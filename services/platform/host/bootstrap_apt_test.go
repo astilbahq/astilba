@@ -104,6 +104,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		prePocket     []string // Sources that replay a pre-release noble.
 		dead          []string // Sources whose indexes are current but which no longer answer.
 		extras        []string // What else the host's sources hold; see fakeAptGet.
+		hostOnly      bool     // The operator gave --use-host-package-sources.
 		downloadFails bool
 		nothingNeeded bool
 		used          string // The fallback archive the install uses, or empty for the host's sources.
@@ -131,6 +132,9 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		{name: "a second Ubuntu mirror on the host is stale", extras: []string{"stale-mirror"}, ok: true},
 		// Another release under a noble suite's name is refused, not skipped.
 		{name: "the host's backports serves another release", extras: []string{"backports-resolute"}, used: amd64[0], ok: true, output: "served noble-backports as suite resolute-backports, codename resolute"},
+		// An operator whose mirror lags on purpose takes its packages as they are, never a fallback's.
+		{name: "--use-host-package-sources on a lagging mirror", hostOnly: true, stale: []string{"host"}, ok: true, output: "Warning: Ubuntu packages come only from this host's own package sources, as they are"},
+		{name: "--use-host-package-sources when the host's sources fail", hostOnly: true, failing: []string{"host"}, output: "apt could not resolve or download the Ubuntu packages from this host's own sources"},
 		{name: "everything fails", failing: append([]string{"host"}, amd64...), output: "Neither this host's package sources nor any fallback Ubuntu archive"},
 		// A download that fails although every index refreshed, such as a package apt can't
 		// resolve, would fail the same way from every archive.
@@ -179,6 +183,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				"ubuntu_keyring=" + keyring,
 				"host_lists=" + lists,
 				`trap 'rm -rf ${apt_root:+"$apt_root"}' EXIT`,
+				"host_sources_only=" + map[bool]string{true: "true", false: "false"}[test.hostOnly],
 				`apt_packages=(/tmp/docker.deb nftables=1.0.9-1ubuntu0.1)`,
 				`apt_download "${apt_packages[@]}"`,
 				install[1],
@@ -231,7 +236,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 			want := []string{"host"}
 			if test.nothingNeeded {
 				want = nil
-			} else if test.used != "" || !test.ok && len(test.failing) > 0 {
+			} else if !test.hostOnly && (test.used != "" || !test.ok && len(test.failing) > 0) {
 				for _, archive := range amd64 {
 					want = append(want, archive)
 					if archive == test.used {
@@ -274,5 +279,14 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				t.Errorf("fallback sources:\n%s", sources)
 			}
 		})
+	}
+}
+
+// --use-host-package-sources turns off a safeguard, so only the operator's own command line may
+// set it, never anything management serves.
+func TestBootstrapHostSourcesOnlyComesFromTheCommandLine(t *testing.T) {
+	sets := regexp.MustCompile(`(?m)^.*host_sources_only=true.*$`).FindAllString(string(Bootstrap()), -1)
+	if len(sets) != 1 || strings.TrimSpace(sets[0]) != "--use-host-package-sources) host_sources_only=true; shift ;;" {
+		t.Fatalf("host_sources_only is set by %q, not only by its command-line option", sets)
 	}
 }

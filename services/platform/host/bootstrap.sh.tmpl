@@ -7,6 +7,7 @@ umask 077
 apply=false
 install_runtime=false
 install_backups=false
+host_sources_only=false
 management=
 release=
 fingerprint=
@@ -17,13 +18,17 @@ usage() {
 Usage: sudo bash bootstrap.sh [--check]
        sudo bash bootstrap.sh --apply --management HTTPS_ORIGIN --release SHA256 \
          --key-fingerprint SHA256 --role deployment|build|combined \
-         [--certificate-contact EMAIL] [--install-runtime] [--install-backups]
+         [--certificate-contact EMAIL] [--install-runtime] [--install-backups] \
+         [--use-host-package-sources]
 
 Check mode only inspects this machine. Apply installs the verified agent and
 prepares its service, without enrolling or starting it. --install-runtime permits
 installing Docker 29.9.2 and Compose 5.6.1 when no Docker installation exists.
 It can start Docker and create its networks and firewall rules. Existing Docker is never replaced.
 Public ingress, certificates and ports still require a reviewed deployment plan.
+--use-host-package-sources takes Ubuntu packages only from this host's own package
+sources, as they are, for a mirror that lags on purpose: it skips the check that
+their indexes are current and the fallback archives. apt still checks signatures.
 HELP
 }
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -33,6 +38,8 @@ while (($#)); do
     --apply) apply=true; shift ;;
     --install-runtime) install_runtime=true; shift ;;
     --install-backups) install_backups=true; shift ;;
+    # Only the operator's own command line sets this; nothing management serves does.
+    --use-host-package-sources) host_sources_only=true; shift ;;
     --management|--release|--key-fingerprint|--certificate-contact|--role)
       (($# >= 2)) || die "Missing value for $1"
       case "$1" in
@@ -283,6 +290,11 @@ apt_download() {
   apt_needed "$@" || return 0
   printf '%s\n' 'Refreshing this host'"'"'s package sources.'
   apt_refresh || refreshed=false
+  if "$host_sources_only"; then
+    printf '%s\n' 'Warning: Ubuntu packages come only from this host'"'"'s own package sources, as they are; --use-host-package-sources skips the check that their indexes are current, and the fallback archives.'
+    apt_fetch "$@" || die 'apt could not resolve or download the Ubuntu packages from this host'"'"'s own sources; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+    return 0
+  fi
   if apt_current; then
     if apt_fetch "$@"; then
       "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; apt used its last copy of those, where it had one.'
@@ -291,7 +303,7 @@ apt_download() {
     "$refreshed" && die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
     reason='This host'"'"'s package sources failed.'
   elif "$refreshed"; then
-    reason='This host'"'"'s Ubuntu package indexes are not current.'
+    reason='This host'"'"'s Ubuntu package indexes are not current. If its sources lag on purpose, run this script again with --use-host-package-sources.'
   else
     reason='This host'"'"'s package sources failed.'
   fi
