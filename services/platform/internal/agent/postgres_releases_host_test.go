@@ -66,7 +66,13 @@ func nativePostgresInPlaceUpdate(t *testing.T, e *Engine, base deployment.Plan, 
 		image := r.Image
 		p.Specification.Volumes = []domain.Volume{{ID: volume, Name: "Data"}}
 		p.Specification.Applications = []domain.Application{{ID: id, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: uuid.New()}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: r.Mount}}}}
-		p.Images = map[string]string{id.String(): image}
+		// The agent resolves the pin to name@digest before anything runs, as production plans hold it.
+		_, digest, _ := strings.Cut(r.Image, "@")
+		resolved, err := deployment.DigestReference(r.Image, digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Images = map[string]string{id.String(): resolved}
 		return p.WithHash()
 	}
 	before, after := plan(retired), plan(current)
@@ -79,7 +85,7 @@ func nativePostgresInPlaceUpdate(t *testing.T, e *Engine, base deployment.Plan, 
 	})
 	run := func(r domain.PostgresRelease) string {
 		t.Helper()
-		created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: before.ContainerName(id), Config: &container.Config{Image: r.Image, Env: []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=update-fixture-password"}, Labels: visualLabels(before, id)}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(volume), Target: r.Mount}}}})
+		created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: before.ContainerName(id), Config: &container.Config{Image: plan(r).Images[id.String()], Env: []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=update-fixture-password"}, Labels: visualLabels(before, id)}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(volume), Target: r.Mount}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +103,12 @@ func nativePostgresInPlaceUpdate(t *testing.T, e *Engine, base deployment.Plan, 
 	// of them named like a connection string. An exclusion constraint's index cannot be rebuilt
 	// concurrently, and a leftover of an interrupted rebuild is dropped rather than rebuilt.
 	fixture := `CREATE DOMAIN code AS bpchar;
-CREATE TABLE records(code bpchar, sized char(4), value text, tag code, slot bpchar, EXCLUDE USING btree (slot WITH =));
+CREATE DOMAIN short_code AS code;
+CREATE DOMAIN sized_code AS char(4);
+CREATE TABLE records(code bpchar, sized char(4), value text, tag code, nested short_code, codes short_code[], fixed sized_code, slot bpchar, EXCLUDE USING btree (slot WITH =));
+CREATE INDEX nested ON records(nested);
+CREATE INDEX listed ON records(codes);
+CREATE INDEX fixed ON records(fixed);
 INSERT INTO records VALUES ('a ', 'b', 'retained', 'c', 'd');
 CREATE INDEX unbounded ON records(code);
 CREATE INDEX sized ON records(sized);
@@ -129,7 +140,7 @@ CREATE FUNCTION public.unnest(oidvector) RETURNS SETOF oid LANGUAGE sql AS $$ SE
 RESET ROLE;`); err != nil {
 		t.Fatal(err)
 	}
-	indexes := "('unbounded', 'sized', 'plain', 'tagged', 'records_slot_excl', 'unbounded_ccnew')"
+	indexes := "('unbounded', 'sized', 'plain', 'tagged', 'nested', 'listed', 'fixed', 'records_slot_excl', 'unbounded_ccnew')"
 	files := func(container string, application domain.Application) map[string]string {
 		t.Helper()
 		raw, err := e.pgQuery(ctx, container, application, "SELECT string_agg(relname || '=' || relfilenode, ',' ORDER BY relname) FROM pg_class WHERE relname IN "+indexes)
@@ -180,7 +191,7 @@ RESET ROLE;`); err != nil {
 	steps := 0
 	begin := func() error { steps++; return nil }
 	note, err := e.reindexPostgres(ctx, after, begin)
-	if err != nil || !strings.Contains(note, "did not finish") || steps != 1 {
+	if err != nil || !strings.Contains(note, "did not finish for Database") || steps != 1 {
 		t.Fatalf("a held rebuild was not reported: %q, %v, %d steps", note, err, steps)
 	}
 	if record, _, _ := e.Journal.postgresData(volume); record.Image != retired.Image {
@@ -198,8 +209,8 @@ RESET ROLE;`); err != nil {
 		if _, left := got["unbounded_ccnew"]; left {
 			t.Errorf("%s: the leftover of an interrupted rebuild was kept", name)
 		}
-		for _, index := range []string{"unbounded", "tagged", "sized", "plain", "records_slot_excl"} {
-			if rebuilt := got[index] != was[index]; rebuilt != (index == "unbounded" || index == "tagged") {
+		for _, index := range []string{"unbounded", "tagged", "nested", "listed", "sized", "fixed", "plain", "records_slot_excl"} {
+			if rebuilt := got[index] != was[index]; rebuilt != (index == "unbounded" || index == "tagged" || index == "nested" || index == "listed") {
 				t.Errorf("%s: index %s rebuilt is %v (%v, was %v)", name, index, rebuilt, got, was)
 			}
 		}

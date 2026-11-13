@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,6 +89,9 @@ func (j *Journal) recordNewPostgresStorage(p deployment.Plan, volume uuid.UUID) 
 // reindexBudget bounds a database's rebuild. A lock wait gives up quickly, because REINDEX
 // CONCURRENTLY waits for every older transaction, and one left open would hold the host.
 const (
+	reindexApplication = "astilba-reindex"
+	// Sessions resolve names only in pg_catalog and name themselves, so a cancellation finds them.
+	reindexOptions      = "PGOPTIONS=-c search_path=pg_catalog,pg_temp"
 	reindexBudget       = time.Hour
 	reindexSessionLimit = "SET lock_timeout = '10s';\nSET statement_timeout = '30min';\n"
 )
@@ -99,7 +104,7 @@ const (
 // again, and the returned note says so. begin runs once before the first rebuild, to record the
 // step. Only a journal failure is an error.
 func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin func() error) (string, error) {
-	var notes []string
+	var unfinished, exclusions []string
 	for _, a := range p.LocalApplications() {
 		if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
 			continue
@@ -127,13 +132,16 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 					}
 					begin = nil
 				}
-				note, rebuilt := e.rebuildPostgresIndexes(ctx, p, a, serving, queries)
-				if note != "" {
-					notes = append(notes, note)
+				skipped, err := e.rebuildPostgresIndexes(ctx, p, a, serving, queries)
+				if ctx.Err() != nil {
+					// The agent is stopping: the command resumes when it restarts.
+					return "", ctx.Err()
 				}
-				if !rebuilt {
+				if err != nil {
+					unfinished = append(unfinished, a.Name)
 					continue
 				}
+				exclusions = append(exclusions, skipped...)
 			}
 		}
 		if !found || record.Image != serving.Image {
@@ -142,7 +150,40 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			}
 		}
 	}
-	return strings.Join(notes, " "), nil
+	return reindexNote(unfinished, exclusions), nil
+}
+
+// reindexNote tells the owner what the rebuild left, within the room an operation's note has.
+func reindexNote(unfinished, exclusions []string) string {
+	var parts []string
+	if len(unfinished) > 0 {
+		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unfinished, 240)+"; the data is served on the new release and the next deployment retries it.")
+	}
+	if len(exclusions) > 0 {
+		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(exclusions, 420)+".")
+	}
+	return strings.Join(parts, " ")
+}
+
+// listSome joins names up to about limit bytes, then counts the rest.
+func listSome(names []string, limit int) string {
+	slices.Sort(names)
+	names = slices.Compact(names)
+	out := ""
+	for i, name := range names {
+		if len(name) > 120 {
+			name = name[:120] + "…"
+		}
+		next := name
+		if out != "" {
+			next = out + ", " + name
+		}
+		if len(next) > limit && out != "" {
+			return out + " and " + strconv.Itoa(len(names)-i) + " more"
+		}
+		out = next
+	}
+	return out
 }
 
 func oldestPostgres(major int) domain.PostgresRelease {
@@ -154,24 +195,30 @@ func oldestPostgres(major int) domain.PostgresRelease {
 	return domain.PostgresRelease{}
 }
 
-// rebuildPostgresIndexes rebuilds one database's indexes and reports whether it finished, with a
-// note for the operation: what failed, or the exclusion-constraint indexes left to the owner.
-func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, a domain.Application, serving domain.PostgresRelease, queries []string) (string, bool) {
-	failed := a.Name + " serves its data on PostgreSQL " + serving.Name() + ", but rebuilding the indexes its release notes name did not finish; the next deployment retries it."
+// rebuildPostgresIndexes rebuilds one database's indexes, returning the exclusion-constraint
+// indexes left to the owner, or why it did not finish.
+func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, a domain.Application, serving domain.PostgresRelease, queries []string) ([]string, error) {
+	// The container runs the plan's resolved reference to the release's digest.
 	v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(a.ID), client.ContainerInspectOptions{})
-	if err != nil || !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != a.ID.String() || v.Container.Config.Image != serving.Image || !v.Container.State.Running {
-		return failed, false
+	if err != nil || !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != a.ID.String() || v.Container.Config.Image != p.Images[a.ID.String()] || !deployment.ResolvedImage(serving.Image, v.Container.Config.Image) || !v.Container.State.Running {
+		return nil, errors.New("the database container is not the plan's")
 	}
-	ctx, cancel := context.WithTimeout(ctx, reindexBudget)
+	budget, cancel := context.WithTimeout(ctx, reindexBudget)
 	defer cancel()
-	exclusions, err := e.runPostgresReindex(ctx, v.Container.ID, a, queries)
-	if err != nil {
-		return failed, false
+	exclusions, err := e.runPostgresReindex(budget, v.Container.ID, a, queries)
+	if err != nil && budget.Err() != nil {
+		// The docker client ending does not stop psql or its backend in the container.
+		e.cancelPostgresReindex(v.Container.ID, a)
 	}
-	if len(exclusions) > 0 {
-		return a.Name + ": PostgreSQL " + serving.Name() + " advises rebuilding these exclusion-constraint indexes, which cannot be rebuilt while writes continue: " + strings.Join(exclusions, ", ") + ". Run REINDEX INDEX on each when writes can pause.", true
-	}
-	return "", true
+	return exclusions, err
+}
+
+// cancelPostgresReindex cancels the rebuild's own sessions, found by their application name.
+func (e *Engine) cancelPostgresReindex(container string, a domain.Application) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// inline-sql: runs in a managed customer database through psql, not in the platform database
+	_ = e.dataTool(ctx, nil, io.Discard, "exec", "-e", reindexOptions, container, "psql", "-XAt", "-U", a.Postgres.Username, "-d", a.Postgres.Database, "-c", "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = '"+reindexApplication+"' AND pid <> pg_backend_pid()")
 }
 
 // runPostgresReindex runs each query in every database that accepts connections, after dropping
@@ -184,7 +231,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, container string, a dom
 	// match for format(), must never run with these privileges. A connection's own options
 	// outrank database and role settings.
 	psql := func(input bool, database string, args ...string) []string {
-		out := []string{"exec", "-e", "PGOPTIONS=-c search_path=pg_catalog,pg_temp"}
+		out := []string{"exec", "-e", reindexOptions, "-e", "PGAPPNAME=" + reindexApplication}
 		if input {
 			out = append(out, "-i")
 		}

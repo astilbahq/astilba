@@ -76,15 +76,16 @@ func gistOpclasses(names ...string) string {
 	return "am.amname = 'gist' AND EXISTS (SELECT 1 FROM unnest(i.indclass) AS k(opclass) JOIN pg_opclass o ON o.oid = k.opclass WHERE o.opcname IN ('" + strings.Join(names, "', '") + "'))"
 }
 
-// indexColumnOf matches an index column whose type is, after resolving a domain to its base type
-// and an array to its element, the named type. An index column keeps its table column's type,
-// so a domain or an array uses the base type's operator class and shares its defect.
+// indexColumnOf matches an index column whose type is, through any chain of domains and arrays,
+// the named type. An index column keeps its table column's type, and a domain or an array uses
+// the base type's comparison, so it shares the base type's defect. Each step keeps the type
+// modifier it adds, so CHAR(n) behind a domain is still told apart.
 func indexColumnOf(condition string) string {
-	return "EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid JOIN pg_type b ON b.oid = CASE WHEN t.typbasetype <> 0 THEN t.typbasetype ELSE t.oid END JOIN pg_type e ON e.oid = CASE WHEN b.typcategory = 'A' THEN b.typelem ELSE b.oid END WHERE a.attrelid = c.oid AND " + condition + ")"
+	return "EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND EXISTS (WITH RECURSIVE r(oid, typmod) AS (SELECT a.atttypid, a.atttypmod UNION ALL SELECT CASE WHEN t.typbasetype <> 0 THEN t.typbasetype ELSE t.typelem END, CASE WHEN t.typbasetype <> 0 THEN t.typtypmod ELSE -1 END FROM r JOIN pg_type t ON t.oid = r.oid WHERE t.typbasetype <> 0 OR t.typcategory = 'A') SELECT 1 FROM r JOIN pg_type e ON e.oid = r.oid WHERE " + condition + "))"
 }
 
-// CHAR(n), which is not affected, keeps a type modifier on the column or on its domain.
-var unboundedBpchar = "am.amname = 'btree' AND " + indexColumnOf("e.oid = 'bpchar'::regtype AND a.atttypmod < 0 AND t.typtypmod < 0")
+// CHAR(n), which is not affected, has a type modifier on its column or on a domain over it.
+var unboundedBpchar = "am.amname = 'btree' AND " + indexColumnOf("e.oid = 'bpchar'::regtype AND NOT EXISTS (SELECT 1 FROM r AS m WHERE m.typmod >= 0)")
 
 // Extension types are matched by name, so the query runs where the extension is not installed.
 func btreeType(name string) string {
