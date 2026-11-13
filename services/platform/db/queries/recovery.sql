@@ -193,11 +193,11 @@ VALUES(@id,@workspace_id,@server_id,@environment_id,@generation,@request_key, @c
 -- name: SetRecoveryFrameCheckpoint :exec
 -- A frame that already exists matches its frozen header, so only the checkpoint it belongs to is
 -- replaced; the stored command keeps its bytes, which its recovery identity is computed from.
-UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,job_id=NULL
+UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ResetRecoveryFrame :exec
-UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL
+UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: OperationReportState :one

@@ -3,6 +3,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
 import { openEnvironmentSection } from "./environment-section";
+import {
+  acknowledgeRelease,
+  acknowledgesReleases,
+} from "./fixtures/agent-releases";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
 import { api, gitProvider } from "./fixtures/ports";
 
@@ -49,6 +53,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
         buildNetwork: true,
         rootlessBuilds: true,
         buildControls: true,
+        ...acknowledgesReleases,
         railpackVersion: "0.43.0",
       },
       preflight: {
@@ -246,6 +251,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
       })
     ).json()
   ).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    railpack,
+  );
   expect(railpack.pipeline.build.builder).toBe("railpack");
   expect(railpack.pipeline.build.dockerfile).toBe("");
   expect(railpack.pipeline.build.railpack).toEqual({
@@ -335,6 +346,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
   });
   expect(poll.status()).toBe(200);
   const command = (await poll.json()).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    command,
+  );
   expect(command.kind).toBe("pipeline");
   expect(command.pipeline.commit).toBe("a".repeat(40));
   expect(command.pipeline.build.budget).toEqual({
@@ -396,6 +413,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
       })
     ).json()
   ).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    completed,
+  );
   const digest = `sha256:${"b".repeat(64)}`;
   const succeeded = await request.post(`${api}/agent/v1/report`, {
     headers: agentHeaders,
@@ -490,6 +513,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
       })
     ).json()
   ).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    initial,
+  );
   expect(
     (
       await request.post(`${api}/agent/v1/report`, {

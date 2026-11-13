@@ -373,13 +373,13 @@ func TestAlertDeliveryAuthorizationAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous := f.st.Keys.Active
-	f.st.Keys.Keys[rotated.Active] = rotated.Keys[rotated.Active]
-	f.st.Keys.Active = rotated.Active
+	previous := keysOf(f.st).Active
+	keysOf(f.st).Keys[rotated.Active] = rotated.Keys[rotated.Active]
+	keysOf(f.st).Active = rotated.Active
 	if err = f.st.Rewrap(ctx, "test"); err != nil {
 		t.Fatal(err)
 	}
-	delete(f.st.Keys.Keys, previous)
+	delete(keysOf(f.st).Keys, previous)
 	operation := alertOperation(t, f, ws, server, env, "failed")
 	alertSweep(t, f, ws)
 	if err := f.apiServer.Alerts.Deliver(ctx); err != nil {

@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -34,6 +35,52 @@ func (q *Queries) AbandonSecretAccess(ctx context.Context, olderThanSeconds floa
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const acknowledgeSecretRelease = `-- name: AcknowledgeSecretRelease :execrows
+UPDATE secret_releases SET acknowledged_at = COALESCE(acknowledged_at, now())
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3
+    AND agent_instance = $4 AND digest = $5
+`
+
+type AcknowledgeSecretReleaseParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+	Digest        string    `json:"digest"`
+}
+
+func (q *Queries) AcknowledgeSecretRelease(ctx context.Context, arg AcknowledgeSecretReleaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, acknowledgeSecretRelease,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+		arg.Digest,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const addOperationNote = `-- name: AddOperationNote :exec
+UPDATE execution_operations SET note = CASE WHEN note = '' THEN $1::text ELSE note || ' ' || $1::text END
+WHERE workspace_id = $2 AND id = $3 AND strpos(note, $1::text) = 0
+`
+
+type AddOperationNoteParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// A release that cannot go says why beside whatever the operation already says, such as a
+// stopped submission's warning, and only once.
+func (q *Queries) AddOperationNote(ctx context.Context, arg AddOperationNoteParams) error {
+	_, err := q.db.Exec(ctx, addOperationNote, arg.Note, arg.WorkspaceID, arg.ID)
+	return err
 }
 
 const insertSecretAccess = `-- name: InsertSecretAccess :exec
@@ -97,6 +144,129 @@ func (q *Queries) InsertSecretAccessOutcome(ctx context.Context, arg InsertSecre
 	return err
 }
 
+const insertSecretRelease = `-- name: InsertSecretRelease :execrows
+INSERT INTO secret_releases(operation_id,dispatch_epoch,agent_instance,workspace_id,server_id,digest,attempts,last_attempt_at)
+VALUES($1,$2,$3,$4,$5,$6,1,now())
+ON CONFLICT DO NOTHING
+`
+
+type InsertSecretReleaseParams struct {
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	ServerID      uuid.UUID `json:"server_id"`
+	Digest        string    `json:"digest"`
+}
+
+func (q *Queries) InsertSecretRelease(ctx context.Context, arg InsertSecretReleaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertSecretRelease,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+		arg.WorkspaceID,
+		arg.ServerID,
+		arg.Digest,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const lockSecretRelease = `-- name: LockSecretRelease :one
+SELECT digest,attempts,last_attempt_at,acknowledged_at,redelivery,now()::timestamptz AS checked_at FROM secret_releases
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3 AND agent_instance = $4 FOR UPDATE
+`
+
+type LockSecretReleaseParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+type LockSecretReleaseRow struct {
+	Digest         string     `json:"digest"`
+	Attempts       int32      `json:"attempts"`
+	LastAttemptAt  time.Time  `json:"last_attempt_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	Redelivery     bool       `json:"redelivery"`
+	CheckedAt      time.Time  `json:"checked_at"`
+}
+
+func (q *Queries) LockSecretRelease(ctx context.Context, arg LockSecretReleaseParams) (LockSecretReleaseRow, error) {
+	row := q.db.QueryRow(ctx, lockSecretRelease,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	var i LockSecretReleaseRow
+	err := row.Scan(
+		&i.Digest,
+		&i.Attempts,
+		&i.LastAttemptAt,
+		&i.AcknowledgedAt,
+		&i.Redelivery,
+		&i.CheckedAt,
+	)
+	return i, err
+}
+
+const repeatSecretRelease = `-- name: RepeatSecretRelease :exec
+UPDATE secret_releases SET digest = $1,attempts = attempts + 1,last_attempt_at = now(),acknowledged_at = NULL,redelivery = false
+WHERE workspace_id = $2 AND operation_id = $3 AND dispatch_epoch = $4 AND agent_instance = $5
+`
+
+type RepeatSecretReleaseParams struct {
+	Digest        string    `json:"digest"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+func (q *Queries) RepeatSecretRelease(ctx context.Context, arg RepeatSecretReleaseParams) error {
+	_, err := q.db.Exec(ctx, repeatSecretRelease,
+		arg.Digest,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	return err
+}
+
+const requestSecretRedelivery = `-- name: RequestSecretRedelivery :execrows
+UPDATE secret_releases SET acknowledged_at = NULL,redelivery = true,last_attempt_at = now() - interval '1 day'
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3
+    AND agent_instance = $4
+`
+
+type RequestSecretRedeliveryParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+// The instance does not hold what was released to it: the next poll releases it again, as a
+// re-delivery. A request is honoured past the attempt limit, which bounds only the releases
+// the instance never answered.
+func (q *Queries) RequestSecretRedelivery(ctx context.Context, arg RequestSecretRedeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, requestSecretRedelivery,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const secretAccessMember = `-- name: SecretAccessMember :one
 SELECT role FROM memberships WHERE workspace_id = $1 AND account_id = $2
 `
@@ -138,4 +308,45 @@ func (q *Queries) SecretAccessWorkspaceExists(ctx context.Context, id uuid.UUID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const secretRelease = `-- name: SecretRelease :one
+SELECT digest,attempts,last_attempt_at,acknowledged_at,redelivery,now()::timestamptz AS checked_at FROM secret_releases
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3 AND agent_instance = $4
+`
+
+type SecretReleaseParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+type SecretReleaseRow struct {
+	Digest         string     `json:"digest"`
+	Attempts       int32      `json:"attempts"`
+	LastAttemptAt  time.Time  `json:"last_attempt_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	Redelivery     bool       `json:"redelivery"`
+	CheckedAt      time.Time  `json:"checked_at"`
+}
+
+// The lease is timed by the database clock, as the claim's is, so the two agree.
+func (q *Queries) SecretRelease(ctx context.Context, arg SecretReleaseParams) (SecretReleaseRow, error) {
+	row := q.db.QueryRow(ctx, secretRelease,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	var i SecretReleaseRow
+	err := row.Scan(
+		&i.Digest,
+		&i.Attempts,
+		&i.LastAttemptAt,
+		&i.AcknowledgedAt,
+		&i.Redelivery,
+		&i.CheckedAt,
+	)
+	return i, err
 }

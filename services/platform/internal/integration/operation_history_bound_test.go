@@ -168,7 +168,7 @@ FROM visual_plans p, generate_series(1,$3::int) i WHERE p.id=$1`, plan, a.id, co
 		writer := gzip.NewWriter(&compressed)
 		writer.Write(raw)
 		writer.Close()
-		envelope, err := g.f.st.Keys.Seal(compressed.Bytes(), "gzip-envelope-probe")
+		envelope, err := keysOf(g.f.st).Seal(compressed.Bytes(), "gzip-envelope-probe")
 		return err == nil && len(envelope) <= deployment.RecoveryEnvelopeLimit
 	}
 	for gzipSealed() {
@@ -191,7 +191,7 @@ func TestDeploymentHistoryStillReachesTheArchiveLimit(t *testing.T) {
 	var environment api.Environment
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Web"}, 201, &environment)
 	_, in, _ := enrollment(t, f, b, ws, "deployment")
-	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+	if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 		t.Fatal(err)
 	}
 	plan := uuid.New()

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
@@ -22,10 +21,7 @@ type Store struct {
 	Pool    *pgxpool.Pool
 	Queries *db.Queries
 	// Broker is the one path to stored values.
-	Broker *secretbroker.Broker
-	// Keys is read only by the agent delivery paths that have not moved to the broker yet. The
-	// secretkeys analyzer allows no other use.
-	Keys              *cryptobox.Keyring
+	Broker            *secretbroker.Broker
 	Hosted            bool
 	Hosting           hosting.Config
 	LogRetention      time.Duration
@@ -340,12 +336,6 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 		return Audit(ctx, q, Principal{Account: a}, w, "workspace.bootstrap", w)
 	})
 	return id, err
-}
-
-// SecretIdentity is a secret version's identity, for the delivery paths that have not moved to
-// the broker yet, which builds its own.
-func SecretIdentity(workspace, id uuid.UUID) string {
-	return "secret:v1:" + workspace.String() + ":" + id.String()
 }
 
 // rewrapFailed names the row, because rotation stops until an operator deals with it and

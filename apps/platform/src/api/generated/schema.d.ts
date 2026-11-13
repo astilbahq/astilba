@@ -1305,6 +1305,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/v1/releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Acknowledges the secret releases this agent instance holds in its journal, and asks again, with a reason, for one it no longer holds. Management releases a command's values to an instance once until it is acknowledged, and again after only on request. */
+        post: operations["noticeSecretReleases"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/v1/operations/{parentId}/checkpoints/{checkpointId}": {
         parameters: {
             query?: never;
@@ -2762,6 +2779,8 @@ export interface components {
             upgrades?: boolean;
             /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
             credentialFreeVisualCancel?: boolean;
+            /** @description Agent acknowledges each command's secret release once it is journaled, and accepts a command without values only when it already holds them. Management releases values only to agents that advertise this. */
+            acknowledgesReleases?: boolean;
             /** @description Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1. */
             machineBoundRotation?: boolean;
             /**
@@ -3022,6 +3041,33 @@ export interface components {
             pipeline?: components["schemas"]["PipelineCommand"];
             backup?: components["schemas"]["BackupCommand"];
             upgrade?: components["schemas"]["UpgradeCommand"];
+            secretRelease?: components["schemas"]["SecretRelease"];
+        };
+        /** @description The secret values a command carries, named by a digest of the values' IDs and versions, never of the values. Without values, the agent must already hold this release. */
+        SecretRelease: {
+            /** Format: int64 */
+            epoch: number;
+            digest: string;
+            values: boolean;
+        };
+        SecretReleaseRef: {
+            /** Format: uuid */
+            operationId: string;
+            /** Format: int64 */
+            epoch: number;
+            digest: string;
+        };
+        SecretRedelivery: {
+            /** Format: uuid */
+            operationId: string;
+            /** Format: int64 */
+            epoch: number;
+            /** @enum {string} */
+            reason: "journal-missing";
+        };
+        SecretReleaseNotice: {
+            acknowledged: components["schemas"]["SecretReleaseRef"][];
+            redeliver: components["schemas"]["SecretRedelivery"][];
         };
         /** @enum {string} */
         ExecutionState: "queued" | "dispatched" | "running" | "waiting_for_agent" | "needs_attention" | "succeeded" | "failed" | "cancelled";
@@ -7840,6 +7886,37 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AgentPoll"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    noticeSecretReleases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretReleaseNotice"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

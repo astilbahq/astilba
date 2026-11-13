@@ -75,7 +75,7 @@ func TestMaintenanceResumeWaitsForPrimaryRecovery(t *testing.T) {
 			f.wait(t, func(state api.ExecutionState, _ string) bool { return state == "dispatched" })
 			poll, cancel := context.WithTimeout(ctx, time.Second)
 			defer cancel()
-			c, err := f.service.execution.Poll(poll, f.identity)
+			c, err := pollReleased(f.service.execution, poll, f.identity)
 			if err != nil || c == nil || c.Id != f.child || !c.CancelRequested {
 				t.Fatal("confirmed primary did not release the frozen cancelled resumption", err)
 			}
@@ -97,7 +97,7 @@ func TestMaintenanceResumeKeepsDispatchedReconciliation(t *testing.T) {
 			f.wait(t, func(state api.ExecutionState, _ string) bool { return state == "dispatched" })
 			poll, cancel := context.WithTimeout(ctx, time.Second)
 			defer cancel()
-			c, err := f.service.execution.Poll(poll, f.identity)
+			c, err := pollReleased(f.service.execution, poll, f.identity)
 			if err != nil || c == nil || c.Id != f.child {
 				t.Fatal("dispatched resumption lost reconciliation delivery", err)
 			}

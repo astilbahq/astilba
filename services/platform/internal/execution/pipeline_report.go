@@ -64,9 +64,15 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys valu
 // and GitHub calls run between passes, and the pass that delivers re-makes every decision
 // below: a revoked or rotated agent, a cancelled or expired operation, a new runtime secret
 // or a changed connection all stop the credential after the call as they would before it.
-func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
+//
+// With nil keys it makes only the decisions that need no values, for a command whose
+// credentials the agent already holds: nothing is opened and no provider is asked.
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (bool, error) {
+	if keys == nil {
+		return s.decidePipelineDelivery(ctx, nil, a, c)
+	}
 	var deliver bool
-	err := s.withGit(ctx, a.Workspace, s.legacyRunKeys(a.Workspace), func(git *gitAnswers) error {
+	err := s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
 		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
 		return err
@@ -170,6 +176,11 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
+	}
+	if git == nil {
+		// The runner holds this command's credentials: what follows only decides whether new
+		// ones may leave.
+		return true, nil
 	}
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
 	if err != nil {

@@ -90,7 +90,7 @@ func (b *Broker) Begin(ctx context.Context, r Request) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !b.budgets.take(budgetKey(r)) {
+	if !b.budgets.take(budgetKeys(r)) {
 		return nil, domain.RateLimited
 	}
 	id := uuid.New()

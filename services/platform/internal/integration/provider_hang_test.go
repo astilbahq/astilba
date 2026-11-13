@@ -390,7 +390,7 @@ type polled struct {
 func (h *hungBuild) pollAsync(ctx context.Context) <-chan polled {
 	out := make(chan polled, 1)
 	go func() {
-		command, err := h.f.execution.Poll(ctx, h.identity)
+		command, err := pollReleased(h.f.execution, ctx, h.identity)
 		out <- polled{command, err}
 	}()
 	return out
@@ -546,7 +546,7 @@ func TestDeliveryGivesUpOnAConnectionThatKeepsChanging(t *testing.T) {
 	before := h.provider.requests("/repos/team/app")
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	command, err := h.f.execution.Poll(ctx, h.identity)
+	command, err := pollReleased(h.f.execution, ctx, h.identity)
 	if !errors.Is(err, domain.Conflict) || carriesCredential(command) || h.deliveryStarted(t, op.Id) {
 		t.Fatal("a connection that never settled reached delivery", err)
 	}
@@ -570,7 +570,7 @@ func TestDeliveryStopsWhenTheProviderFailsAfterHanging(t *testing.T) {
 	if outcome.err == nil || carriesCredential(outcome.command) || h.deliveryStarted(t, op.Id) {
 		t.Fatal("a failed provider check still delivered", outcome.err)
 	}
-	if c, err := h.f.execution.Poll(ctx, h.identity); err != nil || !carriesCredential(c) {
+	if c, err := pollReleased(h.f.execution, ctx, h.identity); err != nil || !carriesCredential(c) {
 		t.Fatal("delivery did not recover with the provider", err)
 	}
 }
@@ -580,7 +580,7 @@ func (h *hungBuild) deliver(t *testing.T, config pipeline.BuildConfig) *api.Exec
 	op := h.createBuild(t, config)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	command, err := h.f.execution.Poll(ctx, h.identity)
+	command, err := pollReleased(h.f.execution, ctx, h.identity)
 	if err != nil || command == nil || command.Id != op.Id {
 		t.Fatal("build was not delivered", command, err)
 	}

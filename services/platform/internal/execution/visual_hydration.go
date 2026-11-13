@@ -10,21 +10,16 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-// Secret values are hydrated only at the authenticated agent transport boundary.
-func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) error {
-	if c.Visual != nil {
-		var p deployment.Payload
-		// Removal needs no secret or registry access.
-		if json.Unmarshal(*c.Visual, &p) == nil && (p.Action == "preview-cleanup" || p.Action == retireAction) {
-			return nil
-		}
-	}
+// Secret values are hydrated only at the authenticated agent transport boundary. With nil keys
+// it makes the delivery's checks and opens nothing.
+func (s *Service) hydrateVisual(ctx context.Context, keys valueKeys, c *api.ExecutionCommand) error {
 	if c.Visual == nil {
 		return errors.New("missing visual payload")
 	}
@@ -53,6 +48,9 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 			return domain.Invalid("server.capabilities.safeReleases")
 		}
 	}
+	if keys == nil {
+		return nil
+	}
 	payload.RegistryAccess = map[string]pipeline.Credential{}
 	for key, a := range payload.Plan.Artifacts {
 		if a.RegistryID == nil {
@@ -63,7 +61,7 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 			return err
 		}
 		var access pipeline.RegistryAccess
-		if err := s.legacyOpenIntegration(ws, *a.RegistryID, "registry", registry.EncryptedAccess, &access); err != nil {
+		if err := openJSON(keys, secretbroker.Item{Kind: secretbroker.Registry, ID: *a.RegistryID}, registry.EncryptedAccess, &access); err != nil {
 			return err
 		}
 		payload.RegistryAccess[key] = access.Pull
@@ -78,7 +76,7 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 		if err != nil {
 			return err
 		}
-		plain, err := s.Store.Keys.Open(v.EncryptedValue, store.SecretIdentity(ws, id))
+		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, v.EncryptedValue)
 		if err != nil {
 			return err
 		}
@@ -96,7 +94,7 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 	return nil
 }
 
-func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, spec domain.Specification) error {
+func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, spec domain.Specification) error {
 	if len(domain.SecretReferences(spec)) > 100 {
 		return domain.Invalid("secrets")
 	}
@@ -106,7 +104,7 @@ func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, ws, env 
 		if err != nil {
 			return store.IfMissing(err, domain.Invalid("secretVersionId"))
 		}
-		plain, err := s.Store.Keys.Open(secret.EncryptedValue, store.SecretIdentity(ws, id))
+		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, secret.EncryptedValue)
 		if err != nil {
 			return err
 		}

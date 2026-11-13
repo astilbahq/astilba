@@ -985,7 +985,7 @@ func (q *Queries) ResetRecoveredNetworkMembers(ctx context.Context, arg ResetRec
 }
 
 const resetRecoveryFrame = `-- name: ResetRecoveryFrame :exec
-UPDATE execution_operations SET command=CASE WHEN $1::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',$1::jsonb,true) END,state = $2,report_sequence=0,steps='[]',note='',job_id=NULL
+UPDATE execution_operations SET command=CASE WHEN $1::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',$1::jsonb,true) END,state = $2,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = $3 AND id = $4
 `
 
@@ -1295,7 +1295,7 @@ func (q *Queries) SetRecoveryCheckpointAcknowledged(ctx context.Context, arg Set
 }
 
 const setRecoveryFrameCheckpoint = `-- name: SetRecoveryFrameCheckpoint :exec
-UPDATE execution_operations SET command=CASE WHEN $1::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',$1::jsonb,true) END,job_id=NULL
+UPDATE execution_operations SET command=CASE WHEN $1::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',$1::jsonb,true) END,job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = $2 AND id = $3
 `
 

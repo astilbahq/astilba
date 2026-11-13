@@ -75,6 +75,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set(agentidentity.KeysHeader, "v1")
 		// v1 reviews the host changes a plan resolution reports.
 		w.Header().Set("Astilba-Agent-Host-Changes", "v1")
+		// v1 releases a command's secrets once per agent instance, until it acknowledges them.
+		w.Header().Set("Astilba-Agent-Secret-Releases", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768
@@ -303,6 +305,13 @@ func (s *Server) ReportAgent(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AgentReport](r)
 	if e == nil {
 		e = s.Execution.Report(r.Context(), agentIdentity(r.Context()), b)
+	}
+	s.executionResponse(w, r, 204, nil, e)
+}
+func (s *Server) NoticeSecretReleases(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.SecretReleaseNotice](r)
+	if e == nil {
+		e = s.Execution.NoticeSecretReleases(r.Context(), agentIdentity(r.Context()), b)
 	}
 	s.executionResponse(w, r, 204, nil, e)
 }

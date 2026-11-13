@@ -3,6 +3,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
 import { openEnvironmentSection } from "./environment-section";
+import {
+  acknowledgeRelease,
+  acknowledgesReleases,
+} from "./fixtures/agent-releases";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("private network and placement retain failed drafts and review both hosts", async ({
@@ -34,6 +38,7 @@ test("private network and placement retain failed drafts and review both hosts",
       safeReleases: true,
       replicas: true,
       crossHost: true,
+      ...acknowledgesReleases,
     },
     preflight: {
       ready: true,
@@ -86,6 +91,12 @@ test("private network and placement retain failed drafts and review both hosts",
     const { command }: { command: Schema["ExecutionCommand"] } =
       await response.json();
     expect(command).toBeTruthy();
+    await acknowledgeRelease(
+      request,
+      "/agent/v1/releases",
+      peer.headers,
+      command,
+    );
     return command;
   };
   const report = async (

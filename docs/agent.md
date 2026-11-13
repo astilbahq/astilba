@@ -34,6 +34,8 @@ The agent compiles its version, minimum version and commit in, and reports them 
 
 An agent only installs a release whose minimum version is at least that of the release it runs, whether the update comes from the dashboard or from `update-local` (which applies the minimum version of the agent binary that runs it). A release's minimum version is never later than its version, so this also refuses any older release. An agent's minimum version therefore only ever rises, however many updates it takes. Rolling back among releases that share a minimum version stays possible; see [rollback and downgrade](#rollback-and-downgrade). A compromised management can't move an agent below its minimum version, even one release at a time, to an older, genuinely signed release with a known flaw.
 
+A fresh host has no floor until its first install. Give the bootstrap `--minimum-version` from your trusted channel to set one; see [server onboarding](server-onboarding.md).
+
 The minimum version is the reviewed file `services/platform/cmd/agent/minimum-version`, which every build embeds, so it is part of the release's commit. Raise it in a pull request when releases below it must not run again, for example after a security fix, or after a change that earlier agents can't read. An agent is bound by the new value only once it runs a release that carries it; from then on it only installs releases that carry that value or a higher one. Update every agent to such a release promptly.
 
 ### Release procedure
