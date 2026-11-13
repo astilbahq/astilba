@@ -52,7 +52,8 @@ const owner: Session = { ...member, recentAuth: true };
 let requests: { method: string; body: unknown }[] = [];
 let refusePut: number | null = null;
 let refuseDelete: number | null = null;
-// The source the workshop server holds after a binding, reset before each story.
+// The source the workshop server holds after a binding, whose hash its response names, reset before
+// each story.
 let served: Schema["GitSourceStatus"] = source;
 const rebound: Schema["GitSourceStatus"] = {
   ...source,
@@ -186,7 +187,6 @@ const meta = {
         },
       ] as Schema["Server"][]),
     ),
-    http.get(`${root}/source`, () => HttpResponse.json(served)),
     http.put(`${root}/source`, async ({ request }) => {
       requests.push({ method: "PUT", body: await request.json() });
       if (refusePut) return refusal(refusePut);
@@ -203,7 +203,7 @@ const meta = {
           steps: [],
           createdAt: "2026-11-13T10:01:00Z",
         } satisfies Schema["Operation"],
-        { status: 202 },
+        { status: 202, headers: { "Astilba-Source-Hash": served.sourceHash } },
       );
     }),
     http.delete(`${root}/source`, () => {
@@ -246,6 +246,18 @@ export const RebindRenamedFile: Story = {
     });
     await userEvent.clear(entrypoints);
     await userEvent.type(entrypoints, "docker-compose.yaml");
+    // The owner's own binding is never shown as a change made elsewhere, not even for a moment.
+    let noticed = false;
+    const watch = new MutationObserver(() => {
+      noticed ||= /The source changed since this form was opened/.test(
+        canvasElement.textContent ?? "",
+      );
+    });
+    watch.observe(canvasElement, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
     await userEvent.click(
       canvas.getByRole("button", { name: "Bind again and import" }),
     );
@@ -272,14 +284,40 @@ export const RebindRenamedFile: Story = {
     await expect(await canvas.findByText(/Source changed/)).toHaveFocus();
     // The page's refreshed source arrives after the binding settles, and is the binding's own.
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await expect(
-      canvas.queryByText(/The source changed since this form was opened/),
-    ).toBeNull();
+    watch.disconnect();
+    await expect(noticed).toBe(false);
     await expect(
       canvas.getByRole("textbox", {
         name: "Compose entrypoints, one path per line",
       }),
     ).toHaveValue("docker-compose.yaml");
+  },
+};
+
+// Another owner's change that reaches the page while this owner's binding settles is still shown.
+export const ChangedDuringRebind: Story = {
+  args: {
+    next: {
+      ...rebound,
+      sourceHash: "3".repeat(64),
+      configuration: { ...rebound.configuration, autoDeploy: true },
+    },
+  },
+  beforeEach: () => {
+    served = rebound;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByText("Change or remove the Git source"));
+    await waitFor(() =>
+      expect(canvas.getByRole("option", { name: /builder/ })).toBeTruthy(),
+    );
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Bind again and import" }),
+    );
+    await expect(
+      await canvas.findByText(/The source changed since this form was opened/),
+    ).toBeVisible();
   },
 };
 

@@ -1,7 +1,10 @@
 package integration
 
 import (
+	"bytes"
 	"encoding/json/v2"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +49,30 @@ func (i *importedEnvironment) addSourceWithFallback(t *testing.T, name string, f
 	}
 	runner.reportImport(c, i.source.head.Load().(string), []composeproject.File{file})
 	return path
+}
+
+// bindAgain binds the environment's source again and returns the queued import and the source hash
+// the response names.
+func (i *importedEnvironment) bindAgain(t *testing.T, body map[string]any) (api.Operation, string) {
+	t.Helper()
+	raw, _ := stablejson.Marshal(body)
+	request, err := http.NewRequest("PUT", i.f.server.URL+i.path+"/source", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", i.f.server.URL)
+	request.Header.Set("X-CSRF-Token", i.b.csrf)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := i.b.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var op api.Operation
+	if response.StatusCode != 202 || json.UnmarshalRead(response.Body, &op) != nil {
+		t.Fatal("binding again was refused", response.StatusCode)
+	}
+	return op, response.Header.Get("Astilba-Source-Hash")
 }
 
 func (i *importedEnvironment) sourceStatus(t *testing.T, path string) api.GitSourceStatus {
@@ -189,10 +216,15 @@ func TestRenamedSourceFileImportsAfterRebinding(t *testing.T) {
 	}
 
 	source.Paths, source.Entrypoints = []string{"docker-compose.yaml", "config/app.env"}, []string{"docker-compose.yaml"}
-	var op api.Operation
-	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source, "sourceHash": shown}, 202, &op)
-	if status := i.sourceStatus(t, i.path); status.Failure != nil || status.ImportedRevisionId != nil {
+	op, bound := i.bindAgain(t, map[string]any{"baseRevisionId": i.draft.Id, "configuration": source, "sourceHash": shown})
+	status := i.sourceStatus(t, i.path)
+	if status.Failure != nil || status.ImportedRevisionId != nil {
 		t.Fatal("binding again kept the failure or the earlier import", status.Failure, status.ImportedRevisionId)
+	}
+	// The response names the source as now bound, as reading it does, so a client can tell its own
+	// binding from a change made elsewhere since.
+	if bound != status.SourceHash || bound == shown {
+		t.Fatalf("binding again named source %q, but the source is %q", bound, status.SourceHash)
 	}
 	// Binding again made the source the owner's, which the audit record says; the refused attempt left none.
 	if rebinds, binds := auditedBy(t, i.f, i.ws, i.f.owner, "git.source.rebind"), auditedBy(t, i.f, i.ws, i.f.owner, "git.source.bind"); rebinds != 1 || binds != 1 {
@@ -204,7 +236,7 @@ func TestRenamedSourceFileImportsAfterRebinding(t *testing.T) {
 	}
 	i.runner.reportImport(c, latest, renamed)
 	i.succeeded(t, i.path, c)
-	status := i.sourceStatus(t, i.path)
+	status = i.sourceStatus(t, i.path)
 	if status.ImportedCommit != latest || status.Status != "ready" || status.Configuration.Paths[0] != "docker-compose.yaml" || !status.Clean {
 		t.Fatalf("the source did not import its new files: %+v", status)
 	}
@@ -509,7 +541,9 @@ func TestSavingRefusesAFallbackRunnerThatIsntTheWorkspaces(t *testing.T) {
 		}
 	}
 	_, spec := draftSpec(t, i.b, i.path)
-	for _, fallback := range []uuid.UUID{foreign.Server.Id, revokedID} {
+	// Another workspace's server, a revoked one, and one that doesn't exist.
+	fallbacks := []uuid.UUID{foreign.Server.Id, revokedID, uuid.New()}
+	for _, fallback := range fallbacks {
 		source := pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &fallback, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}
 		refusedFor(i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source, "sourceHash": i.sourceStatus(t, i.path).SourceHash}, 400, nil))
 		build := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &fallback, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}
@@ -520,8 +554,9 @@ func TestSavingRefusesAFallbackRunnerThatIsntTheWorkspaces(t *testing.T) {
 	i.b.call("POST", i.prefix+"/projects", map[string]string{"name": "New"}, 201, &project)
 	var env api.Environment
 	i.b.call("POST", i.prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &env)
-	foreignID := foreign.Server.Id
-	refusedFor(i.b.call("PUT", i.prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &foreignID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 400, nil))
+	for _, fallback := range fallbacks {
+		refusedFor(i.b.call("PUT", i.prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &fallback, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 400, nil))
+	}
 	if status := i.sourceStatus(t, i.path); status.ImportedCommit != strings.Repeat("a", 40) || status.Configuration.FallbackRunnerId != nil {
 		t.Fatal("a refused fallback changed the source")
 	}

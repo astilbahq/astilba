@@ -3415,8 +3415,12 @@
             type: string
             format: uuid
       responses:
-        '201':
-          description: Success
+        '202':
+          description: Bound; the import is queued.
+          headers:
+            Astilba-Source-Hash:
+              description: The source's hash as now bound, as returned with the source, so a client can tell its own binding from a change made elsewhere since.
+              schema: {type: string, pattern: '^[a-f0-9]{64}$'}
           content:
             application/json:
               schema:

@@ -204,10 +204,13 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 // binding again is refused while one is running.
 // Binding again needs the hash returned with the source, so a change made since it was shown, such
 // as another owner's binding, is refused rather than overwritten.
-func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source, hash string) (api.Operation, error) {
+// It returns the source's hash as now bound, so a client can tell its own binding from a change
+// made elsewhere since.
+func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source, hash string) (api.Operation, string, error) {
 	var out api.Operation
+	var boundHash string
 	if err := c.Validate(); err != nil {
-		return api.Operation{}, domain.Invalid("source")
+		return api.Operation{}, "", domain.Invalid("source")
 	}
 	// The audit record says whether the source was bound again, which also made it the caller's.
 	// Only the pass that commits keeps it.
@@ -275,10 +278,15 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			}
 		}
 		command := pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()}
-		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command)
+		if out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command); err != nil {
+			return err
+		}
+		// The hash is of the configuration as stored, which is how GitSource reads it.
+		stored, err := db.New(tx).LockGitSourcePolicy(ctx, db.LockGitSourcePolicyParams{WorkspaceID: ws, EnvironmentID: env})
+		boundHash = sourceHash(stored.Configuration, stored.PolicyActor)
 		return err
 	})
-	return operationFor(p, out), err
+	return operationFor(p, out), boundHash, err
 }
 func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, discard bool) (api.Operation, error) {
 	var out api.Operation

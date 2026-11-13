@@ -251,9 +251,17 @@ export function ChangeSource({
   const action = useAction({ recentAuth: true });
   // Removal has its own action, so its refusal is shown in its dialog, not as the form's error.
   const removal = useAction({ recentAuth: true });
-  // The source the form started from. A change made elsewhere since is shown, not taken over what
-  // the owner typed; this form's own binding starts it from the source that binding made.
-  const [shown, setShown] = useState(source);
+  // shown is the source the form started from. A change made elsewhere since is shown, not taken
+  // over what the owner typed; this form's own binding starts it from the source that binding made.
+  // Until the page has that source too, replacing is the hash the binding replaced, which the page
+  // still showing is no change elsewhere.
+  const [view, setView] = useState<{
+    shown: Schema["GitSourceStatus"];
+    replacing: string | null;
+  }>({ shown: source, replacing: null });
+  if (view.replacing && source.sourceHash === view.shown.sourceHash)
+    setView({ shown: view.shown, replacing: null });
+  const shown = view.shown;
   const [removing, setRemoving] = useState(false);
   const remove = useRef<HTMLButtonElement>(null);
   // After a removal the page says so and moves focus there, so the dialog doesn't take it back.
@@ -264,25 +272,26 @@ export function ChangeSource({
       <summary ref={summary}>Change or remove the Git source</summary>
       <div className={s.stack}>
         <ErrorNotice error={action.error} />
-        {source.sourceHash !== shown.sourceHash && (
-          <div className={s.notice} role="status">
-            <p>
-              The source changed since this form was opened, for example because
-              another owner bound it again or turned automatic deployment off.
-              Binding it again from this form is refused until you start again
-              from the source as it is now.
-            </p>
-            <Button
-              type="button"
-              onClick={() => {
-                setShown(source);
-                summary.current?.focus();
-              }}
-            >
-              Start again from the current source
-            </Button>
-          </div>
-        )}
+        {source.sourceHash !== shown.sourceHash &&
+          source.sourceHash !== view.replacing && (
+            <div className={s.notice} role="status">
+              <p>
+                The source changed since this form was opened, for example
+                because another owner bound it again or turned automatic
+                deployment off. Binding it again from this form is refused until
+                you start again from the source as it is now.
+              </p>
+              <Button
+                type="button"
+                onClick={() => {
+                  setView({ shown: source, replacing: null });
+                  summary.current?.focus();
+                }}
+              >
+                Start again from the current source
+              </Button>
+            </div>
+          )}
         <BindAgain
           key={shown.sourceHash}
           path={path}
@@ -291,7 +300,9 @@ export function ChangeSource({
           dirty={dirty}
           action={action}
           changed={changed}
-          bound={setShown}
+          bound={(next) =>
+            setView({ shown: next, replacing: shown.sourceHash })
+          }
         />
         <div>
           <Button
@@ -386,12 +397,13 @@ function BindAgain({
       label="Change the Git source"
       onSubmit={(d) =>
         action.run(async () => {
+          const configuration = sourceConfiguration(d);
           const request = client.PUT(`${root}/source`, {
             params: { path },
             body: {
               baseRevisionId: revisionId,
               sourceHash: source.sourceHash,
-              configuration: sourceConfiguration(d),
+              configuration,
             },
           });
           try {
@@ -409,12 +421,12 @@ function BindAgain({
             );
             return;
           }
-          // The form starts again from the source this binding made, read now rather than from
-          // the page's next poll, which a change elsewhere could reach first.
-          const now = await result(
-            client.GET(`${root}/source`, { params: { path } }),
-          ).catch(() => null);
-          if (now) bound(now);
+          // The form starts again from the source this binding made, whose hash the response
+          // names, rather than from the page's next poll, which a change elsewhere could reach first.
+          const hash = (await request).response.headers.get(
+            "Astilba-Source-Hash",
+          );
+          if (hash) bound({ ...source, configuration, sourceHash: hash });
           await changed(
             "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
           );

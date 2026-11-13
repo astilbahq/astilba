@@ -8706,9 +8706,11 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success */
-            201: {
+            /** @description Bound; the import is queued. */
+            202: {
                 headers: {
+                    /** @description The source's hash as now bound, as returned with the source, so a client can tell its own binding from a change made elsewhere since. */
+                    "Astilba-Source-Hash"?: string;
                     [name: string]: unknown;
                 };
                 content: {

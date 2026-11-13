@@ -75,7 +75,10 @@ func (s *Server) BindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, 
 	if b.SourceHash != nil {
 		hash = *b.SourceHash
 	}
-	v, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg, hash)
+	v, bound, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg, hash)
+	if e == nil {
+		w.Header().Set("Astilba-Source-Hash", bound)
+	}
 	s.executionResponse(w, r, 202, v, e)
 }
 func (s *Server) UnbindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
