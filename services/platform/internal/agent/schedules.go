@@ -34,7 +34,7 @@ type scheduleState struct {
 // have failed: never recorded, recorded as failed, or stopped before its first effect, which it
 // now records as failed.
 func (e *Engine) interruptedRunFailed(b backup.Command) (bool, error) {
-	if (b.Action != "backup" && b.Action != "restore") || b.RunID == uuid.Nil {
+	if b.RunID == uuid.Nil {
 		return false, nil
 	}
 	s, err := e.Journal.schedule(b.Installation.Policy.ID)
@@ -68,7 +68,8 @@ func settleUnstarted(s *scheduleState, now time.Time) bool {
 	}
 	for i := range s.Runs {
 		if s.Runs[i].ID == s.BeforeEffects && s.Runs[i].State == "running" {
-			s.Runs[i].State, s.Runs[i].FinishedAt = "failed", &now
+			// As a run that fails in process, a restore no longer protects its own record.
+			s.Runs[i].State, s.Runs[i].FinishedAt, s.Runs[i].Protected = "failed", &now, false
 			s.Runs[i].Note = "The agent stopped before this run changed anything. It will not be repeated automatically."
 		}
 	}
@@ -199,8 +200,9 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Digest() != c.PlanHash || b.Installation.Policy.ID != c.ResourceId || b.Installation.Policy.ServerID != c.ServerId || b.Installation.Policy.EnvironmentID != c.EnvironmentId || b.Installation.Policy.Validate() != nil || (c.Kind == "schedule") != b.Installation.Policy.GeneralSchedule() {
 		return e.finish(c.Id, "failed", "Backup command identity or policy is invalid.")
 	}
-	// An interrupted command is settled by what its run did, whether or not it was cancelled since.
-	if r.Checkpoint != "accepted" {
+	// An interrupted backup or restore is settled by what its run did, whether or not it was
+	// cancelled since.
+	if r.Checkpoint != "accepted" && (b.Action == "backup" || b.Action == "restore") {
 		if failed, err := e.interruptedRunFailed(b); err != nil {
 			return err
 		} else if failed && e.cancelled(c.Id) {
@@ -210,8 +212,11 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		}
 		return e.finish(c.Id, "needs_attention", "An interrupted backup command needs local inspection. Scheduled run history records its outcome; it will not be repeated automatically.")
 	}
-	if e.cancelled(c.Id) || time.Now().After(c.Deadline) {
+	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
+	}
+	if r.Checkpoint != "accepted" {
+		return e.finish(c.Id, "needs_attention", "An interrupted backup command needs local inspection. Scheduled run history records its outcome; it will not be repeated automatically.")
 	}
 	parent := ctx
 	ctx, stop := e.commandContext(ctx, c)

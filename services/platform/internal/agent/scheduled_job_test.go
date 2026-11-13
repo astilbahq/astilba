@@ -305,7 +305,7 @@ func TestJobUncertaintyStartsAtItsFirstEffect(t *testing.T) {
 // effect, or had already failed settles the command, cancelled or not.
 func TestInterruptedRunCommandSettlesByItsRun(t *testing.T) {
 	cases := []struct {
-		name              string
+		name, action      string
 		run               string // "" for a run never recorded
 		marked, cancel    bool
 		command, recorded string
@@ -315,12 +315,17 @@ func TestInterruptedRunCommandSettlesByItsRun(t *testing.T) {
 		{name: "before effects cancelled", run: "running", marked: true, cancel: true, command: "cancelled", recorded: "failed"},
 		{name: "already failed", run: "failed", command: "failed", recorded: "failed"},
 		{name: "already failed cancelled", run: "failed", cancel: true, command: "cancelled", recorded: "failed"},
+		{name: "check cancelled", action: "check", cancel: true, command: "cancelled"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e, p, _ := scheduledJobFixture(t, "")
 			at := time.Now().UTC()
-			b := backup.Command{Action: "backup", Installation: backup.Installation{Policy: p}, RunID: uuid.New()}
+			action := tc.action
+			if action == "" {
+				action = "backup"
+			}
+			b := backup.Command{Action: action, Installation: backup.Installation{Policy: p}, RunID: uuid.New()}
 			raw, _ := stablejson.Marshal(b)
 			payload := jsontext.Value(raw)
 			kind := api.ExecutionCommandKind("backup")
