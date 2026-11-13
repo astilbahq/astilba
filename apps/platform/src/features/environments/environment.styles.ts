@@ -22,6 +22,7 @@ export const title = css({
   lineHeight: "heading",
   letterSpacing: "heading",
   overflowWrap: "anywhere",
+  outline: "none",
 });
 export const heading = css({
   fontSize: "lg",
@@ -224,3 +225,39 @@ export const configurationHeading = css({
   lineHeight: "heading",
   outline: "none",
 });
+
+export const retirement = css({
+  display: "grid",
+  gap: "4",
+  padding: "5",
+  marginBlockEnd: "6",
+  borderWidth: "1px",
+  borderStyle: "solid",
+  borderColor: "border",
+  borderRadius: "panel",
+  overflowWrap: "anywhere",
+});
+export const retirementHeading = css({
+  fontSize: "md",
+  fontWeight: "semibold",
+  lineHeight: "heading",
+  outline: "none",
+});
+export const retirementSubheading = css({
+  fontSize: "sm",
+  fontWeight: "semibold",
+  lineHeight: "heading",
+});
+export const retainedVolumes = css({ display: "grid", gap: "1" });
+// The dialog's description: a muted lead-in sentence and the list of effects it introduces.
+export const dialogDescription = css({ display: "grid", gap: "3" });
+export const effects = css({
+  display: "grid",
+  gap: "2",
+  paddingInlineStart: "5",
+  color: "fg",
+  listStyleType: "disc",
+  overflowWrap: "anywhere",
+});
+export const dialogTitle = css({ outline: "none", overflowWrap: "anywhere" });
+export const confirmField = css({ display: "grid", gap: "2" });

@@ -682,6 +682,54 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/retire:
+    post:
+      operationId: retireEnvironment
+      description: Owner with recent identity confirmation. Revokes the environment's automation credentials, turns off its preview, terminal-session and backup policies, and asks its server to remove its routes, services and networks. Named volumes are kept. Asking again re-queues a retirement whose operation ended without success.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnvironmentLifecycleRequest'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Environment'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/restore:
+    post:
+      operationId: restoreEnvironment
+      description: Owner with recent identity confirmation. Makes a retired environment active again as configuration only; nothing is deployed, and credentials and policies stay off.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnvironmentLifecycleRequest'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Environment'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets:
     get:
       operationId: listConfiguredBuildTargets
@@ -5237,6 +5285,9 @@
         previews:
           type: boolean
           description: Supports bounded preview plans and ownership-verified cleanup.
+        retirement:
+          type: boolean
+          description: Removes a retired environment's routes, services and networks while keeping its volumes. Advertised only after Astilba-Agent-Retirement v1.
 
         "protocol":
           "type": "integer"
@@ -5707,11 +5758,14 @@
         - "arch"
         - "size"
         - "sha256"
+        - "commit"
+        - "minimumVersion"
         - "signature"
       "properties":
         "version":
           "type": "string"
           "maxLength": 80
+          "description": "A semantic version without build metadata."
         "protocol":
           "type": "integer"
           "enum":
@@ -5727,6 +5781,14 @@
         "sha256":
           "type": "string"
           "maxLength": 64
+        "commit":
+          "type": "string"
+          "maxLength": 40
+          "description": "The source commit the artifact was built from."
+        "minimumVersion":
+          "type": "string"
+          "maxLength": 80
+          "description": "The earliest version an agent running this release may update to. An agent refuses any older release."
         "signature":
           "type": "string"
           "maxLength": 128
@@ -6399,6 +6461,14 @@
               "type": "string"
               "format": "uuid"
           "nullable": true
+        state:
+          type: string
+          enum: [active, retiring, retired]
+          description: Lifecycle state. A retiring or retired environment is read-only until it is restored.
+        retiredAt: {type: string, format: date-time, nullable: true, description: When retirement was last requested.}
+        retiredBy: {type: string, format: uuid, nullable: true, description: The owner who last requested retirement.}
+        retirementOperationId: {type: string, format: uuid, nullable: true, description: The operation that removes the environment from its server.}
+        retiredWithoutHost: {type: boolean, description: Retirement finished without contacting the server because the server was revoked. Its containers may still run there.}
       "required":
         - "id"
         - "projectId"
@@ -6406,6 +6476,7 @@
         - "configurationOwner"
         - "draftRevisionId"
         - "deploymentUnit"
+        - state
     ApplicationSource:
       "type": "object"
       "additionalProperties": false
@@ -7434,6 +7505,12 @@
         - "serverId"
         - "baseRevisionId"
         - "acceptDrift"
+    EnvironmentLifecycleRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmName]
+      properties:
+        confirmName: {type: string, minLength: 1, maxLength: 80, description: The environment's exact current name.}
     "CloneEnvironment":
       "type": "object"
       "additionalProperties": false

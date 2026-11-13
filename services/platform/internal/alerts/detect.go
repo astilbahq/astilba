@@ -438,7 +438,7 @@ func (s *Service) stopServer(ctx context.Context, tx pgx.Tx, ws, server uuid.UUI
 	return nil
 }
 func (s *Service) services(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID, samples []api.MetricSample) error {
-	rows, err := tx.Query(ctx, `SELECT r.id,r.environment_id FROM managed_resources r JOIN deployment_units u ON u.workspace_id=r.workspace_id AND u.id=r.unit_id JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id JOIN specification_revisions v ON v.workspace_id=e.workspace_id AND v.id=e.applied_revision_id WHERE r.workspace_id=$1 AND u.server_id=$2 AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.specification->'applications') a WHERE a->>'id'=r.id::text) ORDER BY r.id LIMIT 2001`, ws, server)
+	rows, err := tx.Query(ctx, `SELECT r.id,r.environment_id FROM managed_resources r JOIN deployment_units u ON u.workspace_id=r.workspace_id AND u.id=r.unit_id JOIN environments e ON e.workspace_id=r.workspace_id AND e.id=r.environment_id JOIN specification_revisions v ON v.workspace_id=e.workspace_id AND v.id=e.applied_revision_id WHERE r.workspace_id=$1 AND u.server_id=$2 AND e.state='active' AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.specification->'applications') a WHERE a->>'id'=r.id::text) ORDER BY r.id LIMIT 2001`, ws, server)
 	if err != nil {
 		return err
 	}
