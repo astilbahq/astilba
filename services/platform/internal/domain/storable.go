@@ -142,9 +142,14 @@ func replaceNUL(v reflect.Value, path string) (changed bool, field string, colli
 		// What an interface holds cannot be changed in place, so a copy is changed and stored.
 		c := reflect.New(v.Elem().Type()).Elem()
 		c.Set(v.Elem())
-		if changed, field, collides = replaceNUL(c, path); changed && !collides {
+		changed, field, collides := replaceNUL(c, path)
+		if collides {
+			return false, field, true
+		}
+		if changed {
 			v.Set(c)
 		}
+		return changed, "", false
 	case reflect.String:
 		if strings.ContainsRune(v.String(), 0) {
 			v.SetString(strings.ReplaceAll(v.String(), "\x00", " "))

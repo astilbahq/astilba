@@ -171,4 +171,8 @@ func TestReplaceNULRefusesKeysItWouldMerge(t *testing.T) {
 	if field, collides := ReplaceNUL(&probe); !collides || field != "labels" {
 		t.Fatalf("answered %q, %v", field, collides)
 	}
+	probe = nulProbe{Any: map[string]any{"a" + nul: 1.0, "a ": 2.0}}
+	if field, collides := ReplaceNUL(&probe); !collides || field != "any" {
+		t.Fatalf("inside an interface, answered %q, %v", field, collides)
+	}
 }
