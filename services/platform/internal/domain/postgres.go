@@ -163,6 +163,19 @@ func (r PostgresRelease) UpgradesTo(target PostgresRelease) error {
 	return nil
 }
 
+// FreshPostgresImage is the image a new copy of a database starts on, such as a preview's or a
+// cloned environment's: its major's current release. New storage holds no data an earlier release
+// wrote, so nothing ties it to a retired one. An image Astilba never pinned is returned as given,
+// for validation to refuse.
+func FreshPostgresImage(image string) string {
+	if r, ok := PostgresReleaseOf(image); ok {
+		if current, ok := CurrentPostgres(r.Major()); ok {
+			return current.Image
+		}
+	}
+	return image
+}
+
 // PostgresMount is where an image keeps its volume. An image Astilba never pinned gets the
 // current layout; validation refuses it for a managed database.
 func PostgresMount(image string) string {

@@ -145,10 +145,8 @@ func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, ho
 			a.Postgres.PasswordSecretVersionID = id
 			// A preview's database is new storage, so it starts on its major's current release
 			// even while the template's own database stays on a retired one.
-			if r, ok := PostgresReleaseOf(*a.Source.Image); ok {
-				current, _ := CurrentPostgres(r.Major())
-				a.Source.Image = &current.Image
-			}
+			fresh := FreshPostgresImage(*a.Source.Image)
+			a.Source.Image = &fresh
 		}
 	}
 	for i := range s.Volumes {

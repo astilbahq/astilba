@@ -437,8 +437,12 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 			status.Next = old.Next
 		}
 	}
+	knownRelease := func(image string) bool {
+		_, ok := domain.PostgresReleaseOf(image)
+		return ok
+	}
 	for _, r := range status.Runs {
-		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) || r.RestoreImage != "" && !knownPostgres(r.RestoreImage) {
+		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) || r.RestoreImage != "" && !knownRelease(r.RestoreImage) {
 			return domain.Invalid("run")
 		}
 	}
@@ -605,11 +609,6 @@ func refuseElevatedJob(p backup.Policy) error {
 		return errElevatedJob
 	}
 	return nil
-}
-
-func knownPostgres(image string) bool {
-	_, ok := domain.PostgresReleaseOf(image)
-	return ok
 }
 
 // refuseIncompatibleRestore refuses, before anything runs, a restore whose archive the database's
