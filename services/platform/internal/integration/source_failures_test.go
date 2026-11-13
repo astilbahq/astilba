@@ -9,6 +9,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/google/uuid"
 )
 
@@ -170,8 +171,12 @@ func TestRenamedSourceFileImportsAfterRebinding(t *testing.T) {
 	}
 
 	source := pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: []string{"docker-compose.yml", "config/app.env"}, Entrypoints: []string{"docker-compose.yml"}}
+	shown := i.sourceStatus(t, i.path).SourceHash
+	// Binding again names the source as it was shown, so a change since is refused, not overwritten.
+	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source}, 409, nil)
+	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source, "sourceHash": strings.Repeat("0", 64)}, 409, nil)
 	// A misspelt new name is refused by name, and changes nothing.
-	if err := json.Unmarshal(i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source}, 400, nil), &refused); err != nil || !strings.Contains(refused.Message, `"docker-compose.yml"`) {
+	if err := json.Unmarshal(i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source, "sourceHash": shown}, 400, nil), &refused); err != nil || !strings.Contains(refused.Message, `"docker-compose.yml"`) {
 		t.Fatalf("binding to a missing file was not refused by name: %q %v", refused.Message, err)
 	}
 	if status := i.sourceStatus(t, i.path); status.Failure == nil || status.ImportedCommit != strings.Repeat("a", 40) {
@@ -180,9 +185,13 @@ func TestRenamedSourceFileImportsAfterRebinding(t *testing.T) {
 
 	source.Paths, source.Entrypoints = []string{"docker-compose.yaml", "config/app.env"}, []string{"docker-compose.yaml"}
 	var op api.Operation
-	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source}, 202, &op)
+	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source, "sourceHash": shown}, 202, &op)
 	if status := i.sourceStatus(t, i.path); status.Failure != nil || status.ImportedRevisionId != nil {
 		t.Fatal("binding again kept the failure or the earlier import", status.Failure, status.ImportedRevisionId)
+	}
+	// Binding again made the source the owner's, which the audit record says; the refused attempt left none.
+	if rebinds, binds := auditedBy(t, i.f, i.ws, i.f.owner, "git.source.rebind"), auditedBy(t, i.f, i.ws, i.f.owner, "git.source.bind"); rebinds != 1 || binds != 1 {
+		t.Fatalf("audited %d rebinds and %d binds, want one of each", rebinds, binds)
 	}
 	c := i.runner.next()
 	if c.Id != op.Id || importCommand(t, c).Commit != latest {
@@ -217,7 +226,7 @@ func TestUnbindingDuringAnImportSavesNothing(t *testing.T) {
 	i.source.tree.record(latest, importHonest)
 	i.source.head.Store(latest)
 	running := i.refresh(t)
-	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 409, nil)
+	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}, "sourceHash": i.sourceStatus(t, i.path).SourceHash}, 409, nil)
 	i.b.call("DELETE", i.path+"/source", nil, 204, nil)
 	i.runner.reportImport(running, latest, importHonest)
 	if unbound := i.operation(t, running.Id); unbound.State != "failed" || !strings.Contains(unbound.Note, "unbound") {
@@ -251,9 +260,79 @@ func TestOnlyAnOwnerRebindsOrUnbindsASource(t *testing.T) {
 	var accepted api.Session
 	operator.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromLinkMail(t, i.f, "/invitation"), "name": "Operator", "password": i.f.password}, 200, &accepted)
 	operator.csrf = accepted.CsrfToken
-	operator.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 403, nil)
+	operator.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}, "sourceHash": i.sourceStatus(t, i.path).SourceHash}, 403, nil)
 	operator.call("DELETE", i.path+"/source", nil, 403, nil)
 	if status := i.sourceStatus(t, i.path); status.ImportedCommit != strings.Repeat("a", 40) {
 		t.Fatal("an operator changed the source")
 	}
+}
+
+// A runner enrolling again has no credential for a while, but it is still the workspace's: its
+// source waits for it, shown as not yet imported, rather than failing.
+func TestRefreshWaitsForARunnerEnrollingAgain(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	head := i.source.head.Load().(string)
+	all := append(append([]composeproject.File{}, importHonest...), otherSourceFile)
+	i.source.tree.record(head, all)
+	enrollingID, enrolling := i.addRunner(t)
+	otherPath := i.addSourceOn(t, "Other", otherSourceFile, enrollingID, enrolling)
+	var next api.Enrollment
+	i.b.call("POST", i.prefix+"/servers/"+enrollingID.String()+"/enrollment", nil, 201, &next)
+
+	latest := strings.Repeat("e", 40)
+	i.source.tree.record(latest, all)
+	i.source.push(latest)
+	c := i.runner.next()
+	i.runner.reportImport(c, latest, importHonest)
+	waitFor(t, "the other source to wait", 15*time.Second, func() bool { return i.pendingCommit(t, otherPath) == latest })
+	if failure := i.sourceStatus(t, otherPath).Failure; failure != nil {
+		t.Fatalf("a runner enrolling again failed its source: %+v", failure)
+	}
+
+	in := enrolling.in
+	credential, err := randtoken.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Token, in.Credential = next.Token, &credential
+	agentRequest(t, i.f.server.Client(), i.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	enrolled := authorityAgent{t, i.f, enrollingID.String() + "." + credential, in}
+	i.retryRefresh(t)
+	c = enrolled.next()
+	if command := importCommand(t, c); command.Commit != latest || command.Source.Paths[0] != otherSourceFile.Path {
+		t.Fatal("the waiting source did not import once its runner enrolled", command.Commit, command.Source.Paths)
+	}
+}
+
+// Builds wait for their environment's import, so once binding the source again imports the commit
+// a failed refresh held them at, they build it without another push.
+func TestBuildsHeldByAFailedImportRunAfterRebinding(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	_, spec := draftSpec(t, i.b, i.path)
+	cfg := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
+	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 202, nil)
+	i.runner.finishPipeline(i.runner.next(), "cancelled", pipeline.Result{})
+
+	renamed := []composeproject.File{{Path: "docker-compose.yaml", Content: importHonest[0].Content}, importHonest[1]}
+	latest := strings.Repeat("e", 40)
+	i.source.tree.record(latest, renamed)
+	i.source.push(latest)
+	i.refreshEnded(t)
+	builds := func() int {
+		var count int
+		if err := i.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND kind='pipeline' AND command->'pipeline'->>'action'='build' AND command->'pipeline'->>'commit'=$2", i.ws, latest).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	if builds() != 0 {
+		t.Fatal("a build started ahead of its environment's failed import")
+	}
+
+	var op api.Operation
+	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "sourceHash": i.sourceStatus(t, i.path).SourceHash, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: []string{"docker-compose.yaml", "config/app.env"}, Entrypoints: []string{"docker-compose.yaml"}}}, 202, &op)
+	c := i.runner.next()
+	i.runner.reportImport(c, latest, renamed)
+	i.succeeded(t, i.path, c)
+	waitFor(t, "the held build", 20*time.Second, func() bool { return builds() == 1 })
 }

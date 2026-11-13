@@ -248,12 +248,16 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 // deployments the caller's. Binding again forgets the earlier import, so the draft is compared
 // with, and deployments wait for, this one. An environment runs one operation at a time, so
 // binding again waits for an import that is running.
-func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source) (api.Operation, error) {
+// Binding again needs the hash returned with the source, so a change made since it was shown, such
+// as another owner's binding, is refused rather than overwritten.
+func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source, hash string) (api.Operation, error) {
 	var out api.Operation
 	if err := c.Validate(); err != nil {
 		return api.Operation{}, domain.Invalid("source")
 	}
-	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx, git *gitAnswers) error {
+	// The audit record says whether the source was bound again, which also made it the caller's.
+	// Only the pass that commits keeps it.
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -279,6 +283,19 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		connection, commit := head.Connection, head.Value
 		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
 		if err != nil {
+			return err
+		}
+		action := "git.source.rebind"
+		bound, err := db.New(tx).LockGitSourcePolicy(ctx, db.LockGitSourcePolicyParams{WorkspaceID: ws, EnvironmentID: env})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			action = "git.source.bind"
+		case err != nil:
+			return err
+		case sourceHash(bound.Configuration, bound.PolicyActor) != hash:
+			return domain.Conflict
+		}
+		if err = store.Audit(ctx, db.New(tx), p, ws, action, env); err != nil {
 			return err
 		}
 		raw, _ := stablejson.Marshal(c)

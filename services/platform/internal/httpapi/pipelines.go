@@ -71,7 +71,11 @@ func (s *Server) BindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, 
 	var cfg pipeline.Source
 	raw, _ := stablejson.Marshal(b.Configuration)
 	_ = json.Unmarshal(raw, &cfg)
-	v, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg)
+	hash := ""
+	if b.SourceHash != nil {
+		hash = *b.SourceHash
+	}
+	v, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg, hash)
 	s.executionResponse(w, r, 202, v, e)
 }
 func (s *Server) UnbindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {

@@ -1,13 +1,16 @@
 package execution
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -20,6 +23,11 @@ func (f *sourceFailure) Error() string { return f.reason }
 
 // failureReasonLimit is the most a source's recorded reason holds, as the column allows.
 const failureReasonLimit = 1000
+
+// errRefreshWaits says a source or target can't start now for a reason that passes by itself, such
+// as its runner enrolling again, upgrading or being moved, or the workspace's operation limit. The
+// refresh rolls it back and looks again shortly, as for a busy environment.
+var errRefreshWaits = errors.New("the work waits for its runner or the workspace")
 
 func failedSource(reason string) *sourceFailure {
 	reason = strings.ToValidUTF8(reason, "")
@@ -40,9 +48,11 @@ func absentSourceFiles(paths []string, blobs map[string]string) []string {
 	return missing
 }
 
-// missingSourceFiles refuses an import whose selected files the commit doesn't hold, naming them.
-// A file renamed or removed upstream needs the source bound again, since every later commit is
-// missing it too. Paths are checked as the configuration allows, so naming them quotes no content.
+// missingSourceFiles refuses an import whose selected files the provider has nothing to import at,
+// naming them. The provider says the same of a path that holds a directory, a symlink on GitHub or
+// a file too large for its answer, none of which a runner would import either. A file renamed or
+// removed upstream needs the source bound again, since every later commit is missing it too. Paths
+// are checked as the configuration allows, so naming them quotes no content.
 func missingSourceFiles(commit string, missing []string) *domain.Error {
 	quoted := make([]string, 0, 3)
 	for _, path := range missing[:min(len(missing), 3)] {
@@ -52,9 +62,9 @@ func missingSourceFiles(commit string, missing []string) *domain.Error {
 	if more := len(missing) - len(quoted); more > 0 {
 		names += fmt.Sprintf(" and %d more", more)
 	}
-	what := "the file " + names + ", which the source selects. If it was"
+	what := "a file Astilba can import at " + names + ", which the source selects. It may be missing, a directory, a symlink or too large. If it was"
 	if len(missing) > 1 {
-		what = "the files " + names + ", which the source selects. If they were"
+		what = "files Astilba can import at " + names + ", which the source selects. They may be missing, directories, symlinks or too large. If they were"
 	}
 	return &domain.Error{
 		Code:    "invalid_input",
@@ -66,8 +76,9 @@ func missingSourceFiles(commit string, missing []string) *domain.Error {
 func shortCommit(commit string) string { return commit[:min(len(commit), 12)] }
 
 // runnerUnavailable reports whether selecting a runner failed because the configured runner, or
-// its fallback, can't take the work: it was removed or revoked, isn't a build runner, or needs an
-// upgrade. The configuration must change, or the runner, before the work can start.
+// its fallback, can't take the work: it has no credential, isn't a build runner, or needs an
+// upgrade. The configuration must change, or the runner, before the work can start, unless
+// runnerWaits finds it enrolling again.
 func runnerUnavailable(err error) bool {
 	var refused *domain.Error
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -84,14 +95,33 @@ func runnerUnavailable(err error) bool {
 	return false
 }
 
+// runnerWaits reports whether a runner selection that failed for want of a credential is only
+// waiting for one of the runners to finish enrolling again or moving to another management.
+func runnerWaits(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, err error) (bool, error) {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	ids := []uuid.UUID{primary}
+	if fallback != nil {
+		ids = append(ids, *fallback)
+	}
+	return db.New(tx).RunnerReenrolling(ctx, db.RunnerReenrollingParams{WorkspaceID: ws, Ids: ids})
+}
+
 const runnerUnavailableReason = "The source's runner, or its fallback, was removed or revoked, or can no longer run imports. Bind the source again with another runner."
 
-// importRefusal is the reason management gave for refusing to start an import.
-func importRefusal(refused *domain.Error) string {
-	if refused.Message == "Check the identified fields." {
-		return "Astilba refused to start this import (" + strings.Join(refused.Fields, ", ") + ")."
+// importRefusal is the outcome of management refusing to start an import. Invalid input, such as a
+// file the commit doesn't hold or a clone credential that can push, fails the source until its
+// configuration changes. Any other refusal, such as its runner upgrading or the workspace's
+// operation limit, passes by itself, so the import waits.
+func importRefusal(refused *domain.Error) error {
+	if refused.Code != "invalid_input" {
+		return errRefreshWaits
 	}
-	return refused.Message
+	if refused.Message == "Check the identified fields." {
+		return failedSource("Astilba refused to start this import (" + strings.Join(refused.Fields, ", ") + ").")
+	}
+	return failedSource(refused.Message)
 }
 
 // reviewUnanswered is a provider's failure to say whether a review submitted from the draft

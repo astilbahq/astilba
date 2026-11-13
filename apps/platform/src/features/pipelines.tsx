@@ -383,6 +383,7 @@ export function Pipelines({
               )}
               {owner && (
                 <ChangeSource
+                  key={source.data.sourceHash}
                   path={path}
                   revisionId={revision.id}
                   source={source.data}

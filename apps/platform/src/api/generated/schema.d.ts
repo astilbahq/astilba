@@ -1618,7 +1618,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getGitSource"];
-        /** @description Bind the environment to a Git source, or bind it again: a new connection, branch, runner, selected files or entrypoints. Either imports the branch's current commit, replacing the Compose files in the saved draft, and makes the automatic imports and deployments yours. Binding again also forgets the earlier import, so deployments wait for this one, and is refused while an import of the environment runs. Needs an owner with recent authentication. A selected file the branch doesn't hold is refused by name. */
+        /** @description Bind the environment to a Git source, or bind it again: a new connection, branch, runner, selected files or entrypoints. Either imports the branch's current commit, replacing the Compose files in the saved draft, and makes the automatic imports and deployments yours. Binding again also forgets the earlier import, so deployments wait for this one, and is refused while an import of the environment runs. Binding again needs the source's `sourceHash`, and is refused if the source changed since. Needs an owner with recent authentication. A selected file the branch doesn't hold is refused by name. */
         put: operations["bindGitSource"];
         post?: never;
         /** @description Stop importing the environment from Git. The saved draft keeps its Compose files, and an import still running saves nothing. Needs an owner with recent authentication. */
@@ -3971,6 +3971,8 @@ export interface components {
             configuration: components["schemas"]["GitSourceConfiguration"];
             /** Format: uuid */
             baseRevisionId: string;
+            /** @description The hash returned with the source, needed to bind it again, so a change made since it was shown is refused rather than overwritten. */
+            sourceHash?: string;
         };
         RefreshGitSource: {
             /** Format: uuid */

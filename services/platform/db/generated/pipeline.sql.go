@@ -149,6 +149,33 @@ func (q *Queries) AutomaticBuildArtifact(ctx context.Context, arg AutomaticBuild
 	return identity, err
 }
 
+const automaticBuildsBehind = `-- name: AutomaticBuildsBehind :one
+SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = $1 AND environment_id = $2 AND connection_id = $3
+    AND configuration->>'branch' = $4::text AND configuration->>'autoBuild' = 'true' AND automatic_requested_commit <> $5::text)::boolean AS behind
+`
+
+type AutomaticBuildsBehindParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ConnectionID  uuid.UUID `json:"connection_id"`
+	Branch        string    `json:"branch"`
+	Commit        string    `json:"commit"`
+}
+
+// Whether an environment builds this branch automatically and has not yet been asked to build commit.
+func (q *Queries) AutomaticBuildsBehind(ctx context.Context, arg AutomaticBuildsBehindParams) (bool, error) {
+	row := q.db.QueryRow(ctx, automaticBuildsBehind,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ConnectionID,
+		arg.Branch,
+		arg.Commit,
+	)
+	var behind bool
+	err := row.Scan(&behind)
+	return behind, err
+}
+
 const automaticDeploymentWorkspace = `-- name: AutomaticDeploymentWorkspace :one
 SELECT workspace_id FROM pipeline_auto_deployments WHERE id = $1
 `
@@ -474,7 +501,7 @@ func (q *Queries) LockSourceSubmission(ctx context.Context, arg LockSourceSubmis
 }
 
 const markGitSourceConflict = `-- name: MarkGitSourceConflict :exec
-UPDATE git_sources SET pending_commit = $1::text, status = 'conflict'
+UPDATE git_sources SET pending_commit = $1::text, status = 'conflict', failed_commit = '', failure_reason = '', failed_at = NULL
 WHERE workspace_id = $2 AND environment_id = $3
 `
 
@@ -484,6 +511,7 @@ type MarkGitSourceConflictParams struct {
 	EnvironmentID uuid.UUID `json:"environment_id"`
 }
 
+// A conflict says why the commit waits, so an earlier failure no longer does.
 func (q *Queries) MarkGitSourceConflict(ctx context.Context, arg MarkGitSourceConflictParams) error {
 	_, err := q.db.Exec(ctx, markGitSourceConflict, arg.Commit, arg.WorkspaceID, arg.EnvironmentID)
 	return err
@@ -641,6 +669,24 @@ type RewrapRegistryAccessParams struct {
 func (q *Queries) RewrapRegistryAccess(ctx context.Context, arg RewrapRegistryAccessParams) error {
 	_, err := q.db.Exec(ctx, rewrapRegistryAccess, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
 	return err
+}
+
+const runnerReenrolling = `-- name: RunnerReenrolling :one
+SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND NOT revoked AND credential_hash IS NULL)::boolean AS reenrolling
+`
+
+type RunnerReenrollingParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+// A runner that is enrolling again, or moving to another management, has no credential until it
+// finishes, but it is still the workspace's: work for it waits rather than fails.
+func (q *Queries) RunnerReenrolling(ctx context.Context, arg RunnerReenrollingParams) (bool, error) {
+	row := q.db.QueryRow(ctx, runnerReenrolling, arg.WorkspaceID, arg.Ids)
+	var reenrolling bool
+	err := row.Scan(&reenrolling)
+	return reenrolling, err
 }
 
 const setGitSourcePendingCommit = `-- name: SetGitSourcePendingCommit :exec

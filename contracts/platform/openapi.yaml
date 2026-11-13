@@ -3392,8 +3392,9 @@
         Bind the environment to a Git source, or bind it again: a new connection, branch, runner, selected files or
         entrypoints. Either imports the branch's current commit, replacing the Compose files in the saved draft, and
         makes the automatic imports and deployments yours. Binding again also forgets the earlier import, so deployments
-        wait for this one, and is refused while an import of the environment runs. Needs an owner with recent
-        authentication. A selected file the branch doesn't hold is refused by name.
+        wait for this one, and is refused while an import of the environment runs. Binding again needs the source's
+        `sourceHash`, and is refused if the source changed since. Needs an owner with recent authentication. A selected
+        file the branch doesn't hold is refused by name.
       parameters:
         - name: workspaceId
           in: path
@@ -8314,6 +8315,12 @@
         baseRevisionId:
           type: string
           format: uuid
+        sourceHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: >-
+            The hash returned with the source, needed to bind it again, so a change made since it was shown is refused
+            rather than overwritten.
       required:
         - configuration
         - baseRevisionId

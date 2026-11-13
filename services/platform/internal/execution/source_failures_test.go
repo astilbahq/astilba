@@ -45,7 +45,7 @@ func TestRunnerUnavailableIsTheConfigurations(t *testing.T) {
 func TestMissingSourceFilesNamesAFewAndFitsItsColumn(t *testing.T) {
 	commit := strings.Repeat("e", 40)
 	one := missingSourceFiles(commit, []string{"compose.yaml"})
-	if !strings.Contains(one.Message, `the file "compose.yaml", which the source selects. If it was renamed`) || !strings.HasPrefix(one.Message, "Commit eeeeeeeeeeee ") {
+	if !strings.Contains(one.Message, `at "compose.yaml", which the source selects.`) || !strings.Contains(one.Message, "If it was renamed") || !strings.HasPrefix(one.Message, "Commit eeeeeeeeeeee ") {
 		t.Fatal(one.Message)
 	}
 	long := []string{}
@@ -55,5 +55,25 @@ func TestMissingSourceFilesNamesAFewAndFitsItsColumn(t *testing.T) {
 	many := missingSourceFiles(commit, long)
 	if !strings.Contains(many.Message, "and 13 more") || len(failedSource(many.Message).reason) > failureReasonLimit {
 		t.Fatal(len(many.Message), many.Message)
+	}
+}
+
+// Only a refusal of the source's own input fails it; one that passes by itself, such as its runner
+// upgrading or the workspace's operation limit, waits.
+func TestOnlyInvalidInputFailsAnImport(t *testing.T) {
+	for _, refused := range []*domain.Error{domain.Conflict, domain.RateLimited, domain.EnvironmentInactive, sourceFilesUnavailable} {
+		if err := importRefusal(refused); !errors.Is(err, errRefreshWaits) {
+			t.Errorf("%s: %v, want a wait", refused.Code, err)
+		}
+	}
+	for _, refused := range []*domain.Error{errCloneCanPush, missingSourceFiles(strings.Repeat("e", 40), []string{"a.yaml"})} {
+		var failed *sourceFailure
+		if err := importRefusal(refused); !errors.As(err, &failed) || failed.reason != refused.Message {
+			t.Errorf("%s: %v, want the source to fail with its message", refused.Fields, err)
+		}
+	}
+	var failed *sourceFailure
+	if err := importRefusal(domain.Invalid("pipeline").(*domain.Error)); !errors.As(err, &failed) || !strings.Contains(failed.reason, "(pipeline)") {
+		t.Errorf("a refusal without its own message: %v", err)
 	}
 }

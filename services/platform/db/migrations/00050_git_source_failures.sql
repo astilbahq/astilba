@@ -1,4 +1,5 @@
 -- +goose Up
+-- astilba: not additive: it widens build_target_rejection with two reasons the previous release cannot show.
 -- A Git source records why a refresh could not import a commit, as a build target records why
 -- it rejected one: the commit, a bounded reason and when. A refresh does not try that source
 -- again at that commit; a new push, a refresh started by hand or a rebind does.
@@ -13,10 +14,8 @@ ALTER TABLE build_targets DROP CONSTRAINT build_target_rejection, ADD CONSTRAINT
     (rejected_commit IS NOT NULL AND rejection_reason IS NOT NULL AND length(rejected_commit) BETWEEN 1 AND 64 AND rejection_reason IN
         ('missing_build_secret','build_secret_budget','arguments_contain_secret','runtime_secret_budget','runner_unavailable','registry_unavailable') AND rejected_at IS NOT NULL)
 );
-INSERT INTO schema_additive_migrations (version) VALUES (50);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 50;
 -- The earlier release knows neither reason. Its next refresh of the target meets the same runner or
 -- registry and stops its branch's refresh again, which is how it behaved.
 UPDATE build_targets SET rejected_commit = NULL, rejection_reason = NULL, rejected_at = NULL

@@ -446,6 +446,11 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 					return err
 				}
 			}
+			// A refresh holds an environment's automatic builds while its source can't import, and
+			// ends. An import started by hand or by binding the source again then lets them build.
+			if err = s.refreshBehindBuilds(ctx, tx, ws, c.EnvironmentId, p); err != nil {
+				return err
+			}
 
 		case "build", "build-preview":
 			var hash, commit string

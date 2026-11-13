@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { client, result, type Schema } from "../../api/client";
+import { ApiError, client, result, type Schema } from "../../api/client";
 import type { EnvironmentPath } from "../../api/environment";
 import { gitConnectionsOptions } from "../../api/integrations";
 import { serversOptions } from "../../api/servers";
@@ -49,7 +49,9 @@ const lines = (value: string) =>
 
 // ChangeSource lets an owner bind the environment's source again, with other files, a branch, a
 // connection or a runner, as a file renamed upstream needs, or stop importing from Git. Both
-// confirm the owner's identity first. changed runs after either succeeds, with what to say.
+// confirm the owner's identity first. changed runs after either succeeds, or after the server
+// says the source changed since it was shown, with what to say. Its form starts from the source
+// as shown, so its parent keys it by the source's hash: a change made elsewhere starts it again.
 export function ChangeSource({
   path,
   revisionId,
@@ -64,6 +66,8 @@ export function ChangeSource({
   changed: (message: string) => Promise<void>;
 }) {
   const action = useAction({ recentAuth: true });
+  // Removal has its own action, so its refusal is shown in its dialog, not as the form's error.
+  const removal = useAction({ recentAuth: true });
   const connections = useQuery(gitConnectionsOptions(path.workspaceId));
   const servers = useQuery(serversOptions(path.workspaceId));
   const current = source.configuration;
@@ -76,6 +80,11 @@ export function ChangeSource({
   const runners = servers.data?.filter(
     (v) => v.role !== "deployment" && v.capabilities?.build,
   );
+  const fallbacks = runners?.filter((v) => v.id !== runner);
+  // A stored fallback that is no longer a runner here is shown as such, so what is sent is what is
+  // shown.
+  const fallbackGone =
+    !!fallback && !!fallbacks && !fallbacks.some((v) => v.id === fallback);
   return (
     <details>
       <summary>Change or remove the Git source</summary>
@@ -86,23 +95,31 @@ export function ChangeSource({
           label="Change the Git source"
           onSubmit={(d) =>
             action.run(async () => {
-              await result(
-                client.PUT(`${root}/source`, {
-                  params: { path },
-                  body: {
-                    baseRevisionId: revisionId,
-                    configuration: {
-                      connectionId: connection,
-                      branch: text(d, "branch"),
-                      runnerId: runner,
-                      fallbackRunnerId: fallback || undefined,
-                      entrypoints: lines(text(d, "entrypoints")),
-                      paths: lines(text(d, "paths")),
-                      autoDeploy: d.has("autoDeploy"),
-                    },
+              const request = client.PUT(`${root}/source`, {
+                params: { path },
+                body: {
+                  baseRevisionId: revisionId,
+                  sourceHash: source.sourceHash,
+                  configuration: {
+                    connectionId: connection,
+                    branch: text(d, "branch"),
+                    runnerId: runner,
+                    fallbackRunnerId: fallback || undefined,
+                    entrypoints: lines(text(d, "entrypoints")),
+                    paths: lines(text(d, "paths")),
+                    autoDeploy: d.has("autoDeploy"),
                   },
-                }),
-              );
+                },
+              });
+              try {
+                await result(request);
+              } catch (e) {
+                if (!(e instanceof ApiError) || e.status !== 409) throw e;
+                await changed(
+                  "The source was not bound again: it changed since it was shown, or an import of this environment is running. It now shows as it is; try again once any import finishes.",
+                );
+                return;
+              }
               await changed(
                 "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
               );
@@ -140,7 +157,11 @@ export function ChangeSource({
               name="runner"
               required
               value={runner}
-              onChange={(e) => setRunner(e.target.value)}
+              onChange={(e) => {
+                setRunner(e.target.value);
+                // A runner can't be its own fallback.
+                if (e.target.value === fallback) setFallback("");
+              }}
             >
               {!runners?.some((v) => v.id === runner) && (
                 <option value="">Choose a runner</option>
@@ -160,13 +181,16 @@ export function ChangeSource({
               onChange={(e) => setFallback(e.target.value)}
             >
               <option value="">Queue on selected runner</option>
-              {runners
-                ?.filter((v) => v.id !== runner)
-                .map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name} · {v.status}
-                  </option>
-                ))}
+              {fallbackGone && (
+                <option value={fallback}>
+                  A runner no longer in this workspace
+                </option>
+              )}
+              {fallbacks?.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name} · {v.status}
+                </option>
+              ))}
             </Select>
           </Label>
           <Label>
@@ -198,8 +222,12 @@ export function ChangeSource({
           <Button
             ref={remove}
             type="button"
-            disabled={action.isPending}
-            onClick={() => setRemoving(true)}
+            focusableWhenDisabled
+            disabled={action.isPending || removal.isPending}
+            onClick={() => {
+              removal.reset();
+              setRemoving(true);
+            }}
           >
             Remove Git source
           </Button>
@@ -207,7 +235,7 @@ export function ChangeSource({
         <AlertDialogRoot
           open={removing}
           onOpenChange={(next) => {
-            if (!next && !action.isPending) setRemoving(false);
+            if (!next && !removal.isPending) setRemoving(false);
           }}
         >
           <AlertDialogContent finalFocus={remove}>
@@ -217,22 +245,25 @@ export function ChangeSource({
               its Compose files, and an import that is running saves nothing.
               You can bind a source again later.
             </AlertDialogDescription>
+            {/* A refusal stays in the dialog, beside the control that asked. */}
+            <ErrorNotice error={removal.error} />
             <AlertDialogActions>
               <AlertDialogClose
                 render={
-                  <Button disabled={action.isPending}>Keep source</Button>
+                  <Button disabled={removal.isPending}>Keep source</Button>
                 }
               />
               <Button
                 type="button"
                 variant="danger"
-                disabled={action.isPending}
+                focusableWhenDisabled
+                disabled={removal.isPending}
                 onClick={() =>
-                  action.run(async () => {
-                    setRemoving(false);
+                  removal.run(async () => {
                     await result(
                       client.DELETE(`${root}/source`, { params: { path } }),
                     );
+                    setRemoving(false);
                     await changed(
                       "Git source removed. The saved draft keeps its Compose files.",
                     );

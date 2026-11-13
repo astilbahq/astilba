@@ -143,9 +143,20 @@ ON CONFLICT (workspace_id, environment_id) DO UPDATE SET connection_id = EXCLUDE
 DELETE FROM git_sources WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
 
 -- name: MarkGitSourceConflict :exec
-UPDATE git_sources SET pending_commit = @commit::text, status = 'conflict'
+-- A conflict says why the commit waits, so an earlier failure no longer does.
+UPDATE git_sources SET pending_commit = @commit::text, status = 'conflict', failed_commit = '', failure_reason = '', failed_at = NULL
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
 
 -- name: RejectBuildTarget :exec
 UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp()
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
+
+-- name: RunnerReenrolling :one
+-- A runner that is enrolling again, or moving to another management, has no credential until it
+-- finishes, but it is still the workspace's: work for it waits rather than fails.
+SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]) AND NOT revoked AND credential_hash IS NULL)::boolean AS reenrolling;
+
+-- name: AutomaticBuildsBehind :one
+-- Whether an environment builds this branch automatically and has not yet been asked to build commit.
+SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND connection_id = @connection_id
+    AND configuration->>'branch' = @branch::text AND configuration->>'autoBuild' = 'true' AND automatic_requested_commit <> @commit::text)::boolean AS behind;
