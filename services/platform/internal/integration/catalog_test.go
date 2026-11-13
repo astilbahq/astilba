@@ -135,6 +135,12 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &compose)
 	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments/"+compose.Id.String()+"/catalog-stagings", request(compose.DraftRevisionId, "Kaneo"), 400, nil)
 
+	// A retired environment takes no staging, as it takes no draft save.
+	var retired api.Environment
+	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Retired"}, 201, &retired)
+	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments/"+retired.Id.String()+"/retire", api.EnvironmentLifecycleRequest{ConfirmName: "Retired"}, 201, &retired)
+	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments/"+retired.Id.String()+"/catalog-stagings", request(retired.DraftRevisionId, "Kaneo"), 409, nil)
+
 	// The assigned agent receives the generated values; nothing the browser read holds them.
 	enrolled, in, token := enrollment(t, f, b, ws, "deployment")
 	yes := true

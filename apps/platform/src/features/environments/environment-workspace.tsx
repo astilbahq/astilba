@@ -42,10 +42,12 @@ export function EnvironmentWorkspace({
   initial,
   write,
   owner,
+  previewCleanup,
   section,
   visited,
   selectSection,
 }: EnvProps & {
+  previewCleanup: boolean;
   initial: Schema["Revision"];
   section: EnvironmentSection;
   visited: ReadonlySet<EnvironmentSection>;
@@ -461,6 +463,8 @@ export function EnvironmentWorkspace({
                 revision={base}
                 dirty={dirty}
                 owner={owner}
+                cleanup={previewCleanup}
+                retired={environment.state !== "active"}
               />
             </>
           )}

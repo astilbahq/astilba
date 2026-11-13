@@ -59,6 +59,24 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		}
 		archive.Tables["source_submissions"] = []Row{}
 	}
+	if archive.Version < 8 {
+		// An environment from before retirement is active, and nothing recorded which PostgreSQL
+		// major initialised a volume: its next deployment records it.
+		fields := map[string]map[string]any{
+			"environments":    {"state": "active", "retired_at": nil, "retired_by": nil, "retirement_operation_id": nil, "retired_without_host": false},
+			"managed_volumes": {"postgres_major": nil},
+		}
+		for table, values := range fields {
+			for _, row := range archive.Tables[table] {
+				for field, value := range values {
+					if _, exists := row[field]; exists {
+						return archive, ErrArchive
+					}
+					setValue(row, field, value)
+				}
+			}
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -109,10 +127,16 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 		}
 	}
+	if !recovery {
+		if e = checkReleasedRoutes(archive); e != nil {
+			return archive, e
+		}
+	}
 	// Foreign keys on global IDs must refer to records within this archive; a
 	// destination row in another workspace must never satisfy an imported link.
 	refs := []struct{ table, column, target string }{
 		{"environments", "runtime_operation_id", "execution_operations"},
+		{"environments", "retirement_operation_id", "execution_operations"},
 		{"backup_cutovers", "source_plan_id", "visual_requests"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
@@ -326,6 +350,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				if e != nil {
 					return out, e
 				}
+				// The account that retired it is not in this installation; the importer answers for it.
+				if string(row["retired_by"]) != "null" {
+					setValue(row, "retired_by", p.Account.ID)
+				}
 				applied[id] = row["applied_revision_id"]
 				appliedOperations[id] = row["runtime_operation_id"]
 				setValue(row, "applied_revision_id", nil)
@@ -392,6 +420,9 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		if _, e = tx.Exec(ctx, "UPDATE environments SET applied_revision_id=$3,runtime_operation_id=$4 WHERE workspace_id=$1 AND id=$2", archive.Workspace, id, value, operation); e != nil {
 			return out, store.Normalize(e)
 		}
+	}
+	if e = backfillPostgresMajors(ctx, q, archive.Workspace); e != nil {
+		return out, e
 	}
 	for id, raw := range visualPlans {
 		var value *uuid.UUID
@@ -469,6 +500,38 @@ func normalizePreNetworkArchive(a *Archive) error {
 			return ErrArchive
 		}
 		setValue(row, "parent_id", nil)
+	}
+	return nil
+}
+
+// checkReleasedRoutes refuses an archive in which an environment whose server confirmed its
+// retirement still claims a hostname or port. That retirement released them for other
+// environments, and nothing but a reviewed deployment after a restore claims them again. A
+// retirement that could not reach a revoked server keeps what that server may still serve.
+func checkReleasedRoutes(a Archive) error {
+	released := map[string]bool{}
+	for _, row := range a.Tables["environments"] {
+		var state string
+		var withoutHost bool
+		if json.Unmarshal(row["state"], &state) != nil || json.Unmarshal(row["retired_without_host"], &withoutHost) != nil {
+			return ErrArchive
+		}
+		if state == "retired" && !withoutHost {
+			id, err := rowString(row, "id")
+			if err != nil {
+				return err
+			}
+			released[id] = true
+		}
+	}
+	for _, row := range a.Tables["route_claims"] {
+		env, err := rowString(row, "environment_id")
+		if err != nil {
+			return err
+		}
+		if released[env] {
+			return ErrArchive
+		}
 	}
 	return nil
 }

@@ -306,6 +306,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Owner with recent identity confirmation. Revokes the environment's automation credentials, turns off its preview, terminal-session and backup policies, and asks its server to remove its routes, services and networks. Named volumes are kept. Asking again re-queues a retirement whose operation ended without success. */
+        post: operations["retireEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Owner with recent identity confirmation. Makes a retired environment active again as configuration only; nothing is deployed, and credentials and policies stay off. */
+        post: operations["restoreEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets": {
         parameters: {
             query?: never;
@@ -2693,6 +2727,8 @@ export interface components {
             maintenanceContinuation?: boolean;
             /** @description Supports bounded preview plans and ownership-verified cleanup. */
             previews?: boolean;
+            /** @description Removes a retired environment's routes, services and networks while keeping its volumes. Advertised only after Astilba-Agent-Retirement v1. */
+            retirement?: boolean;
             /** @enum {integer} */
             protocol: 1;
             version: string;
@@ -3194,6 +3230,28 @@ export interface components {
             draftRevisionId: string;
             deploymentUnit: components["schemas"]["DeploymentUnit"];
             appliedRevisionId?: string | null;
+            /**
+             * @description Lifecycle state. A retiring or retired environment is read-only until it is restored.
+             * @enum {string}
+             */
+            state: "active" | "retiring" | "retired";
+            /**
+             * Format: date-time
+             * @description When retirement was last requested.
+             */
+            retiredAt?: string | null;
+            /**
+             * Format: uuid
+             * @description The owner who last requested retirement.
+             */
+            retiredBy?: string | null;
+            /**
+             * Format: uuid
+             * @description The operation that removes the environment from its server.
+             */
+            retirementOperationId?: string | null;
+            /** @description Retirement finished without contacting the server because the server was revoked. Its containers may still run there. */
+            retiredWithoutHost?: boolean;
         };
         ApplicationSource: {
             /** @enum {string} */
@@ -3719,6 +3777,10 @@ export interface components {
              * @description Ignored. Host changes are approved when a plan is applied.
              */
             allowHostChanges?: boolean;
+        };
+        EnvironmentLifecycleRequest: {
+            /** @description The environment's exact current name. */
+            confirmName: string;
         };
         CloneEnvironment: {
             name: string;
@@ -5511,6 +5573,80 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Operation"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    retireEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentLifecycleRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Environment"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    restoreEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentLifecycleRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Environment"];
                 };
             };
             /** @description Error */

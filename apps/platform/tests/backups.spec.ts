@@ -389,6 +389,8 @@ test("backup setup, restore verification and separate cutover use the real API",
     protected: false,
     pruned: false,
     exitCode: null,
+    // The agent reports the archive's full manifest hash with every run, and a cutover checks it.
+    manifestHash: "c".repeat(64),
     manifest: {
       recipe: 1,
       policyId: policy.id,

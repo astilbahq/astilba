@@ -61,7 +61,7 @@ func (b *RecoveryBases) Add(a Archive) error {
 		return err
 	}
 	if b.archive.CreatedAt.Before(a.CreatedAt) {
-		b.archive = Archive{Version: a.Version, Workspace: a.Workspace, Name: a.Name, RequireMFA: a.RequireMFA, CreatedAt: a.CreatedAt}
+		b.archive = Archive{Version: ArchiveVersion, Workspace: a.Workspace, Name: a.Name, RequireMFA: a.RequireMFA, CreatedAt: a.CreatedAt}
 
 	}
 	carried := recoveryBaseOperations{at: a.CreatedAt, keys: map[string]bool{}}

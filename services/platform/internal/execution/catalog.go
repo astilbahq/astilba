@@ -67,6 +67,10 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 		if err != nil {
 			return err
 		}
+		// As a draft save: a retiring or retired environment takes no change, checked first.
+		if err = requireActive(row.State); err != nil {
+			return err
+		}
 		if row.DraftRevisionID != in.BaseRevisionId {
 			return domain.Conflict
 		}

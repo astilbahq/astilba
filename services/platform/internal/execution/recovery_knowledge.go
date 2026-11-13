@@ -105,6 +105,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					err = recoveryMonotonic(selected, prior, row, []string{"revoked"}, []string{"controller_generation", "update_generation"})
 				case "environments":
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"execution_generation"})
+					if err == nil {
+						err = recoveryRetirementKnowledge(selected, prior, row, known["execution_operations"])
+					}
 				case "workspace_networks":
 					if Hash(jsontext.Value(prior["id"])) != Hash(jsontext.Value(row["id"])) || Hash(jsontext.Value(prior["prefix"])) != Hash(jsontext.Value(row["prefix"])) {
 						return errors.New("network identity conflicts with known management metadata")
@@ -114,6 +117,10 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					selected, err = recoveryMemberKnowledge(prior, row, source, revoked)
 				case "managed_volumes":
 					err = recoveryMonotonic(selected, prior, row, []string{"deleted"}, nil)
+					// Recorded once, by the first deployment of a PostgreSQL major on the volume.
+					if err == nil && string(prior["postgres_major"]) == "null" {
+						selected["postgres_major"] = row["postgres_major"]
+					}
 				case "supported_upgrades":
 					selected, err = recoveryUpgradeKnowledge(prior, row)
 				case "backup_policies":

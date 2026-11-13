@@ -19,8 +19,8 @@ CREATE TABLE catalog_stagings (
     FOREIGN KEY (workspace_id, environment_id, revision_id) REFERENCES specification_revisions(workspace_id, environment_id, id) ON DELETE CASCADE
 );
 CREATE INDEX catalog_stagings_environment ON catalog_stagings (workspace_id, environment_id, created_at);
-INSERT INTO schema_additive_migrations (version) VALUES (47);
+INSERT INTO schema_additive_migrations (version) VALUES (48);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 47;
+DELETE FROM schema_additive_migrations WHERE version = 48;
 DROP TABLE catalog_stagings;
