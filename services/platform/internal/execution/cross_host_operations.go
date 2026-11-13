@@ -201,7 +201,7 @@ func phaseUnits(p deployment.Plan, phase string) []deployment.DistributedUnit {
 	}
 	return p.Distributed.Units
 }
-func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobArgs], ws uuid.UUID, c api.ExecutionCommand, state api.ExecutionState, cancelled bool) error {
+func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, keys *passKeys, job *river.Job[jobArgs], ws uuid.UUID, c api.ExecutionCommand, state api.ExecutionState, cancelled bool) error {
 	var command coordinationCommand
 	if c.Crosshost == nil || hostnetwork.Decode(*c.Crosshost, &command) != nil || Hash(command) != c.PlanHash || command.Plan.Distributed == nil {
 		return domain.Invalid("crosshost")
@@ -235,7 +235,7 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 		if command.Maintenance != nil {
 			units = p.ActiveUnits()
 		}
-		descriptor, err := s.createRecoveryBase(ctx, tx, ws, c, p, units)
+		descriptor, err := s.createRecoveryBase(ctx, tx, keys, ws, c, p, units)
 		if errors.Is(err, portability.ErrArchive) || errors.Is(err, errRecoverySize) {
 			if command.Maintenance == nil {
 				if err := s.retireCrossHostGrants(ctx, tx, ws, p, true); err != nil {
@@ -254,7 +254,7 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 		}
 	}
 	if command.Maintenance != nil {
-		return s.coordinateMaintenance(ctx, tx, job, ws, c, command, cancelled)
+		return s.coordinateMaintenance(ctx, tx, keys, job, ws, c, command, cancelled)
 	}
 	var phase string
 	var receiptsRaw []byte
@@ -354,7 +354,7 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 		failed = failed || child == "failed" || child == "cancelled"
 		children = append(children, phaseKey(c.Id, phase, u.Plan.UnitID))
 	}
-	if err := s.stageRecoveryPhase(ctx, tx, ws, c, command, phase, children, recoveryGeneration); err != nil {
+	if err := s.stageRecoveryPhase(ctx, tx, keys, ws, c, command, phase, children, recoveryGeneration); err != nil {
 		return err
 	}
 	if uncertain {
