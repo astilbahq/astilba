@@ -110,7 +110,7 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 		return fail(err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups", "cross-host", "distributed-fences", "retained-pools", "recovery-heads", "recovery-checkpoints", "recovery-authority", "recovery-gc", "troubleshooting-shells", "troubleshooting-entered"} {
+		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups", "cross-host", "distributed-fences", "retained-pools", "recovery-heads", "recovery-checkpoints", "recovery-authority", "recovery-gc", "troubleshooting-shells", "troubleshooting-entered", postgresDataBucket} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}

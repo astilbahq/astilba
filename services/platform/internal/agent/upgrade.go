@@ -406,6 +406,9 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err = e.restorePostgres(ctx, policy, &run, dir, m, s.Command.Installation.Access.DatabasePassword, to, true); err != nil {
 		return err
 	}
+	if err = e.Journal.savePostgresData(p.TargetVolumeID, postgresData{Image: to.Image}); err != nil {
+		return err
+	}
 	e.point("upgrade-restore-effect")
 	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."
 	return nil

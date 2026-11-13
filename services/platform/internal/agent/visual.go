@@ -46,6 +46,9 @@ func (j *Journal) saveUnit(v unitState) error {
 		if err := j.get(tx, "units", v.Plan.UnitID.String(), &previous); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if err := j.recordPostgresWriters(tx, previous.Plan); err != nil {
+			return err
+		}
 		if err := j.put(tx, "units", v.Plan.UnitID.String(), v); err != nil {
 			return err
 		}
@@ -187,6 +190,9 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		_, err = e.Docker.VolumeRemove(ctx, v.Volume.Name, client.VolumeRemoveOptions{Force: false})
 		if err != nil && !errdefs.IsNotFound(err) {
 			return e.visualFinish(ctx, c, p, "needs_attention", "The volume could not be removed. Confirm no container uses it before retrying.")
+		}
+		if err = e.Journal.forgetPostgresData(*p.VolumeID); err != nil {
+			return err
 		}
 		return e.visualFinish(ctx, c, p, "succeeded", "The explicitly selected unused volume was deleted.")
 	}
@@ -368,6 +374,9 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	observed.Applied = true
 	if err = e.visualObservation(c, observed); err != nil {
 		return e.finish(c.Id, "needs_attention", "The runtime report exceeds its supported size. Inspect the host before retrying.")
+	}
+	if err = e.reindexPostgres(ctx, p.Plan); err != nil {
+		return e.finish(c.Id, "needs_attention", errPostgresReindex.Error()+".")
 	}
 	return e.finish(c.Id, "succeeded", "The reviewed revision is running and its routes were verified.")
 }

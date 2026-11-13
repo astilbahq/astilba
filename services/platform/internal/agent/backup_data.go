@@ -445,6 +445,11 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	r.Manifest = &stored
 	r.ManifestHash = backup.Hash(stored)
 	r.RestoreImage = release.Image
+	if release.Image != "" {
+		if err = e.Journal.savePostgresData(r.TargetID, postgresData{Image: release.Image}); err != nil {
+			return err
+		}
+	}
 	r.Verified = true
 	return nil
 }
