@@ -2,6 +2,7 @@ package domain
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,8 +23,8 @@ var (
 	pg1710 = PostgresRelease{Image: "postgres:17.10-alpine3.23@sha256:" + strings.Repeat("1", 64), Version: 170010, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data"}
 	pg1712 = PostgresRelease{Image: "postgres:17.12-alpine3.23@sha256:" + strings.Repeat("2", 64), Version: 170012, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data"}
 	pg184  = PostgresRelease{Image: "postgres:18.4-alpine3.23@sha256:" + strings.Repeat("3", 64), Version: 180004, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"}
-	pg186  = PostgresRelease{Image: "postgres:18.6-alpine3.23@sha256:" + strings.Repeat("4", 64), Version: 180006, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker", Reindex: "SELECT 'a'"}
-	pg187  = PostgresRelease{Image: "postgres:18.7-alpine3.23@sha256:" + strings.Repeat("5", 64), Version: 180007, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker", Reindex: "SELECT 'b'"}
+	pg186  = PostgresRelease{Image: "postgres:18.6-alpine3.23@sha256:" + strings.Repeat("4", 64), Version: 180006, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"}
+	pg187  = PostgresRelease{Image: "postgres:18.7-alpine3.23@sha256:" + strings.Repeat("5", 64), Version: 180007, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"}
 	pg188  = PostgresRelease{Image: "postgres:18.8-alpine3.24@sha256:" + strings.Repeat("6", 64), Version: 180008, Line: "alpine3.24", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"}
 )
 
@@ -94,11 +95,33 @@ func TestPostgresReleaseRules(t *testing.T) {
 	if pg1710.UpgradesTo(pg184) != nil || pg1712.UpgradesTo(pg188) != nil || pg184.UpgradesTo(pg187) == nil || pg184.UpgradesTo(pg1712) == nil {
 		t.Error("the upgrade is not exactly PostgreSQL 17 to 18")
 	}
-	if got := pg187.ReindexSince(pg184); len(got) != 2 || got[0] != pg186.Reindex || got[1] != pg187.Reindex {
-		t.Errorf("an update across releases skipped one's reindex: %v", got)
+	// The advice follows PostgreSQL's releases, so moving 18.4 to 18.7 without pinning 18.6
+	// still rebuilds what 18.6 named.
+	reindex := func(from, to PostgresRelease) []int {
+		var versions []int
+		for _, query := range to.ReindexSince(from) {
+			for _, advice := range postgresReindex {
+				if advice.Query == query && advice.Version/10000 == to.Major() {
+					versions = append(versions, advice.Version)
+				}
+			}
+		}
+		return versions
 	}
-	if got := pg187.ReindexSince(pg186); len(got) != 1 || got[0] != pg187.Reindex {
-		t.Errorf("an update repeated a reindex its data already had: %v", got)
+	for _, c := range []struct {
+		from, to PostgresRelease
+		want     []int
+	}{
+		{pg184, pg187, []int{180006, 180007}},
+		{pg186, pg187, []int{180007}},
+		{pg187, pg188, nil},
+		{pg187, pg187, nil},
+		{pg1710, pg1712, []int{170011, 170012}},
+		{pg1712, pg187, nil},
+	} {
+		if got := reindex(c.from, c.to); !slices.Equal(got, c.want) {
+			t.Errorf("%s to %s rebuilds after %v, want %v", c.from.Name(), c.to.Name(), got, c.want)
+		}
 	}
 }
 

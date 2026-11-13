@@ -176,10 +176,13 @@ export function newestInLine(current, candidates, track) {
 const trackFields = ["reason", "releases"];
 
 // .github/pinned-releases.json names the images and tools that follow a narrower
-// track than their line: a pattern every release on the track matches, and why.
+// track than their line: a pattern every release on the track matches, and why. Its
+// retired list names image pins kept on purpose after a newer release replaced them,
+// such as a PostgreSQL release that databases and backups made under it still name,
+// each keyed image@digest with the reason.
 export function parseTracks(document) {
   const unknown = Object.keys(document).filter(
-    (key) => !["images", "tools"].includes(key),
+    (key) => !["images", "tools", "retired"].includes(key),
   );
   if (unknown.length)
     throw new Error(
@@ -206,8 +209,21 @@ export function parseTracks(document) {
       tracks[kind].set(name, pattern);
     }
   }
+  tracks.retired = new Map();
+  for (const [key, reason] of Object.entries(document.retired ?? {})) {
+    if (!/^[^\s@]+@sha256:[0-9a-f]{64}$/.test(key))
+      throw new Error(
+        `pinned-releases.json retired ${key} must be image@sha256:digest`,
+      );
+    if (typeof reason !== "string" || !reason.trim())
+      throw new Error(`pinned-releases.json retired ${key} needs a reason`);
+    tracks.retired.set(key, reason);
+  }
   return tracks;
 }
+
+// The key a retired pin is listed under.
+export const retiredKey = (pin) => `${pin.image}@${pin.digest}`;
 
 // A pin off its own track is a mistake in the pin or the track, so it is reported
 // rather than compared.

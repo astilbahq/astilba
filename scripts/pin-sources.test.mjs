@@ -9,6 +9,7 @@ import {
   newestInLine,
   offTrack,
   parseTracks,
+  retiredKey,
   trackedFiles,
 } from "./pin-sources.mjs";
 
@@ -61,6 +62,35 @@ test("tracks name a pattern and a reason, and nothing else", () => {
     [{ ...entry, releases: 1 }, /needs a releases/],
   ])
     assert.throws(() => parseTracks({ images: { x: bad } }), message);
+});
+
+test("a retired pin is keyed image@digest, with a reason", () => {
+  const key = `postgres@sha256:${"a".repeat(64)}`;
+  const tracks = parseTracks({ retired: { [key]: "Replaced." } });
+  assert.equal(
+    tracks.retired.get(
+      retiredKey({ image: "postgres", digest: `sha256:${"a".repeat(64)}` }),
+    ),
+    "Replaced.",
+  );
+  assert.equal(parseTracks({}).retired.size, 0);
+  for (const [bad, message] of [
+    [{ "postgres:18.4": "Replaced." }, /must be image@sha256:digest/],
+    [{ [key]: " " }, /needs a reason/],
+    [{ [key]: 1 }, /needs a reason/],
+  ])
+    assert.throws(() => parseTracks({ retired: bad }), message);
+});
+
+test("every retired pin in the repository is still pinned", () => {
+  const tracks = parseTracks(
+    JSON.parse(
+      readFileSync(resolve(root, ".github/pinned-releases.json"), "utf8"),
+    ),
+  );
+  const pinned = new Set(findImages(trackedFiles(root)).map(retiredKey));
+  for (const key of tracks.retired.keys())
+    assert.ok(pinned.has(key), `${key} is retired but no longer pinned`);
 });
 
 test("every track in the repository names a pin and is followed by it", () => {

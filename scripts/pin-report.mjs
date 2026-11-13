@@ -27,6 +27,7 @@ import {
   newestInLine,
   offTrack,
   parseTracks,
+  retiredKey,
   trackedFiles,
 } from "./pin-sources.mjs";
 import { clip, maxAliases, renderSections } from "./report-issue.mjs";
@@ -47,6 +48,7 @@ export const sections = {
   tools: "Tool updates",
   vulnerabilities: "Vulnerabilities to act on",
   other: "Other vulnerabilities",
+  retired: "Retired pins",
 };
 
 // One finding per advisory group and package in OSV Scanner's report on an image.
@@ -192,6 +194,15 @@ export function assemble({ images, tools }) {
         `image-error|${pin.image}|${pin.digest}|${error.step}`,
         `${name}: ${error.step} failed: ${error.message}`,
       );
+    // A newer release replaced it on purpose, so neither newer releases nor its
+    // advisories are something to act on in this pin.
+    if (pin.retired) {
+      info.push({
+        section: sections.retired,
+        text: `${name}@${short(pin.digest)} (${where(pin)}): ${pin.retired}`,
+      });
+      continue;
+    }
     if (pin.moved)
       problem(
         sections.images,
@@ -327,6 +338,8 @@ async function checkImage(client, scanner, pin, directory) {
   const manifest = await step("reading the pinned manifest", () =>
     client.manifest(pin, pin.digest),
   );
+  // A retired pin must stay pullable at its digest; nothing else about it is news.
+  if (pin.retired) return result;
   const targets = manifest
     ? ((await step("finding its platforms", () =>
         platformManifests(client, pin, manifest),
@@ -430,6 +443,7 @@ if (
   const pins = findImages(files).map((pin) => ({
     ...pin,
     track: tracks.images.get(pin.image),
+    retired: tracks.retired.get(retiredKey(pin)),
   }));
   const goTools = findGoTools(
     files

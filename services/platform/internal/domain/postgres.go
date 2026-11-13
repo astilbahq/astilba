@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // Postgres17Image and PostgresImage are the current pins of each supported major. A new
@@ -27,10 +28,42 @@ type PostgresRelease struct {
 	// Mount is where the image expects its volume, and DataDirectory is the cluster in it.
 	Mount         string
 	DataDirectory string
-	// Reindex, when set, is a query run in each database after a data directory moves to
-	// this release in place. It returns the indexes the release notes say to rebuild,
-	// because the fix that comes with the release does not repair entries already written.
-	Reindex string
+}
+
+// postgresReindex lists, by the PostgreSQL release that fixed them, the indexes release notes say
+// to rebuild after updating, because the fix does not repair entries already written. Each query
+// returns index OIDs; the agent rebuilds them concurrently in every database. It follows
+// PostgreSQL's releases rather than Astilba's pins, so an update that skips a release still
+// rebuilds what that release named. Advice for indexes only suspected of damage, such as GIN
+// after a VACUUM race, is left to the owner.
+var postgresReindex = []struct {
+	Version int
+	Query   string
+}{
+	// 17.11 and 18.6: contrib/btree_gist on float4/float8 that may hold NaN (and, in 18, on
+	// bit/varbit, which sorted wrongly), and btree on contrib/ltree values with many labels.
+	{170011, reindexIndexes(gistOpclasses("gist_float4_ops", "gist_float8_ops") + " OR " + btreeType("ltree"))},
+	{180006, reindexIndexes(gistOpclasses("gist_float4_ops", "gist_float8_ops", "gist_bit_ops", "gist_vbit_ops") + " OR " + btreeType("ltree"))},
+	// 17.12 and 18.7: btree on unbounded bpchar, which deduplicated equal values that differ in
+	// trailing spaces, and contrib/pg_trgm's gist_trgm_ops, which could lose entries' format flag.
+	{170012, reindexIndexes(unboundedBpchar + " OR " + gistOpclasses("gist_trgm_ops"))},
+	{180007, reindexIndexes(unboundedBpchar + " OR " + gistOpclasses("gist_trgm_ops"))},
+}
+
+func reindexIndexes(condition string) string {
+	return "SELECT DISTINCT c.oid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE c.relkind = 'i' AND c.relnamespace NOT IN ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace, 'information_schema'::regnamespace) AND (" + condition + ")"
+}
+
+func gistOpclasses(names ...string) string {
+	return "am.amname = 'gist' AND EXISTS (SELECT 1 FROM unnest(i.indclass) AS k(opclass) JOIN pg_opclass o ON o.oid = k.opclass WHERE o.opcname IN ('" + strings.Join(names, "', '") + "'))"
+}
+
+// An index column keeps its table column's type modifier, so CHAR(n), which is not affected, has one.
+const unboundedBpchar = "am.amname = 'btree' AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.atttypid = 'bpchar'::regtype AND a.atttypmod < 0)"
+
+// Extension types are matched by name, so the query runs where the extension is not installed.
+func btreeType(name string) string {
+	return "am.amname = 'btree' AND EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid WHERE a.attrelid = c.oid AND t.typname = '" + name + "')"
 }
 
 // postgresReleases lists every pinned release, oldest first within each major.
@@ -111,9 +144,9 @@ func (r PostgresRelease) OpensDataFrom(source PostgresRelease) error {
 // before this release serves it, oldest first.
 func (r PostgresRelease) ReindexSince(source PostgresRelease) []string {
 	var out []string
-	for _, between := range postgresReleases {
-		if between.Major() == r.Major() && between.Version > source.Version && between.Version <= r.Version && between.Reindex != "" {
-			out = append(out, between.Reindex)
+	for _, advice := range postgresReindex {
+		if advice.Version/10000 == r.Major() && source.Major() == r.Major() && advice.Version > source.Version && advice.Version <= r.Version {
+			out = append(out, advice.Query)
 		}
 	}
 	return out
