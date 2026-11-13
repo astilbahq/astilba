@@ -126,7 +126,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	// A busy environment waits before anything asks its provider, so waiting costs no call and
 	// opens no credential.
 	var busy bool
-	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state NOT IN ('succeeded','failed','cancelled'))", ws, env).Scan(&busy); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state IN ('queued','dispatched','running','needs_attention'))", ws, env).Scan(&busy); err != nil {
 		return err
 	}
 	if busy {

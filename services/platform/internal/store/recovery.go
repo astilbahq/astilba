@@ -76,9 +76,11 @@ func (s *Store) PrepareRecovery(ctx context.Context, id uuid.UUID, next int64) e
 	if e = q.ResetServerDomainApproval(ctx, db.ResetServerDomainApprovalParams{WorkspaceID: ws, ServerID: id}); e != nil {
 		return e
 	}
-	// River payloads are ephemeral delivery records; domain history stays intact.
+	// River payloads are ephemeral delivery records; domain history stays intact. Only jobs River
+	// hasn't finalized can still run, and each looks up its own operation, so this reads River's
+	// pending work, not the host's whole history.
 	// inline-sql: river_job is owned by River.
-	_, e = tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_dns_v1' AND args->>'server'=($1::uuid)::text) OR (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE workspace_id=$3 AND server_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=$2) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$3))`, id, ws.String(), ws)
+	_, e = tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_dns_v1' AND args->>'server'=($1::uuid)::text) OR (kind='platform_execution_v1' AND finalized_at IS NULL AND EXISTS(SELECT 1 FROM execution_operations o WHERE o.id=(args->>'id')::uuid AND o.workspace_id=$3 AND o.server_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=$2) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$3))`, id, ws.String(), ws)
 	if e != nil {
 		return e
 	}

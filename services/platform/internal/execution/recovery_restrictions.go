@@ -76,7 +76,7 @@ func collectRecoveryRestrictions(ctx context.Context, tx pgx.Tx, archives ...por
 // is restored before commit; no host or serving worker can observe this hold.
 func holdRecoveryRestrictions(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
 	// inline-sql: recovery session temporary table
-	_, err := tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',job_id=NULL WHERE workspace_id=$1 AND id IN (SELECT id FROM recovery_standalone_restrictions)`, ws)
+	_, err := tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',job_id=NULL WHERE workspace_id=$1 AND id=ANY(ARRAY(SELECT id FROM recovery_standalone_restrictions))`, ws)
 	return err
 }
 

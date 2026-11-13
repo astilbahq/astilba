@@ -102,7 +102,7 @@ func (q *Queries) CancelHeldPreparation(ctx context.Context, arg CancelHeldPrepa
 const cancelUnstartedReleaseCommands = `-- name: CancelUnstartedReleaseCommands :exec
 UPDATE execution_operations child SET cancel_requested=true FROM execution_operations root
 WHERE child.workspace_id = $1 AND root.workspace_id = $1 AND child.parent_id=root.id
-    AND child.state NOT IN ('succeeded','failed','cancelled') AND child.command->'crosshost'->>'phase'='hook'
+    AND child.state IN ('queued','dispatched','running','needs_attention') AND child.command->'crosshost'->>'phase'='hook'
     AND root.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',$2::text)))
 `
 
@@ -771,7 +771,7 @@ func (q *Queries) RevokeServer(ctx context.Context, arg RevokeServerParams) (int
 const revokedServerInActiveRoot = `-- name: RevokedServerInActiveRoot :one
 SELECT EXISTS(SELECT 1 FROM execution_operations o JOIN servers s ON s.workspace_id=o.workspace_id
     WHERE o.workspace_id = $1 AND s.id = $2 AND s.revoked AND o.parent_id IS NULL AND o.kind='crosshost'
-        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND o.state IN ('queued','dispatched','running','needs_attention')
         AND (o.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',$2::text)))
             OR o.command->'crosshost'->'plan'->'distributed'->'abandoned' @> jsonb_build_array($2::text)))
 `

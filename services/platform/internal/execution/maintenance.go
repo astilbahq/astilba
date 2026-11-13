@@ -65,7 +65,7 @@ func (s *Service) maintenanceEffectAllowed(ctx context.Context, tx pgx.Tx, ws uu
 	}
 	var phase string
 	var raw []byte
-	if err := tx.QueryRow(ctx, `SELECT h.phase,o.command FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id WHERE h.workspace_id=$1 AND h.id=$2 AND o.state NOT IN ('succeeded','failed','cancelled')`, ws, *c.ParentId).Scan(&phase, &raw); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT h.phase,o.command FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id WHERE h.workspace_id=$1 AND h.id=$2 AND o.state IN ('queued','dispatched','running','needs_attention')`, ws, *c.ParentId).Scan(&phase, &raw); err != nil {
 		return false, err
 	}
 	var root api.ExecutionCommand
@@ -335,7 +335,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, keys *pa
 		return tx.Commit(ctx)
 	}
 	if cancelled && strings.HasPrefix(phase, "maintenance-run:") {
-		if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled')`, parent.Id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention')`, parent.Id); err != nil {
 			return err
 		}
 	}
@@ -369,11 +369,11 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, keys *pa
 	initial := m.Effect.Upgrade == nil || maintenanceAction(phase) == "" || maintenanceAction(phase) == "prepare"
 	if (cancelled || initial && time.Now().After(parent.Deadline)) && beforeEffect {
 		var pending bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))`, parent.Id).Scan(&pending); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))`, parent.Id).Scan(&pending); err != nil {
 			return err
 		}
 		if pending {
-			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled')`, parent.Id); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention')`, parent.Id); err != nil {
 				return err
 			}
 			return wait("running", "Waiting for known host outcomes before resuming maintenance writers.")

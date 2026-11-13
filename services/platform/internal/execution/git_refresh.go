@@ -88,7 +88,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		return err
 	}
 	var active int
-	if err = tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND kind='pipeline' AND state NOT IN ('succeeded','failed','cancelled')", a.Workspace).Scan(&active); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND kind='pipeline' AND state IN ('queued','dispatched','running','needs_attention')", a.Workspace).Scan(&active); err != nil {
 		return err
 	}
 	capacity := 50 - active
@@ -113,7 +113,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	// One statement, so a source and the import that is saving it are read as of one moment.
 	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor,g.pending_commit,
  EXISTS(SELECT 1 FROM pipeline_runs r JOIN execution_operations o ON o.workspace_id=r.workspace_id AND o.id=r.id WHERE r.workspace_id=g.workspace_id AND r.environment_id=g.environment_id
-  AND r.configuration->>'action'='import' AND r.configuration->>'commit'<>$4 AND o.state NOT IN ('succeeded','failed','cancelled'))
+  AND r.configuration->>'action'='import' AND r.configuration->>'commit'<>$4 AND o.state IN ('queued','dispatched','running','needs_attention'))
  FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
  WHERE g.workspace_id=$1 AND g.connection_id=$2 AND g.status<>'approval_required' AND g.configuration->>'branch'=$3
   AND policy_approver_holds(g.workspace_id,g.policy_actor,g.policy_auth_version,true)

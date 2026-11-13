@@ -99,7 +99,7 @@ UPDATE backup_policies SET status = @status WHERE workspace_id = @workspace_id A
 SELECT EXISTS(SELECT 1 FROM cross_host_operations h
     JOIN execution_operations o ON o.workspace_id=h.workspace_id AND o.id=h.id
     WHERE h.workspace_id = @workspace_id AND h.environment_id = @environment_id
-        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND o.state IN ('queued','dispatched','running','needs_attention')
         AND (o.command->'crosshost'->'maintenance'->'effect'->'backup'->'installation'->'policy'->>'id' = @policy_id::text
             OR o.command->'crosshost'->'maintenance'->'effect'->'upgrade'->'plan'->>'policyId' = @policy_id::text));
 

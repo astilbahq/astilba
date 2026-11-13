@@ -194,7 +194,7 @@ func (q *Queries) ClearGitSourcePendingCommit(ctx context.Context, arg ClearGitS
 }
 
 const environmentHoldsAutomaticWork = `-- name: EnvironmentHoldsAutomaticWork :one
-SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state NOT IN ('succeeded','failed','cancelled'))
+SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state IN ('queued','dispatched','running','needs_attention'))
     OR EXISTS(SELECT 1 FROM pipeline_auto_deployments d JOIN pipeline_runs r ON r.workspace_id = d.workspace_id AND r.id = d.id
               WHERE d.workspace_id = $1 AND d.environment_id = $2::uuid AND d.state = 'pending' AND r.created_at > now() - interval '1 hour'))::boolean AS busy
 `

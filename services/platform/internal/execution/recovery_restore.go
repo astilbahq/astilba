@@ -18,11 +18,13 @@ import (
 
 func fenceRecoveryWorkspace(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
 	// inline-sql: recovery session temporary tables.
-	if _, err := tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',cancel_requested=true,job_id=NULL,note='Fenced by offline controller recovery.' WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled') AND id NOT IN (SELECT id FROM recovery_selected_roots) AND id NOT IN (SELECT id FROM recovery_standalone_restrictions) AND (parent_id IS NULL OR parent_id NOT IN (SELECT id FROM recovery_selected_roots))`, ws); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE execution_operations SET state='cancelled',cancel_requested=true,job_id=NULL,note='Fenced by offline controller recovery.' WHERE workspace_id=$1 AND state IN ('queued','dispatched','running','needs_attention') AND id NOT IN (SELECT id FROM recovery_selected_roots) AND id NOT IN (SELECT id FROM recovery_standalone_restrictions) AND (parent_id IS NULL OR parent_id NOT IN (SELECT id FROM recovery_selected_roots))`, ws); err != nil {
 		return err
 	}
+	// Only jobs River hasn't finalized can still run, and each looks up its own operation, so
+	// this reads River's pending work, not the workspace's whole history.
 	// inline-sql: river_job is owned by River.
-	if _, err := tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_execution_v1' AND args->>'id' IN (SELECT id::text FROM execution_operations WHERE workspace_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=($1::uuid)::text) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$1)) OR (kind='platform_dns_v1' AND args->>'server' IN (SELECT id::text FROM servers WHERE workspace_id=$1)) OR (kind='platform_source_submission_v1' AND args->>'workspace'=($1::uuid)::text)`, ws); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM river_job WHERE (kind='platform_execution_v1' AND finalized_at IS NULL AND EXISTS(SELECT 1 FROM execution_operations o WHERE o.id=(args->>'id')::uuid AND o.workspace_id=$1)) OR (kind='platform_git_refresh_v1' AND args->>'workspace'=($1::uuid)::text) OR (kind='platform_automatic_deployment_v1' AND args->>'ID' IN (SELECT id::text FROM pipeline_auto_deployments WHERE workspace_id=$1)) OR (kind='platform_dns_v1' AND args->>'server' IN (SELECT id::text FROM servers WHERE workspace_id=$1)) OR (kind='platform_source_submission_v1' AND args->>'workspace'=($1::uuid)::text)`, ws); err != nil {
 		return err
 	}
 	q := db.New(tx)

@@ -54,11 +54,12 @@ const exportEnvironments = `INSERT INTO export_keep(kind,id) SELECT 'env',e.id F
 // The app's lists, with the same order and limits as the queries that show them.
 // inline-sql: seeds the export's transaction-local working set
 const exportSeeds = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id FROM (
-	SELECT 'op' AS kind,o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.state NOT IN ('succeeded','failed','cancelled')
-	UNION ALL SELECT 'op',c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state NOT IN ('succeeded','failed','cancelled')
-	UNION ALL SELECT 'op',o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.created_at>=COALESCE((SELECT n.created_at FROM execution_operations n WHERE n.workspace_id=$1 ORDER BY n.created_at DESC OFFSET 99 LIMIT 1),'-infinity')
-	UNION ALL SELECT 'op',x.id FROM (SELECT o.id,row_number() OVER (PARTITION BY o.environment_id ORDER BY o.created_at DESC,o.id DESC) n FROM execution_operations o JOIN export_keep k ON k.kind='env' AND k.id=o.environment_id
-		WHERE o.workspace_id=$1 AND o.state='succeeded' AND o.visual_plan_id IS NOT NULL AND o.command->'visual'->>'action'='deploy') x WHERE x.n<=20
+	SELECT 'op' AS kind,o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.state IN ('queued','dispatched','running','needs_attention')
+	UNION ALL SELECT 'op',c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state IN ('queued','dispatched','running','needs_attention')
+	UNION ALL SELECT 'op',n.id FROM (SELECT id FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC FETCH FIRST 100 ROWS WITH TIES) n
+	UNION ALL SELECT 'op',x.id FROM export_keep k CROSS JOIN LATERAL (SELECT o.id FROM execution_operations o
+		WHERE o.workspace_id=$1 AND o.environment_id=k.id AND o.state='succeeded' AND o.visual_plan_id IS NOT NULL AND o.command->'visual'->>'action'='deploy'
+		ORDER BY o.created_at DESC,o.id DESC LIMIT 20) x WHERE k.kind='env'
 	UNION ALL SELECT 'run',x.id FROM (SELECT r.id,row_number() OVER (PARTITION BY r.environment_id ORDER BY r.created_at DESC) n FROM pipeline_runs r JOIN export_keep k ON k.kind='env' AND k.id=r.environment_id WHERE r.workspace_id=$1) x WHERE x.n<=100
 	UNION ALL SELECT 'submission',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM source_submissions s JOIN export_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=100
 	UNION ALL SELECT 'revision',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM specification_revisions s JOIN export_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=50
@@ -73,18 +74,19 @@ const exportSeeds = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id FR
 // image. The configurations are each listed revision, each environment's draft and applied
 // revision, and the plans of carried operations and current runtimes. Only those, once: a build
 // records the draft it built, which uses the previous build's artifact, so following every carried
-// revision would walk back through every build.
+// revision would walk back through every build. The plans are looked up one by one: export_keep
+// has no statistics, so as a subquery the planner would read every plan the workspace has.
 // inline-sql: seeds the export's transaction-local working set
 const exportPinnedArtifacts = `WITH configurations(doc) AS (
 	SELECT s.specification FROM specification_revisions s WHERE s.workspace_id=$1 AND s.id IN (
 		SELECT id FROM export_keep WHERE kind='revision'
 		UNION SELECT e.draft_revision_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id
 		UNION SELECT e.applied_revision_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id)
-	UNION ALL SELECT p.plan FROM visual_plans p WHERE p.workspace_id=$1 AND p.id IN (
+	UNION ALL SELECT p.plan FROM visual_plans p WHERE p.workspace_id=$1 AND p.id=ANY(ARRAY(
 		SELECT o.visual_plan_id FROM execution_operations o JOIN export_keep k ON k.kind='op' AND k.id=o.id
 		UNION SELECT o.runtime_plan_id FROM execution_operations o JOIN export_keep k ON k.kind='op' AND k.id=o.id
 		UNION SELECT t.plan_id FROM visual_runtime t JOIN export_keep k ON k.kind='env' AND k.id=t.environment_id
-		UNION SELECT t.plan_id FROM cross_host_runtime t JOIN export_keep k ON k.kind='env' AND k.id=t.environment_id))
+		UNION SELECT t.plan_id FROM cross_host_runtime t JOIN export_keep k ON k.kind='env' AND k.id=t.environment_id)))
 INSERT INTO export_keep(kind,id)
 	SELECT 'artifact',a.id FROM build_artifacts a WHERE a.workspace_id=$1 AND a.id::text IN (SELECT jsonb_path_query(doc,'lax $.**.artifactId')#>>'{}' FROM configurations)
 	UNION SELECT 'artifact',x.id FROM (SELECT DISTINCT ON (a.identity->>'image') a.id FROM build_artifacts a

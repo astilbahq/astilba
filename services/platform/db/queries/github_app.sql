@@ -62,7 +62,7 @@ WHERE workspace_id = @workspace_id AND connection_id = @connection_id AND active
 -- Match Report: operation rows precede source rows and the App binding.
 UPDATE execution_operations SET cancel_requested=true,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END
 WHERE workspace_id = @workspace_id AND kind='pipeline' AND command->'pipeline'->'connection'->>'id' = @connection_id::text
-    AND state NOT IN ('succeeded','failed','cancelled');
+    AND state IN ('queued','dispatched','running','needs_attention');
 
 -- name: PauseGitHubSources :exec
 UPDATE git_sources SET status='approval_required',configuration=jsonb_set(configuration,'{autoDeploy}','false')

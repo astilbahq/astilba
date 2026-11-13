@@ -123,7 +123,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		return out, err
 	}
 	var count int
-	if err := tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND kind='pipeline' AND state NOT IN ('succeeded','failed','cancelled')", ws).Scan(&count); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND kind='pipeline' AND state IN ('queued','dispatched','running','needs_attention')", ws).Scan(&count); err != nil {
 		return out, err
 	}
 	if count >= 50 {
