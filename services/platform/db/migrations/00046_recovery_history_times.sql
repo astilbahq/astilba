@@ -1,4 +1,5 @@
 -- +goose Up
+-- astilba: not additive: adds a trigger to execution_operations, which an older release writes, and backfills its new columns.
 -- When an operation committed a runtime change and when it ended, in this database. A recovery
 -- base carries a window of applied history chosen by these times, so a backup taken inside the
 -- window can be checked against it (docs/cross-host-placement.md).
