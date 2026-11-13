@@ -2927,6 +2927,7 @@ export interface components {
             approveHostChanges?: boolean;
         };
         AgentRelease: {
+            /** @description A semantic version without build metadata. */
             version: string;
             /** @enum {integer} */
             protocol: 1;
@@ -2935,6 +2936,10 @@ export interface components {
             /** Format: int64 */
             size: number;
             sha256: string;
+            /** @description The source commit the artifact was built from. */
+            commit: string;
+            /** @description The earliest version an agent running this release may update to. An agent refuses any older release. */
+            minimumVersion: string;
             signature: string;
         };
         /** @description Private IPv4 TCP destinations, such as a package mirror, that builds on this runner may reach. Builds always reach public addresses, and never loopback, link-local or cloud metadata addresses, the host itself or IPv6. */
