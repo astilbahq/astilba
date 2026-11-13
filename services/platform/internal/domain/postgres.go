@@ -8,9 +8,9 @@ import (
 
 // Postgres17Image and PostgresImage are the current pins of each supported major. A new
 // managed database runs one of them.
-const Postgres17Image = "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4"
+const Postgres17Image = "postgres:17.12-alpine3.23@sha256:a7a82c6bf77e2a6414ea07c8709f8c51911bfb92cb6c49156d63ac2a8b8effbc"
 
-const PostgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
+const PostgresImage = "postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1"
 
 // PostgresRelease is one PostgreSQL image Astilba has pinned for managed databases.
 //
@@ -68,8 +68,10 @@ func btreeType(name string) string {
 
 // postgresReleases lists every pinned release, oldest first within each major.
 var postgresReleases = []PostgresRelease{
-	{Image: Postgres17Image, Version: 170010, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data"},
-	{Image: PostgresImage, Version: 180004, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"},
+	{Image: "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4", Version: 170010, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data"},
+	{Image: Postgres17Image, Version: 170012, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data"},
+	{Image: "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e", Version: 180004, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"},
+	{Image: PostgresImage, Version: 180007, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"},
 }
 
 // PostgresReleases returns every known release, oldest first within each major.
