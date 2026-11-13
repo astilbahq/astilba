@@ -5,9 +5,7 @@ package secretkeys
 
 import (
 	"go/ast"
-	"go/token"
 	"go/types"
-	"path"
 	"strconv"
 	"strings"
 
@@ -15,18 +13,10 @@ import (
 )
 
 var Analyzer = &analysis.Analyzer{
-	Name:      "secretkeys",
-	Doc:       "reports use of the keyring or a custody backend outside the secret broker",
-	Run:       run,
-	FactTypes: []analysis.Fact{new(transitional)},
+	Name: "secretkeys",
+	Doc:  "reports use of the keyring or a custody backend outside the secret broker",
+	Run:  run,
 }
-
-// transitional marks a function in a pending file that reaches keys, so that a call to it from
-// another package is reported too.
-type transitional struct{}
-
-func (*transitional) AFact()         {}
-func (*transitional) String() string { return "transitional" }
 
 const (
 	cryptoboxPath = "internal/cryptobox"
@@ -43,35 +33,6 @@ var keyPackages = map[string]bool{
 	"internal/secretbroker/brokertest": true,
 	"cmd/server":                       true,
 	"internal/agent":                   true,
-}
-
-// pending are the files that still hold keys without the broker, as package/file: the agent
-// delivery path, which moves to the broker with release records (PLAT-196), and the plan-time
-// size check, which moves to stored lengths. None may be added.
-var pending = map[string]bool{
-	"internal/execution/cross_host_hydration.go": true,
-	"internal/execution/legacy_keys.go":          true,
-	"internal/execution/visual_hydration.go":     true,
-	"internal/store/store.go":                    true,
-}
-
-// legacyCallers are the files that reach, through any chain of calls, a function in a pending
-// file that uses keys: the agent delivery path and the plan-time size check, and the handlers
-// that start them. They leave the list with those paths, and none may be added.
-var legacyCallers = map[string]bool{
-	"internal/execution/automatic.go":        true,
-	"internal/execution/backups.go":          true,
-	"internal/execution/cross_host_plans.go": true,
-	"internal/execution/pipeline_report.go":  true,
-	"internal/execution/preview_workers.go":  true,
-	"internal/execution/previews.go":         true,
-	"internal/execution/transport.go":        true,
-	"internal/execution/upgrades.go":         true,
-	"internal/execution/visual.go":           true,
-	"internal/httpapi/execution.go":          true,
-	"internal/httpapi/previews.go":           true,
-	"internal/httpapi/upgrades.go":           true,
-	"internal/httpapi/visual.go":             true,
 }
 
 // harmless are the cryptobox names that hold no key.
@@ -92,118 +53,16 @@ func trimmed(pkg string) string {
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	pkg := strings.TrimSuffix(trimmed(pass.Pkg.Path()), "_test")
-	if keyPackages[pkg] {
+	if keyPackages[strings.TrimSuffix(trimmed(pass.Pkg.Path()), "_test")] {
 		return nil, nil
 	}
-	report := func(pos token.Pos, what string) {
-		pass.Reportf(pos, "%s gives keys outside the secret broker; ask secretbroker for a session instead", what)
-	}
-	legacy := map[types.Object]bool{}
-	uses := func(id *ast.Ident) string {
-		if why := holdsKeys(pass.TypesInfo.Uses[id]); why != "" {
-			return why
-		}
-		if keyring(pass.TypesInfo.TypeOf(id)) {
-			// A field or variable holding the keyring, such as a store's.
-			return id.Name + ", a keyring,"
-		}
-		return ""
-	}
-	// Functions that reach keys open values without a record: those in pending files that use
-	// keys, and, until nothing changes, every function in a pending or listed caller file that
-	// calls one. Each is recorded as a fact, so a caller in another package is held to the same
-	// list.
-	var isLegacy func(object types.Object) bool
-	isLegacy = func(object types.Object) bool {
-		switch v := object.(type) {
-		case *types.Func:
-			object = v.Origin()
-		case *types.Var:
-			// A package-level variable can hold a transitional function.
-			if v.Parent() != v.Pkg().Scope() {
-				return false
-			}
-		case *types.TypeName:
-			// A type in a pending file with a transitional method reaches keys through any
-			// interface it is used as, which calls do not show: making one is reaching them.
-			named, ok := v.Type().(*types.Named)
-			if !ok || v.Pkg() != pass.Pkg || !pending[pkg+"/"+path.Base(pass.Fset.Position(v.Pos()).Filename)] {
-				return false
-			}
-			for method := range named.Methods() {
-				if isLegacy(method) {
-					return true
-				}
-			}
-			return false
-		default:
-			return false
-		}
-		return legacy[object] || object.Pkg() != pass.Pkg && pass.ImportObjectFact(object, new(transitional))
-	}
-	// Each function, and each package-level variable's initialiser, in a pending or listed file.
-	type function struct {
-		object types.Object
-		body   ast.Node
-		file   string
-	}
-	var functions []function
-	for _, file := range pass.Files {
-		name := pkg + "/" + path.Base(pass.Fset.Position(file.Pos()).Filename)
-		if !pending[name] && !legacyCallers[name] {
-			continue
-		}
-		for _, decl := range file.Decls {
-			switch decl := decl.(type) {
-			case *ast.FuncDecl:
-				if decl.Body != nil {
-					functions = append(functions, function{pass.TypesInfo.Defs[decl.Name], decl.Body, name})
-				}
-			case *ast.GenDecl:
-				for _, spec := range decl.Specs {
-					value, ok := spec.(*ast.ValueSpec)
-					if !ok {
-						continue
-					}
-					for i, id := range value.Names {
-						if i < len(value.Values) {
-							functions = append(functions, function{pass.TypesInfo.Defs[id], value.Values[i], name})
-						}
-					}
-				}
-			}
-		}
-	}
-	for changed := true; changed; {
-		changed = false
-		for _, fn := range functions {
-			if legacy[fn.object] {
-				continue
-			}
-			ast.Inspect(fn.body, func(n ast.Node) bool {
-				id, ok := n.(*ast.Ident)
-				if ok && !legacy[fn.object] && (pending[fn.file] && uses(id) != "" || isLegacy(pass.TypesInfo.Uses[id])) {
-					legacy[fn.object] = true
-					changed = true
-				}
-				return true
-			})
-		}
-	}
-	for _, fn := range functions {
-		if legacy[fn.object] {
-			pass.ExportObjectFact(fn.object, new(transitional))
-		}
+	report := func(n ast.Node, what string) {
+		pass.Reportf(n.Pos(), "%s gives keys outside the secret broker; ask secretbroker for a session instead", what)
 	}
 	for _, file := range pass.Files {
-		name := pkg + "/" + path.Base(pass.Fset.Position(file.Pos()).Filename)
-		if pending[name] {
-			continue
-		}
 		for _, spec := range file.Imports {
 			if value, _ := strconv.Unquote(spec.Path.Value); trimmed(value) == custodyPath {
-				report(spec.Pos(), "the custody package")
+				report(spec, "the custody package")
 			}
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
@@ -211,10 +70,11 @@ func run(pass *analysis.Pass) (any, error) {
 			if !ok {
 				return true
 			}
-			if why := uses(id); why != "" {
-				report(id.Pos(), why)
-			} else if object := pass.TypesInfo.Uses[id]; isLegacy(object) && !legacyCallers[name] {
-				report(id.Pos(), object.Name()+", which opens values without a record,")
+			if why := holdsKeys(pass.TypesInfo.Uses[id]); why != "" {
+				report(id, why)
+			} else if keyring(pass.TypesInfo.TypeOf(id)) {
+				// A field or variable holding the keyring.
+				report(id, id.Name+", a keyring,")
 			}
 			return true
 		})

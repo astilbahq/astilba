@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
 import { openEnvironmentSection } from "./environment-section";
+import { acknowledgesReleases } from "./fixtures/agent-releases";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("replica staging retains failed and conflicting drafts and reviews a complete group", async ({
@@ -25,6 +26,7 @@ test("replica staging retains failed and conflicting drafts and reviews a comple
         docker: true,
         visual: true,
         safeReleases: true,
+        ...acknowledgesReleases,
         replicas: true,
         backups: true,
         upgrades: true,

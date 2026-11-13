@@ -40,7 +40,7 @@ RETURNING controller_generation;
 -- name: AuthenticateAgent :one
 -- unscoped: the presented agent credential establishes the workspace.
 SELECT workspace_id,role,(credential_hash <> @credential_hash)::boolean AS previous,
-    COALESCE((capabilities->>'credentialFreeVisualCancel')::boolean,false)::boolean AS credential_free_visual_cancel
+    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
 FROM servers
 WHERE id = @server_id AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = @credential_hash OR (previous_hash = @credential_hash AND previous_until>now()));

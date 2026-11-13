@@ -46,6 +46,10 @@ type Client struct {
 	primaryIngress          atomic.Bool
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
+	secretReleases          atomic.Bool
+	// unacknowledged are journaled releases whose acknowledgement has not yet reached
+	// management. Only Run's poll loop uses it.
+	unacknowledged []api.SecretReleaseRef
 	// Keys seals this agent's keys; KeyStoreErr says why there is none here. OpenKeys, when set,
 	// opens the store; Run opens it again in the background while it is unavailable. Read them
 	// through keyStore.
@@ -183,6 +187,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 		c.primaryIngress.Store(response.Header.Get("Astilba-Agent-Primary-Ingress") == "v1")
 		c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
 		c.machineRotation.Store(response.Header.Get("Astilba-Agent-Machine-Rotation") == "v1")
+		c.secretReleases.Store(response.Header.Get("Astilba-Agent-Secret-Releases") == "v1")
 		c.keysSupported.Store(response.Header.Get(agentidentity.KeysHeader) == "v1")
 		if c.Engine != nil {
 			read := refusalsUnread
@@ -289,6 +294,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.machineRotation.Load() {
 		v.MachineBoundRotation = nil
+	}
+	if !c.secretReleases.Load() {
+		v.AcknowledgesReleases = nil
 	}
 	return v
 }
@@ -533,13 +541,14 @@ func (c *Client) Run(ctx context.Context) error {
 				break
 			}
 		}
+		_ = c.acknowledgeReleases(ctx)
 		var poll api.AgentPoll
 		e = c.call(ctx, "GET", "/agent/v1/poll", nil, &poll, authAgent)
 		if e == nil && poll.TroubleshootingOffers != nil {
 			c.offerTroubleshootingSessions(ctx, *poll.TroubleshootingOffers)
 		}
 		if e == nil && poll.Command != nil {
-			_, e = c.acceptPolledCommand(*poll.Command)
+			e = c.acceptReleased(ctx, *poll.Command)
 			if e == nil {
 				select {
 				case wake <- struct{}{}:

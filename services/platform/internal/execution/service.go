@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
@@ -317,9 +318,20 @@ type Identity struct {
 	Kind  string
 	// Credential is the server's identity this request authenticated as: the bearer's hash, or the
 	// hash of the key the token was issued for.
-	Credential                 []byte
-	Lineage                    uuid.UUID
-	CredentialFreeVisualCancel bool
+	Credential []byte
+	Lineage    uuid.UUID
+	// AcknowledgesReleases is an agent that acknowledges the secret releases it holds, and so may
+	// receive them.
+	AcknowledgesReleases bool
+}
+
+// instance names what holds a release: the agent's key, whose journal outlives its token
+// sessions, or its bearer credential.
+func (a Identity) instance() string {
+	if a.Kind == identityToken {
+		return "key:" + hex.EncodeToString(a.Credential)
+	}
+	return "credential:" + hex.EncodeToString(a.Credential)
 }
 
 // lineage scopes credential checks to a token's session; a bearer has none.
@@ -342,7 +354,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return v, keyNotCurrent
 		}
-		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.CredentialFreeVisualCancel = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.CredentialFreeVisualCancel
+		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.AcknowledgesReleases = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.AcknowledgesReleases
 		return v, err
 	}
 	if len(token) != 43 {
@@ -350,7 +362,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 	}
 	row, err := s.Store.Queries.AuthenticateAgent(ctx, db.AuthenticateAgentParams{ServerID: id, CredentialHash: hash(token)})
 	v.Kind, v.Credential = identityBearer, hash(token)
-	v.Workspace, v.Role, v.Previous, v.CredentialFreeVisualCancel = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.CredentialFreeVisualCancel
+	v.Workspace, v.Role, v.Previous, v.AcknowledgesReleases = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.AcknowledgesReleases
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}

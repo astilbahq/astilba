@@ -60,7 +60,7 @@ func TestFixturePollRecoversAfterLeaseContention(t *testing.T) {
 	if _, err = f.st.Pool.Exec(ctx, "UPDATE servers SET poll_id=$2,poll_until=now()+interval '1 hour' WHERE id=$1", v.Server.Id, lease); err != nil {
 		t.Fatal(err)
 	}
-	command, err := f.execution.Poll(ctx, identity)
+	command, err := pollReleased(f.execution, ctx, identity)
 	if command != nil || !errors.Is(err, execution.ErrPollLeaseHeld) || !errors.Is(err, domain.Conflict) {
 		t.Fatal("lease contention lost its distinct conflict identity", command, err)
 	}
@@ -75,7 +75,7 @@ func TestFixturePollRecoversAfterLeaseContention(t *testing.T) {
 	if _, err = f.st.Pool.Exec(ctx, "UPDATE servers SET poll_until=now()-interval '1 second' WHERE id=$1 AND poll_id=$2", v.Server.Id, lease); err != nil {
 		t.Fatal(err)
 	}
-	command, err = f.execution.Poll(ctx, identity)
+	command, err = pollReleased(f.execution, ctx, identity)
 	if err != nil || command == nil || command.Id != operation.Id {
 		t.Fatal("expired lease did not release the original command", command, err)
 	}
@@ -98,7 +98,7 @@ func TestCancelledPollLeavesNoLease(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() {
-			_, err := f.execution.PollAgent(ctx, identity)
+			_, err := pollAgentReleased(f.execution, ctx, identity)
 			done <- err
 		}()
 		time.Sleep(time.Duration(i) * 15 * time.Microsecond)

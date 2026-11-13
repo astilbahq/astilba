@@ -20,7 +20,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -36,7 +35,7 @@ func seedFirstSecretPage(t *testing.T, f *fixture, ws, env uuid.UUID) {
 	}
 	for i := range 64 {
 		id := uuid.UUID{15: byte(i + 1)}
-		cipher, err := f.st.Keys.Seal([]byte("first-page-decoy"), store.SecretIdentity(ws, id))
+		cipher, err := keysOf(f.st).Seal([]byte("first-page-decoy"), secretIdentity(ws, id))
 		if err != nil {
 			t.Fatal(err)
 		}

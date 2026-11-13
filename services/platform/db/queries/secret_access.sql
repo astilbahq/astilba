@@ -28,3 +28,40 @@ ORDER BY a.at LIMIT 1000;
 
 -- name: SecretAccessWorkspaceExists :one
 SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = @id)::boolean;
+
+-- name: SecretRelease :one
+-- The lease is timed by the database clock, as the claim's is, so the two agree.
+SELECT digest,attempts,last_attempt_at,acknowledged_at,redelivery,now()::timestamptz AS checked_at FROM secret_releases
+WHERE workspace_id = @workspace_id AND operation_id = @operation_id AND dispatch_epoch = @dispatch_epoch AND agent_instance = @agent_instance;
+
+-- name: LockSecretRelease :one
+SELECT digest,attempts,last_attempt_at,acknowledged_at,redelivery,now()::timestamptz AS checked_at FROM secret_releases
+WHERE workspace_id = @workspace_id AND operation_id = @operation_id AND dispatch_epoch = @dispatch_epoch AND agent_instance = @agent_instance FOR UPDATE;
+
+-- name: InsertSecretRelease :execrows
+INSERT INTO secret_releases(operation_id,dispatch_epoch,agent_instance,workspace_id,server_id,digest,attempts,last_attempt_at)
+VALUES(@operation_id,@dispatch_epoch,@agent_instance,@workspace_id,@server_id,@digest,1,now())
+ON CONFLICT DO NOTHING;
+
+-- name: RepeatSecretRelease :exec
+UPDATE secret_releases SET digest = @digest,attempts = attempts + 1,last_attempt_at = now(),acknowledged_at = NULL,redelivery = false
+WHERE workspace_id = @workspace_id AND operation_id = @operation_id AND dispatch_epoch = @dispatch_epoch AND agent_instance = @agent_instance;
+
+-- name: AcknowledgeSecretRelease :execrows
+UPDATE secret_releases SET acknowledged_at = COALESCE(acknowledged_at, now())
+WHERE workspace_id = @workspace_id AND operation_id = @operation_id AND dispatch_epoch = @dispatch_epoch
+    AND agent_instance = @agent_instance AND digest = @digest;
+
+-- name: RequestSecretRedelivery :execrows
+-- The instance does not hold what was released to it: the next poll releases it again, as a
+-- re-delivery. A request is honoured past the attempt limit, which bounds only the releases
+-- the instance never answered.
+UPDATE secret_releases SET acknowledged_at = NULL,redelivery = true,last_attempt_at = now() - interval '1 day'
+WHERE workspace_id = @workspace_id AND operation_id = @operation_id AND dispatch_epoch = @dispatch_epoch
+    AND agent_instance = @agent_instance;
+
+-- name: AddOperationNote :exec
+-- A release that cannot go says why beside whatever the operation already says, such as a
+-- stopped submission's warning, and only once.
+UPDATE execution_operations SET note = CASE WHEN note = '' THEN @note::text ELSE note || ' ' || @note::text END
+WHERE workspace_id = @workspace_id AND id = @id AND strpos(note, @note::text) = 0;

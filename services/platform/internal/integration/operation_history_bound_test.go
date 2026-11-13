@@ -191,7 +191,7 @@ func TestBusyWorkspaceStaysWithinTheArchiveLimits(t *testing.T) {
 	var environment api.Environment
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Web"}, 201, &environment)
 	_, in, _ := enrollment(t, f, b, ws, "deployment")
-	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+	if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 		t.Fatal(err)
 	}
 	plan := uuid.New()

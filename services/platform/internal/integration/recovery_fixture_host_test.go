@@ -43,7 +43,7 @@ func runRecoveryFixtureHost(t *testing.T, workers context.Context, service *exec
 			lastHeartbeat = time.Now()
 		}
 		poll, done := context.WithTimeout(workers, time.Second)
-		c, err := service.Poll(poll, identity)
+		c, err := pollReleased(service, poll, identity)
 		pollErr := poll.Err()
 		done()
 		if err != nil {
