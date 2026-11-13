@@ -8,9 +8,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -245,12 +247,12 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 		if len(archive) > 16<<10 {
 			t.Fatal("fixture is not small", len(archive))
 		}
-		refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: 8 * imageLoadEntriesPerGiB})
+		refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries})
 	})
 	t.Run("sparse archive member", func(t *testing.T) {
 		// Docker's untar writes a member's holes from its header alone, so the header is held.
 		archive := append(sparseEntry("blobs/sha256/"+strings.Repeat("a", 64), 8<<30), make([]byte, 1024)...)
-		if docker := refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: 8 * imageLoadEntriesPerGiB}); len(docker) != 0 {
+		if docker := refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries}); len(docker) != 0 {
 			t.Fatal("Docker received the sparse member's header")
 		}
 	})
@@ -322,6 +324,20 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 		image.image([]string{layer}, []string{layer})
 		refused(t, image.archive(t), testLimit)
 	})
+	t.Run("the name tar-split records again", func(t *testing.T) {
+		// 600 entries with 3 KiB paths: about 4 MiB of headers, but Docker's legacy store
+		// writes each name a second time in the layer's metadata.
+		var out bytes.Buffer
+		w := tar.NewWriter(&out)
+		for i := range 600 {
+			_ = w.WriteHeader(&tar.Header{Name: fmt.Sprintf("%sf%03d", strings.Repeat(strings.Repeat("n", 250)+"/", 12), i), Typeflag: tar.TypeReg, Mode: 0644})
+		}
+		_ = w.Close()
+		image := newTestImage()
+		layer := image.blob(gzipOf(t, out.Bytes()))
+		image.image([]string{layer}, []string{layer})
+		refused(t, image.archive(t), imageLoadLimit{Bytes: 5 << 20, Entries: 100000})
+	})
 	layer := tarOf(t, testFile{"data", 20 << 20})
 	t.Run("a layer listed again", func(t *testing.T) {
 		image := newTestImage()
@@ -384,6 +400,25 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 		"layer missing from the archive": func() []byte {
 			image := valid()
 			image.image([]string{"sha256:" + strings.Repeat("d", 64)}, nil)
+			return image.archive(t)
+		},
+		// Docker resolves a path through the layer's own links, which the agent does not follow.
+		"layer writing through its own link": func() []byte {
+			var out bytes.Buffer
+			w := tar.NewWriter(&out)
+			_ = w.WriteHeader(&tar.Header{Name: "target/", Typeflag: tar.TypeDir, Mode: 0755})
+			_ = w.WriteHeader(&tar.Header{Name: "a", Typeflag: tar.TypeSymlink, Linkname: "target"})
+			_ = w.WriteHeader(&tar.Header{Name: "a/x/f", Typeflag: tar.TypeReg, Mode: 0644})
+			_ = w.Close()
+			image := valid()
+			layer := image.blob(gzipOf(t, out.Bytes()))
+			image.image([]string{layer}, []string{layer})
+			return image.archive(t)
+		},
+		"layer writing a path twice": func() []byte {
+			image := valid()
+			layer := image.blob(gzipOf(t, tarOf(t, testFile{"a", 1}, testFile{"./a", 1})))
+			image.image([]string{layer}, []string{layer})
 			return image.archive(t)
 		},
 		"index nested too deeply": func() []byte {
@@ -458,6 +493,49 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 				t.Fatal("Docker received the whole archive")
 			}
 		})
+	}
+}
+
+// Docker holds every directory's header until its layer is unpacked, within any storage limit.
+func TestImageArchiveRefusesMoreMetadataThanDockerHolds(t *testing.T) {
+	var out bytes.Buffer
+	w := tar.NewWriter(&out)
+	for i := range 130 {
+		_ = w.WriteHeader(&tar.Header{Name: fmt.Sprintf("d%d/", i), Typeflag: tar.TypeDir, Mode: 0755, PAXRecords: map[string]string{"comment": strings.Repeat("c", 1<<20-64)}})
+	}
+	_ = w.Close()
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, out.Bytes()))
+	image.image([]string{layer}, []string{layer})
+	_, err := inspectTest(image.archive(t), imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries})
+	var refused *imageLoadRefused
+	if !errors.As(err, &refused) {
+		t.Fatal("not refused", err)
+	}
+}
+
+// A whiteout's name is four bytes longer than the file it removes, which may itself be as long
+// as Linux allows.
+func TestImageArchiveAcceptsAWhiteoutForALongName(t *testing.T) {
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, tarOf(t, testFile{"dir/.wh." + strings.Repeat("n", layerNameBytes), 0})))
+	image.image([]string{layer}, []string{layer})
+	if _, err := inspectTest(image.archive(t), testLimit); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A failure reading the archive from the build container is told apart from Docker's.
+func TestImageArchiveReportsAnUnreadArchive(t *testing.T) {
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, tarOf(t, testFile{"app", 100 << 10})))
+	image.image([]string{layer}, []string{layer})
+	archive := image.archive(t)
+	var docker bytes.Buffer
+	err := inspectImageArchive(&imageArchiveGate{src: io.MultiReader(bytes.NewReader(archive[:len(archive)/2]), iotest.ErrReader(errors.New("container exited"))), out: &docker}, testLimit)
+	var unread *imageArchiveUnread
+	if !errors.As(err, &unread) {
+		t.Fatal("an unreadable archive was reported as", err)
 	}
 }
 

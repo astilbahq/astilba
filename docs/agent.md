@@ -195,8 +195,8 @@ The agent checks routes only when it creates a network. If a route appears later
 
 A local build, one that does not push to a registry, is loaded into the host's Docker. A build can make an image that unpacks to far more than its archive, so the agent bounds what one load may write. Two settings on the agent's `run` command control the bound. Only the host's owner can set them; management can't.
 
-- `--image-load-gib` is the most one load may write to Docker's storage, in GiB. The default is 8. A load may also create at most 131,072 files and directories for each GiB of this setting, so 1,048,576 at the default.
-- `--image-load-reserve-gib` is the free space a load must leave on Docker's data-root and on `/var/lib/containerd`, in GiB. The default is 4. A load must also leave 262,144 inodes free.
+- `--image-load-gib` is the most one load may write to Docker's storage, in GiB. The default is 8. A load may also create at most 1,048,576 files and directories, whatever this setting is.
+- `--image-load-reserve-gib` is the free space a load must leave on Docker's data-root and on `/var/lib/containerd`, in GiB. The default is 4. A load must also leave 262,144 inodes free. This reserve applies only to loads: a build still needs 4 GiB free on the data-root to start.
 
 Both take whole numbers from 1 to 1024. Set them with an inspected `ExecStart` override that keeps the existing arguments, as for [certificate contact](#certificate-contact), and restart the agent. A refused build's note names the limit it hit and the setting that changes it. [Git builds](git-builds.md#budgets-and-recovery) describes what a load counts.
 

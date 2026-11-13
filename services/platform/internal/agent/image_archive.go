@@ -6,14 +6,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
-	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"path"
 	"regexp"
 	"strings"
@@ -33,9 +29,11 @@ const (
 	// host's owner sets the agent's --image-load-gib and --image-load-reserve-gib.
 	DefaultImageLoadBytes        = 8 << 30
 	DefaultImageLoadReserveBytes = 4 << 30
-	// Files a load may create for each GiB it may write: 1 Mi for the default 8 GiB.
-	imageLoadEntriesPerGiB = 128 << 10
-	dockerReserveInodes    = 1 << 18
+	// Files and directories a load may create, which also bounds the agent's memory per layer.
+	localImageLoadEntries = 1 << 20
+	dockerReserveInodes   = 1 << 18
+	// Names and PAX records in one layer, which Docker holds in memory while unpacking it.
+	layerMetadataBytes = 128 << 20
 	// An image has a config, a manifest and a blob per layer; this many members is never one.
 	imageMembers = 4096
 	// Header blocks, PAX records and long names the gate holds before a member's size is known.
@@ -113,7 +111,7 @@ func (l imageLoadLimit) refusal(over error) error {
 	case l.entriesByStorage:
 		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacking it would leave fewer than %d inodes free in this server's Docker storage. Free space on the server, such as unused images, and build again.", dockerReserveInodes) + tail}
 	}
-	return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacked, it would create more than %d files and directories, the most one image load may create here (%d for each GiB of the agent's --image-load-gib). Make the image smaller, or ask the server's owner to raise that setting.", l.Entries, imageLoadEntriesPerGiB) + tail}
+	return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacked, it would create more than %d files and directories, the most one image load may create. Make the image smaller, for example with a multi-stage build that copies only what the application needs.", localImageLoadEntries) + tail}
 }
 
 func unmeasurableImage(why string) error {
@@ -145,10 +143,18 @@ func (g *imageArchiveGate) Read(p []byte) (int, error) {
 	}
 	g.pending = append(g.pending, p[:n]...)
 	if err != nil && err != io.EOF {
-		g.failed = err
+		g.failed = &imageArchiveUnread{err}
+		return n, g.failed
 	}
 	return n, err
 }
+
+// imageArchiveUnread is a failure to read the archive from the build container, as opposed to
+// Docker failing to read it from the agent.
+type imageArchiveUnread struct{ err error }
+
+func (e *imageArchiveUnread) Error() string { return "reading the image archive: " + e.err.Error() }
+func (e *imageArchiveUnread) Unwrap() error { return e.err }
 
 func (g *imageArchiveGate) release() error {
 	if len(g.pending) == 0 {
@@ -344,310 +350,4 @@ func inspectImageMember(r io.Reader, gate *imageArchiveGate, size int64, limit i
 		return nil, gate.cause(err, "its archive is not a valid tar archive")
 	}
 	return member, nil
-}
-
-const tarBlockBytes = 512
-
-// boundedReader counts what it reads and fails past ceiling, so a parser cannot read without
-// limit before returning anything to count.
-type boundedReader struct {
-	r          io.Reader
-	n, ceiling int64
-	over       error
-}
-
-func (b *boundedReader) Read(p []byte) (int, error) {
-	if b.n >= b.ceiling {
-		return 0, b.over
-	}
-	n, err := b.r.Read(p[:min(int64(len(p)), b.ceiling-b.n)])
-	b.n += int64(n)
-	return n, err
-}
-
-// layerCost counts what unpacking the tar archive r writes, and how many headers it has.
-func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
-	raw := &boundedReader{r: r, over: errImageOverBytes}
-	tr := tar.NewReader(raw)
-	directories := layerDirectories{}
-	var cost imageCost
-	headers := 0
-	for {
-		// Docker's legacy store keeps every byte between entries' data: headers, including meta
-		// headers Go's reader folds into the next entry, long names and padding.
-		before := raw.n
-		raw.ceiling = before + limit.Bytes - cost.Bytes
-		hdr, err := tr.Next()
-		cost.Bytes += raw.n - before
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return cost, headers, err
-		}
-		headers++
-		entry, err := directories.entry(hdr)
-		if err != nil {
-			return cost, headers, err
-		}
-		cost.add(entry)
-		if err = limit.check(cost); err != nil {
-			return cost, headers, err
-		}
-		// The entry's data is read here, not in Next, so Next reads only what is counted above.
-		// It is at most the entry's counted size.
-		raw.ceiling = math.MaxInt64
-		if _, err = io.Copy(io.Discard, tr); err != nil {
-			return cost, headers, err
-		}
-	}
-	// Docker's legacy image store reads what follows the end marker into memory and keeps it.
-	raw.ceiling, raw.over = raw.n+layerTrailerBytes+1, io.EOF
-	n, err := io.Copy(io.Discard, raw)
-	if err != nil {
-		return cost, headers, err
-	}
-	if n > layerTrailerBytes {
-		return cost, headers, unmeasurableImage("a layer has data after its end")
-	}
-	cost.Bytes += n
-	return cost, headers, limit.check(cost)
-}
-
-// layerDirectories is the directories one layer has made, explicitly or as the parents Docker
-// creates for an entry whose directory the layer does not have.
-type layerDirectories map[layerPathKey]int32
-
-type layerPathKey struct {
-	parent int32
-	name   string
-}
-
-var directoryCost = imageCost{Bytes: storageEntryBytes + storageBlockBytes, Entries: 1}
-
-// entry is what writing one tar entry costs, including directories it needs Docker to create.
-func (d layerDirectories) entry(h *tar.Header) (imageCost, error) {
-	if len(h.Name) > layerPathBytes || len(h.Linkname) > layerPathBytes {
-		return imageCost{}, unmeasurableImage("a layer has a path longer than Linux allows")
-	}
-	parts := strings.Split(strings.TrimPrefix(path.Clean("/"+h.Name), "/"), "/")
-	cost := entryCost(h)
-	parent := int32(0)
-	for i, part := range parts {
-		if len(part) > layerNameBytes {
-			return imageCost{}, unmeasurableImage("a layer has a file name longer than Linux allows")
-		}
-		if i == len(parts)-1 && h.Typeflag != tar.TypeDir {
-			break
-		}
-		key := layerPathKey{parent, part}
-		id, ok := d[key]
-		if !ok {
-			id = int32(len(d) + 1)
-			d[layerPathKey{parent, strings.Clone(part)}] = id
-			if i < len(parts)-1 {
-				cost.add(directoryCost)
-			}
-		}
-		parent = id
-	}
-	return cost, nil
-}
-
-// entryCost is the storage one tar entry takes once written. Its size is the logical one, so a
-// sparse file counts in full, as Docker writes it.
-func entryCost(h *tar.Header) imageCost {
-	bytes := int64(storageEntryBytes)
-	xattrs := false
-	for k := range h.PAXRecords {
-		xattrs = xattrs || strings.HasPrefix(k, "SCHILY.xattr.") || strings.HasPrefix(k, "LIBARCHIVE.xattr.")
-	}
-	if xattrs {
-		bytes += storageBlockBytes
-	}
-	if h.Typeflag == tar.TypeDir {
-		bytes += storageBlockBytes
-	}
-	size := min(max(h.Size, 0), 1<<60)
-	return imageCost{Bytes: bytes + (size+storageBlockBytes-1)/storageBlockBytes*storageBlockBytes, Entries: 1}
-}
-
-// compressionOf names the compression Docker detects from a stream's first bytes, which is
-// gzip, zstd (also behind a skippable frame), bzip2 or xz, or "" for none.
-func compressionOf(head []byte) string {
-	switch {
-	case bytes.HasPrefix(head, []byte{0x1f, 0x8b}):
-		return "gzip"
-	case bytes.HasPrefix(head, []byte{0x28, 0xb5, 0x2f, 0xfd}):
-		return "zstd"
-	case len(head) >= 4 && binary.LittleEndian.Uint32(head)&0xfffffff0 == 0x184d2a50:
-		return "zstd"
-	case bytes.HasPrefix(head, []byte("BZh")):
-		return "bzip2"
-	case bytes.HasPrefix(head, []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}):
-		return "xz"
-	}
-	return ""
-}
-
-// plainTarHeader reports whether Docker's tar reader accepts head's first block as a header.
-func plainTarHeader(head []byte) bool {
-	if len(head) < tarBlockBytes {
-		return false
-	}
-	_, err := tar.NewReader(bytes.NewReader(head[:tarBlockBytes])).Next()
-	return !errors.Is(err, tar.ErrHeader)
-}
-
-// imageChainsCost counts the layers Docker unpacks for every image the archive's manifests
-// describe. Docker's legacy store reads manifest.json and the containerd store also index.json,
-// so both count. Docker unpacks a layer once for each distinct chain of layers below and
-// including it, so a layer listed twice, or below different layers, counts each time, as does
-// each layer's own bookkeeping.
-func imageChainsCost(members map[string]*imageMember, limit imageLoadLimit) (imageCost, error) {
-	var chains [][]string
-	if m := members["manifest.json"]; m != nil {
-		var images []jsontext.Value
-		if m.data == nil || json.Unmarshal(m.data, &images) != nil {
-			return imageCost{}, unmeasurableImage("its manifest.json is not valid")
-		}
-		for _, image := range images {
-			lists, err := foldedMembers(image, "Layers")
-			if err != nil {
-				return imageCost{}, err
-			}
-			for _, list := range lists {
-				var layers []string
-				if json.Unmarshal(list, &layers) != nil {
-					return imageCost{}, unmeasurableImage("its manifest.json is not valid")
-				}
-				chain := make([]string, len(layers))
-				for i, layer := range layers {
-					// Docker's legacy store resolves each path inside the archive.
-					chain[i] = strings.TrimPrefix(path.Clean("/"+layer), "/")
-				}
-				chains = append(chains, chain)
-			}
-		}
-	}
-	if members["index.json"] != nil {
-		visited := map[string]bool{}
-		if err := indexChains(members, "index.json", 0, visited, &chains); err != nil {
-			return imageCost{}, err
-		}
-	}
-	type node struct {
-		parent int32
-		name   string
-	}
-	nodes := map[node]int32{}
-	var cost imageCost
-	for _, chain := range chains {
-		if len(chain) > imageChainDepth {
-			return imageCost{}, unmeasurableImage("an image in its archive has more layers than Docker can stack")
-		}
-		parent := int32(0)
-		for _, name := range chain {
-			m := members[name]
-			if m == nil {
-				return imageCost{}, unmeasurableImage("its manifests name a layer its archive does not have")
-			}
-			key := node{parent, name}
-			id, ok := nodes[key]
-			if !ok {
-				id = int32(len(nodes) + 1)
-				nodes[key] = id
-				cost.add(m.cost)
-				cost.add(imageCost{Bytes: storageLayerBytes, Entries: storageLayerEntries})
-				if err := limit.check(cost); err != nil {
-					return cost, err
-				}
-			}
-			parent = id
-		}
-	}
-	return cost, nil
-}
-
-// indexChains follows an OCI index or manifest to the layer chains it describes. It reads
-// each document's manifests and layers whatever its media type says, as either may be used.
-func indexChains(members map[string]*imageMember, name string, depth int, visited map[string]bool, chains *[][]string) error {
-	if visited[name] {
-		return nil
-	}
-	visited[name] = true
-	m := members[name]
-	switch {
-	case m == nil:
-		return unmeasurableImage("its image index names a document its archive does not have")
-	case m.data == nil:
-		return unmeasurableImage("its image index names a document the agent cannot read")
-	case depth > imageIndexDepth:
-		return unmeasurableImage("its image index is nested too deeply")
-	}
-	manifests, err := foldedMembers(m.data, "manifests")
-	if err != nil {
-		return err
-	}
-	for _, list := range manifests {
-		blobs, err := descriptorBlobs(list)
-		if err != nil {
-			return err
-		}
-		for _, blob := range blobs {
-			if err = indexChains(members, blob, depth+1, visited, chains); err != nil {
-				return err
-			}
-		}
-	}
-	layers, err := foldedMembers(m.data, "layers")
-	if err != nil {
-		return err
-	}
-	for _, list := range layers {
-		chain, err := descriptorBlobs(list)
-		if err != nil {
-			return err
-		}
-		*chains = append(*chains, chain)
-	}
-	return nil
-}
-
-// descriptorBlobs names the archive members a list of OCI descriptors points at.
-func descriptorBlobs(list jsontext.Value) ([]string, error) {
-	var descriptors []jsontext.Value
-	if json.Unmarshal(list, &descriptors) != nil {
-		return nil, unmeasurableImage("its image index is not valid")
-	}
-	blobs := make([]string, 0, len(descriptors))
-	for _, descriptor := range descriptors {
-		digests, err := foldedMembers(descriptor, "digest")
-		if err != nil {
-			return nil, err
-		}
-		var digest string
-		if len(digests) != 1 || json.Unmarshal(digests[0], &digest) != nil {
-			return nil, unmeasurableImage("its image index is not valid")
-		}
-		algorithm, encoded, _ := strings.Cut(digest, ":")
-		blobs = append(blobs, "blobs/"+algorithm+"/"+encoded)
-	}
-	return blobs, nil
-}
-
-// foldedMembers returns the values of an object's members named name, ignoring case as Docker's
-// and containerd's JSON decoding does.
-func foldedMembers(raw []byte, name string) ([]jsontext.Value, error) {
-	var object map[string]jsontext.Value
-	if json.Unmarshal(raw, &object) != nil {
-		return nil, unmeasurableImage("its image metadata is not valid JSON")
-	}
-	var values []jsontext.Value
-	for key, value := range object {
-		if strings.EqualFold(key, name) && string(value) != "null" {
-			values = append(values, value)
-		}
-	}
-	return values, nil
 }
