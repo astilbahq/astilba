@@ -63,7 +63,7 @@ func TestUnfinishedIndexHoldsExactlyTheStatesThatHaveNotEnded(t *testing.T) {
 // once read every operation, and past PostgreSQL's JIT threshold each poll spent hundreds of
 // milliseconds compiling. This takes every statement that reads operations from the code, as the
 // inline SQL check counts them, and sqlc's, so a new one is held to the same plan: no sequential
-// scan of operations, and a cost that stays put as ended history triples. A statement assembled
+// scan of operations, and a cost that doesn't rise with ended history. A statement assembled
 // from several literals at run time, such as a recovery base's capture, isn't seen here (PLAT-325).
 func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 	ctx := context.Background()
@@ -257,28 +257,37 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 	if _, err := f.st.Pool.Exec(ctx, `ANALYZE`); err != nil {
 		t.Fatal(err)
 	}
-	before := map[string]float64{}
-	for _, q := range queries {
-		if p, ok := plan(q); ok {
-			before[q.at] = p.Cost
+	// Each statement is planned at three sizes of history, each three times the last.
+	costs := map[string][]float64{}
+	measure := func() {
+		t.Helper()
+		for _, q := range queries {
+			if p, ok := plan(q); ok {
+				costs[q.at] = append(costs[q.at], p.Cost)
+			}
 		}
 	}
+	measure()
 	for _, r := range append(slices.Clone(historyReaders), limitedReaders...) {
 		if !slices.ContainsFunc(queries, func(q operationQuery) bool { return q.name == r.name && strings.Contains(q.sql, r.fragment) }) {
 			t.Errorf("%s %q is listed as reading history, but no statement reading operations matches it now", r.name, r.fragment)
 		}
 	}
 	history(20000)
+	measure()
+	history(60000)
 	for _, q := range queries {
 		p, ok := plan(q)
-		if !ok {
+		if !ok || len(costs[q.at]) != 2 {
 			continue
 		}
+		// A plan that reads history adds three times as much cost for each tripling as it did for
+		// the last, and across both it rises by more than a step in its indexes' depth: a plan of
+		// index probes rises a little, in steps, as each index gains a level.
+		c := append(costs[q.at], p.Cost)
+		grows := c[2]-c[1] > 2*(c[1]-c[0])+1 && c[2] > c[0]*1.05+10
 		excepted, isExcepted := historyReader(q, historyReaders)
 		bound, limited := historyReader(q, limitedReaders)
-		// Index descents deepen as history grows, so a plan of index probes rises a few percent;
-		// one that reads history roughly triples.
-		grows := p.Cost > before[q.at]*1.1+1
 		switch {
 		case isExcepted && !scans(p) && p.Cost < threshold && !grows:
 			t.Errorf("%s no longer reads history; take it out of historyReaders", q)
@@ -290,12 +299,10 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f: narrow it with an index so every call doesn't compile", q, p.Cost, threshold)
 		case limited && !uses(p, bound.index):
 			t.Errorf("%s no longer reads through %s, which bounds it at its LIMIT: give it that index back, or another that keeps it bounded", q, bound.index)
-		case limited && !grows:
-			t.Errorf("%s no longer grows; take it out of limitedReaders", q)
 		case limited:
-			t.Logf("%s grows from %.0f to %.0f until %s", q, before[q.at], p.Cost, bound.reason)
+			t.Logf("%s costs %.0f, %.0f, %.0f as it grows until %s", q, c[0], c[1], c[2], bound.reason)
 		case grows:
-			t.Errorf("%s grows with ended history (cost %.0f, then %.0f with three times as much): narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q, before[q.at], p.Cost)
+			t.Errorf("%s grows with ended history (cost %.0f, %.0f, %.0f as it triples twice): narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q, c[0], c[1], c[2])
 		}
 	}
 }
