@@ -251,12 +251,9 @@ export function ChangeSource({
   const action = useAction({ recentAuth: true });
   // Removal has its own action, so its refusal is shown in its dialog, not as the form's error.
   const removal = useAction({ recentAuth: true });
-  // adopt takes the next source as shown while this form's own binding is being settled, as the
-  // binding changes it; once settled, a change elsewhere is shown, not adopted.
-  const [view, setView] = useState({ shown: source, adopt: false });
-  if (view.adopt && source.sourceHash !== view.shown.sourceHash)
-    setView({ shown: source, adopt: false });
-  const shown = view.shown;
+  // The source the form started from. A change made elsewhere since is shown, not taken over what
+  // the owner typed; this form's own binding starts it from the source that binding made.
+  const [shown, setShown] = useState(source);
   const [removing, setRemoving] = useState(false);
   const remove = useRef<HTMLButtonElement>(null);
   // After a removal the page says so and moves focus there, so the dialog doesn't take it back.
@@ -267,7 +264,7 @@ export function ChangeSource({
       <summary ref={summary}>Change or remove the Git source</summary>
       <div className={s.stack}>
         <ErrorNotice error={action.error} />
-        {!view.adopt && source.sourceHash !== shown.sourceHash && (
+        {source.sourceHash !== shown.sourceHash && (
           <div className={s.notice} role="status">
             <p>
               The source changed since this form was opened, for example because
@@ -278,7 +275,7 @@ export function ChangeSource({
             <Button
               type="button"
               onClick={() => {
-                setView({ shown: source, adopt: false });
+                setShown(source);
                 summary.current?.focus();
               }}
             >
@@ -294,7 +291,7 @@ export function ChangeSource({
           dirty={dirty}
           action={action}
           changed={changed}
-          binding={(adopt) => setView((v) => ({ ...v, adopt }))}
+          bound={setShown}
         />
         <div>
           <Button
@@ -371,7 +368,7 @@ function BindAgain({
   dirty,
   action,
   changed,
-  binding,
+  bound,
 }: {
   path: EnvironmentPath;
   revisionId: string;
@@ -379,7 +376,7 @@ function BindAgain({
   dirty: boolean;
   action: ReturnType<typeof useAction>;
   changed: (message: string) => Promise<void>;
-  binding: (adopt: boolean) => void;
+  bound: (source: Schema["GitSourceStatus"]) => void;
 }) {
   const connection = useState(source.configuration.connectionId);
   const runner = useState(source.configuration.runnerId);
@@ -412,14 +409,15 @@ function BindAgain({
             );
             return;
           }
-          binding(true);
-          try {
-            await changed(
-              "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
-            );
-          } finally {
-            binding(false);
-          }
+          // The form starts again from the source this binding made, read now rather than from
+          // the page's next poll, which a change elsewhere could reach first.
+          const now = await result(
+            client.GET(`${root}/source`, { params: { path } }),
+          ).catch(() => null);
+          if (now) bound(now);
+          await changed(
+            "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
+          );
         })
       }
     >

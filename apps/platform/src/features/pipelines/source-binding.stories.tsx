@@ -52,6 +52,18 @@ const owner: Session = { ...member, recentAuth: true };
 let requests: { method: string; body: unknown }[] = [];
 let refusePut: number | null = null;
 let refuseDelete: number | null = null;
+// The source the workshop server holds after a binding, reset before each story.
+let served: Schema["GitSourceStatus"] = source;
+const rebound: Schema["GitSourceStatus"] = {
+  ...source,
+  sourceHash: "1".repeat(64),
+  failure: null,
+  configuration: {
+    ...source.configuration,
+    entrypoints: ["docker-compose.yaml"],
+    paths: ["docker-compose.yaml", "config/app.env"],
+  },
+};
 const refusal = (status: number) =>
   HttpResponse.json(
     {
@@ -90,11 +102,11 @@ function Panel({
         source={current}
         dirty={false}
         changed={async (message) => {
-          flushSync(() => {
-            setSaid(message);
-            if (next) setCurrent(next);
-          });
+          flushSync(() => setSaid(message));
           status.current?.focus();
+          // The page's refreshed source reaches the panel a moment later, as the query's
+          // notification is scheduled after the refresh resolves.
+          if (next) setTimeout(() => setCurrent(next), 0);
         }}
       />
       {said && (
@@ -174,6 +186,7 @@ const meta = {
         },
       ] as Schema["Server"][]),
     ),
+    http.get(`${root}/source`, () => HttpResponse.json(served)),
     http.put(`${root}/source`, async ({ request }) => {
       requests.push({ method: "PUT", body: await request.json() });
       if (refusePut) return refusal(refusePut);
@@ -203,6 +216,7 @@ const meta = {
     requests = [];
     refusePut = null;
     refuseDelete = null;
+    served = source;
   },
 } satisfies Meta<typeof Panel>;
 export default meta;
@@ -211,17 +225,9 @@ type Story = StoryObj<typeof meta>;
 // A selected file renamed upstream stops automatic imports and says which file. The owner binds
 // the source again with the new name, keeping everything else as it was.
 export const RebindRenamedFile: Story = {
-  args: {
-    next: {
-      ...source,
-      sourceHash: "1".repeat(64),
-      failure: null,
-      configuration: {
-        ...source.configuration,
-        entrypoints: ["docker-compose.yaml"],
-        paths: ["docker-compose.yaml", "config/app.env"],
-      },
-    },
+  args: { next: rebound },
+  beforeEach: () => {
+    served = rebound;
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -264,6 +270,8 @@ export const RebindRenamedFile: Story = {
     );
     // The page then shows the source as bound, which isn't someone else's change.
     await expect(await canvas.findByText(/Source changed/)).toHaveFocus();
+    // The page's refreshed source arrives after the binding settles, and is the binding's own.
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await expect(
       canvas.queryByText(/The source changed since this form was opened/),
     ).toBeNull();

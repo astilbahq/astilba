@@ -417,3 +417,59 @@ func TestRefreshQueuesOnTheRunnerWhenItsFallbackIsGone(t *testing.T) {
 		t.Fatalf("a gone fallback failed a source whose runner was only busy: %+v", failure)
 	}
 }
+
+// A manual build whose fallback can't take it queues on its busy runner rather than being refused,
+// and can't wait on that runner for good: revoking it settles the build. A runner already revoked
+// refuses the build at once.
+func TestManualBuildQueuesOnItsRunnerWhenTheFallbackIsGone(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	_, spec := draftSpec(t, i.b, i.path)
+	goneID, _ := i.addRunner(t)
+	i.b.call("POST", i.prefix+"/servers/"+goneID.String()+"/revoke", nil, 204, nil)
+	// The runner is busy with another environment's import.
+	var project api.Project
+	i.b.call("POST", i.prefix+"/projects", map[string]string{"name": "Busy"}, 201, &project)
+	var env api.Environment
+	i.b.call("POST", i.prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &env)
+	i.b.call("PUT", i.prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 202, nil)
+	i.runner.next()
+
+	cfg := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &goneID, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}
+	var build api.Operation
+	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 202, &build)
+	if build.ServerId != i.runnerID || build.State != "queued" {
+		t.Fatalf("the build did not queue on its runner: server %s, state %s", build.ServerId, build.State)
+	}
+	i.b.call("POST", i.prefix+"/servers/"+i.runnerID.String()+"/revoke", nil, 204, nil)
+	if settled := i.operation(t, build.Id); settled.State != "failed" && settled.State != "cancelled" {
+		t.Fatalf("a build queued on a revoked runner still waits: %s", settled.State)
+	}
+	// A runner that is already revoked refuses the build rather than queueing it.
+	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 404, nil)
+}
+
+// A fallback whose agent can't run builds without root isn't ready for a build, so the build queues
+// on its busy runner, as it does when the runner is idle.
+func TestManualBuildQueuesOnItsRunnerWhenTheFallbackCantBuild(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	_, spec := draftSpec(t, i.b, i.path)
+	yes, no := true, false
+	older, in, token := enrollment(t, i.f, i.b, i.ws, "build")
+	in.Capabilities.Build, in.Capabilities.BuildNetwork, in.Capabilities.RootlessBuilds = &yes, &yes, &no
+	agentRequest(t, i.f.server.Client(), i.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	// Its heartbeat keeps the older runner online and idle.
+	agentRequest(t, i.f.server.Client(), i.f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
+	var project api.Project
+	i.b.call("POST", i.prefix+"/projects", map[string]string{"name": "Busy"}, 201, &project)
+	var env api.Environment
+	i.b.call("POST", i.prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &env)
+	i.b.call("PUT", i.prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 202, nil)
+	i.runner.next()
+
+	cfg := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &older.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}
+	var build api.Operation
+	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 202, &build)
+	if build.ServerId != i.runnerID {
+		t.Fatalf("the build went to a fallback that can't run it: %s", build.ServerId)
+	}
+}

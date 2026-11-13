@@ -17,7 +17,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls, railpack bool) (bool, error) {
+// runnerEligible reports whether a runner can take work, and whether it is online. build asks also
+// for what every build needs of its runner, which insertPipeline checks again of the runner chosen.
+func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls, railpack, build bool) (bool, error) {
 	var role string
 	var raw []byte
 	var online bool
@@ -35,10 +37,19 @@ func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architectu
 	if railpack && (c.RailpackVersion == nil || *c.RailpackVersion != pipeline.RailpackVersion) {
 		return false, domain.Invalid("runner.railpackUpgradeRequired")
 	}
+	if build && (c.BuildNetwork == nil || !*c.BuildNetwork) {
+		return false, domain.Invalid("runner.buildNetworkUpgradeRequired")
+	}
+	if build && (c.RootlessBuilds == nil || !*c.RootlessBuilds) {
+		return false, domain.Invalid("runner.rootlessBuildsUpgradeRequired")
+	}
 	return online, nil
 }
-func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls, railpack bool) (uuid.UUID, error) {
-	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls, railpack)
+
+// selectRunner chooses the runner for work: the primary, or its fallback when the primary is
+// offline or busy and the fallback is ready. build is whether the work is a build.
+func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls, railpack, build bool) (uuid.UUID, error) {
+	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls, railpack, build)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -50,7 +61,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 		// A fallback that can't take the work, as when it was revoked or needs an upgrade, isn't
 		// ready, so the primary queues it, as it would with no fallback: whether work starts must
 		// not depend on how busy the primary is.
-		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture, controls, railpack)
+		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture, controls, railpack, build)
 		var refused *domain.Error
 		if errors.Is(err, pgx.ErrNoRows) || errors.As(err, &refused) {
 			return primary, nil
@@ -288,7 +299,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return head.failure(domain.Invalid("branch"))
 		}
 		connection, commit := head.Connection, head.Value
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false, false)
 		if err != nil {
 			return err
 		}
@@ -379,7 +390,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 				return domain.Conflict
 			}
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false, false)
 		if err != nil {
 			return err
 		}
@@ -466,7 +477,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 		return api.Operation{}, head.failure(domain.Invalid("branch"))
 	}
 	connection, commit := head.Connection, head.Value
-	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack())
+	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack(), true)
 	if err != nil {
 		return api.Operation{}, err
 	}

@@ -163,7 +163,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack(), false); err != nil {
 			return false, err
 		}
 	}

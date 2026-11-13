@@ -191,7 +191,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = domain.ValidatePreviewTemplate(v.Spec, cfg.App); err != nil {
 			return err
 		}
-		if _, err = runnerEligible(ctx, tx, ws, cfg.Build.RunnerID, cfg.Build.Architecture, true, cfg.Build.UsesRailpack()); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, cfg.Build.RunnerID, cfg.Build.Architecture, true, cfg.Build.UsesRailpack(), false); err != nil {
 			return err
 		}
 		if _, err = s.visualServer(ctx, tx, ws, cfg.Build.RunnerID); err != nil {

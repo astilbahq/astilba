@@ -310,7 +310,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			continue
 		}
 		// A target whose runner or registry is gone records why rather than stopping the branch.
-		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture, cfg.NeedsControls(), cfg.UsesRailpack())
+		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture, cfg.NeedsControls(), cfg.UsesRailpack(), true)
 		wait, waitErr := runnerWaits(ctx, tx, a.Workspace, cfg.RunnerID, err)
 		if waitErr != nil {
 			return waitErr
@@ -517,7 +517,7 @@ func (w *refreshWorker) refreshSource(ctx context.Context, tx pgx.Tx, git *gitAn
 		}
 		return sourceUnreadable, db.New(tx).SetGitSourcePendingCommit(ctx, db.SetGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Commit: head})
 	}
-	runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, false)
+	runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, false, false)
 	wait, waitErr := runnerWaits(ctx, tx, a.Workspace, cfg.RunnerID, err)
 	if waitErr != nil {
 		return sourceSettled, waitErr
