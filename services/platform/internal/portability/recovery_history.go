@@ -253,6 +253,7 @@ func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start tim
 		SELECT GREATEST(effective,ended) AS effective FROM carried
 		UNION ALL SELECT COALESCE(o.ended_at+interval '1 day',o.created_at+interval '7 days') FROM execution_operations o
 		WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='crosshost' AND o.runtime_outcome IS NULL AND o.state IN ('succeeded','failed','cancelled')
+		AND (o.ended_at>=$2::timestamptz-interval '1 day' OR o.ended_at IS NULL AND o.created_at>=$2::timestamptz-interval '7 days')
 		AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id)
 	) SELECT effective FROM items WHERE effective>=$2 ORDER BY effective DESC OFFSET $3 LIMIT 1`, ws, start, limit-1).Scan(&cut)
 	if errors.Is(err, pgx.ErrNoRows) {

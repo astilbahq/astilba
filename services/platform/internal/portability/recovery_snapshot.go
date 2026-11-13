@@ -103,7 +103,9 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 		if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied); err != nil {
 			return RecoveryCapture{}, err
 		}
-		// A runtime change that ran across the window's start is settled without being counted.
+		// The cut counts the window's changes and settled roots. A settled operation it doesn't,
+		// such as a runtime change in an environment the base no longer carries, or a root that
+		// ended while the capture ran, can still pass the record limit.
 		if excess := count + history.Records() - maxArchiveRecords; excess > 0 {
 			over += excess
 			continue

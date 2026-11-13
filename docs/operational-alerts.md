@@ -51,7 +51,8 @@ running; it is not an external uptime service.
   revoked peers, are not receiving changes. A successful pass establishes recovery. Network
   members show as pending throughout; a removal is not complete until peers acknowledge it.
 - **Cross-host recovery window is shorter than 35 days:** the workspace's newest recovery
-  checkpoint carries less than 35 days of applied history, because that history is busy. Cross-host
+  checkpoint's window is shorter than 35 days, because the workspace's runtime changes or its
+  cross-host roots, such as coordinated backups, are too many to fit. Cross-host
   recovery refuses a management backup taken before the window opened that holds a runtime the
   window doesn't reach, so backups kept for the 35 days [management
   backups](management-backups.md) suggests may be too old. The Workspace

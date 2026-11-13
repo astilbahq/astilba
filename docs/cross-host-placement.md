@@ -150,7 +150,8 @@ follows the workspace's configuration, not its age.
   can't show that such a backup is its ancestor rather than a diverged copy. One whose runtimes
   haven't changed since still recovers. Use a more recent backup. There is no override.
 - **A shorter window.** When a busy workspace's history doesn't fit a base, the window starts
-  later, at the newest change that still fits. Management logs a warning, and raises the
+  later, so it holds only the newest runtime changes and ended cross-host roots that fit. Frequent
+  coordinated backups count as well as deployments: backing up less often lengthens the window. Management logs a warning, and raises the
   `recovery_window` alert, while the window is shorter than 35 days, the backup retention
   [management backups](management-backups.md) suggests. The Workspace page shows the newest
   checkpoint's time and its window.

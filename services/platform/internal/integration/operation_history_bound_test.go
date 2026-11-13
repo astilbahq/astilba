@@ -357,7 +357,7 @@ func TestFrequentCoordinatedBackupsShortenTheWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	// Ended an hour apart over the last 80 days, as hourly backups of a few environments would.
+	// Ended ten minutes apart over the last 80 days, as hourly backups of six environments would.
 	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
 		t.Fatal(err)
 	}
