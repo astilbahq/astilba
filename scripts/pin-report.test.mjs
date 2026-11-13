@@ -520,6 +520,18 @@ test("an upstream rebuild, a newer tag or tool, and anything not checked need at
   );
 });
 
+test("a release beyond a pin's track is listed for information", () => {
+  const { problems, info } = assemble({
+    images: [checked({ scans: [], offTrack: "18.8-alpine3.24" })],
+    tools: [],
+  });
+  assert.deepEqual(problems, []);
+  assert.match(
+    info.find(({ section }) => section === sections.images).text,
+    /postgres:18\.4-alpine3\.23 has a newer release off its track: 18\.8-alpine3\.24/,
+  );
+});
+
 test("a retired pin is listed for information, except a manifest that cannot be read", () => {
   const retired = "PostgreSQL 18.4, replaced by 18.7; old databases and backups still name it.";
   const { problems, summary, info } = assemble({

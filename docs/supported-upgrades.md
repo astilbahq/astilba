@@ -64,12 +64,18 @@ Three rules decide what data a release may use:
 
 - **Restore:** a logical backup restores into its own major, in a release at least as new as the one that dumped it. The restore runs in the database's own release, which then serves the data, not in the archive's. So a backup taken on 18.4 restores into a database now on 18.7. A backup from another major is refused before anything runs, with the reason: restore it into a database of its own major, or use the major upgrade. Each run records the release that filled its target. Runs from before that record were filled by the archive's own image.
 - **In place:** a later release replaces an earlier one on the same volume only within one major and one Alpine line. A line keeps its C library and ICU build, so indexes sort the same; every release above uses ICU 76.1. A release never moves back to an earlier one. The plan review names the update. Moving to another line needs a restore into new storage, which rebuilds every index.
-- **Rebuilt indexes:** some releases say to rebuild indexes after updating, because their fix does not repair entries already written. The agent records, per volume, the release whose indexes the data holds. After a deployment moves the database to a later release, it rebuilds those indexes with `REINDEX INDEX CONCURRENTLY` in every database, so the database keeps serving. The advice follows PostgreSQL's releases, not the pins, so skipping a release still rebuilds what it named. If rebuilding fails, the deployment ends as needing attention and the next one retries. Advice for indexes only suspected of damage, such as GIN after a VACUUM race, is left to the owner.
+- **Rebuilt indexes:** some releases say to rebuild indexes after updating, because their fix does not repair entries already written. The agent records, per volume, the release whose indexes the data holds: the release that created new storage or filled a restore target, or the one an applied plan ran on it. After a deployment moves the database to a later release and it is healthy, a `postgres-reindex` step rebuilds those indexes with `REINDEX INDEX CONCURRENTLY` in every database, so the database keeps serving. The advice follows PostgreSQL's releases, not the pins, so skipping a release still rebuilds what it named. Storage with no record, such as a restore target an earlier agent filled, is assumed to hold the oldest release's indexes. The step:
+  - gives up a lock wait after 10 seconds and a single rebuild after 30 minutes, because a concurrent rebuild waits for every older transaction;
+  - first drops the invalid `_ccnew` and `_ccold` indexes an interrupted rebuild leaves, and leaves other invalid indexes and other sessions' temporary tables alone;
+  - names, rather than rebuilds, an index that backs an exclusion constraint, which cannot be rebuilt while writes continue: run `REINDEX INDEX` on it when writes can pause;
+  - never fails or undoes the deployment. If it does not finish, the operation's note says so, the record keeps the earlier release, and the next deployment, or this one resumed after an agent restart, tries again.
+
+  Advice for indexes only suspected of damage, such as GIN after a VACUUM race, is left to the owner.
 
 | Release | Indexes rebuilt after updating to it |
 | --- | --- |
-| 17.11, 18.6 | `btree_gist` GiST indexes on `float4` and `float8` (and in 18, `bit` and `varbit`); btree indexes on `ltree` |
-| 17.12, 18.7 | btree indexes on unbounded `bpchar` (not `CHAR(n)`); `pg_trgm` GiST indexes using `gist_trgm_ops` |
+| 17.11, 18.6 | `btree_gist` GiST indexes on `float4` and `float8` (and in 18, `bit` and `varbit`); btree indexes on `ltree`, including domains and arrays of it |
+| 17.12, 18.7 | btree indexes on unbounded `bpchar` (not `CHAR(n)`), including domains and arrays of it; `pg_trgm` GiST indexes using `gist_trgm_ops` |
 
 ### Adding a release
 

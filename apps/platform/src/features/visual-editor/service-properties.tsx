@@ -486,9 +486,9 @@ function PostgresVersion({
       {next && (
         <>
           <p>
-            PostgreSQL {running.name} is retired. Update to {next.name} in
-            place: the database restarts on its existing data, and the plan
-            review lists any follow-up maintenance.
+            PostgreSQL {running.name} is retired. Update to {next.name}: a
+            deployed database restarts on its existing data, and the plan review
+            lists any follow-up maintenance.
           </p>
           <Button
             type="button"

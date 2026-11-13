@@ -50,7 +50,7 @@ func TestPostgresReleasesAndRetiredReleaseDrafts(t *testing.T) {
 		return domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: mount}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
 	}
 	refused := string(b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec(retired.Image, retired.Mount)}, 400, nil))
-	if !strings.Contains(refused, "applications.postgres.retired") {
+	if !strings.Contains(refused, "applications.postgres.retired") || !strings.Contains(refused, "is retired, so Database cannot start on it") {
 		t.Fatalf("a new database started on a retired release: %s", refused)
 	}
 	var draft api.Revision

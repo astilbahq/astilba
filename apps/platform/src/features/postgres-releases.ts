@@ -15,6 +15,8 @@ export function usePostgresReleases(workspaceId: string) {
         }),
       ),
     staleTime: Number.POSITIVE_INFINITY,
+    // The list rarely fails, but without it no database can be added; try again before saying so.
+    retry: 2,
   });
 }
 

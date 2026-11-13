@@ -71,7 +71,8 @@ func ValidateNewDraft(next, applied Specification) error {
 		// A database may stay on a retired release until it moves, but none starts on one.
 		if a.Postgres != nil && a.Source.Image != nil && running[a.ID] != *a.Source.Image {
 			if r, ok := PostgresReleaseOf(*a.Source.Image); ok && r.Retired() {
-				return Invalid("applications.postgres.retired")
+				current, _ := CurrentPostgres(r.Major())
+				return &Error{Code: "invalid_input", Message: "PostgreSQL " + r.Name() + " is retired, so " + a.Name + " cannot start on it. Choose PostgreSQL " + current.Name() + " for it.", Fields: []string{"applications.postgres.retired"}}
 			}
 		}
 	}

@@ -179,3 +179,21 @@ func TestPreviewDatabaseStartsOnTheCurrentRelease(t *testing.T) {
 		}
 	}
 }
+
+// A pin names one digest. The same tag rebuilt upstream is another image, which has not cleared the
+// release-age cooldown, so nothing accepts it as a release until it is pinned on purpose.
+func TestRebuiltTagIsNotARelease(t *testing.T) {
+	tag, _, _ := strings.Cut(PostgresImage, "@")
+	rebuilt := tag + "@sha256:" + strings.Repeat("0", 64)
+	if _, ok := PostgresReleaseOf(rebuilt); ok {
+		t.Fatal("a rebuilt tag was accepted as the pinned release")
+	}
+	database, volume := uuid.New(), uuid.New()
+	spec := Specification{Version: 1, Variables: []Variable{}, Volumes: []Volume{{ID: volume, Name: "Data"}}, Applications: []Application{{ID: database, Name: "Database", Kind: "postgres", Source: ApplicationSource{Kind: "image", Image: &rebuilt}, Postgres: &Postgres{Database: "app", Username: "app", PasswordSecretVersionID: uuid.New()}, Mounts: []VolumeMount{{VolumeID: volume, Target: PostgresMount(PostgresImage)}}}}}
+	if ValidateVisual(spec) == nil {
+		t.Fatal("a managed database on a rebuilt tag was accepted")
+	}
+	if FreshPostgresImage(rebuilt) != rebuilt {
+		t.Fatal("an unpinned image was moved to a release instead of refused")
+	}
+}

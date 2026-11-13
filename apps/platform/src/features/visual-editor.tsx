@@ -545,7 +545,8 @@ export function VisualEditor({
         <AddServiceForm
           spec={spec}
           secrets={secrets.data ?? []}
-          postgresReleases={postgresReleases.data ?? []}
+          postgresReleases={postgresReleases.data}
+          postgresReleasesError={postgresReleases.error}
           action={action}
           stage={stage}
           onSelect={choose}

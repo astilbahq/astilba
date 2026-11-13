@@ -5,7 +5,7 @@ import { Input } from "../../components/input";
 import { Label } from "../../components/label";
 import { Select } from "../../components/select";
 import * as s from "../../styles";
-import { Field, Form, text, type useAction } from "../../ui";
+import { ErrorNotice, Field, Form, text, type useAction } from "../../ui";
 import { currentReleases, type PostgresRelease } from "../postgres-releases";
 
 type Spec = Schema["Specification"];
@@ -33,18 +33,20 @@ export function AddServiceForm({
   spec,
   secrets,
   postgresReleases,
+  postgresReleasesError,
   action,
   stage,
   onSelect,
 }: {
   spec: Spec;
   secrets: Schema["SecretVersion"][];
-  postgresReleases: PostgresRelease[];
+  postgresReleases: PostgresRelease[] | undefined;
+  postgresReleasesError: Error | null;
   action: ReturnType<typeof useAction>;
   stage: (spec: Spec) => void;
   onSelect: (id: string) => void;
 }) {
-  const offered = currentReleases(postgresReleases);
+  const offered = currentReleases(postgresReleases ?? []);
   return (
     <details className={s.workspaceUtility}>
       <summary>Add a service</summary>
@@ -141,7 +143,8 @@ export function AddServiceForm({
             ))}
           </Select>
         </Label>
-        {offered.length === 0 && (
+        <ErrorNotice error={postgresReleasesError} />
+        {!postgresReleases && !postgresReleasesError && (
           <small role="status">Loading PostgreSQL versions…</small>
         )}
 

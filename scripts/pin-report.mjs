@@ -209,6 +209,11 @@ export function assemble({ images, tools }) {
         `image-moved|${pin.image}|${pin.digest}|${pin.moved}`,
         `${name} was rebuilt upstream: the tag now points to ${short(pin.moved)}, pinned at ${short(pin.digest)} (${where(pin)})`,
       );
+    if (pin.offTrack)
+      info.push({
+        section: sections.images,
+        text: `${name} has a newer release off its track: ${pin.offTrack}. If its track has ended, the pin needs a new one (${where(pin)})`,
+      });
     if (pin.newer)
       problem(
         sections.images,
@@ -360,7 +365,13 @@ async function checkImage(client, scanner, pin, directory) {
   });
   await step("listing tags", async () => {
     offTrack(pin.tag, pin.track);
-    result.newer = newestInLine(pin.tag, await client.tags(pin), pin.track);
+    const tags = await client.tags(pin);
+    result.newer = newestInLine(pin.tag, tags, pin.track);
+    // A track can run dry, as an Alpine line does when upstream stops building it.
+    if (pin.track) {
+      const beyond = newestInLine(pin.tag, tags);
+      if (beyond && beyond !== result.newer) result.offTrack = beyond;
+    }
   });
   for (const target of targets) {
     const scan = await step(`scanning ${target.platform}`, () =>

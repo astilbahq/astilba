@@ -412,7 +412,9 @@ narrower track than its line: `.github/pinned-releases.json` names such an image
 with a pattern every release on its track matches and the reason, and only those releases
 count. nginx follows its stable releases, whose minor version is even, so a mainline
 release such as 1.31.8 is not an update to 1.30.6. A pin off its own track is reported as
-a check that failed, and `make check-ci` fails if a track names nothing pinned. Its
+a check that failed, and `make check-ci` fails if a track names nothing pinned. A newer
+release in the line but off the track is listed in the run's summary, so a track that has
+run dry, such as an Alpine line upstream stopped building, is noticed. Its
 `retired` list names image pins kept on purpose after a newer release replaced them, keyed
 `image@sha256:digest` with the reason, such as a PostgreSQL release that existing databases and
 backups still name ([PostgreSQL releases](supported-upgrades.md#postgresql-releases)). The

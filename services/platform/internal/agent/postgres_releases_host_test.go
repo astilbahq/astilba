@@ -205,4 +205,15 @@ UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'unbounded_ccnew'::reg
 	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || note != "" || steps != 2 || fmt.Sprint(files(updated, a)) != fmt.Sprint(rebuilt) {
 		t.Fatalf("a finished update rebuilt indexes again: %q, %v", note, err)
 	}
+	// Storage with no record, such as a restore target an earlier agent filled, is assumed to
+	// hold the oldest release's indexes, so its rebuild is never skipped.
+	if err = e.Journal.forgetPostgresData(volume); err != nil {
+		t.Fatal(err)
+	}
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || steps != 3 || files(updated, a)["unbounded"] == rebuilt["unbounded"] {
+		t.Fatalf("storage without a record skipped its rebuild: %q, %v", note, err)
+	}
+	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
+		t.Fatalf("the rebuilt storage records %+v", record)
+	}
 }
