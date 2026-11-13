@@ -24,7 +24,7 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 			if a.ID != p.ResourceID || a.Postgres == nil {
 				continue
 			}
-			if a.Source.Image == nil || r.Manifest.Image != *a.Source.Image || len(a.Mounts) != 1 || a.Mounts[0].Target != domain.PostgresMount(r.Manifest.Image) {
+			if !OpensRestoredPostgres(a, *r.Manifest) {
 				return uuid.Nil, errors.New("the restored PostgreSQL image and physical layout differ from the frozen target")
 			}
 			old, found = a.Mounts[0].VolumeID, true
@@ -42,4 +42,11 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 		}
 	}
 	return old, nil
+}
+
+// OpensRestoredPostgres reports whether a PostgreSQL application runs the image a logical restore
+// initialised its target with, mounted where that image keeps its data. A data directory one major
+// initialised cannot be opened by another.
+func OpensRestoredPostgres(a domain.Application, m Manifest) bool {
+	return a.Postgres != nil && a.Source.Image != nil && m.Image == *a.Source.Image && len(a.Mounts) == 1 && a.Mounts[0].Target == domain.PostgresMount(m.Image)
 }

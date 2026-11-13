@@ -116,7 +116,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
   AND r.configuration->>'action'='import' AND r.configuration->>'commit'<>$4 AND o.state NOT IN ('succeeded','failed','cancelled'))
  FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
  WHERE g.workspace_id=$1 AND g.connection_id=$2 AND g.status<>'approval_required' AND g.configuration->>'branch'=$3
-  AND policy_approver_holds(g.workspace_id,g.policy_actor,g.policy_auth_version,true)
+  AND policy_approver_holds(g.workspace_id,g.policy_actor,g.policy_auth_version,true) AND e.state='active'
  ORDER BY g.pending_commit=$4,g.environment_id`, a.Workspace, a.Connection, a.Branch, head)
 	if err != nil {
 		return err
@@ -271,7 +271,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	rows, err = tx.Query(ctx, `SELECT b.environment_id,b.application_id,b.configuration,e.project_id,e.draft_revision_id,b.automatic_requested_commit
  FROM build_targets b JOIN environments e ON e.workspace_id=b.workspace_id AND e.id=b.environment_id
  WHERE b.workspace_id=$1 AND b.connection_id=$2 AND b.configuration->>'branch'=$3 AND b.configuration->>'autoBuild'='true'
-  AND policy_approver_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,COALESCE((b.configuration->>'autoDeploy')::boolean,false))`, a.Workspace, a.Connection, a.Branch)
+  AND policy_approver_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,COALESCE((b.configuration->>'autoDeploy')::boolean,false)) AND e.state='active'`, a.Workspace, a.Connection, a.Branch)
 	if err != nil {
 		return err
 	}
