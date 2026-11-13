@@ -177,7 +177,7 @@ func TestRecoveryRegistersTheBaseItTakesOver(t *testing.T) {
 	if id != r.descriptor.BaseID || environment != r.env || primary != r.a.ServerId || closed != nil {
 		t.Fatalf("the taken-over base was registered as %s for %s on %s, closed %v", id, environment, primary, closed)
 	}
-	compressed, err := r.f.st.Keys.Open(r.envelope, fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", r.ws, r.root.Id, r.descriptor.CheckpointID, 0, r.root.PlanHash))
+	compressed, err := keysOf(r.f.st).Open(r.envelope, fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", r.ws, r.root.Id, r.descriptor.CheckpointID, 0, r.root.PlanHash))
 	if err != nil {
 		t.Fatal(err)
 	}
