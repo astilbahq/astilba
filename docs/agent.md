@@ -59,11 +59,11 @@ Releases are built by `.github/workflows/agent-release.yml`, never on a workstat
    ```sh
    scripts/agent-release-sign.sh agent-v0.3.0 /secure/release.pem ./releases
    ```
-   The script stops at the first check that fails, and signs nothing unless all of them pass. It:
+   The script stops at the first check that fails, and adds nothing to the catalog unless both architectures were signed. It:
    - fetches the tag as it is on GitHub, and checks that its commit is on `main`;
-   - checks that each manifest names that commit, the tag's version and its own architecture, and prints each manifest for review;
+   - checks that each manifest names that commit, the tag's version and its own architecture, prints each manifest, and asks before it uses the key;
    - verifies, with `gh attestation verify`, that the release workflow built each binary and manifest for this tag at this commit. An attestation proves which workflow file at which commit built a file, so the commit check is what ties the workflow's own checks to reviewed code;
-   - builds the signing tool from that commit in a separate worktree, never from an artifact under review, which would then run with the key readable;
+   - builds the signing tool from that commit in a separate worktree, with the release workflow's Go settings, never from an artifact under review, which would then run with the key readable;
    - signs. `release-sign` refuses an artifact whose size or digest differs from its manifest, or whose Go build information names another architecture, records no Git checkout, or names another commit or a modified checkout. It also refuses unless it was itself built from the release's commit, unmodified, and the manifest's minimum version is the one that commit embeds.
 5. Publish the catalog with the matching corresponding source and licence notices.
 

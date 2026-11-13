@@ -193,10 +193,12 @@ func checkBuild(path string, r api.AgentRelease, requireCheckout bool) error {
 func checkSigner(r api.AgentRelease) error {
 	info, ok := debug.ReadBuildInfo()
 	settings := map[string]string{}
-	for _, s := range info.Settings {
-		settings[s.Key] = s.Value
+	if ok {
+		for _, s := range info.Settings {
+			settings[s.Key] = s.Value
+		}
 	}
-	if !ok || settings["vcs.revision"] != r.Commit || settings["vcs.modified"] != "false" {
+	if settings["vcs.revision"] != r.Commit || settings["vcs.modified"] != "false" {
 		return fmt.Errorf("release-sign must be built from commit %s, unmodified; scripts/agent-release-sign.sh builds it so", r.Commit)
 	}
 	if minimumVersion != "" || strings.TrimSpace(sourceMinimumVersion) != r.MinimumVersion {

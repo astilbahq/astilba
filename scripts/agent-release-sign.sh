@@ -3,8 +3,11 @@
 # the release procedure in docs/agent.md. Run it from the root of a checkout of main, after
 # downloading the run's artifacts into amd64/ and arm64/:
 #   scripts/agent-release-sign.sh agent-v0.3.0 /secure/release.pem ./releases
-# It stops at the first check that fails, and signs nothing unless every check passed.
+# It stops at the first check that fails, asks before it uses the key, and adds nothing to the
+# catalog unless both architectures were signed.
 set -euo pipefail
+# cd must not look paths up anywhere else.
+unset CDPATH
 (($# == 3)) || { echo 'Usage: scripts/agent-release-sign.sh TAG PRIVATE_KEY CATALOG_DIRECTORY' >&2; exit 2; }
 tag=$1 key=$2 catalog=$3
 repository=astilbahq/astilba
@@ -38,15 +41,24 @@ for arch in amd64 arm64; do
   jq '{version, minimumVersion, commit, arch, size, sha256}' "$manifest"
 done
 
+read -r -p "Sign $tag ($commit) for amd64 and arm64 with $key? [y/N] " answer
+[[ "$answer" == y || "$answer" == Y ]] || refuse "not confirmed."
+
 # The signing tool is built from the release's own commit, in a separate worktree, never from an
-# artifact under review. It checks that it was built from the manifest's commit and that the
-# manifest's minimum version is the one that commit embeds.
+# artifact under review, with the same Go settings as the release workflow rather than the caller's.
+# It checks that it was built from the manifest's commit and that the manifest's minimum version is
+# the one that commit embeds.
 tree=$(mktemp -d)
-trap 'git worktree remove --force "$tree" >/dev/null 2>&1 || rm -rf "$tree"' EXIT
+staged=$(mktemp -d)
+trap 'git worktree remove --force "$tree" >/dev/null 2>&1 || rm -rf "$tree"; rm -rf "$staged"' EXIT
 git worktree add --quiet --detach "$tree" "$commit"
-(cd "$tree/services/platform" && CGO_ENABLED=0 go build -trimpath -buildvcs=true -o "$tree/astilba-agent" ./cmd/agent)
+(cd "$tree/services/platform" && env -u GOEXPERIMENT GOFLAGS=-mod=readonly GOWORK=off CGO_ENABLED=0 go build -trimpath -buildvcs=true -o "$tree/astilba-agent" ./cmd/agent)
 for arch in amd64 arm64; do
   "$tree/astilba-agent" release-sign --key "$key" --manifest "$PWD/$arch/astilba-agent-linux-$arch.json" \
-    --artifact "$PWD/$arch/astilba-agent-linux-$arch" --out "$catalog" >/dev/null
-  echo "Signed $tag for $arch into $catalog."
+    --artifact "$PWD/$arch/astilba-agent-linux-$arch" --out "$staged" >/dev/null
 done
+for file in "$staged"/*; do
+  [[ ! -e "$catalog/$(basename "$file")" ]] || refuse "$catalog already holds $(basename "$file")."
+done
+mv "$staged"/* "$catalog"/
+echo "Signed $tag for amd64 and arm64 into $catalog."
