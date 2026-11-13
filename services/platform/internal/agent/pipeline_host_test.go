@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -454,6 +455,69 @@ func TestNativePipeline(t *testing.T) {
 	if exhausted.Report.State != "failed" {
 		t.Fatal("unbounded build storage", exhausted.Report.State)
 	}
+	// A build whose image unpacks to more than a load may write is refused before Docker writes
+	// it. A sparse file costs the builder nothing and its layer is a few MiB of gzip, but Docker
+	// would write it in full.
+	loadRefused := func(sparse, note string) {
+		t.Helper()
+		if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN truncate -s "+sparse+" /sparse\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		git("-C", work, "add", ".")
+		git("-C", work, "commit", "-m", "sparse "+sparse)
+		git("-C", work, "push", repo, "main")
+		build.Commit = git("-C", work, "rev-parse", "HEAD")
+		before, _, ok := imageStorage(ctx, docker)
+		if !ok {
+			t.Fatal("cannot observe Docker storage")
+		}
+		var lowest atomic.Int64
+		lowest.Store(before)
+		stopWatching, watched := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(watched)
+			for {
+				select {
+				case <-stopWatching:
+					return
+				case <-time.After(50 * time.Millisecond):
+				}
+				if free, _, ok := imageStorage(ctx, docker); ok && free < lowest.Load() {
+					lowest.Store(free)
+				}
+			}
+		}()
+		refused := run(build)
+		close(stopWatching)
+		<-watched
+		if refused.Report.State != "failed" || !strings.Contains(refused.Report.Note, note) {
+			t.Fatalf("image of a %s sparse file: %s %q", sparse, refused.Report.State, refused.Report.Note)
+		}
+		if used := before - lowest.Load(); used > 256<<20 {
+			t.Fatalf("refusing an image of a %s sparse file took %d MiB of Docker storage", sparse, used>>20)
+		}
+		if current, err := docker.ImageInspect(ctx, result.Image); err != nil || current.ID != result.Digest {
+			t.Fatal("refused image changed previous artifact", err)
+		}
+	}
+	// Beyond the default per-load limit. A host with under 13 GiB free refuses it for its storage.
+	loadRefused("9G", "The built image was not loaded: unpack")
+	// Within the fixed limit, but it would leave less than the reserve free.
+	func() {
+		info, err := docker.Info(ctx, client.InfoOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fill := filepath.Join(info.Info.DockerRootDir, "astilba-test-fill-"+uuid.NewString())
+		defer os.Remove(fill)
+		free, _, ok := freeSpace(info.Info.DockerRootDir)
+		if size := free - DefaultImageLoadReserveBytes - 1<<30; ok && size > 0 {
+			if out, err := exec.Command("fallocate", "-l", strconv.FormatInt(size, 10), fill).CombinedOutput(); err != nil {
+				t.Fatal(err, string(out))
+			}
+		}
+		loadRefused("2G", "Free space on the server")
+	}()
 	if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN sleep 30\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,7 @@ import { Input } from "./components/input";
 import { Label } from "./components/label";
 import { Select } from "./components/select";
 import { CrossHostRecovery } from "./features/cross-host-recovery";
+import { SecretAccess } from "./features/secret-access/secret-access";
 import { SessionHistory } from "./features/troubleshooting/session-history";
 import { useAuditActionText } from "./features/troubleshooting/session-text";
 import { WorkspaceSubscription } from "./hosting";
@@ -271,6 +272,7 @@ export function Members() {
             </div>
           </section>
           <SessionHistory workspaceId={id} />
+          <SecretAccess workspaceId={id} />
         </>
       )}
     </div>
