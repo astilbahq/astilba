@@ -118,81 +118,86 @@ func rawNULField(doc any, path string) (string, bool) {
 
 // ReplaceNUL replaces U+0000 with a space in every string v points to that the JSON encoding
 // reads, including map keys and the escapes in raw JSON values, so that the length of what a
-// host reported does not change. It returns the field of a map in which a replaced key would
-// collide with another, which it leaves unchanged and the caller must refuse.
+// host reported does not change. It reports the field of a map in which a replaced key would
+// equal another, whose keys it leaves as they are, and then the caller must refuse v.
 func ReplaceNUL(v any) (string, bool) {
-	field, ok := replaceNUL(reflect.ValueOf(v), "")
-	if ok && field == "" {
+	_, field, collides := replaceNUL(reflect.ValueOf(v), "")
+	if collides && field == "" {
 		field = "request"
 	}
-	return field, ok
+	return field, collides
 }
 
-func replaceNUL(v reflect.Value, path string) (string, bool) {
-	if _, found := nulField(v, path); !found {
-		return "", false
-	}
+// replaceNUL is ReplaceNUL for a settable v, and also reports whether it changed v.
+func replaceNUL(v reflect.Value, path string) (changed bool, field string, collides bool) {
 	switch v.Kind() {
 	case reflect.Pointer:
-		return replaceNUL(v.Elem(), path)
+		if !v.IsNil() {
+			return replaceNUL(v.Elem(), path)
+		}
 	case reflect.Interface:
-		// What an interface holds cannot be changed in place, so it is replaced by a copy.
+		if v.IsNil() {
+			break
+		}
+		// What an interface holds cannot be changed in place, so a copy is changed and stored.
 		c := reflect.New(v.Elem().Type()).Elem()
 		c.Set(v.Elem())
-		if field, collides := replaceNUL(c, path); collides {
-			return field, true
+		if changed, field, collides = replaceNUL(c, path); changed && !collides {
+			v.Set(c)
 		}
-		v.Set(c)
 	case reflect.String:
-		v.SetString(strings.ReplaceAll(v.String(), "\x00", " "))
+		if strings.ContainsRune(v.String(), 0) {
+			v.SetString(strings.ReplaceAll(v.String(), "\x00", " "))
+			changed = true
+		}
 	case reflect.Slice, reflect.Array:
-		if v.Type() == rawJSON {
-			ReplaceEscapedNUL(v.Bytes())
-			return "", false
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			if v.Type() == rawJSON {
+				changed = ReplaceEscapedNUL(v.Bytes())
+			}
+			break
 		}
 		for i := range v.Len() {
-			if field, collides := replaceNUL(v.Index(i), path); collides {
-				return field, true
+			c, field, collides := replaceNUL(v.Index(i), path)
+			if collides {
+				return false, field, true
 			}
+			changed = changed || c
 		}
 	case reflect.Map:
 		type entry struct{ key, newKey, value reflect.Value }
-		var changed []entry
+		var replaced []entry
 		entries := v.MapRange()
 		for entries.Next() {
-			key, value := entries.Key(), entries.Value()
-			if _, found := nulField(key, path); !found {
-				if _, found = nulField(value, path); !found {
-					continue
-				}
+			e := entry{entries.Key(), reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()}
+			e.newKey.Set(e.key)
+			e.value.Set(entries.Value())
+			keyChanged, _, _ := replaceNUL(e.newKey, path)
+			valueChanged, field, collides := replaceNUL(e.value, path)
+			if collides {
+				return false, field, true
 			}
-			e := entry{key, reflect.New(key.Type()).Elem(), reflect.New(value.Type()).Elem()}
-			e.newKey.Set(key)
-			e.value.Set(value)
-			if field, collides := replaceNUL(e.newKey, path); collides {
-				return field, true
+			if keyChanged || valueChanged {
+				replaced = append(replaced, e)
 			}
-			if field, collides := replaceNUL(e.value, path); collides {
-				return field, true
-			}
-			changed = append(changed, e)
 		}
 		renamed := map[any]bool{}
-		for _, e := range changed {
+		for _, e := range replaced {
 			if e.newKey.Equal(e.key) {
 				continue
 			}
 			if v.MapIndex(e.newKey).IsValid() || renamed[e.newKey.Interface()] {
-				return path, true
+				return false, path, true
 			}
 			renamed[e.newKey.Interface()] = true
 		}
-		for _, e := range changed {
+		for _, e := range replaced {
 			v.SetMapIndex(e.key, reflect.Value{})
 		}
-		for _, e := range changed {
+		for _, e := range replaced {
 			v.SetMapIndex(e.newKey, e.value)
 		}
+		changed = len(replaced) > 0
 	case reflect.Struct:
 		t := v.Type()
 		for i := range t.NumField() {
@@ -205,12 +210,14 @@ func replaceNUL(v reflect.Value, path string) (string, bool) {
 				// decoded, but reflection reads them only. They belong to v, which is settable.
 				value = reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem()
 			}
-			if field, collides := replaceNUL(value, member(path, t.Field(i))); collides {
-				return field, true
+			c, field, collides := replaceNUL(value, member(path, t.Field(i)))
+			if collides {
+				return false, field, true
 			}
+			changed = changed || c
 		}
 	}
-	return "", false
+	return changed, "", false
 }
 
 // member is the path of a struct field below path: its JSON member, or its parent's for an
@@ -242,9 +249,10 @@ func EscapedNUL(raw []byte) bool {
 	return escapedNUL(raw, false)
 }
 
-// ReplaceEscapedNUL rewrites each \u0000 in raw, a valid JSON value, as  , a space, in place.
-func ReplaceEscapedNUL(raw []byte) {
-	escapedNUL(raw, true)
+// ReplaceEscapedNUL rewrites each \u0000 in raw, a valid JSON value, as \u0020, a space, in place,
+// and reports whether it found one.
+func ReplaceEscapedNUL(raw []byte) bool {
+	return escapedNUL(raw, true)
 }
 
 func escapedNUL(raw []byte, replace bool) bool {

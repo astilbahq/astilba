@@ -34,6 +34,16 @@ func (s *Server) swap(w http.ResponseWriter, r *http.Request, other io.ReadClose
 	r.Body = http.MaxBytesReader(w, io.NopCloser(r.Body), 1024) // want `a request body read outside decode` `a request body read outside decode`
 }
 
+func (s *Server) form(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()              // want `a request body read outside decode`
+	_ = r.FormValue("name")        // want `a request body read outside decode`
+	_ = r.PostFormValue("name")    // want `a request body read outside decode`
+	_, _ = r.MultipartReader()     // want `a request body read outside decode`
+	_ = r.ParseMultipartForm(1024) // want `a request body read outside decode`
+	_, _, _ = r.FormFile("file")   // want `a request body read outside decode`
+	_ = r.URL.Query().Get("name")
+}
+
 func (s *Server) responses(res *http.Response) {
 	_, _ = io.ReadAll(res.Body)
 }

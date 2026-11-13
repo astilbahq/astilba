@@ -12,7 +12,7 @@ import (
 
 var Analyzer = &analysis.Analyzer{
 	Name: "requestbody",
-	Doc:  "reports (*http.Request).Body read outside httpapi's decode and the webhooks that verify a signature over the raw bytes",
+	Doc:  "reports (*http.Request).Body, or a method that reads it as a form, used outside httpapi's decode and the webhooks that verify a signature over the raw bytes",
 	Run:  run,
 }
 
@@ -49,7 +49,7 @@ func run(pass *analysis.Pass) (any, error) {
 					limit(pass, assign, allowed)
 				}
 				sel, ok := n.(*ast.SelectorExpr)
-				if ok && !allowed[sel] && requestBody(pass, sel) {
+				if ok && !allowed[sel] && (requestBody(pass, sel) || formReader(pass, sel)) {
 					pass.Reportf(sel.Pos(), "a request body read outside decode skips its checks for unknown members and NUL, which PostgreSQL cannot store; read it with decode[T]")
 				}
 				return true
@@ -92,6 +92,26 @@ func requestBody(pass *analysis.Pass, sel *ast.SelectorExpr) bool {
 		t = pointer.Elem()
 	}
 	named, ok := t.(*types.Named)
+	return ok && named.Obj().Name() == "Request"
+}
+
+// formReaders are the methods of *http.Request that read its body as a form.
+var formReaders = map[string]bool{"ParseForm": true, "ParseMultipartForm": true, "FormValue": true, "PostFormValue": true, "FormFile": true, "MultipartReader": true}
+
+func formReader(pass *analysis.Pass, sel *ast.SelectorExpr) bool {
+	method, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
+	if !ok || !formReaders[method.Name()] || method.Pkg() == nil || method.Pkg().Path() != "net/http" {
+		return false
+	}
+	recv := method.Signature().Recv()
+	if recv == nil {
+		return false
+	}
+	pointer, ok := recv.Type().(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := pointer.Elem().(*types.Named)
 	return ok && named.Obj().Name() == "Request"
 }
 
