@@ -739,15 +739,15 @@ it uses a mirror instead of Canonical, and fails when none answers.
 
 This step is CI only. The production bootstrap leaves a host's sources alone and falls back
 to the same independent mirrors, then Canonical's archive, only when it can't download its
-Ubuntu packages from them; see [server onboarding](server-onboarding.md). Its fallback relies on
-apt's own `Valid-Until-Max` for freshness rather than this step's check.
+Ubuntu packages from them or their Ubuntu indexes aren't current; see [server onboarding](server-onboarding.md). It checks the age of
+the Ubuntu indexes it uses itself, for the host's sources and fallbacks alike.
 
 `TestBootstrapOnDisposableHost` covers each path the bootstrap's Ubuntu packages can take:
 
 | Lanes | What the fresh installation does |
 | --- | --- |
 | `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, and must install nftables from a fallback archive. |
-| `recovery` | Removes nftables and must install it from the runner's own sources. |
+| `recovery` | Removes nftables and must install it from the runner's own sources, while the test holds dpkg's lock for the first 90 seconds, as a fresh VM's unattended-upgrades does. |
 | `upgrade` | Leaves the runner as it is, which needs no Ubuntu package. |
 
 A runner already has every other Ubuntu package the bootstrap installs. If this step already moved the runner to a mirror because Canonical's archive is down, the blocked lanes install from the runner's sources instead, with a warning annotation, because blocking that mirror too would leave too few to fall back to. The `recovery` lane warns in the same way if it had to fall back.

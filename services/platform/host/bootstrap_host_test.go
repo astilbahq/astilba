@@ -208,9 +208,15 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 			t.Fatal("the fallback changed this host's package sources")
 		}
 	case "host":
+		// A fresh VM's unattended-upgrades often holds dpkg's lock for its first minutes. The
+		// bootstrap must wait for it rather than fail. 90 seconds outlasts its downloads before apt.
+		holdDpkgLock(t, 90*time.Second)
 		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
 		if e != nil {
-			t.Fatalf("fresh production bootstrap: %s %v", out, e)
+			t.Fatalf("fresh production bootstrap while dpkg's lock was held: %s %v", out, e)
+		}
+		if !bytes.Contains(out, []byte("Waiting for cache lock")) {
+			t.Fatalf("the bootstrap did not wait for dpkg's lock: %s", out)
 		}
 		if !bytes.Contains(out, []byte("Refreshing this host's package sources.")) {
 			t.Fatalf("the bootstrap did not refresh this host's sources: %s", out)
@@ -344,6 +350,27 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatalf("normal-PATH backup capability omitted: %s %v", out, e)
 	}
 
+}
+
+// holdDpkgLock takes dpkg's frontend lock as apt and unattended-upgrades do, with an fcntl lock,
+// and releases it after d.
+func holdDpkgLock(t *testing.T, d time.Duration) {
+	t.Helper()
+	file, err := os.OpenFile("/var/lib/dpkg/lock-frontend", os.O_RDWR|os.O_CREATE, 0o640)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := syscall.Flock_t{Type: syscall.F_WRLCK}
+	if err = syscall.FcntlFlock(file.Fd(), syscall.F_SETLK, &lock); err != nil {
+		file.Close()
+		t.Fatal("dpkg's lock is already held: ", err)
+	}
+	released := time.AfterFunc(d, func() { file.Close() })
+	t.Cleanup(func() {
+		if released.Stop() {
+			file.Close()
+		}
+	})
 }
 
 // aptSources reads this host's apt source files.
