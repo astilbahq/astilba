@@ -6,15 +6,14 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"fmt"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -37,11 +36,35 @@ type recoveryContinuation struct {
 	UpgradeStatus   jsontext.Value    `json:"upgradeStatus,omitempty"`
 }
 
-func recoveryIdentity(d deployment.RecoveryDescriptor) string {
-	return fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", d.WorkspaceID, d.ParentID, d.CheckpointID, d.Sequence, d.RootHash)
+// sealCheckpoint seals a recovery checkpoint's envelope with the coordinator's keys, which a
+// pass asks for only when it reaches a checkpoint.
+func sealCheckpoint(keys *passKeys, d deployment.RecoveryDescriptor, raw []byte) ([]byte, error) {
+	session, err := keys.get()
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := session.Seal(secretbroker.Checkpoint(d), raw)
+	if err == nil {
+		keys.use()
+	}
+	return sealed, err
 }
 
-func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, root api.ExecutionCommand, p deployment.Plan, units []deployment.DistributedUnit) (deployment.RecoveryDescriptor, error) {
+// openCheckpoint reads an envelope back, to prove it opens, with the keys that sealed it.
+func openCheckpoint(keys *passKeys, d deployment.RecoveryDescriptor, envelope []byte) ([]byte, error) {
+	session, err := keys.get()
+	if err != nil {
+		return nil, err
+	}
+	return session.Open(secretbroker.Checkpoint(d), envelope)
+}
+
+func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UUID, root api.ExecutionCommand, p deployment.Plan, units []deployment.DistributedUnit) (deployment.RecoveryDescriptor, error) {
+	// Asked for before the capture, so a pass without keys rolls back after a few reads rather
+	// than after capturing and compressing the whole workspace.
+	if _, err := keys.get(); err != nil {
+		return deployment.RecoveryDescriptor{}, err
+	}
 	id := uuid.New()
 	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: p.ID, GroupHash: p.Hash, BaseID: id, CheckpointID: id, Participants: []uuid.UUID{}}
 	for _, unit := range units {
@@ -59,8 +82,8 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 		return d, errors.Join(errRecoverySize, err)
 	}
 	defer clear(compressed)
-	envelope, err := s.Store.Keys.Seal(compressed, recoveryIdentity(d))
-	if errors.Is(err, cryptobox.ErrTooLarge) {
+	envelope, err := sealCheckpoint(keys, d, compressed)
+	if errors.Is(err, secretbroker.ErrTooLarge) {
 		return d, errRecoverySize
 	}
 	if err != nil {
@@ -71,7 +94,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	}
 	// Admission checks the final serialized envelope, including base64 overhead,
 	// against the actual recovery reader.
-	verified, err := s.Store.Keys.Open(envelope, recoveryIdentity(d))
+	verified, err := openCheckpoint(keys, d, envelope)
 	if err != nil {
 		return d, err
 	}
@@ -106,7 +129,7 @@ func reserveRecoveryGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, par
 	return q.AdvanceEnvironmentExecutionGeneration(ctx, db.AdvanceEnvironmentExecutionGenerationParams{WorkspaceID: ws, ID: parent.EnvironmentId})
 }
 
-func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, parent api.ExecutionCommand, command coordinationCommand, phase string, ids []uuid.UUID, generation int64) error {
+func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UUID, parent api.ExecutionCommand, command coordinationCommand, phase string, ids []uuid.UUID, generation int64) error {
 	if parent.RecoveryCheckpoint == nil || phase == "checkpoint" || phase == "maintenance-checkpoint" || command.Action == "resolve" || command.Action == "observe" || len(ids) == 0 {
 		return nil
 	}
@@ -173,9 +196,9 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	d := previous
 	d.Sequence++
 	d.CheckpointID, d.PreviousHash = uuid.New(), previous.Digest
-	envelope, err := s.Store.Keys.Seal(raw, recoveryIdentity(d))
+	envelope, err := sealCheckpoint(keys, d, raw)
 	clear(raw)
-	if errors.Is(err, cryptobox.ErrTooLarge) {
+	if errors.Is(err, secretbroker.ErrTooLarge) {
 		return errRecoverySize
 	}
 	if err != nil {
@@ -184,7 +207,7 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	if len(envelope) > deployment.RecoveryEnvelopeLimit {
 		return errRecoverySize
 	}
-	opened, err := s.Store.Keys.Open(envelope, recoveryIdentity(d))
+	opened, err := openCheckpoint(keys, d, envelope)
 	clear(opened)
 	if err != nil {
 		return err

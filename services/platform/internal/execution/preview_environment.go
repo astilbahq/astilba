@@ -7,13 +7,14 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p previewPolicy, r *previewRecord) error {
+func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyKeys *passKeys, p previewPolicy, r *previewRecord) error {
 	var raw []byte
 	if err := tx.QueryRow(ctx, "SELECT specification FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", p.Workspace, p.Template, p.Revision).Scan(&raw); err != nil {
 		return err
@@ -47,7 +48,14 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p pre
 		}
 	}
 	secrets := map[uuid.UUID]uuid.UUID{}
-	for _, old := range domain.SecretReferences(template) {
+	references := domain.SecretReferences(template)
+	var keys *secretbroker.Session
+	if len(references) > 0 {
+		if keys, err = copyKeys.get(); err != nil {
+			return err
+		}
+	}
+	for _, old := range references {
 		var value string
 		if passwords[old] {
 			value, err = randtoken.New()
@@ -56,7 +64,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p pre
 			v, err = q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: p.Workspace, EnvironmentID: p.Template, ID: old})
 			if err == nil {
 				var plain []byte
-				plain, err = s.Store.Keys.Open(v.EncryptedValue, store.SecretIdentity(p.Workspace, old))
+				plain, err = keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old}, v.EncryptedValue)
 				value = string(plain)
 				clear(plain)
 			}
@@ -68,13 +76,14 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p pre
 		if err = q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: sid, Name: "Preview " + old.String()}); err != nil {
 			return err
 		}
-		cipher, err := s.Store.Keys.Seal([]byte(value), store.SecretIdentity(p.Workspace, id))
+		cipher, err := keys.Seal(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, []byte(value))
 		if err != nil {
 			return err
 		}
 		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: p.Workspace, SecretID: sid, ID: id, EncryptedValue: cipher, AuthorID: p.Actor}); err != nil {
 			return err
 		}
+		copyKeys.use()
 		secrets[old] = id
 	}
 	spec, err := domain.RemapPreview(template, ids, secrets, func(app uuid.UUID) string {
