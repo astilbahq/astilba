@@ -6,6 +6,7 @@ import { Label } from "../../components/label";
 import { Select } from "../../components/select";
 import * as s from "../../styles";
 import { Field, Form, text, type useAction } from "../../ui";
+import { currentReleases, type PostgresRelease } from "../postgres-releases";
 
 type Spec = Schema["Specification"];
 type App = Schema["ApplicationReference"];
@@ -28,24 +29,22 @@ export function VolumeNameField({ name }: { name: string }) {
   );
 }
 
-const postgresImage =
-  "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e";
-const postgres17Image =
-  "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4";
-
 export function AddServiceForm({
   spec,
   secrets,
+  postgresReleases,
   action,
   stage,
   onSelect,
 }: {
   spec: Spec;
   secrets: Schema["SecretVersion"][];
+  postgresReleases: PostgresRelease[];
   action: ReturnType<typeof useAction>;
   stage: (spec: Spec) => void;
   onSelect: (id: string) => void;
 }) {
+  const offered = currentReleases(postgresReleases);
   return (
     <details className={s.workspaceUtility}>
       <summary>Add a service</summary>
@@ -54,6 +53,10 @@ export function AddServiceForm({
         label="Add service"
         onSubmit={(d, form) => {
           const kind = text(d, "kind") as "web" | "worker" | "postgres";
+          const release = offered.find(
+            (r) => r.image === text(d, "postgresImage"),
+          );
+          if (kind === "postgres" && !release) return;
           const id = crypto.randomUUID();
           let next: Spec = {
             ...spec,
@@ -66,14 +69,12 @@ export function AddServiceForm({
             source: {
               kind: "image",
               image:
-                kind === "postgres"
-                  ? text(d, "postgresVersion") === "17"
-                    ? postgres17Image
-                    : postgresImage
+                kind === "postgres" && release
+                  ? release.image
                   : text(d, "image"),
             },
           };
-          if (kind === "postgres") {
+          if (kind === "postgres" && release) {
             const volumeId = crypto.randomUUID();
             service.postgres = {
               database: "app",
@@ -83,10 +84,7 @@ export function AddServiceForm({
             service.mounts = [
               {
                 volumeId,
-                target:
-                  text(d, "postgresVersion") === "17"
-                    ? "/var/lib/postgresql/data"
-                    : "/var/lib/postgresql",
+                target: release.mount,
                 readOnly: false,
               },
             ];
@@ -131,11 +129,21 @@ export function AddServiceForm({
         </Label>
         <Label>
           PostgreSQL version for a new database
-          <Select name="postgresVersion" defaultValue="18">
-            <option value="18">18.4</option>
-            <option value="17">17.10</option>
+          <Select
+            name="postgresImage"
+            defaultValue={offered[0]?.image}
+            key={offered[0]?.image}
+          >
+            {offered.map((release) => (
+              <option key={release.image} value={release.image}>
+                {release.name}
+              </option>
+            ))}
           </Select>
         </Label>
+        {offered.length === 0 && (
+          <small role="status">Loading PostgreSQL versions…</small>
+        )}
 
         <small>
           Create the password in Secrets below before adding PostgreSQL. Its

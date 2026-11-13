@@ -29,6 +29,7 @@ import * as s from "../styles";
 import { ThemeContext } from "../theme";
 import { ErrorNotice, Form, text, useAction } from "../ui";
 import { GeneratedDomain } from "./generated-domain";
+import { usePostgresReleases } from "./postgres-releases";
 import { ServiceCatalog } from "./service-catalog";
 import { ServiceConnections } from "./service-outputs";
 import * as v from "./visual-editor.styles";
@@ -117,6 +118,7 @@ export function VisualEditor({
   const action = useAction();
   const queries = useQueryClient();
   const layout = useQuery(layoutOptions(path));
+  const postgresReleases = usePostgresReleases(path.workspaceId);
   const secrets = useQuery({
     queryKey: ["secrets", path],
     queryFn: () =>
@@ -497,6 +499,7 @@ export function VisualEditor({
             }
             update={update}
             stage={stage}
+            postgresReleases={postgresReleases.data ?? []}
             onRemove={() => {
               stage({
                 ...spec,
@@ -542,6 +545,7 @@ export function VisualEditor({
         <AddServiceForm
           spec={spec}
           secrets={secrets.data ?? []}
+          postgresReleases={postgresReleases.data ?? []}
           action={action}
           stage={stage}
           onSelect={choose}
