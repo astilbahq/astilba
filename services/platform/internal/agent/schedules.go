@@ -204,7 +204,7 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		if failed, err := e.interruptedRunFailed(b); err != nil {
 			return err
 		} else if failed && e.cancelled(c.Id) {
-			return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
+			return e.finish(c.Id, "cancelled", "Cancelled. The interrupted run failed or changed nothing; run history records which.")
 		} else if failed {
 			return e.finish(c.Id, "failed", "The interrupted run failed or changed nothing; run history records which. It will not be repeated automatically.")
 		}

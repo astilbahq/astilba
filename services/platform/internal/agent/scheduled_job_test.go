@@ -314,6 +314,7 @@ func TestInterruptedRunCommandSettlesByItsRun(t *testing.T) {
 		{name: "before effects", run: "running", marked: true, command: "failed", recorded: "failed"},
 		{name: "before effects cancelled", run: "running", marked: true, cancel: true, command: "cancelled", recorded: "failed"},
 		{name: "already failed", run: "failed", command: "failed", recorded: "failed"},
+		{name: "already failed cancelled", run: "failed", cancel: true, command: "cancelled", recorded: "failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
