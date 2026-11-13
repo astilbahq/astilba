@@ -6,31 +6,89 @@ The dashboard’s [guided server onboarding](server-onboarding.md) adds a review
 
 ## Prepare verified artifacts
 
-The management operator supplies a signed release catalog and a public key through a trusted channel. Pin that key independently of the download endpoint. A compromised download endpoint must not be able to substitute the key.
+The management operator supplies a signed release catalog and a public key through a trusted channel. Pin that key independently of the download endpoint. A compromised download endpoint must not be able to substitute the key. A key file holds one PEM `PUBLIC KEY` block and nothing else; the agent and management refuse any other file.
 
-Build from the reviewed source using `AGENT_VERSION=0.2.0 pnpm agent:build`. Generate a protected signing key with `go run ./cmd/agent release-keygen --key /secure/release.pem` from `services/platform`. Keep the private key outside the repository and management container. Sign each binary with:
+### What a release signs
 
-```sh
-astilba-agent release-sign --key /secure/release.pem --version 0.2.0 \
-  --arch amd64 --artifact astilba-agent-linux-amd64 --out ./releases
+A release's Ed25519 signature covers this message, one field per line, each ending in a line feed:
+
+```text
+astilba-agent-release-signature-v2
+VERSION
+PROTOCOL
+ARCH
+SIZE
+SHA256
+COMMIT
+MINIMUM_VERSION
 ```
 
-Repeat for arm64. Configure management with `ASTILBA_AGENT_RELEASES` pointing to this read-only catalog and `ASTILBA_AGENT_RELEASE_KEY` pointing to the public PEM. Startup verifies every manifest and artifact. The catalog uses the SHA-256 as the filename; the dashboard only offers catalog entries. Both management deployments use this same catalog configuration. Mount it into the container if distributing your own builds.
+- The first line separates release signatures from anything else the key might sign, and names the format.
+- `VERSION` and `MINIMUM_VERSION` are semantic versions without build metadata, such as `0.3.0` or `0.4.0-rc.1`. `MINIMUM_VERSION` is no later than `VERSION`.
+- `COMMIT` is the 40-character source commit the artifact was built from.
+- Signatures don't expire.
+
+The agent compiles its version, minimum version and commit in, and reports them with `astilba-agent describe`. The bootstrap and the agent's updater both compare that output with the signed message before they install a release.
+
+### Minimum version
+
+An agent never updates to a release older than the minimum version of the release it runs, whether the update comes from the dashboard or from `update-local`. This bounds the deliberate rollback described below. A compromised management also can't move an agent back to an older, genuinely signed release with a known flaw.
+
+The minimum version is kept in `services/platform/cmd/agent/minimum-version`. Raise it in a reviewed pull request when releases below it must not run again, for example after a security fix or a change that earlier agents can't read. The release workflow refuses a minimum version lower than the previous release's.
+
+### Release procedure
+
+Releases are built by `.github/workflows/agent-release.yml`, never on a workstation, and signed offline by the holder of the release key.
+
+1. Merge everything for the release to `main`, including any change to the minimum version.
+2. Tag the commit on `main` and push the tag:
+   ```sh
+   git tag agent-v0.3.0 <commit> && git push origin agent-v0.3.0
+   ```
+   For each architecture, the workflow:
+   - checks that the commit is on `main`, that the version is valid, and that the minimum version is no later than the version and no lower than the previous release's;
+   - builds the agent on a native runner from the tagged commit, with `-trimpath`, `CGO_ENABLED=0` and the version, minimum version and commit compiled in;
+   - checks that Go recorded that commit, unmodified, and that `describe` reports the same values;
+   - writes an unsigned manifest;
+   - attests the binary and manifest with GitHub's build provenance, which records the repository, workflow and commit.
+3. On the machine that holds the release key, download the run's `agent-release-amd64` and `agent-release-arm64` artifacts, for example with `gh run download`. For each architecture, verify that the workflow built the binary and its manifest from that tag:
+   ```sh
+   gh attestation verify astilba-agent-linux-amd64 --repo astilbahq/astilba \
+     --signer-workflow astilbahq/astilba/.github/workflows/agent-release.yml \
+     --source-ref refs/tags/agent-v0.3.0
+   gh attestation verify astilba-agent-linux-amd64.json --repo astilbahq/astilba \
+     --signer-workflow astilbahq/astilba/.github/workflows/agent-release.yml \
+     --source-ref refs/tags/agent-v0.3.0
+   ```
+4. Review the manifest's version, minimum version and commit, then sign:
+   ```sh
+   astilba-agent release-sign --key /secure/release.pem \
+     --manifest astilba-agent-linux-amd64.json \
+     --artifact astilba-agent-linux-amd64 --out ./releases
+   ```
+   `release-sign` refuses an artifact whose size or digest differs from the manifest, or whose Go build information names another architecture, another commit or a modified checkout. It writes the artifact and the signed manifest into the catalog directory.
+5. Repeat step 4 for arm64. Publish the catalog with the matching corresponding source and licence notices.
+
+Generate the protected signing key once, with `go run ./cmd/agent release-keygen --key /secure/release.pem` from `services/platform`. Keep the private key outside the repository, CI and the management container. Publish the fingerprint of `release.pem.pub` through your own trusted channel.
+
+Configure management with `ASTILBA_AGENT_RELEASES` pointing to the read-only catalog, and `ASTILBA_AGENT_RELEASE_KEY` pointing to the public PEM. Startup verifies every manifest and artifact. The catalog names each artifact by its SHA-256, and the dashboard only offers catalog entries. Both management deployments use this same catalog configuration. Mount it into the container if you distribute your own builds.
+
+### Verify a downloaded release by hand
 
 The enrollment panel links each configured agent binary and its signed JSON manifest. Download the matching pair (`/agent-artifacts/SHA256` and `/agent-artifacts/SHA256/manifest.json`). Before running any downloaded binary, verify the manifest with the independently pinned public key. These commands need `jq`, OpenSSL and standard Ubuntu tools:
 
 ```sh
-jq -r '"astilba-agent-v1\n\(.version)\n\(.protocol)\n\(.arch)\n\(.size)\n\(.sha256)"' release.json > release.message
+jq -r '"astilba-agent-release-signature-v2\n\(.version)\n\(.protocol)\n\(.arch)\n\(.size)\n\(.sha256)\n\(.commit)\n\(.minimumVersion)"' release.json > release.message
 jq -r .signature release.json | base64 -d > release.signature
 openssl pkeyutl -verify -pubin -inkey release-public.pem \
   -rawin -in release.message -sigfile release.signature
 # Check these values before selecting the artifact:
-jq '{version, protocol, arch, size, sha256}' release.json
+jq '{version, minimumVersion, commit, protocol, arch, size, sha256}' release.json
 printf '%s  %s\n' "$(jq -r .sha256 release.json)" ./astilba-agent | sha256sum -c -
 test "$(wc -c < ./astilba-agent | tr -d ' ')" = "$(jq -r .size release.json)"
 ```
 
-The signed architecture must match `uname -m` (`x86_64` → `amd64`, `aarch64` → `arm64`) and protocol must be 1. Review the version and digest. The signature covers all five fields, including size and digest. Only then make the artifact executable. Keep the matching corresponding source archive and licence notices alongside distributed artifacts.
+The signed architecture must match `uname -m` (`x86_64` → `amd64`, `aarch64` → `arm64`) and protocol must be 1. Review the version, minimum version, commit and digest. The signature covers every field, including size and digest. Only then make the artifact executable. Keep the matching corresponding source archive and licence notices alongside distributed artifacts.
 
 ## Install and enroll
 
@@ -105,7 +163,7 @@ Until a host is updated, the response to a suspected leak is to revoke it and en
 
 ### Rollback and downgrade
 
-Once an agent holds a key, it refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
+An agent refuses any release older than the minimum version of the release it runs; see [minimum version](#minimum-version). Once an agent holds a key, it also refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
 
 Upgrade every management replica before updating agents: a replica from before keys refuses the access tokens an updated agent presents.
 
@@ -143,7 +201,7 @@ sudo systemctl start astilba-agent
 
 ## Explicit updates
 
-An owner with recent authentication selects a catalog release on the Servers page. Updates are serialized with all other host mutations. The agent verifies protocol, architecture, Ed25519 signature, size, hash and the binary's compiled identity, then fsyncs and atomically replaces only its own executable. Systemd restarts it; the durable operation reports on reconnect. `/usr/local/bin/astilba-agent.previous` retains the previous binary. Workloads stay running. No automatic update policy is enabled.
+An owner with recent authentication selects a catalog release on the Servers page. Updates are serialized with all other host mutations. The agent verifies protocol, architecture, Ed25519 signature, size, hash, that the release is no older than its own minimum version, and the binary's compiled identity, including its commit and minimum version, then fsyncs and atomically replaces only its own executable. Systemd restarts it; the durable operation reports on reconnect. `/usr/local/bin/astilba-agent.previous` retains the previous binary. Workloads stay running. No automatic update policy is enabled.
 
 For a disconnected host, stop the service, inspect its operation state, download and verify the same signed artifacts, then use:
 

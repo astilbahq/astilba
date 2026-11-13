@@ -68,7 +68,8 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatal("check mode changed installed packages")
 	}
 	binary := filepath.Join(dir, "agent")
-	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version=onboarding-fixture", "-o", binary, "./cmd/agent")
+	const version, minimum, commit = "0.1.0-onboarding-fixture", "0.0.0", "0123456789abcdef0123456789abcdef01234567"
+	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version="+version+" -X main.minimumVersion="+minimum+" -X main.commit="+commit, "-o", binary, "./cmd/agent")
 	build.Dir = ".."
 	if out, e := build.CombinedOutput(); e != nil {
 		t.Fatalf("build: %s %v", out, e)
@@ -80,8 +81,14 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	der, _ := x509.MarshalPKIXPublicKey(public)
 	key := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	// The served file puts another key first, in a block OpenSSL skips. The bootstrap must check
+	// and install the key whose fingerprint it was given, and nothing that a reader taking the
+	// first block would see.
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	otherDER, _ := x509.MarshalPKIXPublicKey(other)
+	served := append(pem.EncodeToMemory(&pem.Block{Type: "OTHER KEY", Bytes: otherDER}), key...)
 	digest := sha256.Sum256(data)
-	release := api.AgentRelease{Version: "onboarding-fixture", Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Sha256: hex.EncodeToString(digest[:]), Size: int64(len(data))}
+	release := api.AgentRelease{Version: version, MinimumVersion: minimum, Commit: commit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Sha256: hex.EncodeToString(digest[:]), Size: int64(len(data))}
 	signed := func(v api.AgentRelease) api.AgentRelease {
 		v.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, agentrelease.Message(v)))
 		return v
@@ -95,7 +102,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		mu.Unlock()
 		switch {
 		case r.URL.Path == "/agent-public-key.pem":
-			_, _ = w.Write(key)
+			_, _ = w.Write(served)
 		case strings.HasSuffix(r.URL.Path, "/message"):
 			_, _ = w.Write(agentrelease.Message(v))
 		case strings.HasSuffix(r.URL.Path, "/signature"):
@@ -133,7 +140,11 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	wrongHash := release
 	wrongHash.Sha256 = strings.Repeat("b", 64)
 	wrongHash = signed(wrongHash)
-	for _, v := range []api.AgentRelease{bad, wrongArch, wrongProtocol, wrongHash} {
+	// Correctly signed, but not what the binary was built from.
+	wrongCommit := release
+	wrongCommit.Commit = strings.Repeat("f", 40)
+	wrongCommit = signed(wrongCommit)
+	for _, v := range []api.AgentRelease{bad, wrongArch, wrongProtocol, wrongHash, wrongCommit} {
 		mu.Lock()
 		current = v
 		mu.Unlock()
@@ -154,6 +165,11 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	mu.Unlock()
 	if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
 		t.Fatalf("fresh production bootstrap: %s %v", out, e)
+	}
+	if pinned, e := os.ReadFile("/etc/astilba/release-public.pem"); e != nil || !bytes.Equal(pinned, key) {
+		t.Fatalf("the bootstrap pinned %q, not the verified key alone: %v", pinned, e)
+	} else if k, e := agentrelease.PublicKey(pinned); e != nil || !k.Equal(public) {
+		t.Fatalf("the agent reads another key from the pinned file: %v", e)
 	}
 	// Cleanup is limited to paths just created by this fixture, after checking the
 	// installed binary/key and journal ownership; the runtime stays for host checks.

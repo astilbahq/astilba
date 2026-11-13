@@ -5704,11 +5704,14 @@
         - "arch"
         - "size"
         - "sha256"
+        - "commit"
+        - "minimumVersion"
         - "signature"
       "properties":
         "version":
           "type": "string"
           "maxLength": 80
+          "description": "A semantic version without build metadata."
         "protocol":
           "type": "integer"
           "enum":
@@ -5724,6 +5727,14 @@
         "sha256":
           "type": "string"
           "maxLength": 64
+        "commit":
+          "type": "string"
+          "maxLength": 40
+          "description": "The source commit the artifact was built from."
+        "minimumVersion":
+          "type": "string"
+          "maxLength": 80
+          "description": "The earliest version an agent running this release may update to. An agent refuses any older release."
         "signature":
           "type": "string"
           "maxLength": 128

@@ -16,14 +16,18 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 )
 
-func TestPublicReleaseKeyExcludesConfiguredFileRemainder(t *testing.T) {
+// Management serves only its release key, re-encoded. A configured file holding anything more,
+// such as the private key appended by mistake, is refused rather than partly served.
+func TestPublicReleaseKeyIsServedCanonically(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	der, _ := x509.MarshalPKIXPublicKey(public)
 	canonical := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 	privateDER, _ := x509.MarshalPKCS8PrivateKey(private)
-	configured := append(bytes.Clone(canonical), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})...)
-	configured = append(configured, []byte("private operator annotation")...)
-	key, e := agentrelease.PublicKey(configured)
+	withPrivate := append(bytes.Clone(canonical), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})...)
+	if _, e := agentrelease.PublicKey(withPrivate); e == nil {
+		t.Fatal("a release key file holding a private key too was accepted")
+	}
+	key, e := agentrelease.PublicKey(append(append([]byte("\n"), canonical...), "\r\n"...))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -35,6 +39,6 @@ func TestPublicReleaseKeyExcludesConfiguredFileRemainder(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", "/agent-public-key.pem", nil))
 	if response.Code != 200 || !bytes.Equal(response.Body.Bytes(), canonical) {
-		t.Fatalf("public endpoint exposed configured-file remainder: status %d", response.Code)
+		t.Fatalf("public endpoint served %q with status %d, not the key alone", response.Body.Bytes(), response.Code)
 	}
 }

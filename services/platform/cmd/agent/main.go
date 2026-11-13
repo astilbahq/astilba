@@ -3,13 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json/v2"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,7 +12,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -35,7 +28,13 @@ import (
 	"github.com/moby/moby/client"
 )
 
-var version = "development"
+// A release sets these when it is built; see the release procedure in docs/agent.md. The minimum
+// version bounds which releases this agent may update to.
+var (
+	version        = "development"
+	minimumVersion = "0.0.0"
+	commit         = ""
+)
 
 func main() {
 	if e := run(); e != nil {
@@ -45,14 +44,14 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|troubleshooting-enable|troubleshooting-disable|run|retry|resolve-run|reject-cross-host-effect|accept-unready-writers|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-sign")
+		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|troubleshooting-enable|troubleshooting-disable|run|retry|resolve-run|reject-cross-host-effect|accept-unready-writers|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-manifest|release-sign")
 	}
 	command := os.Args[1]
 	if command == "describe" {
 		// KeyAuth 1: this release authenticates with a key it holds, so an agent that holds one may install it.
-		return stablejson.Encode(os.Stdout, map[string]any{"Version": version, "Protocol": 1, "Arch": runtime.GOARCH, "KeyAuth": 1})
+		return stablejson.Encode(os.Stdout, map[string]any{"Version": version, "MinimumVersion": minimumVersion, "Commit": commit, "Protocol": 1, "Arch": runtime.GOARCH, "KeyAuth": 1})
 	}
-	if command == "release-keygen" || command == "release-sign" {
+	if command == "release-keygen" || command == "release-manifest" || command == "release-sign" {
 		return releaseCommand(command, os.Args[2:])
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -324,7 +323,7 @@ func run() error {
 			return e
 		}
 		defer f.Close()
-		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, j.HoldsKey(cfg))
+		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: minimumVersion})
 	}
 	if command == "resolve-run" {
 		policy, err := uuid.Parse(*policyID)
@@ -377,7 +376,7 @@ func run() error {
 		return agent.VerifyInstalledUpdate(r, ed25519.PublicKey(cfg.PublicKey), *executable)
 	}
 	engine.Update = func(ctx context.Context, r api.AgentRelease) error {
-		e := agent.RemoteUpdate(ctx, c, r, *executable)
+		e := agent.RemoteUpdate(ctx, c, r, *executable, minimumVersion)
 		if e == nil {
 			updated.Store(true)
 			stop()
@@ -404,83 +403,4 @@ func privateFile(path string) (*os.File, error) {
 		return nil, errors.New("file must be private and regular")
 	}
 	return f, nil
-}
-func releaseCommand(command string, args []string) error {
-	f := flag.NewFlagSet(command, flag.ContinueOnError)
-	keyPath := f.String("key", "", "private signing key PEM")
-	out := f.String("out", "", "output directory")
-	binary := f.String("artifact", "", "agent executable")
-	v := f.String("version", "", "release version")
-	arch := f.String("arch", "", "linux architecture")
-	if e := f.Parse(args); e != nil {
-		return e
-	}
-	if command == "release-keygen" {
-		pub, key, e := ed25519.GenerateKey(rand.Reader)
-		if e != nil {
-			return e
-		}
-		der, e := x509.MarshalPKCS8PrivateKey(key)
-		if e != nil {
-			return e
-		}
-		p, e := x509.MarshalPKIXPublicKey(pub)
-		if e != nil {
-			return e
-		}
-		if e = writeNew(*keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); e != nil {
-			return e
-		}
-		return writeNew(*keyPath+".pub", pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: p}), 0644)
-	}
-	k, e := privateFile(*keyPath)
-	if e != nil {
-		return e
-	}
-	defer k.Close()
-	raw, e := io.ReadAll(io.LimitReader(k, 4096))
-	if e != nil {
-		return e
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return errors.New("invalid signing key")
-	}
-	parsed, e := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if e != nil {
-		return e
-	}
-	key, ok := parsed.(ed25519.PrivateKey)
-	if !ok {
-		return errors.New("Ed25519 key required")
-	}
-	data, e := os.ReadFile(*binary)
-	if e != nil {
-		return e
-	}
-	sum := sha256.Sum256(data)
-	r := api.AgentRelease{Version: *v, Protocol: 1, Arch: api.AgentReleaseArch(*arch), Size: int64(len(data)), Sha256: hex.EncodeToString(sum[:])}
-	r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, agentrelease.Message(r)))
-	if e = agentrelease.Validate(r, key.Public().(ed25519.PublicKey)); e != nil {
-		return e
-	}
-	if e = os.MkdirAll(*out, 0755); e != nil {
-		return e
-	}
-	if e = writeNew(filepath.Join(*out, r.Sha256), data, 0755); e != nil {
-		return e
-	}
-	b, _ := stablejson.MarshalIndent(r, "", "  ")
-	return writeNew(filepath.Join(*out, r.Version+"-"+string(r.Arch)+".json"), b, 0644)
-}
-func writeNew(path string, b []byte, mode os.FileMode) error {
-	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if e != nil {
-		return e
-	}
-	defer f.Close()
-	if _, e = f.Write(b); e != nil {
-		return e
-	}
-	return f.Sync()
 }
