@@ -344,7 +344,8 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := map[bool]string{true: target.Image, false: j.source}[policy.Plan.Hash == plan.Target().Hash]; current.Config.Image != want {
+			// A deployment runs the plan's digest reference of the pinned release.
+			if want := map[bool]string{true: target.Image, false: j.source}[policy.Plan.Hash == plan.Target().Hash]; !deployment.ResolvedImage(want, current.Config.Image) {
 				t.Fatalf("the database runs %s, want %s", current.Config.Image, want)
 			}
 			value, err := e.pgQuery(ctx, current.ID, a, "SELECT value::text FROM reports.events")

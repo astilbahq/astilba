@@ -187,7 +187,7 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 		}
 		// A restored volume may be served by a later release than the one that filled it. Other
 		// maintenance changes no release; an unfinished rebuild waits for the next deployment.
-		if s.Maintenance.Kind == "restore" && command.UseTarget {
+		if command.UseTarget && s.Maintenance.Kind == "restore" {
 			rebuild, err := e.reindexPostgres(ctx, expected, func() error { return e.checkpoint(c.Id, "postgres-reindex") })
 			if err != nil {
 				return err
