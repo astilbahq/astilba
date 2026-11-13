@@ -88,6 +88,7 @@ export function devAgent({ directory, platform, run, state, saveState }) {
         releaseKey,
         "--manifest",
         manifest,
+        "--development",
         "--artifact",
         binary,
         "--out",

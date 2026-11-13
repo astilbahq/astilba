@@ -99,17 +99,37 @@ func Validate(r api.AgentRelease, key ed25519.PublicKey) error {
 	return nil
 }
 
-// Permits reports whether an agent whose own release has minimum version floor may install r.
-// An agent never goes below that floor. This bounds a deliberate rollback, and stops a
-// compromised management from serving an older, genuinely signed release.
+// Permits reports whether an agent whose own release has minimum version floor may install r. r
+// must have a minimum version at least as high: then r is never older than floor either, since a
+// release's minimum version is no later than its version, and an agent's floor only ever rises,
+// across any chain of updates. Rolling back among releases that share a floor stays possible.
+// A compromised management can't move an agent below its floor, even one step at a time.
 func Permits(floor string, r api.AgentRelease) error {
 	if !ValidVersion(floor) {
 		return errors.New("this agent has no valid minimum version, so it can't tell which releases it may install")
 	}
-	if CompareVersions(r.Version, floor) < 0 {
-		return fmt.Errorf("release %s is older than %s, the minimum version of the release this agent runs", r.Version, floor)
+	if CompareVersions(r.MinimumVersion, floor) < 0 {
+		return fmt.Errorf("release %s allows going back to %s, below %s, the minimum version of the release this agent runs", r.Version, r.MinimumVersion, floor)
 	}
 	return nil
+}
+
+// Identity is what an agent build reports about itself with describe. Its fields are in the order
+// describe writes them, which the bootstrap compares byte for byte.
+type Identity struct {
+	Arch   string `json:"Arch"`
+	Commit string `json:"Commit"`
+	// KeyAuth 1: this release authenticates with a key it holds, so an agent that holds one may
+	// install it.
+	KeyAuth        int    `json:"KeyAuth"`
+	MinimumVersion string `json:"MinimumVersion"`
+	Protocol       int    `json:"Protocol"`
+	Version        string `json:"Version"`
+}
+
+// Describes reports whether a build with this identity is the one release r was signed for.
+func (i Identity) Describes(r api.AgentRelease) bool {
+	return i.Version == r.Version && i.MinimumVersion == r.MinimumVersion && i.Commit == r.Commit && i.Protocol == int(r.Protocol) && i.Arch == string(r.Arch)
 }
 
 func Verify(r api.AgentRelease, key ed25519.PublicKey, reader io.Reader) error {
@@ -156,10 +176,10 @@ func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 		}
 		var r api.AgentRelease
 		if e = json.Unmarshal(data, &r); e != nil {
-			return nil, e
+			return nil, fmt.Errorf("release manifest %s: %w", entry.Name(), e)
 		}
 		if e = Validate(r, key); e != nil {
-			return nil, e
+			return nil, fmt.Errorf("release manifest %s: %w", entry.Name(), e)
 		}
 		file, e := os.Open(ArtifactPath(dir, r))
 		if e != nil {
@@ -168,7 +188,7 @@ func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 		e = Verify(r, key, file)
 		file.Close()
 		if e != nil {
-			return nil, e
+			return nil, fmt.Errorf("release manifest %s: %w", entry.Name(), e)
 		}
 		out = append(out, r)
 	}

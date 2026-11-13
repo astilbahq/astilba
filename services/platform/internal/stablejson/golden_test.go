@@ -44,8 +44,9 @@ func TestDigestsKeepTheirReleasedValues(t *testing.T) {
 		"deployment payload": {deployment.Payload{Action: fixtureText, Plan: fixturePlan()}.Digest(), "79de51650e74cc3277d7f7c9a5339b74ce7664d99f6452d64a5497bae0360db2"},
 		"crosshost command":  {deployment.CrossHostCommand{ParentID: fixtureID, Phase: fixtureText, Unit: deployment.DistributedUnit{Plan: fixturePlan()}}.Digest(), "321f9c8a89bbd1ae2b75bc6d809b48a22a1ee24cd3a12e6337d66e21d0b3d964"},
 		// The agent checks this before replacing itself, so it is the way out of any
-		// version skew. If it moves, older agents can no longer be updated. Recorded with the
-		// v2 release format, which added the commit and minimum version before the first release.
+		// version skew. If it moves, older agents can no longer be updated. Re-recorded with
+		// encoding/json v2 for the v2 release format, before the first release. AgentRelease
+		// can't gain a field without a new signature format: the signature covers every field.
 		"agent update":     {execution.Hash(&api.AgentRelease{Version: "1.2.3", MinimumVersion: "1.0.0", Commit: "0123456789abcdef0123456789abcdef01234567", Protocol: 1, Arch: "amd64", Size: 10, Sha256: "abc", Signature: "c2ln"}), "a6531fb43c531e01959687df3a970cbf41ec4a4659dd13d9ef413c048b950bb5"},
 		"railpack policy":  {pipeline.Hash(jsontext.Value(pipeline.RailpackSourcePolicy(pipeline.RailpackInputs{}))), "dfda240d8e63dbca7e0346203c386b54a7e9498f226f20b8d1cae26695af15fd"},
 		"pipeline command": {pipeline.Command{Action: fixtureText, SubmissionID: fixtureID}.Digest(), "6761729faa7743cf39ec678c7924953fe79f09db951b0439dfa45eb49c722f48"},

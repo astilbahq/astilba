@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Earlier release tags and main, to check this release against them.
+          # main, to check that the tagged commit is on it.
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -50,42 +50,27 @@ jobs:
           version=${TAG#agent-v}
           [[ "$TAG" == agent-v* && "$version" != "$TAG" ]] || { echo "::error::$TAG is not an agent-vVERSION tag."; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$TAG is not on main."; exit 1; }
-          minimum=$(cat services/platform/cmd/agent/minimum-version)
-          # Every earlier release this one descends from, by the minimum version it was built with.
-          previous=()
-          while read -r tag; do
-            [[ "$tag" == "$TAG" ]] && continue
-            floor=$(git show "$tag:services/platform/cmd/agent/minimum-version" 2>/dev/null) || continue
-            previous+=("$floor")
-          done < <(git tag --list 'agent-v*' --merged "$GITHUB_SHA")
-          {
-            echo "version=$version"
-            echo "minimum=$minimum"
-            echo "previous=${previous[*]}"
-          } >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build the agent
         env:
           VERSION: ${{ steps.tag.outputs.version }}
-          MINIMUM: ${{ steps.tag.outputs.minimum }}
           GOFLAGS: -mod=readonly
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.arch }}
         working-directory: services/platform
+        # The minimum version comes from cmd/agent/minimum-version at this commit.
         run: |
           mkdir -p "$RUNNER_TEMP/release"
-          go build -trimpath -buildvcs=true -ldflags "-s -w -X main.version=$VERSION -X main.minimumVersion=$MINIMUM -X main.commit=$GITHUB_SHA" \
+          go build -trimpath -buildvcs=true -ldflags "-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA" \
             -o "$RUNNER_TEMP/release/astilba-agent-linux-$GOARCH" ./cmd/agent
       - name: Describe the release
         env:
           ARCH: ${{ matrix.arch }}
-          PREVIOUS: ${{ steps.tag.outputs.previous }}
         run: |
           artifact="$RUNNER_TEMP/release/astilba-agent-linux-$ARCH"
-          floors=()
-          for floor in $PREVIOUS; do floors+=(--previous-minimum-version "$floor"); done
           # The built agent describes itself on its own architecture, and checks what Go recorded.
-          "$artifact" release-manifest --artifact "$artifact" "${floors[@]}" --out "$artifact.json"
+          "$artifact" release-manifest --artifact "$artifact" --out "$artifact.json"
           cat "$artifact.json"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

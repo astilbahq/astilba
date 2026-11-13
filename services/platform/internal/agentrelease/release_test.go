@@ -105,11 +105,11 @@ func TestReleaseFields(t *testing.T) {
 	}
 }
 
-// An agent never installs a release older than the minimum version of the one it runs.
-func TestPermitsBoundsRollback(t *testing.T) {
+// An agent only installs a release at least as strict as the one it runs, so its floor never drops.
+func TestPermitsKeepsTheFloor(t *testing.T) {
 	r, _ := signedRelease(t, []byte("x"))
 	for _, test := range []struct {
-		floor, version string
+		floor, minimum string
 		ok             bool
 	}{
 		{"1.2.0", "1.2.0", true},
@@ -120,9 +120,9 @@ func TestPermitsBoundsRollback(t *testing.T) {
 		{"", "1.2.0", false},
 		{"development", "1.2.0", false},
 	} {
-		r.Version = test.version
+		r.MinimumVersion = test.minimum
 		if e := Permits(test.floor, r); (e == nil) != test.ok {
-			t.Errorf("floor %q, release %q: %v, want ok=%v", test.floor, test.version, e, test.ok)
+			t.Errorf("floor %q, release minimum %q: %v, want ok=%v", test.floor, test.minimum, e, test.ok)
 		}
 	}
 }

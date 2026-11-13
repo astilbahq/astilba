@@ -50,30 +50,32 @@ func TestAtomicVerifiedReplacement(t *testing.T) {
 	}
 }
 
-// An agent refuses a release older than the minimum version of the one it runs, and a release
-// whose binary was built from another commit, or with another minimum version, than it was
-// signed with.
-func TestInstallRefusesRollbackBelowItsFloorAndMisdescribedReleases(t *testing.T) {
+// An agent refuses a release whose minimum version is below that of the release it runs, so its
+// floor never drops, even one update at a time. It also refuses a release whose binary was built
+// from another commit, or with another minimum version, than it was signed with.
+func TestInstallKeepsItsFloorAndRefusesMisdescribedReleases(t *testing.T) {
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
-	release := func(version string, change func(*api.AgentRelease)) (api.AgentRelease, []byte) {
-		body := fixtureAgent(version, false)
+	release := func(version, floor string, change func(*api.AgentRelease)) (api.AgentRelease, []byte) {
+		body := fixtureAgentWithFloor(version, floor, false)
 		sum := sha256.Sum256(body)
-		r := api.AgentRelease{Version: version, MinimumVersion: fixtureFloor, Commit: fixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(body)), Sha256: hex.EncodeToString(sum[:])}
+		r := api.AgentRelease{Version: version, MinimumVersion: floor, Commit: fixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(body)), Sha256: hex.EncodeToString(sum[:])}
 		change(&r)
 		r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, agentrelease.Message(r)))
 		return r, body
 	}
+	same := func(*api.AgentRelease) {}
 	for _, test := range []struct {
-		name    string
-		running Running
-		version string
-		change  func(*api.AgentRelease)
-		refusal string
+		name           string
+		floor          string // The minimum version of the release the agent runs.
+		version, below string
+		change         func(*api.AgentRelease)
+		refusal        string
 	}{
-		{"below the floor", Running{MinimumVersion: "0.3.0"}, "0.2.9", func(*api.AgentRelease) {}, "older than 0.3.0"},
-		{"a pre-release of the floor", Running{MinimumVersion: "0.3.0"}, "0.3.0-rc.1", func(*api.AgentRelease) {}, "older than 0.3.0"},
-		{"another commit", permitted, "0.3.0", func(r *api.AgentRelease) { r.Commit = strings.Repeat("f", 40) }, "identity"},
-		{"another minimum version", permitted, "0.3.0", func(r *api.AgentRelease) { r.MinimumVersion = "0.1.0" }, "identity"},
+		{"older than the floor", "0.3.0", "0.2.9", "0.0.0", same, "below 0.3.0"},
+		// Its version is fine, but once installed it would let the agent go back below 0.3.0.
+		{"a step down", "0.3.0", "0.3.0", "0.0.0", same, "below 0.3.0"},
+		{"another commit", fixtureFloor, "0.3.0", fixtureFloor, func(r *api.AgentRelease) { r.Commit = strings.Repeat("f", 40) }, "identity"},
+		{"another minimum version", fixtureFloor, "0.3.0", "0.1.0", func(r *api.AgentRelease) { r.MinimumVersion = "0.2.0" }, "identity"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "agent")
@@ -81,8 +83,8 @@ func TestInstallRefusesRollbackBelowItsFloorAndMisdescribedReleases(t *testing.T
 			if err := os.WriteFile(path, current, 0755); err != nil {
 				t.Fatal(err)
 			}
-			r, body := release(test.version, test.change)
-			if err := Install(context.Background(), r, pub, bytes.NewReader(body), path, test.running); err == nil || !strings.Contains(err.Error(), test.refusal) {
+			r, body := release(test.version, test.below, test.change)
+			if err := Install(context.Background(), r, pub, bytes.NewReader(body), path, Running{MinimumVersion: test.floor}); err == nil || !strings.Contains(err.Error(), test.refusal) {
 				t.Fatalf("Install: %v, want a refusal naming %q", err, test.refusal)
 			}
 			if got, _ := os.ReadFile(path); !bytes.Equal(got, current) {
@@ -90,12 +92,13 @@ func TestInstallRefusesRollbackBelowItsFloorAndMisdescribedReleases(t *testing.T
 			}
 		})
 	}
-	r, body := release("0.3.0", func(*api.AgentRelease) {})
+	// Rolling back to an earlier release with the same floor stays possible.
+	r, body := release("0.3.0", "0.3.0", same)
 	path := filepath.Join(t.TempDir(), "agent")
 	if err := os.WriteFile(path, []byte("current executable"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := Install(context.Background(), r, pub, bytes.NewReader(body), path, Running{MinimumVersion: "0.3.0"}); err != nil {
-		t.Fatalf("a release at the floor: %v", err)
+		t.Fatalf("a release with the same floor: %v", err)
 	}
 }

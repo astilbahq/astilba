@@ -31,16 +31,12 @@ func releaseCommand(command string, args []string) error {
 	out := f.String("out", "", "release catalog directory, or the unsigned manifest to write")
 	binary := f.String("artifact", "", "agent executable, as the release workflow built it")
 	manifest := f.String("manifest", "", "the release workflow's unsigned manifest for the artifact")
-	var previous []string
-	f.Func("previous-minimum-version", "an earlier release's minimum version, which this one's may not be below (repeatable)", func(v string) error {
-		previous = append(previous, v)
-		return nil
-	})
+	development := f.Bool("development", false, "sign a development build, whose Go build information records no Git checkout to check its commit against")
 	if e := f.Parse(args); e != nil {
 		return e
 	}
 	if command == "release-manifest" {
-		return releaseManifest(*binary, *out, previous)
+		return releaseManifest(*binary, *out)
 	}
 	if command == "release-keygen" {
 		pub, key, e := ed25519.GenerateKey(rand.Reader)
@@ -100,7 +96,7 @@ func releaseCommand(command string, args []string) error {
 	if int64(len(data)) != r.Size || hex.EncodeToString(sum[:]) != r.Sha256 {
 		return errors.New("the artifact is not the one its manifest describes")
 	}
-	if e = checkBuild(*binary, r, false); e != nil {
+	if e = checkBuild(*binary, r, !*development); e != nil {
 		return e
 	}
 	r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, agentrelease.Message(r)))
@@ -123,9 +119,12 @@ func releaseCommand(command string, args []string) error {
 
 // releaseManifest describes a built agent for signing: what it reports about itself when run here,
 // on its own architecture, with its size and digest. The release workflow runs it on each
-// architecture's runner. A release's minimum version may not be below an earlier release's, so
-// an agent can't be moved below a floor through a release built later.
-func releaseManifest(path, out string, previous []string) error {
+// architecture's runner.
+func releaseManifest(path, out string) error {
+	path, e := filepath.Abs(path)
+	if e != nil {
+		return e
+	}
 	data, e := os.ReadFile(path)
 	if e != nil {
 		return e
@@ -134,14 +133,7 @@ func releaseManifest(path, out string, previous []string) error {
 	if e != nil {
 		return fmt.Errorf("run the artifact's describe: %w", e)
 	}
-	var identity struct {
-		Version        string `json:"Version"`
-		MinimumVersion string `json:"MinimumVersion"`
-		Commit         string `json:"Commit"`
-		Protocol       int    `json:"Protocol"`
-		Arch           string `json:"Arch"`
-		KeyAuth        int    `json:"KeyAuth"`
-	}
+	var identity agentrelease.Identity
 	if e = json.Unmarshal(described, &identity, json.RejectUnknownMembers(true)); e != nil {
 		return fmt.Errorf("read the artifact's describe output: %w", e)
 	}
@@ -153,21 +145,13 @@ func releaseManifest(path, out string, previous []string) error {
 	if e = checkBuild(path, r, true); e != nil {
 		return e
 	}
-	for _, floor := range previous {
-		if !agentrelease.ValidVersion(floor) {
-			return fmt.Errorf("an earlier release's minimum version %q is not a version", floor)
-		}
-		if agentrelease.CompareVersions(r.MinimumVersion, floor) < 0 {
-			return fmt.Errorf("minimum version %s is below %s, an earlier release's", r.MinimumVersion, floor)
-		}
-	}
 	b, _ := stablejson.MarshalIndent(r, "", "  ")
 	return writeNew(out, b, 0644)
 }
 
 // checkBuild compares a release with the artifact's Go build information: the target it was built
-// for and, when the build recorded its Git checkout, that checkout. The release workflow requires
-// that record, so a release names the unmodified commit it was built from. The version and minimum
+// for and the unmodified Git checkout it was built from, which must be the release's commit. Only
+// a development build, signed with --development, may lack that record. The version and minimum
 // version are checked against the binary's own describe output, by release-manifest on each
 // architecture and by every host before it installs the release.
 func checkBuild(path string, r api.AgentRelease, requireCheckout bool) error {
@@ -187,7 +171,7 @@ func checkBuild(path string, r api.AgentRelease, requireCheckout bool) error {
 	}
 	revision, ok := settings["vcs.revision"]
 	if !ok && requireCheckout {
-		return errors.New("the artifact's build recorded no Git checkout; build it with -buildvcs=true from the tagged commit")
+		return errors.New("the artifact's build recorded no Git checkout to check its commit against; release builds come from the release workflow")
 	}
 	if ok && (revision != r.Commit || settings["vcs.modified"] != "false") {
 		return fmt.Errorf("the manifest names commit %s, but the artifact was built from %s with modified=%s", r.Commit, revision, settings["vcs.modified"])

@@ -96,15 +96,8 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 	if e != nil {
 		return errors.New("verified agent cannot run on this host")
 	}
-	var identity struct {
-		Version        string `json:"Version"`
-		MinimumVersion string `json:"MinimumVersion"`
-		Commit         string `json:"Commit"`
-		Protocol       int    `json:"Protocol"`
-		Arch           string `json:"Arch"`
-		KeyAuth        int    `json:"KeyAuth"`
-	}
-	if json.Unmarshal(output, &identity) != nil || identity.Version != r.Version || identity.MinimumVersion != r.MinimumVersion || identity.Commit != r.Commit || identity.Protocol != int(r.Protocol) || identity.Arch != string(r.Arch) {
+	var identity agentrelease.Identity
+	if json.Unmarshal(output, &identity) != nil || !identity.Describes(r) {
 		return errors.New("artifact identity does not match manifest")
 	}
 	if running.Keyed && identity.KeyAuth < 1 {
@@ -142,10 +135,6 @@ func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable
 		return nil
 	}
 	if e = agentrelease.Validate(r, key); e != nil {
-		return e
-	}
-	// Before downloading a release this agent would refuse.
-	if e = agentrelease.Permits(minimumVersion, r); e != nil {
 		return e
 	}
 	req, e := http.NewRequestWithContext(ctx, "GET", cfg.Origin+"/agent-artifacts/"+r.Sha256, nil)

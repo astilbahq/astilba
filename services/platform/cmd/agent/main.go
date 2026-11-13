@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	_ "embed"
 	"encoding/json/v2"
 	"errors"
 	"flag"
@@ -28,13 +29,27 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// A release sets these when it is built; see the release procedure in docs/agent.md. The minimum
-// version bounds which releases this agent may update to.
+// A release build sets the version and commit; see the release procedure in docs/agent.md.
 var (
-	version        = "development"
-	minimumVersion = "0.0.0"
-	commit         = ""
+	version = "development"
+	commit  = ""
 )
+
+// The minimum version bounds which releases this agent may update to. A build takes it from the
+// reviewed file beside this one, so it is part of the source commit. Only test fixtures set
+// minimumVersion instead.
+var (
+	//go:embed minimum-version
+	sourceMinimumVersion string
+	minimumVersion       string
+)
+
+func releaseMinimumVersion() string {
+	if minimumVersion != "" {
+		return minimumVersion
+	}
+	return strings.TrimSpace(sourceMinimumVersion)
+}
 
 func main() {
 	if e := run(); e != nil {
@@ -48,8 +63,7 @@ func run() error {
 	}
 	command := os.Args[1]
 	if command == "describe" {
-		// KeyAuth 1: this release authenticates with a key it holds, so an agent that holds one may install it.
-		return stablejson.Encode(os.Stdout, map[string]any{"Version": version, "MinimumVersion": minimumVersion, "Commit": commit, "Protocol": 1, "Arch": runtime.GOARCH, "KeyAuth": 1})
+		return stablejson.Encode(os.Stdout, agentrelease.Identity{Version: version, MinimumVersion: releaseMinimumVersion(), Commit: commit, Protocol: 1, Arch: runtime.GOARCH, KeyAuth: 1})
 	}
 	if command == "release-keygen" || command == "release-manifest" || command == "release-sign" {
 		return releaseCommand(command, os.Args[2:])
@@ -323,7 +337,7 @@ func run() error {
 			return e
 		}
 		defer f.Close()
-		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: minimumVersion})
+		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: releaseMinimumVersion()})
 	}
 	if command == "resolve-run" {
 		policy, err := uuid.Parse(*policyID)
@@ -376,7 +390,7 @@ func run() error {
 		return agent.VerifyInstalledUpdate(r, ed25519.PublicKey(cfg.PublicKey), *executable)
 	}
 	engine.Update = func(ctx context.Context, r api.AgentRelease) error {
-		e := agent.RemoteUpdate(ctx, c, r, *executable, minimumVersion)
+		e := agent.RemoteUpdate(ctx, c, r, *executable, releaseMinimumVersion())
 		if e == nil {
 			updated.Store(true)
 			stop()

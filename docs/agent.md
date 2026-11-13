@@ -32,9 +32,9 @@ The agent compiles its version, minimum version and commit in, and reports them 
 
 ### Minimum version
 
-An agent never updates to a release older than the minimum version of the release it runs, whether the update comes from the dashboard or from `update-local`. This bounds the deliberate rollback described below. A compromised management also can't move an agent back to an older, genuinely signed release with a known flaw.
+An agent only installs a release whose minimum version is at least that of the release it runs, whether the update comes from the dashboard or from `update-local` (which applies the minimum version of the agent binary that runs it). A release's minimum version is never later than its version, so this also refuses any older release. An agent's minimum version therefore only ever rises, however many updates it takes. Rolling back among releases that share a minimum version stays possible; see [rollback and downgrade](#rollback-and-downgrade). A compromised management can't move an agent below its minimum version, even one release at a time, to an older, genuinely signed release with a known flaw.
 
-The minimum version is kept in `services/platform/cmd/agent/minimum-version`. Raise it in a reviewed pull request when releases below it must not run again, for example after a security fix or a change that earlier agents can't read. The release workflow refuses a minimum version lower than the previous release's.
+The minimum version is the reviewed file `services/platform/cmd/agent/minimum-version`, which every build embeds, so it is part of the release's commit. Raise it in a pull request when releases below it must not run again, for example after a security fix, or after a change that earlier agents can't read. Agents already above the new value can only update to releases that carry it.
 
 ### Release procedure
 
@@ -46,28 +46,35 @@ Releases are built by `.github/workflows/agent-release.yml`, never on a workstat
    git tag agent-v0.3.0 <commit> && git push origin agent-v0.3.0
    ```
    For each architecture, the workflow:
-   - checks that the commit is on `main`, that the version is valid, and that the minimum version is no later than the version and no lower than the previous release's;
-   - builds the agent on a native runner from the tagged commit, with `-trimpath`, `CGO_ENABLED=0` and the version, minimum version and commit compiled in;
-   - checks that Go recorded that commit, unmodified, and that `describe` reports the same values;
-   - writes an unsigned manifest;
-   - attests the binary and manifest with GitHub's build provenance, which records the repository, workflow and commit.
-3. On the machine that holds the release key, download the run's `agent-release-amd64` and `agent-release-arm64` artifacts, for example with `gh run download`. For each architecture, verify that the workflow built the binary and its manifest from that tag:
+   - checks that the tagged commit is on `main`;
+   - builds the agent on a native runner from that commit, with `-trimpath`, `CGO_ENABLED=0`, the version from the tag and the commit compiled in;
+   - runs `release-manifest`, which checks that Go recorded that commit, unmodified, and writes an unsigned manifest from the agent's own `describe` output;
+   - attests the binary and manifest with GitHub's build provenance, which records the repository, workflow, tag and commit.
+3. On the machine that holds the release key, in a checkout of this repository, download each architecture's artifacts into its own directory:
    ```sh
-   gh attestation verify astilba-agent-linux-amd64 --repo astilbahq/astilba \
-     --signer-workflow astilbahq/astilba/.github/workflows/agent-release.yml \
-     --source-ref refs/tags/agent-v0.3.0
-   gh attestation verify astilba-agent-linux-amd64.json --repo astilbahq/astilba \
-     --signer-workflow astilbahq/astilba/.github/workflows/agent-release.yml \
-     --source-ref refs/tags/agent-v0.3.0
+   gh run download <run-id> --repo astilbahq/astilba -n agent-release-amd64 -D amd64
+   gh run download <run-id> --repo astilbahq/astilba -n agent-release-arm64 -D arm64
    ```
-4. Review the manifest's version, minimum version and commit, then sign:
+4. For each architecture, take the commit from the manifest and confirm that it is the tag's commit and that it is on `main`. Then verify that this workflow built both files from that commit. An attestation proves which workflow file at which commit built a file, so the commit check is what ties the workflow's own checks to reviewed code:
    ```sh
-   astilba-agent release-sign --key /secure/release.pem \
-     --manifest astilba-agent-linux-amd64.json \
-     --artifact astilba-agent-linux-amd64 --out ./releases
+   commit=$(jq -r .commit amd64/astilba-agent-linux-amd64.json)
+   git fetch origin main --tags
+   test "$(git rev-parse 'agent-v0.3.0^{commit}')" = "$commit"
+   git merge-base --is-ancestor "$commit" origin/main
+   for file in amd64/astilba-agent-linux-amd64 amd64/astilba-agent-linux-amd64.json; do
+     gh attestation verify "$file" --repo astilbahq/astilba \
+       --signer-workflow astilbahq/astilba/.github/workflows/agent-release.yml \
+       --source-ref refs/tags/agent-v0.3.0 --source-digest "$commit"
+   done
    ```
-   `release-sign` refuses an artifact whose size or digest differs from the manifest, or whose Go build information names another architecture, another commit or a modified checkout. It writes the artifact and the signed manifest into the catalog directory.
-5. Repeat step 4 for arm64. Publish the catalog with the matching corresponding source and licence notices.
+5. Review the manifest's version, minimum version and commit. Sign with a tool built from that commit, never with an artifact under review, which would then run with the key readable. From `services/platform` in a checkout of the commit:
+   ```sh
+   go run ./cmd/agent release-sign --key /secure/release.pem \
+     --manifest ../../amd64/astilba-agent-linux-amd64.json \
+     --artifact ../../amd64/astilba-agent-linux-amd64 --out ./releases
+   ```
+   `release-sign` refuses an artifact whose size or digest differs from the manifest, or whose Go build information names another architecture, records no Git checkout, or names another commit or a modified checkout. It writes the artifact and the signed manifest into the catalog directory.
+6. Repeat steps 4 and 5 for arm64. Publish the catalog with the matching corresponding source and licence notices.
 
 Generate the protected signing key once, with `go run ./cmd/agent release-keygen --key /secure/release.pem` from `services/platform`. Keep the private key outside the repository, CI and the management container. Publish the fingerprint of `release.pem.pub` through your own trusted channel.
 
@@ -163,7 +170,7 @@ Until a host is updated, the response to a suspected leak is to revoke it and en
 
 ### Rollback and downgrade
 
-An agent refuses any release older than the minimum version of the release it runs; see [minimum version](#minimum-version). Once an agent holds a key, it also refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
+An agent refuses any release whose minimum version is below that of the release it runs; see [minimum version](#minimum-version). Once an agent holds a key, it also refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
 
 Upgrade every management replica before updating agents: a replica from before keys refuses the access tokens an updated agent presents.
 
