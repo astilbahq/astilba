@@ -14,12 +14,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,8 +156,29 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	mu.Lock()
 	current = release
 	mu.Unlock()
-	if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
+	// Half the CI lanes install from this host's own package sources; the others block them.
+	if os.Getenv("ASTILBA_BOOTSTRAP_BLOCK_UBUNTU_ARCHIVES") == "1" {
+		sources := aptSources(t)
+		blocked, restore := blockUbuntuArchives(t)
+		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
+		restore()
+		if e != nil {
+			t.Fatalf("fresh production bootstrap with this host's Ubuntu archives blocked (%s): %s %v", strings.Join(blocked, ", "), out, e)
+		}
+		used := regexp.MustCompile(`Ubuntu packages for this run come from (\S+)\. This host's package sources are unchanged\.`).FindSubmatch(out)
+		if !bytes.Contains(out, []byte("This host's package sources failed.")) || used == nil {
+			t.Fatalf("the bootstrap did not say it used a fallback archive: %s", out)
+		}
+		if u, err := url.Parse(string(used[1])); err != nil || slices.Contains(blocked, u.Hostname()) {
+			t.Fatalf("installed from a blocked archive: %s", used[1])
+		}
+		if after := aptSources(t); !maps.Equal(sources, after) {
+			t.Fatal("the fallback changed this host's package sources")
+		}
+	} else if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
 		t.Fatalf("fresh production bootstrap: %s %v", out, e)
+	} else if bytes.Contains(out, []byte("This host's package sources failed.")) {
+		t.Fatalf("the bootstrap fell back although this host's package sources work: %s", out)
 	}
 	// Cleanup is limited to paths just created by this fixture, after checking the
 	// installed binary/key and journal ownership; the runtime stays for host checks.
@@ -264,6 +289,70 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatalf("normal-PATH backup capability omitted: %s %v", out, e)
 	}
 
+}
+
+// aptSources reads this host's apt source files.
+func aptSources(t *testing.T) map[string]string {
+	t.Helper()
+	files, err := filepath.Glob("/etc/apt/sources.list.d/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string]string{}
+	for _, file := range append(files, "/etc/apt/sources.list", "/etc/apt/apt-mirrors.txt") {
+		data, err := os.ReadFile(file)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		sources[file] = string(data)
+	}
+	return sources
+}
+
+// blockUbuntuArchives makes the Ubuntu archives in this host's apt sources, and Canonical's own,
+// refuse connections, as when the distribution's mirror names stopped resolving on 11 November
+// 2026. It returns the names it blocked, and a function that restores /etc/hosts, which also
+// runs when the test ends.
+func blockUbuntuArchives(t *testing.T) ([]string, func()) {
+	t.Helper()
+	archive := regexp.MustCompile(`(?m)\bhttps?://([A-Za-z0-9.-]+)(:[0-9]+)?/[^\s\]]*\bubuntu(-ports)?/?(\s|$)`)
+	var fromSources []string
+	for _, data := range aptSources(t) {
+		for _, match := range archive.FindAllStringSubmatch(data, -1) {
+			fromSources = append(fromSources, strings.ToLower(match[1]))
+		}
+	}
+	if len(fromSources) == 0 {
+		t.Fatal("found no Ubuntu archive in this host's apt sources to block")
+	}
+	names := append(fromSources, "archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com")
+	slices.Sort(names)
+	names = slices.Compact(names)
+	original, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := bytes.TrimRight(original, "\n")
+	blocked = append(blocked, "\n# Ubuntu archives blocked by TestBootstrapOnDisposableHost\n"...)
+	for _, name := range names {
+		blocked = fmt.Appendf(blocked, "127.0.0.1 %s\n::1 %s\n", name, name)
+	}
+	if err = os.WriteFile("/etc/hosts", blocked, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	restore := func() {
+		if !restored {
+			restored = true
+			if err := os.WriteFile("/etc/hosts", original, 0o644); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(restore)
+	return names, restore
 }
 
 const (

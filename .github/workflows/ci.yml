@@ -102,11 +102,15 @@ jobs:
         # Canonical first, then independent mirrors. Every one is verified against Ubuntu's key.
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" bash scripts/ci-ubuntu-archive.sh
       - name: Verify fresh production host bootstrap
+        env:
+          # Two lanes per architecture block this host's Ubuntu archives, so the bootstrap must
+          # install from a pinned fallback; the others install from the host's own sources.
+          BLOCK_UBUNTU_ARCHIVES: ${{ (matrix.lane == 'core' || matrix.lane == 'visual') && '1' || '0' }}
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)
           sudo env ASTILBA_DISPOSABLE_HOST=1 ASTILBA_BOOTSTRAP_OWNER="$owner" GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" GITHUB_RUN_ID="$GITHUB_RUN_ID" bash services/platform/host/prepare-bootstrap-test.sh
           cd services/platform
-          sudo --preserve-env=GOCACHE,GOMODCACHE env PATH="$PATH" ASTILBA_NATIVE_BOOTSTRAP=1 ASTILBA_BOOTSTRAP_OWNER="$owner" go test -count=1 -timeout=12m -v -run '^TestBootstrapOnDisposableHost$' ./host
+          sudo --preserve-env=GOCACHE,GOMODCACHE env PATH="$PATH" ASTILBA_NATIVE_BOOTSTRAP=1 ASTILBA_BOOTSTRAP_OWNER="$owner" ASTILBA_BOOTSTRAP_BLOCK_UBUNTU_ARCHIVES="$BLOCK_UBUNTU_ARCHIVES" go test -count=1 -timeout=12m -v -run '^TestBootstrapOnDisposableHost$' ./host
       - name: Install pinned disposable host runtime
         run: |
           sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstrap.sh
