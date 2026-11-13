@@ -51,8 +51,8 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 	if history.Superseded, err = recoverySuperseded(ctx, tx, ws); err != nil {
 		return RecoveryCapture{}, err
 	}
-	// The settled list only shrinks as the window does, so the full window's bounds it.
-	settled, err := recoverySettled(ctx, tx, ws, start, nil)
+	// The settled list only shrinks as the window does, so the full window's roots bound it.
+	settled, err := recoverySettled(ctx, tx, ws, start, nil, true)
 	if err != nil {
 		return RecoveryCapture{}, err
 	}
@@ -66,7 +66,7 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 	if history.Environments, history.Applied, err = recoveryLedger(ctx, tx, ws, start); err != nil {
 		return RecoveryCapture{}, err
 	}
-	if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied); err != nil {
+	if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied, false); err != nil {
 		return RecoveryCapture{}, err
 	}
 	archive.Recovery = history

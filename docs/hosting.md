@@ -669,19 +669,16 @@ each time. An imported workspace shows the same lists as its source, except that
 environments retired before the export aren't listed, and older entries can't be opened by ID.
 Audit history beyond the newest 100 stays in the source installation's database.
 
-A cross-host recovery checkpoint carries the operation history recovery needs:
-- unfinished work;
-- every operation that applied or removed a runtime;
-- every standalone private network removal;
-- every operation another archived record names;
-- the newest 100 operations.
-
-It keeps the newest 100 audit events, and the revisions the app lists or a record names.
-Checkpoints are compressed with zstd, which holds about two and a half times the history gzip
-did. Deployment history is still carried, so a busy workspace can still reach the checkpoint
-limits, and its cross-host deployments then fail before any host changes. A workspace
-recovered from a management backup doesn't get back the housekeeping, revisions or audit
-events recorded after the backup that the checkpoint left out.
+A cross-host recovery checkpoint carries the workspace's configuration, unfinished work, the
+newest 100 operations and audit events, the revisions the app lists or a record names, and a
+compact record of the runtime changes committed in the 90 days before it was captured. Its size
+follows the configuration, not the workspace's age. A busy workspace whose history doesn't fit
+gets a shorter window, and management warns while it is under 35 days. Checkpoints are compressed
+with zstd. Cross-host recovery can use a management backup taken after the newest checkpoint's
+window opened, which the Workspace page shows; [Recovering management from an older
+backup](cross-host-placement.md#the-recovery-window) says what comes back. A workspace recovered
+from a backup doesn't get back the housekeeping, releases, revisions, build runs or audit events
+recorded after the backup that the checkpoint left out.
 
 Work that Git webhooks start runs in a background queue of its own, with four workers
 per replica: source refreshes, draft submissions, pull-request previews and GitHub App

@@ -328,8 +328,10 @@ func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Tim
 }
 
 // recoverySettled reads the final state of roots and runtime changes that ended since start, less
-// the margin, and that the base carries neither as a row nor in its ledger.
-func recoverySettled(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, ledger []AppliedEntry) ([]SettledOperation, error) {
+// the margin, and that the base carries neither as a row nor in its ledger. Before the ledger is
+// read, roots alone bound the list: a runtime change that ended inside the window was recorded in
+// it too, unless it ran across the window's start.
+func recoverySettled(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, ledger []AppliedEntry, rootsOnly bool) ([]SettledOperation, error) {
 	listed := []uuid.UUID{}
 	for _, e := range ledger {
 		listed = append(listed, e.Operation)
@@ -338,8 +340,8 @@ func recoverySettled(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Ti
 	rows, err := tx.Query(ctx, `SELECT o.id,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,COALESCE(o.ended_at,o.created_at) FROM execution_operations o
 	WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND (o.kind='crosshost' OR o.runtime_outcome IS NOT NULL) AND o.state IN ('succeeded','failed','cancelled')
 	AND (o.ended_at>=$2 OR o.ended_at IS NULL AND o.created_at>=$3)
-	AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id) AND NOT (o.id=ANY($4::uuid[]))
-	ORDER BY o.id`, ws, start.Add(-recoveryMargin), start.Add(-recoveryFallbackMargin), listed)
+	AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id) AND NOT (o.id=ANY($4::uuid[])) AND NOT ($5 AND o.runtime_outcome IS NOT NULL)
+	ORDER BY o.id`, ws, start.Add(-recoveryMargin), start.Add(-recoveryFallbackMargin), listed, rootsOnly)
 	if err != nil {
 		return nil, err
 	}

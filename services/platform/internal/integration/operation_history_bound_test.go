@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"errors"
 	"path"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -86,11 +86,13 @@ func TestLongOperationHistoryKeepsCrossHostDeploymentAndExport(t *testing.T) {
 func TestRecoveryReadsABaseCapturedBeforeHistoryWasBounded(t *testing.T) {
 	var seeded []uuid.UUID
 	r := newClaimRecoveryCaptured(t, 7, func(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
-		// What CaptureRecovery wrote before it was bounded: every row of every archived table.
+		// What CaptureRecovery wrote before it was bounded: every row of every archived table, in
+		// the format of its time.
 		archive, _, err := portability.InspectRecovery(ctx, tx, ws)
 		if err != nil {
 			return nil, err
 		}
+		archive.Recovery = nil
 		return stablejson.Marshal(archive)
 	}, func(f *fixture, _ *browser, ws, _ uuid.UUID) {
 		server := claimUUID(t, f, `SELECT server_id FROM execution_operations WHERE workspace_id=$1 AND kind='visual' LIMIT 1`, ws)
@@ -177,11 +179,11 @@ FROM visual_plans p, generate_series(1,$3::int) i WHERE p.id=$1`, plan, a.id, co
 	g.applied(t, &e, g.place(t, &e, a.id, b.id))
 }
 
-// Recovery checks a newer base against the exact runtime an older one applied, so a base still
-// carries every deployment that applied a runtime. A workspace with enough of them still reaches
-// the archive's record limit, and its cross-host deployments and export stop. This pins that limit
-// until bases carry a compact record of applied history instead.
-func TestDeploymentHistoryStillReachesTheArchiveLimit(t *testing.T) {
+// A recovery base used to carry every operation that applied a runtime, so a workspace with
+// enough deployments reached the archive's record limit and its cross-host deployments stopped. A
+// base now carries a window of applied history: changes older than 90 days stay out, and when the
+// window's own changes don't fit, the window starts later, so a busy workspace keeps a base.
+func TestBusyWorkspaceStaysWithinTheArchiveLimits(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
 	b := f.browser(t)
@@ -205,29 +207,60 @@ func TestDeploymentHistoryStillReachesTheArchiveLimit(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO visual_plans(id,workspace_id,environment_id,plan) VALUES($1,$2,$3,'{}')`, plan, ws, environment.Id); err != nil {
 		t.Fatal(err)
 	}
-	applied := func(count int) {
+	// applied seeds count deployments that each applied a runtime, recorded age ago, a millisecond apart.
+	applied := func(count int, age time.Duration) {
 		t.Helper()
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at)
-SELECT gen_random_uuid(),$1,$2,$3,COALESCE((SELECT max(generation) FROM execution_operations WHERE environment_id=$3),0)+i,gen_random_uuid(),'{}','visual','succeeded',1,'applied',$4,now()-interval '1 day'+i*interval '1 millisecond'
-FROM generate_series(1,$5::int) i`, ws, in.ServerId, environment.Id, plan, count); err != nil {
+		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at)
+SELECT gen_random_uuid(),$1,$2,$3,COALESCE((SELECT max(generation) FROM execution_operations WHERE environment_id=$3),0)+i,gen_random_uuid(),'{}','visual','succeeded',1,'applied',$4,now()-$6::interval+i*interval '1 millisecond',now()-$6::interval+i*interval '1 millisecond'
+FROM generate_series(1,$5::int) i`, ws, in.ServerId, environment.Id, plan, count, age.String()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	capture := func() error {
+	capture := func() (portability.RecoveryCapture, portability.Archive) {
+		t.Helper()
 		tx, err := f.st.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		_, err = portability.CaptureRecovery(ctx, tx, ws)
-		return err
+		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget)
+		if err != nil {
+			t.Fatal("the workspace no longer fits a recovery base: ", err)
+		}
+		archive, err := portability.DecodeRecovery(captured.Raw)
+		if err != nil {
+			t.Fatal("the recovery base doesn't read back: ", err)
+		}
+		return captured, archive
 	}
-	applied(9000)
-	if err := capture(); err != nil {
-		t.Fatal("9,000 applied deployments no longer fit a recovery base: ", err)
+	day := 24 * time.Hour
+	// A change recorded half a day before the window opens may have committed after it did, so
+	// the window counts it, and starts from the one before.
+	applied(9000, 120*day)
+	applied(1, 100*day)
+	applied(1, 90*day+12*time.Hour)
+	applied(2000, 10*day)
+	captured, archive := capture()
+	if window := captured.CapturedAt.Sub(captured.WindowStart); window != portability.RecoveryWindowTarget {
+		t.Fatal("a workspace whose history fits got a shorter window: ", window)
 	}
-	applied(1100)
-	if err := capture(); !errors.Is(err, portability.ErrArchive) {
-		t.Fatal("10,100 applied deployments fit a recovery base, so the archive limit this test pins has moved: ", err)
+	ledger := archive.Recovery.Applied
+	if len(ledger) != 2002 || ledger[0].Generation != 9002 || ledger[1].Generation != 9003 {
+		t.Fatalf("the base carries %d applied changes from generation %d, not the 2,002 from the change before the window opened", len(ledger), ledger[0].Generation)
 	}
+	if archive.Recovery.Environments[0].Floor != 9002 || len(archive.Tables["execution_operations"]) > 200 {
+		t.Fatal("the base carries applied history as operation rows, or starts it at the wrong change")
+	}
+
+	applied(12000, 5*day)
+	captured, archive = capture()
+	if window := captured.CapturedAt.Sub(captured.WindowStart); window >= 6*day || window <= 0 {
+		t.Fatal("a busy workspace's window didn't shrink to the changes that fit: ", window)
+	}
+	if records := archive.Recovery.Records(); records < 8000 || records > 10000 {
+		t.Fatalf("the shortened window holds %d records", records)
+	}
+	passphrase := "busy workspace archive passphrase"
+	var encrypted api.WorkspaceArchive
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &encrypted)
 }

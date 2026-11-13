@@ -181,7 +181,10 @@ which the manifest records.
    and follow [installation backup and recovery](hosting.md#installation-backup-and-recovery)
    to fence each one first. If you'll recover cross-host work, use an image at least as new as
    the one that last ran management: hosts' recovery checkpoints can only be read by the release
-   that sealed them or a newer one.
+   that sealed them or a newer one. Cross-host recovery also needs a backup taken after the
+   newest checkpoint's window opened, which the Workspace page shows, normally 90 days before the
+   checkpoint ([the recovery window](cross-host-placement.md#the-recovery-window)). Keeping
+   backups for 35 days stays well inside it.
 
 7. **Start and check.** Start `astilba serve`, sign in with your second factor, and check that
    the workspaces, servers and recent history are what you expect. A second factor that works
