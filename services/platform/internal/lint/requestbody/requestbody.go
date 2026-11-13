@@ -17,7 +17,8 @@ var Analyzer = &analysis.Analyzer{
 }
 
 // Handlers that verify a provider's signature over the raw bytes, so they cannot decode first,
-// as package.receiver.function. Each then reads only identifiers it validates.
+// as package.receiver.function. Only the provider can write what they then read, and
+// store.Normalize refuses a NUL in it.
 var rawReaders = map[string]bool{
 	"internal/httpapi.Server.StripeWebhook":    true,
 	"internal/httpapi.Server.ReceiveGitHubApp": true,

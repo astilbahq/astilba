@@ -109,7 +109,7 @@ PostgreSQL's `text` and `jsonb` cannot hold U+0000. A write with one fails with 
 - **Request bodies.** `httpapi.decode` is the one reader of a request body, which the `requestbody` analyzer enforces. It walks every string the body decodes to, including map keys and the strings inside raw JSON members. A person's or program's request is refused with `invalid_input` naming the member. An agent's request, one authenticated as an agent or one of the requests an agent makes for its credentials, has each NUL replaced with a space instead. Its strings carry its host's output, such as os-release and Docker's version, and refusing them would refuse every heartbeat or report after it. The only refusal is a map in which a replacement would make two keys equal.
 - **Paths and query strings.** Every request whose path or query decodes to NUL is refused before a handler runs.
 - **Archives.** An export cannot write NUL, so an archive row holding one is refused as an invalid archive.
-- **Signed webhooks.** The Stripe, GitHub App and Git push handlers read their raw bytes to check a signature, and then read only identifiers they validate.
+- **Signed webhooks.** The Stripe, GitHub App and Git push handlers read their raw bytes to check the provider's signature, then decode a few identifiers from them. Only the provider can write those, and the store's refusal below covers them.
 
 `store.Normalize` maps 22021 and 22P05 to `domain.UnstorableText`, an `invalid_input` refusal, so a path these miss, such as a provider's reply, is refused rather than answered with a 500, and the API logs a warning naming the route. The recovery CLI reads hosts' exports from disk rather than through a request, so it is not covered yet (PLAT-321).
 
