@@ -9,7 +9,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 )
 
 // enrollCode exchanges one enrollment code. Whatever was first sent with a code, a key or a legacy
@@ -47,7 +47,7 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 			}
 			entry.Keyed = true
 		default:
-			if entry.Credential, err = cryptobox.Token(); err != nil {
+			if entry.Credential, err = randtoken.New(); err != nil {
 				return status, sent, false, err
 			}
 		}

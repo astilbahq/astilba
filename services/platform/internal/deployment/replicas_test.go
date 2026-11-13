@@ -148,3 +148,36 @@ func TestReplicaEligibilityPreservesOrdinaryMountedApps(t *testing.T) {
 		t.Fatal("replication admitted a persistent writer")
 	}
 }
+
+// A single-host plan gives an application its own ID as its first instance by leaving it out of
+// Instances. One that never left the primary keeps that ID through a placement, so removing the
+// placement must leave it out again, and keep the instance a moved application was given.
+func TestRemovingPlacementKeepsEachApplicationsInstance(t *testing.T) {
+	single := replicaPlan()
+	database, web := single.Specification.Applications[0].ID, single.Specification.Applications[1].ID
+	moved, movedInstance, replica := uuid.New(), uuid.New(), uuid.New()
+	api := single.Specification.Applications[1]
+	api.ID, api.Name = moved, "API"
+	single.Specification.Applications[1].Replicas = 2
+	single.Specification.Applications = append(single.Specification.Applications, api)
+	single.Images[moved.String()] = single.Images[web.String()]
+	primary := copyPlan(single)
+	primary.Recipe = CrossHostRecipe
+	primary.Local = &LocalPlacement{Primary: true, Instances: map[string][]uuid.UUID{database.String(): {database}, web.String(): {web, replica}, moved.String(): {movedInstance}}}
+	next := copyPlan(single)
+	next.ID = uuid.New()
+	next.PrepareInstances(primary)
+	next = next.WithHash()
+	if err := next.Validate(false); err != nil {
+		t.Fatalf("the plan without placement is refused: %v", err)
+	}
+	if next.Instance(database) != database || next.Instance(web) != web || next.Instance(moved) != movedInstance {
+		t.Fatal("removing the placement replaced an instance")
+	}
+	if ids := next.InstanceIDs(web); len(ids) != 2 || ids[1] != replica {
+		t.Fatal("removing the placement replaced a replica", ids)
+	}
+	if _, ok := next.Instances[web.String()]; ok {
+		t.Fatal("the default instance was written out, so one identity has two encodings")
+	}
+}

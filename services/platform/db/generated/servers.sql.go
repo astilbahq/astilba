@@ -499,7 +499,7 @@ func (q *Queries) MoveEnvironmentVolumes(ctx context.Context, arg MoveEnvironmen
 const parkedMaintenanceOnPrimary = `-- name: ParkedMaintenanceOnPrimary :many
 SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
 WHERE o.workspace_id = $1 AND o.server_id = $2 AND o.parent_id IS NULL AND o.kind='crosshost'
-    AND o.state NOT IN ('succeeded','failed','cancelled') AND c.phase='maintenance-owner'
+    AND o.state IN ('queued','dispatched','running','needs_attention') AND c.phase='maintenance-owner'
 `
 
 type ParkedMaintenanceOnPrimaryParams struct {
@@ -916,7 +916,7 @@ func (q *Queries) ServerCapabilities(ctx context.Context, arg ServerCapabilities
 
 const serverHasActiveOperations = `-- name: ServerHasActiveOperations :one
 SELECT EXISTS(SELECT 1 FROM execution_operations
-    WHERE workspace_id = $1 AND server_id = $2 AND state NOT IN ('succeeded','failed','cancelled'))
+    WHERE workspace_id = $1 AND server_id = $2 AND state IN ('queued','dispatched','running','needs_attention'))
 `
 
 type ServerHasActiveOperationsParams struct {
@@ -1004,7 +1004,7 @@ func (q *Queries) SetServerBuildEgress(ctx context.Context, arg SetServerBuildEg
 
 const settleRevokedServerOperations = `-- name: SettleRevokedServerOperations :exec
 UPDATE execution_operations SET state='cancelled',cancel_requested=true,report_sequence = $1,note='The server was revoked before reporting, so what it did is unknown.'
-WHERE workspace_id = $2 AND server_id = $3 AND state NOT IN ('succeeded','failed','cancelled')
+WHERE workspace_id = $2 AND server_id = $3 AND state IN ('queued','dispatched','running','needs_attention')
     AND (parent_id IS NOT NULL OR kind NOT IN ('crosshost','network'))
 `
 

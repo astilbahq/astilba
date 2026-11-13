@@ -108,7 +108,7 @@ func (s *Service) Apply(ctx context.Context, p store.Principal, ws, planID, key 
 		out, err = s.insert(ctx, tx, ws, key, &planID, c)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, planID *uuid.UUID, c api.ExecutionCommand) (api.Operation, error) {
 	var out api.Operation
@@ -188,14 +188,15 @@ func (s *Service) Operations(ctx context.Context, p store.Principal, ws uuid.UUI
 		}
 		return rows.Err()
 	})
-	if err == nil {
-		for i := range out {
-			if err = s.operationAvailability(ctx, &out[i]); err != nil {
-				return out, err
-			}
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if err = s.operationAvailability(ctx, &out[i]); err != nil {
+			return nil, err
 		}
 	}
-	return out, err
+	return operationsFor(p, out), nil
 }
 
 func (s *Service) operationAvailability(ctx context.Context, out *api.Operation) error {
@@ -252,7 +253,7 @@ func (s *Service) RequestUpdate(ctx context.Context, p store.Principal, ws, id u
 		out, err = s.insert(ctx, tx, ws, uuid.New(), nil, c)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 type jobArgs struct {
@@ -353,7 +354,7 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 			return tx.Commit(ctx)
 		}
 		var ready bool
-		if err = tx.QueryRow(ctx, "SELECT NOT revoked AND COALESCE(last_seen>now()-interval '45 seconds',false) AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND state NOT IN ('succeeded','failed','cancelled') AND (state<>'queued' OR kind<>'pipeline')) FROM servers WHERE id=$1", server, c.Id).Scan(&ready); err != nil {
+		if err = tx.QueryRow(ctx, "SELECT NOT revoked AND COALESCE(last_seen>now()-interval '45 seconds',false) AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND state IN ('queued','dispatched','running','needs_attention') AND (state<>'queued' OR kind<>'pipeline')) FROM servers WHERE id=$1", server, c.Id).Scan(&ready); err != nil {
 			return err
 		}
 		if !ready {
@@ -428,7 +429,7 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 		}
 		if c.Kind == "network" && recoveryCommand(c) {
 			var active bool
-			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND kind='network' AND command->'network'->>'action'='restrict' AND state NOT IN ('queued','succeeded','failed','cancelled'))`, server, c.Id).Scan(&active); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND kind='network' AND command->'network'->>'action'='restrict' AND state IN ('dispatched','running','needs_attention'))`, server, c.Id).Scan(&active); err != nil {
 				return err
 			}
 			if active {

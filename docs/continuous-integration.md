@@ -43,7 +43,7 @@ only when every changed path is known not to affect it:
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
 | Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull action, canvas the root JavaScript manifests and lockfile, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
-| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action or script, `scripts/fetch-attempts.mjs`, the Makefile, the allowlist, the scanner script or its workflows |
+| Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action or script, the Makefile, the allowlist, the pinned Public Suffix List, the scan's workflows, or a file under `scripts/` other than a `.test.mjs` file, since the scan's scripts import, read and run others |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
 scripts, toolchain and unknown paths select the native suite. A change to the
@@ -165,7 +165,7 @@ public source.
 
 `PLAT_AGENT_TESTS` overrides the test pattern. The default runs
 `TestNativeReleaseCommandTransport`, `TestNativeCompletionWaitsForAWritersHealthCheck`,
-`TestNativeLateCompletionReleasesTheReservation`, `TestNativeLateCompletionKeepsAnUnconfirmedReservation`, `TestNativeLateRestoreLeavesTheSourceToResume`,
+`TestNativeLateCompletionReleasesTheReservation`, `TestNativeLateCompletionKeepsAnUnconfirmedReservation`, `TestNativeLateRestoreLeavesTheSourceToResume`, `TestNativeLateRetirementAndCompletionReleaseTheReservation`, `TestNativeLatePublicationLeavesTheHostToAbort`,
 `TestNativeTroubleshootingTarget` and the native session tests in `troubleshooting_session_host_test.go`. These need nothing
 beyond root, the pinned image above and Docker with a supported runc; only
 `docker pull` needs a registry. `scripts/native-agent-colima.sh` lists them by
@@ -201,8 +201,10 @@ Each retains race detection, uncached execution and a fifteen-minute process
 timeout, and any failure fails the Application verification gate. Locally,
 `make verify-app-core` runs the build target and then the lanes concurrently.
 
-Each integration process owns a separate disposable PostgreSQL container, and
-each test creates its own database and temporary resources. The database copies one
+Each integration process owns a separate disposable PostgreSQL container, which it
+reaches through the Docker API rather than a published port (see
+[parallel runs](#parallel-runs-on-one-machine)), and each test creates its own
+database and temporary resources. The database copies one
 that the process migrates and checks once, and every fixture shares one password
 hash and one loaded API specification, because those cost about 1.6 seconds per
 fixture under the race detector. Preview recovery has a separate process budget from
@@ -223,10 +225,13 @@ lines. One commit's package time has differed by 28% between hosted runners, so 
 single run says little about a lane.
 
 `lane-budget.yml` runs `make check-lane-budget` daily and on demand. It reads the
-last five main runs of the current lanes and fails when a lane's package has a
-median above 600 seconds, listing the times in its job summary. While that lasts it
-keeps one issue open with the latest times, and closes it when the lanes recover. It
-is not a required check, so runner variance cannot remove a pull request from the
+last five main runs of the current lanes and reports a lane whose package has a
+median above 600 seconds, listing the times in its job summary. Run by hand, that fails
+the command; in the workflow the job fails only when it cannot check or report, since
+the issue is the notice. While a lane is over it
+keeps one issue open with the latest times, comments when another package goes over,
+and closes it when the lanes recover, as [Scheduled reports](#scheduled-reports)
+describes. It is not a required check, so runner variance cannot remove a pull request from the
 queue. The integration package also adds a warning to any run past that budget, so
 the pull request that crosses it shows it in its own checks. When a lane is past its
 budget, first look for time every test shares, because the fixture is the only place
@@ -239,22 +244,69 @@ starts a new sample, and a lane with fewer than three runs neither fails the che
 closes the issue. Locally, `GITHUB_TOKEN` must allow reading Actions, and nothing is
 opened.
 
+## Parallel runs on one machine
+
+Several checkouts can run the application suites on one machine at the same time,
+each against its own disposable Docker daemon, such as one Colima profile per
+checkout:
+
+```bash
+colima start <profile> --activate=false
+```
+
+```bash
+PLAT_APP_DOCKER_HOST="unix://$HOME/.colima/<profile>/docker.sock" make verify-app
+```
+
+Two rules keep the runs apart, here and on CI runners alike.
+
+**No fixture publishes a container port.** A port published in a VM reaches the
+Mac through the VM's port forwarder at the same number, so two VMs can pick the same
+one and a test can reach the other VM's container. Instead, the harness listens on a
+loopback port the kernel gives it and carries each connection over the Docker API,
+the way `kubectl port-forward` goes through the API server. Each connection runs
+`internal/integration/relay` with `docker exec` in a container on the target's
+network; the harness builds it for the daemon's architecture and copies it in. Unlike
+BusyBox `nc`, it ends when the server closes, which a PostgreSQL cancel request waits
+for. The integration tests reach their PostgreSQL and Gitea this way
+(`internal/integration/docker_forward_test.go`), and the dashboard fixture and image
+smoke test their PostgreSQL and server (`scripts/docker-forward.mjs`).
+Each new connection costs one `docker exec`, tens of milliseconds; connection pools
+keep theirs. Nothing on the Mac then depends on the profile's port forwarder.
+
+**Browser suites reserve their ports.** Each dashboard and workshop run takes the
+first free block of ten loopback ports from 15180 to 15999, below the default
+ephemeral ranges, and holds the block's first port open while it runs. That listener
+is the lock, and it goes when the run does, however it ends. The run's fixture, Vite
+and tests read the block from `PLAT_BROWSER_PORT_BASE`, which Playwright's main
+process sets (`scripts/test-ports.mjs`); nothing assumes a fixed port. A lone run
+gets 15181 for management, as before. Setting the variable yourself skips the
+reservation, so do that only to repeat a run's ports.
+
+Runs in one checkout would build the dashboard into the same directories, so the
+fixture of a second dashboard run there stops at once and says so. Its lock is a Unix
+socket under `/tmp/astilba-<uid>` that the kernel releases with the run, so a killed
+run never blocks the next. Run Chromium and WebKit side by side from two checkouts, or
+one after the other as `make verify-app` does. Each run writes its results under
+`.artifacts/p1/playwright/<block>`. The canvas experiment keeps its fixed port 15171.
+
 ## Vulnerability scan
 
 `make check-vulnerabilities` runs `govulncheck` (a `services/platform` Go tool) and
 OSV Scanner (a release binary pinned by SHA-256 in `scripts/vulnerability-scan.mjs`)
 against `pnpm-lock.yaml` and every Go module. The Application workflow calls
 `vulnerability-scan.yml` when the suite is selected, and that gate requires it, so
-it adds no required context. The same workflow runs daily on its own, so an advisory
+it adds no required context. `scheduled-scans.yml` also calls it daily, so an advisory
 published after the last code change fails a scheduled run without rerunning the
-application suites; GitHub notifies whoever last changed the schedule. The target is
-not part of `check-app` because it needs the Go and OSV vulnerability databases and
+application suites, and the failure reaches an issue as
+[Scheduled reports](#scheduled-reports) describes. The target is not part of `check-app` because it needs the Go and OSV vulnerability databases and
 a GitHub release download. `make check-ci` runs its offline policy tests. The download
 follows the rules in [Host downloads](#host-downloads): it repeats for at least four
 minutes, a stall repeats while a slow download finishes, a file failing its hash stops
 the scan, and a 404 also takes four minutes to report.
 
-The target also runs `node scripts/public-suffix-list.mjs --check`. It fails unless the
+The target also runs `node scripts/public-suffix-list.mjs --check`, even after the scan fails, so a
+finding cannot hide it, and a scheduled run reports its failure beside the scan's findings. It fails unless the
 [pinned Public Suffix List](hosting.md#the-pinned-list)'s commit was on upstream's main
 branch 24 hours ago and the committed copy matches that commit byte for byte, so
 neither a hand edit nor a commit from a fork can pass as upstream's list. The step gets
@@ -300,8 +352,9 @@ function is not reachable are listed for information and do not fail.
 
 Not scanned:
 
-- Test-only Go code and Go tools such as `staticcheck`.
-- Container base images and the pinned runtime images.
+- Test-only Go code and Go tools such as `staticcheck`, whose newer releases the
+  [pin report](#pinned-images-and-tools) lists.
+- Container images, which the pin report scans instead.
 - Tools bundled inside another package. `vite` resolves to
   `@voidzero-dev/vite-plus-core`, which carries Vite, Rolldown and tsdown in its own
   `dist`, so an advisory against those names cannot match it. Check them when
@@ -329,6 +382,135 @@ in a reviewed pull request:
 still applies on its expiry date. The scan fails if an entry has expired, the
 finding reaches a surface the entry does not name, or the entry no longer matches a
 finding, so exceptions cannot outlive what was reviewed.
+
+## Pinned images and tools
+
+`make report-pins` runs `scripts/pin-report.mjs`, which reports what the pins
+Dependabot cannot read need: the images Go constants, workflows, tests and the
+Dockerfile pin by digest, the Go tools and the release binaries. `scheduled-scans.yml`
+runs it daily and on demand. It finds the pins from source on every run, so a pin added
+later needs no list:
+
+- every `name:tag@sha256:digest` reference in a tracked file other than Markdown. One in
+  the server's non-test code, the dashboard's source or the Dockerfile is labelled
+  `runtime`, any other `CI`;
+- every `tool` directive in a tracked `go.mod`, with the requirement that provides it;
+- every GitHub release download in a tracked file, with the version in its URL or in a
+  constant of the same file. A version it cannot read stops the report.
+
+For each image it reads the pinned manifest and checks its bytes against the digest. It
+pulls the `linux/amd64` and `linux/arm64` images, the platforms Astilba runs, by their
+own digests, saves each with `docker save` and scans the archive with the OSV Scanner
+binary [the vulnerability scan](#vulnerability-scan) pins. No container starts. It also
+asks whether the tag now points elsewhere, which means upstream rebuilt the image, and
+lists the registry's tags for a newer release in the same line. A line keeps the tag's
+shape and its first number: `18.4-alpine3.23` can become `18.5-alpine3.24`, but not
+`19.0-alpine3.24` or `18.5-trixie`. A first number of 1000 or more is a year, so a
+calendar version such as `mise-2026.10.14` can become any later date. A pin can follow a
+narrower track than its line: `.github/pinned-releases.json` names such an image or tool,
+with a pattern every release on its track matches and the reason, and only those releases
+count. nginx follows its stable releases, whose minor version is even, so a mainline
+release such as 1.31.8 is not an update to 1.30.6. A pin off its own track is reported as
+a check that failed, and `make check-ci` fails if a track names nothing pinned. Go tools are
+compared through the Go module proxy, and release binaries through GitHub's releases
+without drafts or pre-releases.
+
+These need attention, and keep the [issue](#scheduled-reports) open:
+
+- a pinned tag rebuilt upstream, or a newer release in its line, of an image or tool;
+- in a `runtime` image, a vulnerability whose advisory gives a fixed version for the
+  package's own distribution branch, such as `Alpine:v3.23`, and whose CVSS score is
+  7 or more or missing, as it is for most Go advisories;
+- anything that could not be checked, such as a pull, a scan or a registry request.
+
+The issue gives each image one line: how many vulnerabilities to act on, how many more
+have a fix or have none, and the worst three with the CVE, the package, the fixed
+version and the score. A comment names each new one. Everything else is counted for
+information. A `CI` image runs only fixtures, and an advisory without a fix leaves
+nothing to do but wait for upstream; the updates above still report both kinds of
+image. The run's summary lists every finding. An image of one static binary, such as
+`busybox`, has no packages OSV Scanner can read, and says so.
+
+The report does not apply the release-age gate, so a security release is heard of at
+once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
+change by themselves. Registry requests, pulls and scans repeat like
+[host downloads](#host-downloads) until one has failed for that long; the rest of the
+run then tries each a few times. A registry request ends within a minute, and no image
+check starts or runs past 90 minutes; the tool checks after them are bounded by their
+own retries. So the report is written within the job's two hours, unless OSV Scanner
+itself cannot be downloaded, which the issue reports as a run that did not finish. A registry manifest or blob whose bytes
+do not match its digest is reported as a check that failed.
+
+Much of what the report finds waits on upstream, so closing its issue accepts what it
+lists. A later run opens a new issue only for something the closed one did not have:
+a new advisory, a new release, or the same advisory in a newly pinned digest. A problem
+accepted and then gone is new again if it returns. A check that could not run is never
+accepted, so closing the issue while one cannot run opens a new issue on the next run;
+once nothing but accepted problems remain, that issue closes itself. An advisory keeps
+its place when another id joins it, such as a `GO-` id beside a `GHSA-` one, and a newer
+release stays accepted when its tag is pinned again at a rebuilt digest. What a person
+accepted only ever narrows: a report's ids only recognise keys already kept, and an
+issue keeps only the keys of problems it announced or already knew, so a report cannot
+get something accepted that no issue showed. An advisory whose every accepted id leaves
+its group is therefore announced once more. Say why in a
+comment before closing. Locally, the report needs Docker through `DOCKER_HOST`
+and the network: `GITHUB_TOKEN="$(gh auth token)" make report-pins`. It writes nothing
+to GitHub.
+
+## Scheduled reports
+
+A scheduled run's failure email goes to whichever account GitHub holds responsible for
+the schedule. Once the workflow last changed through the merge queue, that is
+`github-merge-queue[bot]`, so it reaches nobody. Scheduled checks report through an
+issue instead, which GitHub sends to everyone watching the repository's issues.
+
+`scheduled-scans.yml` runs daily and on demand. Its `dependencies` job calls
+`vulnerability-scan.yml`, and its `pins` job runs the pin report. Both have only
+`contents: read` and write what they found to an artifact. The `report` job runs on
+`main` after both, whatever their result. It and the `watch` job described below are the
+only jobs with `issues: write`, and neither runs a scanner or pulls an image. The report
+job reads the artifacts as data: every line
+reaches the issue as inline code, so a mention, link or markup in an advisory or a tag
+stays inert. Runs of the workflow queue rather than overlap, so two never edit one
+issue.
+
+`scripts/report-issue.mjs` keeps at most one open issue per report, opened by
+`github-actions[bot]`: `Scheduled vulnerability scan failed` and `Pinned images and
+tools need attention`. A failure opens it. Each later run replaces the body with what is
+wrong that day, which notifies nobody, and comments with only the problems that are new.
+Each problem has a key that leaves out the day's details, kept in the body, so a problem
+already reported stays quiet. The comment goes before the body changes, so one that
+fails is sent again the next day. A job that failed without a report, timed out or was
+cancelled, or a check that could not run, is itself a problem; the earlier keys stay
+with it, so what that run could not see is not announced again when it is seen, and
+closing the issue then accepts only what it listed. A
+passing job closes the issue and clears its keys, and a skipped one leaves it as it is. Closing the dependency scan's issue by hand accepts
+nothing: the next failing run opens another, because the same failure also stops pull
+requests. The lane budget guard keeps its issue the same way. `make check-ci` seeds a
+failure offline and follows its issue through a repeat, a new problem and recovery.
+
+A workflow that cannot start, or whose report job fails, cannot say so itself, so the two
+daily workflows check on each other with `scripts/schedule-watch.mjs`. Each judges only
+the other's scheduled runs on `main` since its workflow file last changed there:
+scheduled runs always use `main`'s file, so no fork's runs and no manual run on another
+ref can stand in for one, and a run of an older file is not judged by the new one's jobs.
+The lane budget workflow opens `Scheduled scans stopped reporting` when
+`scheduled-scans.yml`:
+
+- is disabled;
+- has had no judged run for 36 hours, counted from the file's last change when it has
+  none since;
+- has a newest judged run that could not start;
+- or has a newest judged run whose `Report to issues` or `Check the lane budget` job did
+  not succeed, a job that timed out included.
+
+The scheduled scans' `Check the lane budget` job opens `Lane budget stopped running` on
+the same checks for `lane-budget.yml` and its `Compare Go race lane times` job. A run the
+concurrency group cancelled before those jobs ran is passed over. A fresh run that has not
+finished leaves the issue as it is, so it closes only once the other workflow has run and
+reported again. GitHub starts a daily schedule hours late under load, hence the 36 hours.
+If GitHub disables both schedules at once, such as after 60 days without repository
+activity, neither can tell.
 
 ## Source-size ratchet
 
@@ -413,6 +595,8 @@ one-sentence explanation:
 | `jsonguard` | Code imports `encoding/json` outside the files [JSON encoding](json-encoding.md#remaining-v1-use) gives a reason for, or calls a plain `encoding/json/v2` writer outside a named third-party function. A stored or peer value written that way would move a digest when read back. Its two lists are the decisions recorded in [JSON encoding](json-encoding.md), not suppressions. | The `encoding/json/v2` adoption |
 | `txnetwork` | A function holding a transaction calls a Git provider or GitHub, directly or through a function in its package, so a tenant's slow server holds the transaction's locks and connection. Ask between passes with `providerCall`. | Holding a server's row across provider calls, after #157 |
 | `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
+| `operationview` | An exported function in `internal/execution` that takes a `store.Principal` returns an `api.Operation`, or a slice of them, other than through `operationFor` or `operationsFor` called with its own principal, or a function elsewhere takes a principal and returns one. An operation's note can quote the environment's configuration, which those withhold from a credential without `environment:read`. | PLAT-285 |
+| `revisioninsert` | Code outside `internal/store` calls `(*db.Queries).InsertRevision`. `store.InsertRevision` refuses a specification over the size limit, measured as the table's check measures it, before the check can fail and abort the transaction. | PLAT-286 |
 
 These catch the shapes the defects took, so a clean run does not rule a defect out.
 `dberror` looks only at `err != nil` conditions, alone or as `||` terms, on an error set in

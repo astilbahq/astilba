@@ -95,8 +95,8 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextKeys.Keys["test"] = old.Keys["test"]
-	f.st.Keys = nextKeys
-	if err = f.st.Rewrap(context.Background()); err != nil {
+	useKeys(t, f.st, nextKeys)
+	if err = f.st.Rewrap(context.Background(), "test"); err != nil {
 		t.Fatal(err)
 	}
 	delete(nextKeys.Keys, "test")

@@ -16,11 +16,11 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
@@ -163,7 +163,7 @@ func TestNativePreviewEnvironment(t *testing.T) {
 			_, _ = docker.ImageRemove(context.Background(), result.Image, client.ImageRemoveOptions{})
 		}
 	})
-	password, _ := cryptobox.Token()
+	password, _ := randtoken.New()
 	secret := uuid.New()
 	pgImage := domain.PostgresImage
 	built := result.Image
@@ -316,7 +316,7 @@ func TestNativePreviewEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, _ := cryptobox.Token()
+	token, _ := randtoken.New()
 	if err = j.Transfer("https://destination.example.test", key, 1, token); err != nil {
 		t.Fatal(err)
 	}

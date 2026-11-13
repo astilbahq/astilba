@@ -1,8 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { client, result, type Schema } from "../api/client";
-import { runtimeOptions } from "../api/environment";
-import { publishDraft } from "../api/environment";
+import { draftOptions, publishDraft, runtimeOptions } from "../api/environment";
 import { serversOptions } from "../api/servers";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
@@ -13,13 +12,13 @@ import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
-import { ApplyReviewedPlan } from "./apply-reviewed-plan";
 import { DeploymentTarget } from "./deployment-target";
-import { ReviewedPlacements } from "./reviewed-placements";
+import { PreparedPlan, usePreparedPlan } from "./prepared-plan";
 import type { EnvironmentPath } from "./visual-editor";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
+
 export function Deployments({
   path,
   revision,
@@ -40,8 +39,6 @@ export function Deployments({
   const [requireRelease, setRequireRelease] = useState(false);
   const [releaseCommand, setReleaseCommand] = useState("");
   const [serverId, setServerId] = useState("");
-  const [planId, setPlanId] = useState("");
-  const [key, setKey] = useState("");
   const [message, setMessage] = useState("");
   const [bundle, setBundle] = useState<Schema["ConfigurationExport"]>();
   const [logHours, setLogHours] = useState<1 | 6 | 24>(1);
@@ -54,21 +51,7 @@ export function Deployments({
     ...serversOptions(path.workspaceId),
     refetchInterval: 15000,
   });
-  const plan = useQuery({
-    queryKey: ["visual-plan", path, planId],
-    enabled: !!planId,
-    queryFn: () =>
-      result(
-        client.GET(`${root}/deployment-plans/{planId}`, {
-          params: { path: { ...path, planId } },
-        }),
-      ),
-    refetchInterval: (query) =>
-      query.state.data?.plan ||
-      ["failed", "cancelled"].includes(query.state.data?.state ?? "")
-        ? false
-        : 2000,
-  });
+  const plan = usePreparedPlan(path, revision.id);
   const runtime = useQuery(runtimeOptions(path));
   const releases = useQuery({
     queryKey: ["releases", path, revision.id],
@@ -95,6 +78,12 @@ export function Deployments({
       `/api/v1/workspaces/${workspaceId}/projects/${projectId}/environments/${environmentId}/events`,
     );
     events.addEventListener("changed", () => {
+      // Includes the saved revision, which decides whether a prepared plan is still shown.
+      void queries.invalidateQueries({
+        queryKey: draftOptions({ workspaceId, projectId, environmentId })
+          .queryKey,
+        exact: true,
+      });
       void queries.invalidateQueries({
         queryKey: ["runtime", { workspaceId, projectId, environmentId }],
       });
@@ -104,8 +93,6 @@ export function Deployments({
     });
     return () => events.close();
   }, [workspaceId, projectId, environmentId, queries]);
-  const ready = plan.data?.plan;
-  const stale = !!ready && ready.revisionId !== revision.id;
   const download = (
     name: string,
     data: string,
@@ -166,8 +153,7 @@ export function Deployments({
                     },
                   }),
                 );
-                setPlanId(next.id);
-                setKey(crypto.randomUUID());
+                plan.prepare(next.id, revision.id);
                 setMessage(
                   "Resolving image identities and inspecting current state. No deployment has started.",
                 );
@@ -247,7 +233,7 @@ export function Deployments({
             </details>
             <Button
               type="submit"
-              disabled={dirty || action.isPending || !serverId}
+              disabled={dirty || plan.behind || action.isPending || !serverId}
             >
               Prepare plan
             </Button>
@@ -256,109 +242,28 @@ export function Deployments({
                 Save your staged changes before preparing or applying a plan.
               </small>
             )}
+            {plan.behind && (
+              <small>
+                A newer revision was saved. Use Reload current in Configuration
+                before preparing a plan.
+              </small>
+            )}
           </Form>
         )}
-        {plan.data && !ready && (
-          <p role="status">
-            Plan: {plan.data.state}. View the resolution operation below for
-            details.
-          </p>
-        )}
-        {ready && (
-          <section className={s.stack} aria-label="Reviewed deployment plan">
-            <h3>Plan ready</h3>
-            <p>
-              <strong>
-                {ready.distributed
-                  ? "Coordinated cross-host release"
-                  : ready.release
-                    ? "Protected stateless HTTP release"
-                    : "Standard deployment"}
-              </strong>
-            </p>
-            {ready.release && (
-              <p>
-                Readiness must pass before traffic moves. Drain:{" "}
-                {ready.release.options.drainSeconds} seconds. Release command:{" "}
-                {ready.release.options.command.length
-                  ? ready.release.options.command.join(" · ")
-                  : "none"}
-                .
-              </p>
-            )}
-            <p>
-              Server:{" "}
-              {servers.data?.find((server) => server.id === ready.serverId)
-                ?.name ?? ready.serverId}
-            </p>
-            <ul>
-              {ready.specification.applications.map((app) => (
-                <li key={app.id}>
-                  {app.name}: {app.replicas ?? 1}{" "}
-                  {(app.replicas ?? 1) === 1 ? "instance" : "instances"}
-                </li>
-              ))}
-            </ul>
-            {ready.distributed && (
-              <ReviewedPlacements
-                distributed={ready.distributed}
-                applications={ready.specification.applications}
-                servers={servers.data}
-              />
-            )}
-            <ul>
-              {ready.effects.map((effect) => (
-                <li key={effect}>{effect}</li>
-              ))}
-            </ul>
-            <p>
-              Expires {new Date(ready.expiresAt).toLocaleTimeString()} ·
-              revision {ready.revisionId.slice(0, 8)}
-            </p>
-            <ul>
-              {!ready.distributed &&
-                ready.specification.applications.map((app) => (
-                  <li key={app.id}>
-                    <strong>{app.name}</strong>
-                    <code className={s.code}> {ready.images[app.id]}</code>
-                  </li>
-                ))}
-            </ul>
-            <p>
-              {ready.specification.bindings?.length ?? 0} database bindings.
-              Secret values are withheld; the plan uses immutable version
-              references.
-            </p>
-            <details>
-              <summary>Effective configuration and secret references</summary>
-              <pre className={`${s.code} ${s.wrappedCode}`}>
-                {JSON.stringify(ready.specification, null, 2)}
-              </pre>
-            </details>
-            {stale && (
-              <p role="alert">
-                The saved revision changed. Prepare a new plan.
-              </p>
-            )}
-            <ApplyReviewedPlan
-              key={planId}
-              path={path}
-              planId={planId}
-              plan={ready}
-              review={!!plan.data?.hostReview}
-              idempotencyKey={key}
-              owner={owner}
-              write={write}
-              blocked={dirty || stale}
-              action={action}
-              onApplied={(op) =>
-                setMessage(
-                  `Deployment ${op.state}. It continues if this page closes.`,
-                )
-              }
-            />
-          </section>
-        )}
+        <PreparedPlan
+          state={plan}
+          path={path}
+          servers={servers.data}
+          owner={owner}
+          write={write}
+          dirty={dirty}
+          action={action}
+          onApplied={(op) =>
+            setMessage(
+              `Deployment ${op.state}. It continues if this page closes.`,
+            )
+          }
+        />
       </section>
       <section className={s.panel} aria-label="Release history">
         <h2>Release history</h2>
@@ -408,7 +313,8 @@ export function Deployments({
                           loadRevision(next);
                           setRequireRelease(true);
                           setReleaseCommand("");
-                          setPlanId("");
+                          // Its message already asks for a new plan.
+                          plan.clear();
                           setMessage(
                             "Rollback draft created. Review its effective configuration and prepare a new deployment plan; nothing has been deployed.",
                           );

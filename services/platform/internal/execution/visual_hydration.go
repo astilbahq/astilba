@@ -62,7 +62,7 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 			return err
 		}
 		var access pipeline.RegistryAccess
-		if err := s.openIntegration(ws, *a.RegistryID, "registry", registry.EncryptedAccess, &access); err != nil {
+		if err := s.legacyOpenIntegration(ws, *a.RegistryID, "registry", registry.EncryptedAccess, &access); err != nil {
 			return err
 		}
 		payload.RegistryAccess[key] = access.Pull

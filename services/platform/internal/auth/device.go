@@ -9,8 +9,9 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,10 +21,7 @@ import (
 // credential check. It moves the holder from the budgets anyone can spend by naming the email
 // to ones only its holders can, so a guessing attack on the account cannot refuse the person
 // who signs in from their usual browser.
-const (
-	DeviceTokenLifetime = 90 * 24 * time.Hour
-	deviceIdentity      = "login-device:v1"
-)
+const DeviceTokenLifetime = 90 * 24 * time.Hour
 
 type deviceToken struct {
 	Account uuid.UUID `json:"account"`
@@ -36,7 +34,7 @@ type deviceToken struct {
 // IssueDeviceToken ties a token to the account's current auth version, so a password change,
 // a recovery code or anything else that ends the account's sessions also ends these.
 func (s *Service) IssueDeviceToken(account db.Account) (string, error) {
-	nonce, err := cryptobox.Token()
+	nonce, err := randtoken.New()
 	if err != nil {
 		return "", err
 	}
@@ -44,7 +42,7 @@ func (s *Service) IssueDeviceToken(account db.Account) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	blob, err := s.Store.Keys.Seal(raw, deviceIdentity)
+	blob, err := s.Tokens.Seal(secretbroker.DeviceToken, raw)
 	if err != nil {
 		return "", err
 	}
@@ -58,7 +56,7 @@ func (s *Service) openDeviceToken(ctx context.Context, email, token string) (*de
 	if err != nil {
 		return nil, nil
 	}
-	raw, err := s.Store.Keys.Open(blob, deviceIdentity)
+	raw, err := s.Tokens.Open(secretbroker.DeviceToken, blob)
 	if err != nil {
 		return nil, nil
 	}

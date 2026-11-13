@@ -18,12 +18,12 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -410,7 +410,7 @@ func (r *claimRecovery) transfer(t *testing.T, host api.AgentEnrollment) string 
 	if err := json.Unmarshal(staged, &inventory); err != nil {
 		t.Fatal(err)
 	}
-	credential, err := cryptobox.Token()
+	credential, err := randtoken.New()
 	if err != nil {
 		t.Fatal(err)
 	}

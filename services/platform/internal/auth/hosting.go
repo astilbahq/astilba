@@ -7,8 +7,8 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -22,7 +22,7 @@ func (s *Service) InviteHosted(ctx context.Context, email, origin string) error 
 	if e != nil {
 		return e
 	}
-	token, e := cryptobox.Token()
+	token, e := randtoken.New()
 	if e != nil {
 		return e
 	}
@@ -153,7 +153,7 @@ func (s *Service) RequestEmailVerification(ctx context.Context, p store.Principa
 	if e := s.Limit(ctx, "email-verification:"+p.Account.ID.String(), 3, time.Hour); e != nil {
 		return e
 	}
-	token, e := cryptobox.Token()
+	token, e := randtoken.New()
 	if e != nil {
 		return e
 	}

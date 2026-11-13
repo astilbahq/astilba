@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 
 test("guided host preparation and domain staging preserve owner review and conflicts", async ({
   page,
@@ -104,7 +105,7 @@ test("guided host preparation and domain staging preserve owner review and confl
   await form.getByLabel("Public IPv4", { exact: true }).fill("198.51.100.9");
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:15181",
+    Origin: api,
   };
   const domainPath = `/api/v1/workspaces/${ws}/servers/${enrollment.server.id}/domain`;
   expect(

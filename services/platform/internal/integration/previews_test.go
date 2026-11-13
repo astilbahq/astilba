@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
@@ -93,7 +93,7 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 	b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision.Id, ServerId: uuid.New()}, 403, nil)
 	var enrollment api.Enrollment
 	b.call("POST", prefix+"/servers", map[string]any{"name": "Preview host", "role": "combined", "previewOnly": true}, 201, &enrollment)
-	credential, _ := cryptobox.Token()
+	credential, _ := randtoken.New()
 	yes := true
 	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildNetwork: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
 	input.Preflight.ExistingContainers = 1
@@ -471,7 +471,7 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 		}
 		var ticket api.TransferTicket
 		b.call("POST", prefix+"/servers/"+enrollment.Server.Id.String()+"/transfer", nil, 201, &ticket)
-		credential, _ = cryptobox.Token()
+		credential, _ = randtoken.New()
 		input.Credential = &credential
 		input.Token = ticket.Token
 		input.ControllerGeneration = &ticket.Generation

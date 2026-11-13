@@ -27,13 +27,17 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/moby/moby/client"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -107,26 +111,37 @@ func TestMain(m *testing.M) {
 		return exec.CommandContext(ctx, "docker", append([]string{"--host", host}, args...)...).CombinedOutput()
 	}
 	owner := uuid.NewString()
-	password, _ := cryptobox.Token()
+	password, _ := randtoken.New()
 	name := "astilba-p1-test-" + owner
-	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--publish", "127.0.0.1::5432", "--env", "POSTGRES_PASSWORD="+password, postgresImage)
+	// Nothing is published: the tests reach the database through the Docker API.
+	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--env", "POSTGRES_PASSWORD="+password, postgresImage)
 	if e != nil {
 		fmt.Fprintln(os.Stderr, "cannot start disposable test database", string(out))
 		os.Exit(1)
 	}
+	var forward *dockerForward
 	cleanup := func() {
+		if forward != nil {
+			forward.Close()
+		}
 		label, e := run("inspect", "--format", `{{ index .Config.Labels "com.astilba.p1-test" }}`, name)
 		if e == nil && strings.TrimSpace(string(label)) == owner {
 			_, _ = run("rm", "--force", "--volumes", name)
 		}
 	}
-	port, e := run("port", name, "5432/tcp")
+	docker, e := client.New(client.WithHost(host))
 	if e != nil {
 		cleanup()
-		fmt.Fprintln(os.Stderr, "cannot read the test database's port:", e, string(port))
+		fmt.Fprintln(os.Stderr, "cannot reach the test database's daemon:", e)
 		os.Exit(1)
 	}
-	databaseURL = "postgres://postgres:" + password + "@" + strings.TrimSpace(string(port)) + "/postgres?sslmode=disable"
+	forward, e = startDockerForward(docker, name, "127.0.0.1", "5432")
+	if e != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "cannot forward to the test database:", e)
+		os.Exit(1)
+	}
+	databaseURL = "postgres://postgres:" + password + "@" + forward.Addr() + "/postgres?sslmode=disable"
 	pool, e := pgxpool.New(context.Background(), databaseURL)
 	if e != nil {
 		cleanup()
@@ -147,9 +162,9 @@ func TestMain(m *testing.M) {
 	pool.Close()
 	if ping != nil {
 		// Printed first and in turn: a stalled daemon can hold each of these for minutes.
-		fmt.Fprintf(os.Stderr, "test PostgreSQL did not become ready after %s at %s: %v\n", time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(port)), ping)
+		fmt.Fprintf(os.Stderr, "test PostgreSQL did not become ready after %s through the Docker API: %v\n", time.Since(started).Round(time.Millisecond), ping)
 		for _, args := range [][]string{
-			{"inspect", "--format", "{{.State.Status}} {{json .NetworkSettings.Ports}}", name},
+			{"inspect", "--format", "{{.State.Status}}", name},
 			{"exec", name, "pg_isready", "--host", "127.0.0.1"},
 			{"logs", "--tail", "20", name},
 		} {
@@ -190,6 +205,27 @@ func setup(t *testing.T) *fixture { return setupBootstrap(t, true) }
 func setupBootstrap(t *testing.T, bootstrap bool) *fixture {
 	return setupStore(t, bootstrap, false)
 }
+
+// testStore is a store whose broker holds keys, as the server's does.
+func testStore(t *testing.T, pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted bool) *store.Store {
+	t.Helper()
+	st := store.New(pool, nil, hosted)
+	useKeys(t, st, keys)
+	return st
+}
+
+// useKeys gives a store a keyring, as configuring another keyring and restarting does: the
+// broker and the paths not yet moved to it both use the new one.
+func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
+	t.Helper()
+	backend, e := custody.NewFile(keys)
+	if e != nil {
+		t.Fatal(e)
+	}
+	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
+	st.Keys = keys
+}
+
 func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	t.Helper()
 	if testing.Short() {
@@ -208,17 +244,28 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
-	pool, e := pgxpool.New(ctx, databaseDSN(name))
+	// Configured as management configures its own.
+	poolConfig, e := store.PoolConfig(databaseDSN(name))
+	if e != nil {
+		t.Fatal(e)
+	}
+	pool, e := pgxpool.NewWithConfig(ctx, poolConfig)
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(pool.Close)
+	// Every coordinated phase management issued in the test is one the agent runs.
+	t.Cleanup(func() {
+		if unrun := unrunPhases(t, pool); len(unrun) > 0 {
+			t.Errorf("management issued coordinated phases the agent refuses: %v", unrun)
+		}
+	})
 	// The one value a migration makes up. Each installation has its own.
 	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)
 	}
 	keys, _ := cryptobox.New("test")
-	st := store.New(pool, keys, hosted)
+	st := testStore(t, pool, keys, hosted)
 	if hosted {
 		st.Hosting.ServerLimit = 100
 	}
@@ -243,7 +290,11 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	service := &auth.Service{Store: st, Passwords: passwords, Mail: sender, Now: time.Now}
+	tokens, e := st.Broker.Tokens(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	service := &auth.Service{Store: st, Passwords: passwords, Mail: sender, Now: time.Now, Tokens: tokens}
 	log := &lockedLog{}
 	apiServer, cleanup := httpapi.New(st, service, "http://127.0.0.1", true, slog.New(slog.NewTextHandler(log, nil)))
 	t.Cleanup(cleanup)
@@ -331,7 +382,7 @@ type browser struct {
 // drives a service without going through HTTP.
 func browserPrincipal(t *testing.T, st *store.Store, account db.Account, mfa bool) store.Principal {
 	t.Helper()
-	token, err := cryptobox.Token()
+	token, err := randtoken.New()
 	if err != nil {
 		t.Fatal(err)
 	}

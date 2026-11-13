@@ -721,11 +721,43 @@ type RouteClaim struct {
 	EnvironmentID uuid.UUID `json:"environment_id"`
 }
 
+type SchemaAdditiveMigration struct {
+	Version    int64     `json:"version"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 type Secret struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
 	ID            uuid.UUID `json:"id"`
 	Name          string    `json:"name"`
+}
+
+type SecretAccess struct {
+	ID            uuid.UUID   `json:"id"`
+	At            time.Time   `json:"at"`
+	WorkspaceID   *uuid.UUID  `json:"workspace_id"`
+	Purpose       string      `json:"purpose"`
+	PrincipalKind string      `json:"principal_kind"`
+	AccountID     *uuid.UUID  `json:"account_id"`
+	AutomationID  *uuid.UUID  `json:"automation_id"`
+	ServerID      *uuid.UUID  `json:"server_id"`
+	AgentInstance pgtype.Text `json:"agent_instance"`
+	Job           pgtype.Text `json:"job"`
+	OperatorRef   pgtype.Text `json:"operator_ref"`
+	OperationID   *uuid.UUID  `json:"operation_id"`
+	Items         []byte      `json:"items"`
+	ItemCount     int32       `json:"item_count"`
+	Generations   []byte      `json:"generations"`
+	BackendID     string      `json:"backend_id"`
+	Reason        string      `json:"reason"`
+}
+
+type SecretAccessOutcome struct {
+	AccessID           uuid.UUID `json:"access_id"`
+	At                 time.Time `json:"at"`
+	Outcome            string    `json:"outcome"`
+	ProviderRequestIds []byte    `json:"provider_request_ids"`
 }
 
 type SecretVersion struct {

@@ -20,9 +20,9 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 
 	"github.com/google/uuid"
@@ -60,7 +60,7 @@ func agentRequest(t *testing.T, c *http.Client, origin, path, token string, body
 func enrollment(t *testing.T, f *fixture, b *browser, ws uuid.UUID, role string) (api.Enrollment, api.AgentEnrollment, string) {
 	var v api.Enrollment
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/servers", map[string]string{"name": "Test server", "role": role}, 201, &v)
-	credential, _ := cryptobox.Token()
+	credential, _ := randtoken.New()
 	machineBoundRotation := true
 	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
 	return v, in, v.Server.Id.String() + "." + credential
@@ -68,7 +68,7 @@ func enrollment(t *testing.T, f *fixture, b *browser, ws uuid.UUID, role string)
 
 // credentialToken makes a legacy bearer credential for an enrollment request.
 func credentialToken() (*string, error) {
-	token, err := cryptobox.Token()
+	token, err := randtoken.New()
 	return &token, err
 }
 func envForExecution(t *testing.T, f *fixture, b *browser, ws uuid.UUID) uuid.UUID {
@@ -120,7 +120,7 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	if _, e := f.st.Pool.Exec(context.Background(), "UPDATE servers SET rotation_requested=true WHERE id=$1", v.Server.Id); e != nil {
 		t.Fatal(e)
 	}
-	next, _ := cryptobox.Token()
+	next, _ := randtoken.New()
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: next, MachineId: in.MachineId}, 204, nil)
 	var expiry time.Time
 	if e := f.st.Pool.QueryRow(context.Background(), "SELECT previous_until FROM servers WHERE id=$1", v.Server.Id).Scan(&expiry); e != nil {
@@ -132,7 +132,7 @@ func TestServerIdentityLifecycle(t *testing.T) {
 	if !after.Equal(expiry) {
 		t.Fatal("retry extended rotation overlap")
 	}
-	another, _ := cryptobox.Token()
+	another, _ := randtoken.New()
 	agentRequest(t, httpClient, tlsServer.URL, "/agent/v1/rotate", token, api.AgentRotation{Credential: another, MachineId: in.MachineId}, 401, nil)
 	_, _ = f.st.Pool.Exec(context.Background(), "UPDATE servers SET previous_until=now()-interval '1 second' WHERE id=$1", v.Server.Id)
 	heartbeat := api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}
@@ -761,7 +761,7 @@ func TestReenrollmentRecoversPendingRotation(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer j.Close()
-	pending, _ := cryptobox.Token()
+	pending, _ := randtoken.New()
 	_ = j.SetConfig(agent.Config{Origin: tlsServer.URL, ServerID: in.ServerId, MachineID: in.MachineId, Credential: *in.Credential, Pending: pending})
 	c := agent.NewClient(j, &agent.Engine{Journal: j})
 	c.HTTP = tlsServer.Client()

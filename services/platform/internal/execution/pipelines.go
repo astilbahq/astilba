@@ -43,7 +43,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 		return uuid.Nil, err
 	}
 	var busy bool
-	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", primary).Scan(&busy); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", primary).Scan(&busy); err != nil {
 		return uuid.Nil, err
 	}
 	if fallback != nil && (!online || busy) {
@@ -52,7 +52,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 			return uuid.Nil, err
 		}
 		if ready {
-			if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", *fallback).Scan(&busy); err != nil {
+			if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", *fallback).Scan(&busy); err != nil {
 				return uuid.Nil, err
 			}
 			if !busy {
@@ -224,7 +224,7 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source) (api.Operation, error) {
 	var out api.Operation
 	if err := c.Validate(); err != nil {
-		return out, domain.Invalid("source")
+		return api.Operation{}, domain.Invalid("source")
 	}
 	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
@@ -259,7 +259,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, discard bool) (api.Operation, error) {
 	var out api.Operation
@@ -313,27 +313,27 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()})
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig) (api.Operation, error) {
 	var out api.Operation
 	if p.Automation != nil {
-		return out, domain.Forbidden
+		return api.Operation{}, domain.Forbidden
 	}
 	c = c.Canonical()
 	if err := c.Validate(); err != nil {
 		var validation *pipeline.BuildValidationError
 		if errors.As(err, &validation) {
-			return out, &domain.Error{Code: "invalid_input", Message: validation.Message, Fields: []string{"build." + validation.Field}}
+			return api.Operation{}, &domain.Error{Code: "invalid_input", Message: validation.Message, Fields: []string{"build." + validation.Field}}
 		}
-		return out, domain.Invalid("build")
+		return api.Operation{}, domain.Invalid("build")
 	}
 	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: c.AutoDeploy, Recent: c.AutoDeploy}, "build.create", app, func(tx pgx.Tx, git *gitAnswers) error {
 		var err error
 		out, err = s.admitBuild(ctx, tx, git, p, ws, pid, env, base, app, key, c, true)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig, persist bool) (api.Operation, error) {
