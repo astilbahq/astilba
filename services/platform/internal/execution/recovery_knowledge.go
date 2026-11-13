@@ -153,12 +153,6 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 			}
 		}
 	}
-	planKnown := func(plan uuid.UUID) bool {
-		key, _ := stablejson.Marshal([]string{plan.String()})
-		_, kept := known["visual_plans"][string(key)]
-		_, carried := incoming["visual_plans"][string(key)]
-		return kept || carried
-	}
 	for table, rows := range before.Tables {
 		for _, row := range rows {
 			key, err := portability.RecoveryRowKey(table, row)
@@ -168,11 +162,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 			if _, exists := incoming[table][key]; exists {
 				continue
 			}
-			selected := maps.Clone(row)
-			if table == "execution_operations" {
-				if selected, err = endRecoveryGapWork(selected, source.History, planKnown); err != nil {
-					return err
-				}
+			selected, err := endRecoveryGapRow(table, row, source.History, known, incoming)
+			if err != nil {
+				return err
 			}
 			if keep, err := applyRecoveryProjection(table, selected, projections); err != nil {
 				return err

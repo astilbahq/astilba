@@ -9,6 +9,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -213,7 +214,7 @@ func validateRecoveryHistory(a Archive) error {
 }
 
 func marshalValue(value any) []byte {
-	raw, _ := json.Marshal(value)
+	raw, _ := stablejson.Marshal(value)
 	return raw
 }
 
@@ -445,7 +446,7 @@ func StoreRecoveredHistory(ctx context.Context, tx pgx.Tx, ws uuid.UUID, history
 				return err
 			}
 		}
-		raw, err := json.Marshal(e)
+		raw, err := stablejson.Marshal(e)
 		if err != nil {
 			return err
 		}

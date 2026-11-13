@@ -509,7 +509,7 @@ func (q *Queries) InsertRecoveryFrame(ctx context.Context, arg InsertRecoveryFra
 const keepRecoveredRuntimeHistory = `-- name: KeepRecoveredRuntimeHistory :exec
 INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
 SELECT $1,$2,$3,$4,$5,$6
-WHERE NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.id = $2)
+WHERE NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.id = $2 AND o.runtime_outcome IS NOT NULL)
 ON CONFLICT DO NOTHING
 `
 
@@ -522,7 +522,8 @@ type KeepRecoveredRuntimeHistoryParams struct {
 	Entry         []byte    `json:"entry"`
 }
 
-// An applied-history entry whose operation row recovery didn't merge, so later bases carry it.
+// An applied-history entry whose operation row recovery didn't merge, or merged without its
+// outcome, so later bases carry it.
 func (q *Queries) KeepRecoveredRuntimeHistory(ctx context.Context, arg KeepRecoveredRuntimeHistoryParams) error {
 	_, err := q.db.Exec(ctx, keepRecoveredRuntimeHistory,
 		arg.WorkspaceID,
@@ -728,7 +729,7 @@ func (q *Queries) RaiseServerUpdateGenerations(ctx context.Context, workspaceID 
 
 const recoveredRuntimeHistory = `-- name: RecoveredRuntimeHistory :many
 SELECT entry FROM recovered_runtime_history h WHERE h.workspace_id = $1
-AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = h.workspace_id AND o.id = h.operation_id)
+AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = h.workspace_id AND o.id = h.operation_id AND o.runtime_outcome IS NOT NULL)
 ORDER BY h.environment_id,h.generation
 `
 

@@ -11,6 +11,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -327,6 +328,21 @@ func endRecoveryGapWork(row portability.Row, history *portability.RecoveryHistor
 		outcome.Set(out)
 	}
 	return out, nil
+}
+
+// endRecoveryGapRow is a restored row as recovery merges it when the newest base doesn't carry it:
+// an operation gets the final state the base records, naming only a plan one of the two holds.
+func endRecoveryGapRow(table string, row portability.Row, history *portability.RecoveryHistory, known, incoming recoveryRows) (portability.Row, error) {
+	row = maps.Clone(row)
+	if table != "execution_operations" {
+		return row, nil
+	}
+	return endRecoveryGapWork(row, history, func(plan uuid.UUID) bool {
+		key, _ := stablejson.Marshal([]string{plan.String()})
+		_, kept := known["visual_plans"][string(key)]
+		_, carried := incoming["visual_plans"][string(key)]
+		return kept || carried
+	})
 }
 
 // registerLoadedBases records every base recovery loaded that this database doesn't know, since a
