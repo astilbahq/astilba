@@ -128,7 +128,7 @@ func (s *Service) approveMaintenanceUpgrade(ctx context.Context, tx pgx.Tx, ws u
 	}
 	var phase string
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT h.id,h.phase,o.command FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id JOIN cross_host_reservations r ON r.parent_id=h.id AND r.server_id=$3 WHERE h.workspace_id=$1 AND h.environment_id=$2 AND o.state NOT IN ('succeeded','failed','cancelled') FOR UPDATE OF h,o`, ws, plan.Source.EnvironmentID, plan.Source.ServerID).Scan(&parent, &phase, &raw)
+	err = tx.QueryRow(ctx, `SELECT h.id,h.phase,o.command FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id JOIN cross_host_reservations r ON r.parent_id=h.id AND r.server_id=$3 WHERE h.workspace_id=$1 AND h.environment_id=$2 AND o.state IN ('queued','dispatched','running','needs_attention') FOR UPDATE OF h,o`, ws, plan.Source.EnvironmentID, plan.Source.ServerID).Scan(&parent, &phase, &raw)
 	if err != nil {
 		return api.Operation{}, err
 	}

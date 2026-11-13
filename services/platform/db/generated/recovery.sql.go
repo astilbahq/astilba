@@ -175,7 +175,7 @@ func (q *Queries) BlockWorkspacePreviewRequests(ctx context.Context, workspaceID
 
 const cancelServerOperationsForRecovery = `-- name: CancelServerOperationsForRecovery :exec
 UPDATE execution_operations SET state='cancelled',cancel_requested=true,note='Fenced after management recovery; inspect the host before resuming.'
-WHERE workspace_id = $1 AND server_id = $2 AND state NOT IN ('succeeded','failed','cancelled')
+WHERE workspace_id = $1 AND server_id = $2 AND state IN ('queued','dispatched','running','needs_attention')
 `
 
 type CancelServerOperationsForRecoveryParams struct {

@@ -497,7 +497,7 @@ func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env u
 			host := &out.Hosts[i]
 			var online bool
 			var phase string
-			if err := tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND last_seen>now()-interval '45 seconds',COALESCE((SELECT CASE WHEN o.command->'crosshost'->>'action'='observe' THEN 'inspection pending' WHEN o.command->'crosshost' ? 'maintenance' THEN 'maintenance' ELSE 'changing' END FROM cross_host_reservations r JOIN execution_operations o ON o.id=r.parent_id WHERE r.server_id=$2 AND o.environment_id=$3 AND o.state NOT IN ('succeeded','failed','cancelled')),'') FROM servers WHERE workspace_id=$1 AND id=$2`, ws, host.ServerID, env).Scan(&online, &phase); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND last_seen>now()-interval '45 seconds',COALESCE((SELECT CASE WHEN o.command->'crosshost'->>'action'='observe' THEN 'inspection pending' WHEN o.command->'crosshost' ? 'maintenance' THEN 'maintenance' ELSE 'changing' END FROM cross_host_reservations r JOIN execution_operations o ON o.id=r.parent_id WHERE r.server_id=$2 AND o.environment_id=$3 AND o.state IN ('queued','dispatched','running','needs_attention')),'') FROM servers WHERE workspace_id=$1 AND id=$2`, ws, host.ServerID, env).Scan(&online, &phase); err != nil {
 				return err
 			}
 			if !online {

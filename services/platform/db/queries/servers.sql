@@ -119,7 +119,7 @@ SELECT capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id
 
 -- name: ServerHasActiveOperations :one
 SELECT EXISTS(SELECT 1 FROM execution_operations
-    WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled'));
+    WHERE workspace_id = @workspace_id AND server_id = @server_id AND state IN ('queued','dispatched','running','needs_attention'));
 
 -- name: SettleRevokedServerOperations :exec
 -- A revoked server will never report again. Roots are left to the coordinator, which still has the
@@ -127,7 +127,7 @@ SELECT EXISTS(SELECT 1 FROM execution_operations
 -- The sequence answers any later report from a renewed host without letting it change the outcome,
 -- so that host can acknowledge its journal and take work again.
 UPDATE execution_operations SET state='cancelled',cancel_requested=true,report_sequence = @report_sequence,note='The server was revoked before reporting, so what it did is unknown.'
-WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled')
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND state IN ('queued','dispatched','running','needs_attention')
     AND (parent_id IS NOT NULL OR kind NOT IN ('crosshost','network'));
 
 -- name: RejectRevokedServerUpgrades :exec
@@ -139,7 +139,7 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND status->>'phas
 -- choice left to make.
 SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
 WHERE o.workspace_id = @workspace_id AND o.server_id = @server_id AND o.parent_id IS NULL AND o.kind='crosshost'
-    AND o.state NOT IN ('succeeded','failed','cancelled') AND c.phase='maintenance-owner';
+    AND o.state IN ('queued','dispatched','running','needs_attention') AND c.phase='maintenance-owner';
 
 -- name: ResumeMaintenanceSource :exec
 UPDATE cross_host_operations SET phase='maintenance-resume-source' WHERE workspace_id = @workspace_id AND id = @id;
