@@ -209,11 +209,11 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 	scans = func(n node) bool {
 		return n.Type == "Seq Scan" && n.Relation == "execution_operations" || slices.ContainsFunc(n.Plans, scans)
 	}
-	// The unfinished indexes hold every tenant's unfinished work, so a plan that reads one without
-	// its leading key, its host or its workspace, reads other tenants' work.
+	// The unfinished and active indexes hold every tenant's unfinished work, so a plan that reads
+	// one without its leading key, its host or its workspace, reads other tenants' work.
 	var crossTenant func(node) string
 	crossTenant = func(n node) string {
-		for index, key := range map[string]string{"execution_unfinished_server": "server_id", "execution_unfinished_workspace": "workspace_id"} {
+		for index, key := range map[string]string{"execution_unfinished_server": "server_id", "execution_unfinished_workspace": "workspace_id", "execution_active_server": "server_id", "execution_active_restriction": "server_id", "execution_active_environment": "workspace_id"} {
 			if n.Index == index && !strings.Contains(n.Cond, key) {
 				return index
 			}
@@ -275,43 +275,15 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(),now(),'default',1 FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 2000`, ws); err != nil {
 		t.Fatal(err)
 	}
-	// Other workspaces' stuck work: tenants each with an unfinished coordinated root and its
-	// unfinished children on a host and environment of their own, as much as a tenant has. A check
-	// scoped to a workspace, environment, host or root reads only its own, so more tenants don't move
-	// its plan; one that reads every tenant's unfinished work grows with how many there are. The rows
-	// stand for tenants that never connect, so the seed doesn't need the servers and environments
-	// behind them.
-	tenants := func(count int) {
-		t.Helper()
-		seed, err := f.st.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer seed.Rollback(ctx)
-		if _, err := seed.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := seed.Exec(ctx, `WITH tenants AS (SELECT gen_random_uuid() AS ws,gen_random_uuid() AS server,gen_random_uuid() AS env,gen_random_uuid() AS root FROM generate_series(1,$1::int)),
-roots AS (INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence)
-	SELECT root,ws,server,env,1,gen_random_uuid(),'{}','crosshost','running',1 FROM tenants RETURNING id)
-INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence)
-SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',(ARRAY['queued','dispatched','running'])[1+i%3],1 FROM tenants, generate_series(1,3) i`, count); err != nil {
-			t.Fatal(err)
-		}
-		if err := seed.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	tenants(1000)
-	// Every other table keeps the statistics it has now, so only the operations the seed adds
+	// Every other table keeps the statistics it has now, so only the operations the seeds add
 	// change between plans.
 	if _, err := f.st.Pool.Exec(ctx, `ANALYZE`); err != nil {
 		t.Fatal(err)
 	}
-	// Each statement is planned with a thousand tenants and three thousand, and then alone with
-	// ended history, three times as much, and nine times.
+	// Each statement is planned with ended history, three times as much and nine times, and then
+	// beside a thousand other tenants' stuck work and three thousand.
 	costs := map[string][]float64{}
-	crossed, tenanted := []string{}, true
+	crossed, tenanted := []string{}, false
 	measure := func() {
 		t.Helper()
 		for _, q := range queries {
@@ -330,30 +302,6 @@ SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":
 			t.Errorf("%s %q is listed as reading history, but no statement reading operations matches it now", r.name, r.fragment)
 		}
 	}
-	tenants(2000)
-	if _, err := f.st.Pool.Exec(ctx, `ANALYZE execution_operations`); err != nil {
-		t.Fatal(err)
-	}
-	measure()
-	for _, q := range queries {
-		if c := costs[q.at]; len(c) == 2 && c[1] > c[0]*1.1+10 {
-			if _, excepted := historyReader(q, historyReaders); !excepted {
-				t.Errorf("%s reads other workspaces' unfinished work (cost %.0f with a thousand tenants' stuck work, %.0f with three thousand): narrow it by workspace, environment, host or root so one tenant's stuck work can't slow another's", q, c[0], c[1])
-			}
-		}
-		delete(costs, q.at)
-	}
-	// Generic plans take a workspace, host or environment to be an average one, so with many small
-	// tenants the one with the long history would look small too. The tenants go before history is
-	// measured.
-	if _, err := f.st.Pool.Exec(ctx, `DELETE FROM execution_operations WHERE workspace_id NOT IN (SELECT id FROM workspaces)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.st.Pool.Exec(ctx, `VACUUM ANALYZE execution_operations`); err != nil {
-		t.Fatal(err)
-	}
-	tenanted = false
-	measure()
 	history(6667)
 	measure()
 	history(20000)
@@ -384,6 +332,51 @@ SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":
 			t.Logf("%s costs %.0f, %.0f, %.0f as it grows until %s", q, c[0], c[1], c[2], bound.reason)
 		case grows:
 			t.Errorf("%s grows with ended history (cost %.0f, %.0f, %.0f as it triples twice): narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q, c[0], c[1], c[2])
+		}
+	}
+	// Other workspaces' stuck work: tenants each with an active command on a host of their own and
+	// an unfinished coordinated root with its unfinished children, as much as a tenant has. A check
+	// scoped to a workspace, environment, host or root reads only its own, so more tenants don't
+	// move its plan; one that reads every tenant's unfinished work grows with how many there are.
+	// The rows stand for tenants that never connect, so the seed doesn't need the servers and
+	// environments behind them.
+	tenants := func(count int) {
+		t.Helper()
+		seed, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer seed.Rollback(ctx)
+		if _, err := seed.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `WITH tenants AS (SELECT gen_random_uuid() AS ws,gen_random_uuid() AS server,gen_random_uuid() AS env,gen_random_uuid() AS root FROM generate_series(1,$1::int)),
+active AS (INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence)
+	SELECT gen_random_uuid(),ws,server,NULL,1,gen_random_uuid(),'{}','backup','running',1 FROM tenants RETURNING id),
+roots AS (INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence)
+	SELECT root,ws,server,env,1,gen_random_uuid(),'{}','crosshost','running',1 FROM tenants RETURNING id)
+INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence)
+SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',(ARRAY['queued','dispatched','running'])[1+i%3],1 FROM tenants, generate_series(1,3) i`, count); err != nil {
+			t.Fatal(err)
+		}
+		if err := seed.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.st.Pool.Exec(ctx, `ANALYZE execution_operations`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clear(costs)
+	tenanted = true
+	tenants(1000)
+	measure()
+	tenants(2000)
+	measure()
+	for _, q := range queries {
+		if c := costs[q.at]; len(c) == 2 && c[1] > c[0]*1.1+10 {
+			if _, excepted := historyReader(q, historyReaders); !excepted {
+				t.Errorf("%s reads other workspaces' unfinished work (cost %.0f with a thousand tenants' stuck work, %.0f with three thousand): narrow it by workspace, environment, host or root so one tenant's stuck work can't slow another's", q, c[0], c[1])
+			}
 		}
 	}
 }
