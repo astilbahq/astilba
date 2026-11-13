@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Points a disposable GitHub-hosted runner's Ubuntu apt sources at the first archive below that
 # serves current metadata signed with Ubuntu's archive key: Canonical's own, then independent
-# mirrors resolved through other DNS. CI only; a customer's host keeps its own sources.
+# mirrors resolved through other DNS. CI only; a customer's host keeps its own sources. The host
+# bootstrap (services/platform/host/bootstrap.sh.tmpl) falls back to the same archives, less Azure's.
 #
 # Only source URIs change. Signed-By and the keyring are left as they are, so apt still verifies
 # every index and package against Ubuntu's archive key whichever archive serves them.

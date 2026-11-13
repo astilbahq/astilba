@@ -9,6 +9,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // A background writer stops only on a refusal that every retry would repeat, and its note names
@@ -25,6 +26,9 @@ func TestRefusalStopsOnlyWhatARetryWouldRepeat(t *testing.T) {
 		// A retired environment refuses every change until an owner restores it.
 		{domain.EnvironmentInactive, true},
 		{fmt.Errorf("promoting: %w", domain.EnvironmentInactive), true},
+		{&pgconn.PgError{Code: "22021", Message: "invalid byte sequence: SECRET_VALUE"}, true},
+		{fmt.Errorf("saving: %w", &pgconn.PgError{Code: "22P05"}), true},
+		{&pgconn.PgError{Code: "23505"}, false},
 		{domain.Conflict, false},
 		{domain.Forbidden, false},
 		{context.Canceled, false},

@@ -127,10 +127,11 @@ func TestNativePipeline(t *testing.T) {
 	source := pipeline.Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: serverID, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
 	base := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12, Private: true}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), Source: &source, SubmittedAt: time.Now().UTC().Truncate(time.Second), Access: &pipeline.RunnerAccess{Clone: pipeline.Credential{Username: "fixture", Password: "reader-token"}}}
 	var active api.ExecutionCommand
-	var registryCA []byte
 	cancelNext := false
 	replayNext := false
 	preparedCount := 0
+	// The build container's memory-backed places belong to the builder's user.
+	owned := fmt.Sprintf(",uid=%d,gid=%d", builderUID, builderUID)
 	engine.Point = func(point string) {
 		if point == "railpack-prepared" {
 			preparedCount++
@@ -144,15 +145,15 @@ func TestNativePipeline(t *testing.T) {
 			_ = json.Unmarshal(*active.Pipeline, &p)
 			if p.Build.UsesRailpack() {
 				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
-				if err != nil || v.Container.HostConfig.Memory != 6144<<20 || v.Container.HostConfig.NanoCPUs != 2_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=1024m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=4096m" {
+				if err != nil || v.Container.HostConfig.Memory != 6144<<20 || v.Container.HostConfig.NanoCPUs != 2_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=1024m,mode=0700"+owned || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,nodev,size=4096m,mode=0700"+owned {
 					t.Fatal("Railpack ignored runner resource limits", err)
 				}
 			} else if p.Build.Budget != nil {
 				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
-				if err != nil || v.Container.HostConfig.Memory != 1536<<20 || v.Container.HostConfig.NanoCPUs != 1_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=128m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=640m" {
+				if err != nil || v.Container.HostConfig.Memory != 1536<<20 || v.Container.HostConfig.NanoCPUs != 1_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=128m,mode=0700"+owned || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,nodev,size=640m,mode=0700"+owned {
 					t.Fatal("custom build limits not applied", err)
 				}
-				if p.CacheScope != "" && v.Container.HostConfig.Tmpfs[cacheContainerDir] != "rw,nosuid,nodev,noexec,size=256m,mode=0700" {
+				if p.CacheScope != "" && v.Container.HostConfig.Tmpfs[cacheContainerDir] != "rw,nosuid,nodev,noexec,size=256m,mode=0700"+owned {
 					t.Fatal("cache exchange has no hard ceiling")
 				}
 			}
@@ -168,12 +169,6 @@ func TestNativePipeline(t *testing.T) {
 			message := jsontext.Value(raw)
 			active.Pipeline = &message
 			if _, err := journal.Accept(active); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if point == "source" && len(registryCA) > 0 {
-			appendNativeCA(t, engine, pipelineName(active), registryCA)
-			if _, err := docker.ContainerRestart(ctx, pipelineName(active), client.ContainerRestartOptions{}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -345,7 +340,18 @@ func TestNativePipeline(t *testing.T) {
 	}
 	defer docker.ImageRemove(ctx, publicResult.Image, client.ImageRemoveOptions{Force: true})
 	registry := startNativeRegistry(t, lan)
-	registryCA = registry.ca
+	// The builder's root is read-only, so it trusts the registry's certificate authority
+	// through a bundle mounted over its own.
+	bundle := exec.Command(realDocker, "run", "--rm", "--entrypoint", "cat", pipeline.BuilderImage, "/etc/ssl/certs/ca-certificates.crt")
+	bundle.Env = append(os.Environ(), "DOCKER_HOST="+docker.DaemonHost(), "DOCKER_CONFIG="+config)
+	authorities, err := bundle.Output()
+	if err != nil {
+		t.Fatal("cannot read the builder's certificate authorities", err)
+	}
+	engine.builderCAs = filepath.Join(state, "registry-ca.crt")
+	if err = os.WriteFile(engine.builderCAs, append(authorities, registry.ca...), 0644); err != nil {
+		t.Fatal(err)
+	}
 	remote := build
 	remote.Registry = &pipeline.Registry{ID: uuid.New(), Name: "Fixture", Repository: registry.repository}
 	remote.RegistryAccess = &pipeline.RegistryAccess{Push: pipeline.Credential{Username: "builder", Password: registry.push}}
@@ -374,7 +380,7 @@ func TestNativePipeline(t *testing.T) {
 	if rejected.Report.State != "failed" {
 		t.Fatal("read-only registry credential could publish")
 	}
-	registryCA = nil
+	engine.builderCAs = ""
 	assertPipelineImageSecretFree(t, ctx, docker, result.Image, []string{"build-secret-canary", "reader-token", "writer-token"})
 	// Compare frozen commits rather than webhook path summaries or the moving branch.
 	if err = os.WriteFile(filepath.Join(work, "README.md"), []byte("docs only\n"), 0600); err != nil {

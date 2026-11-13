@@ -1,9 +1,7 @@
 package execution
 
 import (
-	"bytes"
 	"context"
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -197,24 +195,6 @@ func (s *Service) commandAllowed(ctx context.Context, ws uuid.UUID, c api.Execut
 	return allowed, err
 }
 
-// PostgreSQL cannot store NUL in text or jsonb, so host output containing one would
-// fail the same report on every retry. A space keeps the payload's size limits exact.
-func replaceEscapedNUL(payload *jsontext.Value) {
-	if payload == nil {
-		return
-	}
-	raw := *payload
-	for i := 0; i < len(raw)-1; i++ {
-		if raw[i] != '\\' {
-			continue
-		}
-		if bytes.HasPrefix(raw[i+1:], []byte("u0000")) {
-			copy(raw[i+1:], "u0020")
-		}
-		i++
-	}
-}
-
 // boundedNote keeps an operation's note to what the API promises and PostgreSQL can store:
 // host output and Compose errors can hold any bytes, and invalid UTF-8 grows when encoded.
 func boundedNote(note string) string {
@@ -229,9 +209,6 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	r.Note = boundedNote(r.Note)
 	if r.State != "running" && r.State != "needs_attention" && !Terminal(r.State) {
 		return domain.Invalid("state")
-	}
-	for _, payload := range []*jsontext.Value{r.Pipeline, r.Observation, r.Crosshost, r.Upgrade, r.Network} {
-		replaceEscapedNUL(payload)
 	}
 	// A provider call between passes must not count against the agent's report.
 	received := time.Now()
@@ -321,7 +298,7 @@ func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received tim
 			return err
 		}
 	}
-	if err = s.crossHostReport(ctx, tx, c, &r); err != nil {
+	if err = s.crossHostReport(ctx, tx, a.Workspace, c, &r); err != nil {
 		return err
 	}
 	if err = s.networkReport(ctx, tx, a.Workspace, c, &r, true); err != nil {

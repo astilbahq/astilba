@@ -428,9 +428,10 @@ func TestFirstHeartbeatResendsWhatTheControllerAccepts(t *testing.T) {
 			w.WriteHeader(400)
 			return
 		}
-		heartbeats = append(heartbeats, body.Capabilities.BuildNetwork != nil && *body.Capabilities.BuildNetwork)
+		heartbeats = append(heartbeats, body.Capabilities.BuildNetwork != nil && *body.Capabilities.BuildNetwork && body.Capabilities.RootlessBuilds != nil && *body.Capabilities.RootlessBuilds)
 		w.Header().Set("Astilba-Agent-Features", "build-controls")
 		w.Header().Set("Astilba-Agent-Build-Network", "v1")
+		w.Header().Set("Astilba-Agent-Rootless-Builds", "v1")
 		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
 	}))
 	defer server.Close()
@@ -443,7 +444,7 @@ func TestFirstHeartbeatResendsWhatTheControllerAccepts(t *testing.T) {
 	c.HTTP = server.Client()
 	yes := true
 	c.Observe = func(context.Context) api.AgentHeartbeat {
-		return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &yes, BuildNetwork: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
+		return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &yes, BuildNetwork: &yes, RootlessBuilds: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
 	}
 	for range 2 {
 		if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {

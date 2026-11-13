@@ -177,10 +177,11 @@ profile if fixtures remain. The rest must be asked for by name:
 | --- | --- |
 | `TestNativeBackupOfStoppedWriter`, `TestNativeRefusedReservationOfStoppedWriterCompletes`, `TestNativeBackupOfWriterFailingItsHealthCheck`, `TestNativeBackupOfWriterFailingItsReadiness`, `TestNativeReservationRefusesChangedConfiguration`, `TestNativePauseRefusesAWriterStoppedSinceReserving`, `TestNativeWriterAlreadyFailingThatCannotRestart`, `TestNativeAcceptingAWriterThatCannotStart`, `TestNativeAcceptingAWriterThatDoesNotComeBack` | Nothing more, but they wait out readiness probes for about a minute and a half in all |
 | `TestNativeComposeDeployment` | Publishes a loopback host port; the pinned Compose plugin and PostgreSQL image |
-| `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d`; nftables 1.0.9; creates a host namespace and veth pair for its private fixtures |
-| `TestNativeBuildNetwork` | nftables 1.0.9, Git `http-backend`, a private primary IPv4 address and access to `registry-1.docker.io`; creates a host namespace, veth pair and Docker network |
+| `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d`; nftables 1.0.9 and AppArmor with `apparmor_parser`; creates a host namespace and veth pair for its private fixtures |
+| `TestNativeBuilderConfinement` | AppArmor with `apparmor_parser`, user namespaces and nftables 1.0.9; runs one privileged container, which mounts the host's Docker disk a second time and writes a kernel setting back unchanged |
+| `TestNativeBuildNetwork` | nftables 1.0.9, AppArmor with `apparmor_parser`, Git `http-backend`, a private primary IPv4 address and access to `registry-1.docker.io`; creates a host namespace, veth pair and Docker network |
 | `TestNativeVisualDeployment` | Ingress publishes host ports 80, 443 and 15432; the pinned Compose plugin and `/opt/astilba-platform-tools/restic` |
-| `TestNativePreviewEnvironment` | Ingress publishes host ports 80 and 443; the pinned Compose plugin, Git `http-backend` and nftables 1.0.9; creates a host namespace and veth pair for its private fixtures |
+| `TestNativePreviewEnvironment` | Ingress publishes host ports 80 and 443; the pinned Compose plugin, Git `http-backend`, nftables 1.0.9 and AppArmor with `apparmor_parser`; creates a host namespace and veth pair for its private fixtures |
 | `TestNativeCrossHostDeployment`, `TestNativeCrossHostTakeover` | Creates host namespaces, bridges and WireGuard links; the WireGuard module, pinned Compose plugin, `wg` and `nft`, `dockerd` and `docker` under `/opt/astilba-plat4` and restic |
 
 This does not replace CI. `CGO_ENABLED=0` rules out the race detector, the run
@@ -596,6 +597,7 @@ one-sentence explanation:
 | `txnetwork` | A function holding a transaction calls a Git provider or GitHub, directly or through a function in its package, so a tenant's slow server holds the transaction's locks and connection. Ask between passes with `providerCall`. | Holding a server's row across provider calls, after #157 |
 | `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
 | `operationview` | An exported function in `internal/execution` that takes a `store.Principal` returns an `api.Operation`, or a slice of them, other than through `operationFor` or `operationsFor` called with its own principal, or a function elsewhere takes a principal and returns one. An operation's note can quote the environment's configuration, which those withhold from a credential without `environment:read`. | PLAT-285 |
+| `requestbody` | Code reads `(*http.Request).Body`, or calls a method that reads it as a form such as `FormValue`, outside `httpapi.decode`, other than to bound it with `http.MaxBytesReader` or in a webhook that checks a signature over the raw bytes. The body would skip decode's refusal of unknown members and its check for NUL, which PostgreSQL cannot store ([JSON encoding](json-encoding.md#text-postgresql-cannot-store)). | PLAT-312 |
 | `revisioninsert` | Code outside `internal/store` calls `(*db.Queries).InsertRevision`. `store.InsertRevision` refuses a specification over the size limit, measured as the table's check measures it, before the check can fail and abort the transaction. | PLAT-286 |
 
 These catch the shapes the defects took, so a clean run does not rule a defect out.
@@ -735,11 +737,20 @@ it uses a mirror instead of Canonical, and fails when none answers.
   file. This is acceptable for a disposable runner, not for a customer's host.
 - **Retries.** The step sets `Acquire::Retries "5"`, up from apt's default of 3.
 
-This is CI only. The production bootstrap is unchanged and uses whatever sources its
-host has, which in CI are the ones this step chose. A fresh customer install still
-depends on that host's own mirrors during an outage like this one. Whether the product should offer a fallback is a separate
-decision. The bootstrap limits its own `apt-get update` to 5 minutes for any source
-that hangs.
+This step is CI only. The production bootstrap leaves a host's sources alone and falls back
+to the same independent mirrors, then Canonical's archive, only when it can't download its
+Ubuntu packages from them; see [server onboarding](server-onboarding.md). Its fallback relies on
+apt's own `Valid-Until-Max` for freshness rather than this step's check.
+
+`TestBootstrapOnDisposableHost` covers each path the bootstrap's Ubuntu packages can take:
+
+| Lanes | What the fresh installation does |
+| --- | --- |
+| `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, and must install nftables from a fallback archive. |
+| `recovery` | Removes nftables and must install it from the runner's own sources. |
+| `upgrade` | Leaves the runner as it is, which needs no Ubuntu package. |
+
+A runner already has every other Ubuntu package the bootstrap installs. If this step already moved the runner to a mirror because Canonical's archive is down, the blocked lanes install from the runner's sources instead, with a warning annotation, because blocking that mirror too would leave too few to fall back to. The `recovery` lane warns in the same way if it had to fall back.
 
 ## Image downloads
 

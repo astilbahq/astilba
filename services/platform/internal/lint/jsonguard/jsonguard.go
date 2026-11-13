@@ -40,6 +40,7 @@ var plainWriters = map[string]bool{
 	"internal/alerts.Service.send":               true,
 	"internal/agent.visualRegistryAuth":          true,
 	"internal/agent.buildKitAuthConfig":          true,
+	"internal/agent.builderSeccompJSON":          true,
 }
 
 func run(pass *analysis.Pass) (any, error) {
