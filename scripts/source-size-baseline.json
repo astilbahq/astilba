@@ -6,6 +6,6 @@
   "services/platform/internal/agent/visual.go": 815,
   "services/platform/internal/composeproject/source.go": 601,
   "services/platform/internal/integration/cross_host_physical_recovery_test.go": 969,
-  "services/platform/internal/integration/cross_host_recovery_test.go": 1342,
+  "services/platform/internal/integration/cross_host_recovery_test.go": 1340,
   "services/platform/internal/integration/cross_host_test.go": 1338
 }
