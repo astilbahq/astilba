@@ -101,6 +101,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		return out, err
 	}
 	var enabledWhenAsked *bool
+
 	// The runner's row and the workspace are free during the branch check. The pass that
 	// saves re-reads the draft, generation, runner and connection the check was made for.
 	// Enabling approves every preview's host changes in advance, so it takes the window for
@@ -219,7 +220,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
 			return err
 		}
-		if _, err = s.buildInputs(ctx, tx, ws, env, cfg.Build); err != nil {
+		if _, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, cfg.Build); err != nil {
 			return err
 		}
 		id, gen := uuid.New(), int64(1)

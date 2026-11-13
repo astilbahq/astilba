@@ -11,3 +11,10 @@ func (s *Service) Exported(v []byte) ([]byte, error) { return s.wrapper(v) } // 
 
 // A variable can hold a transitional function too.
 var Held = (*Service).legacy // want Held:"transitional"
+
+// A type whose methods reach keys is reached by making one, whatever interface calls it.
+type opener interface{ open([]byte) ([]byte, error) }
+
+type legacyOpener struct{ s *Service }
+
+func (o legacyOpener) open(v []byte) ([]byte, error) { return o.s.keys.Open(v, "identity") } // want open:"transitional"

@@ -42,3 +42,10 @@ func tooLarge(err error) bool { return errors.Is(err, cryptobox.ErrTooLarge) }
 func (s *Service) throughWrapper(v []byte) ([]byte, error) {
 	return s.wrapper(v) // want `wrapper, which opens values without a record, gives keys`
 }
+
+// Making the transitional type outside the listed files is reported, though the call goes
+// through an interface.
+func (s *Service) throughInterface(v []byte) ([]byte, error) {
+	var o opener = legacyOpener{s} // want `legacyOpener, which opens values without a record, gives keys`
+	return o.open(v)
+}
