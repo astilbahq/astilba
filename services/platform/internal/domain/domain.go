@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/mail"
 	"net/url"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -118,10 +120,14 @@ var variableName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,79}$`)
 // SpecificationLimit is the most bytes a specification may take, as sent and as stored.
 const SpecificationLimit = 131072
 
+// SpecificationTooLarge refuses a specification over SpecificationLimit, as sent or as stored. It
+// is invalid input like any other, with a message that says which limit it broke.
+var SpecificationTooLarge = &Error{Code: "invalid_input", Message: "The specification is over the " + strconv.Itoa(SpecificationLimit/1024) + " KiB limit.", Fields: []string{"specification"}}
+
 func ParseSpec(raw []byte) (Specification, []byte, error) {
 	var spec Specification
 	if len(raw) > SpecificationLimit {
-		return spec, nil, Invalid("specification")
+		return spec, nil, SpecificationTooLarge
 	}
 	if json.Unmarshal(raw, &spec, json.RejectUnknownMembers(true)) != nil || spec.Version != 1 || spec.Applications == nil || spec.Variables == nil || len(spec.Applications) > 50 || len(spec.Variables) > 100 {
 		return spec, nil, Invalid("specification")
@@ -137,6 +143,10 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 		}
 	} else if len(spec.Networks) > 0 {
 		return spec, nil, Invalid("networks")
+	}
+	// After deriveCompose, whose YAML can spell NUL as an escape.
+	if field, ok := nulField(reflect.ValueOf(spec), "specification"); ok {
+		return spec, nil, Invalid(field)
 	}
 	ids := map[uuid.UUID]bool{}
 	names := map[string]bool{}
@@ -181,7 +191,7 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 	// Stored revisions and their content hashes keep this encoding.
 	canonical, err := stablejson.Marshal(spec)
 	if len(canonical) > SpecificationLimit {
-		return spec, nil, Invalid("specification")
+		return spec, nil, SpecificationTooLarge
 	}
 	return spec, canonical, err
 }

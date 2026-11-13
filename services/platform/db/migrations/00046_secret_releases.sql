@@ -21,9 +21,9 @@ CREATE TABLE secret_releases (
 -- A recovery that dispatches an operation again starts a new epoch, so the host that receives
 -- it gets its values again.
 ALTER TABLE execution_operations ADD COLUMN dispatch_epoch bigint NOT NULL DEFAULT 0;
-INSERT INTO schema_additive_migrations (version) VALUES (48);
+INSERT INTO schema_additive_migrations (version) VALUES (46);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 48;
+DELETE FROM schema_additive_migrations WHERE version = 46;
 ALTER TABLE execution_operations DROP COLUMN dispatch_epoch;
 DROP TABLE secret_releases;

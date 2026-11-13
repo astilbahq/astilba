@@ -259,11 +259,22 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
-	pool, e := pgxpool.New(ctx, databaseDSN(name))
+	// Configured as management configures its own.
+	poolConfig, e := store.PoolConfig(databaseDSN(name))
+	if e != nil {
+		t.Fatal(e)
+	}
+	pool, e := pgxpool.NewWithConfig(ctx, poolConfig)
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(pool.Close)
+	// Every coordinated phase management issued in the test is one the agent runs.
+	t.Cleanup(func() {
+		if unrun := unrunPhases(t, pool); len(unrun) > 0 {
+			t.Errorf("management issued coordinated phases the agent refuses: %v", unrun)
+		}
+	})
 	// The one value a migration makes up. Each installation has its own.
 	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)

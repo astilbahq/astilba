@@ -1,6 +1,10 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import {
+  acknowledgeRelease,
+  acknowledgesReleases,
+} from "./fixtures/agent-releases";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
 import { api } from "./fixtures/ports";
 
@@ -398,6 +402,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
         docker: true,
         visual: true,
         serviceOutputs: true,
+        ...acknowledgesReleases,
       },
       preflight: {
         ready: true,
@@ -503,6 +508,12 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     expect(response.status()).toBe(200);
     const value = await response.json();
     expect(value.command).toBeTruthy();
+    await acknowledgeRelease(
+      request,
+      `${api}/agent/v1/releases`,
+      agentHeaders,
+      value.command,
+    );
     return value.command;
   };
   const resolve = await poll();
@@ -619,10 +630,12 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await expect(
     page.getByText("The saved revision changed. Prepare a new plan."),
   ).toBeVisible();
-  await openEnvironmentSection(page, "Deployments");
+  await expect(
+    page.getByRole("region", { name: "Reviewed deployment plan" }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Apply reviewed plan" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await openEnvironmentSection(page, "Configuration");
   await page.getByLabel("Position x", { exact: true }).fill("99");
