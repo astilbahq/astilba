@@ -238,10 +238,14 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if _, e = q.LockAccount(ctx, p.Account.ID); e != nil {
 		return out, e
 	}
-	// Opening the archive is slow, so the session may have ended by now. Refuse before
-	// holding the account through the insert.
+	// Opening the archive is slow, and the lock may have waited behind a credential change,
+	// so the session may have ended or stopped being recent by now. Refuse before holding
+	// the account through the insert.
 	if e = store.AdmitBrowserSession(ctx, q, p); e != nil {
 		return out, e
+	}
+	if !p.Recent() {
+		return out, domain.RecentRequired
 	}
 	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: archive.Workspace, Name: archive.Name}); e != nil {
 		return out, store.Normalize(e)
