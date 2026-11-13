@@ -75,17 +75,9 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		}
 		secrets := map[uuid.UUID]uuid.UUID{}
 		create := func(label, value string) (uuid.UUID, error) {
-			sid, id := uuid.New(), uuid.New()
-			if err := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: sid, Name: label}); err != nil {
-				return uuid.Nil, err
-			}
-			encrypted, err := keys.Seal(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, []byte(value))
-			if err != nil {
-				return uuid.Nil, err
-			}
+			id := uuid.New()
 			used = true
-			_, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: sid, ID: id, EncryptedValue: encrypted, AuthorID: p.Account.ID})
-			return id, err
+			return id, store.InsertSecretValue(ctx, q, keys, p, ws, env, id, label, value)
 		}
 		if in.CopySecrets {
 			for _, old := range domain.SecretReferences(v.Spec) {

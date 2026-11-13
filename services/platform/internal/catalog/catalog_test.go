@@ -25,9 +25,9 @@ func TestRecipesUseValidatedVisualAndComposeSubset(t *testing.T) {
 			secrets := map[string]string{}
 			for _, app := range p.Specification.Applications {
 				p.Images[app.ID.String()] = *app.Source.Image
-				if app.Postgres != nil {
-					secrets[app.Postgres.PasswordSecretVersionID.String()] = "catalog-fixture-password"
-				}
+			}
+			for _, id := range domain.SecretReferences(p.Specification) {
+				secrets[id.String()] = "catalog-fixture-secret"
 			}
 			p = p.WithHash()
 			raw, err := deployment.Compose(p, secrets, false)
@@ -81,6 +81,22 @@ func TestRecipesUseValidatedVisualAndComposeSubset(t *testing.T) {
 			}
 			if len(recipe.Specification.Routes) != 0 {
 				t.Fatal("recipe publishes a service without review")
+			}
+			// Staging generates or asks for every secret the specification references.
+			declared := map[uuid.UUID]bool{}
+			for _, s := range recipe.Secrets {
+				declared[s.ID] = true
+			}
+			for _, id := range domain.SecretReferences(recipe.Specification) {
+				if !declared[id] {
+					t.Fatal("secret reference without a catalog secret", id)
+				}
+			}
+			if len(declared) != len(domain.SecretReferences(recipe.Specification)) {
+				t.Fatal("catalog secret the specification does not reference")
+			}
+			if (recipe.Kind == AppTemplate) != (len(recipe.Specification.Applications) > 1) || (recipe.Kind == AppTemplate) != (recipe.Version != "") {
+				t.Fatal("kind does not match the entry")
 			}
 		})
 	}
