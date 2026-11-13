@@ -116,9 +116,18 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if out.Plan.Validate() != nil {
 			return domain.Invalid("upgrade.source")
 		}
-		// An agent that does not know the target would build the plan's digest without it.
-		if err = requireAgentSupport(ctx, tx, ws, *v.Server, out.Plan.Target().Specification); err != nil {
-			return err
+		// An agent that does not know the target would build the plan's digest without it. A
+		// grouped upgrade sends the target to every member.
+		targets := []deployment.Plan{out.Plan.Target()}
+		if group != nil {
+			for _, u := range out.Plan.TargetGroup().Distributed.Units {
+				targets = append(targets, u.Plan)
+			}
+		}
+		for _, target := range targets {
+			if err = requireAgentSupport(ctx, tx, ws, target.ServerID, target.Specification); err != nil {
+				return err
+			}
 		}
 		// The target must be storable before the host changes: completion has no way to refuse it.
 		stored, err := upgradeTargetSpecification(out.Plan.TargetGroup())
