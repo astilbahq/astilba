@@ -208,6 +208,32 @@ func TestAccountChangeDoesNotRecreateLoggedOutSession(t *testing.T) {
 	}
 }
 
+// A session that expires after its request was admitted, while the response is saved, is not
+// renewed: a logout no longer sees its row, so a renewal would outlive the logout.
+func TestExpiredSessionIsNotRenewed(t *testing.T) {
+	f := setup(t)
+	gate, release := holdSessions(t, f)
+	b := f.browser(t)
+	b.login("owner@example.test", f.password)
+	cookies := b.client.Jar.Cookies(mustURL(f.server.URL))
+
+	gate.armedCommit.Store(true)
+	finish := sendHeld(t, b, gate, cookies, "POST", "/api/v1/auth/reauthenticate", map[string]string{"password": f.password})
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE sessions SET expiry=clock_timestamp()"); err != nil {
+		t.Fatal(err)
+	}
+	release()
+
+	if result := finish(); result.status != 401 || len(sessionCookies(result.cookies)) != 0 {
+		t.Fatalf("the expired session was renewed: status %d, cookies %v: %s", result.status, result.cookies, result.body)
+	}
+	var live int
+	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM sessions WHERE expiry > clock_timestamp()").Scan(&live); err != nil || live != 0 {
+		t.Fatalf("%d live sessions after expiry: %v", live, err)
+	}
+}
+
 // An idle refresh extends a session, so a request that outlasts its session must not bring it back,
 // whether or not the request itself was refused.
 func TestExpiredSessionStaysExpired(t *testing.T) {
