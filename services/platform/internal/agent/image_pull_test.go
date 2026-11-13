@@ -277,6 +277,11 @@ func TestPullRefusesWhatItCannotMeasure(t *testing.T) {
 		"a manifest and an index at once": func(r *testRegistry) string {
 			return r.manifest(ocispec.MediaTypeImageIndex, fmt.Sprintf(`{"schemaVersion":2,"manifests":[],"config":%s}`, config))
 		},
+		"an index entry whose registry gives another type": func(r *testRegistry) string {
+			d := r.image(layer)
+			entry := strings.Replace(r.entry(d, "linux/amd64", ""), ocispec.MediaTypeImageManifest, "application/vnd.docker.distribution.manifest.v2+json", 1)
+			return r.index(entry)
+		},
 		"a schema 1 manifest": func(r *testRegistry) string {
 			return r.manifest("application/vnd.docker.distribution.manifest.v1+prettyjws", `{"schemaVersion":1}`)
 		},
@@ -306,20 +311,21 @@ func TestPullRefusesWhatItCannotMeasure(t *testing.T) {
 		},
 	}
 	reasons := map[string]string{
-		"a foreign layer":                         "download from elsewhere",
-		"a non-distributable layer":               "foreign.diff.tar.gzip\", which the agent does not pull",
-		"a layer that differs from its digest":    "differs from its digest",
-		"a layer longer than its descriptor":      "mismatch Content-Length",
-		"layers named twice in different case":    "names one field twice",
-		"a digest in different case":              "names one field twice",
-		"a media type the registry does not give": "declares a media type",
-		"a manifest and an index at once":         "of a kind Docker does not pull",
-		"a schema 1 manifest":                     "of a kind Docker does not pull",
-		"no image for this platform":              "no image for this server's platform",
-		"a sha512 layer":                          "other than a sha256 digest",
-		"bzip2 compression":                       "bzip2 compression",
-		"an index nested too deeply":              "nested too deeply",
-		"more layers than Docker stacks":          "more layers than Docker can stack",
+		"a foreign layer":                                  "download from elsewhere",
+		"a non-distributable layer":                        "foreign.diff.tar.gzip\", which the agent does not pull",
+		"a layer that differs from its digest":             "differs from its digest",
+		"a layer longer than its descriptor":               "mismatch Content-Length",
+		"layers named twice in different case":             "names one field twice",
+		"a digest in different case":                       "names one field twice",
+		"a media type the registry does not give":          "declares a media type",
+		"a manifest and an index at once":                  "of a kind Docker does not pull",
+		"a schema 1 manifest":                              "of a kind Docker does not pull",
+		"an index entry whose registry gives another type": "other than its index does",
+		"no image for this platform":                       "no image for this server's platform",
+		"a sha512 layer":                                   "other than a sha256 digest",
+		"bzip2 compression":                                "bzip2 compression",
+		"an index nested too deeply":                       "nested too deeply",
+		"more layers than Docker stacks":                   "more layers than Docker can stack",
 	}
 	for name, root := range cases {
 		t.Run(name, func(t *testing.T) {

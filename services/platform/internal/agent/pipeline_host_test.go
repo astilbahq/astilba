@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -458,7 +459,7 @@ func TestNativePipeline(t *testing.T) {
 	// A build whose image unpacks to more than a load may write is refused before Docker writes
 	// it. A sparse file costs the builder nothing and its layer is a few MiB of gzip, but Docker
 	// would write it in full.
-	loadRefused := func(sparse, note string) {
+	sparseCommit := func(sparse string) string {
 		t.Helper()
 		if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN truncate -s "+sparse+" /sparse\n"), 0600); err != nil {
 			t.Fatal(err)
@@ -466,7 +467,11 @@ func TestNativePipeline(t *testing.T) {
 		git("-C", work, "add", ".")
 		git("-C", work, "commit", "-m", "sparse "+sparse)
 		git("-C", work, "push", repo, "main")
-		build.Commit = git("-C", work, "rev-parse", "HEAD")
+		return git("-C", work, "rev-parse", "HEAD")
+	}
+	// refusedWithin checks that refuse is refused with note, taking almost none of Docker's storage.
+	refusedWithin := func(what, note string, refuse func() string) {
+		t.Helper()
 		before, _, ok := imageStorage(ctx, docker)
 		if !ok {
 			t.Fatal("cannot observe Docker storage")
@@ -487,18 +492,29 @@ func TestNativePipeline(t *testing.T) {
 				}
 			}
 		}()
-		refused := run(build)
+		got := refuse()
 		close(stopWatching)
 		<-watched
-		if refused.Report.State != "failed" || !strings.Contains(refused.Report.Note, note) {
-			t.Fatalf("image of a %s sparse file: %s %q", sparse, refused.Report.State, refused.Report.Note)
+		if !strings.Contains(got, note) {
+			t.Fatalf("%s: %q", what, got)
 		}
 		if used := before - lowest.Load(); used > 256<<20 {
-			t.Fatalf("refusing an image of a %s sparse file took %d MiB of Docker storage", sparse, used>>20)
+			t.Fatalf("refusing the %s took %d MiB of Docker storage", what, used>>20)
 		}
 		if current, err := docker.ImageInspect(ctx, result.Image); err != nil || current.ID != result.Digest {
 			t.Fatal("refused image changed previous artifact", err)
 		}
+	}
+	loadRefused := func(sparse, note string) {
+		t.Helper()
+		build.Commit = sparseCommit(sparse)
+		refusedWithin("image of a "+sparse+" sparse file", note, func() string {
+			refused := run(build)
+			if refused.Report.State != "failed" {
+				t.Fatalf("image of a %s sparse file: %s %q", sparse, refused.Report.State, refused.Report.Note)
+			}
+			return refused.Report.Note
+		})
 	}
 	// Beyond the default per-load limit. A host with under 13 GiB free refuses it for its storage.
 	loadRefused("9G", "The built image was not loaded: unpack")
@@ -517,6 +533,33 @@ func TestNativePipeline(t *testing.T) {
 			}
 		}
 		loadRefused("2G", "Free space on the server")
+	}()
+	// The same image built to a registry pushes, as its layer is a few MiB of gzip, but a host
+	// deploying it refuses to pull it before Docker writes it.
+	func() {
+		engine.builderCAs = filepath.Join(state, "registry-ca.crt")
+		defer func() { engine.builderCAs = "" }()
+		sparse := remote
+		sparse.Commit = sparseCommit("9G")
+		// The build would otherwise replace the layer cache the failed builds below must keep.
+		sparse.CacheScope = ""
+		pushed := run(sparse)
+		if pushed.Report.State != "succeeded" {
+			t.Fatal("registry build of a sparse file", pushed.Report.Note)
+		}
+		var image pipeline.Result
+		_ = json.Unmarshal(*pushed.Report.Pipeline, &image)
+		deploy := deployment.Payload{Plan: deployment.Plan{Images: map[string]string{"app": image.Image}}, RegistryAccess: map[string]pipeline.Credential{"app": {Username: "deployer", Password: registry.pull}}}
+		refusedWithin("registry image of a 9G sparse file", "The image "+image.Image+" was not pulled: unpack", func() string {
+			err := engine.pullVisualImages(ctx, deploy)
+			if !errors.As(err, new(*imagePullRefused)) {
+				t.Fatal("registry image of a sparse file was not refused", err)
+			}
+			return err.Error()
+		})
+		if _, err := docker.ImageInspect(ctx, image.Image); !errdefs.IsNotFound(err) {
+			t.Fatal("refused registry image is in Docker", err)
+		}
 	}()
 	if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN sleep 30\n"), 0600); err != nil {
 		t.Fatal(err)

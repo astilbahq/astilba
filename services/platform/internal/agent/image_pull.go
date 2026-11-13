@@ -6,10 +6,13 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"runtime"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -109,9 +112,10 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	// Docker pulls the image for its own platform, which is the agent's.
 	platforms := []string{runtime.GOARCH, dockerArchitecture(info.Info.Architecture)}
 	var fetched error
+	var measured imageCost
 	for _, source := range sources {
 		measure := imageMeasure{source: source, limit: limit, platforms: platforms, cache: e.layerCosts()}
-		fetched = measure.image(ctx, pinned.Digest())
+		fetched, measured = measure.image(ctx, pinned.Digest()), measure.total
 		var unread *imageArchiveUnread
 		if !errors.As(fetched, &unread) {
 			break
@@ -131,7 +135,52 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if credential != nil {
 		auth = encodedRegistryAuth(*credential)
 	}
-	return e.pullImageAuth(ctx, image, auth)
+	return refuse(e.pullWatched(ctx, image, auth, measured))
+}
+
+// pullSlack is how much more than the agent measured a pull may take of Docker's storage, for
+// other writers on the server, before the agent stops it.
+const pullSlack = 1 << 30
+
+// pullWatched pulls image while watching Docker's storage. Docker writes each blob as its
+// registry sends it and checks the blob's size only once it ends, so a registry that sends
+// Docker more than the image it names could fill the storage. The agent stops the pull once
+// the storage has lost more than it measured, and slack for other writers.
+func (e *Engine) pullWatched(ctx context.Context, image, auth string, measured imageCost) error {
+	roots, ok := imageStorageRoots(ctx, e.Docker)
+	before, _, known := storageFree(roots)
+	if !ok || !known {
+		return &imageLoadRefused{why: "the agent cannot observe this server's Docker storage"}
+	}
+	floor := before - measured.Bytes - pullSlack
+	pullCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	var exceeded atomic.Bool
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pullCtx.Done():
+				return
+			case <-ticker.C:
+			}
+			if free, _, ok := storageFree(roots); ok && free < floor {
+				exceeded.Store(true)
+				stop()
+				return
+			}
+		}
+	}()
+	err := e.pullImageAuth(pullCtx, image, auth)
+	stop()
+	<-watched
+	if exceeded.Load() {
+		return &imageLoadRefused{why: fmt.Sprintf("Docker's pull took more than the %d MiB the agent measured, and %d MiB more, of this server's Docker storage, so the agent stopped it. Its registry sent more than the image it names, or something else on the server wrote to Docker's storage at the same time", measured.Bytes>>20, pullSlack>>20), fix: "Check the image's registry and {retry}. The server's owner can remove a stopped pull's partial download from containerd's ingest directory."}
+	}
+	return err
 }
 
 func (e *Engine) layerCosts() *layerCosts {

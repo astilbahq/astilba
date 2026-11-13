@@ -46,6 +46,8 @@ type imageMeasure struct {
 	layers map[digest.Digest]ocispec.Descriptor
 	// unpacked is what each layer writes once unpacked.
 	unpacked map[string]imageCost
+	// total is what pulling the image writes, once measured.
+	total imageCost
 }
 
 // image counts what pulling the image with this digest writes, and returns an error with the
@@ -85,9 +87,9 @@ func (m *imageMeasure) image(ctx context.Context, root digest.Digest) error {
 		return cost, ok
 	}, m.limit.less(m.stored))
 	if err == nil {
-		total := m.stored
-		total.add(unpacked)
-		err = m.limit.check(total)
+		m.total = m.stored
+		m.total.add(unpacked)
+		err = m.limit.check(m.total)
 	}
 	if errors.Is(err, errImageOverBytes) || errors.Is(err, errImageOverEntries) {
 		return m.limit.refusal(err)
@@ -139,8 +141,12 @@ func (m *imageMeasure) document(ctx context.Context, desc ocispec.Descriptor, de
 		return unmeasurableImage("it has more metadata than an image needs")
 	}
 	desc.Size = int64(len(data))
+	// Docker's legacy store reads a manifest by the type its registry gives, and containerd by
+	// the type its descriptor gives, so the two must agree.
 	if desc.MediaType == "" {
 		desc.MediaType = mediaType
+	} else if mediaType != "" && mediaType != desc.MediaType {
+		return unmeasurableImage("its registry gives a manifest a media type other than its index does")
 	}
 	if err = m.store(desc); err != nil {
 		return err
