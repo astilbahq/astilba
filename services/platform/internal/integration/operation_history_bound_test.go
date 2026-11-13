@@ -136,6 +136,14 @@ func TestCrossHostDeploymentShortensAWindowThatDoesNotSeal(t *testing.T) {
 	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT o.runtime_plan_id FROM environments e JOIN execution_operations o ON o.id=e.runtime_operation_id WHERE e.id=$1`, env).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
+	// Configuration that random content keeps from compressing, which a shorter window doesn't
+	// shrink: the environment's newest 50 revisions. The line the sealer fits must find it.
+	if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO specification_revisions(workspace_id,environment_id,id,author_id,specification,content_hash,created_at)
+SELECT r.workspace_id,r.environment_id,gen_random_uuid(),r.author_id,jsonb_build_object('version',1,'filler',f.text),decode(md5(f.text),'hex'),now()-interval '1 day'+i*interval '1 second'
+FROM specification_revisions r JOIN environments e ON e.workspace_id=r.workspace_id AND e.draft_revision_id=r.id, generate_series(1,50) i,
+LATERAL (SELECT string_agg(md5(random()::text||i||j),'') AS text FROM generate_series(1,250) j) f WHERE e.id=$1`, env); err != nil {
+		t.Fatal(err)
+	}
 	// Each change is a command of its own, recorded inside the window.
 	if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at)
 SELECT n.id,p.workspace_id,$2,p.environment_id,(SELECT max(generation) FROM execution_operations WHERE environment_id=p.environment_id)+i,gen_random_uuid(),jsonb_build_object('id',n.id,'planHash',md5(random()::text)),
@@ -213,7 +221,7 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-$6::interval+i*interval
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget)
+		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, 0)
 		if err != nil {
 			t.Fatal("the workspace no longer fits a recovery base: ", err)
 		}
@@ -277,7 +285,7 @@ func TestRecoveredHistoryTravelsInLaterBases(t *testing.T) {
 	if err = portability.StoreRecoveredHistory(ctx, tx, ws, &portability.RecoveryHistory{Applied: []portability.AppliedEntry{kept}}); err != nil {
 		t.Fatal(err)
 	}
-	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget)
+	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

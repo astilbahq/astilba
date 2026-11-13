@@ -16,22 +16,24 @@ import (
 // credential ciphertext and must be sealed with the management keyring before leaving the
 // management process. It is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
-	capture, err := CaptureRecoveryBase(ctx, tx, ws, RecoveryWindowTarget)
+	capture, err := CaptureRecoveryBase(ctx, tx, ws, RecoveryWindowTarget, 0)
 	return capture.Raw, err
 }
 
-// RecoveryCapture is a captured base and the window its applied history covers.
+// RecoveryCapture is a captured base, the window its applied history covers, and how many entries
+// that history has.
 type RecoveryCapture struct {
 	Raw         []byte
 	CapturedAt  time.Time
 	WindowStart time.Time
+	Entries     int
 }
 
 // CaptureRecoveryBase captures a recovery base whose applied history reaches window back, or less
-// when that doesn't fit the archive's limits: the window then starts at the newest change that
-// still fits. It refuses a workspace whose configuration and fixed history windows alone don't
-// fit.
-func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window time.Duration) (RecoveryCapture, error) {
+// when that doesn't fit the archive's limits or more than entries changes (when entries is
+// positive): the window then starts at the newest change that still fits. It refuses a workspace
+// whose configuration and fixed history windows alone don't fit.
+func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window time.Duration, entries int) (RecoveryCapture, error) {
 	archive := Archive{Version: RecoveryArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
@@ -59,7 +61,11 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 	const listed = 160
 	records := maxArchiveRecords - count - len(history.Superseded) - len(settled) - 2*len(archive.Tables["environments"])
 	bytes := (MaxArchiveBytes - size - listed*(len(history.Superseded)+len(settled)+len(archive.Tables["environments"]))) / recoveryEntryBytes
-	if start, err = recoveryWindowStart(ctx, tx, ws, start, min(records, bytes)); err != nil {
+	limit := min(records, bytes)
+	if entries > 0 {
+		limit = min(limit, entries)
+	}
+	if start, err = recoveryWindowStart(ctx, tx, ws, start, limit); err != nil {
 		return RecoveryCapture{}, err
 	}
 	history.WindowStart = start
@@ -75,7 +81,7 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 		clear(raw)
 		return RecoveryCapture{}, ErrArchive
 	}
-	return RecoveryCapture{Raw: raw, CapturedAt: archive.CreatedAt, WindowStart: start}, nil
+	return RecoveryCapture{Raw: raw, CapturedAt: archive.CreatedAt, WindowStart: start, Entries: len(history.Applied)}, nil
 }
 
 // InspectRecovery reads trusted database state, including a union of individually

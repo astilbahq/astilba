@@ -102,18 +102,24 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passK
 	return d, q.RegisterRecoveryBase(ctx, db.RegisterRecoveryBaseParams{WorkspaceID: ws, ID: id, ParentID: root.Id, EnvironmentID: root.EnvironmentId, PrimaryServerID: root.ServerId, CapturedAt: capture.CapturedAt, WindowStart: &capture.WindowStart})
 }
 
-// recoverySeals is how many times a base is sealed before it is refused. Each seal after the first
-// captures a window shorter by how far the last envelope overflowed, so a workspace whose history
-// compresses worse than the capture's estimate still gets a base inside the coordinate job's time.
+// recoverySeals is how many times a base is sealed before it is refused. A seal that doesn't fit
+// is followed by one with fewer applied-history entries, so a workspace whose history compresses
+// worse than the capture's estimate still gets a base inside the coordinate job's time.
 const recoverySeals = 3
 
 // sealRecoveryBase captures and seals a base whose envelope fits, shortening the window when it
 // doesn't. A base that doesn't compress and read back exactly is refused like one too large to
 // seal, so the root fails before any host effect rather than retrying forever.
+//
+// The envelope grows about linearly with the number of entries. The first overflow scales the
+// entries down by it; later ones fit a line through the sizes measured so far, which also finds
+// the part of the base that doesn't shrink with the window.
 func sealRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UUID, d deployment.RecoveryDescriptor) (portability.RecoveryCapture, []byte, []byte, error) {
-	window := portability.RecoveryWindowTarget
+	limit := 0
+	budget := float64(deployment.RecoveryEnvelopeLimit) * 0.95
+	var entries, sizes []float64
 	for range recoverySeals {
-		capture, err := portability.CaptureRecoveryBase(ctx, tx, ws, window)
+		capture, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, limit)
 		if err != nil {
 			return capture, nil, nil, err
 		}
@@ -137,10 +143,21 @@ func sealRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UU
 			return capture, envelope, compressed, nil
 		}
 		clear(compressed)
-		// Ledger entries are about as compressible as the rest of the base, so the window shrinks
-		// in proportion to the overflow, with a tenth to spare.
-		actual := capture.CapturedAt.Sub(capture.WindowStart)
-		window = time.Duration(float64(actual) * float64(deployment.RecoveryEnvelopeLimit) / float64(size) * 0.9)
+		if capture.Entries == 0 {
+			break
+		}
+		entries, sizes = append(entries, float64(capture.Entries)), append(sizes, float64(size))
+		next := entries[len(entries)-1] * budget / float64(size)
+		if n := len(entries); n > 1 && entries[n-2] != entries[n-1] {
+			per := (sizes[n-2] - sizes[n-1]) / (entries[n-2] - entries[n-1])
+			if per > 0 {
+				next = (budget - (sizes[n-1] - per*entries[n-1])) / per
+			}
+		}
+		limit = min(int(next), capture.Entries-1)
+		if limit < 1 {
+			break
+		}
 	}
 	return portability.RecoveryCapture{}, nil, nil, errRecoverySize
 }
