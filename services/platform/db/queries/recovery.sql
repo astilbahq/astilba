@@ -20,7 +20,7 @@ WHERE workspace_id = @workspace_id AND id = @server_id;
 
 -- name: CancelServerOperationsForRecovery :exec
 UPDATE execution_operations SET state='cancelled',cancel_requested=true,note='Fenced after management recovery; inspect the host before resuming.'
-WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled');
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND state IN ('queued','dispatched','running','needs_attention');
 
 -- name: DisableWorkspaceGitAutoDeploy :exec
 UPDATE git_sources SET configuration=configuration || '{"autoDeploy":false}'::jsonb WHERE workspace_id = @workspace_id;

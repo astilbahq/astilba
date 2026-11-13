@@ -104,7 +104,7 @@ func TestImportOverTheLimitAsStoredFails(t *testing.T) {
 	i.source.tree.record(latest, grown)
 	c := i.refresh(t)
 	i.runner.reportImport(c, latest, grown)
-	if got := i.operation(t, c.Id); got.State != "failed" || got.Note != "Imported source is invalid for this environment." {
+	if got := i.operation(t, c.Id); got.State != "failed" || got.Note != "Imported source was not saved: "+overTheLimit {
 		t.Fatalf("the oversized import was %s: %q", got.State, got.Note)
 	}
 	if draft, _ := draftSpec(t, i.b, i.path); draft.Id != i.draft.Id {

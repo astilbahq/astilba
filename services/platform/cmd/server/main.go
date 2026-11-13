@@ -88,7 +88,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	poolConfig, e := pgxpool.ParseConfig(c.DatabaseURL)
+	poolConfig, e := store.PoolConfig(c.DatabaseURL)
 	if e != nil {
 		return errors.New("cannot configure database")
 	}
