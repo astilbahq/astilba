@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
@@ -47,6 +48,12 @@ type Client struct {
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
 	secretReleases          atomic.Bool
+	// negotiated says this process has heard which extensions management reads. Until then the
+	// flags above are unset, and a heartbeat would replace what management holds with a set
+	// stripped of every extension. negotiatedNow is closed when it becomes true.
+	negotiated     atomic.Bool
+	negotiatedInit sync.Once
+	negotiatedNow  chan struct{}
 	// unacknowledged are journaled releases whose acknowledgement has not yet reached
 	// management. Only Run's poll loop uses it.
 	unacknowledged []api.SecretReleaseRef
@@ -124,6 +131,11 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 		}
 		body = value
 	case api.AgentHeartbeat:
+		// A heartbeat replaces the capabilities management holds, so it waits until this process
+		// knows what management reads.
+		if err := c.negotiate(ctx); err != nil {
+			return err
+		}
 		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
 		if !c.crossHost.Load() {
 			value.Preflight.CrossHostInventory = nil
@@ -201,6 +213,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 			}
 			c.Engine.hostChangeReviews.Store(reviews)
 		}
+		c.markNegotiated()
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return refusal(response)
@@ -216,7 +229,67 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 	if json.UnmarshalRead(io.LimitReader(response.Body, limit), out, json.RejectUnknownMembers(true)) != nil {
 		return errors.New("invalid management response")
 	}
+	// Only management answers an agent request with a body it can read. One that marks nothing
+	// comes from a controller older than negotiation, which reads no extension.
+	c.markNegotiated()
 	return nil
+}
+
+// errNotNegotiated says management has not yet answered this process.
+var errNotNegotiated = errors.New("management has not yet said which agent capabilities it reads")
+
+// errPredatesNegotiation says the controller has no challenge and marks nothing, as one older
+// than negotiation does. It reads no extension.
+var errPredatesNegotiation = fmt.Errorf("%w: the controller predates negotiation", errNotNegotiated)
+
+func (c *Client) negotiatedSignal() chan struct{} {
+	c.negotiatedInit.Do(func() { c.negotiatedNow = make(chan struct{}) })
+	return c.negotiatedNow
+}
+
+func (c *Client) markNegotiated() {
+	if c.negotiated.CompareAndSwap(false, true) {
+		close(c.negotiatedSignal())
+	}
+}
+
+// negotiate learns what management reads, if this process doesn't know yet. A challenge
+// stores nothing at management and every controller marks its answer, whatever the status.
+func (c *Client) negotiate(ctx context.Context) error {
+	if c.negotiated.Load() {
+		return nil
+	}
+	cfg, err := c.Journal.Config()
+	if err != nil {
+		return err
+	}
+	err = c.call(ctx, "POST", "/agent/v1/challenge", api.AgentChallengeRequest{ServerId: cfg.ServerID}, nil, "")
+	if c.negotiated.Load() {
+		return nil
+	}
+	if refused := (rejection{}); errors.As(err, &refused) && refused.status == http.StatusNotFound {
+		return errPredatesNegotiation
+	}
+	return errNotNegotiated
+}
+
+// awaitNegotiation asks until management has answered, or another request hears it first. A
+// controller older than negotiation answers no challenge, and is heard when a poll returns.
+func (c *Client) awaitNegotiation(ctx context.Context) bool {
+	delay := time.Second
+	for c.negotiate(ctx) != nil {
+		t := time.NewTimer(delay + time.Duration(rand.IntN(500))*time.Millisecond)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return false
+		case <-c.negotiatedSignal():
+		case <-t.C:
+			delay = min(delay*2, 30*time.Second)
+		}
+		t.Stop()
+	}
+	return true
 }
 
 // refusal reads why management refused a request.
@@ -333,9 +406,13 @@ func (c *Client) Heartbeat(ctx context.Context) (api.AgentStatus, error) {
 	return status, err
 }
 
-// heartbeat reports this host. A response that changes what this controller reads is followed at
-// once by another report, so management doesn't wait an interval to learn what the agent supports.
+// heartbeat reports this host, once this process knows what management reads. A response that
+// changes what this controller reads, as a controller replaced since the last answer may, is
+// followed at once by another report, so management doesn't wait an interval to learn it.
 func (c *Client) heartbeat(ctx context.Context, credential string, status *api.AgentStatus) error {
+	if err := c.negotiate(ctx); err != nil {
+		return err
+	}
 	h := c.Observe(ctx)
 	sent := c.advertisedCapabilities(h.Capabilities)
 	if err := c.call(ctx, "POST", "/agent/v1/heartbeat", h, status, credential); err != nil {
@@ -441,6 +518,10 @@ func (c *Client) Run(ctx context.Context) error {
 		})
 	})
 	wg.Go(func() {
+		// The first poll may be held, so heartbeats don't wait for it to learn what management reads.
+		if !c.awaitNegotiation(ctx) {
+			return
+		}
 		c.loop(ctx, 15*time.Second, func() error {
 			cfg, e := c.Journal.Config()
 			if e != nil {

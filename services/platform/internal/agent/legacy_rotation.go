@@ -20,6 +20,11 @@ func (c *Client) rotate(ctx context.Context) error {
 	if cfg.Key != nil || cfg.BindKey != nil {
 		return nil
 	}
+	// The exchange below starts with a heartbeat, which can't be sent until negotiation; its
+	// failure must not be read as management not holding the candidate.
+	if e = c.negotiate(ctx); e != nil {
+		return e
+	}
 	if cfg.Pending == "" {
 		pending, e := randtoken.New()
 		if e != nil {

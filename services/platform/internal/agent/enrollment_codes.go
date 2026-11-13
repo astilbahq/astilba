@@ -23,8 +23,12 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 	if err != nil {
 		return status, sent, false, err
 	}
-	// Learn whether this controller authenticates keys before choosing what to send.
-	_ = c.call(ctx, "POST", "/agent/v1/challenge", api.AgentChallengeRequest{ServerId: cfg.ServerID}, nil, "")
+	// Learn what this controller reads, keys included, before choosing what to send: an enrollment
+	// replaces the capabilities management holds. Only a controller older than negotiation, which
+	// has no challenge to answer, is sent one without hearing first.
+	if err = c.negotiate(ctx); err != nil && !errors.Is(err, errPredatesNegotiation) {
+		return status, sent, false, err
+	}
 	codeHash := agentidentity.HashHex(code)
 	if cfg.Enrolled && cfg.EnrolledCode == codeHash {
 		// Sending it with a new key would look, to management, like a second holder of the code.
