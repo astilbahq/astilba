@@ -15,7 +15,7 @@ import (
 const cancelGitHubOperations = `-- name: CancelGitHubOperations :exec
 UPDATE execution_operations SET cancel_requested=true,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END
 WHERE workspace_id = $1 AND kind='pipeline' AND command->'pipeline'->'connection'->>'id' = $2::text
-    AND state NOT IN ('succeeded','failed','cancelled')
+    AND state IN ('queued','dispatched','running','needs_attention')
 `
 
 type CancelGitHubOperationsParams struct {

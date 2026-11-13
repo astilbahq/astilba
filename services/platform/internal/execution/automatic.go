@@ -136,7 +136,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		return stop("The branch no longer points at this commit; this deployment was superseded.")
 	}
 	var busy bool
-	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state NOT IN ('succeeded','failed','cancelled'))", ws, env).Scan(&busy); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state IN ('queued','dispatched','running','needs_attention'))", ws, env).Scan(&busy); err != nil {
 		return err
 	}
 	if busy {

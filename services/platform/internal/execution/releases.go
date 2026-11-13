@@ -162,7 +162,7 @@ func (s *Service) ReleaseHistory(ctx context.Context, p store.Principal, ws, pid
 		if err != nil && current.ID != uuid.Nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT p.plan,o.created_at FROM execution_operations o JOIN visual_plans p ON p.id=o.visual_plan_id WHERE o.workspace_id=$1 AND o.environment_id=$2 AND o.state='succeeded' AND o.command->'visual'->>'action'='deploy' ORDER BY o.created_at DESC,o.id DESC LIMIT 20`, ws, env)
+		rows, err := tx.Query(ctx, `SELECT p.plan,o.created_at FROM execution_operations o JOIN visual_plans p ON p.id=o.visual_plan_id WHERE o.workspace_id=$1 AND o.environment_id=$2 AND o.state='succeeded' AND o.command->'visual'->>'action'='deploy' AND o.visual_plan_id IS NOT NULL ORDER BY o.created_at DESC,o.id DESC LIMIT 20`, ws, env)
 		if err != nil {
 			return err
 		}

@@ -215,7 +215,7 @@ func (q *Queries) NetworkKeyHeldByAnotherMember(ctx context.Context, arg Network
 const networkManifestLanding = `-- name: NetworkManifestLanding :one
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND server_id = $2 AND kind='network'
     AND command->'network'->>'action'='configure'
-    AND (command->'network'->'manifest'->>'generation')::bigint = $3::bigint
+    AND command->'network'->'manifest'->'generation' = to_jsonb($3::bigint)
     AND state IN ('queued','dispatched','running','needs_attention') AND created_at > now()-interval '30 seconds')
 `
 
@@ -239,7 +239,7 @@ const networkManifestMissed = `-- name: NetworkManifestMissed :one
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND server_id = $2 AND kind='network'
     AND command->'network'->>'action'='configure'
     AND command->'network'->>'membershipId' = $3::text
-    AND (command->'network'->'manifest'->>'generation')::bigint = $4::bigint
+    AND command->'network'->'manifest'->'generation' = to_jsonb($4::bigint)
     AND state IN ('failed','cancelled'))
 `
 
@@ -252,7 +252,8 @@ type NetworkManifestMissedParams struct {
 
 // A whole manifest at this generation that ended without landing, for instance because the host had
 // already taken a later command, carried no removal there. Another may not land either, so the
-// removal goes first, on its own.
+// removal goes first, on its own. The host's commands are read by manifest generation through
+// execution_network_configure, not through every network command the host ever ran.
 func (q *Queries) NetworkManifestMissed(ctx context.Context, arg NetworkManifestMissedParams) (bool, error) {
 	row := q.db.QueryRow(ctx, networkManifestMissed,
 		arg.WorkspaceID,

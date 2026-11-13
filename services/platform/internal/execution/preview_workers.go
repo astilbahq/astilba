@@ -311,7 +311,7 @@ func (s *Service) cancelPreviewEnvironment(ctx context.Context, tx pgx.Tx, ws uu
 	if env == nil {
 		return nil
 	}
-	_, err := tx.Exec(ctx, "UPDATE execution_operations SET cancel_requested=true WHERE workspace_id=$2 AND environment_id=$1 AND state NOT IN ('succeeded','failed','cancelled') AND NOT COALESCE(command->'visual'->>'action'='preview-cleanup',false)", *env, ws)
+	_, err := tx.Exec(ctx, "UPDATE execution_operations SET cancel_requested=true WHERE workspace_id=$2 AND environment_id=$1 AND state IN ('queued','dispatched','running','needs_attention') AND NOT COALESCE(command->'visual'->>'action'='preview-cleanup',false)", *env, ws)
 	return err
 }
 func previewBusy(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) (bool, error) {
@@ -319,7 +319,7 @@ func previewBusy(ctx context.Context, tx pgx.Tx, ws uuid.UUID, env *uuid.UUID) (
 		return false, nil
 	}
 	var busy bool
-	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$2 AND environment_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", *env, ws).Scan(&busy)
+	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$2 AND environment_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", *env, ws).Scan(&busy)
 	return busy, err
 }
 func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswers, p previewPolicy, r *previewRecord, pr pipeline.PullRequest, connection pipeline.Connection) error {
@@ -350,7 +350,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 				v := time.Now().UTC().Add(time.Duration(*grace) * time.Hour)
 				due = &v
 			}
-			if _, err := tx.Exec(ctx, "UPDATE preview_requests r SET closed_at=now(),cleanup_at=$2,resume_after_cancel=EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id=r.workspace_id AND o.environment_id=r.environment_id AND o.state NOT IN ('succeeded','failed','cancelled')) WHERE r.id=$1", id, due); err != nil {
+			if _, err := tx.Exec(ctx, "UPDATE preview_requests r SET closed_at=now(),cleanup_at=$2,resume_after_cancel=EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id=r.workspace_id AND o.environment_id=r.environment_id AND o.state IN ('queued','dispatched','running','needs_attention')) WHERE r.id=$1", id, due); err != nil {
 				return err
 			}
 			r.View.CleanupAt = due
@@ -456,7 +456,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 
 	if r.BuiltHead != pr.Head || r.Build == nil {
 		var builds int
-		if err = tx.QueryRow(ctx, "SELECT count(*) FROM preview_requests r JOIN execution_operations o ON o.id=r.build_id WHERE r.policy_id=$1 AND o.state NOT IN ('succeeded','failed','cancelled')", p.ID).Scan(&builds); err != nil {
+		if err = tx.QueryRow(ctx, "SELECT count(*) FROM preview_requests r JOIN execution_operations o ON o.id=r.build_id WHERE r.policy_id=$1 AND o.state IN ('queued','dispatched','running','needs_attention')", p.ID).Scan(&builds); err != nil {
 			return err
 		}
 		if builds >= r.Config.MaxBuilds {

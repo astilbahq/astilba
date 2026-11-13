@@ -311,10 +311,10 @@ func (s *Service) previewCommandBoundary(ctx context.Context, tx pgx.Tx, ws uuid
 	return nil
 }
 func (s *Service) cancelPreviewWork(ctx context.Context, tx pgx.Tx, ws, policy uuid.UUID) error {
-	if _, err := tx.Exec(ctx, `UPDATE preview_requests r SET resume_after_cancel=r.resume_after_cancel OR EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id=r.workspace_id AND o.environment_id=r.environment_id AND o.state NOT IN ('succeeded','failed','cancelled')) WHERE r.workspace_id=$1 AND r.policy_id=$2 AND r.state<>'deleted'`, ws, policy); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE preview_requests r SET resume_after_cancel=r.resume_after_cancel OR EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id=r.workspace_id AND o.environment_id=r.environment_id AND o.state IN ('queued','dispatched','running','needs_attention')) WHERE r.workspace_id=$1 AND r.policy_id=$2 AND r.state<>'deleted'`, ws, policy); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE execution_operations o SET cancel_requested=true WHERE o.workspace_id=$2 AND o.state NOT IN ('succeeded','failed','cancelled') AND o.environment_id IN (SELECT environment_id FROM preview_requests WHERE policy_id=$1) AND NOT COALESCE(o.command->'visual'->>'action'='preview-cleanup',false)`, policy, ws)
+	_, err := tx.Exec(ctx, `UPDATE execution_operations o SET cancel_requested=true WHERE o.workspace_id=$2 AND o.state IN ('queued','dispatched','running','needs_attention') AND o.environment_id IN (SELECT environment_id FROM preview_requests WHERE policy_id=$1) AND NOT COALESCE(o.command->'visual'->>'action'='preview-cleanup',false)`, policy, ws)
 	return err
 }
 

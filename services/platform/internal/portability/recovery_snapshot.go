@@ -67,9 +67,9 @@ func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, str
 // copy of one that a later base leaves out. An export chooses its operations itself
 // (exportSelection).
 const retainedOperations = ` AND id IN (WITH RECURSIVE kept(id) AS (
-	SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND (o.state NOT IN ('succeeded','failed','cancelled') OR o.runtime_outcome IS NOT NULL OR o.parent_id IS NULL AND o.kind='network' AND o.command->'network'->>'action'='restrict')
-	UNION SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.created_at>=COALESCE((SELECT n.created_at FROM execution_operations n WHERE n.workspace_id=$1 ORDER BY n.created_at DESC OFFSET 99 LIMIT 1),'-infinity')
-	UNION SELECT c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state NOT IN ('succeeded','failed','cancelled')
+	SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND (o.state IN ('queued','dispatched','running','needs_attention') OR o.runtime_outcome IS NOT NULL OR o.parent_id IS NULL AND o.kind='network' AND o.command->'network'->>'action'='restrict')
+	UNION SELECT n.id FROM (SELECT id FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC FETCH FIRST 100 ROWS WITH TIES) n
+	UNION SELECT c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state IN ('queued','dispatched','running','needs_attention')
 	UNION SELECT runtime_operation_id FROM environments WHERE workspace_id=$1
 	UNION SELECT id FROM cross_host_operations WHERE workspace_id=$1
 	UNION SELECT parent_id FROM cross_host_approvals WHERE workspace_id=$1

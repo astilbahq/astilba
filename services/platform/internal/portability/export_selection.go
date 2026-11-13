@@ -54,11 +54,12 @@ const exportEnvironments = `INSERT INTO export_keep(kind,id) SELECT 'env',e.id F
 // The app's lists, with the same order and limits as the queries that show them.
 // inline-sql: seeds the export's transaction-local working set
 const exportSeeds = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id FROM (
-	SELECT 'op' AS kind,o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.state NOT IN ('succeeded','failed','cancelled')
-	UNION ALL SELECT 'op',c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state NOT IN ('succeeded','failed','cancelled')
-	UNION ALL SELECT 'op',o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.created_at>=COALESCE((SELECT n.created_at FROM execution_operations n WHERE n.workspace_id=$1 ORDER BY n.created_at DESC OFFSET 99 LIMIT 1),'-infinity')
-	UNION ALL SELECT 'op',x.id FROM (SELECT o.id,row_number() OVER (PARTITION BY o.environment_id ORDER BY o.created_at DESC,o.id DESC) n FROM execution_operations o JOIN export_keep k ON k.kind='env' AND k.id=o.environment_id
-		WHERE o.workspace_id=$1 AND o.state='succeeded' AND o.visual_plan_id IS NOT NULL AND o.command->'visual'->>'action'='deploy') x WHERE x.n<=20
+	SELECT 'op' AS kind,o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.state IN ('queued','dispatched','running','needs_attention')
+	UNION ALL SELECT 'op',c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state IN ('queued','dispatched','running','needs_attention')
+	UNION ALL SELECT 'op',n.id FROM (SELECT id FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC FETCH FIRST 100 ROWS WITH TIES) n
+	UNION ALL SELECT 'op',x.id FROM export_keep k CROSS JOIN LATERAL (SELECT o.id FROM execution_operations o
+		WHERE o.workspace_id=$1 AND o.environment_id=k.id AND o.state='succeeded' AND o.visual_plan_id IS NOT NULL AND o.command->'visual'->>'action'='deploy'
+		ORDER BY o.created_at DESC,o.id DESC LIMIT 20) x WHERE k.kind='env'
 	UNION ALL SELECT 'run',x.id FROM (SELECT r.id,row_number() OVER (PARTITION BY r.environment_id ORDER BY r.created_at DESC) n FROM pipeline_runs r JOIN export_keep k ON k.kind='env' AND k.id=r.environment_id WHERE r.workspace_id=$1) x WHERE x.n<=100
 	UNION ALL SELECT 'submission',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM source_submissions s JOIN export_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=100
 	UNION ALL SELECT 'revision',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM specification_revisions s JOIN export_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=50

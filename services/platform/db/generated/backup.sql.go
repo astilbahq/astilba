@@ -176,7 +176,7 @@ const backupPolicyMaintenanceReserved = `-- name: BackupPolicyMaintenanceReserve
 SELECT EXISTS(SELECT 1 FROM cross_host_operations h
     JOIN execution_operations o ON o.workspace_id=h.workspace_id AND o.id=h.id
     WHERE h.workspace_id = $1 AND h.environment_id = $2
-        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND o.state IN ('queued','dispatched','running','needs_attention')
         AND (o.command->'crosshost'->'maintenance'->'effect'->'backup'->'installation'->'policy'->>'id' = $3::text
             OR o.command->'crosshost'->'maintenance'->'effect'->'upgrade'->'plan'->>'policyId' = $3::text))
 `

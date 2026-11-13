@@ -91,7 +91,7 @@ func (s *Service) crossHostOperationAdmission(ctx context.Context, tx pgx.Tx, ws
 	}
 	if c.ParentId != nil {
 		var valid bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND parent_id IS NULL AND kind='crosshost' AND state NOT IN ('succeeded','failed','cancelled'))`, ws, *c.ParentId, c.EnvironmentId).Scan(&valid); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND parent_id IS NULL AND kind='crosshost' AND state IN ('queued','dispatched','running','needs_attention'))`, ws, *c.ParentId, c.EnvironmentId).Scan(&valid); err != nil {
 			return err
 		}
 		if !valid || reservation != *c.ParentId {
@@ -279,11 +279,11 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 	}
 	if cancelled && beforePublication {
 		var pending bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))`, c.Id).Scan(&pending); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))`, c.Id).Scan(&pending); err != nil {
 			return err
 		}
 		if pending {
-			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled')`, c.Id); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention')`, c.Id); err != nil {
 				return err
 			}
 

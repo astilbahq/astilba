@@ -113,7 +113,7 @@ func (s *Service) finishRecoveryStaging(ctx context.Context, tx pgx.Tx, in Recov
 		return err
 	}
 	// inline-sql: recovery session temporary table
-	rows, err := tx.Query(ctx, `SELECT id FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled') AND (id IN (SELECT id FROM recovery_selected_roots) OR parent_id IN (SELECT id FROM recovery_selected_roots) OR id IN (SELECT id FROM recovery_standalone_restrictions)) ORDER BY created_at,id`, in.WorkspaceID)
+	rows, err := tx.Query(ctx, `SELECT id FROM execution_operations WHERE workspace_id=$1 AND state IN ('queued','dispatched','running','needs_attention') AND (id IN (SELECT id FROM recovery_selected_roots) OR parent_id IN (SELECT id FROM recovery_selected_roots) OR id IN (SELECT id FROM recovery_standalone_restrictions)) ORDER BY created_at,id`, in.WorkspaceID)
 	if err != nil {
 		return err
 	}
