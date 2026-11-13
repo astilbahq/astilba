@@ -6,6 +6,7 @@ import {
   findGoTools,
   findImages,
   findReleases,
+  leadingVersionNewer,
   newestInLine,
   offTrack,
   parseTracks,
@@ -123,4 +124,20 @@ test("every track in the repository names a pin and is followed by it", () => {
     assert.ok(pinned.length, `${name} is not pinned`);
     for (const [, version] of pinned) offTrack(version, track);
   }
+});
+
+test("only a newer release, not a newer base image, counts beyond a track", () => {
+  assert.equal(
+    leadingVersionNewer("18.7-alpine3.24", "18.7-alpine3.23"),
+    false,
+  );
+  assert.equal(leadingVersionNewer("18.8-alpine3.24", "18.7-alpine3.23"), true);
+  assert.equal(
+    leadingVersionNewer("18.7-alpine3.24", "18.8-alpine3.23"),
+    false,
+  );
+  assert.equal(
+    leadingVersionNewer("1.31.8-alpine3.24", "1.30.6-alpine3.24"),
+    true,
+  );
 });
