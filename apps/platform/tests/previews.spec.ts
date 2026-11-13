@@ -91,6 +91,7 @@ test("preview policy retains failed inputs and approves only the displayed fork 
           docker: true,
           build: true,
           buildNetwork: true,
+          rootlessBuilds: true,
           buildControls: true,
           visual: true,
           previews: true,

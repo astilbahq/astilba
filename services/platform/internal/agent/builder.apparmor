@@ -1,0 +1,49 @@
+# The agent loads this profile into the kernel before every build and confines the build
+# container with it; see builder.go. It is Docker's docker-default profile with what rootless
+# BuildKit needs on top: creating a user namespace, mounting inside it, and pivot_root. The
+# rules that keep the host's paths read-only or hidden take the place of the masked and
+# read-only paths Docker sets, which BuildKit can't have: the kernel refuses to mount a fresh
+# /proc for a build step over a /proc with hidden parts.
+
+abi <abi/4.0>,
+
+profile astilba-builder flags=(attach_disconnected,mediate_deleted) {
+  # Rootless BuildKit runs in a user namespace it creates, where it mounts and pivots into
+  # each build step's root. These operate on the namespace's own mounts only.
+  userns,
+  mount,
+  umount,
+  pivot_root,
+
+  # What runc uses inside the user namespace, and Docker's default capabilities for build
+  # steps. Capabilities there are the namespace's, never the host's.
+  capability chown dac_override fowner fsetid kill setgid setuid setpcap setfcap net_bind_service net_raw sys_chroot mknod audit_write sys_admin,
+  # BuildKit and runc try this and work without it. Denied quietly so builds don't fill the
+  # audit log.
+  deny capability dac_read_search,
+
+  network,
+  unix,
+  file,
+
+  signal (receive) peer=unconfined,
+  signal (receive) peer=runc,
+  signal (receive) peer=crun,
+  signal (send,receive) peer=astilba-builder,
+  ptrace (trace,read,tracedby,readby) peer=astilba-builder,
+
+  # The paths Docker masks.
+  deny /proc/{acpi,asound,scsi}/** rwklx,
+  deny /proc/{interrupts,kcore,keys,kmem,latency_stats,mem,sched_debug,timer_list,timer_stats} rwklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/{debug,security}/** rwklx,
+
+  # The paths Docker makes read-only, and the rest of /proc outside a process's own
+  # directory, where rootless BuildKit writes its user namespace's ID maps.
+  deny /proc/* w,
+  deny /proc/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny /proc/{bus,fs,irq,sys}/** w,
+  deny /proc/sysrq-trigger rwklx,
+  deny /sys/** wklx,
+}

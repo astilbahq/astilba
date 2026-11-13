@@ -453,6 +453,10 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, keys *pa
 		return completeBeforeEffects(ctx, tx, job, ws, parent.Id, m, "failed", revokedBeforeChangesNote)
 	}
 	if failed && phase == "maintenance-checkpoint" {
+		// The primary may have kept the capsule before it failed, and keeps an unclosed one for good.
+		if err := s.closeUnreservedCheckpoint(ctx, tx, ws, parent, command); err != nil {
+			return err
+		}
 		return completeBeforeEffects(ctx, tx, job, ws, parent.Id, m, "failed", "The primary did not acknowledge recovery metadata; no host was reserved or paused.")
 	}
 	// A host reports these only without having started the effect, usually because the command

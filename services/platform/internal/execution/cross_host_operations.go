@@ -381,10 +381,10 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, keys *passKeys, job
 				if err := s.retireCrossHostGrants(ctx, tx, ws, p, true); err != nil {
 					return err
 				}
-				if stopping {
-					if err := s.closeUnreservedCheckpoint(ctx, tx, ws, c, command); err != nil {
-						return err
-					}
+				// The primary may have kept the capsule before it failed, and keeps an unclosed one
+				// for good.
+				if err := s.closeUnreservedCheckpoint(ctx, tx, ws, c, command); err != nil {
+					return err
 				}
 			}
 			if stopping {

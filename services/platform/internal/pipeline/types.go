@@ -14,11 +14,16 @@ import (
 	"github.com/google/uuid"
 )
 
-const BuilderImage = "moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c"
+// BuilderImage is BuildKit's rootless image. The agent runs it as an unprivileged host user in
+// a user namespace; see the builder in internal/agent/builder.go.
+const BuilderImage = "moby/buildkit:v0.34.1-rootless@sha256:f68752a5a94acfcdad2d07867b7075601a421638e17fc5f28efc1c814d0c4f89"
 const BuilderVersion = "v0.34.1"
 
 // BuildNetworkV1 marks a build that must run behind the agent's build network policy.
 const BuildNetworkV1 = "v1"
+
+// RootlessBuildV1 marks a build that must run in the agent's unprivileged builder.
+const RootlessBuildV1 = "v1"
 
 type Credential struct {
 	Username string `json:"username"`
@@ -133,8 +138,12 @@ type Command struct {
 	// BuildNetwork is BuildNetworkV1 on every build management queues. An agent that predates
 	// the build network drops it when it recomputes the digest, so it refuses the build
 	// instead of running it on its host's network.
-	BuildNetwork string    `json:"buildNetwork,omitempty"`
-	SubmittedAt  time.Time `json:"submittedAt"`
+	BuildNetwork string `json:"buildNetwork,omitempty"`
+	// RootlessBuild is RootlessBuildV1 on every build management queues. An agent that
+	// predates the unprivileged builder would run the build privileged; it drops this when it
+	// recomputes the digest, so it refuses the build instead.
+	RootlessBuild string    `json:"rootlessBuild,omitempty"`
+	SubmittedAt   time.Time `json:"submittedAt"`
 	// Values exist only in the assigned agent's transport and encrypted journal.
 	Access         *RunnerAccess     `json:"access,omitempty"`
 	BuildSecrets   map[string]string `json:"buildSecrets,omitempty"`
@@ -285,6 +294,14 @@ func (c Command) Validate() error {
 	}
 	if !c.IsBuild() && (c.BuildEgress != nil || c.BuildNetwork != "") {
 		return errors.New("only builds carry a build network")
+	}
+	if !c.IsBuild() && c.RootlessBuild != "" {
+		return errors.New("only builds run in the rootless builder")
+	}
+	// As with the build network, an agent always runs builds rootless, so it runs one from a
+	// controller that predates the marker too.
+	if c.IsBuild() && c.RootlessBuild != "" && c.RootlessBuild != RootlessBuildV1 {
+		return errors.New("unsupported rootless builder")
 	}
 	// An agent enforces its own policy, so it runs a build from a controller that predates
 	// the marker too. Management sets it on every build and stops one queued without it.

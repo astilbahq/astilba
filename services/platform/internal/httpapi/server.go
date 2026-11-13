@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/gob"
-	"encoding/json/v2"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -179,7 +178,11 @@ func (s *Server) request(next http.Handler) http.Handler {
 			}
 		}()
 		recorder := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		next.ServeHTTP(recorder, r)
+		if e := urlNUL(r); e != nil {
+			s.fail(recorder, r, e)
+		} else {
+			next.ServeHTTP(recorder, r)
+		}
 		s.Log.Info("request", "request_id", id, "route", requestRoute(r), "status", recorder.Status())
 	})
 }
@@ -265,6 +268,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			out.Fields = &de.Fields
 		}
 		status = failureStatus(de.Code)
+		if errors.Is(err, domain.UnstorableText) {
+			// Input is checked where it is decoded, so this is a path that missed the check.
+			s.Log.Warn("text reached the database holding a character it cannot store", "request_id", out.RequestId, "route", requestRoute(r), diagnostic.Failure(err))
+		}
 		if status == 503 {
 			w.Header().Set("Retry-After", "5")
 		}
@@ -276,13 +283,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	s.respond(w, status, out)
 }
-func decode[T any](r *http.Request) (T, error) {
-	var v T
-	if json.UnmarshalRead(r.Body, &v, json.RejectUnknownMembers(true)) != nil {
-		return v, domain.Invalid("request")
-	}
-	return v, nil
-}
+
 func value(p *string) string {
 	if p == nil {
 		return ""

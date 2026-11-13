@@ -14,12 +14,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,8 +156,68 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	mu.Lock()
 	current = release
 	mu.Unlock()
-	if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
-		t.Fatalf("fresh production bootstrap: %s %v", out, e)
+	// The CI lanes divide what they check. "blocked" blocks this host's Ubuntu archives, so the
+	// bootstrap must install from a fallback archive; "host" installs from this host's own
+	// sources; anything else leaves the runner as it is, which needs nothing downloaded.
+	ubuntuSources := os.Getenv("ASTILBA_BOOTSTRAP_UBUNTU_SOURCES")
+	archives := ubuntuArchives(t)
+	if canonical := func(name string) bool { return strings.HasSuffix(name, ".ubuntu.com") }; ubuntuSources == "blocked" && !slices.ContainsFunc(archives, canonical) {
+		// CI's own archive step has already moved this runner to a mirror, during an outage of
+		// Canonical's archive, and blocking that mirror too would leave too few to fall back to.
+		fmt.Println("::warning::Canonical's Ubuntu archive is unavailable, so CI moved this runner to a mirror. This lane checked the bootstrap's install from the host's own sources, not its fallback.")
+		ubuntuSources = "host"
+	}
+	if ubuntuSources == "blocked" || ubuntuSources == "host" {
+		// A runner already has every other Ubuntu package the bootstrap needs. Without nftables
+		// it must download one. Ubuntu's server images depend on it through ubuntu-standard,
+		// which goes too.
+		remove := exec.Command("apt-get", "remove", "--yes", "nftables")
+		remove.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if out, e := remove.CombinedOutput(); e != nil {
+			t.Fatalf("remove nftables: %s %v", out, e)
+		}
+	}
+	switch ubuntuSources {
+	case "blocked":
+		sources := aptSources(t)
+		blocked, restore := blockHosts(t, append(archives, "archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com"))
+		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
+		restore()
+		if e != nil {
+			t.Fatalf("fresh production bootstrap with this host's Ubuntu archives blocked (%s): %s %v", strings.Join(blocked, ", "), out, e)
+		}
+		used := regexp.MustCompile(`Ubuntu packages for this run come from (\S+)\. This host's package sources are unchanged\.`).FindSubmatch(out)
+		if !bytes.Contains(out, []byte("This host's package sources failed.")) || used == nil {
+			t.Fatalf("the bootstrap did not say it used a fallback archive: %s", out)
+		}
+		if u, err := url.Parse(string(used[1])); err != nil || slices.Contains(blocked, u.Hostname()) {
+			t.Fatalf("installed from a blocked archive: %s", used[1])
+		}
+		if after := aptSources(t); !maps.Equal(sources, after) {
+			t.Fatal("the fallback changed this host's package sources")
+		}
+	case "host":
+		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
+		if e != nil {
+			t.Fatalf("fresh production bootstrap: %s %v", out, e)
+		}
+		if !bytes.Contains(out, []byte("Refreshing this host's package sources.")) {
+			t.Fatalf("the bootstrap did not refresh this host's sources: %s", out)
+		}
+		// A brief failure of one of the runner's sources is no fault of the bootstrap, which then
+		// rightly falls back, but it means this lane didn't check the host's sources this time.
+		if bytes.Contains(out, []byte("This host's package sources failed.")) {
+			fmt.Println("::warning::The bootstrap fell back from this runner's package sources, so this lane didn't check an install from them; its output above says why.")
+		}
+	default:
+		if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
+			t.Fatalf("fresh production bootstrap: %s %v", out, e)
+		}
+	}
+	if ubuntuSources == "blocked" || ubuntuSources == "host" {
+		if out, e := exec.Command("dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", "nftables").Output(); e != nil || string(out) != "installed 1.0.9-1ubuntu0.1" {
+			t.Fatalf("the pinned nftables: %q %v", out, e)
+		}
 	}
 	// Cleanup is limited to paths just created by this fixture, after checking the
 	// installed binary/key and journal ownership; the runtime stays for host checks.
@@ -264,6 +328,96 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatalf("normal-PATH backup capability omitted: %s %v", out, e)
 	}
 
+}
+
+// aptSources reads this host's apt source files.
+func aptSources(t *testing.T) map[string]string {
+	t.Helper()
+	files, err := filepath.Glob("/etc/apt/sources.list.d/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string]string{}
+	for _, file := range append(files, "/etc/apt/sources.list", "/etc/apt/apt-mirrors.txt") {
+		data, err := os.ReadFile(file)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		sources[file] = string(data)
+	}
+	return sources
+}
+
+// ubuntuArchives names the hosts of this host's Ubuntu archives: the sources apt reads a main
+// component from. That leaves out sources such as Docker's, which the bootstrap downloads from.
+func ubuntuArchives(t *testing.T) []string {
+	t.Helper()
+	out, err := exec.Command("apt-get", "indextargets", "--no-release-info", "--format", "$(REPO_URI)", "Identifier: Packages", "Component: main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, repository := range strings.Fields(string(out)) {
+		uris := []string{repository}
+		// A mirror list names its mirrors in a file.
+		if file, ok := strings.CutPrefix(repository, "mirror+file:"); ok {
+			list, err := os.ReadFile(strings.TrimSuffix(file, "/"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			uris = nil
+			for _, line := range strings.Split(string(list), "\n") {
+				if fields := strings.Fields(line); len(fields) > 0 && !strings.HasPrefix(fields[0], "#") {
+					uris = append(uris, fields[0])
+				}
+			}
+		}
+		for _, uri := range uris {
+			u, err := url.Parse(uri)
+			if err != nil || u.Hostname() == "" {
+				t.Fatalf("an Ubuntu archive this test can't block: %q", uri)
+			}
+			names = append(names, strings.ToLower(u.Hostname()))
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("found no Ubuntu archive in this host's apt sources")
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// blockHosts makes names refuse connections, as when the distribution's mirror names stopped
+// resolving on 11 November 2026. It returns the names it blocked, and a function that restores
+// /etc/hosts, which also runs when the test ends.
+func blockHosts(t *testing.T, names []string) ([]string, func()) {
+	t.Helper()
+	names = slices.Compact(slices.Sorted(slices.Values(names)))
+	original, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := bytes.TrimRight(bytes.Clone(original), "\n")
+	blocked = append(blocked, "\n# Ubuntu archives blocked by TestBootstrapOnDisposableHost\n"...)
+	for _, name := range names {
+		blocked = fmt.Appendf(blocked, "127.0.0.1 %s\n::1 %s\n", name, name)
+	}
+	if err = os.WriteFile("/etc/hosts", blocked, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	restore := func() {
+		if !restored {
+			restored = true
+			if err := os.WriteFile("/etc/hosts", original, 0o644); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(restore)
+	return names, restore
 }
 
 const (
