@@ -133,6 +133,7 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	honnef.co/go/tools v0.8.2 // indirect
+	oras.land/oras-go/v2 v2.7.0 // indirect
 )
 
 tool (

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -17,7 +16,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
@@ -637,33 +635,6 @@ func healthLabels(c api.ExecutionCommand, p deployment.Plan) map[string]string {
 	return labels
 }
 
-func (e *Engine) pullImage(ctx context.Context, image string) error {
-	return e.pullImageAuth(ctx, image, "")
-}
-func (e *Engine) pullImageAuth(ctx context.Context, image, auth string) error {
-	stream, err := e.Docker.ImagePull(ctx, image, client.ImagePullOptions{RegistryAuth: auth})
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-	decoder := jsontext.NewDecoder(stream)
-	for {
-		var message struct {
-			Error string `json:"error"`
-		}
-		err := json.UnmarshalDecode(decoder, &message)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if message.Error != "" {
-			return errors.New("registry rejected the image pull")
-		}
-	}
-}
-
 func resolutionObservation(observed deployment.Observation) deployment.Observation {
 	for _, resource := range observed.Resources {
 		observed.ResourceDrift = observed.ResourceDrift || resource.Drift
@@ -741,48 +712,7 @@ func visualRegistryAuth(p deployment.Payload, key string) string {
 	if !ok {
 		return ""
 	}
-	raw, _ := json.Marshal(map[string]string{"username": c.Username, "password": c.Password})
-	return base64.URLEncoding.EncodeToString(raw)
-}
-
-func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) error {
-	images := make([]string, 0, len(p.Plan.Images)+1)
-	for _, image := range p.Plan.Images {
-		images = append(images, image)
-	}
-	images = append(images, execution.TestImage)
-	for _, image := range images {
-		key := ""
-		for k, v := range p.Plan.Images {
-			if v == image {
-				key = k
-				break
-			}
-		}
-		if a, ok := p.Plan.Artifacts[key]; ok && a.ServerID != nil {
-			v, err := e.Docker.ImageInspect(ctx, image)
-			if err != nil || v.ID != a.Digest || v.Architecture != a.Architecture {
-				return errors.New("local artifact identity is unavailable")
-			}
-			continue
-		}
-		if _, err := e.Docker.ImageInspect(ctx, image); err == nil {
-			continue
-		} else if !errdefs.IsNotFound(err) {
-			return errors.New("cannot inspect reviewed image")
-		}
-		if err := e.pullImageAuth(ctx, image, visualRegistryAuth(p, key)); err != nil {
-			return errors.New("image pull failed or was interrupted")
-		}
-	}
-
-	for key, artifact := range p.Plan.Artifacts {
-		v, err := e.Docker.ImageInspect(ctx, p.Plan.Images[key])
-		if err != nil || v.Architecture != artifact.Architecture {
-			return errors.New("artifact architecture differs from the reviewed target")
-		}
-	}
-	return nil
+	return encodedRegistryAuth(c)
 }
 
 // Running can be normalized to the recorded serving value when validating an

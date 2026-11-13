@@ -37,7 +37,8 @@ type Engine struct {
 	ResticCLI             string
 	BackupRoots           []string
 	// ImageLoadBytes and ImageLoadReserveBytes are the host owner's limits on loading a local
-	// build's image, see image_archive.go; the defaults when zero.
+	// build's image or pulling a deployment's, see image_archive.go and image_pull.go; the
+	// defaults when zero.
 	ImageLoadBytes        int64
 	ImageLoadReserveBytes int64
 	TroubleshootingIdle   time.Duration
@@ -45,6 +46,9 @@ type Engine struct {
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
 	mu          sync.Mutex
+	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
+	layerCostsOnce sync.Once
+	measuredLayers *layerCosts
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
