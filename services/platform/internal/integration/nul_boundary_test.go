@@ -11,6 +11,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -141,7 +142,11 @@ func TestNULIsRefusedFromPeopleAndReplacedFromHosts(t *testing.T) {
 
 	// 5. A report's steps, which the host's output can name and describe.
 	b.call("POST", commandPath, api.BackupCommandRequest{Action: "install", RequestKey: uuid.New(), Snapshot: ""}, 202, &op)
-	report(poll(op.Id), nil, []api.ExecutionStep{{Name: "install" + nul, Detail: "restic" + nul + "said", State: api.Done}})
+	installed := poll(op.Id)
+	// A plan hash is matched, not shown. Its schema refuses a NUL there before decode would
+	// replace it, and a replaced one would match nothing: a well-formed agent never sends one.
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: installed.Id, Generation: installed.Generation, PlanHash: installed.PlanHash + nul, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}}, 400, nil)
+	report(installed, nil, []api.ExecutionStep{{Name: "install" + nul, Detail: "restic" + nul + "said", State: api.Done}})
 	var steps []byte
 	if err := f.st.Pool.QueryRow(ctx, "SELECT steps FROM execution_operations WHERE id=$1", op.Id).Scan(&steps); err != nil {
 		t.Fatal(err)
@@ -221,4 +226,24 @@ func TestStoreRefusesUnstorableTextFromAnyPath(t *testing.T) {
 	if !errors.Is(store.Normalize(err), domain.UnstorableText) {
 		t.Fatal("NUL in jsonb was answered with", err)
 	}
+}
+
+// An agent's NUL is replaced so its host's output can't stop it, but a value the server matches
+// or verifies, such as a challenge or a signature, then no longer matches, and the request is
+// refused: replacement makes a value the agent could have sent itself, never one it could not.
+func TestAgentCredentialsHoldingNULAreRefused(t *testing.T) {
+	_, _, _, v, a := keyedServer(t)
+	key := agentKey(t, a)
+	public, _ := agentidentity.PublicKey(key)
+	token := func(nonce, signature string) {
+		t.Helper()
+		agentRequest(t, a.tls.Client(), a.tls.URL, "/agent/v1/token", "", api.AgentTokenRequest{ServerId: v.Server.Id, PublicKey: public, Nonce: nonce, StartCounter: 100, Signature: signature}, 401, nil)
+	}
+	var challenge api.AgentChallenge
+	agentRequest(t, a.tls.Client(), a.tls.URL, "/agent/v1/challenge", "", api.AgentChallengeRequest{ServerId: v.Server.Id}, 200, &challenge)
+	// Signed over the NUL, so only its replacement makes the request differ from what was signed.
+	signed, _ := agentidentity.Sign(key, agentidentity.TokenMessage(v.Server.Id, challenge.Nonce+nul, 100))
+	token(challenge.Nonce+nul, signed)
+	signature, _ := agentidentity.Sign(key, agentidentity.TokenMessage(v.Server.Id, challenge.Nonce, 100))
+	token(challenge.Nonce, signature+nul)
 }
