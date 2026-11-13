@@ -464,7 +464,7 @@ func (q *Queries) LockGitConnectionDeliveries(ctx context.Context, arg LockGitCo
 const pageEnvironmentSecretVersions = `-- name: PageEnvironmentSecretVersions :many
 SELECT v.id,v.encrypted_value FROM secret_versions v
 JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id > $3
+WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id > $3 AND v.erased_at IS NULL
 ORDER BY v.id LIMIT $4
 `
 

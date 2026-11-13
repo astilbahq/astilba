@@ -27,6 +27,15 @@ export const runtimeOptions = (path: EnvironmentPath) =>
     refetchInterval: 5000,
   });
 
+// The environment's managed volumes, including the ones it keeps while retired. The deployment
+// panel, the retirement banner and the purge confirmation share this list.
+export const volumesOptions = (path: EnvironmentPath) =>
+  queryOptions({
+    queryKey: ["volumes", path],
+    queryFn: ({ signal }) =>
+      result(client.GET(`${root}/volumes`, { params: { path }, signal })),
+  });
+
 export const layoutOptions = (path: EnvironmentPath) =>
   queryOptions({
     queryKey: ["layout", path],

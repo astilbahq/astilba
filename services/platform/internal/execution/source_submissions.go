@@ -318,7 +318,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		return nil, err
 	}
 	if state != "active" {
-		return nil, fail("the environment was retired. Restore it to propose its draft.")
+		return nil, fail("the environment was retired. Restore it to propose its draft; a purged environment cannot be restored.")
 	}
 	var c submissionConfiguration
 	if err = json.Unmarshal(row.Configuration, &c); err != nil {

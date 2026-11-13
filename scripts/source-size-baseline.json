@@ -3,7 +3,7 @@
   "apps/platform/tests/auth.spec.ts": 922,
   "services/platform/internal/agent/backup_data.go": 644,
   "services/platform/internal/agent/cross_host_host_test.go": 1142,
-  "services/platform/internal/agent/visual.go": 815,
+  "services/platform/internal/agent/visual.go": 812,
   "services/platform/internal/composeproject/source.go": 601,
   "services/platform/internal/integration/cross_host_physical_recovery_test.go": 969,
   "services/platform/internal/integration/cross_host_recovery_test.go": 1342,

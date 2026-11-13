@@ -259,5 +259,12 @@ export const effects = css({
   listStyleType: "disc",
   overflowWrap: "anywhere",
 });
+// The volumes a purge deletes, listed under the effect that names them.
+export const purgeVolumes = css({
+  display: "grid",
+  gap: "1",
+  marginBlockStart: "2",
+  listStyleType: "none",
+});
 export const dialogTitle = css({ outline: "none", overflowWrap: "anywhere" });
 export const confirmField = css({ display: "grid", gap: "2" });

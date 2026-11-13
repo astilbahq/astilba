@@ -39,6 +39,7 @@ type Client struct {
 	serviceOutputs          atomic.Bool
 	previews                atomic.Bool
 	retirement              atomic.Bool
+	purge                   atomic.Bool
 	schedules               atomic.Bool
 	replicas                atomic.Bool
 	crossHost               atomic.Bool
@@ -176,6 +177,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 		c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
 		c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
 		c.retirement.Store(response.Header.Get("Astilba-Agent-Retirement") == "v1")
+		c.purge.Store(response.Header.Get("Astilba-Agent-Purge") == "v1")
 		c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
 		c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
 		c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
@@ -261,6 +263,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.retirement.Load() {
 		v.Retirement = nil
+	}
+	if !c.purge.Load() {
+		v.Purge = nil
 	}
 	if !c.serviceOutputs.Load() {
 		v.ServiceOutputs = nil

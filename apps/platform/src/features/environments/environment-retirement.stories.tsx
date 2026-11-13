@@ -16,6 +16,18 @@ import {
   workshopError,
 } from "../../workshop/environment-fixtures";
 import { scenario } from "../../workshop/fixtures";
+import {
+  listed,
+  listing,
+  members,
+  operation,
+  operationFixture,
+  ownerId,
+  pollWait,
+  retired,
+  retiring,
+  volumes,
+} from "../../workshop/retirement-fixtures";
 
 const path = `/?workspace=${workspace.id}&project=${examples[0].id}&environment=${environments[0].id}`;
 const meta = {
@@ -26,68 +38,6 @@ const meta = {
 } satisfies Meta<typeof ShellPreview>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-
-const ownerId = "00000000-0000-4000-8000-000000000050";
-const operationId = "00000000-0000-4000-8000-000000000060";
-const retired: Schema["Environment"] = {
-  ...environments[0],
-  state: "retired",
-  retiredAt: "2026-11-10T09:30:00Z",
-  retiredBy: ownerId,
-  retirementOperationId: operationId,
-};
-const retiring: Schema["Environment"] = { ...retired, state: "retiring" };
-const listed = (environment: Schema["Environment"]) => [
-  environment,
-  ...environments.slice(1),
-];
-const listing = (environment: Schema["Environment"]) =>
-  http.get(environmentsPath, () => HttpResponse.json(listed(environment)));
-const members = http.get("/api/v1/workspaces/:workspaceId/members", () =>
-  HttpResponse.json([
-    {
-      id: ownerId,
-      name: "Ada Lovelace",
-      email: "ada@example.com",
-      role: "owner",
-      mfaEnabled: true,
-    },
-  ] satisfies Schema["Member"][]),
-);
-const volumes = http.get(`${environmentRoot}/volumes`, () =>
-  HttpResponse.json([
-    {
-      id: "00000000-0000-4000-8000-000000000070",
-      name: "postgres-data",
-      inUse: false,
-      deleted: false,
-    },
-    {
-      id: "00000000-0000-4000-8000-000000000071",
-      name: "uploads",
-      inUse: false,
-      deleted: false,
-    },
-  ] satisfies Schema["ManagedVolumes"]),
-);
-const operation = (state: Schema["ExecutionState"], note: string) =>
-  http.get(`${environmentRoot}/operations/:operationId`, () =>
-    HttpResponse.json({
-      id: operationId,
-      serverId: "00000000-0000-4000-8000-000000000080",
-      environmentId: environments[0].id,
-      generation: 1,
-      state,
-      kind: "update",
-      cancelRequested: false,
-      note,
-      steps: [],
-      createdAt: "2026-11-10T09:30:00Z",
-    } satisfies Schema["Operation"]),
-  );
-
-// The retiring page polls every five seconds.
-const pollWait = 7000;
 
 async function openRetireDialog(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
@@ -426,18 +376,7 @@ export const RetirementCompletesOnce: Story = {
     }),
     http.get(`${environmentRoot}/operations/:operationId`, () => {
       confirmed = true;
-      return HttpResponse.json({
-        id: operationId,
-        serverId: "00000000-0000-4000-8000-000000000080",
-        environmentId: environments[0].id,
-        generation: 1,
-        state: "succeeded",
-        kind: "update",
-        cancelRequested: false,
-        note: "",
-        steps: [],
-        createdAt: "2026-11-10T09:30:00Z",
-      } satisfies Schema["Operation"]);
+      return HttpResponse.json(operationFixture("succeeded"));
     }),
     members,
     volumes,

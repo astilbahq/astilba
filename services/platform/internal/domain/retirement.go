@@ -2,11 +2,17 @@ package domain
 
 import "strings"
 
-// EnvironmentInactive refuses a change to an environment that is retiring or retired. Reads,
-// history and configuration export stay available; restoring it allows changes again.
-var EnvironmentInactive = &Error{Code: "conflict", Message: "This environment is retired or being retired. Restore it before changing it.", Fields: []string{"environment.state"}}
+// EnvironmentInactive refuses a change to an environment that is not active: retiring, retired or
+// purged. Reads, history and configuration export stay available; restoring a retired environment
+// allows changes again, and a purged one is never restored.
+var EnvironmentInactive = &Error{Code: "conflict", Message: "This environment is not active, so it cannot be changed. Restore it first if it is retired; one being retired, purging or purged cannot be restored.", Fields: []string{"environment.state"}}
 
-// Reasons a retirement or restore is refused, reported to the dashboard as retirement.<reason>.
+// SecretInUse refuses to retire a secret while something that may still deploy names one of its
+// versions.
+var SecretInUse = &Error{Code: "conflict", Message: "A version of this secret is still used by the draft, the running deployment, a plan or an operation. Replace it there first.", Fields: []string{"secret.inUse"}}
+
+// Reasons a retirement, restore or purge is refused, reported to the dashboard as
+// retirement.<reason>.
 const (
 	RetirementActiveOperation = "active_operation"
 	RetirementServerBusy      = "server_busy"
@@ -17,6 +23,8 @@ const (
 	RetirementAgentUpdate     = "agent_update"
 	RetirementServerTransfer  = "server_transfer"
 	RetirementState           = "state"
+	RetirementVolumes         = "volumes"
+	RetirementPurgeAgent      = "purge_agent_update"
 )
 
 var retirementMessages = map[string]string{
@@ -29,9 +37,11 @@ var retirementMessages = map[string]string{
 	RetirementAgentUpdate:     "Update this server's agent before retiring environments on it.",
 	RetirementServerTransfer:  "This environment's server is waiting for a verified agent transfer. Complete the transfer first.",
 	RetirementState:           "This environment is not in a state that allows this. Reload it to see its current state.",
+	RetirementVolumes:         "The volumes this environment keeps have changed. Reload it and confirm the current list.",
+	RetirementPurgeAgent:      "Update this server's agent before deleting retained data on it.",
 }
 
-// RetirementRefused names why an environment cannot be retired or restored now.
+// RetirementRefused names why an environment cannot be retired, restored or purged now.
 func RetirementRefused(reason string) error {
 	return &Error{Code: "conflict", Message: retirementMessages[reason], Fields: []string{"retirement." + reason}}
 }
