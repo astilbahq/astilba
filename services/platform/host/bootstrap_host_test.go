@@ -156,15 +156,31 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	mu.Lock()
 	current = release
 	mu.Unlock()
-	// Half the CI lanes install from this host's own package sources; the others block them.
-	if os.Getenv("ASTILBA_BOOTSTRAP_BLOCK_UBUNTU_ARCHIVES") == "1" {
+	// The CI lanes divide what they check. "blocked" blocks this host's Ubuntu archives, so the
+	// bootstrap must install from a fallback archive; "host" installs from this host's own
+	// sources; anything else leaves the runner as it is, which needs nothing downloaded.
+	ubuntuSources := os.Getenv("ASTILBA_BOOTSTRAP_UBUNTU_SOURCES")
+	archives := ubuntuArchives(t)
+	if canonical := func(name string) bool { return strings.HasSuffix(name, ".ubuntu.com") }; ubuntuSources == "blocked" && !slices.ContainsFunc(archives, canonical) {
+		// CI's own archive step has already moved this runner to a mirror, during an outage of
+		// Canonical's archive, and blocking that mirror too would leave too few to fall back to.
+		fmt.Printf("::warning::Canonical's Ubuntu archive is unavailable, so this runner uses %s. This lane checked the bootstrap's install from the host's own sources, not its fallback.\n", strings.Join(archives, ", "))
+		ubuntuSources = "host"
+	}
+	if ubuntuSources == "blocked" || ubuntuSources == "host" {
 		// A runner already has every other Ubuntu package the bootstrap needs. Without nftables
-		// it must download one, which only a fallback archive can then supply.
-		if out, e := exec.Command("dpkg", "--remove", "nftables").CombinedOutput(); e != nil {
+		// it must download one. Ubuntu's server images depend on it through ubuntu-standard,
+		// which goes too.
+		remove := exec.Command("apt-get", "remove", "--yes", "nftables")
+		remove.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if out, e := remove.CombinedOutput(); e != nil {
 			t.Fatalf("remove nftables: %s %v", out, e)
 		}
+	}
+	switch ubuntuSources {
+	case "blocked":
 		sources := aptSources(t)
-		blocked, restore := blockUbuntuArchives(t)
+		blocked, restore := blockHosts(t, append(archives, "archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com"))
 		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
 		restore()
 		if e != nil {
@@ -180,11 +196,28 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		if after := aptSources(t); !maps.Equal(sources, after) {
 			t.Fatal("the fallback changed this host's package sources")
 		}
-		if out, e := exec.Command("dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", "nftables").Output(); e != nil || string(out) != "installed 1.0.9-1ubuntu0.1" {
-			t.Fatalf("nftables from the fallback archive: %q %v", out, e)
+	case "host":
+		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
+		if e != nil {
+			t.Fatalf("fresh production bootstrap: %s %v", out, e)
 		}
-	} else if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
-		t.Fatalf("fresh production bootstrap: %s %v", out, e)
+		if !bytes.Contains(out, []byte("Refreshing this host's package sources.")) {
+			t.Fatalf("the bootstrap did not refresh this host's sources: %s", out)
+		}
+		// A brief failure of one of the runner's sources is no fault of the bootstrap, which then
+		// rightly falls back, but it means this lane didn't check the host's sources this time.
+		if bytes.Contains(out, []byte("This host's package sources failed.")) {
+			fmt.Println("::warning::The bootstrap fell back from this runner's package sources, so this lane didn't check an install from them; its output above says why.")
+		}
+	default:
+		if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
+			t.Fatalf("fresh production bootstrap: %s %v", out, e)
+		}
+	}
+	if ubuntuSources == "blocked" || ubuntuSources == "host" {
+		if out, e := exec.Command("dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", "nftables").Output(); e != nil || string(out) != "installed 1.0.9-1ubuntu0.1" {
+			t.Fatalf("the pinned nftables: %q %v", out, e)
+		}
 	}
 	// Cleanup is limited to paths just created by this fixture, after checking the
 	// installed binary/key and journal ownership; the runtime stays for host checks.
@@ -317,12 +350,9 @@ func aptSources(t *testing.T) map[string]string {
 	return sources
 }
 
-// blockUbuntuArchives makes the Ubuntu archives in this host's apt sources, and Canonical's own,
-// refuse connections, as when the distribution's mirror names stopped resolving on 11 November
-// 2026. An Ubuntu archive is a source apt reads a main component from, which leaves out sources
-// such as Docker's that the bootstrap downloads from. It returns the names it blocked, and a
-// function that restores /etc/hosts, which also runs when the test ends.
-func blockUbuntuArchives(t *testing.T) ([]string, func()) {
+// ubuntuArchives names the hosts of this host's Ubuntu archives: the sources apt reads a main
+// component from. That leaves out sources such as Docker's, which the bootstrap downloads from.
+func ubuntuArchives(t *testing.T) []string {
 	t.Helper()
 	out, err := exec.Command("apt-get", "indextargets", "--no-release-info", "--format", "$(REPO_URI)", "Identifier: Packages", "Component: main").Output()
 	if err != nil {
@@ -353,11 +383,18 @@ func blockUbuntuArchives(t *testing.T) ([]string, func()) {
 		}
 	}
 	if len(names) == 0 {
-		t.Fatal("found no Ubuntu archive in this host's apt sources to block")
+		t.Fatal("found no Ubuntu archive in this host's apt sources")
 	}
-	names = append(names, "archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com")
 	slices.Sort(names)
-	names = slices.Compact(names)
+	return slices.Compact(names)
+}
+
+// blockHosts makes names refuse connections, as when the distribution's mirror names stopped
+// resolving on 11 November 2026. It returns the names it blocked, and a function that restores
+// /etc/hosts, which also runs when the test ends.
+func blockHosts(t *testing.T, names []string) ([]string, func()) {
+	t.Helper()
+	names = slices.Compact(slices.Sorted(slices.Values(names)))
 	original, err := os.ReadFile("/etc/hosts")
 	if err != nil {
 		t.Fatal(err)

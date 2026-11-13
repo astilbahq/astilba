@@ -18,7 +18,7 @@ import (
 // whether its package lists started from the host's, and its arguments. An update fails, as apt-get's does, when those sources are listed in
 // FAILING or PARTIAL. A download fails after a FAILING update, since apt then has no lists to
 // resolve from, and always when DOWNLOAD_FAILS is set. Unless NOTHING_NEEDED is set, a package
-// needs downloading.
+// needs downloading. An archive listed in SUBSTITUTED serves -proposed as -security.
 const fakeAptGet = `#!/usr/bin/env bash
 source=host
 for argument in "$@"; do
@@ -35,6 +35,12 @@ for argument in "$@"; do
 done
 printf '%s %s %s\n' "$source" "$seeded" "$*" >> "$LOG"
 case " $* " in
+  *" indextargets "*)
+    printf '%s\n' 'noble noble noble Ubuntu' 'noble-updates noble-updates noble Ubuntu'
+    for substituted in $SUBSTITUTED; do
+      [[ $substituted == "$source" ]] && { echo 'noble-security noble-proposed noble Ubuntu'; exit 0; }
+    done
+    echo 'noble-security noble-security noble Ubuntu' ;;
   *" --print-uris "*)
     printf "'file:/tmp/docker.deb' docker.deb 1 \n"
     [[ -n $NOTHING_NEEDED ]] || printf "'http://archive.test/nftables.deb' nftables.deb 1 \n" ;;
@@ -63,6 +69,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		name          string
 		failing       []string // Sources whose update fails, leaving nothing to download from.
 		partial       []string // Sources whose update fails for an unrelated index.
+		substituted   []string // Archives that serve another suite under a requested one's name.
 		downloadFails bool
 		nothingNeeded bool
 		used          string // The fallback archive the install uses, or empty for the host's sources.
@@ -76,6 +83,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		{name: "an unrelated host source fails", partial: []string{"host"}, ok: true, output: "Some of this host's package indexes failed to refresh"},
 		{name: "host sources fail", failing: []string{"host"}, used: amd64[0], ok: true},
 		{name: "host sources and the first archive fail", failing: []string{"host", amd64[0]}, used: amd64[1], ok: true},
+		{name: "the first archive serves another suite", failing: []string{"host"}, substituted: []string{amd64[0]}, used: amd64[1], ok: true, output: "The archive served noble-security as suite noble-proposed"},
 		{name: "everything fails", failing: append([]string{"host"}, amd64...), output: "Neither this host's package sources nor any fallback Ubuntu archive"},
 		// A download that fails although every index refreshed, such as a package apt can't
 		// resolve, would fail the same way from every archive.
@@ -133,7 +141,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				return ""
 			}
 			cmd := exec.Command("bash", "-c", harness)
-			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+log, "SAVED="+saved, "FAILING="+strings.Join(test.failing, " "), "PARTIAL="+strings.Join(test.partial, " "), "DOWNLOAD_FAILS="+flag(test.downloadFails), "NOTHING_NEEDED="+flag(test.nothingNeeded))
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+log, "SAVED="+saved, "FAILING="+strings.Join(test.failing, " "), "PARTIAL="+strings.Join(test.partial, " "), "SUBSTITUTED="+strings.Join(test.substituted, " "), "DOWNLOAD_FAILS="+flag(test.downloadFails), "NOTHING_NEEDED="+flag(test.nothingNeeded))
 			out, err := cmd.CombinedOutput()
 			if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 77 {
 				t.Skip("needs bash 4.4 or later, as production has")

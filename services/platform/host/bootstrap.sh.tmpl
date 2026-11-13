@@ -155,8 +155,9 @@ verify_hash() { printf '%s  %s\n' "$2" "$1" | sha256sum --check --status; }
 # downloads live in a private directory, so the host's sources and lists stay as they are, and a
 # scheduled apt run can't change what is installed between download and install. apt verifies
 # every index and package against Ubuntu's archive key, as it does for the host's own sources,
-# whatever this host's apt configuration relaxes. A fallback's updates and security indexes must
-# also be under a week old, so a stale mirror can't hold back fixes.
+# whatever this host's apt configuration relaxes. Every index a fallback serves must also be the
+# suite asked for, and its updates and security indexes under a week old, so a mirror can neither
+# substitute another suite nor hold back fixes.
 ubuntu_keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
 host_lists=/var/lib/apt/lists
 apt_options=()
@@ -177,7 +178,7 @@ apt_use() {
   install -d -m 0700 -o _apt -g root "$apt_root/lists/partial" "$apt_root/cache/archives/partial"
   apt_options=(-o "Dir::State::Lists=$apt_root/lists" -o "Dir::Cache=$apt_root/cache")
   if ((!$#)); then
-    find "$host_lists" -maxdepth 1 -type f ! -name lock -exec cp --preserve=mode,timestamps -t "$apt_root/lists" {} +
+    find "$host_lists" -maxdepth 1 -type f ! -name lock -exec cp -p {} "$apt_root/lists/" \;
     return 0
   fi
   install -d -m 0755 "$apt_root/sources"
@@ -210,6 +211,20 @@ SOURCES
 # apt-get update succeeds even when every index fails.
 apt_refresh() { apt_get -o APT::Update::Error-Mode=any update; }
 apt_fetch() { apt_get install --download-only --yes --no-remove --no-install-recommends "$@"; }
+# Fails unless every index an archive served is the Ubuntu suite asked for. A mirror could
+# otherwise serve another suite Ubuntu genuinely signed, such as a later release or -proposed, under
+# this one's name, which apt only warns about.
+apt_suites_match() {
+  local release suite codename origin rest found=false
+  while read -r release suite codename origin rest; do
+    if [[ "$suite" != "$release" || "$codename" != "$VERSION_CODENAME" || "$origin" != Ubuntu || -n "$rest" ]]; then
+      printf 'The archive served %s as suite %s, codename %s, from %s.\n' "$release" "$suite" "$codename" "$origin" >&2
+      return 1
+    fi
+    found=true
+  done < <(apt_get indextargets --format '$(RELEASE) $(SUITE) $(CODENAME) $(ORIGIN)' 'Identifier: Packages')
+  "$found"
+}
 # Succeeds unless everything the packages need is already installed or on this host.
 apt_needed() {
   local uri uris
@@ -229,7 +244,7 @@ apt_download() {
   printf '%s\n' 'Refreshing this host'"'"'s package sources.'
   apt_refresh || refreshed=false
   if apt_fetch "$@"; then
-    "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; the packages come from the ones that did.'
+    "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; apt used its last copy of those, where it had one.'
     return 0
   fi
   "$refreshed" && die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
@@ -237,7 +252,7 @@ apt_download() {
   for archive in "${fallback_archives[@]}"; do
     printf 'Trying the Ubuntu archive at %s.\n' "$archive"
     apt_use "$archive"
-    if apt_refresh && apt_fetch "$@"; then
+    if apt_refresh && apt_suites_match && apt_fetch "$@"; then
       printf 'Ubuntu packages for this run come from %s. This host'"'"'s package sources are unchanged.\n' "$archive"
       return 0
     fi
