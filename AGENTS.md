@@ -24,7 +24,7 @@ This repository contains the BYOS deployment platform and its technical-validati
 - `make verify-troubleshooting-soak`: terminal sessions through every proxy at the real 15-minute idle limit and 60-minute maximum, on the same disposable host. Takes more than 75 minutes, so it runs on demand and is in no other target.
 - `make verify-agent-colima PLAT_AGENT_COLIMA_PROFILE=<disposable-profile>`: selected native agent tests as root in a named disposable Colima VM from macOS, in under a minute by default; does not replace CI. See [local native agent tests](docs/continuous-integration.md#local-native-agent-tests).
 - `make dev`: the local stack — management, the dashboard with hot reload and an enrolled agent in a disposable Colima VM (`PLAT_DEV_COLIMA_PROFILE`, default `astilba-dev`). `make dev-wipe` deletes it. See [local development](docs/local-development.md).
-- `pnpm agent:build`: builds the production agent for Linux amd64 and arm64. See `docs/agent.md` for signing and installation.
+- `pnpm agent:build`: builds the agent for Linux amd64 and arm64 for local use. Releases come only from `.github/workflows/agent-release.yml`; see the release procedure in `docs/agent.md`.
 
 ## Ground rules
 

@@ -260,14 +260,20 @@ apt_download() {
   done
   die 'Neither this host'"'"'s package sources nor any fallback Ubuntu archive supplied current, correctly signed packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
 }
-fetch "$management/agent-public-key.pem" "$scratch/public.pem" 4096
-openssl pkey -pubin -in "$scratch/public.pem" -outform DER -out "$scratch/public.der"
+fetch "$management/agent-public-key.pem" "$scratch/served-public.pem" 4096
+openssl pkey -pubin -in "$scratch/served-public.pem" -outform DER -out "$scratch/public.der"
 [[ $(wc -c < "$scratch/public.der") == 44 && $(od -An -tx1 -N12 "$scratch/public.der" | tr -d ' \n') == 302a300506032b6570032100 ]] || die 'The signing key must be Ed25519.'
 verify_hash "$scratch/public.der" "$fingerprint" || die 'The downloaded signing key does not match the independently trusted fingerprint.'
+# From here on only the key whose fingerprint matched is used, re-encoded from its DER. The served
+# file could hold other PEM blocks that another tool, such as the agent, would read instead.
+openssl pkey -pubin -inform DER -in "$scratch/public.der" -out "$scratch/public.pem"
 fetch "$management/agent-artifacts/$release/message" "$scratch/message" 1024
 fetch "$management/agent-artifacts/$release/signature" "$scratch/signature" 64
 mapfile -t fields < "$scratch/message"
-[[ ${#fields[@]} == 6 && ${fields[0]} == astilba-agent-v1 && ${fields[1]} =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ && ${fields[2]} == 1 && ${fields[3]} == "$arch" && ${fields[4]} =~ ^[1-9][0-9]{0,8}$ && ${fields[5]} == "$release" ]] || die 'The release message is incompatible with this host.'
+# Fields: format, version, protocol, architecture, size, SHA-256, source commit, minimum version.
+# Versions are semantic versions without build metadata; agentrelease checks the same.
+semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+[[ ${#fields[@]} == 8 && ${fields[0]} == astilba-agent-release-signature-v2 && ${#fields[1]} -le 80 && ${fields[1]} =~ $semver && ${fields[2]} == 1 && ${fields[3]} == "$arch" && ${fields[4]} =~ ^[1-9][0-9]{0,8}$ && ${fields[5]} == "$release" && ${fields[6]} =~ ^[a-f0-9]{40}$ && ${#fields[7]} -le 80 && ${fields[7]} =~ $semver ]] || die 'The release message is incompatible with this host.'
 [[ ${fields[4]} -le 104857600 && $(wc -c < "$scratch/signature") == 64 ]] || die 'Invalid signed release bounds.'
 printf '%s\n' "${fields[@]}" > "$scratch/canonical-message"
 cmp --silent "$scratch/message" "$scratch/canonical-message" || die 'The signed message is not canonical.'
@@ -277,7 +283,7 @@ fetch "$management/agent-artifacts/$release" "$scratch/agent" "${fields[4]}"
 verify_hash "$scratch/agent" "$release" || die 'The agent digest does not match its signed release.'
 chmod 0700 "$scratch/agent"
 identity=$("$scratch/agent" describe)
-expected_identity=$(printf '{"Arch":"%s","KeyAuth":1,"Protocol":1,"Version":"%s"}' "$arch" "${fields[1]}")
+expected_identity=$(printf '{"Arch":"%s","Commit":"%s","KeyAuth":1,"MinimumVersion":"%s","Protocol":1,"Version":"%s"}' "$arch" "${fields[6]}" "${fields[7]}" "${fields[1]}")
 [[ "$identity" == "$expected_identity" ]] || die 'Compiled agent identity does not match the signed release.'
 # The verified CLI validates the contact address before host installation.
 timeout 15 "$scratch/agent" preflight --state "$scratch/preflight" --acme-email "$contact" >/dev/null

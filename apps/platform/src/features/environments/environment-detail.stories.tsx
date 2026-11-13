@@ -196,9 +196,16 @@ export const Unsaved: Story = {
   play: async ({ canvasElement }) => {
     const canvas = await edit(canvasElement);
     await userEvent.click(canvas.getByRole("tab", { name: "Overview" }));
-    await expect(canvas.getByRole("status")).toHaveTextContent(
-      "You have unsaved configuration or layout changes.",
-    );
+    // The page's lifecycle status region is always there too, empty.
+    await expect(
+      canvas
+        .getAllByRole("status")
+        .some((region) =>
+          region.textContent?.includes(
+            "You have unsaved configuration or layout changes.",
+          ),
+        ),
+    ).toBe(true);
   },
 };
 export const SaveFailure: Story = {

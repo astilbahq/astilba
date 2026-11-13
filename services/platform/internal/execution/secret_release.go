@@ -38,8 +38,9 @@ const (
 func carriesValues(c api.ExecutionCommand) bool {
 	switch c.Kind {
 	case "visual":
+		// Removing a preview or a retired environment's unit needs no secret or registry access.
 		var p deployment.Payload
-		return c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != "preview-cleanup"
+		return c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != "preview-cleanup" && p.Action != retireAction
 	case "crosshost", "backup", "schedule", "pipeline", "upgrade":
 		return true
 	}

@@ -161,15 +161,12 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	cloneSpec.Routes[0].Domain = spec.Routes[0].Domain
 	var collisionRevision api.Revision
 	b.call("PUT", clonePath+"/draft", map[string]any{"baseRevisionId": cloneRevision.Id, "specification": cloneSpec}, 200, &collisionRevision)
-	var collision deployment.Status
-	b.call("POST", clonePath+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: collisionRevision.Id}, 201, &collision)
-	collisionCommand := poll(collision.OperationID)
-	images := map[string]string{}
-	for _, app := range cloneSpec.Applications {
-		images[app.ID.String()] = *app.Source.Image
+	// The plan is refused before review, naming the claim, rather than at apply.
+	var collision api.Error
+	b.call("POST", clonePath+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: collisionRevision.Id}, 409, &collision)
+	if collision.Fields == nil || len(*collision.Fields) != 1 || (*collision.Fields)[0] != "routes.claimed" {
+		t.Fatalf("route collision was not named: %+v", collision)
 	}
-	report(collisionCommand, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: images, StateHash: strings.Repeat("a", 64)}, "succeeded")
-	b.call("POST", clonePath+"/deployment-plans/"+collision.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 409, nil)
 	cloneRevision = collisionRevision
 	b.call("DELETE", path+"/volumes/"+volume.String(), nil, 409, nil)
 	// A different environment cannot bind a secret version from the source.

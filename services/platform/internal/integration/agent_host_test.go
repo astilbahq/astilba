@@ -40,14 +40,14 @@ func TestNativeAgentService(t *testing.T) {
 	keyPath := filepath.Join(root, "release.pem")
 	_ = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0600)
 	binary, next := filepath.Join(root, "agent"), filepath.Join(root, "next-agent")
-	buildNativeAgent(t, binary, "fixture.1")
-	buildNativeAgent(t, next, "fixture.2")
+	buildNativeAgent(t, binary, "0.1.0-fixture.1")
+	buildNativeAgent(t, next, "0.1.0-fixture.2")
 	data, e := os.ReadFile(next)
 	if e != nil {
 		t.Fatal(e)
 	}
 	digest := sha256.Sum256(data)
-	release := api.AgentRelease{Version: "fixture.2", Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(data)), Sha256: hex.EncodeToString(digest[:])}
+	release := api.AgentRelease{Version: "0.1.0-fixture.2", MinimumVersion: agentFixtureFloor, Commit: agentFixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(data)), Sha256: hex.EncodeToString(digest[:])}
 	release.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, agentrelease.Message(release)))
 	if e = os.WriteFile(filepath.Join(root, release.Sha256), data, 0755); e != nil {
 		t.Fatal(e)
@@ -123,13 +123,13 @@ func TestNativeAgentService(t *testing.T) {
 	systemctl("start", unit)
 	// Signed dashboard update must be deferred by admission while a workload mutation is active.
 	var update api.Operation
-	b.call("POST", base+"/servers/"+enrollment.Server.Id.String()+"/update", api.UpdateAgent{Version: "fixture.2"}, 201, &update)
+	b.call("POST", base+"/servers/"+enrollment.Server.Id.String()+"/update", api.UpdateAgent{Version: "0.1.0-fixture.2"}, 201, &update)
 	await(update.Id)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var servers []api.Server
 		b.call("GET", base+"/servers", nil, 200, &servers)
-		if len(servers) > 0 && servers[0].Capabilities != nil && servers[0].Capabilities.Version == "fixture.2" {
+		if len(servers) > 0 && servers[0].Capabilities != nil && servers[0].Capabilities.Version == "0.1.0-fixture.2" {
 			break
 		}
 		if time.Now().After(deadline) {
