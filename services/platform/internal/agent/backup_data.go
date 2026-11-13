@@ -318,6 +318,9 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
 		return err
 	}
+	if err := e.beginEffects(s, r); err != nil {
+		return err
+	}
 	if err := e.prepareRepository(ctx, in, false); err != nil {
 		return err
 	}

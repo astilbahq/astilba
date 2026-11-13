@@ -23,6 +23,68 @@ type scheduleState struct {
 	Runs         []backup.Run
 	Sequence     int64
 	Writers      []string
+	// BeforeEffects names the run recorded as running that has changed nothing outside the
+	// journal yet. It is cleared, durably, just before the run's first external effect, so a
+	// run that fails or stops while it is set is known to have done nothing. Agents that don't
+	// know it treat such a run as uncertain, as they always have.
+	BeforeEffects uuid.UUID `json:",omitzero"`
+}
+
+// failUnstartedRun settles an interrupted backup or restore command's run when it changed nothing
+// outside the journal: never recorded, or recorded but stopped before its first effect. It
+// reports whether it did.
+func (e *Engine) failUnstartedRun(b backup.Command) (bool, error) {
+	if (b.Action != "backup" && b.Action != "restore") || b.RunID == uuid.Nil {
+		return false, nil
+	}
+	s, err := e.Journal.schedule(b.Installation.Policy.ID)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, run := range s.Runs {
+		if run.ID != b.RunID {
+			continue
+		}
+		if run.State != "running" || s.BeforeEffects != b.RunID {
+			return false, nil
+		}
+		settleUnstarted(&s, time.Now().UTC())
+		return true, e.Journal.saveSchedule(s)
+	}
+	return true, nil
+}
+
+// settleUnstarted fails the run the agent stopped before its first effect. Only a caller that
+// holds the engine's lock, with no run in progress, may call it.
+func settleUnstarted(s *scheduleState, now time.Time) bool {
+	if s.BeforeEffects == uuid.Nil {
+		return false
+	}
+	for i := range s.Runs {
+		if s.Runs[i].ID == s.BeforeEffects && s.Runs[i].State == "running" {
+			s.Runs[i].State, s.Runs[i].FinishedAt = "failed", &now
+			s.Runs[i].Note = "The agent stopped before this run changed anything. It will not be repeated automatically."
+		}
+	}
+	s.BeforeEffects = uuid.Nil
+	return true
+}
+
+// beginEffects records that run r may now change things outside the journal. Until it returns
+// nil, nothing of the run has happened.
+func (e *Engine) beginEffects(s *scheduleState, r *backup.Run) error {
+	if s.BeforeEffects != r.ID {
+		return nil
+	}
+	s.BeforeEffects = uuid.Nil
+	if err := e.Journal.saveSchedule(*s); err != nil {
+		s.BeforeEffects = r.ID
+		return err
+	}
+	return nil
 }
 
 func (j *Journal) scheduleIn(tx *bolt.Tx, id string) (scheduleState, error) {
@@ -134,6 +196,11 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
 	}
 	if r.Checkpoint != "accepted" {
+		if unstarted, err := e.failUnstartedRun(b); err != nil {
+			return err
+		} else if unstarted {
+			return e.finish(c.Id, "failed", "The agent stopped before this run changed anything. It will not be repeated automatically.")
+		}
 		return e.finish(c.Id, "needs_attention", "An interrupted backup command needs local inspection. Scheduled run history records its outcome; it will not be repeated automatically.")
 	}
 	parent := ctx
@@ -196,7 +263,7 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			break
 		}
 		next := scheduleState{Installation: b.Installation, Runs: old.Runs, Sequence: old.Sequence}
-		if len(old.Writers) > 0 || hasUncertainRun(old.Runs) {
+		if len(old.Writers) > 0 || hasUncertainRun(old) {
 			err = errors.New("resolve interrupted run before replacing schedule")
 			break
 		}
@@ -243,9 +310,13 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	}
 	return e.finish(c.Id, "succeeded", "Backup action completed. Snapshot upload and restore verification are recorded separately. Cutover requires a new deployment review.")
 }
-func hasUncertainRun(runs []backup.Run) bool {
-	for _, r := range runs {
-		if r.State == "running" || r.State == "needs_attention" {
+
+// hasUncertainRun reports a run whose outcome is unknown after it may have changed something.
+// One the agent stopped before its first effect is not: it is settled as failed before another
+// run starts.
+func hasUncertainRun(s scheduleState) bool {
+	for _, r := range s.Runs {
+		if r.State == "needs_attention" || r.State == "running" && r.ID != s.BeforeEffects {
 			return true
 		}
 	}
@@ -299,7 +370,7 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 				return err
 			}
 		}
-		changed := false
+		changed := settleUnstarted(s, clock().UTC())
 		for i := range s.Runs {
 			if s.Runs[i].State == "running" {
 				s.Runs[i].State = "needs_attention"
@@ -312,7 +383,7 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 				return err
 			}
 		}
-		blocked = blocked || hasUncertainRun(s.Runs)
+		blocked = blocked || hasUncertainRun(*s)
 	}
 	if blocked {
 		return nil
@@ -333,7 +404,7 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 				continue
 			}
 		}
-		if !p.Enabled || hasUncertainRun(s.Runs) || s.Installation.Next.IsZero() || now.Before(s.Installation.Next) {
+		if !p.Enabled || hasUncertainRun(s) || s.Installation.Next.IsZero() || now.Before(s.Installation.Next) {
 			continue
 		}
 		at, future, dueErr := p.Schedule.Due(s.Installation.Next, now)
@@ -355,14 +426,16 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 		if err = e.runScheduled(ctx, &s, at, backup.RunID(p, at), "", uuid.Nil); err != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if hasUncertainRun(s.Runs) {
+		if hasUncertainRun(s) {
 			return nil
 		}
 	}
 	return nil
 }
 func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Time, id uuid.UUID, snapshot string, target uuid.UUID) error {
-	if hasUncertainRun(s.Runs) {
+	// A run the agent stopped before its first effect is failed before another can take its mark.
+	settleUnstarted(s, time.Now().UTC())
+	if hasUncertainRun(*s) {
 		return errors.New("inspect interrupted run first")
 	}
 	for _, r := range s.Runs {
@@ -379,6 +452,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 
 	r := backup.Run{ID: id, PolicyID: s.Installation.Policy.ID, Generation: s.Installation.Policy.Generation, ScheduledAt: at, StartedAt: time.Now().UTC(), State: "running", TargetID: target, Snapshot: snapshot}
 	s.Runs = append(s.Runs, r)
+	s.BeforeEffects = r.ID
 	if err := e.Journal.saveSchedule(*s); err != nil {
 		return err
 	}
@@ -419,9 +493,12 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	if r.Verified {
 		r.Note = "Fresh restore verified. Existing services and data remain in use until a separate reviewed deployment."
 	}
+	// A run that failed before its first effect changed nothing, whatever the method.
+	effects := s.BeforeEffects != r.ID
+	s.BeforeEffects = uuid.Nil
 	if err != nil {
 		r.State = "failed"
-		if s.Installation.Policy.Method == "container-job" && (r.ExitCode == nil || errors.Is(err, errJobCleanup)) {
+		if s.Installation.Policy.Method == "container-job" && effects && (r.ExitCode == nil || errors.Is(err, errJobCleanup)) {
 			r.State = "needs_attention"
 		}
 		r.Note = "Run failed. Inspect storage access, supported source state and available capacity. Incomplete output is not a usable backup."
