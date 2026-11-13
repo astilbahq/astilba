@@ -6,11 +6,9 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -577,40 +575,6 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 	}
 	s.Status.KeepUntil = time.Now().UTC().Add(time.Duration(p.RetainDays) * 24 * time.Hour)
 	return nil
-}
-
-// pg_restore prints the versions of the server that was dumped and of the pg_dump that dumped it as
-// comments in the SQL preamble. An archive made by an earlier minor, or by the upgrade from 17,
-// names other versions than its verification dump, with the same definitions and data. Only those
-// two comment lines of the bounded preamble are normalized; COPY data is never touched.
-type dumpVersionHeader struct {
-	out     io.Writer
-	pending []byte
-	done    bool
-}
-
-var dumpVersionLine = regexp.MustCompile(`(?m)^-- Dumped (from database|by pg_dump) version [0-9][0-9.]*(?: \([^)\n]*\))?$`)
-
-func (w *dumpVersionHeader) Write(b []byte) (int, error) {
-	n := len(b)
-	if w.done {
-		return w.out.Write(b)
-	}
-	w.pending = append(w.pending, b...)
-	if i := bytes.Index(w.pending, []byte("\nSET ")); i >= 0 {
-		header := dumpVersionLine.ReplaceAll(w.pending[:i], []byte("-- Dumped $1 version (normalized)"))
-		if _, err := w.out.Write(header); err != nil {
-			return 0, err
-		}
-		if _, err := w.out.Write(w.pending[i:]); err != nil {
-			return 0, err
-		}
-		w.pending = nil
-		w.done = true
-	} else if len(w.pending) > 8192 {
-		return 0, fmt.Errorf("unexpected archive preamble")
-	}
-	return n, nil
 }
 
 func upgradeOwned(labels map[string]string, p deployment.Plan) bool {

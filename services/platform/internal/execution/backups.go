@@ -300,11 +300,8 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 				return err
 			}
 		}
-		if b.Action == "restore" && !backup.SnapshotID(b.Snapshot) {
-			return domain.Invalid("snapshot")
-		}
-		if b.Action == "restore" && v.Method == "postgres-logical" {
-			if err = refuseIncompatibleRestore(ctx, tx, ws, env, v, b.Snapshot); err != nil {
+		if b.Action == "restore" {
+			if err = checkRestoreRequest(ctx, tx, ws, env, v, b.Snapshot); err != nil {
 				return err
 			}
 		}
@@ -437,12 +434,8 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 			status.Next = old.Next
 		}
 	}
-	knownRelease := func(image string) bool {
-		_, ok := domain.PostgresReleaseOf(image)
-		return ok
-	}
 	for _, r := range status.Runs {
-		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) || r.RestoreImage != "" && !knownRelease(r.RestoreImage) {
+		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) || unknownRestoreImage(r) {
 			return domain.Invalid("run")
 		}
 	}
@@ -490,13 +483,8 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 					source = a.Mounts[0].VolumeID
 				}
 			}
-			// The restored data must open under the release the draft runs, which keeps serving it.
-			for _, a := range v.Spec.Applications {
-				if a.ID == policy.ResourceID {
-					if err := backup.OpensRestoredPostgres(a, run); err != nil {
-						return &domain.Error{Code: "invalid_input", Message: "This restore cannot replace the database: " + err.Error() + ".", Fields: []string{"restore.compatibility"}}
-					}
-				}
+			if err := restoredDatabaseOpens(v.Spec, policy, run); err != nil {
+				return err
 			}
 		}
 		var boundary *deployment.RestoreCutover
@@ -607,30 +595,6 @@ func refuseElevatedJob(p backup.Policy) error {
 	}
 	if elevation.Services[p.ResourceID] {
 		return errElevatedJob
-	}
-	return nil
-}
-
-// refuseIncompatibleRestore refuses, before anything runs, a restore whose archive the database's
-// own release cannot restore, such as a PostgreSQL 17 backup of a database now on PostgreSQL 18.
-// The agent checks again; this only names the reason sooner.
-func refuseIncompatibleRestore(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, p backup.Policy, snapshot string) error {
-	raw, err := db.New(tx).BackupPolicyStatus(ctx, db.BackupPolicyStatusParams{WorkspaceID: ws, EnvironmentID: env, ID: p.ID})
-	if err != nil {
-		return err
-	}
-	var status backup.Status
-	if json.Unmarshal(raw, &status) != nil {
-		return domain.Conflict
-	}
-	for _, r := range status.Runs {
-		if r.Snapshot != snapshot || r.State != "succeeded" || r.Manifest == nil {
-			continue
-		}
-		if _, err := backup.RestoreRelease(p, *r.Manifest); err != nil {
-			return &domain.Error{Code: "invalid_input", Message: "Restore refused: " + err.Error() + ".", Fields: []string{"snapshot"}}
-		}
-		return nil
 	}
 	return nil
 }
