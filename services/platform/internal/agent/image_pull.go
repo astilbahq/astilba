@@ -18,6 +18,7 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
@@ -118,7 +119,8 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	}
 	// Docker pulls the image for its own platform.
 	platform := ocispec.Platform{OS: "linux", Architecture: dockerArchitecture(info.Info.Architecture)}
-	plan, source, err := planFromSources(ctx, sources, pinned.Digest(), platform, limit)
+	loading := containerdImageStore(info.Info.DriverStatus)
+	plan, source, err := planFromSources(ctx, sources, pinned.Digest(), platform, limit, loading, e.checkedManifests())
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -129,7 +131,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 		}
 		return refuse(err)
 	}
-	if containerdImageStore(info.Info.DriverStatus) {
+	if loading {
 		return refuse(e.loadRegistryImage(ctx, canonical, source, plan, limit))
 	}
 	measured, err := e.measureRegistryImage(ctx, source, plan, limit)
@@ -167,7 +169,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 // planFromSources plans the image from the first of sources that can be read: a mirror the
 // agent cannot read gives way to the next, and an insecure registry it cannot reach over HTTPS
 // to plain HTTP. A registry that answered over HTTPS is not asked again in the clear.
-func planFromSources(ctx context.Context, sources []registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit) (*registryPlan, registryImage, error) {
+func planFromSources(ctx context.Context, sources []registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit, loading bool, checked *checkedManifests) (*registryPlan, registryImage, error) {
 	var err error
 	for _, source := range sources {
 		var answered *errcode.ErrorResponse
@@ -175,7 +177,7 @@ func planFromSources(ctx context.Context, sources []registryImage, root digest.D
 			break
 		}
 		var plan *registryPlan
-		plan, err = planRegistryImage(ctx, source, root, platform, limit)
+		plan, err = planRegistryImage(ctx, source, root, platform, limit, loading, checked)
 		var unread *imageArchiveUnread
 		if !errors.As(err, &unread) {
 			return plan, source, err
@@ -223,6 +225,11 @@ func (e *Engine) measureRegistryImage(ctx context.Context, source registryImage,
 	return registryImageCost(plan, unpacked, limit)
 }
 
+func (e *Engine) checkedManifests() *checkedManifests {
+	e.checkedOnce.Do(func() { e.checkedSiblings = &checkedManifests{} })
+	return e.checkedSiblings
+}
+
 func (e *Engine) layerCosts() *layerCosts {
 	e.layerCostsOnce.Do(func() { e.measuredLayers = &layerCosts{} })
 	return e.measuredLayers
@@ -237,7 +244,7 @@ func registryUnreachable(err error) error {
 		why = "its registry sent more for a blob than the image's manifest says the blob holds"
 	case errors.As(err, &response) && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden):
 		why = "its registry refused to let the agent read it, so the agent cannot measure what pulling it writes"
-	case errors.As(err, &response) && response.StatusCode == http.StatusNotFound:
+	case errors.Is(err, errdef.ErrNotFound):
 		why = "its registry does not have it"
 	}
 	return &imageLoadRefused{why: why, fix: "Check the image's registry, its credentials and that this server can reach it, then {retry}."}

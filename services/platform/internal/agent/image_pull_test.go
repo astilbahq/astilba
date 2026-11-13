@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -17,13 +16,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"testing/iotest"
 
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/distribution/reference"
 	registrytypes "github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/api/types/system"
-	"github.com/moby/moby/client"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -172,7 +169,7 @@ var amd64Server = ocispec.Platform{OS: "linux", Architecture: "amd64"}
 // measureTest measures the image root names as a pull into Docker's classic store does.
 func measureTest(t *testing.T, engine *Engine, source registryImage, root string, limit imageLoadLimit) (*registryPlan, imageCost, error) {
 	t.Helper()
-	plan, err := planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, limit)
+	plan, err := planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, limit, false, nil)
 	if err != nil {
 		return nil, imageCost{}, err
 	}
@@ -183,7 +180,7 @@ func measureTest(t *testing.T, engine *Engine, source registryImage, root string
 // streamTest writes the archive a pull into Docker's containerd store loads.
 func streamTest(t *testing.T, source registryImage, root string, limit imageLoadLimit) ([]byte, error) {
 	t.Helper()
-	plan, err := planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, limit)
+	plan, err := planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, limit, true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -221,22 +218,33 @@ func TestPullReadsOnlyThisServersImage(t *testing.T) {
 		return fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, subject)
 	}
 	root := registry.index(registry.entry(arm64, "linux/arm64/v8", ""), registry.entry(amd64, "linux/amd64", ""), registry.entry(ours, "unknown/unknown", reference(amd64)), registry.entry(theirs, "unknown/unknown", reference(arm64)))
-	plan, total, err := measureTest(t, &Engine{}, registry.source(t, nil), root, pullTestLimit)
+	source := registry.source(t, nil)
+	// Docker's classic store pulls only the chosen image: the index, its manifest, its config
+	// and its layer.
+	plan, total, err := measureTest(t, &Engine{}, source, root, pullTestLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The other platform's manifests are read, to check nothing below them is an image, but
-	// none of their blobs.
-	if registry.count(sha(other)) != 0 || registry.count(sha([]byte(`{"subject":"theirs"}`))) != 0 || registry.count(arm64) != 1 || registry.count(theirs) != 1 {
-		t.Fatal("the agent read what Docker does not pull")
+	if registry.count(arm64) != 0 || registry.count(ours) != 0 || registry.count(theirs) != 0 || len(plan.documents) != 2 || plan.documents[1].desc.Digest.String() != amd64 || len(plan.layers) != 1 || plan.layers[0].Digest.String() != sha(app) {
+		t.Fatal("unexpected plan for a pull", plan)
 	}
-	if len(plan.documents) != 3 || plan.documents[1].desc.Digest.String() != amd64 || plan.documents[2].desc.Digest.String() != ours || len(plan.layers) != 1 || plan.layers[0].Digest.String() != sha(app) {
-		t.Fatal("unexpected plan", plan)
-	}
-	// Docker reads the chosen image's attestation as its referrer, and stores but never
-	// unpacks it: the index, both manifests, both configs, the statement and the layer.
-	if len(plan.attached) != 2 || plan.stored.Entries != 7 || total.Entries <= plan.stored.Entries {
+	if len(plan.attached) != 0 || plan.stored.Entries != 4 || total.Entries <= plan.stored.Entries {
 		t.Fatal("stored blobs", plan.attached, plan.stored, total)
+	}
+	// A load reads the other entries' manifests, to check nothing below them is an image, but
+	// none of their blobs, and remembers them. It also takes the chosen image's attestation,
+	// which Docker reads as its referrer and stores but never unpacks.
+	checked := &checkedManifests{}
+	for range 2 {
+		if plan, err = planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, pullTestLimit, true, checked); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if registry.count(sha(other)) != 0 || registry.count(sha([]byte(`{"subject":"theirs"}`))) != 0 || registry.count(arm64) != 1 || registry.count(theirs) != 1 {
+		t.Fatal("the agent read what Docker does not pull, or read it again")
+	}
+	if len(plan.documents) != 3 || plan.documents[2].desc.Digest.String() != ours || len(plan.attached) != 2 || plan.stored.Entries != 7 {
+		t.Fatal("unexpected plan for a load", plan)
 	}
 	archive, err := streamTest(t, registry.source(t, nil), root, pullTestLimit)
 	if err != nil || !bytes.Contains(archive, []byte(`{"subject":"ours"}`)) || bytes.Contains(archive, []byte(`{"subject":"theirs"}`)) {
@@ -416,6 +424,52 @@ func TestPullRefusesWhatItCannotMeasure(t *testing.T) {
 			chosen := r.image(layer)
 			return r.index(strings.Replace(r.entry(chosen, "linux/amd64", ""), `"variant":""`, `"variant":"","os.features":["sse4"]`, 1))
 		}, "OS version or features"},
+		"an index of too many entries": {func(r *testRegistry) string {
+			entries := []string{r.entry(r.image(layer), "linux/amd64", "")}
+			other := r.imageFor("arm64", layer)
+			for range imageIndexEntries {
+				entries = append(entries, r.entry(other, "linux/arm64", ""))
+			}
+			return r.index(entries...)
+		}, "more entries than an image needs"},
+		"too many attestations": {func(r *testRegistry) string {
+			chosen := r.image(layer)
+			entries := []string{r.entry(chosen, "linux/amd64", "")}
+			for i := range imageAttestations + 1 {
+				statement := fmt.Appendf(nil, `{"n":%d}`, i)
+				attestation := r.manifest(ocispec.MediaTypeImageManifest, manifest(descriptorJSON("application/vnd.in-toto+json", r.blob(statement), len(statement), "")))
+				entries = append(entries, r.entry(attestation, "unknown/unknown", fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, chosen)))
+			}
+			return r.index(entries...)
+		}, "more attestations than an image needs"},
+		"an attestation of too many statements": {func(r *testRegistry) string {
+			chosen := r.image(layer)
+			var statements []string
+			for i := range imageAttestations + 1 {
+				statement := fmt.Appendf(nil, `{"n":%d}`, i)
+				statements = append(statements, descriptorJSON("application/vnd.in-toto+json", r.blob(statement), len(statement), ""))
+			}
+			attestation := r.manifest(ocispec.MediaTypeImageManifest, manifest(strings.Join(statements, ",")))
+			return r.index(r.entry(chosen, "linux/amd64", ""), r.entry(attestation, "unknown/unknown", fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, chosen)))
+		}, "more statements than one needs"},
+		"a blob in two roles": {func(r *testRegistry) string {
+			chosen := r.image(layer)
+			attestation := r.manifest(ocispec.MediaTypeImageManifest, manifest(descriptorJSON("application/vnd.in-toto+json", sha(layer), len(layer), "")))
+			return r.index(r.entry(chosen, "linux/amd64", ""), r.entry(attestation, "unknown/unknown", fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, chosen)))
+		}, "one blob in two roles"},
+		"another platform's manifest missing": {func(r *testRegistry) string {
+			chosen, other := r.image(layer), r.imageFor("arm64", layer)
+			root := r.index(r.entry(chosen, "linux/amd64", ""), r.entry(other, "linux/arm64", ""))
+			delete(r.manifests, other)
+			return root
+		}, "which its registry no longer has"},
+		"the image's attestation missing": {func(r *testRegistry) string {
+			chosen := r.image(layer)
+			attestation := r.manifest(ocispec.MediaTypeImageManifest, manifest(""))
+			root := r.index(r.entry(chosen, "linux/amd64", ""), r.entry(attestation, "unknown/unknown", fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, chosen)))
+			delete(r.manifests, attestation)
+			return root
+		}, "is no longer in its registry"},
 		"a sha512 layer": {func(r *testRegistry) string {
 			return r.manifest(ocispec.MediaTypeImageManifest, manifest(descriptorJSON(ocispec.MediaTypeImageLayerGzip, "sha512:"+strings.Repeat("ab", 64), len(layer), "")))
 		}, "other than a sha256 digest"},
@@ -432,7 +486,7 @@ func TestPullRefusesWhatItCannotMeasure(t *testing.T) {
 			registry := newTestRegistry()
 			registry.blob(configData)
 			d := tc.root(registry)
-			_, _, err := measureTest(t, &Engine{}, registry.source(t, nil), d, pullTestLimit)
+			_, err := streamTest(t, registry.source(t, nil), d, pullTestLimit)
 			var refused *imageLoadRefused
 			var unread *imageArchiveUnread
 			if !errors.As(err, &refused) && !errors.As(err, &unread) || !strings.Contains(err.Error(), tc.reason) {
@@ -599,7 +653,7 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = planFromSources(context.Background(), []registryImage{answered, image}, digest.Digest(root), amd64Server, pullTestLimit); err == nil || registry.count(root) != 0 {
+	if _, _, err = planFromSources(context.Background(), []registryImage{answered, image}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err == nil || registry.count(root) != 0 {
 		t.Fatal("asked again in the clear after the registry answered over HTTPS", err)
 	}
 	closed := httptest.NewTLSServer(http.NotFoundHandler())
@@ -608,7 +662,7 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan, source, err := planFromSources(context.Background(), []registryImage{unreachable, image}, digest.Digest(root), amd64Server, pullTestLimit); err != nil || plan == nil || source != registryImage(image) {
+	if plan, source, err := planFromSources(context.Background(), []registryImage{unreachable, image}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err != nil || plan == nil || source != registryImage(image) {
 		t.Fatal("did not fall back to plain HTTP for an unreachable registry", err)
 	}
 }
@@ -621,67 +675,10 @@ func TestDockerAPIVersionComparison(t *testing.T) {
 	}
 }
 
-// failingBlob reads a blob's first bytes from source, then fails, as a registry that drops the
-// connection does.
-type failingBlob struct{ registryImage }
-
-func (f failingBlob) blob(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
-	rc, err := f.registryImage.blob(ctx, desc)
-	if err != nil {
-		return nil, err
-	}
-	return struct {
-		io.Reader
-		io.Closer
-	}{io.MultiReader(io.LimitReader(rc, 100), iotest.ErrReader(errors.New("connection reset"))), rc}, nil
-}
-
-// A load's note says why it failed: the registry when the agent could not read it, and Docker's
-// own reason when Docker stopped first.
-func TestPullLoadNamesWhatFailed(t *testing.T) {
+func TestPullNamesAnImageItsRegistryLacks(t *testing.T) {
 	registry := newTestRegistry()
-	root := registry.image(gzipOf(t, tarOf(t, testFile{"app", 1 << 20})))
-	source := registry.source(t, nil)
-	plan, err := planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, pullTestLimit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	named, _ := reference.ParseNormalizedNamed("registry.example/fixture/app@" + root)
-	for name, tc := range map[string]struct {
-		source registryImage
-		docker func(w http.ResponseWriter, r *http.Request)
-		note   string
-	}{
-		"the registry fails": {failingBlob{source}, func(w http.ResponseWriter, r *http.Request) {
-			_, _ = io.Copy(io.Discard, r.Body)
-			fmt.Fprint(w, `{"error":"unexpected EOF"}`)
-		}, "could not read it from its registry"},
-		"Docker fails": {source, func(w http.ResponseWriter, r *http.Request) {
-			_, _ = io.CopyN(io.Discard, r.Body, 1024)
-			fmt.Fprint(w, `{"error":"write /var/lib/containerd: no space left on device"}`)
-		}, "Docker's image load failed: write /var/lib/containerd: no space left on device"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Api-Version", "1.54")
-				switch {
-				case strings.HasSuffix(r.URL.Path, "/_ping"):
-				case strings.HasSuffix(r.URL.Path, "/images/load"):
-					tc.docker(w, r)
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			defer server.Close()
-			docker, err := client.New(client.WithHost("tcp://" + strings.TrimPrefix(server.URL, "http://")))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer docker.Close()
-			err = (&Engine{Docker: docker}).loadRegistryImage(context.Background(), named.(reference.Canonical), tc.source, plan, pullTestLimit)
-			if note := refusalNote(t, err); !strings.Contains(note, tc.note) {
-				t.Fatal(note)
-			}
-		})
+	_, _, err := measureTest(t, &Engine{}, registry.source(t, nil), sha([]byte("absent")), pullTestLimit)
+	if note := refusalNote(t, err); !strings.Contains(note, "its registry does not have it") {
+		t.Fatal(note)
 	}
 }

@@ -7,13 +7,16 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"io"
 	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/errdef"
 )
 
 // Media types Docker pulls and the agent reads. Others are refused rather than measured.
@@ -74,12 +77,15 @@ func leafBlobs(blobs ...ocispec.Descriptor) error {
 // checkSiblings reads each entry of the image's index other than those plan holds, and refuses
 // one that names a manifest or index below it (leafBlobs). Docker never pulls these, but its
 // load walks them when it holds their content from elsewhere.
-func checkSiblings(ctx context.Context, source registryImage, children []ocispec.Descriptor, plan *registryPlan) error {
+func checkSiblings(ctx context.Context, source registryImage, children []ocispec.Descriptor, plan *registryPlan, checked *checkedManifests) error {
 	for _, child := range children {
-		if slices.ContainsFunc(plan.documents, func(d registryDocument) bool { return d.desc.Digest == child.Digest }) {
+		if checked.has(child.Digest) || slices.ContainsFunc(plan.documents, func(d registryDocument) bool { return d.desc.Digest == child.Digest }) {
 			continue
 		}
 		document, kind, err := fetchDocument(ctx, source, child)
+		if missing(err) {
+			return unmeasurableImage("its index names the manifest " + truncated(child.Digest.String(), 19) + ", which its registry no longer has, so the agent cannot check what Docker would do with it")
+		}
 		if err != nil {
 			return err
 		}
@@ -105,8 +111,43 @@ func checkSiblings(ctx context.Context, source registryImage, children []ocispec
 		if err = leafBlobs(append(layerDescriptors, configDescriptor)...); err != nil {
 			return err
 		}
+		checked.add(child.Digest)
 	}
 	return nil
+}
+
+// missing reports whether err is the registry saying it has no such content.
+func missing(err error) bool {
+	var unread *imageArchiveUnread
+	return errors.As(err, &unread) && errors.Is(unread.err, errdef.ErrNotFound)
+}
+
+// checkedManifests are manifests checkSiblings found harmless, by digest, so a redeploy does
+// not read them from the registry again.
+type checkedManifests struct {
+	mu      sync.Mutex
+	digests map[digest.Digest]bool
+}
+
+func (c *checkedManifests) has(d digest.Digest) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.digests[d]
+}
+
+func (c *checkedManifests) add(d digest.Digest) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.digests == nil || len(c.digests) >= layerCostEntries {
+		c.digests = map[digest.Digest]bool{}
+	}
+	c.digests[d] = true
 }
 
 // planAttestations adds the attestations of chosen in the index to plan. Docker's load of one
@@ -114,6 +155,7 @@ func checkSiblings(ctx context.Context, source registryImage, children []ocispec
 // them without unpacking, as it skips any image marked as one.
 func planAttestations(ctx context.Context, source registryImage, children []ocispec.Descriptor, chosen ocispec.Descriptor, plan *registryPlan, store func(ocispec.Descriptor) error) error {
 	attestations := 0
+	attached := map[digest.Digest]bool{}
 	for _, child := range children {
 		if child.Annotations["vnd.docker.reference.digest"] != chosen.Digest.String() || child.Digest == chosen.Digest {
 			continue
@@ -125,6 +167,9 @@ func planAttestations(ctx context.Context, source registryImage, children []ocis
 			return &imageLoadRefused{why: "its image has an attestation of the media type " + strconv.Quote(truncated(child.MediaType, 100)) + ", which Docker does not pull"}
 		}
 		document, kind, err := fetchDocument(ctx, source, child)
+		if missing(err) {
+			return unmeasurableImage("its image's attestation " + truncated(child.Digest.String(), 19) + " is no longer in its registry, and Docker's load needs it")
+		}
 		if err != nil {
 			return err
 		}
@@ -147,6 +192,9 @@ func planAttestations(ctx context.Context, source registryImage, children []ocis
 		if err != nil {
 			return err
 		}
+		if len(blobs) > imageAttestations {
+			return unmeasurableImage("its image has an attestation of more statements than one needs")
+		}
 		configDescriptor, err := descriptor(config)
 		if err != nil {
 			return err
@@ -158,7 +206,8 @@ func planAttestations(ctx context.Context, source registryImage, children []ocis
 			if err = store(blob); err != nil {
 				return err
 			}
-			if !slices.ContainsFunc(plan.attached, func(d ocispec.Descriptor) bool { return d.Digest == blob.Digest }) {
+			if !attached[blob.Digest] {
+				attached[blob.Digest] = true
 				plan.attached = append(plan.attached, blob)
 			}
 		}
@@ -169,7 +218,11 @@ func planAttestations(ctx context.Context, source registryImage, children []ocis
 // planRegistryImage reads the image with digest root from source and chooses its manifest for
 // platform as Docker does. It refuses images the agent cannot measure, and images whose blobs
 // alone are more than limit.
-func planRegistryImage(ctx context.Context, source registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit) (*registryPlan, error) {
+//
+// When loading, the image goes into Docker's containerd store with its index, so the plan also
+// holds the chosen image's attestations, which Docker's load reads, and checks the index's
+// other entries (checkSiblings), whose verdicts checked keeps.
+func planRegistryImage(ctx context.Context, source registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit, loading bool, checked *checkedManifests) (*registryPlan, error) {
 	plan := &registryPlan{}
 	seen := map[digest.Digest]bool{}
 	store := func(desc ocispec.Descriptor) error {
@@ -222,11 +275,13 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 			return nil, err
 		}
 		plan.documents = append(plan.documents, document)
-		if err = planAttestations(ctx, source, children, chosen, plan, store); err != nil {
-			return nil, err
-		}
-		if err = checkSiblings(ctx, source, children, plan); err != nil {
-			return nil, err
+		if loading {
+			if err = planAttestations(ctx, source, children, chosen, plan, store); err != nil {
+				return nil, err
+			}
+			if err = checkSiblings(ctx, source, children, plan, checked); err != nil {
+				return nil, err
+			}
 		}
 	}
 	config, err := foldedMember(document.data, "config")

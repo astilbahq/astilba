@@ -49,6 +49,9 @@ type Engine struct {
 	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
 	layerCostsOnce sync.Once
 	measuredLayers *layerCosts
+	// checkedSiblings are index entries the agent found harmless for loads.
+	checkedOnce     sync.Once
+	checkedSiblings *checkedManifests
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex

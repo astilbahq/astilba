@@ -29,6 +29,21 @@ import (
 // named by the reference the deployment pulls, so it resolves, and has the same ID, as if
 // Docker had pulled it.
 func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonical, source registryImage, plan *registryPlan, limit imageLoadLimit) error {
+	// Docker unpacks every image in the loaded index for the platforms it loads, including
+	// any whose content it already holds from elsewhere. So it loads only the chosen image's
+	// platform, which the index has no other image for (choosePlatform).
+	var options []client.ImageLoadOption
+	if plan.platform != nil {
+		// Docker loads one platform of an image from API 1.48, Docker 28.
+		version, err := e.Docker.ServerVersion(ctx, client.ServerVersionOptions{})
+		switch {
+		case err != nil:
+			return &imageLoadRefused{why: "the agent could not read Docker's version on this server"}
+		case !apiVersionAtLeast(version.APIVersion, 1, 48):
+			return &imageLoadRefused{why: "Docker on this server is older than version 28, the first that loads one platform of an image into its containerd image store", fix: "The server's owner upgrades Docker, then you {retry}."}
+		}
+		options = append(options, client.ImageLoadWithPlatforms(*plan.platform))
+	}
 	reader, writer := io.Pipe()
 	streamed := make(chan error, 1)
 	streamCtx, stop := context.WithCancel(ctx)
@@ -38,18 +53,6 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 		_ = writer.CloseWithError(err)
 		streamed <- err
 	}()
-	// Docker unpacks every image in the loaded index for the platforms it loads, including
-	// any whose content it already holds from elsewhere. So it loads only the chosen image's
-	// platform, which the index has no other image for (choosePlatform).
-	var options []client.ImageLoadOption
-	if plan.platform != nil {
-		// Docker loads one platform of an image from API 1.48, Docker 28.
-		version, err := e.Docker.ServerVersion(ctx, client.ServerVersionOptions{})
-		if err != nil || !apiVersionAtLeast(version.APIVersion, 1, 48) {
-			return &imageLoadRefused{why: "Docker on this server is older than version 28, the first that loads one platform of an image into its containerd image store", fix: "The server's owner upgrades Docker, then you {retry}."}
-		}
-		options = append(options, client.ImageLoadWithPlatforms(*plan.platform))
-	}
 	response, loaded := e.Docker.ImageLoad(ctx, reader, options...)
 	if loaded == nil {
 		loaded = imageLoadOutcome(response)
