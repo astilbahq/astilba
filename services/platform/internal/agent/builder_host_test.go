@@ -178,7 +178,8 @@ func TestNativeBuilderConfinement(t *testing.T) {
 	if !regexp.MustCompile(`^[1-9][0-9]*:[0-9]+$`).MatchString(disk) {
 		t.Fatalf("the host's disk is %q, not a block device", disk)
 	}
-	dockerfile := "FROM " + execution.TestImage + "\nENV DISK=" + disk + "\nRUN cat /proc/self/uid_map; " + strings.ReplaceAll(strings.TrimSpace(builderEscapes), "\n", "; ") + "\n"
+	// It can still do what a build step can in any Docker build, such as chroot.
+	dockerfile := "FROM " + execution.TestImage + "\nENV DISK=" + disk + "\nRUN chroot / true && echo chroot=$(echo works)\nRUN cat /proc/self/uid_map; " + strings.ReplaceAll(strings.TrimSpace(builderEscapes), "\n", "; ") + "\n"
 	run(dockerfile, "sh", "-ec", "mkdir -p /workspace/context; cat > /workspace/context/Dockerfile")
 	out = []byte(run("", "buildctl", "build", "--frontend", "dockerfile.v0", "--local", "context=/workspace/context", "--local", "dockerfile=/workspace/context", "--opt", "platform=linux/"+runtime.GOARCH, "--progress", "plain", "--no-cache"))
 	if !regexp.MustCompile(fmt.Sprintf(`(?m)\s0\s+%d\s+1\s*$`, builderUID)).Match(out) || !regexp.MustCompile(fmt.Sprintf(`(?m)\s1\s+%d\s+%d\s*$`, builderUID+1, builderSubIDs)).Match(out) {
@@ -186,6 +187,9 @@ func TestNativeBuilderConfinement(t *testing.T) {
 	}
 	if got := escapeResults(string(out)); !maps.Equal(got, everyEscape("refused")) {
 		t.Fatalf("a build step allowed %v\n%s", got, out)
+	}
+	if !regexp.MustCompile(`(?m)\schroot=works$`).Match(out) {
+		t.Fatalf("a build step could not chroot\n%s", out)
 	}
 
 	// The image's privileged programs are exactly those the builder masks or uses. A new

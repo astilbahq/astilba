@@ -154,6 +154,10 @@ func builderUnsupported() bool {
 	if n, parseErr := strconv.Atoi(strings.TrimSpace(string(namespaces))); err != nil || parseErr != nil || n < 1 {
 		return true
 	}
+	// Ubuntu's kernels also let unprivileged users create user namespaces only while this is 1.
+	if clone, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil && strings.TrimSpace(string(clone)) != "1" {
+		return true
+	}
 	_, err = builderSeccompProfile()
 	return err != nil
 }

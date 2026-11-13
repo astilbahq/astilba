@@ -87,13 +87,14 @@ func serverBuildEgress(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) ([]pipe
 	return rules, nil
 }
 
-// settleBuildNetwork stops a build its runner must not run as it was queued: one queued
+// settleBuildIsolation stops a build its runner must not run as it was queued: one queued
 // before builds carried the build network, which an agent that predates it would run on its
-// host's network, or one with a destination the owner removed since. It reports whether it
+// host's network, one queued before they carried the rootless builder, which such an agent
+// would run privileged, or one with a destination the owner removed since. It reports whether it
 // settled the command, committing tx when it did. An undelivered build fails here; one the
 // runner may hold is stopped and sent as cancelled. Returning an error instead would fail
 // every poll and hold the runner's queue.
-func (s *Service) settleBuildNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (bool, error) {
+func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (bool, error) {
 	if !p.IsBuild() {
 		return false, nil
 	}
@@ -101,6 +102,8 @@ func (s *Service) settleBuildNetwork(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 	note := ""
 	if p.BuildNetwork != pipeline.BuildNetworkV1 {
 		note = "Build stopped: it was queued before builds ran on an isolated network. Start the build again."
+	} else if p.RootlessBuild != pipeline.RootlessBuildV1 {
+		note = "Build stopped: it was queued before builds ran rootless. Start the build again."
 	} else if len(p.BuildEgress) > 0 {
 		current, err := serverBuildEgress(ctx, tx, ws, c.ServerId)
 		if err != nil {

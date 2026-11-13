@@ -122,7 +122,7 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 	if build {
 		memory = int64(p.Build.Limits().MemoryMiB) << 20
 	}
-	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Mounts: mounts, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700" + owned, "/tmp": "rw,nosuid,nodev,size=32m,mode=0700" + owned, "/run": "rw,nosuid,nodev,size=16m,mode=0700" + owned, "/var/lib/buildkit": "rw,exec,nosuid,nodev,size=1024m,mode=0700" + owned}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
+	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Mounts: mounts, LogConfig: container.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "1m", "max-file": "1"}}, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700" + owned, "/tmp": "rw,nosuid,nodev,size=32m,mode=0700" + owned, "/run": "rw,nosuid,nodev,size=16m,mode=0700" + owned, "/var/lib/buildkit": "rw,exec,nosuid,nodev,size=1024m,mode=0700" + owned}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
 	if build {
 		limits := p.Build.Limits()
 		if p.CacheScope != "" {
@@ -209,6 +209,9 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+	if err != nil {
+		return result, errors.New("The rootless builder did not start. Check that this server can create user namespaces, as the builder requirements in the Git builds documentation describe.")
+	}
 	args := []string{"buildctl", "build", "--frontend", "dockerfile.v0", "--local", "context=" + contextDir, "--local", "dockerfile=" + contextDir, "--opt", "filename=" + p.Build.Dockerfile, "--opt", "platform=linux/" + p.Build.Architecture, "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
 	if p.Build.UsesRailpack() {
 		prepared, logs, err := e.prepareRailpack(ctx, c, p, contextDir)
@@ -290,15 +293,22 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		}
 		result.Image = p.Registry.Repository + "@" + result.Digest
 	} else {
-		size, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "stat", "-c", "%s", "/workspace/image.tar")
+		// The builder's user owns the workspace, so the archive is measured as a regular file
+		// and Docker reads no more than that: code that escaped a build step can't feed it more.
+		size, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "stat", "-c", "%F %s", "/workspace/image.tar")
 		if err != nil {
 			return result, err
 		}
-		n, err := strconv.ParseUint(strings.TrimSpace(string(size)), 10, 64)
-		if err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
+		measured := strings.TrimSpace(string(size))
+		kind, length := measured, ""
+		if i := strings.LastIndexByte(measured, ' '); i >= 0 {
+			kind, length = measured[:i], measured[i+1:]
+		}
+		n, err := strconv.ParseUint(length, 10, 64)
+		if kind != "regular file" || err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
 			return result, errors.New("local image exceeds reserved host storage")
 		}
-		if err = e.loadPipelineImage(ctx, c); err != nil {
+		if err = e.loadPipelineImage(ctx, c, int64(n)); err != nil {
 			return result, err
 		}
 		inspected, err := e.Docker.ImageInspect(ctx, image)
@@ -370,7 +380,7 @@ func pipelineLogTail(logs string) string {
 	}
 	return logs[start:]
 }
-func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand) error {
+func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand, size int64) error {
 	cli := e.DockerCLI
 	if cli == "" {
 		cli = "docker"
@@ -387,13 +397,37 @@ func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand) 
 	if err = cmd.Start(); err != nil {
 		return err
 	}
-	response, err := e.Docker.ImageLoad(ctx, stream)
+	response, err := e.Docker.ImageLoad(ctx, &measuredReader{r: stream, remaining: size})
 	if err == nil {
 		_, err = io.Copy(io.Discard, response)
 		_ = response.Close()
 	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+	}
 	wait := cmd.Wait()
 	return errors.Join(err, wait)
+}
+
+// measuredReader reads exactly remaining bytes, and fails if r has more.
+type measuredReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (m *measuredReader) Read(p []byte) (int, error) {
+	if m.remaining == 0 {
+		if n, _ := m.r.Read(make([]byte, 1)); n > 0 {
+			return 0, errors.New("the image archive grew after it was measured")
+		}
+		return 0, io.EOF
+	}
+	n, err := m.r.Read(p[:min(int64(len(p)), m.remaining)])
+	m.remaining -= int64(n)
+	if err == io.EOF && m.remaining > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
 }
 func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	var p pipeline.Command

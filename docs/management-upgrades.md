@@ -78,7 +78,10 @@ If every migration since the old image was recorded as additive, set `ASTILBA_IM
 and run `docker compose up -d --wait platform`. The database is kept, so whatever the newer
 version did stays done. What it kept only in its new tables and columns is ignored until you
 upgrade again, and jobs of kinds the old version does not know wait in the queue and fail
-there. If the old image refuses to start, for whatever reason, restore instead:
+there. A build queued by the newer version can carry a field the old version doesn't know, such
+as the rootless builder's marker, and then the old version refuses its runner's polls until the
+build ends. Let queued builds finish, or cancel them, before rolling back. If the old image
+refuses to start, for whatever reason, restore instead:
 
 1. Stop management.
 2. Before you replace the database, see whether the new version sent work to any server. This

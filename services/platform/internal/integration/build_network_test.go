@@ -191,32 +191,38 @@ func TestBuildNetworkAllowlist(t *testing.T) {
 	finish(*poll())
 
 	// A build queued before builds carried the build network would run on the host's network
-	// at an agent that predates it, so it never reaches the runner.
+	// at an agent that predates it, and one queued before they carried the rootless builder would
+	// run privileged there, so neither reaches the runner.
 	narrow()
-	legacy := build()
-	awaitDispatch(t, ctx, f, legacy.Id)
-	var stored api.ExecutionCommand
-	var raw []byte
-	if err := f.st.Pool.QueryRow(ctx, "SELECT command FROM execution_operations WHERE id=$1", legacy.Id).Scan(&raw); err != nil || json.Unmarshal(raw, &stored) != nil {
-		t.Fatal("cannot read the queued build", err)
+	settled := func(strip func(*pipeline.Command), note string) {
+		t.Helper()
+		legacy := build()
+		awaitDispatch(t, ctx, f, legacy.Id)
+		var stored api.ExecutionCommand
+		var raw []byte
+		if err := f.st.Pool.QueryRow(ctx, "SELECT command FROM execution_operations WHERE id=$1", legacy.Id).Scan(&raw); err != nil || json.Unmarshal(raw, &stored) != nil {
+			t.Fatal("cannot read the queued build", err)
+		}
+		old := frozen(stored)
+		if old.BuildNetwork != pipeline.BuildNetworkV1 || old.RootlessBuild != pipeline.RootlessBuildV1 {
+			t.Fatal("a build was queued without the build network or the rootless builder", old.BuildNetwork, old.RootlessBuild)
+		}
+		strip(&old)
+		payload, _ := stablejson.Marshal(old)
+		message := jsontext.Value(payload)
+		stored.Pipeline, stored.PlanHash = &message, old.Digest()
+		if raw, err := stablejson.Marshal(stored); err != nil {
+			t.Fatal(err)
+		} else if _, err = f.st.Pool.Exec(ctx, "UPDATE execution_operations SET command=$2 WHERE id=$1", legacy.Id, raw); err != nil {
+			t.Fatal(err)
+		}
+		if c := poll(); c != nil {
+			t.Fatal("a build queued before the marker reached the runner", c.Id)
+		}
+		if got, reason := state(legacy.Id); got != "failed" || !strings.Contains(reason, note) {
+			t.Fatal("a build queued before the marker was not settled", got, reason)
+		}
 	}
-	old := frozen(stored)
-	if old.BuildNetwork != pipeline.BuildNetworkV1 {
-		t.Fatal("a build was queued without the build network", old.BuildNetwork)
-	}
-	old.BuildNetwork = ""
-	payload, _ := stablejson.Marshal(old)
-	message := jsontext.Value(payload)
-	stored.Pipeline, stored.PlanHash = &message, old.Digest()
-	if raw, err := stablejson.Marshal(stored); err != nil {
-		t.Fatal(err)
-	} else if _, err = f.st.Pool.Exec(ctx, "UPDATE execution_operations SET command=$2 WHERE id=$1", legacy.Id, raw); err != nil {
-		t.Fatal(err)
-	}
-	if c := poll(); c != nil {
-		t.Fatal("a build queued before the build network reached the runner", c.Id)
-	}
-	if got, note := state(legacy.Id); got != "failed" || !strings.Contains(note, "queued before builds ran on an isolated network") {
-		t.Fatal("build queued before the build network was not settled", got, note)
-	}
+	settled(func(p *pipeline.Command) { p.BuildNetwork = "" }, "queued before builds ran on an isolated network")
+	settled(func(p *pipeline.Command) { p.RootlessBuild = "" }, "queued before builds ran rootless")
 }

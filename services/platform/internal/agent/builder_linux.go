@@ -10,9 +10,10 @@ import (
 )
 
 // builderSyscalls are what rootless BuildKit needs beyond Docker's default seccomp profile, which
-// allows them only to a container with CAP_SYS_ADMIN. The build container has none of the host's
-// capabilities, so each acts only within the user namespace BuildKit creates.
-var builderSyscalls = []string{"clone", "mount", "pivot_root", "sethostname", "setns", "umount2", "unshare"}
+// allows them only to a container with CAP_SYS_ADMIN, and chroot, which it allows only with
+// CAP_SYS_CHROOT and which build steps use as they do in any Docker build. The build container has
+// none of the host's capabilities, so each acts only within the user namespace BuildKit creates.
+var builderSyscalls = []string{"chroot", "clone", "mount", "pivot_root", "sethostname", "setns", "umount2", "unshare"}
 
 // builderSeccompProfile returns the build container's seccomp profile, which Docker reads.
 var builderSeccompProfile = sync.OnceValues(builderSeccompJSON)
