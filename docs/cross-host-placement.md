@@ -168,15 +168,21 @@ follows the workspace's configuration, not its age.
   with the dates.
 
 Recovery merges only the newest checkpoint, N: the one no other supplied checkpoint lists as
-superseded, captured last. N carries every unfinished root with everything it names, so an
-older checkpoint adds nothing to merge, and an older copy of a row N dropped would overwrite the
+superseded, captured last. N carries every unfinished root with everything it names, so an older
+checkpoint adds nothing to merge, and an older copy of a row N dropped would overwrite the
 backup's newer one. A base lists every base a host may still hold that its management captured
-or recovered before it, which vouches that they are its ancestors. Recovery sets those aside
-and names them in its preview. Any other older checkpoint, such as one from a management that
+or recovered before it, which vouches that they are its ancestors. Recovery sets those aside and
+names them in its preview. Any other older checkpoint, such as one from a management that
 diverged, is compared with N first: one whose applied history N doesn't continue, or doesn't
-reach back to, is refused, naming that checkpoint. An
-interrupted root's own checkpoint still supplies its frozen plan, its continuation and its
-environment's runtime.
+reach back to, is refused, naming that checkpoint. An interrupted root's own checkpoint still
+supplies its frozen plan, its continuation and its environment's runtime. Work another
+management started is refused, as diverged. When servers report running a cross-host deployment
+that N neither carries nor lists, a management N's doesn't descend from started it, as when a
+management restored from a backup ran other work on other servers, or N records that it ended
+and their report is stale. Either way only the servers' unsigned reports say it still runs, so
+recovery refuses, naming the deployment and its servers. To proceed, revoke those servers in the
+restored management and leave their exports out. Recovery then continues without them, and
+afterwards you enrol them again and redeploy what they ran.
 
 Checkpoints with a recovery window are a format a release before this one can't read, so once
 hosts hold them, run cross-host recovery with a current release. Checkpoints sealed before it

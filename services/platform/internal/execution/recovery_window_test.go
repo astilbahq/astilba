@@ -310,3 +310,31 @@ func TestLedgerEntryAgreesWithAFailedRootsRow(t *testing.T) {
 		t.Fatal("the ledger entry and the row disagree on a failed root's runtime", got.Applied, row.Applied)
 	}
 }
+
+// Hosts that report running a root the newest base neither carries nor lists are refused by name,
+// whether another management started it or the newest base records that it ended.
+func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) {
+	_, full, plans := windowTestChain(t, 2)
+	newest := windowTestHistory(t, full, plans, 1)
+	server := uuid.New()
+	newest.Tables["servers"] = []portability.Row{appliedTestRow(map[string]any{"id": server, "name": "edge-1"})}
+	carried, _ := recoveryValue[uuid.UUID](newest.Tables["execution_operations"][0], "id")
+	listed, unknown := uuid.New(), uuid.New()
+	n := loadedBase{ID: uuid.New(), Parent: uuid.New(), Supersedes: map[uuid.UUID]uuid.UUID{uuid.New(): listed}}
+	running := func(parent uuid.UUID) map[uuid.UUID]deployment.RecoveryEvidence {
+		return map[uuid.UUID]deployment.RecoveryEvidence{server: {ServerID: server, ActiveParent: parent}}
+	}
+	for _, parent := range []uuid.UUID{uuid.Nil, carried, listed} {
+		if err := refuseUnknownActiveRoots(newest, n, running(parent)); err != nil {
+			t.Fatal("a root the newest base knows was refused", err)
+		}
+	}
+	err := refuseUnknownActiveRoots(newest, n, running(unknown))
+	if err == nil || !strings.Contains(err.Error(), "edge-1 ("+server.String()+")") || !strings.Contains(err.Error(), unknown.String()) || !strings.Contains(err.Error(), "doesn't descend from") || !strings.Contains(err.Error(), "revoke those servers") {
+		t.Fatal("hosts running a root another management started weren't refused by name", err)
+	}
+	newest.Recovery.Settled = append(newest.Recovery.Settled, portability.SettledOperation{Operation: unknown, State: "succeeded", Sequence: 1, EndedAt: newest.CreatedAt})
+	if err := refuseUnknownActiveRoots(newest, n, running(unknown)); err == nil || !strings.Contains(err.Error(), "records as ended") {
+		t.Fatal("a stale report of a root the newest base records as ended wasn't refused", err)
+	}
+}

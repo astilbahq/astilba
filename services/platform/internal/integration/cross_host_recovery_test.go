@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -605,10 +606,36 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','queued')`, restriction.Id, ws, restriction.ServerId, restriction.Generation, requestKey, restrictionRaw); err != nil {
 			t.Fatal(err)
 		}
+		// The newest checkpoint is this branch's, which never saw the first parent. Its hosts
+		// still run it, so recovery refuses by name rather than resume work another management
+		// started on the word of their unsigned reports.
 		input := execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner, HostExports: combined}
+		_, err = destination.execution.RecoverCrossHost(ctx, input)
+		if err == nil || !strings.Contains(err.Error(), operation.Id.String()) || !strings.Contains(err.Error(), "doesn't descend from") {
+			t.Fatal("hosts running another management's parent were not refused", err)
+		}
+		for _, e := range enrollments[:2] {
+			if !strings.Contains(err.Error(), e.ServerId.String()) {
+				t.Fatal("the refusal didn't name a host running the other parent", err)
+			}
+		}
+		// Revoking those hosts and leaving their exports out recovers this branch's parent.
+		for _, e := range enrollments[:2] {
+			for _, statement := range []string{`UPDATE servers SET revoked=true,credential_hash=NULL WHERE id=$1`, `UPDATE network_members SET enabled=false WHERE server_id=$1`} {
+				if _, err = destination.st.Pool.Exec(ctx, statement, e.ServerId); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		input.HostExports = combined[2:]
 		preview, err := destination.execution.RecoverCrossHost(ctx, input)
-		if err != nil || len(preview.Parents) != 2 || len(preview.Handovers) != 4 {
-			t.Fatal("inspect disjoint parent bases", err, preview)
+		if err != nil || !slices.Contains(preview.Parents, operationB.Id) || len(preview.Handovers) != 2 {
+			t.Fatal("inspect without the other management's hosts", err, preview)
+		}
+		for _, e := range enrollments[2:] {
+			if handover, exists := preview.Handovers[e.ServerId]; !exists || handover.Authority.ParentID != operationB.Id {
+				t.Fatal("a remaining host didn't take this branch's parent over", e.ServerId, preview.Handovers)
+			}
 		}
 		input.ExpectedState = preview.StateHash
 		applied, err := destination.execution.RecoverCrossHost(ctx, input)

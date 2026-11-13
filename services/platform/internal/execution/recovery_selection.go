@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -88,6 +91,9 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 	}
 	out.Origins.Newest = origin
 	out.Archive, out.History = a, a.Recovery
+	if err = refuseUnknownActiveRoots(a, newest, out.Hosts); err != nil {
+		return err
+	}
 	needed := map[uuid.UUID]bool{}
 	for _, host := range out.Hosts {
 		if host.ActiveParent != uuid.Nil {
@@ -144,6 +150,67 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 		out.SetAside = append(out.SetAside, RecoverySetAside{Checkpoint: b.ID, Parent: b.Parent, CapturedAt: b.CapturedAt, Reason: "older than the newest checkpoint, which agrees with it"})
 	}
 	return nil
+}
+
+// refuseUnknownActiveRoots refuses hosts that report running a cross-host root the newest base
+// neither carries nor lists. A root of N's own management is unfinished, and so carried, or its
+// base is listed while a host may still hold it. So such a root was started by a management N's
+// doesn't descend from, as when a management restored from a backup ran other work on other hosts,
+// or N records that it ended and the host's report is stale. A base captured when the root started
+// always shows it unfinished, and only the host's unsigned report says it still is, so recovery
+// takes neither over. The hosts are named, so the operator can revoke them, leave their exports
+// out, and enrol them again afterwards.
+func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts map[uuid.UUID]deployment.RecoveryEvidence) error {
+	known := map[uuid.UUID]bool{}
+	for _, parent := range newest.Supersedes {
+		known[parent] = true
+	}
+	for _, row := range a.Tables["execution_operations"] {
+		id, err := recoveryValue[uuid.UUID](row, "id")
+		if err != nil {
+			return err
+		}
+		known[id] = true
+	}
+	ended := map[uuid.UUID]bool{}
+	if a.Recovery != nil {
+		for _, e := range a.Recovery.Applied {
+			ended[e.Operation] = true
+		}
+		for _, e := range a.Recovery.Settled {
+			ended[e.Operation] = true
+		}
+	}
+	names := map[uuid.UUID]string{}
+	for _, row := range a.Tables["servers"] {
+		id, err := recoveryValue[uuid.UUID](row, "id")
+		if err != nil {
+			return err
+		}
+		names[id], _ = recoveryValue[string](row, "name")
+	}
+	unknown := map[uuid.UUID][]string{}
+	for _, host := range hosts {
+		if host.ActiveParent == uuid.Nil || known[host.ActiveParent] {
+			continue
+		}
+		name := names[host.ServerID]
+		if name == "" {
+			name = host.ServerID.String()
+		}
+		unknown[host.ActiveParent] = append(unknown[host.ActiveParent], fmt.Sprintf("%s (%s)", name, host.ServerID))
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	root := slices.MinFunc(slices.Collect(maps.Keys(unknown)), func(x, y uuid.UUID) int { return bytes.Compare(x[:], y[:]) })
+	servers := unknown[root]
+	slices.Sort(servers)
+	reason := "which the newest recovery checkpoint neither carries nor lists, so a management this one doesn't descend from started it"
+	if ended[root] {
+		reason = "which the newest recovery checkpoint records as ended, so their report is stale"
+	}
+	return fmt.Errorf("servers %s report running cross-host deployment %s, %s. Recovery can't take that work over: revoke those servers in this management and leave their exports out, then after recovery enrol them again and redeploy what they ran", strings.Join(servers, ", "), root, reason)
 }
 
 // newestRecoveryBase is N: the base captured last among those no other loaded base lists as
