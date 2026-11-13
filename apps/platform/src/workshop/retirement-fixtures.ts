@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw/http";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Schema } from "../api/client";
 import { environments, environmentsPath } from "./app-preview";
 import { environmentRoot } from "./environment-fixtures";
@@ -78,3 +79,51 @@ export const operation = (
 
 // The retiring and purging pages poll every five seconds.
 export const pollWait = 7000;
+
+export const noVolumes = http.get(`${environmentRoot}/volumes`, () =>
+  HttpResponse.json([] satisfies Schema["ManagedVolumes"]),
+);
+
+// A retired copy of the workshop's preview template, and the environment list that shows it.
+export const template = environments[2];
+export const retiredTemplate: Schema["Environment"] = {
+  ...template,
+  state: "retired",
+  retiredAt: "2026-11-10T09:30:00Z",
+  retiredBy: ownerId,
+};
+export const templateListing = http.get(environmentsPath, () =>
+  HttpResponse.json(
+    environments.map((item) =>
+      item.id === template.id ? retiredTemplate : item,
+    ),
+  ),
+);
+
+// Opens the purge dialog from a retired environment's banner, once the banner has loaded the
+// volumes the dialog lists.
+export async function openPurgeDialog(
+  canvasElement: HTMLElement,
+  name = "Development",
+) {
+  const banner = await within(canvasElement).findByRole("region", {
+    name: "This environment is retired",
+  });
+  await waitFor(() =>
+    expect(within(banner).queryByText("Loading kept volumes…")).toBeNull(),
+  );
+  await userEvent.click(
+    within(banner).getByRole("button", { name: "Delete retained data" }),
+  );
+  return within(canvasElement.ownerDocument.body).findByRole("alertdialog", {
+    name: `Delete the retained data of ${name}?`,
+  });
+}
+
+export async function confirmPurge(dialog: HTMLElement, name = "Development") {
+  const controls = within(dialog);
+  await userEvent.type(controls.getByLabelText("Environment name"), name);
+  await userEvent.click(
+    controls.getByRole("button", { name: "Delete retained data" }),
+  );
+}

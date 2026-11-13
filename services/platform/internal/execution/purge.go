@@ -111,8 +111,8 @@ func (s *Service) purge(ctx context.Context, tx pgx.Tx, p store.Principal, ws, p
 	case holds.UpgradeHold:
 		return domain.RetirementRefused(domain.RetirementUpgrade)
 	}
-	// A preview template's previews hold their own copies of its secret values, which only their
-	// cleanup deletes, so a purge waits for all of them. This transaction holds the workspace write
+	// A preview template's allocated previews hold their own copies of its secret values, which only
+	// their cleanup deletes, so a purge waits for all of them. This transaction holds the workspace write
 	// lock that every change to a preview takes, and a template that is not active starts or revives
 	// none, so none can appear between this check and the purge, or after it.
 	previews, err := q.UndeletedTemplatePreviews(ctx, db.UndeletedTemplatePreviewsParams{WorkspaceID: ws, EnvironmentID: env})

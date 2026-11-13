@@ -216,13 +216,16 @@ export function LifecycleDialog({
   // refuses its purge until then. The list refreshes while the dialog is open.
   const template = purge && environment.purpose === "preview_template";
   const previews = useQuery({ ...previewsOptions(path), enabled: template });
+  // Only a preview that was allocated an environment holds copies, as the server counts them.
   const pending = previews.data?.filter(
-    (preview) => preview.state !== "deleted",
+    (preview) => !!preview.environmentId && preview.state !== "deleted",
   );
   const ready =
     name === environment.name &&
     (!purge || !!kept) &&
     (!template || pending?.length === 0);
+  const volumesFailed = purge && !kept && volumes.isError;
+  const previewsFailed = template && !pending && previews.isError;
   const mismatch = nameMismatch(action.error);
   const dismiss = () => {
     action.reset();
@@ -432,19 +435,21 @@ export function LifecycleDialog({
             </>
           )}
         </AlertDialogDescription>
-        {/* Failed reads are not retried on their own, and the purge cannot be confirmed without
-            the list. */}
-        {((purge && !kept && volumes.isError) ||
-          (template && !pending && previews.isError)) && (
+        {/* The purge cannot be confirmed without these lists. A failed read of the volumes is not
+            retried on its own, and the previews' next poll is seconds away, so either can be asked
+            for again. Each read's own progress disables the button, not the previews' polling. */}
+        {(volumesFailed || previewsFailed) && (
           <div>
             <Button
               size="sm"
-              disabled={volumes.isFetching || previews.isFetching}
+              disabled={
+                (volumesFailed && volumes.isFetching) ||
+                (previewsFailed && previews.isFetching)
+              }
               onClick={() => {
-                const volumesFailed = !kept && volumes.isError;
                 (volumesFailed ? volumeItem : previewItem).current?.focus();
                 if (volumesFailed) void volumes.refetch();
-                if (!pending && previews.isError) void previews.refetch();
+                if (previewsFailed) void previews.refetch();
               }}
             >
               {t(($) => $.retry)}

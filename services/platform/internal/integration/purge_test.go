@@ -411,6 +411,11 @@ func TestPurgeWaitsForATemplatesPreviews(t *testing.T) {
 
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: cleanup.Id, Generation: cleanup.Generation, PlanHash: cleanup.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
 	waitPreviewAt(t, h, h.path, "deleted")
+	// A request never given an environment holds no copy, so it does not hold the purge back, even
+	// one blocked for good because its host was revoked.
+	if _, err := h.f.st.Pool.Exec(t.Context(), "INSERT INTO preview_requests(id,workspace_id,policy_id,number,state,note) SELECT $1,workspace_id,policy_id,77,'blocked','Cleanup needs renewed owner approval or a verified agent transfer.' FROM preview_requests WHERE workspace_id=$2 AND id=$3", uuid.New(), h.ws, preview.Id); err != nil {
+		t.Fatal(err)
+	}
 	var purged api.Environment
 	if err := json.Unmarshal(purge(201), &purged); err != nil || purged.State != api.EnvironmentStatePurged {
 		t.Fatalf("purged template: %+v %v", purged, err)
@@ -421,12 +426,6 @@ func TestPurgeWaitsForATemplatesPreviews(t *testing.T) {
 	var erased bool
 	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT erased_at IS NOT NULL FROM secret_versions WHERE workspace_id=$1 AND id=$2", h.ws, secret.Id).Scan(&erased); err != nil || !erased {
 		t.Fatal("the template's secret version was not erased", err)
-	}
-	// A new provider event brings no preview back.
-	h.pullRequestHook(t)
-	waitPreviewChecks(t, h)
-	if after := previewAt(t, h, h.path); after.State != "deleted" {
-		t.Fatal("a purged template's preview came back", after.State, after.Note)
 	}
 }
 

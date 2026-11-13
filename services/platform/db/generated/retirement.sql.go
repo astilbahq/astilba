@@ -631,7 +631,8 @@ const undeletedTemplatePreviews = `-- name: UndeletedTemplatePreviews :many
 SELECT r.number,r.state,r.note
 FROM preview_requests r
 JOIN preview_policies p ON p.workspace_id = r.workspace_id AND p.id = r.policy_id
-WHERE r.workspace_id = $1 AND p.environment_id = $2 AND r.state <> 'deleted'
+WHERE r.workspace_id = $1 AND p.environment_id = $2
+ AND r.environment_id IS NOT NULL AND r.state <> 'deleted'
 ORDER BY r.number
 `
 
@@ -646,9 +647,11 @@ type UndeletedTemplatePreviewsRow struct {
 	Note   string `json:"note"`
 }
 
-// A preview template's previews each hold copies of its secret values until their cleanup or their
-// host's revocation deletes them, which also marks them deleted. Every change to a preview holds
-// the workspace write lock, as a purge does, so none appears or comes back while a purge checks.
+// A preview that was allocated an environment holds copies of its template's secret values until
+// its cleanup or its host's revocation deletes them, which also marks it deleted. One never
+// allocated holds none, and a template that is not active allocates nothing. Every change to a
+// preview holds the workspace write lock, as a purge does, so none appears or comes back while a
+// purge checks.
 func (q *Queries) UndeletedTemplatePreviews(ctx context.Context, arg UndeletedTemplatePreviewsParams) ([]UndeletedTemplatePreviewsRow, error) {
 	rows, err := q.db.Query(ctx, undeletedTemplatePreviews, arg.WorkspaceID, arg.EnvironmentID)
 	if err != nil {

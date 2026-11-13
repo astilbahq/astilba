@@ -22,10 +22,11 @@ import {
   members,
   operation,
   operationFixture,
-  ownerId,
   pollWait,
   retired,
   retiring,
+  template,
+  templateListing,
   volumes,
 } from "../../workshop/retirement-fixtures";
 
@@ -399,26 +400,13 @@ export const RetirementCompletesOnce: Story = {
 };
 // A retired template's owners can still remove its previews, which its retirement asked to clean
 // up and which may be blocked, but nothing else about them.
-const template = environments[2];
-const retiredTemplate: Schema["Environment"] = {
-  ...template,
-  state: "retired",
-  retiredAt: "2026-11-10T09:30:00Z",
-  retiredBy: ownerId,
-};
 export const RetiredTemplatePreviews: Story = {
   args: {
     initialPath: `/?workspace=${workspace.id}&project=${examples[0].id}&environment=${template.id}`,
   },
   parameters: scenario(
     session,
-    http.get(environmentsPath, () =>
-      HttpResponse.json(
-        environments.map((item) =>
-          item.id === template.id ? retiredTemplate : item,
-        ),
-      ),
-    ),
+    templateListing,
     http.get(`${environmentRoot}/previews`, () =>
       HttpResponse.json([
         {
