@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -67,7 +68,7 @@ func (e *buildInputRejection) note() string {
 
 // buildInputs keeps secret values out of public arguments before persistence and
 // checks again at delivery, when the environment's runtime secrets may differ.
-func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, build pipeline.BuildConfig) (map[string]string, error) {
+func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, build pipeline.BuildConfig) (map[string]string, error) {
 	secrets := make(map[string]string, len(build.Secrets))
 	arguments := domain.NewSecretText(slices.Collect(maps.Values(build.Arguments))...)
 	total := 0
@@ -79,7 +80,7 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID,
 		if err != nil {
 			return nil, err
 		}
-		plain, err := s.Store.Keys.Open(cipher, pipeline.EncryptionIdentity(ws, id, "build-secret"))
+		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.BuildSecret, ID: id}, cipher)
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +98,7 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID,
 		for _, value := range build.Arguments {
 			files = append(files, composeproject.File{Content: value})
 		}
-		if err := s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: files}); err != nil {
+		if err := s.rejectRuntimeSecrets(ctx, tx, keys, ws, env, composeproject.Bundle{Files: files}); err != nil {
 			var invalid *domain.Error
 			if errors.As(err, &invalid) && invalid.Code == "invalid_input" && len(invalid.Fields) == 1 {
 				switch invalid.Fields[0] {

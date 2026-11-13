@@ -199,7 +199,7 @@ SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual
 // name or file and function, with a fragment of its SQL, and why it does.
 var historyReaders = []struct{ name, fragment, reason string }{
 	{"NetworkManifestMissed", "", "it looks up ended commands; PLAT-317 bounds it"},
-	{"operations.go/(*worker).Work", "primary_child.parent_id", "it finds a parent's children, and operations have no parent index yet; PLAT-317 adds one"},
+	{"operations.go/(*worker).work", "primary_child.parent_id", "it finds a parent's children, and operations have no parent index yet; PLAT-317 adds one"},
 	{"recovery.go/(*Store).PrepareRecovery", "DELETE FROM river_job", "offline recovery drops the queued jobs of every operation the host ever ran"},
 }
 

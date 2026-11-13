@@ -161,6 +161,11 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 					t.Fatal("consumer could not use the bound HTTP URL")
 				}
 			}
+			// Uptime Kuma runs as non-root. Readiness already shows it could write its new
+			// volume, since it creates directories there before it listens.
+			if recipe.ID == "uptime-kuma" {
+				exec(source, "sh", "-c", `[ "$(id -u)" != 0 ]`)
+			}
 			// Ordinary Docker restart retains a recipe's existing volume identities.
 			if _, err = e.Docker.ContainerRestart(ctx, p.ContainerName(source), client.ContainerRestartOptions{}); err != nil {
 				t.Fatal(err)
