@@ -248,16 +248,16 @@ func inspectImageArchive(gate *imageArchiveGate, limit imageLoadLimit) error {
 		default:
 			return unmeasurableImage("its archive has a member other than OCI image content")
 		}
-		// BuildKit names archive members in plain headers. A member with PAX or GNU headers is
-		// refused, so none of their data stays behind the names Docker keeps while importing.
-		if len(hdr.PAXRecords) > 0 || len(gate.pending) > 2*tarBlockBytes {
-			return unmeasurableImage("its archive has extended tar headers, which BuildKit does not write")
-		}
 		cost := entryCost(hdr)
 		archive.add(cost)
 		read.add(cost)
 		if err = limit.check(read); err != nil {
 			return err
+		}
+		// BuildKit names archive members in plain headers. A member with PAX or GNU headers is
+		// refused, so none of their data stays behind the names Docker keeps while importing.
+		if len(hdr.PAXRecords) > 0 || len(gate.pending) > 2*tarBlockBytes {
+			return unmeasurableImage("its archive has extended tar headers, which BuildKit does not write")
 		}
 		if err = gate.release(); err != nil {
 			return err

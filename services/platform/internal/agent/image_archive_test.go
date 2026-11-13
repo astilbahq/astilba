@@ -426,6 +426,14 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 			_ = w.Flush()
 			return append(out.Bytes(), image.archive(t)...)
 		},
+		"archive member with a GNU long name": func() []byte {
+			data := []byte("x")
+			sum := sha256.Sum256(data)
+			name := "blobs/sha256/" + hex.EncodeToString(sum[:])
+			member := append(tarBlock("././@LongLink", tar.TypeGNULongName, int64(len(name)+1)), padded(append([]byte(name), 0))...)
+			member = append(append(member, tarBlock(name, tar.TypeReg, 1)...), padded(data)...)
+			return append(member, valid().archive(t)...)
+		},
 		"AUFS metadata": func() []byte {
 			image := valid()
 			layer := image.blob(gzipOf(t, tarOf(t, testFile{".wh..wh.plnk/f", 1})))
