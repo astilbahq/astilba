@@ -505,12 +505,12 @@ func volumeMajor(t *testing.T, f *fixture, volume uuid.UUID) *string {
 	return major
 }
 
-// retirementMigration is the version of 00046_environment_retirement.sql, which adds and backfills
+// retirementMigration is the version of 00047_environment_retirement.sql, which adds and backfills
 // postgres_major. Keep it with that file's number.
-const retirementMigration = 46
+const retirementMigration = 47
 
 // An upgrade planned before volumes recorded their PostgreSQL major has a target volume that no
-// applied revision mounts yet. Migration 00046 and the backfill after an older archive's import or
+// applied revision mounts yet. Migration 00047 and the backfill after an older archive's import or
 // recovery record the major its target runs.
 func TestUpgradeTargetMajorBackfill(t *testing.T) {
 	f := setup(t)
@@ -549,7 +549,7 @@ func TestUpgradeTargetMajorBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != "18" {
-		t.Fatal("migration 00046 missed an upgrade's target", major)
+		t.Fatal("migration 00047 missed an upgrade's target", major)
 	}
 	if err = dbmigrate.Check(ctx, f.st.Pool.Config().ConnString()); err != nil {
 		t.Fatal(err)
