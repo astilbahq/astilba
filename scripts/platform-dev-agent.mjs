@@ -4,9 +4,15 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { buildChanged, sha256 } from "./platform-dev-process.mjs";
+
+// Development releases have no floor and claim no real commit.
+const developmentFloor = "0.0.0";
+const developmentCommit = "0".repeat(40);
 
 // The local stack's agent: its build, the release catalog management serves for it,
 // the certificate it trusts for management, and its installation in the VM.
@@ -38,16 +44,21 @@ export function devAgent({ directory, platform, run, state, saveState }) {
         GOOS: "linux",
         GOARCH: arch,
       };
+      // A release names a semantic version, a minimum version and its source commit. Builds
+      // record no Git checkout, so an edited checkout still signs, and the version depends on
+      // the source alone.
+      const identity = (version) =>
+        `-s -w -X main.version=${version} -X main.minimumVersion=${developmentFloor} -X main.commit=${developmentCommit}`;
       await go(
         development,
-        ["-ldflags", "-s -w -X main.version=development", "./cmd/agent"],
+        ["-buildvcs=false", "-ldflags", identity("0.0.1-development"), "./cmd/agent"],
         env,
       );
-      const version = `dev-${sha256(development).slice(0, 12)}`;
+      const version = `0.0.1-dev-${sha256(development).slice(0, 12)}`;
       if (state.agentVersion === version && existsSync(binary)) return false;
       await go(
         binary,
-        ["-ldflags", `-s -w -X main.version=${version}`, "./cmd/agent"],
+        ["-buildvcs=false", "-ldflags", identity(version), "./cmd/agent"],
         env,
       );
       await go(tool, ["./cmd/agent"]);
@@ -55,14 +66,29 @@ export function devAgent({ directory, platform, run, state, saveState }) {
         await run(tool, ["release-keygen", "--key", releaseKey]);
       // Management reads the catalog at startup, and it holds only the current build.
       rmSync(catalog, { recursive: true, force: true });
+      // The release workflow writes this manifest from the agent's own describe output; a
+      // cross-compiled development agent can't run here, so it is written from the build.
+      const manifest = join(agentDirectory, "manifest.json");
+      writeFileSync(
+        manifest,
+        JSON.stringify({
+          version,
+          minimumVersion: developmentFloor,
+          commit: developmentCommit,
+          protocol: 1,
+          arch,
+          size: statSync(binary).size,
+          sha256: sha256(binary),
+        }),
+        { mode: 0o600 },
+      );
       await run(tool, [
         "release-sign",
         "--key",
         releaseKey,
-        "--version",
-        version,
-        "--arch",
-        arch,
+        "--manifest",
+        manifest,
+        "--development",
         "--artifact",
         binary,
         "--out",

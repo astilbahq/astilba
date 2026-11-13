@@ -33,15 +33,27 @@ func VerifyInstalledUpdate(r api.AgentRelease, key ed25519.PublicKey, executable
 	return agentrelease.Verify(r, key, current)
 }
 
+// Running is the agent that installs a release, as far as it bounds what it may install.
+type Running struct {
+	// Keyed is set once the agent holds a key. It then only installs a release that
+	// authenticates with keys: an earlier one would present the bearer its bind retired.
+	Keyed bool
+	// MinimumVersion is the minimum version of the release this agent runs. It never installs
+	// an older release.
+	MinimumVersion string
+}
+
 // Install only replaces the agent executable. It never stops a workload or edits Docker.
 // The process supervisor restarts it after the current update operation is journaled.
-// Install verifies and installs a signed release. An agent that holds a key only installs a
-// release that authenticates with keys: an earlier one would present the bearer its bind retired.
-func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, source io.Reader, executable string, keyed bool) error {
+// Install verifies and installs a signed release that the running agent permits.
+func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, source io.Reader, executable string, running Running) error {
 	if r.Arch != api.AgentReleaseArch(runtime.GOARCH) {
 		return errors.New("wrong host architecture")
 	}
 	if e := agentrelease.Validate(r, key); e != nil {
+		return e
+	}
+	if e := agentrelease.Permits(running.MinimumVersion, r); e != nil {
 		return e
 	}
 	current, e := os.Open(executable)
@@ -84,16 +96,11 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 	if e != nil {
 		return errors.New("verified agent cannot run on this host")
 	}
-	var identity struct {
-		Version  string `json:"Version"`
-		Protocol int    `json:"Protocol"`
-		Arch     string `json:"Arch"`
-		KeyAuth  int    `json:"KeyAuth"`
-	}
-	if json.Unmarshal(output, &identity) != nil || identity.Version != r.Version || identity.Protocol != int(r.Protocol) || identity.Arch != string(r.Arch) {
+	var identity agentrelease.Identity
+	if json.Unmarshal(output, &identity) != nil || !identity.Describes(r) {
 		return errors.New("artifact identity does not match manifest")
 	}
-	if keyed && identity.KeyAuth < 1 {
+	if running.Keyed && identity.KeyAuth < 1 {
 		return errors.New("this agent authenticates with a key, and this release can't; install a release that can")
 	}
 	backup := temp.Name() + ".previous"
@@ -115,7 +122,10 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 	defer parent.Close()
 	return parent.Sync()
 }
-func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable string) error {
+
+// RemoteUpdate downloads and installs a release management sent. minimumVersion is that of the
+// release this agent runs.
+func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable, minimumVersion string) error {
 	cfg, e := c.Journal.Config()
 	if e != nil {
 		return e
@@ -139,5 +149,5 @@ func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable
 	if response.StatusCode != 200 {
 		return errors.New("artifact unavailable")
 	}
-	return Install(ctx, r, key, response.Body, executable, c.Journal.HoldsKey(cfg))
+	return Install(ctx, r, key, response.Body, executable, Running{Keyed: c.Journal.HoldsKey(cfg), MinimumVersion: minimumVersion})
 }
