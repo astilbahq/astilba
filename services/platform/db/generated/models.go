@@ -272,6 +272,18 @@ type CrossHostRuntime struct {
 	MemoryMib     int64     `json:"memory_mib"`
 }
 
+type CustodyBackend struct {
+	BackendID string    `json:"backend_id"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type CustodyStage struct {
+	Singleton  bool      `json:"singleton"`
+	Stage      int32     `json:"stage"`
+	AdvancedAt time.Time `json:"advanced_at"`
+}
+
 type DeploymentUnit struct {
 	WorkspaceID   uuid.UUID  `json:"workspace_id"`
 	ID            uuid.UUID  `json:"id"`
@@ -279,11 +291,6 @@ type DeploymentUnit struct {
 	Runtime       string     `json:"runtime"`
 	ServerID      *uuid.UUID `json:"server_id"`
 	PrimaryUnit   bool       `json:"primary_unit"`
-}
-
-type DnsInstallation struct {
-	Singleton bool      `json:"singleton"`
-	ID        uuid.UUID `json:"id"`
 }
 
 type DnsPublication struct {
@@ -497,6 +504,33 @@ type HostedSubscription struct {
 	NotifiedUntil   *time.Time  `json:"notified_until"`
 	UpdatedAt       time.Time   `json:"updated_at"`
 	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
+}
+
+type Installation struct {
+	Singleton bool      `json:"singleton"`
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type InstallationKeyCanary struct {
+	BackendID string    `json:"backend_id"`
+	Class     string    `json:"class"`
+	Wrapped   []byte    `json:"wrapped"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type InstallationKeyEvent struct {
+	ID          uuid.UUID   `json:"id"`
+	At          time.Time   `json:"at"`
+	RunID       uuid.UUID   `json:"run_id"`
+	Kind        string      `json:"kind"`
+	Operator    pgtype.Text `json:"operator"`
+	Reason      pgtype.Text `json:"reason"`
+	BackendID   pgtype.Text `json:"backend_id"`
+	Scope       pgtype.Text `json:"scope"`
+	WorkspaceID *uuid.UUID  `json:"workspace_id"`
+	Generation  pgtype.Int8 `json:"generation"`
+	Details     []byte      `json:"details"`
 }
 
 type InstallationSecret struct {

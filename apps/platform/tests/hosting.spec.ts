@@ -404,7 +404,7 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
         "2",
       ],
       {
-        env: { ...process.env, ...fixture.env, ASTILBA_KEYRING_JSON: "" },
+        env: { ...process.env, ...fixture.env },
         stdio: "pipe",
       },
     );

@@ -204,7 +204,6 @@ try {
     ASTILBA_DATABASE_URL: `postgres://postgres:${password}@${address}/postgres?sslmode=disable`,
     ASTILBA_KEYRING: join(directory, "keyring.json"),
     ASTILBA_DEVELOPMENT: "true",
-    ASTILBA_KEYRING_JSON: "",
     ASTILBA_HOSTED: "false",
   };
   execFileSync(binary, ["keygen", "--out", env.ASTILBA_KEYRING], {
@@ -262,6 +261,8 @@ try {
   };
   execFileSync(binary,["keygen","--out",hostedEnv.ASTILBA_KEYRING],{env:hostedEnv,stdio:"inherit"});
   execFileSync(binary,["migrate"],{env:hostedEnv,stdio:"inherit"});
+  // Hosting pins the installation ID that migrating made, as an operator does from `custody status`.
+  hostedEnv.ASTILBA_INSTALLATION_ID=docker(["exec",name,"psql","--username","postgres","--dbname",hostedDatabase,"-v","ON_ERROR_STOP=1","-tAc","SELECT id FROM dns_installation"]).trim();
   for (const project of ["chromium","webkit"]) {
     for (const purpose of ["signup"]) {
       const token=`browser-${project}-${purpose}-invitation-code`;
@@ -271,7 +272,7 @@ try {
   }
   start(binary,["serve"],hostedEnv);
   await mkdir(dirname(hostedInfo),{recursive:true});
-  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
+  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
   ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
   const waitReady = async (port) => {

@@ -223,6 +223,10 @@ func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 		t.Fatal(e)
 	}
 	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
+	// As every command does at start, with an operator's checks so tests may rewrap.
+	if e = st.Broker.Install(context.Background(), st.Pool, uuid.Nil, true); e != nil {
+		t.Fatal(e)
+	}
 	storeKeys.Store(st, keys)
 }
 
@@ -276,7 +280,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	})
 	// The one value a migration makes up. Each installation has its own.
-	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
+	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)
 	}
 	keys, _ := cryptobox.New("test")

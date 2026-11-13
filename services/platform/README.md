@@ -33,6 +33,8 @@ For local development only, set `ASTILBA_DEVELOPMENT=true`, `ASTILBA_LISTEN=127.
 | --- | --- |
 | `ASTILBA_DATABASE_URL` | PostgreSQL connection URL. Require TLS and certificate verification for a remote database. |
 | `ASTILBA_KEYRING` | External JSON keyring path. Regular file, owner-only permissions; never stored in PostgreSQL. |
+| `ASTILBA_INSTALLATION_ID` | The installation's ID, from `astilba custody status`. Required when hosted. See [key custody](../../docs/hosting.md#key-custody). |
+| `ASTILBA_KEY_BACKEND` | Optional; `file`, the keyring file, is the default and the only key service so far. |
 | `ASTILBA_ORIGIN` | Exact browser origin, without a path or trailing slash. HTTPS outside explicit local development. |
 | `ASTILBA_LISTEN` | HTTP listener; defaults to `127.0.0.1:8080`. Use a TLS-terminating reverse proxy in production. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Connections each process may hold, 4 to 1000; defaults to 12. See [database connections](../../docs/hosting.md#database-connections). |
@@ -92,7 +94,9 @@ A project contains logical environments; each starts with one distinct Docker de
 
 Each secret version uses a random data key with AES-256-GCM. A second authenticated encryption wraps that key under the active external wrapping key. Purpose, workspace and version identities are authenticated; swapping ciphertext between identities fails. Ordinary APIs return metadata only. Keep database and keyring backups separately protected: neither is useful for recovery without the other.
 
-To rotate wrapping keys, generate a second private keyring with `keygen --id next --out /path/to/new-key.json`, then create a private combined keyring containing both key IDs and set `active` to the new ID. Stop application writers, back up the database and old keyring, configure the combined keyring and run `astilba rewrap`. This atomically rewraps all secret versions and MFA secrets without changing data ciphertext or revision references. Restart every instance with the combined keyring before retiring the old key. Retain the old key for older database backups, and for as long as cross-host recovery checkpoints sealed under it are kept, because rewrap does not cover them. If a value cannot be read, rewrap changes nothing and its error names the table, row and workspace. Do not replace the original keyring with a new single-key file before rewrap.
+### Rotating the keyring
+
+To rotate wrapping keys, generate a second private keyring with `keygen --id next --out /path/to/new-key.json`, then create a private combined keyring containing both key IDs and set `active` to the new ID. Stop application writers, back up the database and old keyring, configure the combined keyring and run `astilba custody rewrap --operator <your name> --reason <why>`. This atomically rewraps all secret versions and MFA secrets without changing data ciphertext or revision references, then rewraps the installation's canaries. The installation's key history records the run's start and finish; `astilba custody history` lists them. Restart every instance with the combined keyring before retiring the old key. Retain the old key for older database backups, and for as long as cross-host recovery checkpoints sealed under it are kept, because rewrap does not cover them. If a value cannot be read, rewrap changes nothing, records the run as failed, and its error names the table, row and workspace. Do not replace the original keyring with a new single-key file before rewrap: the canaries would no longer open, and nothing would start.
 
 ## Verification and distribution
 

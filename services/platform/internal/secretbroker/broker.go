@@ -72,6 +72,9 @@ type Broker struct {
 	budgets *budgets
 	log     *slog.Logger
 	now     func() time.Time
+	// installation and pool are set by Install, which an operator's command needs first.
+	installation uuid.UUID
+	pool         Pool
 }
 
 // New takes queries that do not run in a caller's transaction: each record commits on its own.

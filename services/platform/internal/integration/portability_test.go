@@ -90,7 +90,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e != nil || string(value) != "portable-secret-canary" {
 		t.Fatal("secret was not unwrapped into encrypted archive")
 	}
-	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job", "server_domains", "dns_installation", "dns_publications", "dns_record_removals"} {
+	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job", "server_domains", "installation", "dns_publications", "dns_record_removals"} {
 		if _, ok := archive.Tables[forbidden]; ok {
 			t.Fatal("installation-private table exported", forbidden)
 		}

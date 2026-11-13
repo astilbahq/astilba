@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/google/uuid"
 )
 
 const (
@@ -27,10 +28,15 @@ type Config struct {
 	LogRetention time.Duration
 	// SecretAccessRetentionDays is how long secret access records are kept. `astilba migrate`
 	// writes it; serving only reads it.
-	SecretAccessRetentionDays                         int32
-	DatabasePoolSize                                  int32
-	DatabaseURL, Keyring, KeyringJSON, Listen, Origin string
-	Development, Hosted, Troubleshooting              bool
+	SecretAccessRetentionDays            int32
+	DatabasePoolSize                     int32
+	DatabaseURL, Keyring, Listen, Origin string
+	// KeyBackend is the key service keys are read from. Only the keyring file exists so far.
+	KeyBackend string
+	// InstallationID pins the installation the database must belong to, or is uuid.Nil when it is
+	// not set, which hosting does not allow.
+	InstallationID                       uuid.UUID
+	Development, Hosted, Troubleshooting bool
 	// AgentForkFencing clears a server's credential on proof that a second holder has its agent
 	// key. Off by default: the proof then only raises the owner's alert.
 	AgentForkFencing bool
@@ -41,7 +47,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	c := Config{DatabaseURL: os.Getenv("ASTILBA_DATABASE_URL"), Keyring: os.Getenv("ASTILBA_KEYRING"), KeyringJSON: os.Getenv("ASTILBA_KEYRING_JSON"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
+	c := Config{DatabaseURL: os.Getenv("ASTILBA_DATABASE_URL"), Keyring: os.Getenv("ASTILBA_KEYRING"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
 	c.ApplicationDNS = applicationdns.Config{Base: os.Getenv("ASTILBA_APPLICATION_DOMAIN"), Zone: os.Getenv("ASTILBA_DNS_CLOUDFLARE_ZONE"), Token: os.Getenv("ASTILBA_DNS_CLOUDFLARE_TOKEN")}
 	switch os.Getenv("ASTILBA_TROUBLESHOOTING") {
 	case "":
@@ -115,11 +121,49 @@ func Load() (Config, error) {
 			return c, e
 		}
 	}
-	if c.DatabaseURL == "" || (c.Keyring == "" && c.KeyringJSON == "") || (c.Keyring != "" && c.KeyringJSON != "") {
-		return c, errors.New("ASTILBA_DATABASE_URL and exactly one of ASTILBA_KEYRING or ASTILBA_KEYRING_JSON are required")
+	if e := c.loadCustody(); e != nil {
+		return c, e
+	}
+	if c.DatabaseURL == "" || c.Keyring == "" {
+		return c, errors.New("ASTILBA_DATABASE_URL and ASTILBA_KEYRING are required")
 	}
 	return c, nil
 }
+
+// loadCustody reads which key service to use and which installation to expect. A keyring in the
+// environment is refused: anything that can read the environment, beside the database URL, could
+// open every value. See docs/hosting.md#key-custody.
+func (c *Config) loadCustody() error {
+	if os.Getenv("ASTILBA_KEYRING_JSON") != "" {
+		return errors.New("ASTILBA_KEYRING_JSON is no longer read: mount the keyring as a private file and name it in ASTILBA_KEYRING")
+	}
+	c.KeyBackend = os.Getenv("ASTILBA_KEY_BACKEND")
+	switch c.KeyBackend {
+	case "":
+		c.KeyBackend = "file"
+	case "file":
+	default:
+		return errors.New("ASTILBA_KEY_BACKEND must be file")
+	}
+	if raw := os.Getenv("ASTILBA_INSTALLATION_ID"); raw != "" {
+		id, e := uuid.Parse(raw)
+		if e != nil || id == uuid.Nil {
+			return errors.New("ASTILBA_INSTALLATION_ID must be the installation's UUID, which `astilba custody status` shows")
+		}
+		c.InstallationID = id
+	}
+	return nil
+}
+
+// RequirePinnedInstallation refuses to use keys when hosted without ASTILBA_INSTALLATION_ID.
+// Migrating and `custody status` do without it, since they are how an operator learns the ID.
+func (c Config) RequirePinnedInstallation() error {
+	if c.Hosted && c.InstallationID == uuid.Nil {
+		return errors.New("ASTILBA_INSTALLATION_ID is required when hosted; `astilba custody status` shows it")
+	}
+	return nil
+}
+
 func loopbackHost(host string) bool {
 	ip := net.ParseIP(host)
 	return host == "localhost" || (ip != nil && ip.IsLoopback())

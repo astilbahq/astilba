@@ -34,7 +34,8 @@ an owner-only environment file outside source control:
 | --- | --- |
 | `ASTILBA_DATABASE_URL` | PostgreSQL connection URL; use verified TLS for a remote database. |
 | `ASTILBA_KEYRING` | Path to a mounted owner-only keyring, readable by UID 65532. |
-| `ASTILBA_KEYRING_JSON` | Alternative keyring JSON supplied directly by a secret manager or container environment. Configure exactly one keyring source. |
+| `ASTILBA_INSTALLATION_ID` | The installation's ID, which `astilba custody status` shows after `astilba migrate`. Required when hosted, and recommended everywhere: a database that belongs to another installation is then refused. See [key custody](#key-custody). |
+| `ASTILBA_KEY_BACKEND` | Optional. The key service keys are read from; `file`, the keyring file, is the default and the only one so far. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
@@ -67,6 +68,41 @@ previously encrypted data.
    on disposable infrastructure before admitting customer workloads.
 
 To move to a newer version later, follow [upgrading management](management-upgrades.md).
+
+### Key custody
+
+The keyring is a file. Management doesn't read a keyring from its environment, where anything
+that can read the environment would find it beside the database URL. `ASTILBA_KEYRING_JSON` was
+removed, and setting it stops management from starting.
+
+Each installation has an ID, made by `astilba migrate`, which every key wrapping is bound to.
+`astilba custody status` shows it. Set `ASTILBA_INSTALLATION_ID` to it: then a database that
+belongs to another installation is refused, such as a copy restored for testing. A restore of the
+same installation keeps its ID.
+
+Every command that uses keys checks them before it starts:
+
+- the first start registers its key backend, and wraps a canary under each key class;
+- later starts open the canaries, so a keyring other than the installation's is refused, as is a
+  database whose installation ID was changed;
+- a refused start is recorded, with its cause.
+
+`astilba custody` reports on and changes the installation's keys. Each change it makes is
+recorded in the installation's key history. The history holds the operator's name and reason; a
+workspace's [secret access records](#operational-bounds-and-retention) name only the run. A
+database trigger refuses to change or remove a key event. That is defence in depth against
+mistakes, not proof against whoever owns the database, who can remove the trigger.
+
+| Command | What it does |
+| --- | --- |
+| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage and any pending work. It changes nothing. |
+| `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
+| `astilba custody rewrap --operator <name> [--reason <text>]` | Wraps every stored value's key, and the canaries, under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+
+`custody status` lists a command that recorded a start and no finish: it stopped part way, or is
+running. The custody stage counts how far the installation has moved through key custody
+changes. `astilba migrate` refuses a release more than one stage ahead, so take those releases one
+at a time, as their upgrade notes say.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.

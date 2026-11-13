@@ -344,9 +344,11 @@ func rewrapFailed(table string, workspace, id uuid.UUID, err error) error {
 	return fmt.Errorf("cannot rewrap %s row %s in workspace %s: %w", table, id, workspace, err)
 }
 
-// Rewrap moves every stored value onto the active key, for an operator, as one recorded run.
-func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
-	rotation, err := s.Broker.BeginRotation(ctx, operator)
+// Rewrap moves every stored value, and the installation's canaries, onto the active key, for an
+// operator, as one recorded run. It wraps each value's data key again and keeps the data, and it
+// never touches cross-host checkpoints, which hosts hold copies of by digest.
+func (s *Store) Rewrap(ctx context.Context, operator, reason string) (err error) {
+	rotation, err := s.Broker.BeginRotation(ctx, operator, reason)
 	if err != nil {
 		return err
 	}
@@ -357,6 +359,13 @@ func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
 		}
 		rotation.Close(ctx, outcome)
 	}()
+	if err = s.rewrapValues(ctx, rotation); err != nil {
+		return err
+	}
+	return rotation.RewrapCanaries(ctx)
+}
+
+func (s *Store) rewrapValues(ctx context.Context, rotation *secretbroker.Rotation) error {
 	return s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
 			return err
