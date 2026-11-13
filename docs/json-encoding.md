@@ -11,7 +11,7 @@ Astilba's Go code reads JSON with `encoding/json/v2` and writes everything excep
 | Writing a value that is stored, journaled, exported or sent between Astilba processes that can be on different releases, an API response, or command output that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream, `stablejson.MarshalIndent` or `stablejson.EncodeIndent`. |
 | Cloning a value through JSON, when the clone can reach a digest | `stablejson.Marshal`, so nil collections stay nil. |
 
-Requests to third parties, alert webhooks and Docker registry credentials use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced.
+Requests to third parties, alert webhooks, Docker registry credentials and the build container's seccomp profile use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced.
 
 The `jsonguard` analyzer in `make check-app` checks this: `encoding/json` only in the files listed under [Remaining v1 use](#remaining-v1-use), and plain v2 writers only in the functions it names. A named function can still add a second writer, so a clean run does not rule that out.
 

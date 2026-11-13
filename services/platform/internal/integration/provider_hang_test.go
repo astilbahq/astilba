@@ -269,6 +269,7 @@ func newHungBuild(t *testing.T) *hungBuild {
 	yes := true
 	in.Capabilities.Build = &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	h.server, h.token, h.enrolled = enrolled.Server.Id, token, in
 	var err error

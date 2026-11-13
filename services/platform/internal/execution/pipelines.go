@@ -93,6 +93,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		}
 		p.BuildEgress = egress
 		p.BuildNetwork = pipeline.BuildNetworkV1
+		p.RootlessBuild = pipeline.RootlessBuildV1
 		var project uuid.UUID
 		var raw []byte
 		if err := tx.QueryRow(ctx, "SELECT e.project_id,s.capabilities FROM environments e JOIN servers s ON s.workspace_id=e.workspace_id AND s.id=$3 WHERE e.workspace_id=$1 AND e.id=$2", ws, env, server).Scan(&project, &raw); err != nil {
@@ -102,6 +103,10 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		// An agent without it would run build code on the host's network.
 		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildNetwork == nil || !*capabilities.BuildNetwork {
 			return out, domain.Invalid("runner.buildNetworkUpgradeRequired")
+		}
+		// An agent without it would run build code as root, privileged.
+		if capabilities.RootlessBuilds == nil || !*capabilities.RootlessBuilds {
+			return out, domain.Invalid("runner.rootlessBuildsUpgradeRequired")
 		}
 		if capabilities.BuildCache != nil && *capabilities.BuildCache && p.Build != nil && p.Build.CanCache() {
 			p.CacheScope = pipeline.Hash([]uuid.UUID{ws, project})
