@@ -11,6 +11,7 @@ management=
 release=
 fingerprint=
 minimum=
+minimum_given=false
 contact=
 role=deployment
 usage() {
@@ -84,7 +85,7 @@ while (($#)); do
       (($# >= 2)) || die "Missing value for $1"
       case "$1" in
         --management) management=$2 ;; --release) release=$2 ;;
-        --key-fingerprint) fingerprint=$2 ;; --minimum-version) minimum=$2 ;;
+        --key-fingerprint) fingerprint=$2 ;; --minimum-version) minimum=$2; minimum_given=true ;;
         --certificate-contact) contact=$2 ;;
         --role) role=$2 ;;
       esac
@@ -154,7 +155,7 @@ fi
 origin_pattern='^https://([A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$'
 [[ "$management" =~ $origin_pattern ]] || die 'Management must be an exact HTTPS origin without user information, path or query.'
 [[ "$release" =~ ^[a-f0-9]{64}$ && "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || die 'Release and independently trusted key fingerprint must be lowercase SHA-256 values.'
-[[ -z "$minimum" || ( ${#minimum} -le 80 && "$minimum" =~ $semver ) ]] || die 'The minimum version must be a semantic version, such as 0.3.0.'
+! "$minimum_given" || [[ ${#minimum} -le 80 && "$minimum" =~ $semver ]] || die 'The minimum version must be a semantic version of at most 80 characters, such as 0.3.0.'
 if [[ "$role" != build || -n "$contact" ]]; then
   [[ "$contact" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die 'Provide a certificate-contact email using its plain address.'
 fi
@@ -325,9 +326,15 @@ mapfile -t fields < "$scratch/message"
 printf '%s\n' "${fields[@]}" > "$scratch/canonical-message"
 cmp --silent "$scratch/message" "$scratch/canonical-message" || die 'The signed message is not canonical.'
 openssl pkeyutl -verify -pubin -inkey "$scratch/public.pem" -rawin -in "$scratch/message" -sigfile "$scratch/signature"
+# A release's minimum version is never later than its version, as agentrelease checks.
+order=$(version_compare "${fields[7]}" "${fields[1]}")
+[[ "$order" == -1 || "$order" == 0 ]] || die 'The signed release has a minimum version later than its version.'
 # An agent never updates below the minimum version it was signed with, so a release with a lower
 # one would let this host go back to a release the operator wants never to run again.
-[[ -z "$minimum" || $(version_compare "${fields[7]}" "$minimum") != -1 ]] || die "Release ${fields[1]} lets an agent go back to ${fields[7]}, below $minimum, the minimum version you gave. Nothing has been installed."
+if "$minimum_given"; then
+  order=$(version_compare "${fields[7]}" "$minimum")
+  [[ "$order" == 0 || "$order" == 1 ]] || die "Release ${fields[1]} lets an agent go back to ${fields[7]}, below $minimum, the minimum version you gave. Nothing has been installed."
+fi
 fetch "$management/agent-artifacts/$release" "$scratch/agent" "${fields[4]}"
 [[ $(wc -c < "$scratch/agent") == "${fields[4]}" ]] || die 'The agent size does not match its signed release.'
 verify_hash "$scratch/agent" "$release" || die 'The agent digest does not match its signed release.'

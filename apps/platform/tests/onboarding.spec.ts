@@ -47,7 +47,10 @@ test("guided host preparation and domain staging preserve owner review and confl
     "Independently trusted minimum agent version (optional)",
   );
   await minimum.fill("fixture.2");
-  await expect(setup.getByRole("alert")).toContainText("semantic version");
+  await expect(minimum).toHaveAttribute("aria-invalid", "true");
+  await expect(setup.locator("#minimum-version-help")).toContainText(
+    "semantic version",
+  );
   await expect(
     setup.locator("code").filter({ hasText: "--apply" }),
   ).toHaveCount(0);

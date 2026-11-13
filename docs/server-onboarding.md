@@ -8,11 +8,11 @@ Choose the server role and architecture, then download `/onboarding/bootstrap.sh
 
 Apply requires an explicit release digest and independently trusted signing-key fingerprint. The installation operator must distribute that fingerprint through a trusted channel, such as their independently obtained release documentation. The key and fingerprint served by the same management endpoint are useful for comparison, but cannot establish their own authenticity. An operator can compute the SPKI DER fingerprint from their trusted key:
 
-An operator can also give `--minimum-version VERSION`, from the same trusted channel as the fingerprint. The bootstrap then refuses, before installing anything, a correctly signed release whose own minimum version is below it. Such a release would let the agent go back to versions the operator wants never to run again. An agent already enforces its own minimum version on every update; this sets one for the first install, which a compromised management could otherwise point at an old release. The dashboard adds the option to the command when you give a version.
-
 ```sh
 openssl pkey -pubin -in release-public.pem -outform DER | openssl dgst -sha256
 ```
+
+An operator can also give `--minimum-version VERSION`, from the same trusted channel as the fingerprint. The bootstrap then refuses, before installing anything, a correctly signed release whose own minimum version is below it. Such a release would let the agent go back to versions the operator wants never to run again. An agent already enforces its own minimum version on every update; this sets one for the first install, which a compromised management could otherwise point at an old release. The dashboard adds the option to the command when you give a version.
 
 The bootstrap checks the key algorithm and fingerprint, detached Ed25519 signature, canonical signed message, protocol, architecture, size and SHA-256 digest before executing the agent. It then compares the compiled identity, including its version, minimum version and source commit, with the signed release. It installs only the key whose fingerprint it checked, re-encoded as a single PEM block, never the served file, which could hold other blocks. Downloads have HTTPS, redirect, timeout and size limits, and each waits up to about five minutes for a host that is failing, printing each failed attempt. Every download happens before any host change, so if one still fails you can run the script again once the cause is resolved.
 

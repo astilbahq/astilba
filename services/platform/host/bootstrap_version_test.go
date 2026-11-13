@@ -1,8 +1,8 @@
 package host
 
 import (
-	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -39,16 +39,15 @@ func TestBootstrapOrdersVersionsAsAgentsDo(t *testing.T) {
 	}
 	harness := strings.Join([]string{
 		"set -euo pipefail",
-		"((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404)) || exit 77",
 		functions,
 		`while read -r a b; do version_compare "$a" "$b"; done`,
 	}, "\n")
 	cmd := exec.Command("bash", "-c", harness)
+	// Run under a locale whose collation isn't byte order, as an operator's sudo often keeps
+	// one, to show the functions pin their own.
+	cmd.Env = append(os.Environ(), "LC_ALL="+collatingLocale(t))
 	cmd.Stdin = strings.NewReader(strings.Join(pairs, "\n") + "\n")
 	out, err := cmd.Output()
-	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 77 {
-		t.Skip("needs bash 4.4 or later, as production has")
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +58,41 @@ func TestBootstrapOrdersVersionsAsAgentsDo(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("version_compare %s = %s, agents order it %s", pairs[i], got[i], want[i])
+		}
+	}
+}
+
+// collatingLocale names an installed locale that collates "a" before "B", unlike byte order, or
+// C.UTF-8 when none is installed, which still checks everything but the pinning.
+func collatingLocale(t *testing.T) string {
+	out, _ := exec.Command("locale", "-a").Output()
+	for _, name := range strings.Fields(string(out)) {
+		if strings.EqualFold(name, "en_US.utf8") || strings.EqualFold(name, "en_US.UTF-8") {
+			return name
+		}
+	}
+	t.Log("no en_US.UTF-8 locale is installed, so this doesn't show version_compare pins its collation")
+	return "C.UTF-8"
+}
+
+// The bootstrap's version pattern accepts exactly what agents call a version.
+func TestBootstrapVersionPatternMatchesAgents(t *testing.T) {
+	pattern := regexp.MustCompile(`(?m)^semver='([^']*)'$`).FindStringSubmatch(string(Bootstrap()))
+	if pattern == nil {
+		t.Fatal("the bootstrap no longer defines semver")
+	}
+	inputs := []string{"0.0.0", "1.2.3", "1.2.3-rc.1", "1.2.3-a-b.0", "1.2.3-0a", "01.2.3", "1.02.3", "1.2.3-01", "1.2.3+build", "1.2", "v1.2.3", "1.2.3-", "1.2.3-a..b", "1.2.3 ", "1.2.3-Alpha", "99999999999999999999.0.0"}
+	harness := `while IFS= read -r v; do if [[ $v =~ $1 ]]; then echo yes; else echo no; fi; done`
+	cmd := exec.Command("bash", "-c", harness, "bash", pattern[1])
+	cmd.Stdin = strings.NewReader(strings.Join(inputs, "\n") + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(string(out))
+	for i, v := range inputs {
+		if want := map[bool]string{true: "yes", false: "no"}[agentrelease.ValidVersion(v)]; i >= len(got) || got[i] != want {
+			t.Errorf("the bootstrap's pattern and agentrelease.ValidVersion disagree on %q", v)
 		}
 	}
 }

@@ -179,9 +179,6 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 			t.Fatalf("a release below the operator's minimum version installed %s", p)
 		}
 	}
-	mu.Lock()
-	current = release
-	mu.Unlock()
 	// The CI lanes divide what they check. "blocked" blocks this host's Ubuntu archives, so the
 	// bootstrap must install from a fallback archive; "host" installs from this host's own
 	// sources; anything else leaves the runner as it is, which needs nothing downloaded.
@@ -352,8 +349,12 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 			t.Error("refusing cleanup of changed backup tool")
 		}
 	}()
+	// Without backups, and without the optional minimum version, as the dashboard prepares it
+	// when the operator gives none.
 	withoutBackups := args(release)
 	withoutBackups = withoutBackups[:len(withoutBackups)-1]
+	at := slices.Index(withoutBackups, "--minimum-version")
+	withoutBackups = slices.Delete(withoutBackups, at, at+2)
 	out, e = run([]string{"CURL_CA_BUNDLE=" + ca}, withoutBackups...)
 	if e != nil || !bytes.Contains(out, []byte(`"backups":true`)) || !bytes.Contains(out, []byte(`"upgrades":true`)) {
 		t.Fatalf("normal-PATH backup capability omitted: %s %v", out, e)
