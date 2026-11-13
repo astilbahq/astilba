@@ -8,6 +8,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -38,8 +39,10 @@ func refusedChange(ctx context.Context, tx pgx.Tx, change func(pgx.Tx) error) (s
 	return reason, nil
 }
 
-// refusal is why a change was refused, or "" for an error that may pass on a retry.
+// refusal is why a change was refused, or "" for an error that may pass on a retry. PostgreSQL's
+// refusal of text it cannot store counts, through store.Normalize, since a retry writes it again.
 func refusal(err error) string {
+	err = store.Normalize(err)
 	var invalid *domain.Error
 	var diagnostic *composeproject.Diagnostic
 	switch {

@@ -153,7 +153,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		c.CancelRequested = true
 		return true, tx.Commit(ctx)
 	}
-	if settled, err := s.settleBuildNetwork(ctx, tx, ws, c, p, undelivered); settled || err != nil {
+	if settled, err := s.settleBuildIsolation(ctx, tx, ws, c, p, undelivered); settled || err != nil {
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {

@@ -57,6 +57,9 @@ type Engine struct {
 	// managed stands in for the host's managed networking in tests, which only a prepared
 	// Linux host has. Nil is the host itself.
 	managed managedHost
+	// builderCAs stands in for the builder image's certificate authorities in tests, which use
+	// a registry with their own. It names a bundle on the host. Empty is the image's.
+	builderCAs string
 }
 
 func (e *Engine) point(p string) {

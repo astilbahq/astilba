@@ -2700,6 +2700,8 @@ export interface components {
             build?: boolean;
             /** @description Runs builds on its owned build network behind the build egress policy. Advertised only after Astilba-Agent-Build-Network v1. */
             buildNetwork?: boolean;
+            /** @description Runs builds rootless, as an unprivileged host user in a user namespace confined by the agent's AppArmor and seccomp profiles. Advertised only after Astilba-Agent-Rootless-Builds v1. */
+            rootlessBuilds?: boolean;
             /** @description Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1. */
             schedules?: boolean;
             backups?: boolean;

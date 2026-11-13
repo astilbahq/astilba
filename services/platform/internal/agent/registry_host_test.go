@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -128,11 +127,4 @@ func startNativeRegistry(t *testing.T, lan nativeLAN) *nativeRegistry {
 		}
 	})
 	return &nativeRegistry{repository: address + "/fixture/application", ca: certificate, push: passwords["builder"], pull: passwords["deployer"]}
-}
-func appendNativeCA(t *testing.T, engine *Engine, container string, ca []byte) {
-	t.Helper()
-	_, err := engine.pipelineCLI(context.Background(), container, nil, ca, 1024, "sh", "-ec", "cat >> /etc/ssl/certs/ca-certificates.crt")
-	if err != nil {
-		t.Fatal("cannot configure disposable registry CA", err)
-	}
 }

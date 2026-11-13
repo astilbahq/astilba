@@ -101,7 +101,12 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	if h.Preflight.Ready && !buildNetwork {
 		h.Preflight.Notes = append(h.Preflight.Notes, buildPolicyUnsupported)
 	}
-	build := h.Preflight.Ready && buildNetwork && dockerFreeBytes(ctx, docker) >= 4<<30
+	// A build runs only in the unprivileged builder, so a host that can't confine it offers none.
+	rootless := !builderUnsupported()
+	if h.Preflight.Ready && !rootless {
+		h.Preflight.Notes = append(h.Preflight.Notes, builderUnsupportedNote)
+	}
+	build := h.Preflight.Ready && buildNetwork && rootless && dockerFreeBytes(ctx, docker) >= 4<<30
 	if raw, err := os.ReadFile("/etc/docker/daemon.json"); build && err == nil && dockerFirewallOff(raw) {
 		h.Preflight.Notes = append(h.Preflight.Notes, dockerFirewallOffNote)
 	}
@@ -110,6 +115,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	}
 	h.Capabilities.Build = &build
 	h.Capabilities.BuildNetwork = &buildNetwork
+	h.Capabilities.RootlessBuilds = &build
 	h.Capabilities.BuildControls = &build
 	h.Capabilities.BuildCache = &build
 	if build {

@@ -102,11 +102,16 @@ jobs:
         # Canonical first, then independent mirrors. Every one is verified against Ubuntu's key.
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" bash scripts/ci-ubuntu-archive.sh
       - name: Verify fresh production host bootstrap
+        env:
+          # core and visual block this host's Ubuntu archives, so the bootstrap must install from
+          # a pinned fallback; recovery installs from the host's own sources; upgrade needs no
+          # Ubuntu package at all.
+          UBUNTU_SOURCES: ${{ (matrix.lane == 'core' || matrix.lane == 'visual') && 'blocked' || matrix.lane == 'recovery' && 'host' || 'unchanged' }}
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)
           sudo env ASTILBA_DISPOSABLE_HOST=1 ASTILBA_BOOTSTRAP_OWNER="$owner" GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" GITHUB_RUN_ID="$GITHUB_RUN_ID" bash services/platform/host/prepare-bootstrap-test.sh
           cd services/platform
-          sudo --preserve-env=GOCACHE,GOMODCACHE env PATH="$PATH" ASTILBA_NATIVE_BOOTSTRAP=1 ASTILBA_BOOTSTRAP_OWNER="$owner" go test -count=1 -timeout=12m -v -run '^TestBootstrapOnDisposableHost$' ./host
+          sudo --preserve-env=GOCACHE,GOMODCACHE env PATH="$PATH" ASTILBA_NATIVE_BOOTSTRAP=1 ASTILBA_BOOTSTRAP_OWNER="$owner" ASTILBA_BOOTSTRAP_UBUNTU_SOURCES="$UBUNTU_SOURCES" go test -count=1 -timeout=12m -v -run '^TestBootstrapOnDisposableHost$' ./host
       - name: Install pinned disposable host runtime
         run: |
           sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstrap.sh
@@ -127,6 +132,7 @@ jobs:
             nginx:1.30.6-alpine3.24@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
             caddy:2.11.8-alpine@sha256:3db3a09e418f86a8fce8de4bc0026fccd2b4cd925aef00cc7d843d9fdc75e442
             moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+            moby/buildkit:v0.34.1-rootless@sha256:f68752a5a94acfcdad2d07867b7075601a421638e17fc5f28efc1c814d0c4f89
             dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
       - name: Verify native Ubuntu host
         if: matrix.lane == 'core'
