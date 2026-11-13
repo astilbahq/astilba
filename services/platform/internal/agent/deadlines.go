@@ -103,12 +103,31 @@ func commandDeadline(c api.ExecutionCommand) deadlineRule {
 	return rule
 }
 
-// crossHostPhases is every phase the agent runs for this kind of coordinated operation.
+// crossHostPhases is every phase the agent runs for this kind of coordinated operation, other than
+// opening and closing recovery.
 func crossHostPhases(body deployment.CrossHostCommand) map[string]deadlineRule {
 	if body.Maintenance != nil {
 		return maintenancePhases
 	}
 	return deploymentPhases
+}
+
+// Opening and closing a recovery root's metadata, for either kind of operation. Execute runs them
+// before admission (recoveryOpen, recoveryClose), so they have no deadline rule.
+const (
+	recoveryOpenPhase  = "recovery-open"
+	recoveryClosePhase = "checkpoint-closed"
+)
+
+// RunsCoordinatedPhase says whether the agent runs a coordinated command naming this phase. When
+// an integration test ends, its fixture checks every phase management issued against this, so a
+// phase management issues in any tested flow fails until it is classified here.
+func RunsCoordinatedPhase(body deployment.CrossHostCommand) bool {
+	if body.Phase == recoveryOpenPhase || body.Phase == recoveryClosePhase {
+		return true
+	}
+	_, known := crossHostPhases(body)[body.Phase]
+	return known
 }
 
 // runsLate says whether a command first taken after its admission deadline still runs. Its rule

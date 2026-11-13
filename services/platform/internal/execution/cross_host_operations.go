@@ -35,7 +35,7 @@ func (s *Service) insertCoordinationCommand(ctx context.Context, tx pgx.Tx, ws, 
 	p := command.Plan
 	for _, u := range units {
 		var idle bool
-		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled')) AND NOT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1) AND NOT EXISTS(SELECT 1 FROM supported_upgrades WHERE server_id=$1 AND status->>'phase' NOT IN ('planned','rejected','complete','returned'))`, u.Plan.ServerID).Scan(&idle); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention')) AND NOT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1) AND NOT EXISTS(SELECT 1 FROM supported_upgrades WHERE server_id=$1 AND status->>'phase' NOT IN ('planned','rejected','complete','returned'))`, u.Plan.ServerID).Scan(&idle); err != nil {
 			return api.Operation{}, err
 		}
 		if !idle {

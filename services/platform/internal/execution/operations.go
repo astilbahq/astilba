@@ -363,7 +363,7 @@ func (w *worker) work(ctx context.Context, keys *passKeys, ws uuid.UUID, job *ri
 			return tx.Commit(ctx)
 		}
 		var ready bool
-		if err = tx.QueryRow(ctx, "SELECT NOT revoked AND COALESCE(last_seen>now()-interval '45 seconds',false) AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND state NOT IN ('succeeded','failed','cancelled') AND (state<>'queued' OR kind<>'pipeline')) FROM servers WHERE id=$1", server, c.Id).Scan(&ready); err != nil {
+		if err = tx.QueryRow(ctx, "SELECT NOT revoked AND COALESCE(last_seen>now()-interval '45 seconds',false) AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND state IN ('queued','dispatched','running','needs_attention') AND (state<>'queued' OR kind<>'pipeline')) FROM servers WHERE id=$1", server, c.Id).Scan(&ready); err != nil {
 			return err
 		}
 		if !ready {
@@ -438,7 +438,7 @@ func (w *worker) work(ctx context.Context, keys *passKeys, ws uuid.UUID, job *ri
 		}
 		if c.Kind == "network" && recoveryCommand(c) {
 			var active bool
-			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND kind='network' AND command->'network'->>'action'='restrict' AND state NOT IN ('queued','succeeded','failed','cancelled'))`, server, c.Id).Scan(&active); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND id<>$2 AND kind='network' AND command->'network'->>'action'='restrict' AND state IN ('dispatched','running','needs_attention'))`, server, c.Id).Scan(&active); err != nil {
 				return err
 			}
 			if active {

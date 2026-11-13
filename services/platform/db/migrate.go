@@ -20,7 +20,7 @@ var migrations embed.FS
 
 // Version is the newest migration this binary carries. It runs on a database at this version,
 // or ahead of it when every newer migration recorded itself as additive.
-const Version int64 = 48
+const Version int64 = 45
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)

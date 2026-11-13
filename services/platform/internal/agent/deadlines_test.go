@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
@@ -54,6 +55,36 @@ func TestEveryCommandKindHasADeadlineRule(t *testing.T) {
 	for kind := range commandKinds {
 		if !kinds[kind] {
 			t.Errorf("deadline rule for command kind %s, which the contract doesn't define", kind)
+		}
+	}
+}
+
+// The agent runs a coordinated phase only where it is handled: recovery opening and closing in
+// their executors before admission, every other phase by its deadline rule. Management's issued
+// phases are checked against RunsCoordinatedPhase when each integration test ends.
+func TestRunsCoordinatedPhaseOnlyWhereThePhaseIsHandled(t *testing.T) {
+	deployed, maintained := lateDeployment(t, "reserve", false).body, expiredMaintenance(t, false).body
+	for _, body := range []deployment.CrossHostCommand{deployed, maintained} {
+		for _, phase := range []string{"drain", "maintenance-reserve", "links", ""} {
+			body.Phase = phase
+			if RunsCoordinatedPhase(body) {
+				t.Errorf("phase %q runs without a rule", phase)
+			}
+		}
+	}
+	deployed.Phase, maintained.Phase = "pause", "probe"
+	if RunsCoordinatedPhase(deployed) || RunsCoordinatedPhase(maintained) {
+		t.Error("a phase runs for the other kind of operation")
+	}
+	for phase, executor := range map[string]func(api.ExecutionCommand) bool{recoveryOpenPhase: recoveryOpen, recoveryClosePhase: recoveryClose} {
+		_, deploymentRule := deploymentPhases[phase]
+		_, maintenanceRule := maintenancePhases[phase]
+		if deploymentRule || maintenanceRule {
+			t.Errorf("%s has a deadline rule it never reaches", phase)
+		}
+		f := lateDeployment(t, phase, false)
+		if !RunsCoordinatedPhase(f.body) || !executor(f.command) {
+			t.Errorf("%s doesn't reach its executor", phase)
 		}
 	}
 }
