@@ -134,7 +134,7 @@ export const TemplatePurgeRefusedForAPreview: Story = {
     const dialog = within(element);
     await waitFor(() =>
       expect(element).toHaveAccessibleDescription(
-        /Its previews are all deleted\./,
+        /None of its previews holds copies of its secrets\./,
       ),
     );
     await confirmPurge(element, "Pull requests");

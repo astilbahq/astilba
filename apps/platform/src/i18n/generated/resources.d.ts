@@ -425,7 +425,7 @@ export default interface Resources {
       "purgeEffects": {
         "backups": "Backups at the workspace’s backup destination are kept.",
         "kept": "Its configuration, revisions and history are kept, read-only.",
-        "noPreviews": "Its previews are all deleted.",
+        "noPreviews": "None of its previews holds copies of its secrets.",
         "noVolumes": "It keeps no data volumes, so nothing is deleted from its server.",
         "preview": "Request #{{number}}: {{state}}",
         "previewWithNote": "Request #{{number}}: {{state}}. {{note}}",

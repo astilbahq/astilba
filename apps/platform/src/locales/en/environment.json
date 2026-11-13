@@ -143,7 +143,7 @@
       "previews": "Its previews hold copies of its secrets, so each must be deleted first. Wait for its cleanup, or choose Remove preview and data on it under Previews:",
       "preview": "Request #{{number}}: {{state}}",
       "previewWithNote": "Request #{{number}}: {{state}}. {{note}}",
-      "noPreviews": "Its previews are all deleted.",
+      "noPreviews": "None of its previews holds copies of its secrets.",
       "secrets": "The values of its secrets are erased, for every version.",
       "kept": "Its configuration, revisions and history are kept, read-only.",
       "backups": "Backups at the workspace’s backup destination are kept."
