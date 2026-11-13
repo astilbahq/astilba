@@ -309,8 +309,8 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 			return result, err
 		}
 		n, err := strconv.ParseUint(strings.TrimSpace(string(size)), 10, 64)
-		if err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
-			return result, errors.New("local image exceeds reserved host storage")
+		if err != nil || n > localImageArchiveBytes {
+			return result, fmt.Errorf("The built image was not loaded: its archive is larger than %d MiB. Make the image smaller, for example with a multi-stage build. Existing workloads are unchanged.", localImageArchiveBytes>>20)
 		}
 		if err = e.loadPipelineImage(ctx, c, int64(n)); err != nil {
 			return result, err
@@ -384,55 +384,7 @@ func pipelineLogTail(logs string) string {
 	}
 	return logs[start:]
 }
-func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand, size int64) error {
-	cli := e.DockerCLI
-	if cli == "" {
-		cli = "docker"
-	}
-	cmd := exec.CommandContext(ctx, cli, "exec", pipelineName(c), "cat", "/workspace/image.tar")
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_HOST=" + e.Docker.DaemonHost()}
-	if v := os.Getenv("DOCKER_CONFIG"); v != "" {
-		cmd.Env = append(cmd.Env, "DOCKER_CONFIG="+v)
-	}
-	stream, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err = cmd.Start(); err != nil {
-		return err
-	}
-	response, err := e.Docker.ImageLoad(ctx, &measuredReader{r: stream, remaining: size})
-	if err == nil {
-		_, err = io.Copy(io.Discard, response)
-		_ = response.Close()
-	}
-	if err != nil {
-		_ = cmd.Process.Kill()
-	}
-	wait := cmd.Wait()
-	return errors.Join(err, wait)
-}
 
-// measuredReader reads exactly remaining bytes, and fails if r has more.
-type measuredReader struct {
-	r         io.Reader
-	remaining int64
-}
-
-func (m *measuredReader) Read(p []byte) (int, error) {
-	if m.remaining == 0 {
-		if n, _ := m.r.Read(make([]byte, 1)); n > 0 {
-			return 0, errors.New("the image archive grew after it was measured")
-		}
-		return 0, io.EOF
-	}
-	n, err := m.r.Read(p[:min(int64(len(p)), m.remaining)])
-	m.remaining -= int64(n)
-	if err == io.EOF && m.remaining > 0 {
-		err = io.ErrUnexpectedEOF
-	}
-	return n, err
-}
 func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {

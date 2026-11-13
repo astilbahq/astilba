@@ -36,6 +36,10 @@ type Engine struct {
 	ACMEEmail             string
 	ResticCLI             string
 	BackupRoots           []string
+	// ImageLoadBytes and ImageLoadReserveBytes are the host owner's limits on loading a local
+	// build's image, see image_archive.go; the defaults when zero.
+	ImageLoadBytes        int64
+	ImageLoadReserveBytes int64
 	TroubleshootingIdle   time.Duration
 	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
 	// DefaultNetworkPool when unset.
