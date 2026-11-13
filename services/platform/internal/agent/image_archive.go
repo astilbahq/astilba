@@ -5,12 +5,15 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"regexp"
 	"strings"
@@ -26,48 +29,72 @@ import (
 // Docker through a gate that refuses before Docker could write more than the limit.
 const (
 	localImageArchiveBytes = 512 << 20
-	// What one load may write to Docker's storage: archive members and unpacked layers.
-	localImageLoadBytes   = 4 << 30
-	localImageLoadEntries = 1 << 20
-	// What a load must leave free where Docker keeps images.
-	dockerReserveBytes  = 4 << 30
-	dockerReserveInodes = 1 << 18
+	// What one load may write to Docker's storage, and what it must leave free there, unless the
+	// host's owner sets the agent's --image-load-gib and --image-load-reserve-gib.
+	DefaultImageLoadBytes        = 8 << 30
+	DefaultImageLoadReserveBytes = 4 << 30
+	// Files a load may create for each GiB it may write: 1 Mi for the default 8 GiB.
+	imageLoadEntriesPerGiB = 128 << 10
+	dockerReserveInodes    = 1 << 18
+	// An image has a config, a manifest and a blob per layer; this many members is never one.
+	imageMembers = 4096
+	// Header blocks, PAX records and long names the gate holds before a member's size is known.
+	imageHeaderBytes = 4 << 20
 	// Small non-layer members are kept to read the manifests that name layers.
 	imageMetadataBytes = 4 << 20
 	imageMetadataTotal = 16 << 20
+	// Docker's overlay storage stacks at most this many layers.
+	imageChainDepth = 128
+	imageIndexDepth = 4
 	// A layer may end with padding after its end marker, which Docker's legacy image store
 	// reads into memory and keeps.
 	layerTrailerBytes = 1 << 20
 	// zstd's largest standard window, which the zstd tool uses for --ultra and --long.
 	layerWindowBytes = 128 << 20
-	imageIndexDepth  = 4
-	// Each entry costs its data in whole filesystem blocks plus an inode, a directory entry and
-	// layer metadata, and a directory at least one block.
+	// Linux refuses longer paths and names, so a layer with them cannot unpack.
+	layerPathBytes = 4096
+	layerNameBytes = 255
+	// Each entry costs its data in whole filesystem blocks plus an inode and a directory entry;
+	// a directory or an out-of-inode extended attribute takes a block more.
 	storageBlockBytes = 4096
 	storageEntryBytes = 512
+	// Each layer Docker unpacks has its own directories and bookkeeping files.
+	storageLayerBytes   = 64 << 10
+	storageLayerEntries = 16
 )
-
-// localImageLoads lets one local image load at a time take Docker's storage, so the free space
-// each measures is not also spent by another.
-var localImageLoads = make(chan struct{}, 1)
 
 // imageLoadLimit is what one load may still write.
 type imageLoadLimit struct {
 	Bytes, Entries int64
-	// Storage is set when the server's free space, not the agent's fixed limit, binds.
-	Storage bool
+	// Whether the server's free space, rather than the per-load limit, binds each.
+	bytesByStorage, entriesByStorage bool
+	// The host's settings, which the refusal notes name.
+	loadBytes, reserveBytes int64
 }
 
 type imageCost struct{ Bytes, Entries int64 }
 
 func (c *imageCost) add(o imageCost) { c.Bytes += o.Bytes; c.Entries += o.Entries }
 
-func (c imageCost) exceeds(l imageLoadLimit) bool {
-	return c.Bytes > l.Bytes || c.Entries > l.Entries
+var (
+	errImageOverBytes   = errors.New("image writes more than its load may")
+	errImageOverEntries = errors.New("image creates more files than its load may")
+)
+
+func (l imageLoadLimit) check(c imageCost) error {
+	switch {
+	case c.Bytes > l.Bytes:
+		return errImageOverBytes
+	case c.Entries > l.Entries:
+		return errImageOverEntries
+	}
+	return nil
 }
 
 func (l imageLoadLimit) less(c imageCost) imageLoadLimit {
-	return imageLoadLimit{Bytes: l.Bytes - c.Bytes, Entries: l.Entries - c.Entries, Storage: l.Storage}
+	l.Bytes -= c.Bytes
+	l.Entries -= c.Entries
+	return l
 }
 
 // imageLoadRefused is why the agent did not load a built image; its message is the operation's note.
@@ -75,13 +102,18 @@ type imageLoadRefused struct{ note string }
 
 func (r *imageLoadRefused) Error() string { return r.note }
 
-var errImageOverLimit = errors.New("image exceeds what its load may write")
-
-func (l imageLoadLimit) refusal() error {
-	if l.Storage {
-		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacking it would leave less than %d GiB or %d inodes free in this server's Docker storage. Free space on the server and build again. Existing workloads are unchanged.", dockerReserveBytes>>30, dockerReserveInodes)}
+// refusal is the note for exceeding the limit in over, naming that limit and who can change it.
+func (l imageLoadLimit) refusal(over error) error {
+	const tail = " Existing workloads are unchanged."
+	switch {
+	case errors.Is(over, errImageOverBytes) && l.bytesByStorage:
+		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacking it would leave less than %d GiB free in this server's Docker storage, which the agent keeps in reserve. Free space on the server and build again; the server's owner sets the reserve with the agent's --image-load-reserve-gib.", l.reserveBytes>>30) + tail}
+	case errors.Is(over, errImageOverBytes):
+		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacked, it would write more than %d GiB to this server's Docker storage, the most one image load may write here. Make the image smaller, for example with a multi-stage build, or ask the server's owner to raise the agent's --image-load-gib.", l.loadBytes>>30) + tail}
+	case l.entriesByStorage:
+		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacking it would leave fewer than %d inodes free in this server's Docker storage. Free space on the server, such as unused images, and build again.", dockerReserveInodes) + tail}
 	}
-	return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacked, it would take more than %d GiB of this server's Docker storage or more than %d files. Make the image smaller, for example with a multi-stage build. Existing workloads are unchanged.", localImageLoadBytes>>30, localImageLoadEntries)}
+	return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacked, it would create more than %d files and directories, the most one image load may create here (%d for each GiB of the agent's --image-load-gib). Make the image smaller, or ask the server's owner to raise that setting.", l.Entries, imageLoadEntriesPerGiB) + tail}
 }
 
 func unmeasurableImage(why string) error {
@@ -96,14 +128,25 @@ type imageArchiveGate struct {
 	out     io.Writer
 	pending []byte
 	head    []byte
+	// failed is the stream's own failure, reading the archive or Docker reading it, which
+	// takes precedence over what a parser makes of it.
+	failed error
 }
 
+var errImageHeaders = unmeasurableImage("its archive has more header data than an image needs")
+
 func (g *imageArchiveGate) Read(p []byte) (int, error) {
+	if len(g.pending) > imageHeaderBytes {
+		return 0, errImageHeaders
+	}
 	n, err := g.src.Read(p)
 	if len(g.head) < 8 {
 		g.head = append(g.head, p[:min(n, 8-len(g.head))]...)
 	}
 	g.pending = append(g.pending, p[:n]...)
+	if err != nil && err != io.EOF {
+		g.failed = err
+	}
 	return n, err
 }
 
@@ -113,7 +156,23 @@ func (g *imageArchiveGate) release() error {
 	}
 	_, err := g.out.Write(g.pending)
 	g.pending = g.pending[:0]
+	if err != nil {
+		g.failed = err
+	}
 	return err
+}
+
+// cause is the error to report for err: the stream's own failure, a refusal or a limit as it
+// is, and otherwise the refusal why, since the archive itself could not be read.
+func (g *imageArchiveGate) cause(err error, why string) error {
+	var refused *imageLoadRefused
+	switch {
+	case g.failed != nil:
+		return g.failed
+	case errors.As(err, &refused), errors.Is(err, errImageOverBytes), errors.Is(err, errImageOverEntries):
+		return err
+	}
+	return unmeasurableImage(why)
 }
 
 // releasing passes a member's content to Docker as it is read. Docker only stores members until
@@ -131,7 +190,7 @@ func (r releasing) Read(p []byte) (int, error) {
 	return n, err
 }
 
-var imageMemberName = regexp.MustCompile(`^(blobs/sha256/[0-9a-f]{64}|index\.json|manifest\.json|oci-layout)$`)
+var imageMemberName = regexp.MustCompile(`^(blobs/sha256/([0-9a-f]{64})|index\.json|manifest\.json|oci-layout)$`)
 
 type imageMember struct {
 	layer bool
@@ -139,8 +198,9 @@ type imageMember struct {
 	data  []byte
 }
 
-// inspectImageArchive reads the archive through gate and returns nil only once the whole archive
-// has reached gate.out. On an error the caller must fail the stream Docker reads.
+// inspectImageArchive reads the archive through gate. It returns nil once the archive's end has
+// reached gate.out, after which the caller ends the stream Docker reads; on an error the caller
+// must fail that stream instead.
 func inspectImageArchive(gate *imageArchiveGate, limit imageLoadLimit) error {
 	tr := tar.NewReader(gate)
 	var archive, read imageCost // members as Docker stores them; plus each layer once
@@ -157,23 +217,26 @@ func inspectImageArchive(gate *imageArchiveGate, limit imageLoadLimit) error {
 			break
 		}
 		if err != nil {
-			return unmeasurableImage("its archive is not a valid tar archive")
+			return gate.cause(err, "its archive is not a valid tar archive")
 		}
 		name := strings.TrimSuffix(hdr.Name, "/")
+		match := imageMemberName.FindStringSubmatch(name)
 		switch {
 		case name != path.Clean(name) || members[name] != nil || directories[name]:
 			return unmeasurableImage("its archive names a member twice or in an unusual form")
+		case len(members)+len(directories) >= imageMembers:
+			return unmeasurableImage("its archive has more members than an image needs")
 		case hdr.Typeflag == tar.TypeDir && (name == "blobs" || name == "blobs/sha256"):
 			directories[name] = true
-		case hdr.Typeflag == tar.TypeReg && hdr.Name == name && imageMemberName.MatchString(name):
+		case hdr.Typeflag == tar.TypeReg && hdr.Name == name && match != nil:
 		default:
 			return unmeasurableImage("its archive has a member other than OCI image content")
 		}
 		cost := entryCost(hdr)
 		archive.add(cost)
 		read.add(cost)
-		if read.exceeds(limit) {
-			return errImageOverLimit
+		if err = limit.check(read); err != nil {
+			return err
 		}
 		if err = gate.release(); err != nil {
 			return err
@@ -181,51 +244,48 @@ func inspectImageArchive(gate *imageArchiveGate, limit imageLoadLimit) error {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		member, err := inspectImageMember(releasing{tr, gate}, hdr.Size, limit.less(read))
+		// containerd stores and finds blobs by their content's digest, so a blob is what its
+		// name says or the archive is refused.
+		digest := sha256.New()
+		member, err := inspectImageMember(io.TeeReader(releasing{tr, gate}, digest), gate, hdr.Size, limit.less(read))
 		if err != nil {
 			return err
 		}
+		if match[2] != "" && hex.EncodeToString(digest.Sum(nil)) != match[2] {
+			return unmeasurableImage("a blob in its archive differs from its digest")
+		}
+		if !member.layer {
+			// Docker's legacy store writes a config both where it unpacks the archive and
+			// where it keeps images.
+			archive.add(cost)
+			read.add(cost)
+		}
 		read.add(member.cost)
+		if err = limit.check(read); err != nil {
+			return err
+		}
 		if kept += len(member.data); kept > imageMetadataTotal {
 			return unmeasurableImage("its archive has more metadata than an image needs")
 		}
 		members[name] = member
 	}
-	unpacked, err := imageChainsCost(members)
+	unpacked, err := imageChainsCost(members, limit.less(archive))
 	if err != nil {
 		return err
 	}
 	archive.add(unpacked)
-	if archive.exceeds(limit) {
-		return errImageOverLimit
-	}
-	if err = gate.release(); err != nil {
+	if err = limit.check(archive); err != nil {
 		return err
 	}
-	// Only padding may follow the end marker; Docker needs it no more than the agent does.
-	buffer := make([]byte, 32<<10)
-	for {
-		n, err := gate.src.Read(buffer)
-		if bytes.ContainsFunc(buffer[:n], func(r rune) bool { return r != 0 }) {
-			return unmeasurableImage("its archive has data after its end")
-		}
-		if _, written := gate.out.Write(buffer[:n]); written != nil {
-			return written
-		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
+	// Docker needs nothing after the end marker, so nothing after it is passed on.
+	return gate.release()
 }
 
-// inspectImageMember counts what Docker writes if it unpacks the member as a layer. Docker
-// recognizes a compressed layer by its magic number, or reads it as a plain tar archive; the
-// containerd image store also reads a layer described as uncompressed as plain tar, whatever it
-// starts with. A member that is no tar archive either way unpacks to nothing.
-func inspectImageMember(r io.Reader, size int64, limit imageLoadLimit) (*imageMember, error) {
+// inspectImageMember counts what Docker writes if it unpacks the member as a layer, and reads
+// all of it. Docker recognizes a compressed layer by its magic number, or reads it as a plain
+// tar archive; the containerd image store also reads a layer described as uncompressed as plain
+// tar, whatever it starts with. A member that is no tar archive either way unpacks to nothing.
+func inspectImageMember(r io.Reader, gate *imageArchiveGate, size int64, limit imageLoadLimit) (*imageMember, error) {
 	member := &imageMember{}
 	buffered := bufio.NewReaderSize(r, 64<<10)
 	head, _ := buffered.Peek(tarBlockBytes)
@@ -249,35 +309,30 @@ func inspectImageMember(r io.Reader, size int64, limit imageLoadLimit) (*imageMe
 			}
 		}
 		if err != nil {
-			return nil, unmeasurableImage("a layer's " + compression + " data is invalid")
+			return nil, gate.cause(err, "a layer's "+compression+" data is invalid")
 		}
-		member.cost, _, err = layerCost(layer, limit)
-		var refused *imageLoadRefused
-		if errors.Is(err, errImageOverLimit) || errors.As(err, &refused) {
-			return nil, err
-		}
-		if err != nil {
-			return nil, unmeasurableImage("a compressed layer is not a valid tar archive")
+		if member.cost, _, err = layerCost(layer, limit); err != nil {
+			return nil, gate.cause(err, "a compressed layer is not a valid tar archive")
 		}
 		member.layer = true
 	case "":
 		var layer io.Reader = buffered
 		if size <= imageMetadataBytes {
 			if member.data, err = io.ReadAll(buffered); err != nil {
-				return nil, err
+				return nil, gate.cause(err, "its archive is not a valid tar archive")
 			}
 			layer = bytes.NewReader(member.data)
 		}
 		var headers int
 		member.cost, headers, err = layerCost(layer, limit)
 		switch {
-		case errors.Is(err, errImageOverLimit):
-			return nil, err
+		case gate.failed != nil:
+			return nil, gate.failed
 		case headers == 0 && (errors.Is(err, tar.ErrHeader) || errors.Is(err, io.ErrUnexpectedEOF)):
 			// Not a tar archive: Docker's tar reader fails at the same first header.
 			member.cost = imageCost{}
 		case err != nil:
-			return nil, unmeasurableImage("a layer is not a valid tar archive")
+			return nil, gate.cause(err, "a layer is not a valid tar archive")
 		default:
 			member.layer, member.data = true, nil
 		}
@@ -286,20 +341,44 @@ func inspectImageMember(r io.Reader, size int64, limit imageLoadLimit) (*imageMe
 	}
 	// Whatever is left is read through, so the archive's next header is what Docker gets next.
 	if _, err = io.Copy(io.Discard, buffered); err != nil {
-		return nil, err
+		return nil, gate.cause(err, "its archive is not a valid tar archive")
 	}
 	return member, nil
 }
 
 const tarBlockBytes = 512
 
+// boundedReader counts what it reads and fails past ceiling, so a parser cannot read without
+// limit before returning anything to count.
+type boundedReader struct {
+	r          io.Reader
+	n, ceiling int64
+	over       error
+}
+
+func (b *boundedReader) Read(p []byte) (int, error) {
+	if b.n >= b.ceiling {
+		return 0, b.over
+	}
+	n, err := b.r.Read(p[:min(int64(len(p)), b.ceiling-b.n)])
+	b.n += int64(n)
+	return n, err
+}
+
 // layerCost counts what unpacking the tar archive r writes, and how many headers it has.
 func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
-	tr := tar.NewReader(r)
+	raw := &boundedReader{r: r, over: errImageOverBytes}
+	tr := tar.NewReader(raw)
+	directories := layerDirectories{}
 	var cost imageCost
 	headers := 0
 	for {
+		// Docker's legacy store keeps every byte between entries' data: headers, including meta
+		// headers Go's reader folds into the next entry, long names and padding.
+		before := raw.n
+		raw.ceiling = before + limit.Bytes - cost.Bytes
 		hdr, err := tr.Next()
+		cost.Bytes += raw.n - before
 		if err == io.EOF {
 			break
 		}
@@ -307,13 +386,24 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 			return cost, headers, err
 		}
 		headers++
-		cost.add(entryCost(hdr))
-		if cost.exceeds(limit) {
-			return cost, headers, errImageOverLimit
+		entry, err := directories.entry(hdr)
+		if err != nil {
+			return cost, headers, err
+		}
+		cost.add(entry)
+		if err = limit.check(cost); err != nil {
+			return cost, headers, err
+		}
+		// The entry's data is read here, not in Next, so Next reads only what is counted above.
+		// It is at most the entry's counted size.
+		raw.ceiling = math.MaxInt64
+		if _, err = io.Copy(io.Discard, tr); err != nil {
+			return cost, headers, err
 		}
 	}
 	// Docker's legacy image store reads what follows the end marker into memory and keeps it.
-	n, err := io.Copy(io.Discard, io.LimitReader(r, layerTrailerBytes+1))
+	raw.ceiling, raw.over = raw.n+layerTrailerBytes+1, io.EOF
+	n, err := io.Copy(io.Discard, raw)
 	if err != nil {
 		return cost, headers, err
 	}
@@ -321,18 +411,59 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 		return cost, headers, unmeasurableImage("a layer has data after its end")
 	}
 	cost.Bytes += n
-	if cost.exceeds(limit) {
-		return cost, headers, errImageOverLimit
+	return cost, headers, limit.check(cost)
+}
+
+// layerDirectories is the directories one layer has made, explicitly or as the parents Docker
+// creates for an entry whose directory the layer does not have.
+type layerDirectories map[layerPathKey]int32
+
+type layerPathKey struct {
+	parent int32
+	name   string
+}
+
+var directoryCost = imageCost{Bytes: storageEntryBytes + storageBlockBytes, Entries: 1}
+
+// entry is what writing one tar entry costs, including directories it needs Docker to create.
+func (d layerDirectories) entry(h *tar.Header) (imageCost, error) {
+	if len(h.Name) > layerPathBytes || len(h.Linkname) > layerPathBytes {
+		return imageCost{}, unmeasurableImage("a layer has a path longer than Linux allows")
 	}
-	return cost, headers, nil
+	parts := strings.Split(strings.TrimPrefix(path.Clean("/"+h.Name), "/"), "/")
+	cost := entryCost(h)
+	parent := int32(0)
+	for i, part := range parts {
+		if len(part) > layerNameBytes {
+			return imageCost{}, unmeasurableImage("a layer has a file name longer than Linux allows")
+		}
+		if i == len(parts)-1 && h.Typeflag != tar.TypeDir {
+			break
+		}
+		key := layerPathKey{parent, part}
+		id, ok := d[key]
+		if !ok {
+			id = int32(len(d) + 1)
+			d[layerPathKey{parent, strings.Clone(part)}] = id
+			if i < len(parts)-1 {
+				cost.add(directoryCost)
+			}
+		}
+		parent = id
+	}
+	return cost, nil
 }
 
 // entryCost is the storage one tar entry takes once written. Its size is the logical one, so a
 // sparse file counts in full, as Docker writes it.
 func entryCost(h *tar.Header) imageCost {
-	bytes := int64(storageEntryBytes + len(h.Name) + len(h.Linkname))
-	for k, v := range h.PAXRecords {
-		bytes += int64(len(k) + len(v))
+	bytes := int64(storageEntryBytes)
+	xattrs := false
+	for k := range h.PAXRecords {
+		xattrs = xattrs || strings.HasPrefix(k, "SCHILY.xattr.") || strings.HasPrefix(k, "LIBARCHIVE.xattr.")
+	}
+	if xattrs {
+		bytes += storageBlockBytes
 	}
 	if h.Typeflag == tar.TypeDir {
 		bytes += storageBlockBytes
@@ -371,8 +502,9 @@ func plainTarHeader(head []byte) bool {
 // imageChainsCost counts the layers Docker unpacks for every image the archive's manifests
 // describe. Docker's legacy store reads manifest.json and the containerd store also index.json,
 // so both count. Docker unpacks a layer once for each distinct chain of layers below and
-// including it, so a layer listed twice, or below different layers, counts each time.
-func imageChainsCost(members map[string]*imageMember) (imageCost, error) {
+// including it, so a layer listed twice, or below different layers, counts each time, as does
+// each layer's own bookkeeping.
+func imageChainsCost(members map[string]*imageMember, limit imageLoadLimit) (imageCost, error) {
 	var chains [][]string
 	if m := members["manifest.json"]; m != nil {
 		var images []jsontext.Value
@@ -404,21 +536,34 @@ func imageChainsCost(members map[string]*imageMember) (imageCost, error) {
 			return imageCost{}, err
 		}
 	}
-	type node map[string]node
-	root := node{}
+	type node struct {
+		parent int32
+		name   string
+	}
+	nodes := map[node]int32{}
 	var cost imageCost
 	for _, chain := range chains {
-		at := root
+		if len(chain) > imageChainDepth {
+			return imageCost{}, unmeasurableImage("an image in its archive has more layers than Docker can stack")
+		}
+		parent := int32(0)
 		for _, name := range chain {
-			next, ok := at[name]
+			m := members[name]
+			if m == nil {
+				return imageCost{}, unmeasurableImage("its manifests name a layer its archive does not have")
+			}
+			key := node{parent, name}
+			id, ok := nodes[key]
 			if !ok {
-				next = node{}
-				at[name] = next
-				if m := members[name]; m != nil && m.layer {
-					cost.add(m.cost)
+				id = int32(len(nodes) + 1)
+				nodes[key] = id
+				cost.add(m.cost)
+				cost.add(imageCost{Bytes: storageLayerBytes, Entries: storageLayerEntries})
+				if err := limit.check(cost); err != nil {
+					return cost, err
 				}
 			}
-			at = next
+			parent = id
 		}
 	}
 	return cost, nil
@@ -432,11 +577,12 @@ func indexChains(members map[string]*imageMember, name string, depth int, visite
 	}
 	visited[name] = true
 	m := members[name]
-	if m == nil || m.data == nil {
-		// Docker cannot read a missing or non-JSON document as a manifest either.
-		return nil
-	}
-	if depth > imageIndexDepth {
+	switch {
+	case m == nil:
+		return unmeasurableImage("its image index names a document its archive does not have")
+	case m.data == nil:
+		return unmeasurableImage("its image index names a document the agent cannot read")
+	case depth > imageIndexDepth:
 		return unmeasurableImage("its image index is nested too deeply")
 	}
 	manifests, err := foldedMembers(m.data, "manifests")

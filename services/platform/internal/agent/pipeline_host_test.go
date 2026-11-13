@@ -500,8 +500,8 @@ func TestNativePipeline(t *testing.T) {
 			t.Fatal("refused image changed previous artifact", err)
 		}
 	}
-	// Beyond the agent's fixed limit. A host with under 8.5 GiB free refuses it for its storage.
-	loadRefused("4500M", "The built image was not loaded: unpack")
+	// Beyond the default per-load limit. A host with under 13 GiB free refuses it for its storage.
+	loadRefused("9G", "The built image was not loaded: unpack")
 	// Within the fixed limit, but it would leave less than the reserve free.
 	func() {
 		info, err := docker.Info(ctx, client.InfoOptions{})
@@ -511,7 +511,7 @@ func TestNativePipeline(t *testing.T) {
 		fill := filepath.Join(info.Info.DockerRootDir, "astilba-test-fill-"+uuid.NewString())
 		defer os.Remove(fill)
 		free, _, ok := freeSpace(info.Info.DockerRootDir)
-		if size := free - dockerReserveBytes - 1<<30; ok && size > 0 {
+		if size := free - DefaultImageLoadReserveBytes - 1<<30; ok && size > 0 {
 			if out, err := exec.Command("fallocate", "-l", strconv.FormatInt(size, 10), fill).CombinedOutput(); err != nil {
 				t.Fatal(err, string(out))
 			}

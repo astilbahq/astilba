@@ -10,16 +10,25 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// Statfs must observe the daemon's host, never a similarly named client-side directory.
-func dockerFreeBytes(ctx context.Context, docker *client.Client) int64 {
+// dockerRoot is the daemon's data-root, when the daemon is this host's own. Statfs must observe
+// the daemon's host, never a similarly named client-side directory.
+func dockerRoot(ctx context.Context, docker *client.Client) (string, bool) {
 	if docker == nil || runtime.GOOS != "linux" || !strings.HasPrefix(docker.DaemonHost(), "unix://") {
-		return 0
+		return "", false
 	}
 	info, err := docker.Info(ctx, client.InfoOptions{})
 	if err != nil || !filepath.IsAbs(info.Info.DockerRootDir) {
+		return "", false
+	}
+	return info.Info.DockerRootDir, true
+}
+
+func dockerFreeBytes(ctx context.Context, docker *client.Client) int64 {
+	root, ok := dockerRoot(ctx, docker)
+	if !ok {
 		return 0
 	}
-	return freeBytes(info.Info.DockerRootDir)
+	return freeBytes(root)
 }
 
 // containerdRoot is where Docker's containerd image store keeps image content and unpacked
@@ -31,14 +40,11 @@ const containerdRoot = "/var/lib/containerd"
 // filesystem allocates them dynamically and reports none. ok is false when the daemon's
 // storage cannot be observed from here.
 func imageStorage(ctx context.Context, docker *client.Client) (bytes, inodes int64, ok bool) {
-	if docker == nil || runtime.GOOS != "linux" || !strings.HasPrefix(docker.DaemonHost(), "unix://") {
+	root, ok := dockerRoot(ctx, docker)
+	if !ok {
 		return 0, 0, false
 	}
-	info, err := docker.Info(ctx, client.InfoOptions{})
-	if err != nil || !filepath.IsAbs(info.Info.DockerRootDir) {
-		return 0, 0, false
-	}
-	roots := []string{info.Info.DockerRootDir}
+	roots := []string{root}
 	if _, err := os.Stat(containerdRoot); err == nil {
 		roots = append(roots, containerdRoot)
 	}

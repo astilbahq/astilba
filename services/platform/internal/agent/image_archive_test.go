@@ -205,7 +205,8 @@ func TestImageArchivePassesUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(docker, archive) {
+	// Docker needs nothing after the end marker, so the padding after it is not passed on.
+	if !bytes.Equal(docker, archive[:len(archive)-4096]) {
 		t.Fatal("Docker received an archive other than the one the build wrote")
 	}
 	// The same archive with zstd and plain tar layers, which base images may bring.
@@ -228,7 +229,7 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 	refused := func(t *testing.T, archive []byte, limit imageLoadLimit) []byte {
 		t.Helper()
 		docker, err := inspectTest(archive, limit)
-		if !errors.Is(err, errImageOverLimit) {
+		if !errors.Is(err, errImageOverBytes) && !errors.Is(err, errImageOverEntries) {
 			t.Fatal("not refused for its size", err)
 		}
 		if len(docker) >= len(archive)-1024 {
@@ -244,12 +245,12 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 		if len(archive) > 16<<10 {
 			t.Fatal("fixture is not small", len(archive))
 		}
-		refused(t, archive, imageLoadLimit{Bytes: localImageLoadBytes, Entries: localImageLoadEntries})
+		refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: 8 * imageLoadEntriesPerGiB})
 	})
 	t.Run("sparse archive member", func(t *testing.T) {
 		// Docker's untar writes a member's holes from its header alone, so the header is held.
 		archive := append(sparseEntry("blobs/sha256/"+strings.Repeat("a", 64), 8<<30), make([]byte, 1024)...)
-		if docker := refused(t, archive, imageLoadLimit{Bytes: localImageLoadBytes, Entries: localImageLoadEntries}); len(docker) != 0 {
+		if docker := refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: 8 * imageLoadEntriesPerGiB}); len(docker) != 0 {
 			t.Fatal("Docker received the sparse member's header")
 		}
 	})
@@ -283,6 +284,44 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 		image.image([]string{layer}, []string{layer})
 		refused(t, image.archive(t), testLimit)
 	})
+	t.Run("parent directories Docker creates", func(t *testing.T) {
+		var out bytes.Buffer
+		w := tar.NewWriter(&out)
+		for _, top := range []string{"a", "b"} {
+			name := top + strings.Repeat("/d", 600) + "/f"
+			_ = w.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644})
+		}
+		_ = w.Close()
+		image := newTestImage()
+		layer := image.blob(gzipOf(t, out.Bytes()))
+		image.image([]string{layer}, []string{layer})
+		refused(t, image.archive(t), testLimit)
+	})
+	t.Run("headers Go folds into the next entry", func(t *testing.T) {
+		// Docker's legacy store keeps every header byte, superseded long names included.
+		var raw []byte
+		for range 80 {
+			raw = append(raw, tarBlock("././@LongLink", tar.TypeGNULongName, 1<<20)...)
+			raw = append(raw, make([]byte, 1<<20)...)
+		}
+		raw = append(append(raw, tarBlock("f", tar.TypeReg, 0)...), make([]byte, 1024)...)
+		image := newTestImage()
+		layer := image.blob(gzipOf(t, raw))
+		image.image([]string{layer}, []string{layer})
+		refused(t, image.archive(t), testLimit)
+	})
+	t.Run("PAX records spread over entries", func(t *testing.T) {
+		var out bytes.Buffer
+		w := tar.NewWriter(&out)
+		for i := range 80 {
+			_ = w.WriteHeader(&tar.Header{Name: fmt.Sprintf("f%d", i), Typeflag: tar.TypeReg, Mode: 0644, PAXRecords: map[string]string{"comment": strings.Repeat("a", 1<<20-64)}})
+		}
+		_ = w.Close()
+		image := newTestImage()
+		layer := image.blob(gzipOf(t, out.Bytes()))
+		image.image([]string{layer}, []string{layer})
+		refused(t, image.archive(t), testLimit)
+	})
 	layer := tarOf(t, testFile{"data", 20 << 20})
 	t.Run("a layer listed again", func(t *testing.T) {
 		image := newTestImage()
@@ -313,7 +352,7 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 		image := newTestImage()
 		digest := image.blob(gzipOf(t, layer))
 		image.image([]string{digest}, []string{digest})
-		refused(t, image.archive(t), imageLoadLimit{Bytes: 16 << 20, Entries: 1000, Storage: true})
+		refused(t, image.archive(t), imageLoadLimit{Bytes: 16 << 20, Entries: 1000, bytesByStorage: true})
 	})
 }
 
@@ -330,8 +369,31 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 		"archive starting like gzip": func() []byte {
 			return append(tarBlock("\x1f\x8b\x08pax", tar.TypeXHeader, 0), valid().archive(t)...)
 		},
-		"data after the archive's end": func() []byte {
-			return append(valid().archive(t), []byte("more")...)
+		"manifest the agent did not keep": func() []byte {
+			image := valid()
+			layer := image.blob(gzipOf(t, tarOf(t, testFile{"app", 10})))
+			manifest := image.blob(append(fmt.Appendf(nil, `{"layers":[{"digest":%q}]}`, layer), bytes.Repeat([]byte(" "), imageMetadataBytes)...))
+			image.add("index.json", fmt.Appendf(nil, `{"manifests":[{"digest":%q}]}`, manifest))
+			return image.archive(t)
+		},
+		"blob that differs from its digest": func() []byte {
+			image := valid()
+			image.add("blobs/sha256/"+strings.Repeat("c", 64), gzipOf(t, tarOf(t, testFile{"app", 10})))
+			return image.archive(t)
+		},
+		"layer missing from the archive": func() []byte {
+			image := valid()
+			image.image([]string{"sha256:" + strings.Repeat("d", 64)}, nil)
+			return image.archive(t)
+		},
+		"index nested too deeply": func() []byte {
+			image := valid()
+			child := image.blob([]byte(`{"layers":[]}`))
+			for range imageIndexDepth + 1 {
+				child = image.blob(fmt.Appendf(nil, `{"manifests":[{"digest":%q}]}`, child))
+			}
+			image.add("index.json", fmt.Appendf(nil, `{"manifests":[{"digest":%q}]}`, child))
+			return image.archive(t)
 		},
 		"unexpected member": func() []byte {
 			image := valid()
@@ -399,10 +461,32 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 	}
 }
 
-func TestImageLoadRefusalNotes(t *testing.T) {
-	fixed := imageLoadLimit{Bytes: 1}.refusal().Error()
-	storage := imageLoadLimit{Bytes: 1, Storage: true}.refusal().Error()
-	if !strings.Contains(fixed, "4 GiB") || !strings.Contains(storage, "Free space") || fixed == storage {
-		t.Fatal(fixed, storage)
+// Docker imports on the archive's end marker, so nothing after it reaches Docker, and the load
+// ends there.
+func TestImageArchiveEndsAtItsEndMarker(t *testing.T) {
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, tarOf(t, testFile{"app", 10})))
+	image.image([]string{layer}, []string{layer})
+	archive := image.archive(t)
+	docker, err := inspectTest(append(append([]byte{}, archive...), "more"...), testLimit)
+	if err != nil || !bytes.Equal(docker, archive) {
+		t.Fatal("data after the end marker reached Docker", err)
+	}
+}
+
+// containerd follows nested indexes to every manifest, so their layers count.
+func TestImageArchiveCountsNestedIndexes(t *testing.T) {
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, tarOf(t, testFile{"data", 20 << 20})))
+	image.image([]string{layer}, []string{layer})
+	if _, err := inspectTest(image.archive(t), testLimit); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := fmt.Sprintf(`{"digest":%q}`, layer)
+	manifest := image.blob(fmt.Appendf(nil, `{"layers":[%s,%s,%s,%s]}`, descriptor, descriptor, descriptor, descriptor))
+	nested := image.blob(fmt.Appendf(nil, `{"manifests":[{"digest":%q}]}`, manifest))
+	image.add("index.json", fmt.Appendf(nil, `{"manifests":[{"digest":%q}]}`, nested))
+	if _, err := inspectTest(image.archive(t), testLimit); !errors.Is(err, errImageOverBytes) {
+		t.Fatal("a nested manifest's layers were not counted", err)
 	}
 }

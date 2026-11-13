@@ -68,6 +68,8 @@ func run() error {
 	dockerCLI := flags.String("docker-cli", "docker", "Docker CLI with the supported Compose plugin")
 	acmeEmail := flags.String("acme-email", "", "certificate contact email, applied only by owner-reviewed host changes")
 	networkPool := flags.String("network-pool", "", "private IPv4 range for the networks the agent creates, instead of "+agent.DefaultNetworkPool.String())
+	imageLoadGiB := flags.Int64("image-load-gib", agent.DefaultImageLoadBytes>>30, "most GiB loading one local build's image may write to Docker's storage")
+	imageReserveGiB := flags.Int64("image-load-reserve-gib", agent.DefaultImageLoadReserveBytes>>30, "GiB of Docker's storage that loading a local build's image must leave free")
 	resticCLI := flags.String("restic-cli", "restic", "pinned restic executable")
 	backupRoots := flags.String("backup-roots", "", "comma-separated operator-approved filesystem roots")
 	policyID := flags.String("policy", "", "backup policy UUID for local reconciliation")
@@ -78,6 +80,9 @@ func run() error {
 	executable := flags.String("executable", "/usr/local/bin/astilba-agent", "installed executable")
 	if e := flags.Parse(os.Args[2:]); e != nil {
 		return e
+	}
+	if *imageLoadGiB < 1 || *imageLoadGiB > 1024 || *imageReserveGiB < 1 || *imageReserveGiB > 1024 {
+		return errors.New("--image-load-gib and --image-load-reserve-gib must be whole GiB from 1 to 1024")
 	}
 	if !strings.HasPrefix(*host, "unix:///") {
 		return errors.New("Docker must be an explicitly selected local Unix socket")
@@ -341,7 +346,7 @@ func run() error {
 	if command != "run" {
 		return errors.New("unknown command")
 	}
-	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ",")}
+	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ","), ImageLoadBytes: *imageLoadGiB << 30, ImageLoadReserveBytes: *imageReserveGiB << 30}
 	// A pool that can't work is refused at start, not at the first deployment.
 	if *networkPool != "" {
 		// An unparsable value is the zero prefix, which validation refuses.

@@ -5,11 +5,8 @@ package agent
 import "golang.org/x/sys/unix"
 
 func freeBytes(path string) int64 {
-	var s unix.Statfs_t
-	if unix.Statfs(path, &s) != nil {
-		return 0
-	}
-	return int64(s.Bavail) * int64(s.Bsize)
+	bytes, _, _ := freeSpace(path)
+	return bytes
 }
 
 // freeSpace is the space and inodes an unprivileged writer may still use at path. Inodes are
