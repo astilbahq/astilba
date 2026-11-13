@@ -1,0 +1,13 @@
+{
+  "crossHostRecovery": {
+    "title": "Cross-host recovery",
+    "description": "A deployment across servers leaves a recovery checkpoint on them. Recovering that work after losing management needs a management backup taken inside the newest checkpoint’s window.",
+    "loading": "Loading cross-host recovery…",
+    "loadFailed": "Cross-host recovery could not be loaded.",
+    "none": "No checkpoint yet. The first deployment across servers takes one.",
+    "checkpoint": "Newest checkpoint: {{date}}.",
+    "window": "Recovery can use a management backup taken after {{date}}.",
+    "whole": "This checkpoint was taken by an earlier release and carries all applied history, so it doesn’t limit which management backup recovery can use.",
+    "short": "This window is shorter than the 35 days of management backups the documentation suggests keeping, because this workspace’s applied history is busy. Keep a backup newer than {{date}}."
+  }
+}

@@ -330,11 +330,10 @@ func endRecoveryGapWork(row portability.Row, history *portability.RecoveryHistor
 }
 
 // registerLoadedBases records every base recovery loaded that this database doesn't know, since a
-// host holds it and a later base must list it. A root recovery takes over keeps its base open.
-func registerLoadedBases(ctx context.Context, q *db.Queries, ws uuid.UUID, source recoverySource, roots map[uuid.UUID]recoveringRoot) error {
+// host holds it and a later base must list it.
+func registerLoadedBases(ctx context.Context, q *db.Queries, ws uuid.UUID, source recoverySource) error {
 	for _, b := range source.Bases {
-		_, resumed := roots[b.Parent]
-		if err := q.RegisterRecoveredBase(ctx, db.RegisterRecoveredBaseParams{WorkspaceID: ws, ID: b.ID, ParentID: b.Parent, EnvironmentID: b.Environment, PrimaryServerID: b.Primary, CapturedAt: b.CapturedAt, WindowStart: b.WindowStart, Open: resumed}); err != nil {
+		if err := q.RegisterRecoveredBase(ctx, db.RegisterRecoveredBaseParams{WorkspaceID: ws, ID: b.ID, ParentID: b.Parent, EnvironmentID: b.Environment, PrimaryServerID: b.Primary, CapturedAt: b.CapturedAt, WindowStart: b.WindowStart}); err != nil {
 			return err
 		}
 	}

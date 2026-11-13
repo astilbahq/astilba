@@ -950,8 +950,8 @@ func (q *Queries) RecoveryServerWorkspace(ctx context.Context, serverID uuid.UUI
 }
 
 const registerRecoveredBase = `-- name: RegisterRecoveredBase :exec
-INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start,closed_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,CASE WHEN $8::boolean THEN NULL ELSE clock_timestamp() END)
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
+VALUES($1,$2,$3,$4,$5,$6,$7)
 ON CONFLICT DO NOTHING
 `
 
@@ -963,12 +963,11 @@ type RegisterRecoveredBaseParams struct {
 	PrimaryServerID uuid.UUID  `json:"primary_server_id"`
 	CapturedAt      time.Time  `json:"captured_at"`
 	WindowStart     *time.Time `json:"window_start"`
-	Open            bool       `json:"open"`
 }
 
 // A base a recovery loaded that this database didn't know. A host holds it, so later bases list it.
-// The base of a root recovery takes over stays open until its primary closes the root again; any
-// other is closed now, which a host did no later.
+// It counts as unclosed until its primary acknowledges a close: whether the host saw its root
+// close isn't known, and a host keeps an unclosed base indefinitely.
 func (q *Queries) RegisterRecoveredBase(ctx context.Context, arg RegisterRecoveredBaseParams) error {
 	_, err := q.db.Exec(ctx, registerRecoveredBase,
 		arg.WorkspaceID,
@@ -978,7 +977,6 @@ func (q *Queries) RegisterRecoveredBase(ctx context.Context, arg RegisterRecover
 		arg.PrimaryServerID,
 		arg.CapturedAt,
 		arg.WindowStart,
-		arg.Open,
 	)
 	return err
 }

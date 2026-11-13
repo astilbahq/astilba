@@ -17,6 +17,7 @@ import common from "../locales/en/common.json";
 import environment from "../locales/en/environment.json";
 import projects from "../locales/en/projects.json";
 import troubleshooting from "../locales/en/troubleshooting.json";
+import workspace from "../locales/en/workspace.json";
 import { ThemeContext, ThemeProvider, type ThemePreference } from "../theme";
 import { guest, resetWorkshopSignOut } from "./fixtures";
 
@@ -53,6 +54,7 @@ export async function createWorkshopState(session: Session = guest) {
     projects,
     environment,
     troubleshooting,
+    workspace,
   });
   for (const code of ["en-XA", "en-XB"]) {
     for (const [namespace, messages] of Object.entries(pseudo)) {

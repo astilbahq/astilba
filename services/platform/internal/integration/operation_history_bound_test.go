@@ -2,7 +2,6 @@ package integration
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"path"
 	"slices"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -125,12 +123,10 @@ func TestRecoveryReadsABaseCapturedBeforeHistoryWasBounded(t *testing.T) {
 	}
 }
 
-// A recovery base used to be gzipped, and gzip can't find a plan the base repeats further back than
-// 32 KiB, so cross-host history filled the 1 MiB envelope long before the archive's record limit,
-// after a few weeks in a busy distributed workspace, and its cross-host deployments stopped. Bases
-// are now zstd-compressed with a window covering the whole base, which holds about 2.5 times the
-// history in the same envelope.
-func TestCrossHostHistoryGzipCouldNotSealStillDeploys(t *testing.T) {
+// A base's applied history is mostly random identifiers, which compress poorly, so a busy
+// workspace's window can fit the archive's limits and still not seal. The deployment then shortens
+// the window by how far the envelope overflowed and seals again, rather than failing.
+func TestCrossHostDeploymentShortensAWindowThatDoesNotSeal(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	a, b := g.hosts[0], g.hosts[1]
 	e := g.primaryEnvironment(t, a)
@@ -140,43 +136,24 @@ func TestCrossHostHistoryGzipCouldNotSealStillDeploys(t *testing.T) {
 	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT o.runtime_plan_id FROM environments e JOIN execution_operations o ON o.id=e.runtime_operation_id WHERE e.id=$1`, env).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
-	// Each copy of the applied plan gets IDs and hashes of its own, as each real deployment does.
-	seed := func(count int) {
-		t.Helper()
-		if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at)
-SELECT gen_random_uuid(),p.workspace_id,$2,p.environment_id,(SELECT max(generation) FROM execution_operations WHERE environment_id=p.environment_id)+i,gen_random_uuid(),
-	regexp_replace(regexp_replace(p.plan::text,'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',gen_random_uuid()::text,'g'),'[0-9a-f]{64}',md5(random()::text)||md5(random()::text),'g')::jsonb,
-	'visual','succeeded',1,'applied',p.id,now()-interval '1 day'+i*interval '1 millisecond'
-FROM visual_plans p, generate_series(1,$3::int) i WHERE p.id=$1`, plan, a.id, count); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE environments SET execution_generation=(SELECT max(generation) FROM execution_operations WHERE environment_id=$1) WHERE id=$1`, env); err != nil {
-			t.Fatal(err)
-		}
+	// Each change is a command of its own, recorded inside the window.
+	if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at)
+SELECT n.id,p.workspace_id,$2,p.environment_id,(SELECT max(generation) FROM execution_operations WHERE environment_id=p.environment_id)+i,gen_random_uuid(),jsonb_build_object('id',n.id,'planHash',md5(random()::text)),
+	'visual','succeeded',1,'applied',p.id,now()-interval '30 days'+i*interval '1 second',now()-interval '30 days'+i*interval '1 second'
+FROM visual_plans p, (SELECT gen_random_uuid() AS id,i FROM generate_series(1,9500) i) n WHERE p.id=$1`, plan, a.id); err != nil {
+		t.Fatal(err)
 	}
-	// gzipSealed reports whether the workspace's base, gzipped as before, would still seal.
-	gzipSealed := func() bool {
-		t.Helper()
-		tx, err := g.f.st.Pool.Begin(g.ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(g.ctx)
-		raw, err := portability.CaptureRecovery(g.ctx, tx, g.ws)
-		if err != nil {
-			t.Fatal("the base no longer fits the archive's own limits", err)
-		}
-		var compressed bytes.Buffer
-		writer := gzip.NewWriter(&compressed)
-		writer.Write(raw)
-		writer.Close()
-		envelope, err := g.f.st.Keys.Seal(compressed.Bytes(), "gzip-envelope-probe")
-		return err == nil && len(envelope) <= deployment.RecoveryEnvelopeLimit
-	}
-	for gzipSealed() {
-		seed(200)
+	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE environments SET execution_generation=(SELECT max(generation) FROM execution_operations WHERE environment_id=$1) WHERE id=$1`, env); err != nil {
+		t.Fatal(err)
 	}
 	g.applied(t, &e, g.place(t, &e, a.id, b.id))
+	var seconds int64
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT extract(epoch FROM captured_at-window_start)::bigint FROM recovery_bases WHERE workspace_id=$1 ORDER BY captured_at DESC LIMIT 1`, g.ws).Scan(&seconds); err != nil {
+		t.Fatal(err)
+	}
+	if window := time.Duration(seconds) * time.Second; window >= 30*24*time.Hour || window <= 0 {
+		t.Fatal("the deployment's base kept a window that couldn't seal: ", window)
+	}
 }
 
 // A recovery base used to carry every operation that applied a runtime, so a workspace with
@@ -207,12 +184,25 @@ func TestBusyWorkspaceStaysWithinTheArchiveLimits(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO visual_plans(id,workspace_id,environment_id,plan) VALUES($1,$2,$3,'{}')`, plan, ws, environment.Id); err != nil {
 		t.Fatal(err)
 	}
-	// applied seeds count deployments that each applied a runtime, recorded age ago, a millisecond apart.
+	// applied seeds count deployments that each applied a runtime and ended age ago, a millisecond
+	// apart. The trigger would date their end now, as for a row that arrives ended, so it is off
+	// while they are written.
 	applied := func(count int, age time.Duration) {
 		t.Helper()
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at)
-SELECT gen_random_uuid(),$1,$2,$3,COALESCE((SELECT max(generation) FROM execution_operations WHERE environment_id=$3),0)+i,gen_random_uuid(),'{}','visual','succeeded',1,'applied',$4,now()-$6::interval+i*interval '1 millisecond',now()-$6::interval+i*interval '1 millisecond'
-FROM generate_series(1,$5::int) i`, ws, in.ServerId, environment.Id, plan, count, age.String()); err != nil {
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,COALESCE((SELECT max(generation) FROM execution_operations WHERE environment_id=$3),0)+i,gen_random_uuid(),'{}','visual','succeeded',1,'applied',$4,t,t,t
+FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-$6::interval+i*interval '1 millisecond' AS t) at`, ws, in.ServerId, environment.Id, plan, count, age.String()); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -263,4 +253,53 @@ FROM generate_series(1,$5::int) i`, ws, in.ServerId, environment.Id, plan, count
 	passphrase := "busy workspace archive passphrase"
 	var encrypted api.WorkspaceArchive
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &encrypted)
+}
+
+// A recovery keeps the applied history it took from a base without the rows, and later bases carry
+// it, so a second recovery, from a backup taken inside the first one's gap, still finds that
+// backup's runtime. The database's own origin reads it too.
+func TestRecoveredHistoryTravelsInLaterBases(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var project api.Project
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects", map[string]string{"name": "Recovered"}, 201, &project)
+	var environment api.Environment
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Web"}, 201, &environment)
+	plan := uuid.New()
+	kept := portability.AppliedEntry{Environment: environment.Id, Operation: uuid.New(), Generation: 7, Identity: "v2:" + strings.Repeat("ab", 32), Outcome: "applied", RuntimePlan: &plan, State: "succeeded", Sequence: 1, RecordedAt: time.Now().Add(-10 * 24 * time.Hour).UTC().Truncate(time.Microsecond), Exact: true}
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err = portability.StoreRecoveredHistory(ctx, tx, ws, &portability.RecoveryHistory{Applied: []portability.AppliedEntry{kept}}); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := portability.DecodeRecovery(captured.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carries := func(entries []portability.AppliedEntry) bool {
+		want, _ := stablejson.Marshal(kept)
+		return slices.ContainsFunc(entries, func(e portability.AppliedEntry) bool {
+			got, _ := stablejson.Marshal(e)
+			return bytes.Equal(got, want)
+		})
+	}
+	if !carries(archive.Recovery.Applied) {
+		t.Fatal("a later base left out the applied history a recovery kept without its row")
+	}
+	inspected, _, err := portability.InspectRecovery(ctx, tx, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !carries(inspected.Recovery.Applied) {
+		t.Fatal("the database's own applied history left out what a recovery kept")
+	}
 }

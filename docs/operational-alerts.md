@@ -50,6 +50,13 @@ running; it is not an external uptime service.
   reconcile the workspace's network for two minutes, so its members, including removals of
   revoked peers, are not receiving changes. A successful pass establishes recovery. Network
   members show as pending throughout; a removal is not complete until peers acknowledge it.
+- **Cross-host recovery window is shorter than 35 days:** the workspace's newest recovery
+  checkpoint carries less than 35 days of applied history, because that history is busy. Cross-host
+  recovery can't use a management backup taken before the window opened, so backups kept for the
+  35 days [management backups](management-backups.md) suggests may be too old. The Workspace
+  page shows owners and operators the checkpoint's time and its window. Its resource is the
+  workspace. A later checkpoint whose window is at least 35 days establishes recovery. See
+  [the recovery window](cross-host-placement.md#the-recovery-window).
 - **Operation problem:** a deployment, image build or backup operation failed or
   needs attention. One record is created per operation, including when a
   needs-attention operation later fails. This is a historical event, not a claim

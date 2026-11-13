@@ -219,7 +219,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = s.restoreRecoveryRoots(ctx, tx, in.WorkspaceID, roots, in.ExpectedState, inputHash, in.OwnerID); err != nil {
 		return out, err
 	}
-	if err = registerLoadedBases(ctx, q, in.WorkspaceID, source, roots); err != nil {
+	if err = registerLoadedBases(ctx, q, in.WorkspaceID, source); err != nil {
 		return out, err
 	}
 	if err = s.restoreRecoveryProofs(ctx, tx, in.WorkspaceID, roots, source.Hosts); err != nil {

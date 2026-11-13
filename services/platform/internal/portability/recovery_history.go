@@ -32,6 +32,13 @@ const (
 	recoveryEntryBytes = 640
 )
 
+// ShortRecoveryWindow reports whether a base captured at captured has a window shorter than the
+// backup retention the docs suggest, so cross-host recovery can't use a backup that old. A base
+// captured before windows has none, carries every applied change, and isn't short.
+func ShortRecoveryWindow(captured time.Time, windowStart *time.Time) bool {
+	return windowStart != nil && captured.Sub(*windowStart) < RecoveryShortWindow
+}
+
 // RecoveryHistory is a base's recovery section. A backup is compatible with the base when it was
 // taken after WindowStart: every runtime change committed since then is in Applied, together with
 // the change each environment had when the window opened, so the base holds the head of any such
@@ -221,6 +228,10 @@ const recoveryChanges = `WITH changes AS (
 	SELECT c.*,c.at+CASE WHEN c.exact THEN interval '1 day' ELSE interval '7 days' END AS effective FROM changes c JOIN archive_keep k ON k.kind='env' AND k.id=c.env
 )`
 
+// Each carried environment's floor: the change it had when the window, starting at $2, opened.
+// inline-sql: reads the base's transaction-local working set
+const recoveryFloors = `, floors AS (SELECT env,max(generation) AS floor FROM carried WHERE effective<$2 GROUP BY env)`
+
 // recoveryWindowStart moves start later until the ledger fits within limit entries beyond one per
 // carried environment. A change whose effective time is before the start isn't in the window, and
 // each environment adds at most the one it had when the window opened.
@@ -245,7 +256,7 @@ func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start tim
 func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time) ([]RecoveryEnvironment, []AppliedEntry, error) {
 	environments := []RecoveryEnvironment{}
 	// inline-sql: reads the base's transaction-local working set
-	rows, err := tx.Query(ctx, recoveryChanges+` SELECT k.id,COALESCE((SELECT max(c.generation) FROM carried c WHERE c.env=k.id AND c.effective<$2),0) FROM archive_keep k WHERE k.kind='env' ORDER BY k.id`, ws, start)
+	rows, err := tx.Query(ctx, recoveryChanges+recoveryFloors+` SELECT k.id,COALESCE(f.floor,0) FROM archive_keep k LEFT JOIN floors f ON f.env=k.id WHERE k.kind='env' ORDER BY k.id`, ws, start)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -268,11 +279,11 @@ func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Tim
 	// The applied revision and hash come from the plan stored for the runtime the change applied,
 	// as recovery reads them for a carried row, so an entry and the row it stands for agree.
 	// inline-sql: reads the base's transaction-local working set
-	rows, err = tx.Query(ctx, recoveryChanges+`
+	rows, err = tx.Query(ctx, recoveryChanges+recoveryFloors+`
 	SELECT c.env,c.id,c.generation,c.at,c.exact,c.entry,o.command,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,p.plan->>'id',p.plan->>'environmentId',p.plan->>'revisionId',p.plan->>'hash'
-	FROM carried c LEFT JOIN execution_operations o ON c.entry IS NULL AND o.workspace_id=$1 AND o.id=c.id
+	FROM carried c LEFT JOIN floors f ON f.env=c.env LEFT JOIN execution_operations o ON c.entry IS NULL AND o.workspace_id=$1 AND o.id=c.id
 	LEFT JOIN visual_plans p ON p.workspace_id=$1 AND p.id=o.runtime_plan_id
-	WHERE c.generation>=COALESCE((SELECT max(f.generation) FROM carried f WHERE f.env=c.env AND f.effective<$2),0)
+	WHERE c.generation>=COALESCE(f.floor,0)
 	ORDER BY c.env,c.generation`, ws, start)
 	if err != nil {
 		return nil, nil, err

@@ -117,10 +117,10 @@ VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured
 
 -- name: RegisterRecoveredBase :exec
 -- A base a recovery loaded that this database didn't know. A host holds it, so later bases list it.
--- The base of a root recovery takes over stays open until its primary closes the root again; any
--- other is closed now, which a host did no later.
-INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start,closed_at)
-VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at,sqlc.narg(window_start),CASE WHEN @open::boolean THEN NULL ELSE clock_timestamp() END)
+-- It counts as unclosed until its primary acknowledges a close: whether the host saw its root
+-- close isn't known, and a host keeps an unclosed base indefinitely.
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at,sqlc.narg(window_start))
 ON CONFLICT DO NOTHING;
 
 -- name: CloseRecoveryBase :exec
