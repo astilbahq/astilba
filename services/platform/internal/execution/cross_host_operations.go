@@ -35,7 +35,7 @@ func (s *Service) insertCoordinationCommand(ctx context.Context, tx pgx.Tx, ws, 
 	p := command.Plan
 	for _, u := range units {
 		var idle bool
-		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled')) AND NOT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1) AND NOT EXISTS(SELECT 1 FROM supported_upgrades WHERE server_id=$1 AND status->>'phase' NOT IN ('planned','rejected','complete','returned'))`, u.Plan.ServerID).Scan(&idle); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention')) AND NOT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$1) AND NOT EXISTS(SELECT 1 FROM supported_upgrades WHERE server_id=$1 AND status->>'phase' NOT IN ('planned','rejected','complete','returned'))`, u.Plan.ServerID).Scan(&idle); err != nil {
 			return api.Operation{}, err
 		}
 		if !idle {
@@ -392,7 +392,10 @@ func (s *Service) coordinate(ctx context.Context, tx pgx.Tx, job *river.Job[jobA
 			}
 			return completeCoordination(ctx, tx, job, c.Id, "failed", "A placement host could not resolve the frozen inputs.")
 		}
-		if phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe" || stopping {
+		// The primary ends a publication failed or cancelled only before it starts changing
+		// ingress, such as when the command reaches it after its deadline. Once it has started,
+		// any outcome but success needs attention, so no host removes candidates the routes use.
+		if phase == "reserve" || phase == "links" || phase == "prepare" || phase == "hook" || phase == "probe" || phase == "publish" || stopping {
 			phase = "abort"
 		} else {
 			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET state='needs_attention',note='Cross-host publication or cleanup requires reconciliation. No unknown outcome was treated as failure.' WHERE id=$1`, c.Id); err != nil {

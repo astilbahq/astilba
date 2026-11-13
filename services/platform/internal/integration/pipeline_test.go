@@ -46,8 +46,17 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
+		if answerReceivePack(w, r) {
+			return
+		}
 		if r.Header.Get("Authorization") != "token api-write-canary" {
 			w.WriteHeader(401)
+			return
+		}
+		// Submissions are written by management and covered against each provider elsewhere;
+		// this provider refuses them, so an attempt fails without being retried.
+		if r.Method != http.MethodGet {
+			w.WriteHeader(403)
 			return
 		}
 		if tree.answer(w, r) {
@@ -86,8 +95,8 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextKeys.Keys["test"] = old.Keys["test"]
-	f.st.Keys = nextKeys
-	if err = f.st.Rewrap(context.Background()); err != nil {
+	useKeys(t, f.st, nextKeys)
+	if err = f.st.Rewrap(context.Background(), "test"); err != nil {
 		t.Fatal(err)
 	}
 	delete(nextKeys.Keys, "test")
@@ -482,41 +491,68 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		edited.Compose.Entrypoints = []string{"deployment.yaml"}
 		edited.Compose.Files = append(edited.Compose.Files, composeproject.File{Path: "settings.conf", Content: "example=true\n"})
 		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": current.Id, "specification": edited}, 200, &current)
-		var submitted, again api.Operation
+		var submitted, again api.SourceSubmission
 		key := uuid.New()
 		b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": current.Id, "requestKey": key}, 202, &submitted)
 		b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": current.Id, "requestKey": uuid.New()}, 202, &again)
 		if again.Id != submitted.Id {
 			t.Fatal("one draft created multiple submissions")
 		}
-		command := poll(submitted.Id)
-		var first pipeline.Command
-		_ = json.Unmarshal(*command.Pipeline, &first)
-		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "failed", Steps: []api.ExecutionStep{}}, 204, nil)
+		settledSubmission := func(id uuid.UUID) (string, string, submissionFrozen) {
+			t.Helper()
+			var state, note string
+			var raw []byte
+			for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(25 * time.Millisecond) {
+				if err := f.st.Pool.QueryRow(context.Background(), "SELECT state,note,configuration FROM source_submissions WHERE id=$1", id).Scan(&state, &note, &raw); err != nil {
+					t.Fatal(err)
+				}
+				if state != "queued" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("submission did not settle", note)
+				}
+			}
+			var frozen submissionFrozen
+			_ = json.Unmarshal(raw, &frozen)
+			return state, note, frozen
+		}
+		state, note, first := settledSubmission(submitted.Id)
+		if state != "failed" || !strings.Contains(note, "HTTP 403") {
+			t.Fatal("a refused write did not fail the submission", state, note)
+		}
 		b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": current.Id, "requestKey": uuid.New()}, 202, &again)
 		if again.Id == submitted.Id {
-			t.Fatal("terminal submission could not retry")
+			t.Fatal("failed submission could not retry")
 		}
-		command = poll(again.Id)
-		var retry pipeline.Command
-		_ = json.Unmarshal(*command.Pipeline, &retry)
+		_, _, retry := settledSubmission(again.Id)
 		if first.SubmissionID != retry.SubmissionID || !first.SubmittedAt.Equal(retry.SubmittedAt) {
 			t.Fatal("retry changed logical submission identity")
 		}
-
-		if strings.Contains(string(*command.Pipeline), "clone-read-canary") || strings.Contains(string(*command.Pipeline), "runtime-only-canary") {
-			t.Fatal("submission received unrelated credentials")
+		// No runner takes part in a submission.
+		var idle api.AgentPoll
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &idle)
+		if idle.Command != nil {
+			t.Fatal("a submission reached a runner", idle.Command.Kind)
+		}
+		// Record what management records when the provider accepts the submission.
+		accept := func(id uuid.UUID, commit string, review int) {
+			t.Helper()
+			result, _ := stablejson.Marshal(map[string]any{"commit": commit, "reviewNumber": review, "reviewUrl": provider.URL + "/team/app/pulls/" + fmt.Sprint(review)})
+			if _, err := f.st.Pool.Exec(context.Background(), "UPDATE source_submissions SET state='succeeded',note='',result=$2,finished_at=now() WHERE id=$1", id, result); err != nil {
+				t.Fatal(err)
+			}
 		}
 		merge := strings.Repeat("d", 40)
-		report(command, pipeline.Result{Commit: merge, ReviewNumber: 5, ReviewURL: provider.URL + "/team/app/pulls/5"})
+		accept(again.Id, merge, 5)
 		// Platform-only edits after submission must retain the merged Git file identity.
 		value := "updated-runtime"
 		edited.Variables = append(edited.Variables, domain.Variable{Name: "AFTER_SUBMISSION", Value: &value})
 		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": current.Id, "specification": edited}, 200, &current)
-		var duplicate api.Operation
+		var duplicate api.SourceSubmission
 		b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": current.Id, "requestKey": uuid.New()}, 202, &duplicate)
-		newer := poll(duplicate.Id)
-		report(newer, pipeline.Result{Commit: strings.Repeat("f", 40), ReviewNumber: 6, ReviewURL: provider.URL + "/team/app/pulls/6"})
+		settledSubmission(duplicate.Id)
+		accept(duplicate.Id, strings.Repeat("f", 40), 6)
 
 		b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: current.Id, ServerId: enrolled.Server.Id}, 400, nil)
 		mergeHead.Store(merge)
@@ -564,7 +600,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		observation := deployment.Observation{Images: map[string]string{app.String(): pipelineTestImage}, Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64), ObservedAt: time.Now()}
 		raw, _ := stablejson.Marshal(observation)
 		message := jsontext.Value(raw)
-		command = *polled.Command
+		command := *polled.Command
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: &message}, 204, nil)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &polled)
 		if polled.Command == nil || polled.Command.Kind != "visual" {
@@ -576,7 +612,6 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		}
 		command = *polled.Command
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: command.Id, Generation: command.Generation, PlanHash: command.PlanHash, Sequence: 2, State: "cancelled", Steps: []api.ExecutionStep{}}, 204, nil)
-		var state string
 		var deploymentID *uuid.UUID
 		if err := f.st.Pool.QueryRow(context.Background(), "SELECT state,operation_id FROM pipeline_auto_deployments WHERE id=$1", autoRun).Scan(&state, &deploymentID); err != nil || state != "queued" || deploymentID == nil || *deploymentID != command.Id {
 			t.Fatal("automatic policy did not record its operation", state, err)
@@ -599,6 +634,12 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 
 	})
 
+}
+
+// submissionFrozen is what a submission's configuration says about its identity.
+type submissionFrozen struct {
+	SubmissionID uuid.UUID `json:"submissionId"`
+	SubmittedAt  time.Time `json:"submittedAt"`
 }
 
 const pipelineTestImage = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
@@ -643,7 +684,7 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 		image := pipelineTestImage
 		spec := domain.Specification{Version: 1, Applications: []domain.Application{{ID: app, Name: "worker", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &image}}}, Variables: []domain.Variable{}}
 		b.call("PUT", prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, nil)
-		if _, err := f.st.Pool.Exec(context.Background(), "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", ws, env.Id, app, connection.Connection.ID, raw, strings.Repeat("a", 64), strings.Repeat("a", 40), f.owner); err != nil {
+		if _, err := f.st.Pool.Exec(context.Background(), "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor,policy_auth_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1)", ws, env.Id, app, connection.Connection.ID, raw, strings.Repeat("a", 64), strings.Repeat("a", 40), f.owner); err != nil {
 			t.Fatal(err)
 		}
 	}

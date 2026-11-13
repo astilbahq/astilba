@@ -700,6 +700,30 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/approval:
+    post:
+      operationId: approveBuildTarget
+      description: >-
+        Approve a build target's automatic builds and deployments as yours, which resumes a paused target. Needs recent
+        authentication, and an owner when the target deploys.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: applicationId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApproveBuildTarget'}
+      responses:
+        '204':
+          description: Approved
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets/{applicationId}/runs:
     post:
       operationId: runConfiguredBuild
@@ -1553,7 +1577,7 @@
           "content":
             "application/json":
               "schema":
-                "$ref": "#/components/schemas/Revision"
+                "$ref": "#/components/schemas/SavedDraft"
         "default":
           "description": "Error"
           "content":
@@ -3377,12 +3401,12 @@
             type: string
             format: uuid
       responses:
-        '201':
+        '202':
           description: Success
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Operation'
+                $ref: '#/components/schemas/SourceSubmission'
         default:
           description: Error
           content:
@@ -3591,6 +3615,29 @@
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/approval:
+    post:
+      operationId: approveGitSource
+      description: >-
+        Approve a Git source's automatic imports and deployments as yours, keeping its configuration, which resumes a
+        paused source. Needs an owner with recent authentication.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApproveGitSource'}
+      responses:
+        '204':
+          description: Approved
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/policy:
     put:
       operationId: updateGitSourcePolicy
@@ -5155,6 +5202,9 @@
       type: object
       additionalProperties: false
       required: [applicationId, baseRevisionId, name, branch, builder, targetHash]
+      description: >-
+        An automation credential lists only targets it can run, those an owner approves now. A person sees every target
+        in the environment, with its automatic actions and their approval.
       properties:
         applicationId: {type: string, format: uuid}
         baseRevisionId: {type: string, format: uuid}
@@ -5162,6 +5212,10 @@
         branch: {type: string}
         builder: {type: string}
         targetHash: {type: string, pattern: '^[a-f0-9]{64}$'}
+        automaticBuild: {type: boolean}
+        automaticDeploy: {type: boolean}
+        approval: {$ref: '#/components/schemas/PolicyApproval'}
+        runnable: {type: boolean, description: "Whether an automation credential can run it on demand, which needs a current owner's approval."}
     RunConfiguredBuild:
       type: object
       additionalProperties: false
@@ -5904,9 +5958,11 @@
         "note":
           "type": "string"
           "maxLength": 1024
+          "description": "Free text from management, the host or the build runner, such as why the operation failed. It can quote the environment's configuration, so an automation credential without environment:read gets a fixed note saying the details were withheld in its place."
         "steps":
           "type": "array"
           "maxItems": 16
+          "description": "Each step's detail is withheld from an automation credential without environment:read, as the note is."
           "items":
             "$ref": "#/components/schemas/ExecutionStep"
         "createdAt":
@@ -6588,6 +6644,89 @@
         - "authorId"
         - "createdAt"
         - "hash"
+    SavedDraft:
+      type: object
+      additionalProperties: false
+      description: The saved draft revision. `hash` and `specification` are present only for a caller that may read the environment, so a credential without `environment:read` learns nothing from a save beyond the new revision's identity.
+      required: [id, authorId, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        authorId: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        hash: {type: string, maxLength: 64}
+        specification: {$ref: '#/components/schemas/Specification'}
+    "DraftSpecification":
+      "type": "object"
+      "description": "A specification as a draft save sends it. It is a Specification whose Compose bundle may leave out `namespace` and `origin`."
+      "additionalProperties": false
+      "properties":
+        placement: {$ref: '#/components/schemas/CrossHostPlacement'}
+        "version":
+          "type": "integer"
+          "enum":
+            - 1
+        "applications":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ApplicationReference"
+          "maxItems": 50
+        "variables":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Variable"
+          "maxItems": 100
+        "volumes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Volume"
+          "maxItems": 50
+        "bindings":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Binding"
+          "maxItems": 100
+        "routes":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/Route"
+          "maxItems": 50
+        "compose":
+          "$ref": "#/components/schemas/DraftComposeBundle"
+        "networks":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/NetworkReference"
+          "maxItems": 20
+      "required":
+        - "version"
+        - "applications"
+        - "variables"
+      "x-go-type": "jsontext.Value"
+      "x-go-type-import": {"path": "encoding/json/jsontext"}
+    "DraftComposeBundle":
+      "type": "object"
+      "description": "A Compose bundle as a draft save sends it. The draft keeps its own `namespace` and Git `origin`, so a save may leave both out. A caller that may read the environment may send them unchanged; a credential without `environment:read` must leave them out."
+      "additionalProperties": false
+      "properties":
+        "namespace":
+          "type": "string"
+          "format": "uuid"
+        "entrypoints":
+          "type": "array"
+          "items":
+            "type": "string"
+            "maxLength": 240
+          "maxItems": 8
+        "files":
+          "type": "array"
+          "items":
+            "$ref": "#/components/schemas/ComposeFile"
+          "maxItems": 16
+        "origin":
+          "$ref": "#/components/schemas/ComposeOrigin"
+      "required":
+        - "entrypoints"
+        - "files"
     "DraftUpdate":
       "type": "object"
       "additionalProperties": false
@@ -6596,7 +6735,7 @@
           "type": "string"
           "format": "uuid"
         "specification":
-          "$ref": "#/components/schemas/Specification"
+          "$ref": "#/components/schemas/DraftSpecification"
       "required":
         - "baseRevisionId"
         - "specification"
@@ -7207,6 +7346,13 @@
             -
               "$ref": "#/components/schemas/VisualPlan"
           "nullable": true
+          "description": "The whole plan, configuration included, once it is ready. Null for a credential without `environment:read`."
+        "review":
+          "allOf":
+            -
+              "$ref": "#/components/schemas/VisualPlanReview"
+          "nullable": true
+          "description": "What reviewing and applying the plan needs, for every caller, once it is ready."
         "hostReview":
           "type": "boolean"
           "description": "Whether applying the plan needs an owner to approve host changes the environment's applied deployment does not already have."
@@ -7215,8 +7361,67 @@
         - "operationId"
         - "state"
         - "plan"
+        - "review"
       "x-go-type": "jsontext.Value"
       "x-go-type-import": {"path": "encoding/json/jsontext"}
+    VisualPlanReview:
+      type: object
+      additionalProperties: false
+      description: A plan without the configuration it deploys. It has no specification, plaintext variables or Compose files.
+      required: [id, serverId, revisionId, hash, expiresAt, hostChanges, acceptDrift, effects, permissions, images, release, units]
+      properties:
+        id: {type: string, format: uuid}
+        serverId: {type: string, format: uuid}
+        revisionId: {type: string, format: uuid}
+        hash: {type: string, maxLength: 64}
+        expiresAt: {type: string, format: date-time}
+        hostChanges: {type: boolean}
+        acceptDrift: {type: boolean}
+        effects:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 300}
+        permissions:
+          type: array
+          description: Host permissions the plan's Compose file asks for.
+          maxItems: 100
+          items: {type: string, maxLength: 300}
+        images:
+          type: object
+          description: The image digest each application deploys, by application ID.
+          maxProperties: 20
+          additionalProperties: {type: string, maxLength: 512}
+        release:
+          allOf:
+            - $ref: '#/components/schemas/VisualPlanReleaseReview'
+          nullable: true
+        units:
+          type: array
+          description: The servers a cross-host plan changes, with the images it pins on each.
+          maxItems: 4
+          items: {$ref: '#/components/schemas/VisualPlanUnitReview'}
+    VisualPlanUnitReview:
+      type: object
+      additionalProperties: false
+      required: [serverId, images, release]
+      properties:
+        serverId: {type: string, format: uuid}
+        images:
+          type: object
+          maxProperties: 20
+          additionalProperties: {type: string, maxLength: 512}
+        release:
+          allOf:
+            - $ref: '#/components/schemas/VisualPlanReleaseReview'
+          nullable: true
+    VisualPlanReleaseReview:
+      type: object
+      additionalProperties: false
+      description: The protected release a plan runs, and the command it runs first with the environment's secrets.
+      required: [applicationId, options]
+      properties:
+        applicationId: {type: string, format: uuid}
+        options: {$ref: '#/components/schemas/ReleaseOptions'}
     PrimaryReplacement:
       type: object
       additionalProperties: false
@@ -7874,6 +8079,17 @@
           maxLength: 80
         clean:
           type: boolean
+        approval:
+          $ref: '#/components/schemas/PolicyApproval'
+        sourceHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Identifies the stored configuration and its approver, so an approval covers exactly what was shown.
+        submission:
+          description: The newest attempt to submit a saved draft of this environment, if any.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SourceSubmission'
       required:
         - configuration
         - importedCommit
@@ -7881,6 +8097,31 @@
         - pendingCommit
         - status
         - clean
+        - approval
+        - sourceHash
+        - submission
+    PolicyApproval:
+      type: string
+      description: >-
+        Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is
+        approved again, after a restore, an import, a disconnected repository or its approver's role change.
+        `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs.
+        `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only
+        owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an
+        owner to approve it again; a target that only builds automatically, an owner or operator.
+      enum: [current, approvalRequired, approverRemoved, approverRole, approverCredentials]
+    ApproveGitSource:
+      type: object
+      additionalProperties: false
+      required: [sourceHash]
+      properties:
+        sourceHash: {type: string, pattern: '^[a-f0-9]{64}$', description: "The hash returned with the source, so the approval covers exactly the configuration shown."}
+    ApproveBuildTarget:
+      type: object
+      additionalProperties: false
+      required: [targetHash]
+      properties:
+        targetHash: {type: string, pattern: '^[a-f0-9]{64}$', description: "The hash listed for the target, so the approval covers exactly the configuration shown."}
     BindGitSource:
       type: object
       additionalProperties: false
@@ -7904,6 +8145,41 @@
           type: boolean
       required:
         - baseRevisionId
+    SourceSubmission:
+      type: object
+      additionalProperties: false
+      description: One attempt to propose a saved draft as a branch and review. Management writes it with the connection's API credential; runners never receive it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        revisionId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [queued, succeeded, failed]
+        note:
+          type: string
+          maxLength: 1024
+        commit:
+          type: string
+          maxLength: 64
+        reviewNumber:
+          type: integer
+          minimum: 1
+        reviewUrl:
+          type: string
+          maxLength: 2048
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - revisionId
+        - state
+        - note
+        - createdAt
     SubmitGitSource:
       type: object
       additionalProperties: false

@@ -18,6 +18,7 @@ function isRequestFailure(error: unknown) {
       "invalid_credentials",
       "invalid_input",
       "invitation_signin_required",
+      "subscription_required",
       "mfa_required",
       "recent_auth_required",
       "conflict",
@@ -88,6 +89,8 @@ export function createAuthValidation(messages: AuthMessages) {
             return credentialsMessage;
           case "invitation_signin_required":
             return messages.invitationSignIn;
+          case "subscription_required":
+            return messages.invitationSubscription;
           case "mfa_required":
             return messages.mfaRequired;
           case "rate_limited":

@@ -8,10 +8,10 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -81,7 +81,7 @@ func recoveredUnits(root recoveringRoot) []deployment.DistributedUnit {
 // asked for anything, but management kept every checkpoint it sealed up to its backup. What the
 // primary sealed copies of beyond that extend the chain (extendRevokedChain). The root then resumes,
 // and the remaining hosts end it as they do whenever a primary is revoked.
-func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, before portability.Archive, revoked map[uuid.UUID]bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
+func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, before portability.Archive, revoked map[uuid.UUID]bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
 	supplied := map[uuid.UUID]bool{}
 	// inline-sql: recovery session temporary table
 	rows, err := tx.Query(ctx, `SELECT DISTINCT parent_id FROM recovery_input_checkpoints`)
@@ -156,15 +156,20 @@ type heldCapsule struct {
 // counts for nothing. The first sequence with no qualifying copy, or with two different ones, ends
 // the chain: withholding leaves the root where management's chain puts it, and two continuations
 // both sealed for one step are taken as neither.
-func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, last deployment.RecoveryDescriptor, primary uuid.UUID, held []heldCapsule) error {
+func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, last deployment.RecoveryDescriptor, primary uuid.UUID, held []heldCapsule) error {
 	for {
 		next := map[uuid.UUID]heldCapsule{}
 		for _, c := range held {
 			if c.descriptor.Sequence != last.Sequence+1 || c.host != primary || c.descriptor.PreviousHash != last.Digest || !deployment.SameRecoveryRoot(last, c.descriptor) {
 				continue
 			}
-			opened, err := keys.Open(c.envelope, recoveryIdentity(c.descriptor))
+			opened, err := keys.Open(secretbroker.Checkpoint(c.descriptor), c.envelope)
 			clear(opened)
+			// A capsule this keyring cannot open does not qualify; a session that ended is no
+			// verdict on the capsule, and must not shorten the chain.
+			if secretbroker.SessionFailure(err) {
+				return err
+			}
 			if err == nil {
 				next[c.descriptor.CheckpointID] = c
 			}

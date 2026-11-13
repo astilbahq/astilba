@@ -15,17 +15,20 @@ import (
 	"time"
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/agentrelease"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/config"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/publicsuffix"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/webassets"
 	"github.com/google/uuid"
@@ -81,7 +84,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	poolConfig, e := pgxpool.ParseConfig(c.DatabaseURL)
+	poolConfig, e := store.PoolConfig(c.DatabaseURL)
 	if e != nil {
 		return errors.New("cannot configure database")
 	}
@@ -94,7 +97,12 @@ func run() error {
 		return errors.New("cannot configure database")
 	}
 	defer pool.Close()
-	st := store.New(pool, keys, c.Hosted)
+	backend, e := custody.NewFile(keys)
+	if e != nil {
+		return e
+	}
+	st := store.New(pool, secretbroker.New(db.New(pool), backend, slog.Default()), c.Hosted)
+	st.Keys = keys
 	st.Hosting = c.Hosting
 	st.LogRetention = c.LogRetention
 	st.ApplicationDomain = c.ApplicationDNS.Base
@@ -145,7 +153,8 @@ func run() error {
 		}
 		return st.GrantManagement(ctx, id, end, *limit)
 	case "rewrap":
-		return st.Rewrap(ctx)
+		// Until operators have records of their own, the command names itself.
+		return st.Rewrap(ctx, "astilba-rewrap")
 	case "bootstrap":
 		f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 		email := f.String("email", "", "owner email")
@@ -218,7 +227,11 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		service := &auth.Service{Store: st, Passwords: passwords, Mail: mail, Now: time.Now}
+		tokens, e := st.Broker.Tokens(ctx)
+		if e != nil {
+			return e
+		}
+		service := &auth.Service{Store: st, Passwords: passwords, Mail: mail, Now: time.Now, Tokens: tokens}
 		api, cleanup := httpapi.New(st, service, c.Origin, c.Development, slog.Default())
 		api.TrustedProxies = c.TrustedProxies
 		api.GitHubConfig = githubapp.Load()

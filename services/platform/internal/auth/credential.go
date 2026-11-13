@@ -7,6 +7,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -65,7 +66,7 @@ func (s *Service) withCredential(ctx context.Context, p store.Principal, c Crede
 	attempts, failures := reauthBudgets(p.Account.ID)
 	budgets := []budget{attempts, failures}
 	var charged, wrong bool
-	err := func() error {
+	err := func() (err error) {
 		if mfa {
 			if err := s.refuseSpent(ctx, budgets); err != nil {
 				return err
@@ -87,13 +88,20 @@ func (s *Service) withCredential(ctx context.Context, p store.Principal, c Crede
 				return err
 			}
 		}
+		var keys *secretbroker.Session
+		if mfa {
+			if keys, err = s.secondFactor(ctx, p.Account.ID, secretbroker.Authenticate, secretbroker.TOTP); err != nil {
+				return err
+			}
+			defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
+		}
 		return s.Store.TransactionTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 			account, err := lockCurrent(ctx, q, p)
 			if err != nil {
 				return err
 			}
 			if mfa {
-				if err := s.checkCode(ctx, tx, &account, c.Code); err != nil {
+				if err := s.checkCode(ctx, tx, keys, &account, c.Code); err != nil {
 					wrong = errors.Is(err, domain.Credentials)
 					return err
 				}

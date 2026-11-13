@@ -23,11 +23,11 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/diagnostic"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -291,11 +291,11 @@ func value(p *string) string {
 	return *p
 }
 func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
-	csrf, err := cryptobox.Token()
+	csrf, err := randtoken.New()
 	if err != nil {
 		return err
 	}
-	nonce, err := cryptobox.Token()
+	nonce, err := randtoken.New()
 	if err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func (s *Server) session(ctx context.Context) (api.Session, error) {
 	token := s.csrfToken(ctx)
 	if token == "" {
 		var err error
-		token, err = cryptobox.Token()
+		token, err = randtoken.New()
 		if err != nil {
 			return api.Session{}, err
 		}

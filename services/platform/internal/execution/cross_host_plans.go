@@ -510,7 +510,7 @@ func (s *Service) admitCrossHostApply(ctx context.Context, tx pgx.Tx, ws uuid.UU
 		}
 		var ready bool
 		var pre []byte
-		if err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND NOT preview_only AND role<>'build' AND COALESCE((capabilities->>'crossHost')::boolean,false) AND last_seen>now()-interval '45 seconds' AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$2 AND state NOT IN ('succeeded','failed','cancelled')) AND NOT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$2),preflight FROM servers WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, ws, u.Plan.ServerID).Scan(&ready, &pre); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND NOT preview_only AND role<>'build' AND COALESCE((capabilities->>'crossHost')::boolean,false) AND last_seen>now()-interval '45 seconds' AND NOT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$2 AND state IN ('queued','dispatched','running','needs_attention')) AND NOT EXISTS(SELECT 1 FROM cross_host_reservations WHERE server_id=$2),preflight FROM servers WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, ws, u.Plan.ServerID).Scan(&ready, &pre); err != nil {
 			return err
 		}
 		var host api.HostPreflight

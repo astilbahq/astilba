@@ -35,6 +35,35 @@ changed kernel parameters, a mounted Docker socket or any host bind mount other
 than the read-only bundle files the agent places itself. Managed Compose already rejects several of these; the agent checks them
 again for every session. **Decided:** these containers are never eligible.
 
+A service that shares a named volume or a network with a privileged or added-capability
+service is ineligible too, because a shell there can drive that service, for example a
+Docker daemon on their shared network, and so reach the host. This is the rule deployment
+review uses for elevated services, including the default network that services naming no
+network, and route targets, run on. Management refuses these sessions with the `elevated`
+reason, whatever the person's role. The agent decides again from its journaled plan and from
+the containers the daemon runs: it refuses a target that shares a network or named volume
+with any container, running or stopped, that is privileged, has a capability beyond Docker's
+defaults or devices, or uses the host's network, process or IPC namespace. It decides again
+once the shell is registered, just before it starts, and it also refuses a container that the
+plan a deployment is running would leave able to reach a privileged service.
+
+Ending a shell ends only its Linux session, and a person can start a process outside it, so
+the agent journals every container a session enters, and this holds after it restarts. A
+Compose run that starts such a container's service always recreates the container, keeping its
+anonymous volumes and discarding its writable layer, even when the plan is the one it was
+created with. Before a Compose run that can start a privileged or added-capability service,
+the agent looks at each entered container whose service that plan makes elevated, or retires,
+or whose current networks or named volumes the privileged service uses. It ends the shells in
+those containers, then clears each one's restart policy and stops it as the container is
+configured to stop. Compose recreates the container when the deployment reaches its service,
+and removes a retired one once the deployment succeeds. A deployment that stops before then
+leaves it stopped, and one that cannot stop it fails before starting the privileged service.
+Files a session wrote into a named volume stay there.
+
+**Decided** on 12 November 2026: these services are refused outright, not opened for owners
+after a recent identity confirmation, because the agent cannot check either and the host owner
+consented to container shells, not host shells.
+
 The session runs `/bin/bash` if `/bin/sh` finds that it runs, and otherwise `/bin/sh`,
 with a TTY, as the container's configured user. Many images run as root inside the
 container; the dashboard says which user the shell will run as. Images without a
@@ -100,7 +129,9 @@ also notifies the workspace's owners. It defaults to
   enforces eligibility, timeouts and limits itself. **Decided:** agent-side
   opt-in, default off.
 - **Subscription state:** hosted workspaces past subscription expiry cannot
-  open sessions, matching the existing expiry restriction on management changes.
+  open sessions or turn the setting on or widen it, matching the existing expiry
+  restriction on management changes. Turning it off or limiting it to owners still
+  works, as [taking access away](hosting.md) always does.
 
 ## Session lifecycle
 
@@ -379,6 +410,8 @@ enabling or widening the environment setting, on by default.
     devices, host network, PID or IPC namespace, kernel parameters, a Docker
     socket and other host bind mounts) are refused with typed reasons, and
     refused attempts are audited;
+  - services sharing a named volume or a network with a privileged service are
+    refused with the `elevated` reason;
   - role removal, `auth_version` changes, logout, credential revocation, the
     owner-only restriction, browser-session idle expiry, the deadline and an
     owner ending all sessions end an open session promptly, and
@@ -435,6 +468,8 @@ Decided on 3 November 2026:
 1. Agent-side opt-in, default off.
 2. Environment setting, default off, plus an optional owners-only restriction.
 3. Containers whose shell would effectively be a host shell are never eligible.
+   On 12 November 2026 this was extended to services that share a named volume
+   or a network with a privileged or added-capability service.
 4. 15-minute idle timeout (typed input only) and 60-minute maximum.
 5. Single-instance management only for P17, with a multi-instance relay as a
    separate design.

@@ -10,7 +10,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -42,15 +42,15 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invitation, err := cryptobox.Token()
+	invitation, err := randtoken.New()
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: "removed@example.test", Role: "viewer", TokenHash: auth.Hash(invitation), ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	account, err := f.st.Queries.AccountByID(ctx, f.owner)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.st.Queries.InsertInvitation(ctx, db.InsertInvitationParams{WorkspaceID: ws, ID: uuid.New(), Email: "removed@example.test", Role: "viewer", TokenHash: auth.Hash(invitation), ExpiresAt: time.Now().Add(time.Hour), IssuerID: account.ID, IssuerAuthVersion: account.AuthVersion}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"reflect"
@@ -105,6 +105,13 @@ func (s *Service) enroll(ctx context.Context, in api.AgentEnrollment, source str
 		return out, nil
 	}
 	ws, expected, awaiting := locked.WorkspaceID, locked.ControllerGeneration, locked.AwaitingTransfer
+	// Enrolling grants a server an identity, so a hosted workspace needs active management. A
+	// transfer is part of recovery, which its own admission governed when the code was issued.
+	if !awaiting {
+		if e = s.Store.ManagementAdmission(ctx, tx, ws); e != nil {
+			return out, e
+		}
+	}
 	if locked.PreviewOnly && locked.Fresh && in.Preflight.ExistingContainers > 0 {
 		return out, domain.Invalid("preview.cleanServerRequired")
 	}
@@ -214,7 +221,7 @@ func (s *Service) codeTaken(ctx context.Context, in api.AgentEnrollment, candida
 
 func (s *Service) PrepareTransfer(ctx context.Context, p store.Principal, ws, id uuid.UUID) (api.TransferTicket, error) {
 	out := api.TransferTicket{ServerId: id, ExpiresAt: time.Now().Add(10 * time.Minute)}
-	token, e := cryptobox.Token()
+	token, e := randtoken.New()
 	if e != nil {
 		return out, e
 	}
@@ -230,7 +237,7 @@ func (s *Service) PrepareTransfer(ctx context.Context, p store.Principal, ws, id
 		} else if held {
 			return domain.Conflict
 		}
-		generation, e := db.New(tx).PrepareServerTransfer(ctx, db.PrepareServerTransferParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(token), EnrollmentExpires: &out.ExpiresAt})
+		generation, e := db.New(tx).PrepareServerTransfer(ctx, db.PrepareServerTransferParams{WorkspaceID: ws, ID: id, EnrollmentHash: hash(token), EnrollmentExpires: &out.ExpiresAt, EnrollmentIssuerID: p.Account.ID, EnrollmentIssuerAuthVersion: p.Account.AuthVersion})
 		out.Generation = generation
 		return e
 	})

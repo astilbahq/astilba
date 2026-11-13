@@ -44,7 +44,7 @@ func expiredMaintenance(t *testing.T, reserved bool) maintenanceContinuationFixt
 	p.Specification.Applications = []domain.Application{{ID: app, Name: "Remote", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}
 	p.Specification.Routes = []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "maintenance.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}
 	p.Specification.Placement = &domain.Placement{NetworkID: network, IngressServerID: p.ServerID, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 100, MemoryMiB: 64, Targets: []domain.PlacementTarget{{ServerID: remote, Count: 1}}}}}
-	p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: true, Instances: map[string][]uuid.UUID{}, Network: hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: uuid.New(), ServerID: p.ServerID, Generation: 1, Prefix: "10.251.0.0/24", Address: "10.251.0.1", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820}}
+	p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: true, Instances: map[string][]uuid.UUID{}, Network: hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: uuid.New(), ServerID: p.ServerID, Generation: 1, ControllerGeneration: 1, Prefix: "10.251.0.0/24", Address: "10.251.0.1", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820}}
 	p = p.WithHash()
 	if err := p.Validate(true); err != nil {
 		t.Fatal("invalid maintenance fixture plan", err)

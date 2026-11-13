@@ -4,6 +4,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 
 async function login(page: Page) {
   await page.goto("/login");
@@ -195,7 +196,7 @@ test("a real view-only membership opens Projects without creation controls", asy
   const context = await browser.newContext();
   try {
     const viewer = await context.newPage();
-    await viewer.goto("http://127.0.0.1:15181/login");
+    await viewer.goto(`${api}/login`);
     await viewer.getByLabel("Email", { exact: true }).fill(email);
     await viewer
       .getByLabel("Password", { exact: true })

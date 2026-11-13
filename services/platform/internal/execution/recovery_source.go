@@ -14,9 +14,9 @@ import (
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -47,7 +47,7 @@ func recoveryDecode(raw []byte, out any) error {
 
 // Records are bounded individually and streamed through temporary SQL tables.
 // Repeated owner recovery actions do not consume the workspace archive ceiling.
-func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, before portability.Archive, dirs []string) (recoverySource, error) {
+func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, before portability.Archive, dirs []string) (recoverySource, error) {
 	var bases portability.RecoveryBases
 	out := recoverySource{Hosts: map[uuid.UUID]deployment.RecoveryEvidence{}, Roots: map[uuid.UUID]deployment.RecoveryDescriptor{}, KnownSequences: map[uuid.UUID]int64{}}
 	if len(dirs) == 0 || len(dirs) > 100 {
@@ -186,7 +186,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 // aside there instead, for management's own chain to decide on. A capsule must come from its root's
 // primary: as the host claims, when claims is set, and in any case as the sealed base's frozen root
 // says.
-func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, dir string, host deployment.RecoveryEvidence, claims bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
+func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, dir string, host deployment.RecoveryEvidence, claims bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.capsule"))
 	if err != nil {
 		return err
@@ -237,8 +237,11 @@ func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring,
 
 // addRecoveryCheckpoint opens one sealed checkpoint of a root whose primary is primary, checks it
 // against its descriptor and frozen root, and stages it for the chain.
-func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *cryptobox.Keyring, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
-	decoded, err := keys.Open(envelope, recoveryIdentity(d))
+func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
+	decoded, err := keys.Open(secretbroker.Checkpoint(d), envelope)
+	if secretbroker.SessionFailure(err) {
+		return err
+	}
 	if err != nil {
 		return errors.New("the original management recovery keyring is required")
 	}

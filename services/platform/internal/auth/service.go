@@ -12,6 +12,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,8 @@ type Service struct {
 	Passwords *Passwords
 	Mail      *mailer.Mailer
 	Now       func() time.Time
+	// Tokens seals the tokens this service issues to itself: device tokens and reset requests.
+	Tokens *secretbroker.Tokens
 	// Queue takes reset requests. Only a serving process has one.
 	Queue *river.Client[pgx.Tx]
 }
@@ -67,13 +70,14 @@ func matchTOTP(code, secret string, now time.Time, last int64) (int64, bool) {
 	}
 	return 0, false
 }
-func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, account *db.Account, code string) error {
+
+func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, account *db.Account, code string) error {
 	q := db.New(tx)
 	code = strings.TrimSpace(code)
 	if len(account.TotpSecret) == 0 {
 		return domain.Credentials
 	}
-	secret, err := s.Store.Keys.Open(account.TotpSecret, store.TOTPIdentity(account.ID, false))
+	secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTP, ID: account.ID}, account.TotpSecret)
 	if err != nil {
 		return err
 	}
@@ -96,12 +100,17 @@ func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, account *db.Account,
 	account.AuthVersion++
 	return s.securityEvent(ctx, tx, account.ID, RecoveryCodeUsed)
 }
-func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (db.Account, error) {
+func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (_ db.Account, err error) {
 	var account db.Account
-	if err := s.Limit(ctx, "mfa:"+id.String(), 5, 5*time.Minute); err != nil {
+	if err = s.Limit(ctx, "mfa:"+id.String(), 5, 5*time.Minute); err != nil {
 		return account, err
 	}
-	err := s.Store.TransactionTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+	keys, err := s.secondFactor(ctx, id, secretbroker.Authenticate, secretbroker.TOTP)
+	if err != nil {
+		return account, err
+	}
+	defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
+	err = s.Store.TransactionTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var err error
 		account, err = q.LockAccount(ctx, id)
 		if err != nil {
@@ -110,7 +119,7 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 		if account.AuthVersion != expectedVersion {
 			return domain.Credentials
 		}
-		return s.checkCode(ctx, tx, &account, code)
+		return s.checkCode(ctx, tx, keys, &account, code)
 	})
 	return account, err
 }
@@ -150,9 +159,14 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 	return account, store.AdmitBrowserSession(ctx, q, p)
 }
 
-func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (string, string, error) {
+func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string, err error) {
 	var secret, uri string
-	err := s.Store.Transaction(ctx, func(q *db.Queries) error {
+	keys, err := s.secondFactor(ctx, p.Account.ID, secretbroker.Seal, secretbroker.TOTPPending)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
+	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
 		account, err := lockCurrent(ctx, q, p)
 		if err != nil {
 			return err
@@ -164,7 +178,7 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (string, stri
 		if err != nil {
 			return err
 		}
-		blob, err := s.Store.Keys.Seal([]byte(key.Secret()), store.TOTPIdentity(account.ID, true))
+		blob, err := keys.Seal(secretbroker.Item{Kind: secretbroker.TOTPPending, ID: account.ID}, []byte(key.Secret()))
 		if err != nil {
 			return err
 		}
@@ -182,21 +196,31 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (string, stri
 // session's holder has given the password. Without it a stolen session could enrol its own
 // authenticator, and the account's owner could not sign in again even after resetting the
 // password.
-func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Credential, code string) (db.Account, []string, error) {
+func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Credential, code string) (_ db.Account, _ []string, err error) {
 	id := p.Account.ID
 	var account db.Account
 	var codes []string
-	if err := s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
+	if err = s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
 		return account, nil, err
 	}
-	err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+	var keys *secretbroker.Session
+	defer func() {
+		if keys != nil {
+			keys.Close(ctx, secretbroker.Done(err))
+		}
+	}()
+	openKeys := func() (err error) {
+		keys, err = s.secondFactor(ctx, id, secretbroker.Authenticate, secretbroker.TOTPPending, secretbroker.TOTP)
+		return err
+	}
+	err = s.withCredential(ctx, p, current, openKeys, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		account = *locked
 		// The new authenticator's code is not the credential that confirms identity, so a
 		// wrong one, or an enrolment that has lapsed, is refused as input to try again.
 		if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) {
 			return domain.Invalid("code")
 		}
-		secret, err := s.Store.Keys.Open(account.TotpPending, store.TOTPIdentity(id, true))
+		secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTPPending, ID: id}, account.TotpPending)
 		if err != nil {
 			return err
 		}
@@ -204,7 +228,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 		if !ok {
 			return domain.Invalid("code")
 		}
-		active, err := s.Store.Keys.Seal(secret, store.TOTPIdentity(id, false))
+		active, err := keys.Seal(secretbroker.Item{Kind: secretbroker.TOTP, ID: id}, secret)
 		if err != nil {
 			return err
 		}
@@ -414,12 +438,18 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 	if err != nil {
 		return account, err
 	}
-	err = s.Store.WorkspaceWriteTransaction(ctx, peek.WorkspaceID, func(q *db.Queries) error {
+	err = s.Store.WorkspaceWriteTransaction(ctx, peek.WorkspaceID, func(tx pgx.Tx) error {
+		q := db.New(tx)
 		invite, err := q.LockInvitation(ctx, Hash(token))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Credentials
 		}
 		if err != nil {
+			return err
+		}
+		// Joining grants access, so a hosted workspace needs active management. The invitation is
+		// kept, so it can still be accepted before it expires if the subscription is renewed.
+		if err = s.Store.ManagementAdmission(ctx, tx, invite.WorkspaceID); err != nil {
 			return err
 		}
 		account, err = q.AccountByEmail(ctx, invite.Email)

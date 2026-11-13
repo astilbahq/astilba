@@ -51,6 +51,8 @@ type Engine struct {
 	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
 	// first answers, using the refusal states.
 	hostChangeReviews atomic.Int32
+	// terminals ends shells in services a deployment makes elevated, see fenceTerminals.
+	terminals terminalFence
 	// managed stands in for the host's managed networking in tests, which only a prepared
 	// Linux host has. Nil is the host itself.
 	managed managedHost
@@ -117,7 +119,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.ServerId != cfg.ServerID || c.Id == uuid.Nil || c.Generation < 1 || len(c.PlanHash) != 64 || (cfg.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (cfg.Role == "deployment" && c.Kind == "pipeline") {
 		return errors.New("command identity or role rejected")
 	}
-	if c.Kind != "test" && c.Kind != "update" && c.Kind != "visual" && c.Kind != "pipeline" && c.Kind != "backup" && c.Kind != "schedule" && c.Kind != "upgrade" && c.Kind != "network" && c.Kind != "crosshost" {
+	if _, known := commandKinds[c.Kind]; !known {
 		return errors.New("unsupported command")
 	}
 	preview := false
@@ -180,22 +182,15 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if err := e.distributedRuntimeAdmission(c); err != nil {
 		return e.finish(c.Id, "failed", err.Error())
 	}
-	// An already accepted command continues after its admission deadline.
-	metadataContinuation, maintenanceContinuation := false, false
-	if c.Kind == "crosshost" {
-		body, bodyErr := crossHostCommand(c)
-		d, descriptorErr := commandCheckpoint(c)
-		metadataContinuation = bodyErr == nil && descriptorErr == nil && body.Phase == "checkpoint" && d.Sequence > 0
-		// The maintenance executor validates the retained checkpoint, frozen
-		// reservation, chosen target and exact writer ownership before effects.
-		// These phases change no data and cannot be issued again, so cancelling one
-		// would strand the reservation. A restore replaces data, so its deadline holds:
-		// see docs/cross-host-placement.md.
-		maintenanceContinuation = bodyErr == nil && body.Maintenance != nil && (body.Phase == "resume-source" || body.Phase == "resume-target" || body.Phase == "complete")
-	}
 	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
-	if c.Kind != "upgrade" && !updateContinuation && !metadataContinuation && !maintenanceContinuation && !networkRestriction(c) && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
-		return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+	if commandDeadline(c) != ownDeadline && !updateContinuation && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+		late, err := e.runsLate(c)
+		if err != nil {
+			return err
+		}
+		if !late {
+			return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+		}
 	}
 	upgrades, err := e.Journal.upgrades()
 	if err != nil {
@@ -284,6 +279,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	}
 	return e.inspectOrRemove(ctx, c)
 }
+
 func (e *Engine) inspect(ctx context.Context, c api.ExecutionCommand) (client.ContainerInspectResult, bool, error) {
 	v, err := e.Docker.ContainerInspect(ctx, Name(c), client.ContainerInspectOptions{})
 	if errdefs.IsNotFound(err) {

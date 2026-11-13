@@ -99,7 +99,14 @@ func loadPreview(ctx context.Context, tx pgx.Tx, id uuid.UUID) (previewRecord, e
 	var r previewRecord
 	var raw []byte
 	var released bool
-	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,approved_head,approved_repository,approved_generation,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &released, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &r.ApprovedHead, &r.ApprovedRepo, &r.ApprovedGeneration, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
+	var ws uuid.UUID
+	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,workspace_id,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &released, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &ws, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
+	if err == nil {
+		// A fork commit's approval counts only while the owner who gave it is still one.
+		var approval db.PreviewForkApprovalRow
+		approval, err = db.New(tx).PreviewForkApproval(ctx, db.PreviewForkApprovalParams{WorkspaceID: ws, ID: id})
+		r.ApprovedHead, r.ApprovedRepo, r.ApprovedGeneration = approval.Head, approval.Repository, approval.Generation
+	}
 	if err == nil && len(raw) > 0 {
 		var c previewConfig
 		err = json.Unmarshal(raw, &c)
@@ -412,8 +419,12 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if allocation, err = tx.Begin(ctx); err != nil {
 			return err
 		}
-		if err = s.createPreviewEnvironment(ctx, tx, p, r); err != nil {
+		why, err := refusedChange(ctx, tx, func(tx pgx.Tx) error { return s.createPreviewEnvironment(ctx, tx, p, r) })
+		if err != nil {
 			return err
+		}
+		if why != "" {
+			return s.previewState(ctx, tx, id, "failed", "Preview environment was not created: "+why, 5*time.Minute)
 		}
 	}
 	if r.Config == nil || r.PolicyGeneration != p.Generation {
@@ -473,7 +484,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		raw, _ := stablejson.Marshal(cfg)
-		if _, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", p.Workspace, *r.View.EnvironmentId, *r.App, p.Connection, raw, hash, pr.Head, p.Actor); err != nil {
+		if _, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", p.Workspace, *r.View.EnvironmentId, *r.App, p.Connection, raw, hash, pr.Head, p.Actor, p.AuthVersion); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET build_id=$2,built_head=$3,plan_id=NULL,operation_id=$2 WHERE id=$1", id, op.Id, pr.Head); err != nil {
@@ -501,12 +512,21 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if err != nil {
 			return err
 		}
-		if err = promoteSpecification(ctx, &v.Spec, *r.App, artifact); err != nil {
+		// Only the revision is refused for good. Planning also refuses on the server's state, such
+		// as a preflight that is not ready, which a later pass can find changed.
+		var rev uuid.UUID
+		why, err := refusedChange(ctx, tx, func(tx pgx.Tx) (err error) {
+			if err = promoteSpecification(ctx, &v.Spec, *r.App, artifact); err != nil {
+				return err
+			}
+			rev, err = s.writePipelineRevision(ctx, tx, p.Workspace, *r.View.EnvironmentId, v.Revision, p.Actor, v.Spec)
 			return err
-		}
-		rev, err := s.writePipelineRevision(ctx, tx, p.Workspace, *r.View.EnvironmentId, v.Revision, p.Actor, v.Spec)
+		})
 		if err != nil {
 			return err
+		}
+		if why != "" {
+			return s.previewState(ctx, tx, id, "failed", "Preview was not deployed: "+why, 5*time.Minute)
 		}
 		status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
 		if err != nil {

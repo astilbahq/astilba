@@ -8,6 +8,9 @@ CREATE TABLE account_security_events (
     kind text NOT NULL CHECK (kind IN ('password_changed','password_reset','mfa_enabled','mfa_disabled','recovery_codes_regenerated','recovery_code_used')),
     created_at timestamptz NOT NULL DEFAULT now()
 );
+-- An older release neither reads nor writes the table.
+INSERT INTO schema_additive_migrations (version) VALUES (46);
 
 -- +goose Down
+DELETE FROM schema_additive_migrations WHERE version = 46;
 DROP TABLE account_security_events;

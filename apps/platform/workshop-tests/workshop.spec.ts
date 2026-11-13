@@ -42,11 +42,14 @@ for (const [id, entry] of Object.entries(entries)) {
 // Explicit axe journeys own the scan to avoid concurrent Storybook addon audits.
 test("static workshop provides dark RTL auth states without reaching a backend", async ({
   page,
+  baseURL,
 }, info) => {
+  // The workshop's own port is the run's, from the block its configuration reserved.
+  const workshop = new URL(baseURL ?? "").port;
   const backendRequests: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname.startsWith("/api/") && url.port !== "15201")
+    if (url.pathname.startsWith("/api/") && url.port !== workshop)
       backendRequests.push(url.href);
   });
   await page.setViewportSize({ width: 320, height: 844 });
