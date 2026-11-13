@@ -102,7 +102,8 @@ const (
 // already happened and is never undone: a rebuild that does not finish leaves the record at the
 // earlier release, so the unit's next deployment, or this one resumed after a restart, tries
 // again, and the returned note says so. begin runs once before the first rebuild, to record the
-// step. Only a journal failure is an error.
+// step. A journal failure is an error, and so is the agent stopping, which leaves the command to
+// resume when it restarts.
 func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin func() error) (string, error) {
 	var unfinished, exclusions []string
 	for _, a := range p.LocalApplications() {

@@ -118,11 +118,13 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		}
 		// An agent that does not know the target would build the plan's digest without it. A
 		// grouped upgrade sends the target to every member.
-		targets := []deployment.Plan{out.Plan.Target()}
+		targets := []deployment.Plan{}
 		if group != nil {
 			for _, u := range out.Plan.TargetGroup().Distributed.Units {
 				targets = append(targets, u.Plan)
 			}
+		} else {
+			targets = append(targets, out.Plan.Target())
 		}
 		for _, target := range targets {
 			if err = requireAgentSupport(ctx, tx, ws, target.ServerID, target.Specification); err != nil {

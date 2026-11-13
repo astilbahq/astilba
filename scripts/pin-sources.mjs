@@ -225,16 +225,15 @@ export function parseTracks(document) {
 // The key a retired pin is listed under.
 export const retiredKey = (pin) => `${pin.image}@${pin.digest}`;
 
-// A tag's leading version is its numbers before the first other character, such as 18.7 in
-// 18.7-alpine3.23, so a newer base image of the same release does not count as a new release.
-export function leadingVersionNewer(candidate, than) {
-  const lead = (tag) =>
-    (/^[0-9.]+/.exec(tag)?.[0] ?? "").split(".").filter(Boolean).map(Number);
-  const a = lead(candidate);
-  const b = lead(than);
-  for (let i = 0; i < Math.max(a.length, b.length); i++)
-    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
-  return false;
+// A track runs dry when upstream stops building it, as for an old Alpine line. A newer
+// release off the track counts only if that release would be on the track in the pin's own
+// form: 18.8-alpine3.24 does for 18.7-alpine3.23, because 18.8-alpine3.23 would match, but
+// nginx's mainline 1.31.8 never does for a stable track, whatever the suffix.
+export function beyondTrack(pinTag, candidate, track) {
+  const lead = (tag) => /^[0-9.]+/.exec(tag)?.[0] ?? "";
+  const version = lead(candidate);
+  if (!track || !version || version === lead(pinTag)) return false;
+  return track.test(version + pinTag.slice(lead(pinTag).length));
 }
 
 // A pin off its own track is a mistake in the pin or the track, so it is reported

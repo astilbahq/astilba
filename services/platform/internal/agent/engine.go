@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -87,7 +88,7 @@ func (e *Engine) checkpoint(id uuid.UUID, name string) error {
 func (e *Engine) finish(id uuid.UUID, state api.ExecutionState, note string) error {
 	return e.Journal.Mutate(id, func(r *Record) {
 		r.Report.State = state
-		r.Report.Note = note
+		r.Report.Note = reportNote(note)
 		if state == "succeeded" {
 			for i := range r.Report.Steps {
 				r.Report.Steps[i].State = "done"
@@ -416,4 +417,14 @@ func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand) 
 		}
 	}()
 	return ctx, func() { close(done); cancel() }
+}
+
+// reportNote keeps a note within the 1024 characters a report may carry, which the controller
+// checks before reading it: a longer one would be refused on every retry.
+func reportNote(note string) string {
+	const limit = 1024
+	if utf8.RuneCountInString(note) <= limit {
+		return note
+	}
+	return string([]rune(note)[:limit-1]) + "…"
 }

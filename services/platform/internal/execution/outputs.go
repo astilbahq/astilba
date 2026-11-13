@@ -30,6 +30,9 @@ func requireAgentSupport(ctx context.Context, q db.DBTX, ws, server uuid.UUID, s
 	return nil
 }
 
+// postgresReleasesField marks a refusal an agent update clears.
+const postgresReleasesField = "server.capabilities.postgresReleases"
+
 // requirePostgresReleases refuses a managed database on a PostgreSQL release the server's agent
 // does not know. An agent from before the release list knows only the first two pins, 17.10 and
 // 18.4, and would refuse anything else as an invalid plan.
@@ -56,7 +59,11 @@ func requirePostgresReleases(ctx context.Context, q db.DBTX, ws, server uuid.UUI
 			}
 		}
 		if !slices.Contains(known, release.Image) {
-			return &domain.Error{Code: "invalid_input", Message: "Update this server's agent before running PostgreSQL " + release.Name() + ": its agent does not know that release.", Fields: []string{"server.capabilities.postgresReleases"}}
+			name, err := db.New(q).ServerName(ctx, db.ServerNameParams{WorkspaceID: ws, ID: server})
+			if err != nil {
+				return err
+			}
+			return &domain.Error{Code: "invalid_input", Message: "Update the agent on " + name + " before running PostgreSQL " + release.Name() + " there: its agent does not know that release.", Fields: []string{postgresReleasesField}}
 		}
 	}
 	return nil

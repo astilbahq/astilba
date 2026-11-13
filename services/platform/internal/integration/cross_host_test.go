@@ -81,7 +81,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var holdRemoteReserve atomic.Bool
 	var holdRemoteResume atomic.Bool
 	var holdPrimaryResume atomic.Bool
-	var unsupportedMaintenanceHost atomic.Int32
+	var unsupportedMaintenanceHost, olderReleasesHost atomic.Int32
 	var failCandidate atomic.Bool
 	var expirePhase atomic.Value
 	var revokePrimary atomic.Bool
@@ -123,6 +123,9 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 					capabilities := in.Capabilities
 					if unsupportedMaintenanceHost.Load() == int32(i+1) {
 						capabilities.MaintenanceContinuation = nil
+					}
+					if olderReleasesHost.Load() == int32(i+1) {
+						capabilities.PostgresReleases = nil
 					}
 					if _, err := f.execution.Heartbeat(ctx, identity, api.AgentHeartbeat{Capabilities: capabilities, Preflight: in.Preflight}); err != nil {
 						if i == 0 && revokePrimary.Load() && errors.Is(err, domain.Unauthenticated) {
@@ -973,6 +976,23 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	}, Volumes: []domain.Volume{{ID: data, Name: "Data"}}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: web, Variable: "DATABASE_URL"}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: web, Protocol: "http", Domain: "upgrade.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	var databaseDraft api.Revision
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseEnv.DraftRevisionId, "specification": stack}, 200, &databaseDraft)
+	// A member's agent validates the whole specification, so a member that does not know the
+	// database's release refuses the plan, naming that member, before anything is queued.
+	olderReleasesHost.Store(2)
+	older := enrollments[1].Capabilities
+	older.PostgresReleases = nil
+	if _, err := f.execution.Heartbeat(ctx, identities[1], api.AgentHeartbeat{Capabilities: older, Preflight: enrollments[1].Preflight}); err != nil {
+		t.Fatal(err)
+	}
+	waitNetworkReady()
+	refreshAuthentication()
+	if refused := string(b.call("POST", databasePath+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: databaseDraft.Id, ServerId: servers[0].Server.Id}, 400, nil)); !strings.Contains(refused, "Update the agent on "+servers[1].Server.Name+" before running PostgreSQL") {
+		t.Fatalf("a member that does not know the release was planned onto: %s", refused)
+	}
+	olderReleasesHost.Store(0)
+	if _, err := f.execution.Heartbeat(ctx, identities[1], api.AgentHeartbeat{Capabilities: enrollments[1].Capabilities, Preflight: enrollments[1].Preflight}); err != nil {
+		t.Fatal(err)
+	}
 	deploy := func(revision uuid.UUID) deployment.Plan {
 		t.Helper()
 		var plan deployment.Status

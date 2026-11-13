@@ -62,7 +62,7 @@ func TestPostgresReleasesAndRetiredReleaseDrafts(t *testing.T) {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	request := api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}
 	refused = string(b.call("POST", path+"/deployment-plans", request, 400, nil))
-	if !strings.Contains(refused, "Update this server's agent before running PostgreSQL "+retiredSuccessor(releases)) {
+	if !strings.Contains(refused, "before running PostgreSQL "+retiredSuccessor(releases)+" there: its agent does not know that release") {
 		t.Fatalf("an agent that does not know the release was sent it: %s", refused)
 	}
 	in.Capabilities.PostgresReleases = agentPostgresReleases()

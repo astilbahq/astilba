@@ -185,12 +185,16 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 		} else if waived > 0 {
 			note = fmt.Sprintf("This host's maintenance reservation is released. %d instances were not required to be ready: they were already stopped or failing, or an operator accepted them.", waived)
 		}
-		// A restored volume may be served by a later release than the one that filled it.
-		rebuild, err := e.reindexPostgres(ctx, expected, func() error { return e.checkpoint(c.Id, "postgres-reindex") })
-		if err != nil {
-			return err
+		// A restored volume may be served by a later release than the one that filled it. Other
+		// maintenance changes no release; an unfinished rebuild waits for the next deployment.
+		if s.Maintenance.Kind == "restore" && command.UseTarget {
+			rebuild, err := e.reindexPostgres(ctx, expected, func() error { return e.checkpoint(c.Id, "postgres-reindex") })
+			if err != nil {
+				return err
+			}
+			note = strings.TrimSpace(note + " " + rebuild)
 		}
-		return e.finishCrossHost(c, command, o, strings.TrimSpace(note+" "+rebuild), true)
+		return e.finishCrossHost(c, command, o, note, true)
 	default:
 		return fail(errors.New("unsupported maintenance phase"))
 	}
