@@ -229,7 +229,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return err
 	}
 	for _, s := range schedules {
-		if (len(s.Writers) > 0 || hasUncertainRun(s.Runs)) && !networkRestriction(c) {
+		if (len(s.Writers) > 0 || hasUncertainRun(s)) && !networkRestriction(c) {
 			return e.finish(c.Id, "needs_attention", "An interrupted local schedule requires inspection and resolve-run before another host operation.")
 		}
 	}
