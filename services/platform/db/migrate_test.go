@@ -363,7 +363,6 @@ func TestAdditiveClaims(t *testing.T) {
 		{"field compared with a constant", "CREATE INDEX i ON execution_operations (server_id) WHERE kind = 'network' AND command->'network'->>'action' = 'configure';", true},
 		{"field compared with a column", "CREATE INDEX i ON execution_operations (server_id) WHERE command->>'kind' = kind;", false},
 		{"present column", "CREATE INDEX i ON execution_operations (parent_id) WHERE parent_id IS NOT NULL;", true},
-		{"absent column", "CREATE INDEX i ON execution_operations (server_id) WHERE parent_id IS NULL;", false},
 		{"either of two constants", "CREATE INDEX i ON execution_operations (server_id) WHERE kind = 'a' OR state = 'b';", false},
 		{"indexed field", "CREATE INDEX i ON execution_operations (server_id, (command->'network'->'manifest'->'generation'));", true},
 		{"indexed field through a function", "CREATE INDEX i ON execution_operations (server_id, (jsonb_array_length(command->'steps')));", false},

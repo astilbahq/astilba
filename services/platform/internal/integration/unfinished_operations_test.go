@@ -63,7 +63,8 @@ func TestUnfinishedIndexHoldsExactlyTheStatesThatHaveNotEnded(t *testing.T) {
 // once read every operation, and past PostgreSQL's JIT threshold each poll spent hundreds of
 // milliseconds compiling. This takes every statement that reads operations from the code, as the
 // inline SQL check counts them, and sqlc's, so a new one is held to the same plan: no sequential
-// scan of operations, and a cost that stays put as ended history triples.
+// scan of operations, and a cost that stays put as ended history triples. A statement assembled
+// from several literals at run time, such as a recovery base's capture, isn't seen here (PLAT-325).
 func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 	ctx := context.Background()
 	queries := operationQueries(t)
