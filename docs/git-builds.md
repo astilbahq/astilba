@@ -148,29 +148,32 @@ Registry builds are not loaded locally. Each host that deploys one pulls it, wit
 
 ### Pulling deployment images
 
-A registry build is pushed once, but every host that deploys it pulls it. A layer can unpack to far more than it takes in the registry: a sparse file, a highly compressed layer, millions of empty files or a layer listed many times. So before Docker pulls a deployment's image, the agent reads the image from its registry itself and counts what pulling it writes. The bounds and settings are those of a local load: 8 GiB, 1,048,576 files and directories, and a 4 GiB and 262,144-inode reserve by default, which the host's owner sets on the agent. What the agent counts:
+A registry build is pushed once, but every host that deploys it pulls it. A layer can unpack to far more than it takes in the registry: a sparse file, a highly compressed layer, millions of empty files or a layer listed many times. A registry can also send more for a blob than the image says it holds. So the agent, not Docker, reads each deployment image from its registry, and counts what putting it into Docker writes before Docker writes it. The bounds and settings are those of a local load: 8 GiB, 1,048,576 files and directories, and a 4 GiB and 262,144-inode reserve by default, which the host's owner sets on the agent. What the agent counts:
 
-- every blob Docker stores: the index and manifests for the host's platform, their attestations, configs and compressed layers;
+- every blob Docker stores: the index, the manifest for the host's platform, its config and its compressed layers;
 - every layer decompressed, as for a load;
 - each layer again for every distinct chain of layers that includes it, with the same allowance for each unpacked layer's bookkeeping.
 
-A pull that would write more than that is refused before Docker pulls anything. The deployment fails with a note that names the limit and the setting that raises it, and existing workloads are unchanged. A pull is also refused when the image has a feature a load refuses. Further refused features:
+The image is named by its digest. The agent checks every blob against its digest, and nothing the build, management or the registry records about the image's size is trusted. Of a multi-platform index, the agent chooses the manifest Docker would: the first in the index for the host's OS and architecture, in a variant the host runs.
 
-- a layer Docker would download from elsewhere, such as a foreign layer;
-- a layer of a type other than tar, gzip or zstd;
+How the image gets into Docker depends on Docker's image store:
+
+- **The containerd image store** is Docker's default for new installs, including the Docker the host bootstrap installs with `--install-runtime`. A host that already had Docker may use either store. The agent is the image's only reader from its registry. It reads each blob once, never more than the blob's descriptor says, and loads the image into Docker as an archive, as for a local build. Docker imports nothing until the archive ends, and the agent ends it only once the whole image is counted within the bounds. The loaded image has the reference, ID and digests a pull would give it.
+- **The classic image store.** The agent reads the image once to count it, and Docker then pulls it. So each layer the agent hasn't counted since it last started is downloaded twice. Docker writes a blob as its registry sends it, so while Docker pulls, the agent watches the free space on Docker's storage. It stops the pull once that storage has lost more than the agent counted plus 1 GiB. A stopped pull can leave its partial download behind. Anything else that writes more than 1 GiB to Docker's storage during a pull also stops it; deploy again. After the pull, the agent checks that Docker pulled the image it counted. Preflight notes a host with the classic store.
+
+A pull that would write more than the bounds is refused before Docker writes the image. The deployment fails with a note that names the limit and the setting that raises it, and existing workloads are unchanged. If the agent can't read or count the image, the pull is refused too, never made without the bound, and the note says why: the registry can't be reached, refused the credentials or lacks the image. An image with a feature a load refuses is refused as well. Further refused features:
+
+- a layer Docker would download from other URLs, such as a foreign, non-distributable layer;
+- a layer of a type other than tar, gzip or zstd, or a manifest of a type Docker doesn't pull, named in the note;
 - content named by a digest other than sha256;
-- a manifest whose media type differs from its registry's;
+- a manifest whose media type differs from its registry's or its index's;
 - a manifest that names a field twice in different case;
-- an image with no manifest for the host's platform.
+- an index entry without a platform, or an index nested in another;
+- an image with no manifest for the host's platform, or whose config is for another platform.
 
-The image is named by its digest and Docker verifies each blob it pulls, so Docker unpacks exactly what the agent counted, whichever registry or mirror serves it. Nothing the build, management or the registry records about the image's size is trusted.
+Compose never pulls on a host: every service the agent runs has `pull_policy: never`, so an image reaches Docker only this way. Exports leave it out.
 
-A registry can still send Docker more than the image it names, because Docker writes each blob as it arrives and checks its size only at the end. So while Docker pulls, the agent watches the free space on Docker's storage. It stops the pull once that storage has lost more than the agent measured plus 1 GiB, and the deployment fails with a note. Two side effects:
-
-- With Docker's containerd image store, a stopped pull's partial download stays in `/var/lib/containerd/io.containerd.content.v1.content/ingest/` until the host's owner removes it.
-- Anything else that writes more than 1 GiB to Docker's storage during a pull also stops it. Deploy again.
-
-The agent remembers each layer it has measured until it restarts. A new version of an image downloads only its changed layers twice. Each pull counts the image's layers in full, even those Docker already has, so the count can exceed what the pull writes.
+The agent reads registries as Docker does, with the deployment's registry credential, which it keeps only for that pull. See [image loads and pulls](agent.md#image-loads-and-pulls) for the certificates, insecure registries, mirrors and proxy it uses.
 
 This covers every application image a deployment pulls: registry builds, images from a registry you name, and catalog images such as PostgreSQL. It doesn't cover:
 

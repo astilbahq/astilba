@@ -258,14 +258,17 @@ A local build, one that does not push to a registry, is loaded into the host's D
 
 Both take whole numbers from 1 to 1024. Set them with an inspected `ExecStart` override that keeps the existing arguments, as for [certificate contact](#certificate-contact), and restart the agent. A refused build's or deployment's note names the limit it hit and the setting that changes it. [Git builds](git-builds.md#budgets-and-recovery) describes what a load counts, and [pulling deployment images](git-builds.md#pulling-deployment-images) what a pull counts.
 
-Before Docker pulls a deployment's image, the agent reads the image from the same registry itself to measure it. So the host must reach the registry as Docker does. The agent trusts what Docker trusts for it:
+The agent reads a deployment's image from its registry itself; see [pulling deployment images](git-builds.md#pulling-deployment-images). So the host must reach the registry as Docker does. The agent uses what Docker uses for it:
 
 - the system's certificate authorities;
 - those in `/etc/docker/certs.d/<registry>/`, with any client certificate there;
 - the daemon's insecure registries;
-- Docker Hub's mirrors from the daemon's configuration.
+- Docker Hub's mirrors from the daemon's configuration;
+- the daemon's proxy, as `docker info` shows it.
 
-It uses the proxy in its own environment (`HTTPS_PROXY`, `NO_PROXY`), not the daemon's. Where Docker reaches a registry only through a proxy set for the daemon, set the same proxy in the agent's environment too, or the agent can't measure the image and refuses the pull.
+Docker's info hides a proxy's password. If the daemon's proxy has one, set the same proxy in the agent's environment with `HTTPS_PROXY` and `NO_PROXY`, or the agent can't read registries and refuses pulls. A daemon without a proxy leaves the agent to its environment's.
+
+With Docker's classic image store, preflight notes that the agent can only watch a pull there. Switch Docker to the containerd image store for exact bounds.
 
 ## Optional cross-host networking
 
