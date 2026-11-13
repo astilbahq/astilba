@@ -203,8 +203,8 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 		if json.Unmarshal(raw, &command) != nil {
 			return out, portability.ErrArchive
 		}
-		if err = s.finalizePreviewCleanup(ctx, tx, in.WorkspaceID, command); err != nil {
-			return out, fmt.Errorf("finalize recovered preview removal: %w", err)
+		if err = s.finalizeRemoval(ctx, tx, in.WorkspaceID, command); err != nil {
+			return out, fmt.Errorf("finalize recovered removal: %w", err)
 		}
 	}
 	if err = holdRecoveryRestrictions(ctx, tx, in.WorkspaceID); err != nil {

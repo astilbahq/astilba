@@ -412,6 +412,25 @@ func Dependencies(s Specification, a Application) []uuid.UUID {
 	return out
 }
 
+// PostgresMajor is the PostgreSQL major version an image runs, such as "18", or "" for an image
+// that does not name one. A data directory one major initialised cannot be opened by another, so a
+// managed volume keeps the major that first ran on it.
+func PostgresMajor(image string) string {
+	tag, ok := strings.CutPrefix(image, "postgres:")
+	if !ok {
+		return ""
+	}
+	end := strings.IndexAny(tag, ".-@")
+	if end < 0 {
+		end = len(tag)
+	}
+	major := tag[:end]
+	if major == "" || len(major) > 3 || strings.Trim(major, "0123456789") != "" {
+		return ""
+	}
+	return major
+}
+
 func PostgresMount(image string) string {
 	if image == Postgres17Image {
 		return "/var/lib/postgresql/data"

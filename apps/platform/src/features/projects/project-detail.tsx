@@ -9,6 +9,7 @@ import { Icon } from "../../components/icons";
 import { Link } from "../../components/link";
 import { ErrorToast } from "../../components/toast";
 import { usePageTitle } from "../../i18n/use-page-title";
+import * as shared from "../../styles";
 import { ProjectBreadcrumbs, ProjectFrame } from "./project-frame";
 import * as s from "./projects.styles";
 
@@ -63,6 +64,8 @@ function ProjectEnvironments({
     (item) => item.id === environmentId,
   );
   const write = workspace.role !== "viewer";
+  const active = environments.data?.filter((item) => item.state === "active");
+  const retired = environments.data?.filter((item) => item.state !== "active");
   usePageTitle(
     environment
       ? envT(($) => $.pageTitle, {
@@ -141,48 +144,18 @@ function ProjectEnvironments({
                 </ButtonLink>
               )}
             </header>
-            {environments.data?.length ? (
+            {active?.length ? (
               <ul className={s.list}>
-                {environments.data.map((item) => (
-                  <li key={item.id}>
-                    <Link
-                      to="/"
-                      search={{
-                        workspace: workspace.id,
-                        project: project.id,
-                        environment: item.id,
-                      }}
-                      variant="plain"
-                      className={s.row}
-                    >
-                      <div className={s.rowDetails}>
-                        <strong className={s.name}>
-                          <bdi>{item.name}</bdi>
-                        </strong>
-                        <span className={s.metadata}>
-                          {item.configurationOwner === "compose"
-                            ? t(($) => $.environments.compose)
-                            : t(($) => $.environments.visual)}
-                          {item.purpose === "preview_template" && (
-                            <span>
-                              {t(($) => $.environments.previewTemplate)}
-                            </span>
-                          )}
-                          {item.purpose === "preview" && (
-                            <span>{t(($) => $.environments.preview)}</span>
-                          )}
-                        </span>
-                      </div>
-                      <span className={s.open}>
-                        {t(($) => $.environments.open)}
-                        <Icon>
-                          <path d="m9 5 7 7-7 7" />
-                        </Icon>
-                      </span>
-                    </Link>
-                  </li>
+                {active.map((item) => (
+                  <EnvironmentRow
+                    key={item.id}
+                    environment={item}
+                    workspaceId={workspace.id}
+                  />
                 ))}
               </ul>
+            ) : retired?.length ? (
+              <p className={s.muted}>{t(($) => $.environments.allRetired)}</p>
             ) : (
               <div className={s.state}>
                 <h3 className={s.heading}>
@@ -195,6 +168,22 @@ function ProjectEnvironments({
                 </p>
               </div>
             )}
+            {!!retired?.length && (
+              <details className={shared.workspaceUtility}>
+                <summary>
+                  {t(($) => $.environments.retired, { total: retired.length })}
+                </summary>
+                <ul className={s.list}>
+                  {retired.map((item) => (
+                    <EnvironmentRow
+                      key={item.id}
+                      environment={item}
+                      workspaceId={workspace.id}
+                    />
+                  ))}
+                </ul>
+              </details>
+            )}
             {!write && (
               <p className={s.muted}>{t(($) => $.environments.readOnly)}</p>
             )}
@@ -202,5 +191,58 @@ function ProjectEnvironments({
         )}
       </section>
     </>
+  );
+}
+
+function EnvironmentRow({
+  environment,
+  workspaceId,
+}: {
+  environment: Schema["Environment"];
+  workspaceId: string;
+}) {
+  const { t } = useTranslation("projects");
+  return (
+    <li>
+      <Link
+        to="/"
+        search={{
+          workspace: workspaceId,
+          project: environment.projectId,
+          environment: environment.id,
+        }}
+        variant="plain"
+        className={s.row}
+      >
+        <div className={s.rowDetails}>
+          <strong className={s.name}>
+            <bdi>{environment.name}</bdi>
+          </strong>
+          <span className={s.metadata}>
+            {environment.configurationOwner === "compose"
+              ? t(($) => $.environments.compose)
+              : t(($) => $.environments.visual)}
+            {environment.purpose === "preview_template" && (
+              <span>{t(($) => $.environments.previewTemplate)}</span>
+            )}
+            {environment.purpose === "preview" && (
+              <span>{t(($) => $.environments.preview)}</span>
+            )}
+            {environment.state === "retired" && (
+              <span>{t(($) => $.environments.retiredState)}</span>
+            )}
+            {environment.state === "retiring" && (
+              <span>{t(($) => $.environments.retiringState)}</span>
+            )}
+          </span>
+        </div>
+        <span className={s.open}>
+          {t(($) => $.environments.open)}
+          <Icon>
+            <path d="m9 5 7 7-7 7" />
+          </Icon>
+        </span>
+      </Link>
+    </li>
   );
 }

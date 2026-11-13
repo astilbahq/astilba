@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"os"
 
@@ -33,19 +34,35 @@ const (
 	// endsHeldWorkOrNone is endsHeldWork that also acknowledges a host holding no reservation at
 	// all, without changing any reservation or runtime there. Refusing it would strand the other hosts.
 	endsHeldWorkOrNone
+	// retiresHeldUnit removes what an environment's unit left on this host, and keeps its volumes.
+	// A server that was offline when its environment was retired runs it on its return, when its
+	// journal holds the unit: its applied plan, a release, its route set, or a deployment it ran,
+	// even one that failed. A host whose journal holds none of these never ran the unit, so the
+	// retirement has nothing to end there; its owner retires again.
+	retiresHeldUnit
 )
 
 // commandKinds is every command kind the agent runs.
 var commandKinds = map[api.ExecutionCommandKind]deadlineRule{
 	"test":      startsWork,
 	"update":    startsWork, // Execute reconciles an artifact a timely update already installed.
-	"visual":    startsWork,
+	"visual":    startsWork, // by action, below
 	"pipeline":  startsWork,
 	"backup":    startsWork,
 	"schedule":  startsWork,
 	"upgrade":   ownDeadline,
 	"network":   startsWork, // by action, below
 	"crosshost": startsWork, // by phase, below
+}
+
+// visualActions is every action executeVisual runs.
+var visualActions = map[string]deadlineRule{
+	"resolve":         startsWork,
+	"observe":         startsWork,
+	"deploy":          startsWork,
+	"delete-volume":   startsWork,
+	"preview-cleanup": startsWork,
+	"retire":          retiresHeldUnit,
 }
 
 var networkActions = map[string]deadlineRule{
@@ -87,6 +104,12 @@ func commandDeadline(c api.ExecutionCommand) deadlineRule {
 		return startsWork
 	}
 	switch c.Kind {
+	case "visual":
+		var p deployment.Payload
+		if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Digest() != c.PlanHash {
+			return startsWork
+		}
+		return visualActions[p.Action]
 	case "network":
 		var n hostnetwork.Command
 		if c.Network == nil || hostnetwork.Decode(*c.Network, &n) != nil || n.Validate() != nil {
@@ -156,6 +179,8 @@ func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
 			return false, err
 		}
 		return held.ParentID != uuid.Nil || rule == endsHeldWorkOrNone, nil
+	case retiresHeldUnit:
+		return e.Journal.holdsUnit(c)
 	}
 	return false, nil
 }
