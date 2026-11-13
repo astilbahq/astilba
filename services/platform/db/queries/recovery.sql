@@ -369,13 +369,17 @@ UPDATE execution_operations SET runtime_recorded_at = COALESCE(runtime_recorded_
 WHERE workspace_id = @workspace_id AND id = @id AND runtime_outcome IS NOT NULL;
 
 -- name: KeepRecoveredRuntimeHistory :exec
--- An applied-history entry whose operation row recovery didn't merge, so later bases carry it.
+-- An applied-history entry whose operation row recovery didn't merge, or merged without its
+-- outcome, so later bases carry it.
 INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
 SELECT @workspace_id,@operation_id,@environment_id,@generation,@recorded_at,@entry
-WHERE NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.id = @operation_id)
+WHERE NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.id = @operation_id AND o.runtime_outcome IS NOT NULL)
 ON CONFLICT DO NOTHING;
 
 -- name: RecoveredRuntimeHistory :many
 SELECT entry FROM recovered_runtime_history h WHERE h.workspace_id = @workspace_id
-AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = h.workspace_id AND o.id = h.operation_id)
+AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = h.workspace_id AND o.id = h.operation_id AND o.runtime_outcome IS NOT NULL)
 ORDER BY h.environment_id,h.generation;
+
+-- name: OperationCommands :many
+SELECT id,command FROM execution_operations WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]);

@@ -64,16 +64,18 @@ func stagedBase(ctx context.Context, tx pgx.Tx, parent uuid.UUID) (portability.A
 // lists, so they are its ancestors, while an unlisted one may come from a diverged management.
 // Bases are compared only with N, whose applied history holds any older head of its own lineage.
 func selectRecoveryBases(ctx context.Context, tx pgx.Tx, ws uuid.UUID, out *recoverySource) error {
+	return chooseRecoveryBases(out, func(parent uuid.UUID) (portability.Archive, error) { return stagedBase(ctx, tx, parent) })
+}
+
+// chooseRecoveryBases is selectRecoveryBases over a way to decode each loaded base by its root.
+func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portability.Archive, error)) error {
 	if len(out.Bases) == 0 {
 		return errors.New("no compatible base recovery capsule was supplied")
 	}
 	newest := newestRecoveryBase(out.Bases)
-	a, err := stagedBase(ctx, tx, newest.Parent)
+	a, err := decode(newest.Parent)
 	if err != nil {
 		return err
-	}
-	if a.Workspace != ws {
-		return errors.New("no compatible base recovery capsule was supplied")
 	}
 	origin, err := buildAppliedOrigin(a, newest.Parent)
 	if err != nil {
@@ -114,7 +116,7 @@ func selectRecoveryBases(ctx context.Context, tx pgx.Tx, ws uuid.UUID, out *reco
 			out.SetAside = append(out.SetAside, RecoverySetAside{Checkpoint: b.ID, Parent: b.Parent, CapturedAt: b.CapturedAt, Reason: "superseded by the newest checkpoint"})
 			continue
 		}
-		older, err := stagedBase(ctx, tx, b.Parent)
+		older, err := decode(b.Parent)
 		if err != nil {
 			return err
 		}
@@ -124,7 +126,12 @@ func selectRecoveryBases(ctx context.Context, tx pgx.Tx, ws uuid.UUID, out *reco
 		}
 		if !vouched {
 			if err = compareWithNewest(origin, o); err != nil {
-				return err
+				// A newer management backup can't help here: the checkpoint is a host's.
+				var window recoveryWindowError
+				if errors.As(err, &window) {
+					err = fmt.Errorf("its runtime for environment %s is from %s, before the newest checkpoint's window opened on %s, so the newest checkpoint can't show it is an ancestor; it may come from a diverged management", window.Environment, window.Recorded.UTC().Format(time.DateOnly), window.Since.UTC().Format(time.DateOnly))
+				}
+				return fmt.Errorf("checkpoint %s of root %s, captured %s, isn't one the newest checkpoint lists: %w", b.ID, b.Parent, b.CapturedAt.UTC().Format(time.RFC3339), err)
 			}
 		}
 		if needed[b.Parent] {
@@ -187,10 +194,11 @@ func compareWithNewest(newest, older *appliedOrigin) error {
 }
 
 // refuseRetiredBeyondWindow refuses a restored database that shows an environment live that the
-// newest base doesn't carry. A base carries every standard environment and every preview that is
-// live or changed inside its window, so such an environment was retired before the window opened,
-// and the database is older than the window. An environment created after the base is the
-// database's own.
+// newest base doesn't carry: a standard environment, or a preview with an applied runtime. A base
+// carries every standard environment and every preview whose runtime is applied or changed inside
+// its window, so such an environment was retired before the window opened, and the database is
+// older than the window. A preview without a runtime brings nothing back to life, and an
+// environment created after the base is the database's own.
 func refuseRetiredBeyondWindow(before portability.Archive, source recoverySource) error {
 	if source.History == nil {
 		return nil
@@ -206,20 +214,6 @@ func refuseRetiredBeyondWindow(before portability.Archive, source recoverySource
 			return err
 		}
 		operations[id] = row
-	}
-	open := map[uuid.UUID]bool{}
-	for _, row := range before.Tables["preview_requests"] {
-		env, err := recoveryValue[*uuid.UUID](row, "environment_id")
-		if err != nil {
-			return err
-		}
-		state, err := recoveryValue[string](row, "state")
-		if err != nil {
-			return err
-		}
-		if env != nil && state != "deleted" {
-			open[*env] = true
-		}
 	}
 	for _, row := range before.Tables["environments"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")
@@ -241,7 +235,7 @@ func refuseRetiredBeyondWindow(before portability.Archive, source recoverySource
 		if err != nil {
 			return err
 		}
-		live := purpose != "preview" || open[id]
+		live := purpose != "preview"
 		if head != nil {
 			outcome, err := portability.ReadRuntimeOutcome(operations[*head])
 			if err != nil {
@@ -262,7 +256,11 @@ func refuseRetiredBeyondWindow(before portability.Archive, source recoverySource
 // unfinished operation as a row, so one it records only there ended before it was captured. Only
 // recorded states are applied, never inferred ones: the database may be newer than the base, so
 // one that progressed further conflicts, and one the base records nothing for is left to fencing.
-func endRecoveryGapWork(row portability.Row, history *portability.RecoveryHistory) (portability.Row, error) {
+//
+// A runtime plan that neither the database nor the base holds can't be named, as for an upgrade
+// whose target plan is stored only when it completes. The operation then ends without the
+// outcome, and recovery keeps the entry with the applied history it holds without a row.
+func endRecoveryGapWork(row portability.Row, history *portability.RecoveryHistory, planKnown func(uuid.UUID) bool) (portability.Row, error) {
 	if history == nil {
 		return row, nil
 	}
@@ -325,7 +323,9 @@ func endRecoveryGapWork(row portability.Row, history *portability.RecoveryHistor
 	}
 	out := maps.Clone(row)
 	out["state"], out["report_sequence"] = final["state"], final["report_sequence"]
-	outcome.Set(out)
+	if outcome.Plan == uuid.Nil || planKnown(outcome.Plan) {
+		outcome.Set(out)
+	}
 	return out, nil
 }
 

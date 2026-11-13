@@ -140,7 +140,7 @@ func identityValid(identity string) bool {
 // environment had when the window opened is present, and nothing is listed twice.
 func validateRecoveryHistory(a Archive) error {
 	h := a.Recovery
-	if h == nil || h.WindowStart.IsZero() || !h.WindowStart.Before(a.CreatedAt) || h.TargetDays < 1 || h.TargetDays > 3650 || h.Environments == nil || h.Applied == nil || h.Settled == nil || h.Superseded == nil {
+	if h.WindowStart.IsZero() || !h.WindowStart.Before(a.CreatedAt) || h.TargetDays < 1 || h.TargetDays > 3650 || h.Environments == nil || h.Applied == nil || h.Settled == nil || h.Superseded == nil {
 		return ErrArchive
 	}
 	carried := map[uuid.UUID]bool{}
@@ -202,7 +202,9 @@ func validateRecoveryHistory(a Archive) error {
 	}
 	bases := map[uuid.UUID]bool{}
 	for _, b := range h.Superseded {
-		if bases[b.Base] || b.Base == uuid.Nil || b.Parent == uuid.Nil || b.CapturedAt.IsZero() || !b.CapturedAt.Before(a.CreatedAt) {
+		// A base a recovery registered keeps its own management's capture time, which can be later
+		// than this one's, so only listing orders bases.
+		if bases[b.Base] || b.Base == uuid.Nil || b.Parent == uuid.Nil || b.CapturedAt.IsZero() {
 			return ErrArchive
 		}
 		bases[b.Base] = true
@@ -216,14 +218,15 @@ func marshalValue(value any) []byte {
 }
 
 // The applied history a base carries: each carried environment's committed runtime changes, from
-// rows and from entries an earlier recovery kept without their rows (recovered_runtime_history).
+// rows and from entries an earlier recovery kept without their rows or outcomes
+// (recovered_runtime_history).
 // effective is when a change counts as recorded, less its margin.
 // inline-sql: reads the base's transaction-local working set
 const recoveryChanges = `WITH changes AS (
 	SELECT o.environment_id AS env,o.id,o.generation,COALESCE(o.runtime_recorded_at,o.created_at) AS at,o.runtime_recorded_at IS NOT NULL AS exact,NULL::jsonb AS entry
 	FROM execution_operations o WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND o.environment_id IS NOT NULL
 	UNION ALL SELECT h.environment_id,h.operation_id,h.generation,h.recorded_at,(h.entry->>'exact')::boolean,h.entry FROM recovered_runtime_history h
-	WHERE h.workspace_id=$1 AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id=$1 AND o.id=h.operation_id)
+	WHERE h.workspace_id=$1 AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id=$1 AND o.id=h.operation_id AND o.runtime_outcome IS NOT NULL)
 ), carried AS (
 	SELECT c.*,c.at+CASE WHEN c.exact THEN interval '1 day' ELSE interval '7 days' END AS effective FROM changes c JOIN archive_keep k ON k.kind='env' AND k.id=c.env
 )`
@@ -253,14 +256,15 @@ func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start tim
 }
 
 // recoveryLedger reads each carried environment's start and its applied history from it.
-func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time) ([]RecoveryEnvironment, []AppliedEntry, error) {
+// identities holds command identities already computed, by operation, and gains the ones it
+// computes, so a base sealed again reads each command once.
+func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, identities map[uuid.UUID]string) ([]RecoveryEnvironment, []AppliedEntry, error) {
 	environments := []RecoveryEnvironment{}
 	// inline-sql: reads the base's transaction-local working set
 	rows, err := tx.Query(ctx, recoveryChanges+recoveryFloors+` SELECT k.id,COALESCE(f.floor,0) FROM archive_keep k LEFT JOIN floors f ON f.env=k.id WHERE k.kind='env' ORDER BY k.id`, ws, start)
 	if err != nil {
 		return nil, nil, err
 	}
-	floors := map[uuid.UUID]int64{}
 	for rows.Next() {
 		var e RecoveryEnvironment
 		if err = rows.Scan(&e.Environment, &e.Floor); err != nil {
@@ -268,7 +272,6 @@ func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Tim
 			return nil, nil, err
 		}
 		e.Whole = e.Floor == 0
-		floors[e.Environment] = e.Floor
 		environments = append(environments, e)
 	}
 	rows.Close()
@@ -280,7 +283,7 @@ func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Tim
 	// as recovery reads them for a carried row, so an entry and the row it stands for agree.
 	// inline-sql: reads the base's transaction-local working set
 	rows, err = tx.Query(ctx, recoveryChanges+recoveryFloors+`
-	SELECT c.env,c.id,c.generation,c.at,c.exact,c.entry,o.command,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,p.plan->>'id',p.plan->>'environmentId',p.plan->>'revisionId',p.plan->>'hash'
+	SELECT c.env,c.id,c.generation,c.at,c.exact,c.entry,(o.command->>'controllerGeneration')::bigint,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,p.plan->>'id',p.plan->>'environmentId',p.plan->>'revisionId',p.plan->>'hash'
 	FROM carried c LEFT JOIN floors f ON f.env=c.env LEFT JOIN execution_operations o ON c.entry IS NULL AND o.workspace_id=$1 AND o.id=c.id
 	LEFT JOIN visual_plans p ON p.workspace_id=$1 AND p.id=o.runtime_plan_id
 	WHERE c.generation>=COALESCE(f.floor,0)
@@ -288,40 +291,34 @@ func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Tim
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	missing := []uuid.UUID{}
 	for rows.Next() {
 		var e AppliedEntry
-		var stored, command []byte
+		var stored []byte
+		var controller *int64
 		var state, outcome *string
 		var sequence *int64
 		var plan *uuid.UUID
 		var planID, planEnv, revision, hash *string
-		if err = rows.Scan(&e.Environment, &e.Operation, &e.Generation, &e.RecordedAt, &e.Exact, &stored, &command, &state, &sequence, &outcome, &plan, &planID, &planEnv, &revision, &hash); err != nil {
+		if err = rows.Scan(&e.Environment, &e.Operation, &e.Generation, &e.RecordedAt, &e.Exact, &stored, &controller, &state, &sequence, &outcome, &plan, &planID, &planEnv, &revision, &hash); err != nil {
+			rows.Close()
 			return nil, nil, err
 		}
 		if stored != nil {
 			var kept AppliedEntry
 			if json.Unmarshal(stored, &kept, json.RejectUnknownMembers(true)) != nil || kept.Operation != e.Operation || kept.Environment != e.Environment || kept.Generation != e.Generation {
+				rows.Close()
 				return nil, nil, ErrArchive
 			}
 			entries = append(entries, kept)
 			continue
 		}
 		if state == nil || sequence == nil || outcome == nil {
+			rows.Close()
 			return nil, nil, ErrArchive
 		}
-		e.Identity, err = CommandIdentity(command, CommandIdentityVersion)
-		if err != nil {
-			return nil, nil, err
-		}
-		var controller struct {
-			Generation *int64 `json:"controllerGeneration"`
-		}
-		if json.Unmarshal(command, &controller) != nil {
-			return nil, nil, ErrArchive
-		}
-		if controller.Generation != nil {
-			e.Controller = *controller.Generation
+		if controller != nil {
+			e.Controller = *controller
 		}
 		e.State, e.Sequence, e.Outcome, e.RuntimePlan = *state, *sequence, *outcome, plan
 		if e.Outcome == "applied" && plan != nil && planID != nil && *planID == plan.String() && planEnv != nil && *planEnv == e.Environment.String() && revision != nil && hash != nil && *hash != "" {
@@ -330,12 +327,47 @@ func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Tim
 				e.Revision, e.PlanHash = &id, *hash
 			}
 		}
+		if _, known := identities[e.Operation]; !known {
+			missing = append(missing, e.Operation)
+		}
 		entries = append(entries, e)
 	}
+	rows.Close()
 	if err = rows.Err(); err != nil {
 		return nil, nil, err
 	}
+	if err = recoveryIdentities(ctx, tx, ws, missing, identities); err != nil {
+		return nil, nil, err
+	}
+	for i := range entries {
+		if entries[i].Identity == "" {
+			entries[i].Identity = identities[entries[i].Operation]
+		}
+	}
 	return environments, entries, nil
+}
+
+// recoveryIdentities computes the command identity of each operation in ids, from its stored
+// command.
+func recoveryIdentities(ctx context.Context, tx pgx.Tx, ws uuid.UUID, ids []uuid.UUID, identities map[uuid.UUID]string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := db.New(tx).OperationCommands(ctx, db.OperationCommandsParams{WorkspaceID: ws, Ids: ids})
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if identities[row.ID], err = CommandIdentity(row.Command, CommandIdentityVersion); err != nil {
+			return err
+		}
+	}
+	for _, id := range ids {
+		if identities[id] == "" {
+			return ErrArchive
+		}
+	}
+	return nil
 }
 
 // recoverySettled reads the final state of roots and runtime changes that ended since start, less

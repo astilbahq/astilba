@@ -10,8 +10,9 @@ import (
 
 // baseSelection chooses the rows a recovery base carries, so its size follows the workspace's
 // configuration and the recovery window rather than its age. Recovery merges only the newest
-// base, and a restored backup taken inside its window keeps every row the base leaves out, so a
-// base carries every row that can differ between such a backup and this database:
+// base, and a restored backup taken inside its window keeps every row the base leaves out. So a
+// base carries the rows recovery needs exact and that can differ between such a backup and this
+// database:
 //   - every standard environment, retired or not, and each preview environment that is still
 //     live or changed since the window opened, with each carried environment's state rows;
 //   - unfinished work and its children, the parents of reservations, standalone network removals
@@ -26,7 +27,9 @@ import (
 //
 // Operations that changed a runtime travel as the recovery section's applied history instead
 // (RecoveryHistory), and roots and runtime changes that ended inside the window as its settled
-// list. since is the window's start less the widest margin a recorded time is given (7 days),
+// list. What else changed in the gap keeps the backup's copy: a build that ended there is fenced
+// as cancelled, an ended root keeps its last phase, and recovery projects each environment's
+// endpoints again from its runtime (projectCrossHostGrants). since is the window's start less the widest margin a recorded time is given (7 days),
 // so the window's edge errs towards carrying a row.
 func baseSelection(ctx context.Context, tx pgx.Tx, ws uuid.UUID, since time.Time) (map[string]string, error) {
 	return selectArchive(ctx, tx, ws, []archiveStep{{baseEnvironments, []any{since}}, {baseSeeds, []any{since}}})

@@ -103,7 +103,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passK
 }
 
 // recoverySeals is how many times a base is sealed before it is refused. A seal that doesn't fit
-// is followed by one with fewer applied-history entries, so a workspace whose history compresses
+// is followed by one with fewer changes in its window, so a workspace whose history compresses
 // worse than the capture's estimate still gets a base inside the coordinate job's time.
 const recoverySeals = 3
 
@@ -111,15 +111,16 @@ const recoverySeals = 3
 // doesn't. A base that doesn't compress and read back exactly is refused like one too large to
 // seal, so the root fails before any host effect rather than retrying forever.
 //
-// The envelope grows about linearly with the number of entries. The first overflow scales the
-// entries down by it; later ones fit a line through the sizes measured so far, which also finds
-// the part of the base that doesn't shrink with the window.
+// The envelope grows about linearly with the changes in the window. The first overflow scales them
+// down by it; later ones fit a line through the sizes measured so far, which also finds the part
+// of the base that doesn't shrink with the window.
 func sealRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UUID, d deployment.RecoveryDescriptor) (portability.RecoveryCapture, []byte, []byte, error) {
-	limit := 0
+	limit := portability.AllChanges
 	budget := float64(deployment.RecoveryEnvelopeLimit) * 0.95
-	var entries, sizes []float64
+	capturing := &portability.RecoveryCapturing{}
+	var changes, sizes []float64
 	for range recoverySeals {
-		capture, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, limit)
+		capture, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, limit, capturing)
 		if err != nil {
 			return capture, nil, nil, err
 		}
@@ -143,21 +144,18 @@ func sealRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UU
 			return capture, envelope, compressed, nil
 		}
 		clear(compressed)
-		if capture.Entries == 0 {
+		if capture.Changes == 0 {
 			break
 		}
-		entries, sizes = append(entries, float64(capture.Entries)), append(sizes, float64(size))
-		next := entries[len(entries)-1] * budget / float64(size)
-		if n := len(entries); n > 1 && entries[n-2] != entries[n-1] {
-			per := (sizes[n-2] - sizes[n-1]) / (entries[n-2] - entries[n-1])
-			if per > 0 {
-				next = (budget - (sizes[n-1] - per*entries[n-1])) / per
+		changes, sizes = append(changes, float64(capture.Changes)), append(sizes, float64(size))
+		next := changes[len(changes)-1] * budget / float64(size)
+		if n := len(changes); n > 1 && changes[n-2] != changes[n-1] {
+			if per := (sizes[n-2] - sizes[n-1]) / (changes[n-2] - changes[n-1]); per > 0 {
+				next = (budget - (sizes[n-1] - per*changes[n-1])) / per
 			}
 		}
-		limit = min(int(next), capture.Entries-1)
-		if limit < 1 {
-			break
-		}
+		// At least one fewer than last time, and no fewer than none.
+		limit = max(min(int(next), capture.Changes-1), 0)
 	}
 	return portability.RecoveryCapture{}, nil, nil, errRecoverySize
 }

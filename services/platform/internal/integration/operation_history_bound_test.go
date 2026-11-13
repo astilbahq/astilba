@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path"
 	"slices"
 	"strings"
@@ -221,7 +222,7 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-$6::interval+i*interval
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, 0)
+		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
 		if err != nil {
 			t.Fatal("the workspace no longer fits a recovery base: ", err)
 		}
@@ -258,6 +259,17 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-$6::interval+i*interval
 	if records := archive.Recovery.Records(); records < 8000 || records > 10000 {
 		t.Fatalf("the shortened window holds %d records", records)
 	}
+	// A base that can hold no change from the last day would start its window after its capture;
+	// it is refused rather than sealed unreadable.
+	applied(1, time.Hour)
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, 0, nil); !errors.Is(err, portability.ErrArchive) {
+		t.Fatal("a window starting after its capture was sealed: ", err)
+	}
+	tx.Rollback(ctx)
 	passphrase := "busy workspace archive passphrase"
 	var encrypted api.WorkspaceArchive
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &encrypted)
@@ -285,7 +297,7 @@ func TestRecoveredHistoryTravelsInLaterBases(t *testing.T) {
 	if err = portability.StoreRecoveredHistory(ctx, tx, ws, &portability.RecoveryHistory{Applied: []portability.AppliedEntry{kept}}); err != nil {
 		t.Fatal(err)
 	}
-	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, 0)
+	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

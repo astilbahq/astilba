@@ -217,7 +217,8 @@ func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin
 }
 
 // addAppliedHistory adds the applied history a base carries without the rows. A carried row's own
-// evidence stands; an entry stands for the row the base left out. The entry's applied plan was
+// evidence stands; an entry stands for the row the base left out, or for one that holds no outcome
+// because recovery couldn't name its plan. The entry's applied plan was
 // read back from the plan management stored when it captured the base, as buildAppliedOrigin reads
 // a row's, so an entry and its row agree wherever the row's applied runtime is valid.
 func addAppliedHistory(out *appliedOrigin, history *portability.RecoveryHistory, generations map[uuid.UUID]map[int64]uuid.UUID) error {
@@ -231,7 +232,7 @@ func addAppliedHistory(out *appliedOrigin, history *portability.RecoveryHistory,
 		}
 	}
 	for _, entry := range history.Applied {
-		if _, carried := out.Operations[entry.Operation]; carried {
+		if row, carried := out.Operations[entry.Operation]; carried && row.Runtime.Kind != "" {
 			continue
 		}
 		if generations[entry.Environment] == nil {
@@ -245,7 +246,9 @@ func addAppliedHistory(out *appliedOrigin, history *portability.RecoveryHistory,
 		switch {
 		case entry.Outcome == "removed" && Terminal(e.State):
 			e.Applied, e.Outcome = appliedTuple{Operation: entry.Operation}, Hash(e.Runtime)
-		case entry.Outcome == "applied" && entry.Revision != nil && e.State == "succeeded" && e.Sequence > 0:
+		// A cross-host root records its runtime while it runs, never reports a sequence, and can
+		// still end failed, so any ended change with a plan that reads back stands, as for a row.
+		case entry.Outcome == "applied" && entry.Revision != nil && Terminal(e.State):
 			e.Applied, e.Outcome, e.PlanHash = appliedTuple{*entry.Revision, *entry.RuntimePlan, entry.Operation}, Hash(e.Runtime), entry.PlanHash
 		}
 		out.Operations[entry.Operation] = e

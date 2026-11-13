@@ -69,7 +69,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 		return out, errors.New("provide every required host export")
 	}
 	// inline-sql: recovery session temporary table
-	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_input_checkpoints(id uuid PRIMARY KEY,parent_id uuid NOT NULL,sequence bigint NOT NULL,descriptor jsonb NOT NULL,envelope bytea NOT NULL,decoded bytea NOT NULL,PRIMARY_SOURCE uuid NOT NULL,retained boolean NOT NULL DEFAULT true,captured_at timestamptz,UNIQUE(parent_id,sequence)) ON COMMIT DROP; CREATE TEMP TABLE recovery_input_proofs(server_id uuid NOT NULL,id uuid NOT NULL,parent_id uuid NOT NULL,header jsonb NOT NULL,report jsonb NOT NULL,checkpoint text NOT NULL,applied boolean NOT NULL DEFAULT false,PRIMARY KEY(server_id,id)) ON COMMIT DROP`); err != nil {
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_input_checkpoints(id uuid PRIMARY KEY,parent_id uuid NOT NULL,sequence bigint NOT NULL,descriptor jsonb NOT NULL,envelope bytea NOT NULL,decoded bytea NOT NULL,PRIMARY_SOURCE uuid NOT NULL,retained boolean NOT NULL DEFAULT true,UNIQUE(parent_id,sequence)) ON COMMIT DROP; CREATE TEMP TABLE recovery_input_proofs(server_id uuid NOT NULL,id uuid NOT NULL,parent_id uuid NOT NULL,header jsonb NOT NULL,report jsonb NOT NULL,checkpoint text NOT NULL,applied boolean NOT NULL DEFAULT false,PRIMARY KEY(server_id,id)) ON COMMIT DROP`); err != nil {
 		return out, err
 	}
 	// A server revoked in the restored management may be gone or hostile, so its export counts only
@@ -253,7 +253,6 @@ func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 // against its descriptor and frozen root, and stages it for the chain. selectRecoveryBases decides
 // how a base is used once every one is staged.
 func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
-	var captured *time.Time
 	decoded, err := keys.Open(secretbroker.Checkpoint(d), envelope)
 	if secretbroker.SessionFailure(err) {
 		return err
@@ -306,7 +305,6 @@ func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Se
 				return errors.New("recovery participant is absent from its descriptor")
 			}
 		}
-		captured = &a.CreatedAt
 		base := loadedBase{ID: d.CheckpointID, Parent: d.ParentID, Environment: parent.EnvironmentId, Primary: primary, CapturedAt: a.CreatedAt}
 		if a.Recovery != nil {
 			base.WindowStart = &a.Recovery.WindowStart
@@ -324,7 +322,7 @@ func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Se
 		}
 	}
 	// inline-sql: recovery session temporary table
-	_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,PRIMARY_SOURCE,captured_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, d.CheckpointID, d.ParentID, d.Sequence, raw, envelope, decoded, primary, captured)
+	_, err = tx.Exec(ctx, `INSERT INTO recovery_input_checkpoints(id,parent_id,sequence,descriptor,envelope,decoded,PRIMARY_SOURCE) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.CheckpointID, d.ParentID, d.Sequence, raw, envelope, decoded, primary)
 	clear(decoded)
 	if err != nil {
 		return err

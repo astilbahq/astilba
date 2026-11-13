@@ -75,6 +75,25 @@ func TestWindowedBaseHoldsAnOlderBackupsRuntime(t *testing.T) {
 		t.Fatal("a backup inside the window was not recognised as the base's ancestor", order, err)
 	}
 
+	t.Run("failed_root_with_no_sequence", func(t *testing.T) {
+		// A cross-host root records its runtime while it runs and reports no sequence. A backup
+		// whose head it is still matches the entry for it.
+		windowed := windowTestHistory(t, full, plans, 1)
+		windowed.Recovery.Applied[0].State, windowed.Recovery.Applied[0].Sequence = "failed", 0
+		failed := maps.Clone(backup.Tables)
+		failed["execution_operations"] = []portability.Row{maps.Clone(backup.Tables["execution_operations"][0])}
+		recoverySet(failed["execution_operations"][0], "state", "failed")
+		recoverySet(failed["execution_operations"][0], "report_sequence", 0)
+		older := backup
+		older.Tables = failed
+		evidence, err := buildAppliedOrigin(windowed, uuid.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e := evidence.Operations[windowed.Recovery.Applied[0].Operation]; e.Applied.empty() {
+			t.Fatal("an ended change without a sequence lost its applied runtime")
+		}
+	})
 	t.Run("below_the_floor", func(t *testing.T) {
 		beyond, err := buildAppliedOrigin(windowTestHistory(t, full, plans, 2), uuid.New())
 		if err != nil {
@@ -125,7 +144,8 @@ func TestRecoveryEndsGapWorkFromTheNewestBase(t *testing.T) {
 	// The ledger's entry for generation 1 describes the same command.
 	history.Applied[0].Operation, _ = recoveryValue[uuid.UUID](row, "id")
 	history.Applied[0].Identity, _ = portability.CommandIdentity(row["command"], portability.CommandIdentityVersion)
-	ended, err := endRecoveryGapWork(row, history)
+	known := func(uuid.UUID) bool { return true }
+	ended, err := endRecoveryGapWork(row, history, known)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,23 +155,35 @@ func TestRecoveryEndsGapWorkFromTheNewestBase(t *testing.T) {
 	if outcome, _ := portability.ReadRuntimeOutcome(ended); outcome.Kind != "applied" || outcome.Plan != plans[0].ID {
 		t.Fatal("the backup's copy lost the runtime the base recorded", outcome)
 	}
+	// A plan neither copy holds, such as an upgrade's target stored when it completed, can't be
+	// named: the operation ends without the outcome, which recovery keeps as an entry instead.
+	unnamed, err := endRecoveryGapWork(row, history, func(uuid.UUID) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := recoveryValue[string](unnamed, "state"); state != "succeeded" {
+		t.Fatal("an operation whose plan isn't held kept its stale state", state)
+	}
+	if outcome, _ := portability.ReadRuntimeOutcome(unnamed); outcome.Kind != "" {
+		t.Fatal("an operation named a plan neither copy holds", outcome)
+	}
 
 	progressed := appliedTestRow(map[string]any{})
 	for key, value := range row {
 		progressed[key] = value
 	}
 	recoverySet(progressed, "report_sequence", 5)
-	if _, err := endRecoveryGapWork(progressed, history); err == nil {
+	if _, err := endRecoveryGapWork(progressed, history, known); err == nil {
 		t.Fatal("a copy that progressed beyond the base's final state was overwritten")
 	}
 	history.Applied[0].Identity = "v2:" + strings.Repeat("1", 64)
-	if _, err := endRecoveryGapWork(row, history); err == nil {
+	if _, err := endRecoveryGapWork(row, history, known); err == nil {
 		t.Fatal("a different command took the base's final state")
 	}
 
 	unknown := appliedTestDeploy(full, plans[1], 3).Tables["execution_operations"][2]
 	recoverySet(unknown, "state", "running")
-	same, err := endRecoveryGapWork(unknown, history)
+	same, err := endRecoveryGapWork(unknown, history, known)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +197,7 @@ func TestRecoveryEndsGapWorkFromTheNewestBase(t *testing.T) {
 	recoverySet(settled, "runtime_plan_id", nil)
 	id, _ := recoveryValue[uuid.UUID](settled, "id")
 	history.Settled = append(history.Settled, portability.SettledOperation{Operation: id, State: "failed", Sequence: 2, EndedAt: time.Now()})
-	ended, err = endRecoveryGapWork(settled, history)
+	ended, err = endRecoveryGapWork(settled, history, known)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,14 +207,15 @@ func TestRecoveryEndsGapWorkFromTheNewestBase(t *testing.T) {
 }
 
 // A backup that shows live an environment the newest base no longer carries is older than the
-// window: the base carries every environment that is live or changed inside it.
+// window: the base carries every environment whose runtime is applied or changed inside it.
 func TestRecoveryRefusesABackupShowingARetiredPreviewLive(t *testing.T) {
 	backup, full, plans := windowTestChain(t, 2)
 	newest := windowTestHistory(t, full, plans, 1)
-	preview := uuid.New()
+	preview, head := uuid.New(), uuid.New()
 	created := newest.CreatedAt.Add(-200 * 24 * time.Hour)
-	backup.Tables["environments"] = append(backup.Tables["environments"], appliedTestRow(map[string]any{"id": preview, "name": "pr-7", "purpose": "preview", "created_at": created, "runtime_operation_id": nil}))
-	backup.Tables["preview_requests"] = []portability.Row{appliedTestRow(map[string]any{"environment_id": preview, "state": "ready"})}
+	backup.Tables["environments"] = append(backup.Tables["environments"], appliedTestRow(map[string]any{"id": preview, "name": "pr-7", "purpose": "preview", "created_at": created, "runtime_operation_id": head}))
+	operation := appliedTestRow(map[string]any{"id": head, "runtime_outcome": "applied", "runtime_plan_id": uuid.New()})
+	backup.Tables["execution_operations"] = append(backup.Tables["execution_operations"], operation)
 	for _, row := range backup.Tables["environments"] {
 		if _, named := row["created_at"]; !named {
 			recoverySet(row, "created_at", created)
@@ -193,15 +226,77 @@ func TestRecoveryRefusesABackupShowingARetiredPreviewLive(t *testing.T) {
 	err := refuseRetiredBeyondWindow(backup, source)
 	var window recoveryWindowError
 	if !errors.As(err, &window) || !window.Retired || window.Environment != "pr-7" {
-		t.Fatal("a backup showing a retired preview live was not refused", err)
+		t.Fatal("a backup showing a retired preview's runtime live was not refused", err)
 	}
-	backup.Tables["preview_requests"] = []portability.Row{appliedTestRow(map[string]any{"environment_id": preview, "state": "deleted"})}
+	recoverySet(operation, "runtime_outcome", "removed")
+	recoverySet(operation, "runtime_plan_id", nil)
 	if err := refuseRetiredBeyondWindow(backup, source); err != nil {
-		t.Fatal("a backup showing the preview retired was refused", err)
+		t.Fatal("a backup showing the preview's runtime removed was refused", err)
 	}
-	backup.Tables["preview_requests"] = []portability.Row{appliedTestRow(map[string]any{"environment_id": preview, "state": "ready"})}
+	recoverySet(operation, "runtime_outcome", "applied")
+	recoverySet(operation, "runtime_plan_id", uuid.New())
 	recoverySet(backup.Tables["environments"][1], "created_at", newest.CreatedAt.Add(time.Minute))
 	if err := refuseRetiredBeyondWindow(backup, source); err != nil {
 		t.Fatal("an environment created after the newest base was refused", err)
 	}
+}
+
+// Recovery merges only the newest base. A base it lists is set aside unread, an unlisted one is
+// compared with it first, and a root still needing recovery keeps its own base for its runtime.
+func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
+	backup, full, plans := windowTestChain(t, 3)
+	newest := windowTestHistory(t, full, plans, 1)
+	archives := map[uuid.UUID]portability.Archive{}
+	base := func(a portability.Archive, captured time.Time) loadedBase {
+		b := loadedBase{ID: uuid.New(), Parent: uuid.New(), CapturedAt: captured}
+		a.CreatedAt = captured
+		archives[b.Parent] = a
+		return b
+	}
+	decode := func(parent uuid.UUID) (portability.Archive, error) { return archives[parent], nil }
+	listed := base(backup, newest.CreatedAt.Add(-2*time.Hour))
+	unlisted := base(backup, newest.CreatedAt.Add(-time.Hour))
+	n := base(newest, newest.CreatedAt)
+	n.Supersedes = map[uuid.UUID]uuid.UUID{listed.ID: listed.Parent}
+	out := recoverySource{Bases: []loadedBase{listed, unlisted, n}}
+	if err := chooseRecoveryBases(&out, decode); err != nil {
+		t.Fatal(err)
+	}
+	if out.Origins.Newest.Parent != n.Parent || len(out.Origins.Values) != 1 || out.History != newest.Recovery || len(out.SetAside) != 2 {
+		t.Fatal("recovery didn't merge only the newest base and set the others aside", out.SetAside)
+	}
+	for _, set := range out.SetAside {
+		if set.Checkpoint == listed.ID && !strings.Contains(set.Reason, "superseded") || set.Checkpoint == unlisted.ID && !strings.Contains(set.Reason, "agrees") {
+			t.Fatal("a set-aside base gave the wrong reason", set)
+		}
+	}
+
+	t.Run("a resumed root keeps its base", func(t *testing.T) {
+		out := recoverySource{Bases: []loadedBase{listed, unlisted, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: listed.Parent}}}
+		if err := chooseRecoveryBases(&out, decode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := out.Origins.origin(plans[0].EnvironmentID, out.Origins.Values[1].Environments[plans[0].EnvironmentID], listed.Parent); err != nil || len(out.SetAside) != 1 {
+			t.Fatal("a root a host still runs lost its own base", err)
+		}
+	})
+	t.Run("an unlisted base below the window", func(t *testing.T) {
+		short := windowTestHistory(t, full, plans, 2)
+		m := base(short, newest.CreatedAt.Add(time.Hour))
+		out := recoverySource{Bases: []loadedBase{unlisted, m}}
+		err := chooseRecoveryBases(&out, decode)
+		if err == nil || !strings.Contains(err.Error(), unlisted.ID.String()) || strings.Contains(err.Error(), "management backup") {
+			t.Fatal("an unlisted checkpoint older than the window wasn't refused by name", err)
+		}
+	})
+	t.Run("an unlisted fork", func(t *testing.T) {
+		p := plans[0]
+		p.ID = uuid.New()
+		p = p.WithHash()
+		fork := base(appliedTestDeploy(backup, p, 2), newest.CreatedAt.Add(-time.Minute))
+		out := recoverySource{Bases: []loadedBase{fork, n}}
+		if err := chooseRecoveryBases(&out, decode); err == nil {
+			t.Fatal("a diverged base was set aside")
+		}
+	})
 }

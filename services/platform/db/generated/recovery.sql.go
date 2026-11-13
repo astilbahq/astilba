@@ -631,6 +631,40 @@ func (q *Queries) OperationCancelRequested(ctx context.Context, arg OperationCan
 	return cancel_requested, err
 }
 
+const operationCommands = `-- name: OperationCommands :many
+SELECT id,command FROM execution_operations WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+`
+
+type OperationCommandsParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+type OperationCommandsRow struct {
+	ID      uuid.UUID `json:"id"`
+	Command []byte    `json:"command"`
+}
+
+func (q *Queries) OperationCommands(ctx context.Context, arg OperationCommandsParams) ([]OperationCommandsRow, error) {
+	rows, err := q.db.Query(ctx, operationCommands, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OperationCommandsRow{}
+	for rows.Next() {
+		var i OperationCommandsRow
+		if err := rows.Scan(&i.ID, &i.Command); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const operationExists = `-- name: OperationExists :one
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND id = $2)
 `

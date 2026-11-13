@@ -16,24 +16,41 @@ import (
 // credential ciphertext and must be sealed with the management keyring before leaving the
 // management process. It is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
-	capture, err := CaptureRecoveryBase(ctx, tx, ws, RecoveryWindowTarget, 0)
+	capture, err := CaptureRecoveryBase(ctx, tx, ws, RecoveryWindowTarget, AllChanges, nil)
 	return capture.Raw, err
 }
 
-// RecoveryCapture is a captured base, the window its applied history covers, and how many entries
-// that history has.
+// RecoveryCapture is a captured base, the window its applied history covers, and how many changes
+// inside the window that history holds, beside each environment's change from before it.
 type RecoveryCapture struct {
 	Raw         []byte
 	CapturedAt  time.Time
 	WindowStart time.Time
-	Entries     int
+	Changes     int
 }
 
+// RecoveryCapturing carries what one capture learns into the next, when a base is captured again
+// with a shorter window: the command identities it computed, by operation.
+type RecoveryCapturing struct {
+	identities map[uuid.UUID]string
+}
+
+// AllChanges asks CaptureRecoveryBase for every change in its window that fits.
+const AllChanges = -1
+
 // CaptureRecoveryBase captures a recovery base whose applied history reaches window back, or less
-// when that doesn't fit the archive's limits or more than entries changes (when entries is
-// positive): the window then starts at the newest change that still fits. It refuses a workspace
-// whose configuration and fixed history windows alone don't fit.
-func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window time.Duration, entries int) (RecoveryCapture, error) {
+// when that doesn't fit the archive's limits, or holds more than changes changes (unless changes
+// is AllChanges): the window then starts at the newest change that still fits, and the base carries
+// only the retired previews and history that window needs. It refuses a workspace whose
+// configuration and fixed history windows alone don't fit, or that can't fit a day of changes.
+// The base is decoded as recovery will decode it before it is returned.
+func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window time.Duration, changes int, capturing *RecoveryCapturing) (RecoveryCapture, error) {
+	if capturing == nil {
+		capturing = &RecoveryCapturing{}
+	}
+	if capturing.identities == nil {
+		capturing.identities = map[uuid.UUID]string{}
+	}
 	archive := Archive{Version: RecoveryArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
@@ -41,47 +58,78 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 	}
 	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
 	start := archive.CreatedAt.Add(-window)
-	filters, err := baseSelection(ctx, tx, ws, start.Add(-recoveryFallbackMargin))
-	if err != nil {
-		return RecoveryCapture{}, err
-	}
-	archive, size, count, err := captureTables(ctx, tx, archive, filters, true)
-	if err != nil {
-		return RecoveryCapture{}, err
-	}
+	var selected time.Time
+	size, count, settled := 0, 0, 0
 	history := &RecoveryHistory{TargetDays: int(RecoveryWindowTarget / (24 * time.Hour))}
-	if history.Superseded, err = recoverySuperseded(ctx, tx, ws); err != nil {
-		return RecoveryCapture{}, err
+	// Each pass narrows the window or learns a larger settled list, so the window only moves later.
+	for range 6 {
+		if !start.Equal(selected) {
+			filters, err := baseSelection(ctx, tx, ws, start.Add(-recoveryFallbackMargin))
+			if err != nil {
+				return RecoveryCapture{}, err
+			}
+			if archive, size, count, err = captureTables(ctx, tx, archive, filters, true); err != nil {
+				return RecoveryCapture{}, err
+			}
+			if history.Superseded, err = recoverySuperseded(ctx, tx, ws); err != nil {
+				return RecoveryCapture{}, err
+			}
+			// Before the ledger is read, the roots that ended inside the window bound the list.
+			roots, err := recoverySettled(ctx, tx, ws, start, nil, true)
+			if err != nil {
+				return RecoveryCapture{}, err
+			}
+			settled, selected = max(settled, len(roots)), start
+		}
+		const listed = 160
+		environments := len(archive.Tables["environments"])
+		records := maxArchiveRecords - count - len(history.Superseded) - settled - 2*environments
+		bytes := (MaxArchiveBytes - size - listed*(len(history.Superseded)+settled+environments)) / recoveryEntryBytes
+		limit := min(records, bytes)
+		if changes != AllChanges {
+			limit = min(limit, changes+1)
+		}
+		next, err := recoveryWindowStart(ctx, tx, ws, start, limit)
+		if err != nil {
+			return RecoveryCapture{}, err
+		}
+		if !next.Before(archive.CreatedAt) {
+			return RecoveryCapture{}, ErrArchive
+		}
+		if !next.Equal(start) {
+			start = next
+			continue
+		}
+		history.WindowStart = start
+		if history.Environments, history.Applied, err = recoveryLedger(ctx, tx, ws, start, capturing.identities); err != nil {
+			return RecoveryCapture{}, err
+		}
+		if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied, false); err != nil {
+			return RecoveryCapture{}, err
+		}
+		if count+history.Records() > maxArchiveRecords {
+			settled = len(history.Settled)
+			continue
+		}
+		archive.Recovery = history
+		raw, err := stablejson.Marshal(archive)
+		if err != nil || len(raw) > MaxArchiveBytes {
+			clear(raw)
+			return RecoveryCapture{}, ErrArchive
+		}
+		if _, err = DecodeRecovery(raw); err != nil {
+			clear(raw)
+			return RecoveryCapture{}, err
+		}
+		floors := 0
+		for _, e := range history.Environments {
+			if !e.Whole {
+				floors++
+			}
+		}
+		return RecoveryCapture{Raw: raw, CapturedAt: archive.CreatedAt, WindowStart: start, Changes: len(history.Applied) - floors}, nil
 	}
-	// The settled list only shrinks as the window does, so the full window's roots bound it.
-	settled, err := recoverySettled(ctx, tx, ws, start, nil, true)
-	if err != nil {
-		return RecoveryCapture{}, err
-	}
-	const listed = 160
-	records := maxArchiveRecords - count - len(history.Superseded) - len(settled) - 2*len(archive.Tables["environments"])
-	bytes := (MaxArchiveBytes - size - listed*(len(history.Superseded)+len(settled)+len(archive.Tables["environments"]))) / recoveryEntryBytes
-	limit := min(records, bytes)
-	if entries > 0 {
-		limit = min(limit, entries)
-	}
-	if start, err = recoveryWindowStart(ctx, tx, ws, start, limit); err != nil {
-		return RecoveryCapture{}, err
-	}
-	history.WindowStart = start
-	if history.Environments, history.Applied, err = recoveryLedger(ctx, tx, ws, start); err != nil {
-		return RecoveryCapture{}, err
-	}
-	if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied, false); err != nil {
-		return RecoveryCapture{}, err
-	}
-	archive.Recovery = history
-	raw, err := stablejson.Marshal(archive)
-	if err != nil || len(raw) > MaxArchiveBytes || count+history.Records() > maxArchiveRecords {
-		clear(raw)
-		return RecoveryCapture{}, ErrArchive
-	}
-	return RecoveryCapture{Raw: raw, CapturedAt: archive.CreatedAt, WindowStart: start, Entries: len(history.Applied)}, nil
+	return RecoveryCapture{}, ErrArchive
 }
 
 // InspectRecovery reads trusted database state, including a union of individually

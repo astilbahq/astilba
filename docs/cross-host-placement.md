@@ -144,10 +144,11 @@ record of applied history: every runtime change committed in the 90 days before 
 captured, plus the change each environment had when that window opened. So a base's size
 follows the workspace's configuration, not its age.
 
-- **Which backup recovery can use.** Recovery uses a management backup taken after the newest
-  checkpoint's window opened. An older one is refused with the dates: the newest checkpoint
-  can't show that such a backup's runtime is its ancestor rather than a diverged copy. Use a
-  more recent backup. There is no override.
+- **Which backup recovery can use.** Use a management backup taken after the newest
+  checkpoint's window opened. An older one is refused, with the dates, when it holds a runtime
+  older than the window or shows live an environment retired before it: the newest checkpoint
+  can't show that such a backup is its ancestor rather than a diverged copy. One whose runtimes
+  haven't changed since still recovers. Use a more recent backup. There is no override.
 - **A shorter window.** When a busy workspace's history doesn't fit a base, the window starts
   later, at the newest change that still fits. Management logs a warning, and raises the
   `recovery_window` alert, while the window is shorter than 35 days, the backup retention
@@ -161,8 +162,9 @@ follows the workspace's configuration, not its age.
   failure are lost. An operation the backup holds unfinished gets the final state the newest
   checkpoint records for it; one it records nothing for is fenced as cancelled, as before.
 - **Retired environments.** A base carries every standard environment, retired or not, and
-  each preview environment that is live or was retired inside its window. A backup that shows
-  live a preview environment retired before the window opened is refused with the dates.
+  each preview environment whose runtime is applied or changed inside its window. A backup that
+  shows a runtime applied for a preview environment retired before the window opened is refused
+  with the dates.
 
 Recovery merges only the newest checkpoint, N: the one no other supplied checkpoint lists as
 superseded, captured last. N carries every unfinished root with everything it names, so an
@@ -170,7 +172,8 @@ older checkpoint adds nothing to merge, and an older copy of a row N dropped wou
 backup's newer one. A base lists every base a host may still hold that its management captured
 or recovered before it, which vouches that they are its ancestors. Recovery sets those aside
 and names them in its preview. Any other older checkpoint, such as one from a management that
-diverged, is compared with N first: one whose applied history N doesn't continue is refused. An
+diverged, is compared with N first: one whose applied history N doesn't continue, or doesn't
+reach back to, is refused, naming that checkpoint. An
 interrupted root's own checkpoint still supplies its frozen plan, its continuation and its
 environment's runtime.
 
