@@ -57,18 +57,18 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 			checked = errDockerStopped
 		}
 	}
-	// The agent's own refusal comes first, then Docker's failure, which also ends the stream.
+	// The stream's own failure comes first: its refusal, or the registry's. Docker's load then
+	// fails too, for that reason. A stream that failed because Docker stopped reading it is
+	// errDockerStopped, and Docker's own failure says why.
 	var refused *imageLoadRefused
 	var unread *imageArchiveUnread
 	switch {
 	case errors.As(checked, &refused):
 		return refused
-	case loaded != nil:
-		return &imageLoadRefused{why: "Docker's image load failed: " + firstLine(loaded.Error(), 300)}
-	case errors.Is(checked, errDockerStopped):
-		return &imageLoadRefused{why: "Docker stopped reading it"}
 	case errors.As(checked, &unread):
 		return registryUnreachable(unread.err)
+	case loaded != nil:
+		return &imageLoadRefused{why: "Docker's image load failed: " + firstLine(loaded.Error(), 300)}
 	case checked != nil:
 		return &imageLoadRefused{why: "Docker stopped reading it"}
 	}
