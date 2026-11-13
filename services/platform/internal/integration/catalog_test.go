@@ -77,6 +77,8 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	// Staging again needs other names, and can use an existing secret instead of a new one.
 	b.call("POST", stagings, request(draft.Id, "Kaneo"), 400, nil)
 	second := request(draft.Id, "Second")
+	other := "second.example.com"
+	second.Route.Domain = &other
 	password := catalogPassword(t)
 	second.ExistingSecrets = &[]struct {
 		SecretId        uuid.UUID `json:"secretId"`
@@ -99,7 +101,7 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	b.call("POST", prefix+"/invitations", map[string]string{"email": "catalog-viewer@example.test", "role": "viewer"}, 201, nil)
 	viewer := f.browser(t)
 	var session api.Session
-	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromMail(t, f.mail), "name": "Viewer", "password": f.password}, 200, &session)
+	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromLinkMail(t, f, "/invitation"), "name": "Viewer", "password": f.password}, 200, &session)
 	viewer.csrf = session.CsrfToken
 	viewer.call("POST", stagings, request(saved.Id, "Viewer"), 403, nil)
 	var compose api.Environment
