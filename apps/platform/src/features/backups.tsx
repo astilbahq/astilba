@@ -143,10 +143,10 @@ export function Backups({
             path={path}
             revision={revision}
             policies={policies.data}
+            form={createPolicy}
             choose={(r) => {
               setPreset(r);
               setMethod(r.method);
-              if (createPolicy.current) createPolicy.current.open = true;
             }}
           />
           <details className={s.panel} ref={createPolicy}>
@@ -158,7 +158,6 @@ export function Backups({
               changing its deployment.
             </p>
             <Form
-              key={preset?.serviceId}
               action={action}
               label="Create backup policy"
               onSubmit={(d, form) =>
@@ -196,6 +195,7 @@ export function Backups({
               }
             >
               <Field
+                key={`name-${preset?.serviceId}`}
                 name="name"
                 label="Policy name"
                 defaultValue={preset && `${preset.app.name} daily backup`}
@@ -216,6 +216,7 @@ export function Backups({
               <Label>
                 Source resource
                 <Select
+                  key={preset?.serviceId}
                   name="resource"
                   required
                   defaultValue={preset?.serviceId ?? ""}
@@ -272,6 +273,7 @@ export function Backups({
                 />
               )}
               <ScheduleFields
+                key={preset?.serviceId}
                 initial={
                   preset && {
                     hour: preset.hour,
@@ -284,6 +286,7 @@ export function Backups({
                 <Label>
                   Successful uploads to retain
                   <Input
+                    key={preset?.serviceId}
                     name="retain"
                     type="number"
                     min="1"

@@ -145,6 +145,7 @@ export function ServiceCatalog({
               })
             }
           />
+          <ErrorNotice error={action.error} />
           {notice && <p role="status">{notice}</p>}
         </>
       )}
@@ -170,6 +171,9 @@ function StageForm({
   ) => void;
 }) {
   const [name, setName] = useState(recipe.name);
+  const [server, setServer] = useState("");
+  // Typed networks win over the prefilled address, which can arrive after typing starts.
+  const [allow, setAllow] = useState<string>();
   const servers = useQuery({
     ...serversOptions(path.workspaceId),
     enabled: !!recipe.route,
@@ -205,14 +209,13 @@ function StageForm({
           }))
           .filter((v) => v.secretVersionId);
         const domain = text(d, "domain").trim();
-        const server = text(d, "server");
         onSubmit({
           recipeId: recipe.id,
           name: text(d, "name"),
           existingSecrets,
           route: recipe.route
             ? {
-                ...(domain ? { domain } : { generatedServerId: server }),
+                ...(server ? { generatedServerId: server } : { domain }),
                 tls: text(d, "tls") as "managed" | "off",
                 allowCidrs: text(d, "allow")
                   .split(/[\s,]+/)
@@ -249,19 +252,13 @@ function StageForm({
         <fieldset className={s.stack}>
           <legend>Public route</legend>
           <Label>
-            Domain
-            <Input
-              name="domain"
-              placeholder="tracker.example.com"
-              maxLength={253}
-              autoCapitalize="none"
-              spellCheck={false}
-            />
-          </Label>
-          <Label>
-            Or a generated application domain on
-            <Select name="server" defaultValue="">
-              <option value="">No generated domain</option>
+            Address
+            <Select
+              name="server"
+              value={server}
+              onChange={(e) => setServer(e.target.value)}
+            >
+              <option value="">A domain you control</option>
               {servers.data
                 ?.filter(
                   (v) =>
@@ -271,11 +268,25 @@ function StageForm({
                 )
                 .map((v) => (
                   <option value={v.id} key={v.id}>
-                    {v.name}
+                    Generated application domain on {v.name}
                   </option>
                 ))}
             </Select>
           </Label>
+          <ErrorNotice error={servers.error} />
+          {!server && (
+            <Label>
+              Domain
+              <Input
+                name="domain"
+                placeholder="tracker.example.com"
+                maxLength={253}
+                autoCapitalize="none"
+                spellCheck={false}
+                required
+              />
+            </Label>
+          )}
           <Label>
             TLS
             <Select name="tls" defaultValue="managed">
@@ -286,19 +297,22 @@ function StageForm({
           <Label>
             Allowed client networks
             <Textarea
-              key={address.data?.prefix}
               name="allow"
               rows={2}
               required
-              defaultValue={address.data?.prefix ?? ""}
+              value={allow ?? address.data?.prefix ?? ""}
+              onChange={(e) => setAllow(e.target.value)}
               spellCheck={false}
             />
           </Label>
+          <ErrorNotice error={address.error} />
           <p className={s.muted}>
             Only these networks can reach {name} until you change the route.
-            Your network is filled in as management sees it; a server elsewhere
-            may see you differently. {recipe.name} makes the first account its
-            administrator, so create yours before opening the route.
+            {address.data?.prefix
+              ? " Your network is filled in as management sees it; a server elsewhere may see you differently."
+              : " Enter your network, such as 203.0.113.7/32."}{" "}
+            {recipe.name} makes the first account its administrator, so create
+            yours before opening the route.
           </p>
         </fieldset>
       )}

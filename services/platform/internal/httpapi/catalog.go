@@ -23,15 +23,10 @@ func (s *Server) StageCatalogEntry(w http.ResponseWriter, r *http.Request, ws, p
 		s.fail(w, r, e)
 		return
 	}
-	p := principal(r.Context())
-	rev, e := s.Execution.StageCatalogEntry(r.Context(), *p, ws, pid, env, b)
-	// As with a draft save, the saved configuration goes only to a caller that may read it.
-	out := api.SavedDraft{Id: rev.ID, AuthorId: rev.AuthorID, CreatedAt: rev.CreatedAt}
-	if e == nil && p.MayReadEnvironment() {
-		v := revision(rev)
-		out.Hash, out.Specification = &v.Hash, &v.Specification
-	}
-	s.executionResponse(w, r, 201, out, e)
+	rev, e := s.Execution.StageCatalogEntry(r.Context(), *principal(r.Context()), ws, pid, env, b)
+	// Only browser members stage (it is no automation operation), and they may read the draft.
+	v := revision(rev)
+	s.executionResponse(w, r, 201, api.SavedDraft{Id: v.Id, AuthorId: v.AuthorId, CreatedAt: v.CreatedAt, Hash: &v.Hash, Specification: &v.Specification}, e)
 }
 
 func (s *Server) ListCatalogStagings(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {

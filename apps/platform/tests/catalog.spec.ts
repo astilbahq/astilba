@@ -31,6 +31,13 @@ test("catalog and named connections stage a private revision with secret referen
   await expect(
     page.getByText(/Nginx is in a new saved revision/),
   ).toBeVisible();
+  // A refused staging says why: the name is taken now.
+  await page.getByRole("button", { name: "Stage Nginx", exact: true }).click();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "already has a service named Nginx" }),
+  ).toBeVisible();
   await recipe.selectOption("valkey-cache");
   await expect(
     page.getByText(/Data is intentionally not persisted/),

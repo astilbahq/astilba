@@ -91,7 +91,8 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	}
 	var listed []api.CatalogStaging
 	b.call("GET", stagings, nil, 200, &listed)
-	if len(listed) != 2 || listed[1].Backups[0].ServiceId != database.ID || listed[0].RecipeName != "Kaneo" || listed[0].RecipeVersion != "2.49.0" || listed[0].RevisionId != saved.Id {
+	// Nothing is deployed yet, so nothing is recommended: a policy needs the applied deployment.
+	if len(listed) != 2 || len(listed[1].Backups) != 0 || listed[0].RecipeName != "Kaneo" || listed[0].RecipeVersion != "2.49.0" || listed[0].RevisionId != saved.Id {
 		t.Fatal("staging records", listed)
 	}
 	// The second staging is undone before deployment; the first stays.
@@ -136,6 +137,18 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	dbPassword := payload.Secrets[database.Postgres.PasswordSecretVersionID.String()]
 	if len(auth) != 64 || strings.Trim(auth, "0123456789abcdef") != "" || len(dbPassword) != 43 {
 		t.Fatal("agent did not receive the generated values")
+	}
+	resources := []deployment.Resource{}
+	for _, a := range []domain.Application{kaneo, database} {
+		resources = append(resources, deployment.Resource{ID: a.ID, Kind: a.ServiceKind(), State: "running", Image: images[a.ID.String()]})
+	}
+	deployed, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: resources, Images: images, Applied: true, StateHash: strings.Repeat("b", 64)})
+	c = polled.Command
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&deployed)}, 204, nil)
+	// The deployed database now has its recommended backup; the undone second staging has none.
+	b.call("GET", stagings, nil, 200, &listed)
+	if len(listed[1].Backups) != 1 || listed[1].Backups[0].ServiceId != database.ID || listed[1].Backups[0].Method != "postgres-logical" || len(listed[0].Backups) != 0 {
+		t.Fatal("backup presets after deployment", listed)
 	}
 	for _, seen := range [][]byte{raw, b.call("GET", path+"/draft", nil, 200, nil), b.call("GET", path+"/secrets", nil, 200, nil), b.call("GET", stagings, nil, 200, nil), b.call("GET", path+"/revisions", nil, 200, nil)} {
 		if strings.Contains(string(seen), auth) || strings.Contains(string(seen), dbPassword) {

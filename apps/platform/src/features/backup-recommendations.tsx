@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { RefObject } from "react";
 import { client, result, type Schema } from "../api/client";
 import { Button } from "../components/button";
 import * as s from "../styles";
@@ -16,11 +17,16 @@ export function BackupRecommendations({
   path,
   revision,
   policies,
+  form,
   choose,
 }: {
   path: EnvironmentPath;
   revision: Schema["Revision"];
   policies: Schema["BackupPolicy"][] | undefined;
+  // The create-policy disclosure. Choosing a recommendation opens it and moves to its name
+  // field. The form refills only the fields a recommendation sets (each is keyed by it), so
+  // a destination or password already entered stays.
+  form: RefObject<HTMLDetailsElement | null>;
   choose: (backup: RecommendedBackup) => void;
 }) {
   const stagings = useQuery({
@@ -61,14 +67,24 @@ export function BackupRecommendations({
             {r.app.name}: daily at {String(r.hour).padStart(2, "0")}:
             {String(r.minute).padStart(2, "0")}, keeping {r.retain} uploads, as
             the {r.from} template recommends.{" "}
-            <Button onClick={() => choose(r)}>Use for {r.app.name}</Button>
+            <Button
+              onClick={() => {
+                choose(r);
+                if (form.current) form.current.open = true;
+                // After the form renders with the recommended values.
+                requestAnimationFrame(() =>
+                  form.current
+                    ?.querySelector<HTMLInputElement>('input[name="name"]')
+                    ?.focus(),
+                );
+              }}
+            >
+              Use for {r.app.name}
+            </Button>
           </li>
         ))}
       </ul>
-      <p>
-        Choose a destination and a repository password to finish. The policy
-        installs after the service is deployed.
-      </p>
+      <p>Choose a destination and a repository password to finish.</p>
     </div>
   );
 }

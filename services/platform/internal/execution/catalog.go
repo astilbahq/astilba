@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json/v2"
+	"slices"
 	"strings"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -48,14 +49,18 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 		server = r.GeneratedServerId
 		stage.Route = &catalog.StageRoute{Domain: domainName, TLS: string(r.Tls), AllowCIDRs: r.AllowCidrs}
 	}
-	keys, err := s.Store.BeginKeys(ctx, p, store.WorkspaceAccess{Write: true}, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
-	if err != nil {
-		return out, err
-	}
+	// Keys are opened only when staging will seal a value it generates.
+	var keys *secretbroker.Session
 	used := false
-	defer func() { keys.Close(ctx, secretbroker.UsedIf(used)) }()
+	if slices.ContainsFunc(recipe.Secrets, func(secret catalog.Secret) bool { return stage.Existing[secret.ID] == uuid.Nil }) {
+		var err error
+		if keys, err = s.Store.BeginKeys(ctx, p, store.WorkspaceAccess{Write: true}, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Kinds: []secretbroker.Kind{secretbroker.SecretVersion}}); err != nil {
+			return out, err
+		}
+		defer func() { keys.Close(ctx, secretbroker.UsedIf(used)) }()
+	}
 	staging := uuid.New()
-	err = s.scope(ctx, p, ws, workspaceAccess{Write: true}, "catalog.stage", staging, func(tx pgx.Tx) error {
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "catalog.stage", staging, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		row, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: env})
 		if err != nil {
@@ -71,25 +76,13 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 		if row.ConfigurationOwner != "dashboard" || v.Spec.Compose != nil {
 			return domain.Invalid("configurationOwner")
 		}
-		for _, version := range stage.Existing {
-			if _, err := q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: env, ID: version}); err != nil {
-				return store.IfMissing(err, domain.Invalid("existingSecrets"))
-			}
-		}
+		// The existing secret versions are checked where SaveDraft checks every reference.
 		staged, err := recipe.Stage(stage, func(app uuid.UUID) (string, error) {
-			// The same rules as a suggested domain: the server must be the environment's, if it
-			// has one, and its application-domain addresses must be in use.
 			if v.Server != nil && *v.Server != *server {
 				return "", domain.Invalid("route.generatedServerId")
 			}
-			config, err := s.domainConfiguration(ctx, tx, ws, *server)
-			if err != nil {
-				return "", err
-			}
-			if config.State == "disabled" || config.State == "unconfigured" || config.State == "review_required" {
-				return "", domain.Invalid("route.generatedServerId")
-			}
-			return domain.ApplicationHostname(s.Store.ApplicationDomain, ws, env, app, *server), nil
+			hostname, _, err := s.generatedHostname(ctx, tx, ws, env, app, *server)
+			return hostname, err
 		})
 		if err != nil {
 			return err
@@ -132,10 +125,10 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 			if err != nil {
 				return err
 			}
-			used = true
 			if err = store.InsertSecretValue(ctx, q, keys, p, ws, env, g.VersionID, g.Name, value); err != nil {
 				return err
 			}
+			used = true
 		}
 		if out, err = s.Store.SaveDraft(ctx, tx, q, p, row, spec, canonical); err != nil {
 			return err
@@ -154,14 +147,31 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 }
 
 // CatalogStagings lists what was staged into the environment, with each entry's backup presets
-// for the services it created. The caller compares them with the environment's specification
-// and backup policies.
+// for the services it created that the applied deployment runs. The caller leaves out those
+// that already have a policy.
 func (s *Service) CatalogStagings(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.CatalogStaging, error) {
 	out := []api.CatalogStaging{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if _, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: env}); err != nil {
+		row, err := q.GetEnvironment(ctx, db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: env})
+		if err != nil {
 			return err
+		}
+		// A backup policy captures the applied deployment, so a preset applies only to a service
+		// that deployment runs.
+		deployed := map[uuid.UUID]bool{}
+		if row.AppliedRevisionID != nil {
+			applied, err := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: *row.AppliedRevisionID})
+			if err != nil {
+				return err
+			}
+			spec, _, err := domain.ParseSpec(applied.Specification)
+			if err != nil {
+				return err
+			}
+			for _, a := range spec.Applications {
+				deployed[a.ID] = true
+			}
 		}
 		rows, err := q.ListCatalogStagings(ctx, db.ListCatalogStagingsParams{WorkspaceID: ws, EnvironmentID: env})
 		if err != nil {
@@ -176,7 +186,7 @@ func (s *Service) CatalogStagings(ctx context.Context, p store.Principal, ws, pi
 			if recipe, ok := catalog.Find(row.RecipeID); ok {
 				v.RecipeName = recipe.Name
 				for _, b := range recipe.Backups {
-					if id, ok := services[b.ServiceID]; ok {
+					if id, ok := services[b.ServiceID]; ok && deployed[id] {
 						v.Backups = append(v.Backups, api.CatalogBackupPreset{ServiceId: id, Method: api.CatalogBackupPresetMethod(b.Method), Hour: b.Hour, Minute: b.Minute, Retain: b.Retain})
 					}
 				}

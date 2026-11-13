@@ -76,8 +76,9 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		secrets := map[uuid.UUID]uuid.UUID{}
 		create := func(label, value string) (uuid.UUID, error) {
 			id := uuid.New()
-			used = true
-			return id, store.InsertSecretValue(ctx, q, keys, p, ws, env, id, label, value)
+			err := store.InsertSecretValue(ctx, q, keys, p, ws, env, id, label, value)
+			used = used || err == nil
+			return id, err
 		}
 		if in.CopySecrets {
 			for _, old := range domain.SecretReferences(v.Spec) {

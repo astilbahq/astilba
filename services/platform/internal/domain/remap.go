@@ -22,7 +22,7 @@ func RemapSpecification(source Specification, ids, secrets map[uuid.UUID]uuid.UU
 	if err != nil {
 		return s, err
 	}
-	if s.Compose != nil || len(s.Networks) > 0 || s.Placement != nil {
+	if s.Compose != nil || s.Placement != nil {
 		return s, Invalid(field + ".specification")
 	}
 	remap := func(id *uuid.UUID) error {
