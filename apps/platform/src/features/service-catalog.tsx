@@ -65,6 +65,7 @@ export function ServiceCatalog({
               onChange={(e) => {
                 setSelected(e.target.value);
                 setNotice("");
+                action.reset();
               }}
             >
               {groups.map(

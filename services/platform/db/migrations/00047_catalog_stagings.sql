@@ -2,8 +2,8 @@
 -- One row each time a catalog entry is staged into an environment: which entry and release, the
 -- draft revision staging saved, and the services it created, as an object from the entry's
 -- placeholder service IDs to the new ones. The backups page recommends the entry's backup
--- presets from it. The environment may since have removed or renamed those services, so readers
--- match them against its current specification. Rows are never changed.
+-- presets from it for the services the applied deployment runs, since the environment may since
+-- have removed them. Rows are never changed.
 CREATE TABLE catalog_stagings (
     workspace_id uuid NOT NULL,
     environment_id uuid NOT NULL,

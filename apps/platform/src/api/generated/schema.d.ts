@@ -395,7 +395,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Catalog entries staged into the environment, newest first, with the backup policies each recommends for the services it created. */
+        /** @description Catalog entries staged into the environment, newest first, with the backup policies each recommends for the services it created that the applied deployment runs. */
         get: operations["listCatalogStagings"];
         put?: never;
         /** @description Adds a catalog entry to the draft under fresh identities and saves the draft, generating the entry's secrets into the environment's secret store. Their values are never returned. The draft must still be `baseRevisionId`. */

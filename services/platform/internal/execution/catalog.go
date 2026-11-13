@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"slices"
 	"strings"
 
@@ -82,6 +83,10 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 				return "", domain.Invalid("route.generatedServerId")
 			}
 			hostname, _, err := s.generatedHostname(ctx, tx, ws, env, app, *server)
+			// The request names the server in its route, so that is the field to check.
+			if invalid := (*domain.Error)(nil); errors.As(err, &invalid) && invalid.Code == "invalid_input" {
+				return "", domain.Invalid("route.generatedServerId")
+			}
 			return hostname, err
 		})
 		if err != nil {

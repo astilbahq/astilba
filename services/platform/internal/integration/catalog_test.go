@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"strings"
@@ -98,6 +99,26 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	// The second staging is undone before deployment; the first stays.
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": saved.Id, "specification": draft.Specification}, 200, &saved)
 
+	// A staging that generates nothing opens no keys and stores no secret.
+	seals := func() (n int) {
+		if err := f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM secret_access WHERE workspace_id=$1 AND purpose='seal'", ws).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := seals()
+	pg, _ := catalog.Find("postgresql-18")
+	given := []struct {
+		SecretId        uuid.UUID `json:"secretId"`
+		SecretVersionId uuid.UUID `json:"secretVersionId"`
+	}{{SecretId: pg.Secrets[0].ID, SecretVersionId: names["Kaneo database · password"]}}
+	b.call("POST", stagings, api.CatalogStageRequest{RecipeId: pg.ID, BaseRevisionId: saved.Id, Name: "Reporting", ExistingSecrets: &given}, 201, &saved)
+	b.call("GET", path+"/secrets", nil, 200, &secrets)
+	if seals() != before || len(secrets) != 3 {
+		t.Fatal("staging with given secrets opened keys or stored a secret")
+	}
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": saved.Id, "specification": draft.Specification}, 200, &saved)
+
 	// Only a writer stages, and only into a dashboard-owned environment.
 	b.call("POST", prefix+"/invitations", map[string]string{"email": "catalog-viewer@example.test", "role": "viewer"}, 201, nil)
 	viewer := f.browser(t)
@@ -145,9 +166,10 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	deployed, _ := stablejson.Marshal(deployment.Observation{ObservedAt: time.Now(), Resources: resources, Images: images, Applied: true, StateHash: strings.Repeat("b", 64)})
 	c = polled.Command
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&deployed)}, 204, nil)
-	// The deployed database now has its recommended backup; the undone second staging has none.
+	// The deployed database now has its recommended backup; the undone stagings have none.
 	b.call("GET", stagings, nil, 200, &listed)
-	if len(listed[1].Backups) != 1 || listed[1].Backups[0].ServiceId != database.ID || listed[1].Backups[0].Method != "postgres-logical" || len(listed[0].Backups) != 0 {
+	first := listed[len(listed)-1]
+	if len(listed) != 3 || len(first.Backups) != 1 || first.Backups[0].ServiceId != database.ID || first.Backups[0].Method != "postgres-logical" || len(listed[0].Backups)+len(listed[1].Backups) != 0 {
 		t.Fatal("backup presets after deployment", listed)
 	}
 	for _, seen := range [][]byte{raw, b.call("GET", path+"/draft", nil, 200, nil), b.call("GET", path+"/secrets", nil, 200, nil), b.call("GET", stagings, nil, 200, nil), b.call("GET", path+"/revisions", nil, 200, nil)} {

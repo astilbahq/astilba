@@ -792,7 +792,7 @@
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/catalog-stagings:
     get:
       operationId: listCatalogStagings
-      description: Catalog entries staged into the environment, newest first, with the backup policies each recommends for the services it created.
+      description: Catalog entries staged into the environment, newest first, with the backup policies each recommends for the services it created that the applied deployment runs.
       parameters:
         - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
         - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
