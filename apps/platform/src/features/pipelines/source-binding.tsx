@@ -67,7 +67,10 @@ function SourceFields({
 }) {
   const connections = useQuery(gitConnectionsOptions(workspaceId));
   const servers = useQuery(serversOptions(workspaceId));
-  const [fallback, setFallback] = useState(initial?.fallbackRunnerId ?? "");
+  const [stored, setFallback] = useState(initial?.fallbackRunnerId ?? "");
+  // A runner can't be its own fallback, however the runner was chosen: the import shares it with
+  // the page's other Git forms.
+  const fallback = stored === runner ? "" : stored;
   const runners = servers.data?.filter(
     (v) => v.role !== "deployment" && v.capabilities?.build,
   );
@@ -101,11 +104,7 @@ function SourceFields({
           name="runner"
           required
           value={runner}
-          onChange={(e) => {
-            setRunner(e.target.value);
-            // A runner can't be its own fallback.
-            if (e.target.value === fallback) setFallback("");
-          }}
+          onChange={(e) => setRunner(e.target.value)}
         >
           {!runners?.some((v) => v.id === runner) && (
             <option value="">Choose a runner</option>
@@ -252,7 +251,8 @@ export function ChangeSource({
   const action = useAction({ recentAuth: true });
   // Removal has its own action, so its refusal is shown in its dialog, not as the form's error.
   const removal = useAction({ recentAuth: true });
-  // adopt takes the next source as shown, after this form's own binding changed it.
+  // adopt takes the next source as shown while this form's own binding is being settled, as the
+  // binding changes it; once settled, a change elsewhere is shown, not adopted.
   const [view, setView] = useState({ shown: source, adopt: false });
   if (view.adopt && source.sourceHash !== view.shown.sourceHash)
     setView({ shown: source, adopt: false });
@@ -294,7 +294,7 @@ export function ChangeSource({
           dirty={dirty}
           action={action}
           changed={changed}
-          bound={() => setView({ shown, adopt: true })}
+          binding={(adopt) => setView((v) => ({ ...v, adopt }))}
         />
         <div>
           <Button
@@ -371,7 +371,7 @@ function BindAgain({
   dirty,
   action,
   changed,
-  bound,
+  binding,
 }: {
   path: EnvironmentPath;
   revisionId: string;
@@ -379,7 +379,7 @@ function BindAgain({
   dirty: boolean;
   action: ReturnType<typeof useAction>;
   changed: (message: string) => Promise<void>;
-  bound: () => void;
+  binding: (adopt: boolean) => void;
 }) {
   const connection = useState(source.configuration.connectionId);
   const runner = useState(source.configuration.runnerId);
@@ -408,14 +408,18 @@ function BindAgain({
             )
               throw e;
             await changed(
-              "The source was not bound again: it changed since this form was opened. Your changes are kept; start again from the current source to bind it.",
+              "The source was not bound again: it changed or was removed since this form was opened. If it is still bound, your changes are kept; start again from the current source to bind it.",
             );
             return;
           }
-          bound();
-          await changed(
-            "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
-          );
+          binding(true);
+          try {
+            await changed(
+              "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
+            );
+          } finally {
+            binding(false);
+          }
         })
       }
     >

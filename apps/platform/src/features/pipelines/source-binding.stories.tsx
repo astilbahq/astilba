@@ -5,8 +5,9 @@ import { flushSync } from "react-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Schema, Session } from "../../api/client";
 import type { EnvironmentPath } from "../../api/environment";
+import { useAction } from "../../ui";
 import { member, scenario } from "../../workshop/fixtures";
-import { ChangeSource, SourceFailure } from "./source-binding";
+import { ChangeSource, ImportSource, SourceFailure } from "./source-binding";
 
 const path: EnvironmentPath = {
   workspaceId: "00000000-0000-4000-8000-000000000002",
@@ -66,13 +67,16 @@ const refusal = (status: number) =>
   );
 
 // Panel behaves as the page does: after a change it shows the source as the server now holds it,
-// which next is, and moves focus to what it says.
+// which next is, and moves focus to what it says. elsewhere is a change another owner makes, which
+// the page's polling would show.
 function Panel({
   shown,
   next,
+  elsewhere,
 }: {
   shown: Schema["GitSourceStatus"];
   next?: Schema["GitSourceStatus"];
+  elsewhere?: Schema["GitSourceStatus"];
 }) {
   const [said, setSaid] = useState("");
   const [current, setCurrent] = useState(shown);
@@ -98,6 +102,39 @@ function Panel({
           {said}
         </p>
       )}
+      {elsewhere && (
+        <button type="button" onClick={() => setCurrent(elsewhere)}>
+          Another owner changes the source
+        </button>
+      )}
+    </main>
+  );
+}
+
+// Importing shares its runner with the page's other Git forms, as the build form does here.
+function Importing() {
+  const action = useAction();
+  const connection = useState("");
+  const runner = useState("");
+  return (
+    <main id="main">
+      <label>
+        Build form runner
+        <select value={runner[0]} onChange={(e) => runner[1](e.target.value)}>
+          <option value="">None</option>
+          <option value={runnerId}>builder</option>
+          <option value={spareId}>spare</option>
+        </select>
+      </label>
+      <ImportSource
+        path={path}
+        revisionId={revisionId}
+        dirty={false}
+        action={action}
+        connection={connection}
+        runner={runner}
+        imported={async () => {}}
+      />
     </main>
   );
 }
@@ -174,6 +211,18 @@ type Story = StoryObj<typeof meta>;
 // A selected file renamed upstream stops automatic imports and says which file. The owner binds
 // the source again with the new name, keeping everything else as it was.
 export const RebindRenamedFile: Story = {
+  args: {
+    next: {
+      ...source,
+      sourceHash: "1".repeat(64),
+      failure: null,
+      configuration: {
+        ...source.configuration,
+        entrypoints: ["docker-compose.yaml"],
+        paths: ["docker-compose.yaml", "config/app.env"],
+      },
+    },
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/import at "compose.yaml"/)).toBeVisible();
@@ -218,6 +267,85 @@ export const RebindRenamedFile: Story = {
     await expect(
       canvas.queryByText(/The source changed since this form was opened/),
     ).toBeNull();
+    await expect(
+      canvas.getByRole("textbox", {
+        name: "Compose entrypoints, one path per line",
+      }),
+    ).toHaveValue("docker-compose.yaml");
+  },
+};
+
+// Binding again without changing anything leaves the source as it was; a change another owner makes
+// afterwards is still shown, not taken over the owner's typing.
+export const ChangedElsewhereAfterBinding: Story = {
+  args: {
+    elsewhere: {
+      ...source,
+      sourceHash: "2".repeat(64),
+      configuration: { ...source.configuration, autoDeploy: true },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByText("Change or remove the Git source"));
+    await waitFor(() =>
+      expect(canvas.getByRole("option", { name: /builder/ })).toBeTruthy(),
+    );
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Bind again and import" }),
+    );
+    await canvas.findByText(/Source changed/);
+    const branch = canvas.getByRole("textbox", { name: "Branch" });
+    await userEvent.clear(branch);
+    await userEvent.type(branch, "release");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Another owner changes the source" }),
+    );
+    await expect(
+      await canvas.findByText(/The source changed since this form was opened/),
+    ).toBeVisible();
+    await expect(branch).toHaveValue("release");
+  },
+};
+
+// The import's fallback can't be the runner, however the runner was chosen, so what is sent is what
+// is shown.
+export const ImportSharesItsRunner: Story = {
+  render: () => <Importing />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByText("Import Compose from Git"));
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("option", { name: /App · team\/app/ }),
+      ).toBeTruthy(),
+    );
+    await userEvent.selectOptions(
+      canvas.getByRole("combobox", { name: "Repository connection" }),
+      connectionId,
+    );
+    await userEvent.type(
+      canvas.getByRole("textbox", { name: "Branch" }),
+      "main",
+    );
+    await userEvent.selectOptions(
+      canvas.getByRole("combobox", { name: "Build runner" }),
+      runnerId,
+    );
+    const fallback = canvas.getByRole("combobox", { name: "Fallback runner" });
+    await userEvent.selectOptions(fallback, spareId);
+    await userEvent.selectOptions(
+      canvas.getByRole("combobox", { name: "Build form runner" }),
+      spareId,
+    );
+    await expect(fallback).toHaveDisplayValue("Queue on selected runner");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Import source" }),
+    );
+    await waitFor(() => expect(requests).toHaveLength(1));
+    const sent = requests[0]!.body as Schema["BindGitSource"];
+    await expect(sent.configuration.runnerId).toBe(spareId);
+    await expect(sent.configuration.fallbackRunnerId).toBeUndefined();
   },
 };
 
@@ -251,7 +379,10 @@ export const RemoveSource: Story = {
     await waitFor(() =>
       expect(requests).toEqual([{ method: "DELETE", body: null }]),
     );
-    await expect(await canvas.findByText(/Git source removed/)).toHaveFocus();
+    // Once the dialog is gone it hasn't taken focus back from what the page says.
+    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await expect(canvas.getByText(/Git source removed/)).toHaveFocus();
   },
 };
 

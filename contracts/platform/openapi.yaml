@@ -8618,8 +8618,8 @@
     BuildRejectionReason:
       type: string
       description: >-
-        Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner, or its fallback,
-        was removed or revoked, lost its credential with no enrollment under way, or can no longer build it. `registry_unavailable`: the target's registry was removed.
+        Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner was removed or
+        revoked, lost its credential with no enrollment under way, or can no longer build it. `registry_unavailable`: the target's registry was removed.
       enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget, runner_unavailable, registry_unavailable]
     BuildRejection:
       type: object

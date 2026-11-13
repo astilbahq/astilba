@@ -28,13 +28,18 @@ func (i *importedEnvironment) addRunner(t *testing.T) (uuid.UUID, authorityAgent
 // addSourceOn is addSource with the source's imports on runner.
 func (i *importedEnvironment) addSourceOn(t *testing.T, name string, file composeproject.File, runnerID uuid.UUID, runner authorityAgent) string {
 	t.Helper()
+	return i.addSourceWithFallback(t, name, file, runnerID, runner, nil)
+}
+
+func (i *importedEnvironment) addSourceWithFallback(t *testing.T, name string, file composeproject.File, runnerID uuid.UUID, runner authorityAgent, fallback *uuid.UUID) string {
+	t.Helper()
 	var project api.Project
 	i.b.call("POST", i.prefix+"/projects", map[string]string{"name": name}, 201, &project)
 	var env api.Environment
 	i.b.call("POST", i.prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &env)
 	path := i.prefix + "/projects/" + project.Id.String() + "/environments/" + env.Id.String()
 	var op api.Operation
-	i.b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: runnerID, Paths: []string{file.Path}, Entrypoints: []string{file.Path}}}, 202, &op)
+	i.b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: runnerID, Paths: []string{file.Path}, Entrypoints: []string{file.Path}, FallbackRunnerID: fallback}}, 202, &op)
 	c := runner.next()
 	if c.Id != op.Id {
 		t.Fatal("the added source's import did not reach its runner")
@@ -382,5 +387,33 @@ func TestUnbindingAFailedSourceLetsItsBuildsRun(t *testing.T) {
 	c := i.runner.next()
 	if command := importCommand(t, c); command.Action != "build" || command.Commit != latest {
 		t.Fatal("unbinding did not start the held build", command.Action, command.Commit)
+	}
+}
+
+// A fallback that can't take an import isn't used: the import queues on its busy runner, as it would
+// with no fallback, rather than failing only when the runner happens to be busy.
+func TestRefreshQueuesOnTheRunnerWhenItsFallbackIsGone(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	head := i.source.head.Load().(string)
+	all := append(append([]composeproject.File{}, importHonest...), otherSourceFile)
+	i.source.tree.record(head, all)
+	goneID, _ := i.addRunner(t)
+	otherPath := i.addSourceWithFallback(t, "Other", otherSourceFile, i.runnerID, i.runner, &goneID)
+	i.b.call("POST", i.prefix+"/servers/"+goneID.String()+"/revoke", nil, 204, nil)
+	// The runner is busy with the first environment's import.
+	latest := strings.Repeat("e", 40)
+	i.source.tree.record(latest, all)
+	i.source.head.Store(latest)
+	i.refresh(t)
+	i.source.push(latest)
+	waitFor(t, "the other source's import", 15*time.Second, func() bool {
+		var queued int
+		if err := i.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM execution_operations o JOIN pipeline_runs r ON r.id=o.id WHERE o.server_id=$1 AND r.configuration->>'commit'=$2 AND r.configuration#>>'{source,paths,0}'=$3", i.runnerID, latest, otherSourceFile.Path).Scan(&queued); err != nil {
+			t.Fatal(err)
+		}
+		return queued == 1
+	})
+	if failure := i.sourceStatus(t, otherPath).Failure; failure != nil {
+		t.Fatalf("a gone fallback failed a source whose runner was only busy: %+v", failure)
 	}
 }

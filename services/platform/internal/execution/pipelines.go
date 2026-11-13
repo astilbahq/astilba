@@ -47,7 +47,14 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 		return uuid.Nil, err
 	}
 	if fallback != nil && (!online || busy) {
+		// A fallback that can't take the work, as when it was revoked or needs an upgrade, isn't
+		// ready, so the primary queues it, as it would with no fallback: whether work starts must
+		// not depend on how busy the primary is.
 		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture, controls, railpack)
+		var refused *domain.Error
+		if errors.Is(err, pgx.ErrNoRows) || errors.As(err, &refused) {
+			return primary, nil
+		}
 		if err != nil {
 			return uuid.Nil, err
 		}
@@ -247,7 +254,7 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 // upstream. Either way it imports the branch's head and makes the source's automatic imports and
 // deployments the caller's. Binding again forgets the earlier import, so the draft is compared
 // with, and deployments wait for, this one. An environment runs one operation at a time, so
-// binding again waits for an import that is running.
+// binding again is refused while one is running.
 // Binding again needs the hash returned with the source, so a change made since it was shown, such
 // as another owner's binding, is refused rather than overwritten.
 func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source, hash string) (api.Operation, error) {

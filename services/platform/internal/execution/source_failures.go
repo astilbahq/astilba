@@ -95,21 +95,16 @@ func runnerUnavailable(err error) bool {
 	return false
 }
 
-// runnerWaits reports whether a runner selection that failed for want of a credential is only
-// waiting for the runner that lacks one to finish enrolling again or moving to another management.
-// selectRunner asks about the fallback only once the primary has its credential, so that is the
-// runner whose answer counts.
-func runnerWaits(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, err error) (bool, error) {
+// runnerWaits reports whether a runner selection that failed for want of the primary runner's
+// credential is only waiting for it to finish enrolling again or moving to another management, or
+// for an enrollment that finished since selectRunner looked. An unusable fallback never fails a
+// selection, so the primary is the runner whose answer counts.
+func runnerWaits(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, err error) (bool, error) {
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	q := db.New(tx)
-	state, err := q.RunnerCredential(ctx, db.RunnerCredentialParams{WorkspaceID: ws, ID: primary})
-	if err != nil || !state.Enrolled || fallback == nil {
-		return state.Enrolling, err
-	}
-	state, err = q.RunnerCredential(ctx, db.RunnerCredentialParams{WorkspaceID: ws, ID: *fallback})
-	return state.Enrolling, err
+	state, err := db.New(tx).RunnerCredential(ctx, db.RunnerCredentialParams{WorkspaceID: ws, ID: primary})
+	return state.Enrolling || state.Enrolled, err
 }
 
 // sourceChangedSinceShown refuses binding a source again from a configuration that is no longer
@@ -120,7 +115,7 @@ var sourceChangedSinceShown = &domain.Error{Code: "conflict", Message: "The sour
 // an environment runs one at a time.
 var sourceImporting = &domain.Error{Code: "conflict", Message: "An import or another operation of this environment is running. Bind the source again once it finishes.", Fields: []string{"environment.operation"}}
 
-const runnerUnavailableReason = "The source's runner, or its fallback, was removed or revoked, has no credential and isn't enrolling, or can no longer run imports. Enroll the runner again, or bind the source again with another runner."
+const runnerUnavailableReason = "The source's runner was removed or revoked, has no credential and isn't enrolling, or can no longer run imports. Enroll the runner again, or bind the source again with another runner."
 
 // importRefusal is the outcome of management refusing to start an import. Invalid input, such as a
 // file the commit doesn't hold or a clone credential that can push, fails the source until its
