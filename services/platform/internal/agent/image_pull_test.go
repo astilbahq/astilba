@@ -225,7 +225,9 @@ func TestPullReadsOnlyThisServersImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registry.count(arm64) != 0 || registry.count(sha(other)) != 0 || registry.count(theirs) != 0 {
+	// The other platform's manifests are read, to check nothing below them is an image, but
+	// none of their blobs.
+	if registry.count(sha(other)) != 0 || registry.count(sha([]byte(`{"subject":"theirs"}`))) != 0 || registry.count(arm64) != 1 || registry.count(theirs) != 1 {
 		t.Fatal("the agent read what Docker does not pull")
 	}
 	if len(plan.documents) != 3 || plan.documents[1].desc.Digest.String() != amd64 || plan.documents[2].desc.Digest.String() != ours || len(plan.layers) != 1 || plan.layers[0].Digest.String() != sha(app) {
@@ -399,7 +401,21 @@ func TestPullRefusesWhatItCannotMeasure(t *testing.T) {
 		}, "no image for this server's platform"},
 		"a nested index": {func(r *testRegistry) string {
 			return r.index(r.entry(r.index(r.entry(r.image(layer), "linux/amd64", "")), "linux/amd64", ""))
-		}, "names another index"},
+		}, `media type "application/vnd.oci.image.index.v1+json"`},
+		"another platform's image naming a manifest": {func(r *testRegistry) string {
+			inner := r.image(layer)
+			other := r.manifest(ocispec.MediaTypeImageManifest, manifest(descriptorJSON(ocispec.MediaTypeImageManifest, inner, len(r.manifests[inner][1]), `,"platform":{"os":"linux","architecture":"amd64"}`)))
+			return r.index(r.entry(r.image(layer), "linux/amd64", ""), r.entry(other, "linux/arm64", ""))
+		}, "name another manifest or index"},
+		"an attestation naming a manifest": {func(r *testRegistry) string {
+			chosen := r.image(layer)
+			attestation := r.manifest(ocispec.MediaTypeImageManifest, manifest(descriptorJSON(ocispec.MediaTypeImageManifest, chosen, len(r.manifests[chosen][1]), "")))
+			return r.index(r.entry(chosen, "linux/amd64", ""), r.entry(attestation, "unknown/unknown", fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, chosen)))
+		}, "name another manifest or index"},
+		"an image needing OS features": {func(r *testRegistry) string {
+			chosen := r.image(layer)
+			return r.index(strings.Replace(r.entry(chosen, "linux/amd64", ""), `"variant":""`, `"variant":"","os.features":["sse4"]`, 1))
+		}, "OS version or features"},
 		"a sha512 layer": {func(r *testRegistry) string {
 			return r.manifest(ocispec.MediaTypeImageManifest, manifest(descriptorJSON(ocispec.MediaTypeImageLayerGzip, "sha512:"+strings.Repeat("ab", 64), len(layer), "")))
 		}, "other than a sha256 digest"},

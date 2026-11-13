@@ -51,7 +51,63 @@ type registryPlan struct {
 }
 
 // imageAttestations is the most attestations one image may have; BuildKit pushes one or two.
-const imageAttestations = 16
+// imageIndexEntries is the most entries an image's index may have: an image and an attestation
+// for each of a few dozen platforms.
+const (
+	imageAttestations = 16
+	imageIndexEntries = 64
+)
+
+// leafBlobs refuses a manifest whose config or layers name a manifest or index. Docker's load
+// walks every document below the image's index whose content it holds, and unpacks those it
+// finds for the server's platform; with this, the only such documents are the index's own
+// entries, which choosePlatform checks.
+func leafBlobs(blobs ...ocispec.Descriptor) error {
+	for _, blob := range blobs {
+		if pullManifestTypes[blob.MediaType] || pullIndexTypes[blob.MediaType] {
+			return unmeasurableImage("it has a manifest whose config or layers name another manifest or index")
+		}
+	}
+	return nil
+}
+
+// checkSiblings reads each entry of the image's index other than those plan holds, and refuses
+// one that names a manifest or index below it (leafBlobs). Docker never pulls these, but its
+// load walks them when it holds their content from elsewhere.
+func checkSiblings(ctx context.Context, source registryImage, children []ocispec.Descriptor, plan *registryPlan) error {
+	for _, child := range children {
+		if slices.ContainsFunc(plan.documents, func(d registryDocument) bool { return d.desc.Digest == child.Digest }) {
+			continue
+		}
+		document, kind, err := fetchDocument(ctx, source, child)
+		if err != nil {
+			return err
+		}
+		if kind != "manifest" {
+			return unmeasurableImage("its image index names an index as a manifest")
+		}
+		config, err := foldedMember(document.data, "config")
+		if err != nil {
+			return err
+		}
+		layers, err := foldedMember(document.data, "layers")
+		if err != nil {
+			return err
+		}
+		configDescriptor, err := descriptor(config)
+		if err != nil {
+			return err
+		}
+		layerDescriptors, err := descriptors(layers)
+		if err != nil {
+			return err
+		}
+		if err = leafBlobs(append(layerDescriptors, configDescriptor)...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // planAttestations adds the attestations of chosen in the index to plan. Docker's load of one
 // platform reads them as the chosen manifest's referrers and fails without them, but stores
@@ -93,6 +149,9 @@ func planAttestations(ctx context.Context, source registryImage, children []ocis
 		}
 		configDescriptor, err := descriptor(config)
 		if err != nil {
+			return err
+		}
+		if err = leafBlobs(append(blobs, configDescriptor)...); err != nil {
 			return err
 		}
 		for _, blob := range append(blobs, configDescriptor) {
@@ -164,6 +223,9 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 		}
 		plan.documents = append(plan.documents, document)
 		if err = planAttestations(ctx, source, children, chosen, plan, store); err != nil {
+			return nil, err
+		}
+		if err = checkSiblings(ctx, source, children, plan); err != nil {
 			return nil, err
 		}
 	}
@@ -337,7 +399,16 @@ func fetchBlob(ctx context.Context, source registryImage, desc ocispec.Descripto
 // entry with no platform, as which image Docker chooses then depends on its config.
 func choosePlatform(children []ocispec.Descriptor, platform ocispec.Platform) (ocispec.Descriptor, error) {
 	host := platforms.Normalize(platform)
+	if len(children) > imageIndexEntries {
+		return ocispec.Descriptor{}, unmeasurableImage("its image index has more entries than an image needs")
+	}
 	var chosen *ocispec.Descriptor
+	for _, child := range children {
+		if !pullManifestTypes[child.MediaType] {
+			// Docker walks every index below the image's, and unpacks what it finds there.
+			return ocispec.Descriptor{}, &imageLoadRefused{why: "its image index names a document of the media type " + strconv.Quote(truncated(child.MediaType, 100)) + ", which the agent does not pull"}
+		}
+	}
 	for i, child := range children {
 		_, attestation := child.Annotations["vnd.docker.reference.type"]
 		switch {
@@ -359,14 +430,14 @@ func choosePlatform(children []ocispec.Descriptor, platform ocispec.Platform) (o
 			return ocispec.Descriptor{}, unmeasurableImage("its image index marks its image for this server's architecture as an attestation")
 		case p.Variant != "":
 			return ocispec.Descriptor{}, unmeasurableImage("its image for this server's architecture is for the variant " + strconv.Quote(truncated(p.Variant, 16)) + ", which not every such server runs")
+		case p.OSVersion != "" || len(p.OSFeatures) > 0:
+			// Docker matches an image that needs OS features or a version to no Linux server.
+			return ocispec.Descriptor{}, unmeasurableImage("its image for this server's architecture names an OS version or features")
 		}
 		chosen = &children[i]
 	}
 	if chosen == nil {
 		return ocispec.Descriptor{}, unmeasurableImage("it has no image for this server's platform, " + host.OS + "/" + host.Architecture)
-	}
-	if !pullManifestTypes[chosen.MediaType] && !pullIndexTypes[chosen.MediaType] {
-		return ocispec.Descriptor{}, &imageLoadRefused{why: "its image index names a document of the media type " + strconv.Quote(truncated(chosen.MediaType, 100)) + " for this server, which Docker does not pull"}
 	}
 	return *chosen, nil
 }
@@ -437,7 +508,7 @@ func descriptor(raw jsontext.Value) (ocispec.Descriptor, error) {
 		return d, err
 	}
 	d.Platform = &ocispec.Platform{}
-	for name, out := range map[string]*string{"os": &d.Platform.OS, "architecture": &d.Platform.Architecture, "variant": &d.Platform.Variant} {
+	for name, out := range map[string]any{"os": &d.Platform.OS, "architecture": &d.Platform.Architecture, "variant": &d.Platform.Variant, "os.version": &d.Platform.OSVersion, "os.features": &d.Platform.OSFeatures} {
 		value, err := foldedMember(platform, name)
 		if err != nil {
 			return d, err

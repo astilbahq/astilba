@@ -168,8 +168,9 @@ A pull that would write more than the bounds is refused before Docker writes the
 - content named by a digest other than sha256;
 - a manifest whose media type differs from its registry's or its index's;
 - a manifest that names a field twice in different case;
-- an index entry without a platform, or an index nested in another;
-- an index with more than one image for the host's architecture, or whose image for it is marked as an attestation;
+- an index entry without a platform, an index nested in another, or an index of more than 64 entries;
+- a manifest anywhere in the index, including another platform's or an attestation, whose config or layers name a manifest or index. Docker's load walks everything below the image's index that it holds, so the agent reads each entry's manifest (but none of another platform's layers) to check this;
+- an index with more than one image for the host's architecture, or whose image for it is marked as an attestation or names an OS version or features;
 - an image with no manifest for the host's architecture, or only one for a newer variant of it, such as amd64 v3;
 - an image whose config is for another platform. Docker would pull a single-platform image for another architecture with a warning, and run it through emulation if the host has it; the agent refuses it.
 
