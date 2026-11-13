@@ -174,7 +174,29 @@ exec rootlesskit --net=host buildkitd --config /run/buildkit/buildkitd.toml --ro
 	if _, err = e.Docker.ContainerStart(ctx, made.ID, client.ContainerStartOptions{}); err != nil {
 		return errors.New("cannot start bounded runner container")
 	}
+	if build {
+		return e.awaitBuilder(ctx, c)
+	}
 	return nil
+}
+
+// awaitBuilder waits for rootless BuildKit to answer. It exits at once when the host refuses its
+// user namespace, so the build stops here with that cause rather than at its next step.
+func (e *Engine) awaitBuilder(ctx context.Context, c api.ExecutionCommand) error {
+	for range 40 {
+		if _, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 4096, "buildctl", "debug", "workers"); err == nil {
+			return nil
+		}
+		if v, err := e.Docker.ContainerInspect(ctx, pipelineName(c), client.ContainerInspectOptions{}); err == nil && v.Container.State != nil && !v.Container.State.Running {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return errors.New("The rootless builder did not start. Check that this server can create user namespaces, as the builder requirements in the Git builds documentation describe.")
 }
 func int64Pointer(value int64) *int64 { return &value }
 func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) (pipeline.Result, error) {
@@ -199,19 +221,6 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		return result, errors.New("source extraction exceeded its bounded workspace")
 	}
 	contextDir := path.Join("/workspace/context", p.Build.Context)
-	for i := 0; i < 40; i++ {
-		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, nil, 4096, "buildctl", "debug", "workers"); err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return result, ctx.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
-	if err != nil {
-		return result, errors.New("The rootless builder did not start. Check that this server can create user namespaces, as the builder requirements in the Git builds documentation describe.")
-	}
 	args := []string{"buildctl", "build", "--frontend", "dockerfile.v0", "--local", "context=" + contextDir, "--local", "dockerfile=" + contextDir, "--opt", "filename=" + p.Build.Dockerfile, "--opt", "platform=linux/" + p.Build.Architecture, "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
 	if p.Build.UsesRailpack() {
 		prepared, logs, err := e.prepareRailpack(ctx, c, p, contextDir)
@@ -293,19 +302,14 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		}
 		result.Image = p.Registry.Repository + "@" + result.Digest
 	} else {
-		// The builder's user owns the workspace, so the archive is measured as a regular file
-		// and Docker reads no more than that: code that escaped a build step can't feed it more.
-		size, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "stat", "-c", "%F %s", "/workspace/image.tar")
+		// The builder's user owns the workspace and can change the archive after it is measured,
+		// so Docker reads no more than the measured size.
+		size, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "stat", "-c", "%s", "/workspace/image.tar")
 		if err != nil {
 			return result, err
 		}
-		measured := strings.TrimSpace(string(size))
-		kind, length := measured, ""
-		if i := strings.LastIndexByte(measured, ' '); i >= 0 {
-			kind, length = measured[:i], measured[i+1:]
-		}
-		n, err := strconv.ParseUint(length, 10, 64)
-		if kind != "regular file" || err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
+		n, err := strconv.ParseUint(strings.TrimSpace(string(size)), 10, 64)
+		if err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
 			return result, errors.New("local image exceeds reserved host storage")
 		}
 		if err = e.loadPipelineImage(ctx, c, int64(n)); err != nil {
