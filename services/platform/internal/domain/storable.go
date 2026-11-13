@@ -6,7 +6,6 @@ import (
 	"encoding/json/v2"
 	"reflect"
 	"strings"
-	"unsafe"
 )
 
 // PostgreSQL's text and jsonb cannot store U+0000. A write holding one is refused, and the
@@ -209,13 +208,7 @@ func replaceNUL(v reflect.Value, path string) (changed bool, field string, colli
 			if !decoded(t.Field(i)) {
 				continue
 			}
-			value := v.Field(i)
-			if !value.CanSet() {
-				// An embedded struct of an unexported type still has its exported fields
-				// decoded, but reflection reads them only. They belong to v, which is settable.
-				value = reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem()
-			}
-			c, field, collides := replaceNUL(value, member(path, t.Field(i)))
+			c, field, collides := replaceNUL(v.Field(i), member(path, t.Field(i)))
 			if collides {
 				return false, field, true
 			}
@@ -241,11 +234,11 @@ func member(path string, f reflect.StructField) string {
 	return path + "." + name
 }
 
-// decoded is whether the JSON encoding reads f: an exported field, or an embedded struct of an
-// unexported type, whose exported fields it reads as its parent's, unless its tag omits it.
+// decoded is whether the JSON encoding reads f: an exported field its tag does not omit. No type
+// these walk embeds a struct of an unexported type, whose exported fields the encoding would read.
 func decoded(f reflect.StructField) bool {
 	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
-	return name != "-" && (f.IsExported() || f.Anonymous && f.Type.Kind() == reflect.Struct)
+	return f.IsExported() && name != "-"
 }
 
 // EscapedNUL reports whether raw, a valid JSON value, writes U+0000, which it can only do as the

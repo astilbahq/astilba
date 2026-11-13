@@ -72,15 +72,10 @@ type nulProbe struct {
 	Nested  map[string]map[string]any `json:"nested"`
 	Ignored string                    `json:"-"`
 	hidden  string
-	nulEmbedded
 }
 
 type nulStep struct {
 	Detail *string `json:"detail"`
-}
-
-type nulEmbedded struct {
-	Inline string `json:"inline"`
 }
 
 // The walk names the member a client sent, so an API refusal can point at it.
@@ -97,7 +92,6 @@ func TestNULFieldNamesTheMember(t *testing.T) {
 		"raw.a":        {Raw: &escapedKey},
 		"any":          {Any: map[string]any{"a": []any{nul}}},
 		"nested":       {Nested: map[string]map[string]any{"a": {"b": nul}}},
-		"inline":       {nulEmbedded: nulEmbedded{Inline: nul}},
 	} {
 		if got, found := NULField(probe, ""); !found || got != want {
 			t.Errorf("NUL in %s was named %q, %v", want, got, found)
@@ -132,7 +126,6 @@ func TestReplaceNULKeepsWhatAHostReported(t *testing.T) {
 		Nested:  map[string]map[string]any{"a": {"b" + nul: nul}},
 		Ignored: nul,
 	}
-	probe.Inline = nul
 	if field, collides := ReplaceNUL(&probe); collides {
 		t.Fatal("replacing collided in", field)
 	}
@@ -144,7 +137,6 @@ func TestReplaceNULKeepsWhatAHostReported(t *testing.T) {
 		Nested:  map[string]map[string]any{"a": {"b ": " "}},
 		Ignored: nul,
 	}
-	want.Inline = " "
 	if *probe.Steps[0].Detail != "a b" || &detail != probe.Steps[0].Detail {
 		t.Error("the step's detail was", *probe.Steps[0].Detail)
 	}

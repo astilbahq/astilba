@@ -47,3 +47,13 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) {
 func (s *Server) responses(res *http.Response) {
 	_, _ = io.ReadAll(res.Body)
 }
+
+var receive http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
+	_, _ = io.ReadAll(r.Body) // want `a request body read outside decode`
+}
+
+type wrapped struct{ *http.Request }
+
+func (s *Server) embedded(x wrapped) {
+	_, _ = io.ReadAll(x.Body) // want `a request body read outside decode`
+}

@@ -32,19 +32,24 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
+			var body ast.Node = decl
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				if fn.Body == nil {
+					continue
+				}
+				name := pkg + "." + fn.Name.Name
+				if fn.Recv != nil && len(fn.Recv.List) == 1 {
+					name = pkg + "." + receiver(fn.Recv.List[0].Type) + "." + fn.Name.Name
+				}
+				if name == "internal/httpapi.decode" || rawReaders[name] {
+					continue
+				}
+				body = fn.Body
 			}
-			name := pkg + "." + fn.Name.Name
-			if fn.Recv != nil && len(fn.Recv.List) == 1 {
-				name = pkg + "." + receiver(fn.Recv.List[0].Type) + "." + fn.Name.Name
-			}
-			if name == "internal/httpapi.decode" || rawReaders[name] {
-				continue
-			}
+			// A declaration other than a function, such as a handler assigned to a package
+			// variable, is never one of the allowed readers.
 			allowed := map[*ast.SelectorExpr]bool{}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ast.Inspect(body, func(n ast.Node) bool {
 				if assign, ok := n.(*ast.AssignStmt); ok {
 					limit(pass, assign, allowed)
 				}
@@ -82,17 +87,27 @@ func limit(pass *analysis.Pass, assign *ast.AssignStmt, allowed map[*ast.Selecto
 	}
 }
 
+// requestBody is whether sel names http.Request's Body field, also when it is promoted from an
+// embedded request.
 func requestBody(pass *analysis.Pass, sel *ast.SelectorExpr) bool {
 	field, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Var)
 	if !ok || !field.IsField() || field.Name() != "Body" || field.Pkg() == nil || field.Pkg().Path() != "net/http" {
 		return false
 	}
-	t := pass.TypesInfo.TypeOf(sel.X)
-	if pointer, ok := t.(*types.Pointer); ok {
-		t = pointer.Elem()
+	request, ok := field.Pkg().Scope().Lookup("Request").(*types.TypeName)
+	if !ok {
+		return false
 	}
-	named, ok := t.(*types.Named)
-	return ok && named.Obj().Name() == "Request"
+	fields, ok := request.Type().Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for i := range fields.NumFields() {
+		if fields.Field(i) == field {
+			return true
+		}
+	}
+	return false
 }
 
 // formReaders are the methods of *http.Request that read its body as a form.
