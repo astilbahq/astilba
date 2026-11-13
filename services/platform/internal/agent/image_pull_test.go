@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -16,11 +17,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/distribution/reference"
 	registrytypes "github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/api/types/system"
+	"github.com/moby/moby/client"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -210,21 +213,32 @@ func TestPullReadsOnlyThisServersImage(t *testing.T) {
 	other := gzipOf(t, tarOf(t, testFile{"other", 10 << 10}))
 	amd64 := registry.image(app)
 	arm64 := registry.imageFor("arm64", other)
-	attestation := registry.manifest(ocispec.MediaTypeImageManifest, fmt.Sprintf(`{"schemaVersion":2,"config":%s,"layers":[]}`, descriptorJSON("application/vnd.in-toto+json", registry.blob([]byte("{}")), 2, "")))
-	root := registry.index(registry.entry(arm64, "linux/arm64/v8", ""), registry.entry(amd64, "linux/amd64", ""), registry.entry(attestation, "unknown/unknown", fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, amd64)))
+	attest := func(subject string, statement []byte) string {
+		return registry.manifest(ocispec.MediaTypeImageManifest, fmt.Sprintf(`{"schemaVersion":2,"config":%s,"layers":[%s]}`, descriptorJSON(ocispec.MediaTypeImageConfig, registry.blob([]byte(`{"architecture":"unknown","os":"unknown"}`)), 41, ""), descriptorJSON("application/vnd.in-toto+json", registry.blob(statement), len(statement), "")))
+	}
+	ours, theirs := attest(amd64, []byte(`{"subject":"ours"}`)), attest(arm64, []byte(`{"subject":"theirs"}`))
+	reference := func(subject string) string {
+		return fmt.Sprintf(`{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":%q}`, subject)
+	}
+	root := registry.index(registry.entry(arm64, "linux/arm64/v8", ""), registry.entry(amd64, "linux/amd64", ""), registry.entry(ours, "unknown/unknown", reference(amd64)), registry.entry(theirs, "unknown/unknown", reference(arm64)))
 	plan, total, err := measureTest(t, &Engine{}, registry.source(t, nil), root, pullTestLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registry.count(arm64) != 0 || registry.count(sha(other)) != 0 || registry.count(attestation) != 0 {
+	if registry.count(arm64) != 0 || registry.count(sha(other)) != 0 || registry.count(theirs) != 0 {
 		t.Fatal("the agent read what Docker does not pull")
 	}
-	if len(plan.documents) != 2 || plan.documents[1].desc.Digest.String() != amd64 || len(plan.layers) != 1 || plan.layers[0].Digest.String() != sha(app) {
+	if len(plan.documents) != 3 || plan.documents[1].desc.Digest.String() != amd64 || plan.documents[2].desc.Digest.String() != ours || len(plan.layers) != 1 || plan.layers[0].Digest.String() != sha(app) {
 		t.Fatal("unexpected plan", plan)
 	}
-	// The index, the manifest, its config and its layer stored, and the layer unpacked.
-	if plan.stored.Entries != 4 || total.Entries <= plan.stored.Entries {
-		t.Fatal("stored blobs", plan.stored, total)
+	// Docker reads the chosen image's attestation as its referrer, and stores but never
+	// unpacks it: the index, both manifests, both configs, the statement and the layer.
+	if len(plan.attached) != 2 || plan.stored.Entries != 7 || total.Entries <= plan.stored.Entries {
+		t.Fatal("stored blobs", plan.attached, plan.stored, total)
+	}
+	archive, err := streamTest(t, registry.source(t, nil), root, pullTestLimit)
+	if err != nil || !bytes.Contains(archive, []byte(`{"subject":"ours"}`)) || bytes.Contains(archive, []byte(`{"subject":"theirs"}`)) {
+		t.Fatal("the loaded archive lacks the chosen image's attestation, or has another's", err)
 	}
 }
 
@@ -249,7 +263,7 @@ func TestPullChoosesThePlatformDockerDoes(t *testing.T) {
 		"arm64 beside arm":                  {arm64, []ocispec.Descriptor{{Platform: plat("linux", "arm", "v7")}, {Platform: plat("linux", "arm64", "")}}, 1},
 		"amd64 v1":                          {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "386", "")}, {Platform: plat("linux", "amd64", "v1")}}, 1},
 		"x86_64 in capitals":                {amd64Server, []ocispec.Descriptor{{Platform: plat("Linux", "X86_64", "")}}, 0},
-		"attestations and unknown":          {amd64Server, []ocispec.Descriptor{{Annotations: attestation}, {Platform: plat("unknown", "unknown", "")}, {Platform: plat("linux", "amd64", "")}}, 2},
+		"attestations for unknown":          {amd64Server, []ocispec.Descriptor{{Platform: plat("unknown", "unknown", ""), Annotations: attestation}, {Platform: plat("unknown", "unknown", "")}, {Platform: plat("linux", "amd64", "")}}, 2},
 		"an empty OS beside linux":          {amd64Server, []ocispec.Descriptor{{Platform: plat("", "amd64", "")}, {Platform: plat("linux", "amd64", "")}}, emptyOS},
 		"two for the architecture":          {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "amd64", "")}, {Platform: plat("linux", "x86_64", "")}}, -1},
 		"two variants":                      {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "amd64", "v3")}, {Platform: plat("linux", "amd64", "v1")}}, -1},
@@ -580,5 +594,78 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 	}
 	if plan, source, err := planFromSources(context.Background(), []registryImage{unreachable, image}, digest.Digest(root), amd64Server, pullTestLimit); err != nil || plan == nil || source != registryImage(image) {
 		t.Fatal("did not fall back to plain HTTP for an unreachable registry", err)
+	}
+}
+
+func TestDockerAPIVersionComparison(t *testing.T) {
+	for v, want := range map[string]bool{"1.48": true, "1.54": true, "2.0": true, "1.47": false, "1.9": false, "": false, "1": false, "x.48": false} {
+		if apiVersionAtLeast(v, 1, 48) != want {
+			t.Error(v)
+		}
+	}
+}
+
+// failingBlob reads a blob's first bytes from source, then fails, as a registry that drops the
+// connection does.
+type failingBlob struct{ registryImage }
+
+func (f failingBlob) blob(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
+	rc, err := f.registryImage.blob(ctx, desc)
+	if err != nil {
+		return nil, err
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(io.LimitReader(rc, 100), iotest.ErrReader(errors.New("connection reset"))), rc}, nil
+}
+
+// A load's note says why it failed: the registry when the agent could not read it, and Docker's
+// own reason when Docker stopped first.
+func TestPullLoadNamesWhatFailed(t *testing.T) {
+	registry := newTestRegistry()
+	root := registry.image(gzipOf(t, tarOf(t, testFile{"app", 1 << 20})))
+	source := registry.source(t, nil)
+	plan, err := planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, pullTestLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, _ := reference.ParseNormalizedNamed("registry.example/fixture/app@" + root)
+	for name, tc := range map[string]struct {
+		source registryImage
+		docker func(w http.ResponseWriter, r *http.Request)
+		note   string
+	}{
+		"the registry fails": {failingBlob{source}, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			fmt.Fprint(w, `{"error":"unexpected EOF"}`)
+		}, "could not read it from its registry"},
+		"Docker fails": {source, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.CopyN(io.Discard, r.Body, 1024)
+			fmt.Fprint(w, `{"error":"write /var/lib/containerd: no space left on device"}`)
+		}, "Docker's image load failed: write /var/lib/containerd: no space left on device"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Api-Version", "1.54")
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/_ping"):
+				case strings.HasSuffix(r.URL.Path, "/images/load"):
+					tc.docker(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			docker, err := client.New(client.WithHost("tcp://" + strings.TrimPrefix(server.URL, "http://")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer docker.Close()
+			err = (&Engine{Docker: docker}).loadRegistryImage(context.Background(), named.(reference.Canonical), tc.source, plan, pullTestLimit)
+			if note := refusalNote(t, err); !strings.Contains(note, tc.note) {
+				t.Fatal(note)
+			}
+		})
 	}
 }

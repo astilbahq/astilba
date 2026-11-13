@@ -8,6 +8,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"io"
+	"slices"
 	"strconv"
 
 	"github.com/containerd/platforms"
@@ -44,6 +45,66 @@ type registryPlan struct {
 	// platform is the chosen manifest's platform in the image's index, normalized, or nil when
 	// the image has no index.
 	platform *ocispec.Platform
+	// attached are the blobs of the chosen manifest's attestations, which Docker stores but never
+	// unpacks; their manifests are among documents.
+	attached []ocispec.Descriptor
+}
+
+// imageAttestations is the most attestations one image may have; BuildKit pushes one or two.
+const imageAttestations = 16
+
+// planAttestations adds the attestations of chosen in the index to plan. Docker's load of one
+// platform reads them as the chosen manifest's referrers and fails without them, but stores
+// them without unpacking, as it skips any image marked as one.
+func planAttestations(ctx context.Context, source registryImage, children []ocispec.Descriptor, chosen ocispec.Descriptor, plan *registryPlan, store func(ocispec.Descriptor) error) error {
+	attestations := 0
+	for _, child := range children {
+		if child.Annotations["vnd.docker.reference.digest"] != chosen.Digest.String() || child.Digest == chosen.Digest {
+			continue
+		}
+		if attestations++; attestations > imageAttestations {
+			return unmeasurableImage("its image has more attestations than an image needs")
+		}
+		if !pullManifestTypes[child.MediaType] {
+			return &imageLoadRefused{why: "its image has an attestation of the media type " + strconv.Quote(truncated(child.MediaType, 100)) + ", which Docker does not pull"}
+		}
+		document, kind, err := fetchDocument(ctx, source, child)
+		if err != nil {
+			return err
+		}
+		if kind != "manifest" {
+			return unmeasurableImage("its image has an attestation that is not a manifest")
+		}
+		if err = store(document.desc); err != nil {
+			return err
+		}
+		plan.documents = append(plan.documents, document)
+		config, err := foldedMember(document.data, "config")
+		if err != nil {
+			return err
+		}
+		layers, err := foldedMember(document.data, "layers")
+		if err != nil {
+			return err
+		}
+		blobs, err := descriptors(layers)
+		if err != nil {
+			return err
+		}
+		configDescriptor, err := descriptor(config)
+		if err != nil {
+			return err
+		}
+		for _, blob := range append(blobs, configDescriptor) {
+			if err = store(blob); err != nil {
+				return err
+			}
+			if !slices.ContainsFunc(plan.attached, func(d ocispec.Descriptor) bool { return d.Digest == blob.Digest }) {
+				plan.attached = append(plan.attached, blob)
+			}
+		}
+	}
+	return nil
 }
 
 // planRegistryImage reads the image with digest root from source and chooses its manifest for
@@ -102,6 +163,9 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 			return nil, err
 		}
 		plan.documents = append(plan.documents, document)
+		if err = planAttestations(ctx, source, children, chosen, plan, store); err != nil {
+			return nil, err
+		}
 	}
 	config, err := foldedMember(document.data, "config")
 	if err != nil {
@@ -153,6 +217,17 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 		return nil, err
 	}
 	plan.config = registryDocument{configDescriptor, data}
+	// Each blob is in the archive once, as what one document names it, so the image's documents,
+	// config, layers and attestations' blobs are refused if any two of them share a digest.
+	kinds := map[digest.Digest]string{}
+	for kind, list := range map[string][]ocispec.Descriptor{"document": documentDescriptors(plan.documents, plan.config), "layer": plan.layers, "attached": plan.attached} {
+		for _, desc := range list {
+			if other, ok := kinds[desc.Digest]; ok && other != kind {
+				return nil, unmeasurableImage("it uses one blob in two roles, such as a layer and a config")
+			}
+			kinds[desc.Digest] = kind
+		}
+	}
 	var configPlatform ocispec.Platform
 	for name, out := range map[string]*string{"os": &configPlatform.OS, "architecture": &configPlatform.Architecture, "variant": &configPlatform.Variant} {
 		value, err := foldedMember(data, name)
@@ -167,6 +242,14 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 		return nil, unmeasurableImage("its image for this server's platform is built for " + strconv.Quote(truncated(configPlatform.OS+"/"+configPlatform.Architecture, 64)))
 	}
 	return plan, nil
+}
+
+func documentDescriptors(documents []registryDocument, config registryDocument) []ocispec.Descriptor {
+	out := []ocispec.Descriptor{config.desc}
+	for _, document := range documents {
+		out = append(out, document.desc)
+	}
+	return out
 }
 
 // chains is the image's one chain of layers, by digest.
@@ -258,9 +341,8 @@ func choosePlatform(children []ocispec.Descriptor, platform ocispec.Platform) (o
 	for i, child := range children {
 		_, attestation := child.Annotations["vnd.docker.reference.type"]
 		switch {
-		case child.Platform == nil && attestation:
-			continue
 		case child.Platform == nil:
+			// Docker's load of one platform reads such an entry whatever it is.
 			return ocispec.Descriptor{}, unmeasurableImage("its image index has a manifest without a platform")
 		case child.Platform.OS == "unknown" && child.Platform.Architecture == "unknown":
 			continue

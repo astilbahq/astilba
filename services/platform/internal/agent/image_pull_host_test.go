@@ -110,11 +110,24 @@ func (f *nativePullFixture) image(arch, file string) (manifest, layer string) {
 	return manifest, layer
 }
 
-func (f *nativePullFixture) index(entries map[string]string) string {
+// attestation adds a provenance attestation for manifest, as BuildKit pushes one, and returns
+// its index entry.
+func (f *nativePullFixture) attestation(manifest string) string {
+	config := []byte(`{"architecture":"unknown","os":"unknown","config":{},"rootfs":{"type":"layers","diff_ids":[]}}`)
+	statement := []byte(`{"_type":"https://in-toto.io/Statement/v0.1","predicateType":"https://slsa.dev/provenance/v0.2","subject":[],"predicate":{}}`)
+	f.blobs[sha(config)], f.blobs[sha(statement)] = config, statement
+	content := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[{"mediaType":"application/vnd.in-toto+json","digest":%q,"size":%d,"annotations":{"in-toto.io/predicate-type":"https://slsa.dev/provenance/v0.2"}}]}`, ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageConfig, sha(config), len(config), sha(statement), len(statement))
+	d := sha([]byte(content))
+	f.docs[d] = [2]string{ocispec.MediaTypeImageManifest, content}
+	return fmt.Sprintf(`{"mediaType":%q,"digest":%q,"size":%d,"platform":{"os":"unknown","architecture":"unknown"},"annotations":{"vnd.docker.reference.digest":%q,"vnd.docker.reference.type":"attestation-manifest"}}`, ocispec.MediaTypeImageManifest, d, len(content), manifest)
+}
+
+func (f *nativePullFixture) index(entries map[string]string, extra ...string) string {
 	var list []string
 	for arch, manifest := range entries {
 		list = append(list, fmt.Sprintf(`{"mediaType":%q,"digest":%q,"size":%d,"platform":{"os":"linux","architecture":%q}}`, ocispec.MediaTypeImageManifest, manifest, len(f.docs[manifest][1]), arch))
 	}
+	list = append(list, extra...)
 	content := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[%s]}`, ocispec.MediaTypeImageIndex, strings.Join(list, ","))
 	d := sha([]byte(content))
 	f.docs[d] = [2]string{ocispec.MediaTypeImageIndex, content}
@@ -228,7 +241,8 @@ func TestNativePullPutsAMultiPlatformImageInDocker(t *testing.T) {
 	other := map[string]string{"amd64": "arm64", "arm64": "amd64"}[runtime.GOARCH]
 	ours, ourLayer := f.image(runtime.GOARCH, "ours")
 	theirs, theirLayer := f.image(other, "theirs")
-	root := f.index(map[string]string{runtime.GOARCH: ours, other: theirs})
+	// BuildKit pushes a provenance attestation for each image by default.
+	root := f.index(map[string]string{runtime.GOARCH: ours, other: theirs}, f.attestation(ours), f.attestation(theirs))
 	for _, d := range []string{ourLayer, theirLayer} {
 		f.reads[d] = &atomic.Int64{}
 	}

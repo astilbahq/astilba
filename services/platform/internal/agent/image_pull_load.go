@@ -9,6 +9,8 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/distribution/reference"
@@ -41,6 +43,11 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 	// platform, which the index has no other image for (choosePlatform).
 	var options []client.ImageLoadOption
 	if plan.platform != nil {
+		// Docker loads one platform of an image from API 1.48, Docker 28.
+		version, err := e.Docker.ServerVersion(ctx, client.ServerVersionOptions{})
+		if err != nil || !apiVersionAtLeast(version.APIVersion, 1, 48) {
+			return &imageLoadRefused{why: "Docker on this server is older than version 28, the first that loads one platform of an image into its containerd image store", fix: "The server's owner upgrades Docker, then you {retry}."}
+		}
 		options = append(options, client.ImageLoadWithPlatforms(*plan.platform))
 	}
 	response, loaded := e.Docker.ImageLoad(ctx, reader, options...)
@@ -79,6 +86,15 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 		return &imageLoadRefused{why: "Docker did not load it under the name the deployment uses"}
 	}
 	return nil
+}
+
+// apiVersionAtLeast reports whether the Docker API version v, such as "1.48", is at least
+// major.minor.
+func apiVersionAtLeast(v string, major, minor int) bool {
+	a, b, ok := strings.Cut(v, ".")
+	m, errA := strconv.Atoi(a)
+	n, errB := strconv.Atoi(b)
+	return ok && errA == nil && errB == nil && (m > major || m == major && n >= minor)
 }
 
 // errDockerStopped is Docker no longer reading the archive, for a reason its load reports.
@@ -126,6 +142,14 @@ func streamRegistryArchive(ctx context.Context, out io.Writer, source registryIm
 	for _, document := range append(append([]registryDocument{}, plan.documents...), plan.config) {
 		if err := member("blobs/sha256/"+document.desc.Digest.Encoded(), document.data); err != nil {
 			return err
+		}
+	}
+	for _, blob := range plan.attached {
+		if err := tw.WriteHeader(&tar.Header{Name: "blobs/sha256/" + blob.Digest.Encoded(), Typeflag: tar.TypeReg, Mode: 0444, Size: blob.Size}); err != nil {
+			return failed(err)
+		}
+		if err := copyRegistryBlob(ctx, source, blob, tw); err != nil {
+			return failed(err)
 		}
 	}
 	running := plan.stored
@@ -197,6 +221,36 @@ func measureRegistryLayer(ctx context.Context, source registryImage, desc ocispe
 		return imageCost{}, unmeasurableImage("a layer in it differs from its digest")
 	}
 	return member.cost, nil
+}
+
+// copyRegistryBlob copies the blob desc names from source to out, at most its size, and refuses
+// it if it differs from its digest. Docker stores such a blob but never unpacks it.
+func copyRegistryBlob(ctx context.Context, source registryImage, desc ocispec.Descriptor, out io.Writer) error {
+	rc, err := source.blob(ctx, desc)
+	if err != nil {
+		return &imageArchiveUnread{err}
+	}
+	defer rc.Close()
+	digester := sha256.New()
+	var read io.Reader = &readFailures{&measuredReader{r: rc, remaining: desc.Size}}
+	if _, err = io.Copy(io.MultiWriter(out, digester), read); err != nil {
+		return err
+	}
+	if !matchesDigest(digester, desc.Digest) {
+		return unmeasurableImage("a blob in it differs from its digest")
+	}
+	return nil
+}
+
+// readFailures marks a failure to read from the registry as such.
+type readFailures struct{ r io.Reader }
+
+func (r *readFailures) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if err != nil && err != io.EOF {
+		err = &imageArchiveUnread{err}
+	}
+	return n, err
 }
 
 func matchesDigest(h hash.Hash, d digest.Digest) bool {
