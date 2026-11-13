@@ -24,6 +24,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 )
 
@@ -104,24 +105,44 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 			return errors.New("cannot obtain the pinned builder")
 		}
 	}
-	config := &container.Config{Image: pipeline.BuilderImage, Entrypoint: []string{"sleep"}, Cmd: []string{"infinity"}, Labels: map[string]string{labelServer: c.ServerId.String(), labelResource: c.Id.String(), labelEnvironment: c.EnvironmentId.String(), labelKind: "pipeline-v1", "com.astilba.plan": c.PlanHash}}
+	mounts, err := e.builderMounts()
+	if err != nil {
+		return errors.New("cannot prepare the builder's accounts")
+	}
+	if e.builderCAs != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: e.builderCAs, Target: "/etc/ssl/certs/ca-certificates.crt", ReadOnly: true})
+	}
+	// Every runner container runs as the builder's unprivileged user. Its writable places are
+	// its own, and source, secrets and BuildKit's state stay in memory.
+	owned := fmt.Sprintf(",uid=%d,gid=%d", builderUID, builderUID)
+	user := fmt.Sprintf("%d:%d", builderUID, builderUID)
+	config := &container.Config{Image: pipeline.BuilderImage, User: user, Entrypoint: []string{"sleep"}, Cmd: []string{"infinity"}, Env: []string{"HOME=/workspace", "TMPDIR=/tmp", "XDG_RUNTIME_DIR=/run"}, Labels: map[string]string{labelServer: c.ServerId.String(), labelResource: c.Id.String(), labelEnvironment: c.EnvironmentId.String(), labelKind: "pipeline-v1", "com.astilba.plan": c.PlanHash}}
 	build := p.IsBuild()
 	memory := int64(512 << 20)
 	if build {
 		memory = int64(p.Build.Limits().MemoryMiB) << 20
 	}
-	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", Privileged: build, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700", "/tmp": "rw,nosuid,nodev,size=32m", "/run": "rw,nosuid,nodev,size=16m", "/var/lib/buildkit": "rw,exec,nosuid,size=1024m"}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
+	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Mounts: mounts, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700" + owned, "/tmp": "rw,nosuid,nodev,size=32m,mode=0700" + owned, "/run": "rw,nosuid,nodev,size=16m,mode=0700" + owned, "/var/lib/buildkit": "rw,exec,nosuid,nodev,size=1024m,mode=0700" + owned}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
 	if build {
 		limits := p.Build.Limits()
 		if p.CacheScope != "" {
-			host.Tmpfs[cacheContainerDir] = "rw,nosuid,nodev,noexec,size=256m,mode=0700"
+			host.Tmpfs[cacheContainerDir] = "rw,nosuid,nodev,noexec,size=256m,mode=0700" + owned
 		}
 		host.Resources.NanoCPUs = int64(limits.CPUs) * 1_000_000_000
-		host.Tmpfs["/workspace"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.SourceMiB)
-		host.Tmpfs["/var/lib/buildkit"] = fmt.Sprintf("rw,exec,nosuid,size=%dm", limits.StateMiB)
-		host.ReadonlyRootfs = false
-		host.CapDrop = nil
-		host.SecurityOpt = nil
+		host.Tmpfs["/workspace"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.SourceMiB) + owned
+		host.Tmpfs["/var/lib/buildkit"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.StateMiB) + owned
+		// Rootless BuildKit, see builder.go: no host capability but the two newuidmap and
+		// newgidmap use to map its user namespace, which is also why no-new-privileges is off.
+		// BuildKit mounts a fresh /proc and /sys for each build step, which the kernel
+		// refuses over the ones Docker masks, so the AppArmor profile hides those instead.
+		security, err := builderSecurity(ctx)
+		if err != nil {
+			return err
+		}
+		host.SecurityOpt = security
+		host.CapAdd = []string{"CAP_SETUID", "CAP_SETGID"}
+		host.MaskedPaths = []string{}
+		host.ReadonlyPaths = []string{}
 		// The policy is in place before the build container exists, so nothing in it runs
 		// on a network without one.
 		resolvers, err := e.prepareBuildNetwork(ctx, c, p)
@@ -133,17 +154,18 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 		for _, r := range resolvers {
 			nameservers = append(nameservers, strconv.Quote(r.String()))
 		}
-		config.Env = []string{"ASTILBA_GC_MIB=" + strconv.Itoa(limits.StateMiB/2), "ASTILBA_NAMESERVERS=" + strings.Join(nameservers, ", ")}
+		config.Env = append(config.Env, "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock", "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2), "ASTILBA_NAMESERVERS="+strings.Join(nameservers, ", "))
 		if p.Registry != nil {
 			config.Env = append(config.Env, "ASTILBA_REGISTRY_HOST="+strings.Split(p.Registry.Repository, "/")[0])
 		}
 		// RUN steps share the build container's network, which the policy filters on the host.
 		// BuildKit replaces Docker's loopback resolver for them, so it is given the host's.
+		// rootlesskit creates the user namespace and keeps that network, so the policy holds.
 		config.Entrypoint = []string{"sh", "-ec"}
-		config.Cmd = []string{`mkdir -p /etc/buildkit; : > /etc/buildkit/buildkitd.toml
-if [ -n "$ASTILBA_REGISTRY_HOST" ]; then printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" >> /etc/buildkit/buildkitd.toml; fi
-if [ -n "$ASTILBA_NAMESERVERS" ]; then printf '[dns]\n  nameservers = [%s]\n' "$ASTILBA_NAMESERVERS" >> /etc/buildkit/buildkitd.toml; fi
-exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-net host --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
+		config.Cmd = []string{`mkdir -p /run/buildkit; : > /run/buildkit/buildkitd.toml
+if [ -n "$ASTILBA_REGISTRY_HOST" ]; then printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" >> /run/buildkit/buildkitd.toml; fi
+if [ -n "$ASTILBA_NAMESERVERS" ]; then printf '[dns]\n  nameservers = [%s]\n' "$ASTILBA_NAMESERVERS" >> /run/buildkit/buildkitd.toml; fi
+exec rootlesskit --net=host buildkitd --config /run/buildkit/buildkitd.toml --root /var/lib/buildkit --addr unix:///run/buildkit/buildkitd.sock --oci-worker-net host --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
 	}
 	made, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: pipelineName(c), Config: config, HostConfig: host})
 	if err != nil {

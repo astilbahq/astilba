@@ -77,6 +77,12 @@ func TestBuildNetworkAllowlist(t *testing.T) {
 	}
 	in.Capabilities.BuildNetwork = &yes
 	heartbeat()
+	// An agent that would run builds privileged gets none either.
+	if body := request(400, nil); !strings.Contains(string(body), "runner.rootlessBuildsUpgradeRequired") {
+		t.Fatal("a build was offered to an agent without the rootless builder", string(body))
+	}
+	in.Capabilities.RootlessBuilds = &yes
+	heartbeat()
 
 	var current api.BuildNetwork
 	b.call("GET", route, nil, 200, &current)
