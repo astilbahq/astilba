@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"encoding/json/jsontext"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -58,5 +60,115 @@ func TestParseSpecRefusesNULWhereverItIs(t *testing.T) {
 		if !ok || refused.Code != "invalid_input" || !slices.Equal(refused.Fields, []string{c.field}) {
 			t.Errorf("NUL in %s was answered with %v", c.field, err)
 		}
+	}
+}
+
+type nulProbe struct {
+	Name    string                    `json:"name"`
+	Labels  map[string]string         `json:"labels"`
+	Steps   []nulStep                 `json:"steps"`
+	Raw     *jsontext.Value           `json:"raw"`
+	Any     any                       `json:"any"`
+	Nested  map[string]map[string]any `json:"nested"`
+	Ignored string                    `json:"-"`
+	hidden  string
+	nulEmbedded
+}
+
+type nulStep struct {
+	Detail *string `json:"detail"`
+}
+
+type nulEmbedded struct {
+	Inline string `json:"inline"`
+}
+
+// The walk names the member a client sent, so an API refusal can point at it.
+func TestNULFieldNamesTheMember(t *testing.T) {
+	nul := string(rune(0))
+	detail := "ok" + nul
+	escaped := jsontext.Value(`{"a":[{"b":"` + `\` + `u0000"}]}`)
+	escapedKey := jsontext.Value(`{"a":{"b` + `\` + `u0000":1}}`)
+	for want, probe := range map[string]nulProbe{
+		"name":         {Name: nul},
+		"labels":       {Labels: map[string]string{"a" + nul: "b"}},
+		"steps.detail": {Steps: []nulStep{{}, {Detail: &detail}}},
+		"raw.a.b":      {Raw: &escaped},
+		"raw.a":        {Raw: &escapedKey},
+		"any":          {Any: map[string]any{"a": []any{nul}}},
+		"nested":       {Nested: map[string]map[string]any{"a": {"b": nul}}},
+		"inline":       {nulEmbedded: nulEmbedded{Inline: nul}},
+	} {
+		if got, found := NULField(probe, ""); !found || got != want {
+			t.Errorf("NUL in %s was named %q, %v", want, got, found)
+		}
+	}
+	quoted := jsontext.Value(`{"a":"\\` + `u0000"}`)
+	for name, probe := range map[string]nulProbe{
+		"none":            {Name: "a", Labels: map[string]string{"a": "b"}, Any: []any{"a", 1.0}},
+		"an escaped \\":   {Raw: &quoted},
+		"a skipped field": {Ignored: nul, hidden: nul},
+	} {
+		if field, found := NULField(probe, ""); found {
+			t.Errorf("%s: found NUL in %s", name, field)
+		}
+	}
+	if field, found := NULField(nul, ""); !found || field != "request" {
+		t.Errorf("a NUL body was named %q", field)
+	}
+}
+
+// What a host reported keeps its shape and size, with a space for each NUL, wherever it is.
+func TestReplaceNULKeepsWhatAHostReported(t *testing.T) {
+	nul := string(rune(0))
+	detail := "a" + nul + "b"
+	raw := jsontext.Value(`{"a":"x` + `\` + `u0000y","b":"\\` + `u0000"}`)
+	probe := nulProbe{
+		Name:    nul,
+		Labels:  map[string]string{"k" + nul: "v" + nul, "plain": "kept"},
+		Steps:   []nulStep{{Detail: &detail}},
+		Raw:     &raw,
+		Any:     map[string]any{"a": []any{nul, 1.0}},
+		Nested:  map[string]map[string]any{"a": {"b" + nul: nul}},
+		Ignored: nul,
+	}
+	probe.Inline = nul
+	if field, collides := ReplaceNUL(&probe); collides {
+		t.Fatal("replacing collided in", field)
+	}
+	want := nulProbe{
+		Name:    " ",
+		Labels:  map[string]string{"k ": "v ", "plain": "kept"},
+		Raw:     probe.Raw,
+		Any:     map[string]any{"a": []any{" ", 1.0}},
+		Nested:  map[string]map[string]any{"a": {"b ": " "}},
+		Ignored: nul,
+	}
+	want.Inline = " "
+	if *probe.Steps[0].Detail != "a b" || &detail != probe.Steps[0].Detail {
+		t.Error("the step's detail was", *probe.Steps[0].Detail)
+	}
+	probe.Steps = nil
+	if !reflect.DeepEqual(probe, want) {
+		t.Errorf("replaced into %+v", probe)
+	}
+	if string(raw) != `{"a":"x`+`\`+`u0020y","b":"\\`+`u0000"}` {
+		t.Errorf("the raw value became %s", raw)
+	}
+	if _, found := NULField(probe, ""); found {
+		t.Error("NUL survived the replacement")
+	}
+}
+
+// Two keys that a replacement would make equal cannot both be kept, so the body is refused.
+func TestReplaceNULRefusesKeysItWouldMerge(t *testing.T) {
+	nul := string(rune(0))
+	probe := nulProbe{Labels: map[string]string{"a" + nul: "1", "a ": "2"}}
+	if field, collides := ReplaceNUL(&probe); !collides || field != "labels" {
+		t.Fatalf("answered %q, %v", field, collides)
+	}
+	probe = nulProbe{Labels: map[string]string{"a" + nul + " ": "1", "a " + nul: "2"}}
+	if field, collides := ReplaceNUL(&probe); !collides || field != "labels" {
+		t.Fatalf("answered %q, %v", field, collides)
 	}
 }

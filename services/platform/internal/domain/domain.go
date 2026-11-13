@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/mail"
 	"net/url"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -145,7 +144,7 @@ func ParseSpec(raw []byte) (Specification, []byte, error) {
 		return spec, nil, Invalid("networks")
 	}
 	// After deriveCompose, whose YAML can spell NUL as an escape.
-	if field, ok := nulField(reflect.ValueOf(spec), "specification"); ok {
+	if field, ok := NULField(spec, "specification"); ok {
 		return spec, nil, Invalid(field)
 	}
 	ids := map[uuid.UUID]bool{}

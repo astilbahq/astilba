@@ -102,6 +102,17 @@ Some readers stay looser, because other people or tools write their input and re
 
 `httpapi.decode`, agent poll responses, `hostnetwork.Decode`, recovery records, specifications, archives and keyrings all use `RejectUnknownMembers`. A body such as `{"role":"viewer","ROLE":"owner"}` used to read as `owner` in `decode`. It was not exploitable before this work because every request object with named properties in the OpenAPI schema sets `additionalProperties: false`, so the validator refused `ROLE`, and kin-openapi refuses duplicate names when built with `goexperiment.jsonv2`. `decode` now refuses both on its own. It also refuses invalid UTF-8 and lone surrogates, which v1 replaced silently.
 
+## Text PostgreSQL cannot store
+
+PostgreSQL's `text` and `jsonb` cannot hold U+0000. A write with one fails with 22021, or 22P05 for the `\u0000` escape in `jsonb`, and the failure aborts its transaction. Input is kept clear of it where it enters:
+
+- **Request bodies.** `httpapi.decode` is the one reader of a request body, which the `requestbody` analyzer enforces. It walks every string the body decodes to, including map keys and the strings inside raw JSON members. A person's or program's request is refused with `invalid_input` naming the member. An agent's request, one authenticated as an agent or one of the requests an agent makes for its credentials, has each NUL replaced with a space instead. Its strings carry its host's output, such as os-release and Docker's version, and refusing them would refuse every heartbeat or report after it. The only refusal is a map in which a replacement would make two keys equal.
+- **Paths and query strings.** Every request whose path or query decodes to NUL is refused before a handler runs.
+- **Archives.** An export cannot write NUL, so an archive row holding one is refused as an invalid archive.
+- **Signed webhooks.** The Stripe, GitHub App and Git push handlers read their raw bytes to check a signature, and then read only identifiers they validate.
+
+`store.Normalize` maps 22021 and 22P05 to `domain.UnstorableText`, an `invalid_input` refusal, so a path these miss, such as a provider's reply, is refused rather than answered with a 500, and the API logs a warning naming the route. The recovery CLI reads hosts' exports from disk rather than through a request, so it is not covered yet (PLAT-321).
+
 ## Where third-party code keeps v1
 
 These libraries call `encoding/json` v1 themselves, so they accept v1's looser input at that boundary:
