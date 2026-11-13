@@ -192,6 +192,7 @@ export const environments: Schema["Environment"][] = [
     configurationOwner: "dashboard",
     purpose: "standard",
     draftRevisionId: "00000000-0000-4000-8000-000000000100",
+    state: "active",
     deploymentUnit: {
       id: "00000000-0000-4000-8000-000000000200",
       runtime: "docker",
@@ -204,6 +205,7 @@ export const environments: Schema["Environment"][] = [
     configurationOwner: "compose",
     purpose: "standard",
     draftRevisionId: "00000000-0000-4000-8000-000000000101",
+    state: "active",
     deploymentUnit: {
       id: "00000000-0000-4000-8000-000000000201",
       runtime: "docker",
@@ -216,6 +218,7 @@ export const environments: Schema["Environment"][] = [
     configurationOwner: "dashboard",
     purpose: "preview_template",
     draftRevisionId: "00000000-0000-4000-8000-000000000102",
+    state: "active",
     deploymentUnit: {
       id: "00000000-0000-4000-8000-000000000202",
       runtime: "docker",

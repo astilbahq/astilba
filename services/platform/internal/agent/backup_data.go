@@ -385,7 +385,7 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if err = checksumFile(filepath.Join(dir, filename), &checked); err != nil || checked.Bytes != m.Bytes || checked.SHA256 != m.SHA256 {
 		return errors.New("snapshot checksum mismatch")
 	}
-	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(r.TargetID), Driver: "local", Labels: visualLabels(in.Policy.Plan, r.TargetID)}); err != nil {
+	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(r.TargetID), Driver: "local", Labels: restoreTargetLabels(in.Policy.Plan, r.TargetID, m)}); err != nil {
 		return err
 	}
 	if _, err = e.volumePath(ctx, in.Policy, r.TargetID); err != nil {

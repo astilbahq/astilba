@@ -13,6 +13,7 @@ import (
 	"time"
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -492,6 +493,67 @@ func TestUpgradeEndedWithoutStatusSettlesPlan(t *testing.T) {
 	refuse(h.poll(t, h.action(t, actions, "reconcile", "attention")))
 	expect(view.Plan.ID, "attention", "unknown", true)
 	h.poll(t, h.action(t, actions, "reconcile", "attention"))
+}
+
+// volumeMajor reads the PostgreSQL major management recorded for a volume.
+func volumeMajor(t *testing.T, f *fixture, volume uuid.UUID) *string {
+	t.Helper()
+	var major *string
+	if err := f.st.Pool.QueryRow(context.Background(), "SELECT postgres_major FROM managed_volumes WHERE id=$1", volume).Scan(&major); err != nil {
+		t.Fatal(err)
+	}
+	return major
+}
+
+// retirementMigration is the version of 00047_environment_retirement.sql, which adds and backfills
+// postgres_major. Keep it with that file's number.
+const retirementMigration = 47
+
+// An upgrade planned before volumes recorded their PostgreSQL major has a target volume that no
+// applied revision mounts yet. Migration 00047 and the backfill after an older archive's import or
+// recovery record the major its target runs.
+func TestUpgradeTargetMajorBackfill(t *testing.T) {
+	f := setup(t)
+	h := newUpgradeHost(t, f)
+	view, _ := h.plan(t)
+	ctx := context.Background()
+	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != domain.PostgresMajor(domain.PostgresImage) {
+		t.Fatal("planning the upgrade did not record its target's major", major)
+	}
+	forget := func() {
+		t.Helper()
+		if _, err := f.st.Pool.Exec(ctx, "UPDATE managed_volumes SET postgres_major=NULL WHERE id=$1", view.Plan.TargetVolumeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forget()
+	if err := db.New(f.st.Pool).BackfillUpgradeTargetMajors(ctx, h.ws); err != nil {
+		t.Fatal(err)
+	}
+	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != "18" {
+		t.Fatal("the archive backfill missed an upgrade's target", major)
+	}
+	conn, err := sql.Open("pgx", f.st.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, conn, os.DirFS("../../db/migrations"), goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, retirementMigration, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, retirementMigration, true); err != nil {
+		t.Fatal(err)
+	}
+	if major := volumeMajor(t, f, view.Plan.TargetVolumeID); major == nil || *major != "18" {
+		t.Fatal("migration 00047 missed an upgrade's target", major)
+	}
+	if err = dbmigrate.Check(ctx, f.st.Pool.Config().ConnString()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Plans stranded before these were settled stop blocking their servers on upgrade.

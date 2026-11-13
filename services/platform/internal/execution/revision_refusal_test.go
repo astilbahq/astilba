@@ -23,6 +23,9 @@ func TestRefusalStopsOnlyWhatARetryWouldRepeat(t *testing.T) {
 		{fmt.Errorf("saving: %w", domain.SpecificationTooLarge), true},
 		{domain.Invalid("specification.applications.source.image"), true},
 		{&composeproject.Diagnostic{Path: "secret-name.yaml", Line: 3, Column: 7, Message: "image is interpolated from SECRET_VALUE"}, true},
+		// A retired environment refuses every change until an owner restores it.
+		{domain.EnvironmentInactive, true},
+		{fmt.Errorf("promoting: %w", domain.EnvironmentInactive), true},
 		{&pgconn.PgError{Code: "22021", Message: "invalid byte sequence: SECRET_VALUE"}, true},
 		{fmt.Errorf("saving: %w", &pgconn.PgError{Code: "22P05"}), true},
 		{&pgconn.PgError{Code: "23505"}, false},

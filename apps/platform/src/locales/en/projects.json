@@ -52,7 +52,11 @@
     "preview": "Pull-request preview",
     "open": "Open environment",
     "unavailableTitle": "Environment unavailable",
-    "unavailable": "This environment is unavailable in this project. Use the project breadcrumb to choose another environment."
+    "unavailable": "This environment is unavailable in this project. Use the project breadcrumb to choose another environment.",
+    "retired": "Retired environments ({{total}})",
+    "retiredState": "Retired",
+    "retiringState": "Being retired",
+    "allRetired": "Every environment in this project is retired."
   },
   "createEnvironment": {
     "title": "New environment",

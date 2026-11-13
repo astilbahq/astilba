@@ -36,7 +36,7 @@ func recoveryCommand(c api.ExecutionCommand) bool {
 	}
 	if c.Kind == "visual" && c.Visual != nil {
 		var p deployment.Payload
-		if json.Unmarshal(*c.Visual, &p) == nil && p.Action == "preview-cleanup" && p.Plan.Preview != nil {
+		if json.Unmarshal(*c.Visual, &p) == nil && (p.Action == "preview-cleanup" && p.Plan.Preview != nil || p.Action == retireAction && p.Plan.Preview == nil) {
 			return true
 		}
 	}

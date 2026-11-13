@@ -136,8 +136,15 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	status := backup.Status{PolicyID: policy.ID, Generation: 1, Next: time.Now().Add(time.Hour), Runs: []backup.Run{}}
 	now := time.Now()
 	target := uuid.New()
-	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, Manifest: &backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg}}
-	status.Runs = append(status.Runs, run)
+	manifest := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg, Method: "postgres-logical", Image: image}
+	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
+	// A verified restore of an archive another PostgreSQL major wrote: its target was initialised
+	// with that major, which the deployed database cannot open.
+	older := manifest
+	older.Image = domain.Postgres17Image
+	crossMajor := run
+	crossMajor.ID, crossMajor.TargetID, crossMajor.Verified, crossMajor.Manifest, crossMajor.ManifestHash = uuid.New(), uuid.New(), true, &older, backup.Hash(older)
+	status.Runs = append(status.Runs, run, crossMajor)
 	send := func(seq int64, want int) {
 		raw, _ := stablejson.Marshal(status)
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/schedule-reports", token, map[string]any{"sequence": seq, "status": jsontext.Value(raw)}, want, nil)
@@ -146,11 +153,14 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	send(1, 204)
 	var got backup.Status
 	b.call("GET", path+"/backup-policies/"+policy.ID.String()+"/status", nil, 200, &got)
-	if len(got.Runs) != 1 {
+	if len(got.Runs) != 2 {
 		t.Fatal("report retry duplicated a scheduled run")
 	}
 	cutover := path + "/backup-policies/" + policy.ID.String() + "/cutover"
 	b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: run.ID}, 409, nil)
+	if raw := b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: crossMajor.ID}, 400, nil); !strings.Contains(string(raw), "restore.compatibility") {
+		t.Fatalf("a cutover across PostgreSQL majors was not refused as incompatible: %s", raw)
+	}
 	status.Runs[0].Verified = true
 	uploadRecord := status.Runs[0]
 	uploadRecord.ID = upload.RunID
@@ -163,6 +173,11 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	var restored domain.Specification
 	if json.Unmarshal(next.Specification, &restored) != nil || restored.Applications[0].Mounts[0].VolumeID != target {
 		t.Fatal("cutover draft did not bind the fresh target")
+	}
+	// The target records the major its restore initialised it with before any plan mounts it.
+	var major *string
+	if err := f.st.Pool.QueryRow(context.Background(), "SELECT postgres_major FROM managed_volumes WHERE environment_id=$1 AND id=$2 AND NOT deleted", env.Id, target).Scan(&major); err != nil || major == nil || *major != domain.PostgresMajor(image) {
+		t.Fatal("the restore target's PostgreSQL major was not recorded", err)
 	}
 	var applied *uuid.UUID
 	if err := f.st.Pool.QueryRow(context.Background(), "SELECT applied_revision_id FROM environments WHERE id=$1", env.Id).Scan(&applied); err != nil || applied == nil || *applied != draft.Id {
