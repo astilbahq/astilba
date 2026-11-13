@@ -136,7 +136,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 					lastHeartbeat = time.Now()
 				}
 				poll, done := context.WithTimeout(ctx, time.Second)
-				c, err := f.execution.Poll(poll, identity)
+				c, err := pollReleased(f.execution, poll, identity)
 				pollErr := poll.Err()
 				done()
 				if err != nil {

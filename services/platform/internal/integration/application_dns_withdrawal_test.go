@@ -142,7 +142,7 @@ func publishedServer(t *testing.T, f *fixture, z *dnsZone) dnsServer {
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	enrolled, input, _ := enrollment(t, f, b, ws, "deployment")
-	if _, e := f.execution.Enroll(ctx, input, "test"); e != nil {
+	if _, e := f.execution.Enroll(ctx, acknowledging(input), "test"); e != nil {
 		t.Fatal(e)
 	}
 	var installation uuid.UUID

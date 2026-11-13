@@ -2534,6 +2534,28 @@
       "security":
         -
           "agentBearer": []
+  /agent/v1/releases:
+    post:
+      operationId: noticeSecretReleases
+      description: >-
+        Acknowledges the secret releases this agent instance holds in its journal, and asks
+        again, with a reason, for one it no longer holds. Management releases a command's
+        values to an instance once until it is acknowledged, and again after only on request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SecretReleaseNotice'}
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+      security:
+        - agentBearer: []
   /agent/v1/operations/{parentId}/checkpoints/{checkpointId}:
     get:
       operationId: downloadRecoveryCheckpoint
@@ -5347,6 +5369,12 @@
         credentialFreeVisualCancel:
           type: boolean
           description: Agent accepts visual cancellation without re-sending hydrated credentials.
+        acknowledgesReleases:
+          type: boolean
+          description: >-
+            Agent acknowledges each command's secret release once it is journaled, and accepts a
+            command without values only when it already holds them. Management releases values
+            only to agents that advertise this.
         machineBoundRotation:
           type: boolean
           description: Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1.
@@ -5893,6 +5921,50 @@
           $ref: '#/components/schemas/BackupCommand'
         upgrade:
           $ref: '#/components/schemas/UpgradeCommand'
+        secretRelease:
+          $ref: '#/components/schemas/SecretRelease'
+    SecretRelease:
+      type: object
+      additionalProperties: false
+      description: >-
+        The secret values a command carries, named by a digest of the values' IDs and versions,
+        never of the values. Without values, the agent must already hold this release.
+      required: [epoch, digest, values]
+      properties:
+        epoch: {type: integer, format: int64, minimum: 0}
+        digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        values: {type: boolean}
+    SecretReleaseRef:
+      type: object
+      additionalProperties: false
+      required: [operationId, epoch, digest]
+      properties:
+        operationId: {type: string, format: uuid}
+        epoch: {type: integer, format: int64, minimum: 0}
+        digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+    SecretRedelivery:
+      type: object
+      additionalProperties: false
+      required: [operationId, epoch, reason]
+      properties:
+        operationId: {type: string, format: uuid}
+        epoch: {type: integer, format: int64, minimum: 0}
+        reason:
+          type: string
+          enum: [journal-missing]
+    SecretReleaseNotice:
+      type: object
+      additionalProperties: false
+      required: [acknowledged, redeliver]
+      properties:
+        acknowledged:
+          type: array
+          maxItems: 64
+          items: {$ref: '#/components/schemas/SecretReleaseRef'}
+        redeliver:
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/SecretRedelivery'}
     "ExecutionState":
       "type": "string"
       "enum":

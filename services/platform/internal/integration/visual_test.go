@@ -103,18 +103,14 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	if strings.Contains(string(stored), "visual-secret-canary") {
 		t.Fatal("command stored plaintext secret")
 	}
-	// A controller-first upgrade must still cancel an existing agent's exact
-	// hydrated command. New agents explicitly opt in to credential-free cancels.
+	// An agent that acknowledges releases keeps the values it was given and compares payloads
+	// by digest, so its cancel comes without them even if it never said it takes
+	// credential-free cancels.
 	b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
-	legacyCancel := poll(op.Id)
-	if !legacyCancel.CancelRequested || string(*legacyCancel.Visual) != string(*command.Visual) {
-		t.Fatal("legacy visual cancellation changed the accepted payload")
-	}
-	in.Capabilities.CredentialFreeVisualCancel = &yes
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
-	currentCancel := poll(op.Id)
-	if !currentCancel.CancelRequested || strings.Contains(string(*currentCancel.Visual), "visual-secret-canary") {
-		t.Fatal("capable agent did not receive credential-free cancellation")
+	cancelled := poll(op.Id)
+	var cancelledPayload deployment.Payload
+	if !cancelled.CancelRequested || strings.Contains(string(*cancelled.Visual), "visual-secret-canary") || json.Unmarshal(*cancelled.Visual, &cancelledPayload) != nil || cancelledPayload.Digest() != payload.Digest() {
+		t.Fatal("acknowledging agent did not receive credential-free cancellation of the same command")
 	}
 	// Admission reserves PostgreSQL initialization even if an initial deployment is cancelled.
 	report(command, deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, StateHash: strings.Repeat("a", 64)}, "cancelled")

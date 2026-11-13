@@ -89,7 +89,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	b.call("POST", prefix+"/registries", map[string]any{"name": "Images", "repository": "registry.example.test/" + strings.Repeat("a", 200-len("registry.example.test/")), "push": map[string]string{"username": "push", "password": "push-canary"}, "pull": map[string]string{"username": "pull", "password": "pull-canary"}}, 201, &registry)
 	var buildSecret pipeline.BuildSecret
 	b.call("POST", prefix+"/build-secrets", map[string]string{"name": "PACKAGE_TOKEN", "value": "build-only-canary"}, 201, &buildSecret)
-	old := f.st.Keys
+	old := keysOf(f.st)
 	nextKeys, err := cryptobox.New("next")
 	if err != nil {
 		t.Fatal(err)
@@ -340,9 +340,15 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			if state != "dispatched" {
 				t.Fatal("operation never dispatched", state)
 			}
-			// Only a command that may already have reached the runner is still delivered.
-			poll(op.Id)
+			// Only a command that may already have reached the runner is still delivered. The
+			// runner holds its credentials, so only releasing them again asks the provider, and
+			// a changed repository refuses that.
+			first := poll(op.Id)
 			repositoryIdentity.Store(13)
+			if held := poll(op.Id); held.SecretRelease == nil || held.SecretRelease.Values {
+				t.Fatal("a held release was made again", held.SecretRelease)
+			}
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: op.Id, Epoch: first.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
 			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 500, nil)
 			if expired {
 				var raw []byte

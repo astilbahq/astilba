@@ -233,7 +233,7 @@ func TestRefreshWorkerRechecksAfterAHungProvider(t *testing.T) {
 	release()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	command, err := h.f.execution.Poll(ctx, h.identity)
+	command, err := pollReleased(h.f.execution, ctx, h.identity)
 	if err != nil || command == nil || command.Id == first.Id {
 		t.Fatal("refresh admitted nothing", command, err)
 	}
@@ -263,7 +263,7 @@ func TestRefreshWorkerAsksAgainAfterAPushDuringItsCheck(t *testing.T) {
 	release()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	command, err := h.f.execution.Poll(ctx, h.identity)
+	command, err := pollReleased(h.f.execution, ctx, h.identity)
 	if err != nil || command == nil || command.Id == first.Id {
 		t.Fatal("refresh admitted nothing", command, err)
 	}
