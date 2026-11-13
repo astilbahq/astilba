@@ -204,8 +204,8 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 			if code := get("/"); code != http.StatusForbidden {
 				t.Fatal("route admitted a client outside its allowlist", code)
 			}
-			// Opening the route to the owner's network is a later, reviewed change.
-			redeploy := func(next deployment.Plan) {
+			// Opening the route, once the owner has their account, is a later, reviewed change.
+			redeploy := func(next deployment.Plan, secrets map[string]string) {
 				t.Helper()
 				next.ID, next.RevisionID, next.Images = uuid.New(), uuid.New(), map[string]string{}
 				p = next.WithHash()
@@ -216,8 +216,8 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 			}
 			opened := p
 			opened.Specification.Routes = []domain.Route{spec.Routes[0]}
-			opened.Specification.Routes[0].AllowCIDRs = []string{"127.0.0.1/32"}
-			redeploy(opened)
+			opened.Specification.Routes[0].AllowCIDRs = []string{}
+			redeploy(opened, secrets)
 			// The application may still be migrating its database behind its readiness check.
 			health := "/"
 			for _, a := range spec.Applications {
@@ -225,9 +225,13 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 					health = a.Health.Path
 				}
 			}
-			for deadline := time.Now().Add(3 * time.Minute); get(health) != http.StatusOK; time.Sleep(time.Second) {
+			for deadline := time.Now().Add(3 * time.Minute); ; time.Sleep(time.Second) {
+				code := get(health)
+				if code == http.StatusOK {
+					break
+				}
 				if time.Now().After(deadline) {
-					t.Fatal("route did not reach the application's readiness")
+					t.Fatal("route did not reach the application's readiness", code)
 				}
 			}
 			if recipe.ID == "kaneo" {
@@ -242,7 +246,7 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 			// An empty plan removes the entry's services and route from this host's ingress.
 			empty := p
 			empty.Specification = domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}}
-			redeploy(empty)
+			redeploy(empty, map[string]string{})
 			if code := get("/"); code == http.StatusOK {
 				t.Fatal("removed route still answers")
 			}
