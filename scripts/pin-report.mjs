@@ -24,7 +24,7 @@ import {
   findGoTools,
   findImages,
   findReleases,
-  beyondTrack,
+  offTrackRelease,
   newestInLine,
   offTrack,
   parseTracks,
@@ -370,12 +370,7 @@ async function checkImage(client, scanner, pin, directory) {
     result.newer = newestInLine(pin.tag, tags, pin.track);
     // A track can run dry, as an Alpine line does when upstream stops building it.
     if (pin.track) {
-      const beyond = newestInLine(
-        pin.tag,
-        tags.filter((tag) => beyondTrack(pin.tag, tag, pin.track)),
-      );
-      if (beyond && newestInLine(result.newer ?? pin.tag, [beyond]) === beyond)
-        result.offTrack = beyond;
+      result.offTrack = offTrackRelease(pin.tag, tags, pin.track, result.newer);
     }
   });
   for (const target of targets) {

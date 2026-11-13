@@ -7,6 +7,7 @@ import {
   findImages,
   findReleases,
   beyondTrack,
+  offTrackRelease,
   newestInLine,
   offTrack,
   parseTracks,
@@ -144,5 +145,40 @@ test("only a release the track would take in the pin's form counts beyond it", (
   assert.equal(
     beyondTrack("18.7-alpine3.23", "18.8-alpine3.24", undefined),
     false,
+  );
+});
+
+test("a track that has run dry is noticed, and one that has not is quiet", () => {
+  const alpine = /-alpine3\.23$/;
+  const both = [
+    "18.7-alpine3.23",
+    "18.7-alpine3.24",
+    "18.8-alpine3.23",
+    "18.8-alpine3.24",
+  ];
+  const newer = newestInLine("18.7-alpine3.23", both, alpine);
+  assert.equal(newer, "18.8-alpine3.23");
+  assert.equal(
+    offTrackRelease("18.7-alpine3.23", both, alpine, newer),
+    undefined,
+  );
+  const dry = ["18.7-alpine3.23", "18.7-alpine3.24", "18.8-alpine3.24"];
+  assert.equal(
+    offTrackRelease(
+      "18.7-alpine3.23",
+      dry,
+      alpine,
+      newestInLine("18.7-alpine3.23", dry, alpine),
+    ),
+    "18.8-alpine3.24",
+  );
+  assert.equal(
+    offTrackRelease(
+      "1.30.6-alpine3.24",
+      ["1.30.7-alpine3.24", "1.31.8-alpine3.24"],
+      stable,
+      "1.30.7-alpine3.24",
+    ),
+    undefined,
   );
 });

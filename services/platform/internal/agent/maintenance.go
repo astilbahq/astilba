@@ -192,7 +192,8 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			if err != nil {
 				return err
 			}
-			note = strings.TrimSpace(note + " " + rebuild)
+			// The owner's instructions come first, so a clipped note never loses them.
+			note = strings.TrimSpace(rebuild + " " + note)
 		}
 		return e.finishCrossHost(c, command, o, note, true)
 	default:

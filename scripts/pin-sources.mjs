@@ -236,6 +236,18 @@ export function beyondTrack(pinTag, candidate, track) {
   return track.test(version + pinTag.slice(lead(pinTag).length));
 }
 
+// The newest release beyond a pin's track that the track would take in the pin's form, when it
+// is newer than anything on the track: the sign that the track has run dry.
+export function offTrackRelease(pinTag, tags, track, newer) {
+  const beyond = newestInLine(
+    pinTag,
+    tags.filter((tag) => beyondTrack(pinTag, tag, track)),
+  );
+  return beyond && beyondTrack(newer ?? pinTag, beyond, track)
+    ? beyond
+    : undefined;
+}
+
 // A pin off its own track is a mistake in the pin or the track, so it is reported
 // rather than compared.
 export function offTrack(current, track) {
