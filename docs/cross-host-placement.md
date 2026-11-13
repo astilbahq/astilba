@@ -167,10 +167,13 @@ follows the workspace's configuration, not its age.
   shows a runtime applied for a preview environment retired before the window opened is refused
   with the dates.
 
-Recovery merges only the newest checkpoint, N: the one no other supplied checkpoint lists as
-superseded, captured last. N carries every unfinished root with everything it names, so an
-older checkpoint adds nothing to merge, and an older copy of a row N dropped would overwrite the
-backup's newer one. A base lists every base a host may still hold that its management captured
+Recovery merges the newest checkpoint, N: the one no other supplied checkpoint lists as
+superseded, captured last. N carries every unfinished root of its own management's history with
+everything it names, so an older checkpoint of that history adds nothing to merge, and an older
+copy of a row N dropped would overwrite the backup's newer one. A root that hosts still run and
+that N doesn't carry was started by a management N's doesn't descend from, as when a management
+restored from a backup ran other work on other hosts. Its checkpoint is merged with N, and where
+both carry a row, the copy captured later wins. A base lists every base a host may still hold that its management captured
 or recovered before it, which vouches that they are its ancestors. Recovery sets those aside
 and names them in its preview. Any other older checkpoint, such as one from a management that
 diverged, is compared with N first: one whose applied history N doesn't continue, or doesn't

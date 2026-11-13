@@ -223,8 +223,9 @@ func TestRecoveryRefusesABackupShowingARetiredPreviewLive(t *testing.T) {
 	}
 }
 
-// Recovery merges only the newest base. A base it lists is set aside unread, an unlisted one is
-// compared with it first, and a root still needing recovery keeps its own base for its runtime.
+// Recovery merges the newest base, and the base of a root still needing recovery only when the
+// newest doesn't carry that root. A base it lists is set aside unread, an unlisted one is compared
+// with it first, and a root still needing recovery keeps its own base for its runtime.
 func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
 	backup, full, plans := windowTestChain(t, 3)
 	newest := windowTestHistory(t, full, plans, 1)
@@ -269,6 +270,43 @@ func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
 		err := chooseRecoveryBases(&out, decode)
 		if err == nil || !strings.Contains(err.Error(), unlisted.ID.String()) || strings.Contains(err.Error(), "management backup") {
 			t.Fatal("an unlisted checkpoint older than the window wasn't refused by name", err)
+		}
+	})
+	t.Run("a forked management's root is merged", func(t *testing.T) {
+		// A management restored from a backup ran other work in another environment. The newest
+		// base, from the original, doesn't carry that root, so its own base is merged with it.
+		other := appliedTestPlan()
+		forkedArchive := appliedTestDeploy(backup, other, 1)
+		forkedArchive.CreatedAt = newest.CreatedAt.Add(-time.Minute)
+		root, _ := recoveryValue[uuid.UUID](forkedArchive.Tables["execution_operations"][1], "id")
+		forked := loadedBase{ID: uuid.New(), Parent: root, CapturedAt: forkedArchive.CreatedAt}
+		// Combining keys a runtime by its workspace and environment.
+		for _, a := range []portability.Archive{newest, forkedArchive} {
+			for _, row := range a.Tables["visual_runtime"] {
+				recoverySet(row, "workspace_id", a.Workspace)
+			}
+		}
+		archives[root] = forkedArchive
+		out := recoverySource{Bases: []loadedBase{forked, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: root}}}
+		if err := chooseRecoveryBases(&out, decode); err != nil {
+			t.Fatal(err)
+		}
+		merged := false
+		for _, row := range out.Archive.Tables["execution_operations"] {
+			if id, _ := recoveryValue[uuid.UUID](row, "id"); id == root {
+				merged = true
+			}
+		}
+		if !merged || !out.ForkedEnvironments[other.EnvironmentID] || out.Archive.Recovery != newest.Recovery || out.Archive.Version != newest.Version || len(out.Archive.Tables["environments"]) != 2 {
+			t.Fatal("a root the newest base doesn't carry wasn't merged with it", merged, out.ForkedEnvironments)
+		}
+		// A root the newest base carries, as one it lists, is never merged from an older base.
+		out = recoverySource{Bases: []loadedBase{listed, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: listed.Parent}}}
+		if err := chooseRecoveryBases(&out, decode); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.ForkedEnvironments) != 0 || len(out.Archive.Tables["execution_operations"]) != len(newest.Tables["execution_operations"]) {
+			t.Fatal("an older base of the newest one's own lineage was merged")
 		}
 	})
 	t.Run("an unlisted fork", func(t *testing.T) {

@@ -57,13 +57,16 @@ func stagedBase(ctx context.Context, tx pgx.Tx, parent uuid.UUID) (portability.A
 }
 
 // selectRecoveryBases chooses what recovery reads from the bases it loaded. The newest by capture
-// time, N, is the one it merges: N carries every unfinished root with its children and everything
-// they name, so an older base adds nothing to merge, and an older copy of a row N dropped would
-// overwrite the restored database's newer one. The base of a root that still needs recovery is
-// kept for its environment's applied runtime. Every other base is set aside, after a comparison
-// with N unless N lists it as superseded: N's management captured or recovered every base it
-// lists, so they are its ancestors, while an unlisted one may come from a diverged management.
-// Bases are compared only with N, whose applied history holds any older head of its own lineage.
+// time, N, is merged: N carries every unfinished root of its own lineage with its children and
+// everything they name, so an older base of that lineage adds nothing to merge, and an older copy
+// of a row N dropped would overwrite the restored database's newer one. A root that still needs
+// recovery and that N doesn't carry was started by a management N's doesn't descend from, as when
+// a management restored from a backup ran other work on other hosts; its base is merged with N, the
+// newer copy of a shared row winning. The base of every root that still needs recovery is kept for
+// its environment's applied runtime. Every other base is set aside. A base is compared with N
+// first unless N lists it as superseded: N's management captured or recovered every base it lists,
+// so they are its ancestors, while an unlisted one may come from a diverged management. Bases are
+// compared only with N, whose applied history holds any older head of its own lineage.
 func selectRecoveryBases(ctx context.Context, tx pgx.Tx, ws uuid.UUID, out *recoverySource) error {
 	return chooseRecoveryBases(out, func(parent uuid.UUID) (portability.Archive, error) { return stagedBase(ctx, tx, parent) })
 }
@@ -94,7 +97,13 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 			needed[host.ActiveParent] = true
 		}
 	}
+	carried := map[uuid.UUID]bool{}
 	for _, row := range a.Tables["execution_operations"] {
+		id, err := recoveryValue[uuid.UUID](row, "id")
+		if err != nil {
+			return err
+		}
+		carried[id] = true
 		c, err := recoveryValue[api.ExecutionCommand](row, "command")
 		if err != nil {
 			return err
@@ -107,6 +116,7 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 			needed[c.Id] = true
 		}
 	}
+	var forked []portability.Archive
 	for _, b := range out.Bases {
 		if b.ID == newest.ID {
 			continue
@@ -139,10 +149,35 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 			if err = out.Origins.add(o); err != nil {
 				return err
 			}
+			if !vouched && !carried[b.Parent] {
+				forked = append(forked, older)
+			}
 			continue
 		}
 		out.SetAside = append(out.SetAside, RecoverySetAside{Checkpoint: b.ID, Parent: b.Parent, CapturedAt: b.CapturedAt, Reason: "older than the newest checkpoint, which agrees with it"})
 	}
+	if len(forked) == 0 {
+		return nil
+	}
+	var combined portability.RecoveryBases
+	if err = combined.Add(a); err != nil {
+		return err
+	}
+	out.ForkedEnvironments = map[uuid.UUID]bool{}
+	for _, base := range forked {
+		if err = combined.Add(base); err != nil {
+			return err
+		}
+		for _, row := range base.Tables["environments"] {
+			id, err := recoveryValue[uuid.UUID](row, "id")
+			if err != nil {
+				return err
+			}
+			out.ForkedEnvironments[id] = true
+		}
+	}
+	out.Archive = combined.Archive()
+	out.Archive.Version, out.Archive.Recovery = a.Version, a.Recovery
 	return nil
 }
 
@@ -194,12 +229,12 @@ func compareWithNewest(newest, older *appliedOrigin) error {
 	return nil
 }
 
-// refuseRetiredBeyondWindow refuses a restored database that shows an environment live that the
-// newest base doesn't carry: a standard environment, or a preview with an applied runtime. A base
+// refuseRetiredBeyondWindow refuses a restored database that shows an environment live that no
+// merged base carries: a standard environment, or a preview with an applied runtime. A base
 // carries every standard environment and every preview whose runtime is applied or changed inside
-// its window, so such an environment was retired before the window opened, and the database is
-// older than the window. A preview without a runtime brings nothing back to life, and an
-// environment created after the base is the database's own.
+// its window, so such an environment was retired before the newest base's window opened, and the
+// database is older than the window. A preview without a runtime brings nothing back to life, and
+// an environment created after the newest base is the database's own.
 func refuseRetiredBeyondWindow(before portability.Archive, source recoverySource) error {
 	if source.History == nil {
 		return nil
@@ -208,6 +243,7 @@ func refuseRetiredBeyondWindow(before portability.Archive, source recoverySource
 	for _, e := range source.History.Environments {
 		carried[e.Environment] = true
 	}
+	maps.Copy(carried, source.ForkedEnvironments)
 	operations := map[uuid.UUID]portability.Row{}
 	for _, row := range before.Tables["execution_operations"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")

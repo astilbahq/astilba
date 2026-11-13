@@ -35,6 +35,9 @@ type recoverySource struct {
 	// Bases are every base loaded, and SetAside those recovery doesn't use.
 	Bases    []loadedBase
 	SetAside []RecoverySetAside
+	// ForkedEnvironments are those carried by the bases merged with the newest one for roots it
+	// doesn't carry, which a management it doesn't descend from started.
+	ForkedEnvironments map[uuid.UUID]bool
 }
 
 // loadedBase is a base recovery authenticated, as the recovery_bases registry records it.
