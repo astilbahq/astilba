@@ -22,22 +22,38 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// nativePostgresMetadataRestore restores logical archives into fresh clusters and checks the
+// database metadata survives. An archive an earlier minor made restores in the database's own,
+// later release, as one taken before a pin bump does.
 func nativePostgresMetadataRestore(t *testing.T, e *Engine, base deployment.Plan) {
 	t.Helper()
-	for _, fixture := range []struct{ name, image, database string }{
-		{"postgres18", domain.PostgresImage, "app"},
-		{"postgres17_maintenance_database", domain.Postgres17Image, "postgres"},
+	retired := map[int]string{}
+	for _, r := range domain.PostgresReleases() {
+		if r.Retired() {
+			retired[r.Major()] = r.Image
+		}
+	}
+	for _, fixture := range []struct{ name, dumped, restored, database string }{
+		{"postgres18", domain.PostgresImage, domain.PostgresImage, "app"},
+		{"postgres17_maintenance_database", domain.Postgres17Image, domain.Postgres17Image, "postgres"},
+		{"postgres18_backup_from_a_retired_release", retired[18], domain.PostgresImage, "app"},
+		{"postgres17_backup_from_a_retired_release", retired[17], domain.Postgres17Image, "postgres"},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
-			p := base
-			a := domain.Application{ID: uuid.New(), Source: domain.ApplicationSource{Image: &fixture.image}, Postgres: &domain.Postgres{Username: "app", Database: fixture.database}}
-			p.Specification.Applications = []domain.Application{a}
-			p.Images = map[string]string{a.ID.String(): fixture.image}
-			policy := backup.Policy{Plan: p, ResourceID: a.ID}
-			start := func(volume uuid.UUID) string {
+			id := uuid.New()
+			policyFor := func(image string) backup.Policy {
+				p := base
+				a := domain.Application{ID: id, Source: domain.ApplicationSource{Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: fixture.database}}
+				p.Specification.Applications = []domain.Application{a}
+				p.Images = map[string]string{a.ID.String(): image}
+				return backup.Policy{Plan: p, ResourceID: a.ID}
+			}
+			source, target := policyFor(fixture.dumped), policyFor(fixture.restored)
+			a := source.Plan.Specification.Applications[0]
+			start := func(volume uuid.UUID, image string) string {
 				t.Helper()
-				created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Config: &container.Config{Image: fixture.image, Env: []string{"POSTGRES_USER=app", "POSTGRES_DB=" + fixture.database, "POSTGRES_PASSWORD=metadata-fixture-password"}, Labels: visualLabels(p, a.ID)}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(volume), Target: domain.PostgresMount(fixture.image)}}}})
+				created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Config: &container.Config{Image: image, Env: []string{"POSTGRES_USER=app", "POSTGRES_DB=" + fixture.database, "POSTGRES_PASSWORD=metadata-fixture-password"}, Labels: visualLabels(source.Plan, a.ID)}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(volume), Target: domain.PostgresMount(image)}}}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -52,16 +68,20 @@ func nativePostgresMetadataRestore(t *testing.T, e *Engine, base deployment.Plan
 			}
 			volumes := []uuid.UUID{uuid.New(), uuid.New()}
 			for _, volume := range volumes {
-				if _, err := e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(volume), Labels: visualLabels(p, volume)}); err != nil {
+				if _, err := e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(volume), Labels: visualLabels(source.Plan, volume)}); err != nil {
 					t.Fatal(err)
 				}
+				t.Cleanup(func() {
+					_, _ = e.Docker.VolumeRemove(ctx, deployment.VolumeName(volume), client.VolumeRemoveOptions{Force: true})
+				})
 			}
-			source := start(volumes[0])
+			dumped := start(volumes[0], fixture.dumped)
 			db := quoteIdentifier(fixture.database)
-			if _, err := e.pgQuery(ctx, source, a, `CREATE ROLE backup_reader NOLOGIN;
+			if _, err := e.pgQuery(ctx, dumped, a, `CREATE ROLE backup_reader NOLOGIN;
 CREATE SCHEMA reporting;
-CREATE TABLE reporting.records(value text);
-INSERT INTO reporting.records VALUES ('retained');
+CREATE TABLE reporting.records(value text, code bpchar);
+INSERT INTO reporting.records VALUES ('retained', 'a ');
+CREATE INDEX records_code ON reporting.records(code);
 ALTER DATABASE `+db+` SET search_path=reporting,public;
 ALTER ROLE backup_reader IN DATABASE `+db+` SET work_mem='16MB';
 REVOKE CONNECT ON DATABASE `+db+` FROM PUBLIC;
@@ -73,24 +93,34 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 			}
 			dir := t.TempDir()
 			m := backup.Manifest{}
-			if err := e.dumpPostgres(ctx, policy, dir, &m); err != nil {
+			if err := e.dumpPostgres(ctx, source, dir, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.Image != fixture.dumped {
+				t.Fatalf("the archive names %s, not the release that made it", m.Image)
+			}
+			if _, err := e.Docker.ContainerStop(ctx, dumped, client.ContainerStopOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			// These are the existing custom-format archives: no new manifest or
 			// dump option is required to recover their database metadata.
-			release, _ := domain.PostgresReleaseOf(fixture.image)
-			if err := e.restorePostgres(ctx, policy, &backup.Run{ID: uuid.New(), TargetID: volumes[1]}, dir, m, "metadata-fixture-password", release, false); err != nil {
+			release, err := backup.RestoreRelease(target, m)
+			if err != nil || release.Image != fixture.restored {
+				t.Fatalf("restores in %s: %v", release.Image, err)
+			}
+			if err := e.restorePostgres(ctx, target, &backup.Run{ID: uuid.New(), TargetID: volumes[1]}, dir, m, "metadata-fixture-password", release, false); err != nil {
 				t.Fatal(err)
 			}
-			restored := start(volumes[1])
+			restored := start(volumes[1], fixture.restored)
 			got, err := e.pgQuery(ctx, restored, a, `SELECT
+current_setting('server_version_num'),
 current_setting('search_path'),
-(SELECT value FROM reporting.records),
+(SELECT value FROM reporting.records WHERE code = 'a'),
 has_database_privilege('backup_reader', current_database(), 'CONNECT'),
 (SELECT setconfig::text FROM pg_db_role_setting WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname=current_database()) AND setrole=(SELECT oid FROM pg_roles WHERE rolname='backup_reader')),
 (SELECT concat_ws(',',datconnlimit,pg_get_userbyid(datdba),shobj_description(oid,'pg_database')) FROM pg_database WHERE datname=current_database()),
 NOT EXISTS (SELECT 1 FROM pg_database, LATERAL aclexplode(coalesce(datacl,acldefault('d',datdba))) WHERE datname=current_database() AND grantee=0 AND privilege_type='CONNECT')`)
-			if err != nil || strings.TrimSpace(string(got)) != "reporting, public|retained|t|{work_mem=16MB}|7,backup_reader,metadata recovery fixture|t" {
+			if err != nil || strings.TrimSpace(string(got)) != fmt.Sprint(release.Version)+"|reporting, public|retained|t|{work_mem=16MB}|7,backup_reader,metadata recovery fixture|t" {
 				t.Fatalf("database settings, privileges, ownership, comments or records were lost: %q, %v", got, err)
 			}
 		})

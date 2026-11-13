@@ -316,12 +316,6 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if in.Policy.Method == "container-job" || !backup.SnapshotID(r.Snapshot) || r.TargetID == uuid.Nil {
 		return errors.New("invalid restore")
 	}
-	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
-		return err
-	}
-	if err := e.prepareRepository(ctx, in, false); err != nil {
-		return err
-	}
 	var original *backup.Run
 	for i := range s.Runs {
 		v := &s.Runs[i]
@@ -343,6 +337,12 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 		if release, err = backup.RestoreRelease(in.Policy, m); err != nil {
 			return restoreRefusal{err}
 		}
+	}
+	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
+		return err
+	}
+	if err := e.prepareRepository(ctx, in, false); err != nil {
+		return err
 	}
 	// Reserve headroom for the downloaded archive and expanded database, retaining
 	// both old and new volumes. Refuse unknown capacity rather than assuming room.

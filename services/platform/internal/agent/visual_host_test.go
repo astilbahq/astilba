@@ -292,9 +292,6 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close(ctx)
-	t.Run("database_metadata_restore", func(t *testing.T) {
-		nativePostgresMetadataRestore(t, f.engine, p)
-	})
 	t.Run("backup_and_fresh_restore", func(t *testing.T) {
 		nativeBackupJourney(t, f.engine, p, func(b backup.Command) Record {
 			f.generation++

@@ -434,6 +434,10 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		if errors.Is(err, errJobCleanup) {
 			r.Note = "Job cleanup could not be confirmed. Inspect the owned run container and resolve the run locally before further host operations."
 		}
+		var refused restoreRefusal
+		if errors.As(err, &refused) {
+			r.Note = "Restore refused: " + refused.Error() + "."
+		}
 	}
 	compactManifest(&r)
 	s.Runs[index] = r
