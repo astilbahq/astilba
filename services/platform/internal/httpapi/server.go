@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/gob"
-	"encoding/json/v2"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -179,7 +178,11 @@ func (s *Server) request(next http.Handler) http.Handler {
 			}
 		}()
 		recorder := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
-		next.ServeHTTP(recorder, r)
+		if e := urlNUL(r); e != nil {
+			s.fail(recorder, r, e)
+		} else {
+			next.ServeHTTP(recorder, r)
+		}
 		s.Log.Info("request", "request_id", id, "route", requestRoute(r), "status", recorder.Status())
 	})
 }
@@ -265,6 +268,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 			out.Fields = &de.Fields
 		}
 		status = failureStatus(de.Code)
+		if errors.Is(err, domain.UnstorableText) {
+			// Input is checked where it is decoded, so this is a path that missed the check.
+			s.Log.Warn("text reached the database holding a character it cannot store", "request_id", out.RequestId, "route", requestRoute(r), diagnostic.Failure(err))
+		}
 		if status == 503 {
 			w.Header().Set("Retry-After", "5")
 		}
@@ -276,13 +283,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	s.respond(w, status, out)
 }
-func decode[T any](r *http.Request) (T, error) {
-	var v T
-	if json.UnmarshalRead(r.Body, &v, json.RejectUnknownMembers(true)) != nil {
-		return v, domain.Invalid("request")
-	}
-	return v, nil
-}
+
 func value(p *string) string {
 	if p == nil {
 		return ""
@@ -394,6 +395,10 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	a, e := s.Auth.VerifyCode(r.Context(), id, s.Sessions.GetInt64(r.Context(), "pending-version"), b.Code)
 	if e == nil {
+		// The signed-in token continues the pending sign-in's lineage, so a logout that read
+		// the pending sign-in, such as choosing another account in another tab, ends what it
+		// became. Signing in proves a credential, so it does not need the pending row itself.
+		r.Context().Value(sessionLoadKey{}).(*sessionLoad).continueLineage = true
 		e = s.establish(r.Context(), a, true)
 	}
 	if e != nil {
@@ -402,7 +407,21 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendSession(w, r)
 }
+
+// Logout ends the session the browser presented and every token that renewed it since its
+// sign-in. That includes one whose account a credential change has moved on: its row remains
+// until the change renews it, and ending the lineage makes that renewal refuse. Nothing else
+// is needed for a session that had already ended.
 func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
+	loaded := r.Context().Value(sessionLoadKey{}).(*sessionLoad)
+	if loaded.lineage != uuid.Nil {
+		if e := endLineage(r.Context(), s.Store, loaded.lineage); e != nil {
+			s.fail(w, r, e)
+			return
+		}
+	}
+	// The lineage is gone, so a stale session's cookie is replaced too.
+	loaded.keepCookie = false
 	if e := s.Sessions.Destroy(r.Context()); e != nil {
 		s.fail(w, r, e)
 		return

@@ -101,6 +101,7 @@ func TestGitImportOfARefusedFileNamesTheFix(t *testing.T) {
 	yes := true
 	in.Capabilities.Build, in.Capabilities.Visual, in.Capabilities.Compose = &yes, &yes, &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agent := authorityAgent{t, f, agentToken, in}
 	web := "services:\n  web:\n    image: " + pipelineTestImage + "\n"

@@ -244,14 +244,17 @@ func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
 	renewedCookie := changer.client.Jar.Cookies(target)[0].Value
 
 	// Each runs twice: first while the outdated row exists, then once it has gone.
+	// A mutation from an outdated row passes its CSRF check with the token the page holds, so
+	// that it can log out, and is then refused for lack of a session. Once the row has gone
+	// only the token derived from the cookie passes.
 	for _, stale := range []struct {
 		name, method, path, csrf string
 		cookie                   *http.Cookie
-		status                   int
+		status                   map[string]int
 	}{
-		{"session", "GET", "/api/v1/session", "", guestCookie, 200},
-		{"read", "GET", "/api/v1/workspaces/" + workspace.String() + "/projects", "", readerCookie, 401},
-		{"mutation", "POST", "/api/v1/auth/logout", writer.csrf, writerCookie, 403},
+		{"session", "GET", "/api/v1/session", "", guestCookie, map[string]int{"outdated": 200, "deleted": 200}},
+		{"read", "GET", "/api/v1/workspaces/" + workspace.String() + "/projects", "", readerCookie, map[string]int{"outdated": 401, "deleted": 401}},
+		{"mutation", "POST", "/api/v1/auth/mfa/enroll", writer.csrf, writerCookie, map[string]int{"outdated": 401, "deleted": 403}},
 	} {
 		for _, row := range []string{"outdated", "deleted"} {
 			if row == "deleted" {
@@ -260,7 +263,7 @@ func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
 				}
 			}
 			response, data := send(stale.method, stale.path, stale.csrf, stale.cookie, "")
-			if response.StatusCode != stale.status || len(response.Cookies()) != 0 {
+			if response.StatusCode != stale.status[row] || len(response.Cookies()) != 0 {
 				t.Fatalf("%s with %s row: status %d, cookies %v: %s", stale.name, row, response.StatusCode, response.Cookies(), data)
 			}
 			if strings.Contains(string(data), f.owner.String()) {

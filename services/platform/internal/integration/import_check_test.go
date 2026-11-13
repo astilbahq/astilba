@@ -63,6 +63,7 @@ func newImportedEnvironment(t *testing.T, kind string) *importedEnvironment {
 	enrolled, in, token := enrollment(t, f, b, i.ws, "build")
 	in.Capabilities.Build = &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	i.runnerID, i.in, i.runner = enrolled.Server.Id, in, authorityAgent{t, f, token, in}
 	var deployIn api.AgentEnrollment
@@ -668,6 +669,7 @@ func TestImportCheckThroughAGitHubApp(t *testing.T) {
 	enrolled, in, token := enrollment(t, f, b, h.ws, "build")
 	in.Capabilities.Build = &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	runner := authorityAgent{t, f, token, in}
 	head := strings.Repeat("a", 40)

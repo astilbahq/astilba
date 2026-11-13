@@ -67,3 +67,34 @@ export async function loadSession({ signal }: { signal?: AbortSignal } = {}) {
   signal?.throwIfAborted();
   return session;
 }
+
+// signOut ends this browser's session and confirms it has ended. A logout can race another
+// tab that renews the session, such as by confirming identity or changing the password. The
+// server ends a renewal that comes after the logout read the session, but one that came first
+// has already replaced the token the logout sent, so that logout is refused or ends nothing.
+// Reading the session again presents the browser's current cookie, so one still signed in is
+// logged out once more.
+export async function signOut({ signal }: { signal?: AbortSignal } = {}) {
+  let refused: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await result(client.POST("/api/v1/auth/logout", { signal }));
+      refused = undefined;
+    } catch (error) {
+      // The token this tab sent was replaced, so its CSRF token no longer matches.
+      if (!(error instanceof ApiError) || error.status !== 403) throw error;
+      refused = error;
+    }
+    let session: Session;
+    try {
+      session = setSession(await loadSession({ signal }));
+    } catch (error) {
+      // The page that follows a sign-out reads the session itself, so an accepted logout
+      // need not wait for this check.
+      if (refused === undefined) return;
+      throw error;
+    }
+    if (!session.user && !session.mfaPending) return;
+  }
+  throw refused ?? new Error("The session is still signed in.");
+}

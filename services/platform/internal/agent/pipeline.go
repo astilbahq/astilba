@@ -24,6 +24,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 )
 
@@ -104,24 +105,44 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 			return errors.New("cannot obtain the pinned builder")
 		}
 	}
-	config := &container.Config{Image: pipeline.BuilderImage, Entrypoint: []string{"sleep"}, Cmd: []string{"infinity"}, Labels: map[string]string{labelServer: c.ServerId.String(), labelResource: c.Id.String(), labelEnvironment: c.EnvironmentId.String(), labelKind: "pipeline-v1", "com.astilba.plan": c.PlanHash}}
+	mounts, err := e.builderMounts()
+	if err != nil {
+		return errors.New("cannot prepare the builder's accounts")
+	}
+	if e.builderCAs != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: e.builderCAs, Target: "/etc/ssl/certs/ca-certificates.crt", ReadOnly: true})
+	}
+	// Every runner container runs as the builder's unprivileged user. Its writable places are
+	// its own, and source, secrets and BuildKit's state stay in memory.
+	owned := fmt.Sprintf(",uid=%d,gid=%d", builderUID, builderUID)
+	user := fmt.Sprintf("%d:%d", builderUID, builderUID)
+	config := &container.Config{Image: pipeline.BuilderImage, User: user, Entrypoint: []string{"sleep"}, Cmd: []string{"infinity"}, Env: []string{"HOME=/workspace", "TMPDIR=/tmp", "XDG_RUNTIME_DIR=/run"}, Labels: map[string]string{labelServer: c.ServerId.String(), labelResource: c.Id.String(), labelEnvironment: c.EnvironmentId.String(), labelKind: "pipeline-v1", "com.astilba.plan": c.PlanHash}}
 	build := p.IsBuild()
 	memory := int64(512 << 20)
 	if build {
 		memory = int64(p.Build.Limits().MemoryMiB) << 20
 	}
-	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", Privileged: build, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700", "/tmp": "rw,nosuid,nodev,size=32m", "/run": "rw,nosuid,nodev,size=16m", "/var/lib/buildkit": "rw,exec,nosuid,size=1024m"}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
+	host := &container.HostConfig{ReadonlyRootfs: true, NetworkMode: "host", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges:true"}, Mounts: mounts, LogConfig: container.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "1m", "max-file": "1"}}, Tmpfs: map[string]string{"/workspace": "rw,exec,nosuid,nodev,size=256m,mode=0700" + owned, "/tmp": "rw,nosuid,nodev,size=32m,mode=0700" + owned, "/run": "rw,nosuid,nodev,size=16m,mode=0700" + owned, "/var/lib/buildkit": "rw,exec,nosuid,nodev,size=1024m,mode=0700" + owned}, Resources: container.Resources{Memory: memory, MemorySwap: memory, NanoCPUs: 2_000_000_000, PidsLimit: int64Pointer(256)}}
 	if build {
 		limits := p.Build.Limits()
 		if p.CacheScope != "" {
-			host.Tmpfs[cacheContainerDir] = "rw,nosuid,nodev,noexec,size=256m,mode=0700"
+			host.Tmpfs[cacheContainerDir] = "rw,nosuid,nodev,noexec,size=256m,mode=0700" + owned
 		}
 		host.Resources.NanoCPUs = int64(limits.CPUs) * 1_000_000_000
-		host.Tmpfs["/workspace"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.SourceMiB)
-		host.Tmpfs["/var/lib/buildkit"] = fmt.Sprintf("rw,exec,nosuid,size=%dm", limits.StateMiB)
-		host.ReadonlyRootfs = false
-		host.CapDrop = nil
-		host.SecurityOpt = nil
+		host.Tmpfs["/workspace"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.SourceMiB) + owned
+		host.Tmpfs["/var/lib/buildkit"] = fmt.Sprintf("rw,exec,nosuid,nodev,size=%dm,mode=0700", limits.StateMiB) + owned
+		// Rootless BuildKit, see builder.go: no host capability but the two newuidmap and
+		// newgidmap use to map its user namespace, which is also why no-new-privileges is off.
+		// BuildKit mounts a fresh /proc and /sys for each build step, which the kernel
+		// refuses over the ones Docker masks, so the AppArmor profile hides those instead.
+		security, err := builderSecurity(ctx)
+		if err != nil {
+			return err
+		}
+		host.SecurityOpt = security
+		host.CapAdd = []string{"CAP_SETUID", "CAP_SETGID"}
+		host.MaskedPaths = []string{}
+		host.ReadonlyPaths = []string{}
 		// The policy is in place before the build container exists, so nothing in it runs
 		// on a network without one.
 		resolvers, err := e.prepareBuildNetwork(ctx, c, p)
@@ -133,17 +154,18 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 		for _, r := range resolvers {
 			nameservers = append(nameservers, strconv.Quote(r.String()))
 		}
-		config.Env = []string{"ASTILBA_GC_MIB=" + strconv.Itoa(limits.StateMiB/2), "ASTILBA_NAMESERVERS=" + strings.Join(nameservers, ", ")}
+		config.Env = append(config.Env, "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock", "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2), "ASTILBA_NAMESERVERS="+strings.Join(nameservers, ", "))
 		if p.Registry != nil {
 			config.Env = append(config.Env, "ASTILBA_REGISTRY_HOST="+strings.Split(p.Registry.Repository, "/")[0])
 		}
 		// RUN steps share the build container's network, which the policy filters on the host.
 		// BuildKit replaces Docker's loopback resolver for them, so it is given the host's.
+		// rootlesskit creates the user namespace and keeps that network, so the policy holds.
 		config.Entrypoint = []string{"sh", "-ec"}
-		config.Cmd = []string{`mkdir -p /etc/buildkit; : > /etc/buildkit/buildkitd.toml
-if [ -n "$ASTILBA_REGISTRY_HOST" ]; then printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" >> /etc/buildkit/buildkitd.toml; fi
-if [ -n "$ASTILBA_NAMESERVERS" ]; then printf '[dns]\n  nameservers = [%s]\n' "$ASTILBA_NAMESERVERS" >> /etc/buildkit/buildkitd.toml; fi
-exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit/buildkitd.sock --oci-worker-net host --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
+		config.Cmd = []string{`mkdir -p /run/buildkit; : > /run/buildkit/buildkitd.toml
+if [ -n "$ASTILBA_REGISTRY_HOST" ]; then printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" >> /run/buildkit/buildkitd.toml; fi
+if [ -n "$ASTILBA_NAMESERVERS" ]; then printf '[dns]\n  nameservers = [%s]\n' "$ASTILBA_NAMESERVERS" >> /run/buildkit/buildkitd.toml; fi
+exec rootlesskit --net=host buildkitd --config /run/buildkit/buildkitd.toml --root /var/lib/buildkit --addr unix:///run/buildkit/buildkitd.sock --oci-worker-net host --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
 	}
 	made, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: pipelineName(c), Config: config, HostConfig: host})
 	if err != nil {
@@ -152,7 +174,29 @@ exec buildkitd --config /etc/buildkit/buildkitd.toml --addr unix:///run/buildkit
 	if _, err = e.Docker.ContainerStart(ctx, made.ID, client.ContainerStartOptions{}); err != nil {
 		return errors.New("cannot start bounded runner container")
 	}
+	if build {
+		return e.awaitBuilder(ctx, c)
+	}
 	return nil
+}
+
+// awaitBuilder waits for rootless BuildKit to answer. It exits at once when the host refuses its
+// user namespace, so the build stops here with that cause rather than at its next step.
+func (e *Engine) awaitBuilder(ctx context.Context, c api.ExecutionCommand) error {
+	for range 40 {
+		if _, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 4096, "buildctl", "debug", "workers"); err == nil {
+			return nil
+		}
+		if v, err := e.Docker.ContainerInspect(ctx, pipelineName(c), client.ContainerInspectOptions{}); err == nil && v.Container.State != nil && !v.Container.State.Running {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return errors.New("The rootless builder did not start. Check that this server can create user namespaces, as the builder requirements in the Git builds documentation describe.")
 }
 func int64Pointer(value int64) *int64 { return &value }
 func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) (pipeline.Result, error) {
@@ -177,16 +221,6 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		return result, errors.New("source extraction exceeded its bounded workspace")
 	}
 	contextDir := path.Join("/workspace/context", p.Build.Context)
-	for i := 0; i < 40; i++ {
-		if _, err = e.pipelineCLI(ctx, pipelineName(c), nil, nil, 4096, "buildctl", "debug", "workers"); err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return result, ctx.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
 	args := []string{"buildctl", "build", "--frontend", "dockerfile.v0", "--local", "context=" + contextDir, "--local", "dockerfile=" + contextDir, "--opt", "filename=" + p.Build.Dockerfile, "--opt", "platform=linux/" + p.Build.Architecture, "--progress", "plain", "--metadata-file", "/workspace/metadata.json"}
 	if p.Build.UsesRailpack() {
 		prepared, logs, err := e.prepareRailpack(ctx, c, p, contextDir)
@@ -268,6 +302,8 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		}
 		result.Image = p.Registry.Repository + "@" + result.Digest
 	} else {
+		// The builder's user owns the workspace and can change the archive after it is measured,
+		// so Docker reads no more than the measured size.
 		size, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "stat", "-c", "%s", "/workspace/image.tar")
 		if err != nil {
 			return result, err
@@ -276,7 +312,7 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		if err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
 			return result, errors.New("local image exceeds reserved host storage")
 		}
-		if err = e.loadPipelineImage(ctx, c); err != nil {
+		if err = e.loadPipelineImage(ctx, c, int64(n)); err != nil {
 			return result, err
 		}
 		inspected, err := e.Docker.ImageInspect(ctx, image)
@@ -348,7 +384,7 @@ func pipelineLogTail(logs string) string {
 	}
 	return logs[start:]
 }
-func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand) error {
+func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand, size int64) error {
 	cli := e.DockerCLI
 	if cli == "" {
 		cli = "docker"
@@ -365,13 +401,37 @@ func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand) 
 	if err = cmd.Start(); err != nil {
 		return err
 	}
-	response, err := e.Docker.ImageLoad(ctx, stream)
+	response, err := e.Docker.ImageLoad(ctx, &measuredReader{r: stream, remaining: size})
 	if err == nil {
 		_, err = io.Copy(io.Discard, response)
 		_ = response.Close()
 	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+	}
 	wait := cmd.Wait()
 	return errors.Join(err, wait)
+}
+
+// measuredReader reads exactly remaining bytes, and fails if r has more.
+type measuredReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (m *measuredReader) Read(p []byte) (int, error) {
+	if m.remaining == 0 {
+		if n, _ := m.r.Read(make([]byte, 1)); n > 0 {
+			return 0, errors.New("the image archive grew after it was measured")
+		}
+		return 0, io.EOF
+	}
+	n, err := m.r.Read(p[:min(int64(len(p)), m.remaining)])
+	m.remaining -= int64(n)
+	if err == io.EOF && m.remaining > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
 }
 func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	var p pipeline.Command

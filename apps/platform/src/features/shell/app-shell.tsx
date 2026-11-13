@@ -2,7 +2,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { appShell } from "../../../styled-system/recipes";
-import { client, result, type Schema } from "../../api/client";
+import { signOut, type Schema } from "../../api/client";
 import { useSessionRequest } from "../../api/use-session-request";
 import { Button } from "../../components/button";
 import { IconButton } from "../../components/icon-button";
@@ -222,11 +222,7 @@ export function AppShell({
             onClick={() => {
               setOpen(false);
               logout.run(() =>
-                request(
-                  (signal) =>
-                    result(client.POST("/api/v1/auth/logout", { signal })),
-                  onSignedOut,
-                ),
+                request((signal) => signOut({ signal }), onSignedOut),
               );
             }}
           >
