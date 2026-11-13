@@ -59,7 +59,7 @@ Protected stateless releases do not replace a source with bound consumers: those
 
 | Recipe | Deployment and bindings | Backup / restore | Major upgrades |
 | --- | --- | --- | --- |
-| PostgreSQL 18.4 | Private database and built-in outputs | Tested logical backup and fresh restore | Existing 17.10 → 18.4 workflow only |
+| PostgreSQL 18.7 | Private database and built-in outputs | Tested logical backup and fresh restore, including backups from earlier 18 releases | Later 18 releases in place; 17 → 18 through the [supported upgrade](supported-upgrades.md) |
 | Valkey 9.1.3 cache | Private Redis-compatible cache, `HOST`/`PORT`/`URL` | Not applicable: persistence disabled, data lost on restart | Manual compatibility review |
 | Nginx 1.30.6 | HTTP readiness, private HTTP outputs | Not applicable to the welcome-page recipe | Manual compatibility review |
 | Uptime Kuma 2.5.9 (slim, rootless) | HTTP readiness, private HTTP outputs, local retained volume | Manual: stopped-volume tools available; recipe-specific recovery unverified | Manual compatibility review |
