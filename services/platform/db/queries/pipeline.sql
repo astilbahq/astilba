@@ -168,3 +168,8 @@ SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = @workspace_id AND
 -- name: EnvironmentOperationRunning :one
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND environment_id = @environment_id::uuid
     AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled'))::boolean AS running;
+
+-- name: WorkspaceRunnerKnown :one
+-- Whether a server is one of the workspace's and not revoked, as a fallback runner saved with a
+-- configuration must be.
+SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = @workspace_id AND id = @id AND NOT revoked)::boolean AS known;

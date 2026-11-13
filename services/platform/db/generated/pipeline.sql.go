@@ -866,3 +866,21 @@ func (q *Queries) UnbindGitSource(ctx context.Context, arg UnbindGitSourceParams
 	}
 	return result.RowsAffected(), nil
 }
+
+const workspaceRunnerKnown = `-- name: WorkspaceRunnerKnown :one
+SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = $1 AND id = $2 AND NOT revoked)::boolean AS known
+`
+
+type WorkspaceRunnerKnownParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether a server is one of the workspace's and not revoked, as a fallback runner saved with a
+// configuration must be.
+func (q *Queries) WorkspaceRunnerKnown(ctx context.Context, arg WorkspaceRunnerKnownParams) (bool, error) {
+	row := q.db.QueryRow(ctx, workspaceRunnerKnown, arg.WorkspaceID, arg.ID)
+	var known bool
+	err := row.Scan(&known)
+	return known, err
+}

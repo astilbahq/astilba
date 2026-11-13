@@ -46,6 +46,22 @@ func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architectu
 	return online, nil
 }
 
+// unknownFallbackRunner refuses saving a configuration whose fallback runner isn't one of the
+// workspace's, or was revoked. Choosing a runner passes over a fallback that can't take work, so
+// nothing else would say so.
+var unknownFallbackRunner = &domain.Error{Code: "invalid_input", Message: "The fallback runner isn't one of this workspace's servers, or was revoked. Choose another fallback, or none.", Fields: []string{"configuration.fallbackRunnerId"}}
+
+func checkFallbackRunner(ctx context.Context, tx pgx.Tx, ws uuid.UUID, fallback *uuid.UUID) error {
+	if fallback == nil {
+		return nil
+	}
+	known, err := db.New(tx).WorkspaceRunnerKnown(ctx, db.WorkspaceRunnerKnownParams{WorkspaceID: ws, ID: *fallback})
+	if err == nil && !known {
+		return unknownFallbackRunner
+	}
+	return err
+}
+
 // selectRunner chooses the runner for work: the primary, or its fallback when the primary is
 // offline or busy and the fallback is ready. build is whether the work is a build.
 func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls, railpack, build bool) (uuid.UUID, error) {
@@ -299,6 +315,9 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return head.failure(domain.Invalid("branch"))
 		}
 		connection, commit := head.Connection, head.Value
+		if err = checkFallbackRunner(ctx, tx, ws, c.FallbackRunnerID); err != nil {
+			return err
+		}
 		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false, false)
 		if err != nil {
 			return err
@@ -477,6 +496,12 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 		return api.Operation{}, head.failure(domain.Invalid("branch"))
 	}
 	connection, commit := head.Connection, head.Value
+	// Saving a target saves its fallback; a stored target's run uses it as it stands.
+	if persist {
+		if err = checkFallbackRunner(ctx, tx, ws, c.FallbackRunnerID); err != nil {
+			return api.Operation{}, err
+		}
+	}
 	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack(), true)
 	if err != nil {
 		return api.Operation{}, err

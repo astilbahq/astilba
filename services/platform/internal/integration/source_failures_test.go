@@ -418,13 +418,16 @@ func TestRefreshQueuesOnTheRunnerWhenItsFallbackIsGone(t *testing.T) {
 	}
 }
 
-// A manual build whose fallback can't take it queues on its busy runner rather than being refused,
-// and can't wait on that runner for good: revoking it settles the build. A runner already revoked
-// refuses the build at once.
-func TestManualBuildQueuesOnItsRunnerWhenTheFallbackIsGone(t *testing.T) {
+// A build target whose fallback was revoked after it was saved queues its automatic build on its busy
+// runner rather than being rejected, and can't wait on that runner for good: revoking it settles the
+// build. A runner already revoked refuses a manual build at once.
+func TestBuildQueuesOnItsRunnerWhenTheFallbackIsGone(t *testing.T) {
 	i := newImportedEnvironment(t, "github")
 	_, spec := draftSpec(t, i.b, i.path)
 	goneID, _ := i.addRunner(t)
+	cfg := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &goneID, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
+	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 202, nil)
+	i.runner.finishPipeline(i.runner.next(), "cancelled", pipeline.Result{})
 	i.b.call("POST", i.prefix+"/servers/"+goneID.String()+"/revoke", nil, 204, nil)
 	// The runner is busy with another environment's import.
 	var project api.Project
@@ -434,17 +437,32 @@ func TestManualBuildQueuesOnItsRunnerWhenTheFallbackIsGone(t *testing.T) {
 	i.b.call("PUT", i.prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 202, nil)
 	i.runner.next()
 
-	cfg := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &goneID, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}
-	var build api.Operation
-	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 202, &build)
-	if build.ServerId != i.runnerID || build.State != "queued" {
-		t.Fatalf("the build did not queue on its runner: server %s, state %s", build.ServerId, build.State)
+	// The source tracks a branch of its own, so a push to main exercises only the target.
+	if _, err := i.f.st.Pool.Exec(t.Context(), `UPDATE git_sources SET configuration=jsonb_set(configuration,'{branch}','"release"') WHERE environment_id=$1`, i.env.Id); err != nil {
+		t.Fatal(err)
+	}
+	latest := strings.Repeat("e", 40)
+	i.source.tree.record(latest, importHonest)
+	i.source.push(latest)
+	var build uuid.UUID
+	waitFor(t, "the automatic build", 20*time.Second, func() bool {
+		err := i.f.st.Pool.QueryRow(t.Context(), "SELECT id FROM execution_operations WHERE workspace_id=$1 AND kind='pipeline' AND command->'pipeline'->>'action'='build' AND command->'pipeline'->>'commit'=$2", i.ws, latest).Scan(&build)
+		return err == nil
+	})
+	if op := i.operation(t, build); op.ServerId != i.runnerID || op.State != "queued" {
+		t.Fatalf("the build did not queue on its runner: server %s, state %s", op.ServerId, op.State)
+	}
+	var rejections []api.BuildRejection
+	i.b.call("GET", i.path+"/build-rejections", nil, 200, &rejections)
+	if len(rejections) != 0 {
+		t.Fatalf("a gone fallback rejected a target whose runner was only busy: %+v", rejections)
 	}
 	i.b.call("POST", i.prefix+"/servers/"+i.runnerID.String()+"/revoke", nil, 204, nil)
-	if settled := i.operation(t, build.Id); settled.State != "failed" && settled.State != "cancelled" {
+	if settled := i.operation(t, build); settled.State != "failed" && settled.State != "cancelled" {
 		t.Fatalf("a build queued on a revoked runner still waits: %s", settled.State)
 	}
-	// A runner that is already revoked refuses the build rather than queueing it.
+	// A runner that is already revoked refuses a manual build rather than queueing it.
+	cfg.FallbackRunnerID = nil
 	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 404, nil)
 }
 
@@ -471,5 +489,40 @@ func TestManualBuildQueuesOnItsRunnerWhenTheFallbackCantBuild(t *testing.T) {
 	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 202, &build)
 	if build.ServerId != i.runnerID {
 		t.Fatalf("the build went to a fallback that can't run it: %s", build.ServerId)
+	}
+}
+
+// A fallback runner is saved with a source or build target only if it is one of the workspace's
+// servers and not revoked, since choosing a runner passes over one that can't take work.
+func TestSavingRefusesAFallbackRunnerThatIsntTheWorkspaces(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	var other api.Workspace
+	i.b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
+	foreign, _, _ := enrollment(t, i.f, i.b, other.Id, "build")
+	revokedID, _ := i.addRunner(t)
+	i.b.call("POST", i.prefix+"/servers/"+revokedID.String()+"/revoke", nil, 204, nil)
+	refusedFor := func(raw []byte) {
+		t.Helper()
+		var refused api.Error
+		if err := json.Unmarshal(raw, &refused); err != nil || refused.Fields == nil || (*refused.Fields)[0] != "configuration.fallbackRunnerId" {
+			t.Fatalf("not refused for its fallback runner: %s %v", raw, err)
+		}
+	}
+	_, spec := draftSpec(t, i.b, i.path)
+	for _, fallback := range []uuid.UUID{foreign.Server.Id, revokedID} {
+		source := pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &fallback, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}
+		refusedFor(i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": source, "sourceHash": i.sourceStatus(t, i.path).SourceHash}, 400, nil))
+		build := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &fallback, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}}
+		refusedFor(i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": build}, 400, nil))
+	}
+	// A first binding is checked the same way.
+	var project api.Project
+	i.b.call("POST", i.prefix+"/projects", map[string]string{"name": "New"}, 201, &project)
+	var env api.Environment
+	i.b.call("POST", i.prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &env)
+	foreignID := foreign.Server.Id
+	refusedFor(i.b.call("PUT", i.prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, FallbackRunnerID: &foreignID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 400, nil))
+	if status := i.sourceStatus(t, i.path); status.ImportedCommit != strings.Repeat("a", 40) || status.Configuration.FallbackRunnerId != nil {
+		t.Fatal("a refused fallback changed the source")
 	}
 }
