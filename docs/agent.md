@@ -34,7 +34,7 @@ The agent compiles its version, minimum version and commit in, and reports them 
 
 An agent only installs a release whose minimum version is at least that of the release it runs, whether the update comes from the dashboard or from `update-local` (which applies the minimum version of the agent binary that runs it). A release's minimum version is never later than its version, so this also refuses any older release. An agent's minimum version therefore only ever rises, however many updates it takes. Rolling back among releases that share a minimum version stays possible; see [rollback and downgrade](#rollback-and-downgrade). A compromised management can't move an agent below its minimum version, even one release at a time, to an older, genuinely signed release with a known flaw.
 
-The minimum version is the reviewed file `services/platform/cmd/agent/minimum-version`, which every build embeds, so it is part of the release's commit. Raise it in a pull request when releases below it must not run again, for example after a security fix, or after a change that earlier agents can't read. Agents already above the new value can only update to releases that carry it.
+The minimum version is the reviewed file `services/platform/cmd/agent/minimum-version`, which every build embeds, so it is part of the release's commit. Raise it in a pull request when releases below it must not run again, for example after a security fix, or after a change that earlier agents can't read. An agent is bound by the new value only once it runs a release that carries it; from then on it only installs releases that carry that value or a higher one. Update every agent to such a release promptly.
 
 ### Release procedure
 
@@ -50,31 +50,22 @@ Releases are built by `.github/workflows/agent-release.yml`, never on a workstat
    - builds the agent on a native runner from that commit, with `-trimpath`, `CGO_ENABLED=0`, the version from the tag and the commit compiled in;
    - runs `release-manifest`, which checks that Go recorded that commit, unmodified, and writes an unsigned manifest from the agent's own `describe` output;
    - attests the binary and manifest with GitHub's build provenance, which records the repository, workflow, tag and commit.
-3. On the machine that holds the release key, in a checkout of this repository, download each architecture's artifacts into its own directory:
+3. On the machine that holds the release key, in a checkout of `main`, download each architecture's artifacts into its own directory:
    ```sh
    gh run download <run-id> --repo astilbahq/astilba -n agent-release-amd64 -D amd64
    gh run download <run-id> --repo astilbahq/astilba -n agent-release-arm64 -D arm64
    ```
-4. For each architecture, take the commit from the manifest and confirm that it is the tag's commit and that it is on `main`. Then verify that this workflow built both files from that commit. An attestation proves which workflow file at which commit built a file, so the commit check is what ties the workflow's own checks to reviewed code:
+4. Verify and sign both architectures. This needs `git`, `gh`, `jq` and Go:
    ```sh
-   commit=$(jq -r .commit amd64/astilba-agent-linux-amd64.json)
-   git fetch origin main --tags
-   test "$(git rev-parse 'agent-v0.3.0^{commit}')" = "$commit"
-   git merge-base --is-ancestor "$commit" origin/main
-   for file in amd64/astilba-agent-linux-amd64 amd64/astilba-agent-linux-amd64.json; do
-     gh attestation verify "$file" --repo astilbahq/astilba \
-       --signer-workflow astilbahq/astilba/.github/workflows/agent-release.yml \
-       --source-ref refs/tags/agent-v0.3.0 --source-digest "$commit"
-   done
+   scripts/agent-release-sign.sh agent-v0.3.0 /secure/release.pem ./releases
    ```
-5. Review the manifest's version, minimum version and commit. Sign with a tool built from that commit, never with an artifact under review, which would then run with the key readable. From `services/platform` in a checkout of the commit:
-   ```sh
-   go run ./cmd/agent release-sign --key /secure/release.pem \
-     --manifest ../../amd64/astilba-agent-linux-amd64.json \
-     --artifact ../../amd64/astilba-agent-linux-amd64 --out ./releases
-   ```
-   `release-sign` refuses an artifact whose size or digest differs from the manifest, or whose Go build information names another architecture, records no Git checkout, or names another commit or a modified checkout. It writes the artifact and the signed manifest into the catalog directory.
-6. Repeat steps 4 and 5 for arm64. Publish the catalog with the matching corresponding source and licence notices.
+   The script stops at the first check that fails, and signs nothing unless all of them pass. It:
+   - fetches the tag as it is on GitHub, and checks that its commit is on `main`;
+   - checks that each manifest names that commit, the tag's version and its own architecture, and prints each manifest for review;
+   - verifies, with `gh attestation verify`, that the release workflow built each binary and manifest for this tag at this commit. An attestation proves which workflow file at which commit built a file, so the commit check is what ties the workflow's own checks to reviewed code;
+   - builds the signing tool from that commit in a separate worktree, never from an artifact under review, which would then run with the key readable;
+   - signs. `release-sign` refuses an artifact whose size or digest differs from its manifest, or whose Go build information names another architecture, records no Git checkout, or names another commit or a modified checkout. It also refuses unless it was itself built from the release's commit, unmodified, and the manifest's minimum version is the one that commit embeds.
+5. Publish the catalog with the matching corresponding source and licence notices.
 
 Generate the protected signing key once, with `go run ./cmd/agent release-keygen --key /secure/release.pem` from `services/platform`. Keep the private key outside the repository, CI and the management container. Publish the fingerprint of `release.pem.pub` through your own trusted channel.
 
@@ -208,7 +199,7 @@ sudo systemctl start astilba-agent
 
 ## Explicit updates
 
-An owner with recent authentication selects a catalog release on the Servers page. Updates are serialized with all other host mutations. The agent verifies protocol, architecture, Ed25519 signature, size, hash, that the release is no older than its own minimum version, and the binary's compiled identity, including its commit and minimum version, then fsyncs and atomically replaces only its own executable. Systemd restarts it; the durable operation reports on reconnect. `/usr/local/bin/astilba-agent.previous` retains the previous binary. Workloads stay running. No automatic update policy is enabled.
+An owner with recent authentication selects a catalog release on the Servers page. Updates are serialized with all other host mutations. The agent verifies protocol, architecture, Ed25519 signature, size, hash, that the release's minimum version is at least that of the release it runs, and the binary's compiled identity, including its commit and minimum version, then fsyncs and atomically replaces only its own executable. Systemd restarts it; the durable operation reports on reconnect. `/usr/local/bin/astilba-agent.previous` retains the previous binary. Workloads stay running. No automatic update policy is enabled.
 
 For a disconnected host, stop the service, inspect its operation state, download and verify the same signed artifacts, then use:
 

@@ -1,11 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 // Builds the agent for both architectures, for local use. Releases come only from
 // .github/workflows/agent-release.yml; see the release procedure in docs/agent.md. The minimum
 // version comes from services/platform/cmd/agent/minimum-version.
 const root = resolve(import.meta.dirname, "..");
-const version = process.env.AGENT_VERSION ?? "0.0.1-development";
+// By default, a development version just above the embedded minimum version, which a release's
+// version may not be below.
+const [major, minor, patch] = readFileSync(resolve(root, "services/platform/cmd/agent/minimum-version"), "utf8").trim().split(/[.-]/);
+const version = process.env.AGENT_VERSION ?? `${major}.${minor}.${Number(patch) + 1}-development`;
 // agentrelease.ValidVersion: a semantic version without build metadata.
 const identifier = "(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
 const semver = new RegExp(`^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-${identifier}(\\.${identifier})*)?$`);

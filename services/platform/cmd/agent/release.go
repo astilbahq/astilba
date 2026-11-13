@@ -17,6 +17,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/agentrelease"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -99,6 +101,11 @@ func releaseCommand(command string, args []string) error {
 	if e = checkBuild(*binary, r, !*development); e != nil {
 		return e
 	}
+	if !*development {
+		if e = checkSigner(r); e != nil {
+			return e
+		}
+	}
 	r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, agentrelease.Message(r)))
 	if e = agentrelease.Validate(r, key.Public().(ed25519.PublicKey)); e != nil {
 		return e
@@ -175,6 +182,25 @@ func checkBuild(path string, r api.AgentRelease, requireCheckout bool) error {
 	}
 	if ok && (revision != r.Commit || settings["vcs.modified"] != "false") {
 		return fmt.Errorf("the manifest names commit %s, but the artifact was built from %s with modified=%s", r.Commit, revision, settings["vcs.modified"])
+	}
+	return nil
+}
+
+// checkSigner requires release-sign itself to be built from the release's commit, unmodified, as
+// scripts/agent-release-sign.sh builds it, and the release's minimum version to be the one that
+// commit embeds. The artifact's Go build information records its commit but not the -ldflags that
+// could override its minimum version, so this ties the signed minimum version to the reviewed file.
+func checkSigner(r api.AgentRelease) error {
+	info, ok := debug.ReadBuildInfo()
+	settings := map[string]string{}
+	for _, s := range info.Settings {
+		settings[s.Key] = s.Value
+	}
+	if !ok || settings["vcs.revision"] != r.Commit || settings["vcs.modified"] != "false" {
+		return fmt.Errorf("release-sign must be built from commit %s, unmodified; scripts/agent-release-sign.sh builds it so", r.Commit)
+	}
+	if minimumVersion != "" || strings.TrimSpace(sourceMinimumVersion) != r.MinimumVersion {
+		return fmt.Errorf("the manifest's minimum version %s is not %s, the one commit %s embeds", r.MinimumVersion, strings.TrimSpace(sourceMinimumVersion), r.Commit)
 	}
 	return nil
 }

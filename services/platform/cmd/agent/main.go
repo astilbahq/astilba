@@ -36,8 +36,9 @@ var (
 )
 
 // The minimum version bounds which releases this agent may update to. A build takes it from the
-// reviewed file beside this one, so it is part of the source commit. Only test fixtures set
-// minimumVersion instead.
+// reviewed file beside this one, so it is part of the source commit. Only test fixtures and the
+// local development stack (scripts/platform-dev-agent.mjs) set minimumVersion instead, and
+// release-sign refuses a release built that way.
 var (
 	//go:embed minimum-version
 	sourceMinimumVersion string
