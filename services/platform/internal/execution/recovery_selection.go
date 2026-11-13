@@ -156,7 +156,7 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 // doesn't carry. N carries every unfinished root of its own management, so such a root was started
 // by a management N's doesn't descend from, as when a management restored from a backup ran other
 // work on other hosts, or it ended, as N records by listing its base or by its applied or settled
-// history, and the hosts' report is stale. A base captured when the root started always shows it
+// history or, before its window, no longer records at all, and the hosts' report is stale. A base captured when the root started always shows it
 // unfinished, and only the hosts' unsigned reports say it still is, so recovery takes neither over.
 // Every such root is named with its servers, so the operator can revoke them, leave their exports
 // out, and enrol them again afterwards.
@@ -181,6 +181,11 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 			ended[e.Operation] = true
 		}
 	}
+	// A server N shows revoked counts for nothing it reports; recovery ignores its claims later.
+	revoked, err := recoveryRevokedServers(a)
+	if err != nil {
+		return err
+	}
 	names := map[uuid.UUID]string{}
 	for _, row := range a.Tables["servers"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")
@@ -191,7 +196,7 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 	}
 	unknown := map[uuid.UUID][]string{}
 	for _, host := range hosts {
-		if host.ActiveParent == uuid.Nil || carried[host.ActiveParent] {
+		if host.ActiveParent == uuid.Nil || carried[host.ActiveParent] || revoked[host.ServerID] {
 			continue
 		}
 		name := names[host.ServerID]
@@ -207,7 +212,7 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 	for _, root := range slices.SortedFunc(maps.Keys(unknown), bytesCompareUUID) {
 		servers := unknown[root]
 		slices.Sort(servers)
-		reason := "which the newest recovery checkpoint doesn't carry, so a management this one doesn't descend from started it"
+		reason := "which the newest recovery checkpoint doesn't carry, so a management this one doesn't descend from started it, or it ended before the checkpoint's window"
 		if ended[root] {
 			reason = "which the newest recovery checkpoint records as ended, so their report is stale"
 		}

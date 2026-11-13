@@ -2,21 +2,41 @@ package integration
 
 import (
 	"context"
+	"encoding/json/v2"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/google/uuid"
 )
 
-// recoverWithoutAnotherManagementsHosts expects recovery to refuse hosts that run root, which
-// another management started, naming the root and each of them. It then revokes them in the
-// restored management, leaves their exports out of input as the refusal says, and returns the
-// preview of recovering kept's work, which each remaining host's export takes over.
-func recoverWithoutAnotherManagementsHosts(t *testing.T, ctx context.Context, destination *fixture, input execution.RecoveryImport, root, kept uuid.UUID, others []api.AgentEnrollment, remaining []string) (execution.RecoveryImport, execution.RecoveryPreview) {
+// recoverWithoutAnotherManagementsHosts expects recovery to refuse the hosts of othersExports,
+// once they report running root as a reserved host does, because another management started it,
+// naming the root and each of them. It then revokes them in the restored management, leaves their
+// exports out as the refusal says, and returns the preview of recovering kept's work, which each
+// remaining host's export takes over.
+func recoverWithoutAnotherManagementsHosts(t *testing.T, ctx context.Context, destination *fixture, input execution.RecoveryImport, root, kept uuid.UUID, others []api.AgentEnrollment, othersExports, remaining []string) (execution.RecoveryImport, execution.RecoveryPreview) {
 	t.Helper()
+	// The fixture's hosts never reserve, so their exports are made to say they did.
+	input.HostExports = slices.Clone(remaining)
+	for _, dir := range othersExports {
+		active := copyRecoveryExport(t, dir)
+		var evidence deployment.RecoveryEvidence
+		raw, err := os.ReadFile(filepath.Join(active, "host.json"))
+		if err != nil || json.Unmarshal(raw, &evidence) != nil {
+			t.Fatal("other management's host export", err)
+		}
+		evidence.ActiveParent = root
+		if err = os.WriteFile(filepath.Join(active, "host.json"), claimBytes(t, evidence), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		input.HostExports = append(input.HostExports, active)
+	}
 	_, err := destination.execution.RecoverCrossHost(ctx, input)
 	if err == nil || !strings.Contains(err.Error(), root.String()) || !strings.Contains(err.Error(), "doesn't descend from") {
 		t.Fatal("hosts running another management's root were not refused", err)

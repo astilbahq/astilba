@@ -325,7 +325,7 @@ func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) 
 	_, full, plans := windowTestChain(t, 2)
 	newest := windowTestHistory(t, full, plans, 1)
 	server := uuid.New()
-	newest.Tables["servers"] = []portability.Row{appliedTestRow(map[string]any{"id": server, "name": "edge-1"})}
+	newest.Tables["servers"] = []portability.Row{appliedTestRow(map[string]any{"id": server, "name": "edge-1", "revoked": false})}
 	carried, _ := recoveryValue[uuid.UUID](newest.Tables["execution_operations"][0], "id")
 	listed, unknown := uuid.New(), uuid.New()
 	n := loadedBase{ID: uuid.New(), Parent: uuid.New(), Supersedes: map[uuid.UUID]uuid.UUID{uuid.New(): listed}}
@@ -345,6 +345,12 @@ func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "edge-1 ("+server.String()+")") || !strings.Contains(err.Error(), unknown.String()) || !strings.Contains(err.Error(), "doesn't descend from") || !strings.Contains(err.Error(), "revoke those servers") {
 		t.Fatal("hosts running a root another management started weren't refused by name", err)
 	}
+	// A server the newest base shows revoked counts for nothing it reports.
+	recoverySet(newest.Tables["servers"][0], "revoked", true)
+	if err := refuseUnknownActiveRoots(newest, n, running(unknown)); err != nil {
+		t.Fatal("a server the newest base shows revoked was refused", err)
+	}
+	recoverySet(newest.Tables["servers"][0], "revoked", false)
 	newest.Recovery.Settled = append(newest.Recovery.Settled, portability.SettledOperation{Operation: unknown, State: "succeeded", Sequence: 1, EndedAt: newest.CreatedAt})
 	if err := refuseUnknownActiveRoots(newest, n, running(unknown)); err == nil || !strings.Contains(err.Error(), "records as ended") {
 		t.Fatal("a stale report of a root the newest base records as ended wasn't refused", err)

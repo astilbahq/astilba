@@ -607,7 +607,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		}
 		// The newest checkpoint is this branch's, which never saw the first parent. Its hosts still
 		// run it, so recovery refuses them by name; revoked and left out, the rest recover.
-		input, preview := recoverWithoutAnotherManagementsHosts(t, ctx, destination, execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner, HostExports: combined}, operation.Id, operationB.Id, enrollments[:2], combined[2:])
+		input, preview := recoverWithoutAnotherManagementsHosts(t, ctx, destination, execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner}, operation.Id, operationB.Id, enrollments[:2], combined[:2], combined[2:])
 		input.ExpectedState = preview.StateHash
 		applied, err := destination.execution.RecoverCrossHost(ctx, input)
 		if err != nil || !applied.Applied {
