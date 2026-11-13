@@ -159,3 +159,49 @@ func serviceNames(projects ...*composeproject.Project) []string {
 	slices.Sort(names)
 	return names
 }
+
+// Elevation is what review treats as having host-level access in a specification: its
+// elevated services, see elevatedServices, by resource ID, and the runtime names of the
+// networks and named volumes its privileged and cap_add services reach. A container on one of
+// those can drive such a service, whichever plan created it. A visual specification has none.
+// Terminal sessions and scheduled jobs are refused in all of them, by management and again by
+// the agent.
+type Elevation struct {
+	Services map[uuid.UUID]bool
+	// Privileged are the privileged and cap_add services themselves.
+	Privileged map[uuid.UUID]bool
+	Reach      map[string]bool
+}
+
+// ElevationOf finds a specification's Elevation.
+func ElevationOf(spec domain.Specification) (Elevation, error) {
+	out := Elevation{Services: map[uuid.UUID]bool{}, Privileged: map[uuid.UUID]bool{}, Reach: map[string]bool{}}
+	if spec.Compose == nil {
+		return out, nil
+	}
+	project, err := deployment.SourceProject(deployment.Plan{Specification: spec}, nil)
+	if err != nil {
+		return Elevation{}, err
+	}
+	namespace := spec.Compose.Namespace
+	for name, elevated := range elevatedServices(project, spec) {
+		if elevated {
+			out.Services[composeproject.ResourceID(namespace, "service", name)] = true
+		}
+	}
+	for name, service := range project.Model.Services {
+		if !elevatedService(service) {
+			continue
+		}
+		out.Privileged[composeproject.ResourceID(namespace, "service", name)] = true
+		for _, mount := range service.Volumes {
+			if mount.Type == "volume" {
+				out.Reach[deployment.VolumeName(composeproject.ResourceID(namespace, "volume", mount.Source))] = true
+			}
+		}
+		for _, network := range serviceNetworks(spec, name, service) {
+			out.Reach[deployment.SourceNetworkName(namespace, composeproject.ResourceID(namespace, "network", network), network)] = true
+		}
+	}
+	return out, nil
+}

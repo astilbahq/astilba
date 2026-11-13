@@ -92,8 +92,27 @@ func (s *Server) apiRequestError(ctx context.Context, err error, w http.Response
 	s.fail(w, r, domain.Invalid("request"))
 }
 
-// Keep this allowlist independent of browser membership: a token never gains a
-// new API operation merely because its creator can use that operation.
+// automationOperations are the API operations a credential may call, each with the capabilities any
+// one of which allows it. Keep this allowlist independent of browser membership: a token never gains
+// a new API operation merely because its creator can use that operation.
+var automationOperations = map[string][]string{
+	"GetEnvironment":             {domain.EnvironmentRead},
+	"GetDraft":                   {domain.EnvironmentRead},
+	"ListRevisions":              {domain.EnvironmentRead},
+	"GetRevision":                {domain.EnvironmentRead},
+	"GetRuntime":                 {domain.EnvironmentRead},
+	"ListPipelineRuns":           {domain.EnvironmentRead},
+	"ListBuildRejections":        {domain.EnvironmentRead},
+	"ListReleases":               {domain.EnvironmentRead},
+	"UpdateDraft":                {domain.ConfigurationWrite},
+	"CreateVisualPlan":           {domain.DeploymentPlan},
+	"GetVisualPlan":              {domain.EnvironmentRead, domain.DeploymentPlan, domain.DeploymentApply},
+	"ApplyVisualPlan":            {domain.DeploymentApply},
+	"ListConfiguredBuildTargets": {domain.EnvironmentRead, domain.BuildRun},
+	"RunConfiguredBuild":         {domain.BuildRun},
+	"GetEnvironmentOperation":    {domain.EnvironmentRead, domain.DeploymentPlan, domain.DeploymentApply, domain.BuildRun},
+}
+
 func authorizeAutomation(g domain.AutomationGrant, operation string, path map[string]string) error {
 	if operation == "GetAutomationContext" {
 		return nil
@@ -104,28 +123,8 @@ func authorizeAutomation(g domain.AutomationGrant, operation string, path map[st
 			return domain.Forbidden
 		}
 	}
-	var capabilities []string
-	switch operation {
-	case "GetEnvironment", "GetDraft", "ListRevisions", "GetRevision", "GetRuntime", "ListPipelineRuns", "ListBuildRejections", "ListReleases":
-		capabilities = []string{domain.EnvironmentRead}
-	case "UpdateDraft":
-		capabilities = []string{domain.ConfigurationWrite}
-	case "CreateVisualPlan":
-		capabilities = []string{domain.DeploymentPlan}
-	case "GetVisualPlan":
-		capabilities = []string{domain.EnvironmentRead, domain.DeploymentPlan, domain.DeploymentApply}
-	case "ApplyVisualPlan":
-		capabilities = []string{domain.DeploymentApply}
-	case "ListConfiguredBuildTargets":
-		capabilities = []string{domain.EnvironmentRead, domain.BuildRun}
-	case "RunConfiguredBuild":
-		capabilities = []string{domain.BuildRun}
-	case "GetEnvironmentOperation":
-		capabilities = []string{domain.EnvironmentRead, domain.DeploymentPlan, domain.DeploymentApply, domain.BuildRun}
-	default:
-		return domain.Forbidden
-	}
-	if !g.Allows(capabilities...) {
+	capabilities, ok := automationOperations[operation]
+	if !ok || !g.Allows(capabilities...) {
 		return domain.Forbidden
 	}
 	return nil
@@ -200,4 +199,14 @@ func (s *Server) RunConfiguredBuild(w http.ResponseWriter, r *http.Request, ws, 
 	}
 	v, err := s.Execution.RunConfiguredBuild(r.Context(), *principal(r.Context()), ws, pid, env, app, b)
 	s.executionResponse(w, r, 202, v, err)
+}
+
+func (s *Server) ApproveBuildTarget(w http.ResponseWriter, r *http.Request, ws, pid, env, app uuid.UUID) {
+	b, err := decode[api.ApproveBuildTarget](r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	err = s.Execution.ApproveBuildTarget(r.Context(), *principal(r.Context()), ws, pid, env, app, b.TargetHash)
+	s.executionResponse(w, r, 204, nil, err)
 }

@@ -68,8 +68,12 @@ var version5Tables = func() []table {
 		table{Name: "preview_requests", Columns: "id,workspace_id,policy_id,number,head,head_repository,fork,approved_head,approved_repository,approved_generation,generation,environment_id,application_id,policy_generation,configuration,state,build_id,plan_id,operation_id,built_head,closed_at,cleanup_at,cleanup_requested,resume_after_cancel,cleanup_actor,cleanup_auth_version,cleanup_controller,next_check_at,note,created_at,updated_at"})
 }()
 
+// ArchiveVersion is the format exports and recovery bases write. Version 7 added source_submissions.
+const ArchiveVersion = 7
+
 var tables = func() []table {
 	out := append([]table{}, version5Tables...)
+	out = append(out, table{Name: "source_submissions", Columns: "id,workspace_id,environment_id,revision_id,request_key,actor_id,configuration,state,note,result,created_at,finished_at"})
 	for i := range out {
 		switch out[i].Name {
 		case "environments":

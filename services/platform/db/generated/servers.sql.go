@@ -120,6 +120,7 @@ func (q *Queries) CancelUnstartedReleaseCommands(ctx context.Context, arg Cancel
 
 const completeAgentEnrollment = `-- name: CompleteAgentEnrollment :one
 UPDATE servers SET credential_hash = $1,enrollment_hash=NULL,enrollment_expires=NULL,
+    enrollment_issuer_id=NULL,enrollment_issuer_auth_version=NULL,
     machine_id = $2,capabilities = $3,preflight = $4,last_seen=now(),awaiting_transfer=false
 WHERE workspace_id = $5 AND id = $6
 RETURNING role,rotation_requested,preview_only
@@ -271,19 +272,21 @@ func (q *Queries) InsertSecondaryUnit(ctx context.Context, arg InsertSecondaryUn
 }
 
 const insertServer = `-- name: InsertServer :one
-INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,preview_only)
-VALUES($1,$2,$3,$4,$5,$6,$7)
+INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,enrollment_issuer_id,enrollment_issuer_auth_version,preview_only)
+VALUES($1,$2,$3,$4,$5,$6,$7::uuid,$8::bigint,$9)
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
 `
 
 type InsertServerParams struct {
-	ID                uuid.UUID  `json:"id"`
-	WorkspaceID       uuid.UUID  `json:"workspace_id"`
-	Name              string     `json:"name"`
-	Role              string     `json:"role"`
-	EnrollmentHash    []byte     `json:"enrollment_hash"`
-	EnrollmentExpires *time.Time `json:"enrollment_expires"`
-	PreviewOnly       bool       `json:"preview_only"`
+	ID                          uuid.UUID  `json:"id"`
+	WorkspaceID                 uuid.UUID  `json:"workspace_id"`
+	Name                        string     `json:"name"`
+	Role                        string     `json:"role"`
+	EnrollmentHash              []byte     `json:"enrollment_hash"`
+	EnrollmentExpires           *time.Time `json:"enrollment_expires"`
+	EnrollmentIssuerID          uuid.UUID  `json:"enrollment_issuer_id"`
+	EnrollmentIssuerAuthVersion int64      `json:"enrollment_issuer_auth_version"`
+	PreviewOnly                 bool       `json:"preview_only"`
 }
 
 type InsertServerRow struct {
@@ -307,6 +310,8 @@ func (q *Queries) InsertServer(ctx context.Context, arg InsertServerParams) (Ins
 		arg.Role,
 		arg.EnrollmentHash,
 		arg.EnrollmentExpires,
+		arg.EnrollmentIssuerID,
+		arg.EnrollmentIssuerAuthVersion,
 		arg.PreviewOnly,
 	)
 	var i InsertServerRow
@@ -406,11 +411,13 @@ func (q *Queries) LockAgentCredential(ctx context.Context, arg LockAgentCredenti
 
 const lockAgentEnrollment = `-- name: LockAgentEnrollment :one
 SELECT workspace_id,controller_generation,awaiting_transfer,preview_only,(machine_id IS NULL)::boolean AS fresh,
-    (enrollment_hash = $1 AND enrollment_expires>now() AND credential_hash IS NULL)::boolean AS consuming,
+    (enrollment_hash = $1 AND enrollment_expires>now() AND credential_hash IS NULL
+        AND policy_approver_holds(workspace_id,enrollment_issuer_id,enrollment_issuer_auth_version,true))::boolean AS consuming,
     role,rotation_requested
 FROM servers
 WHERE id = $2 AND NOT revoked AND (machine_id IS NULL OR machine_id = $3)
-    AND ((enrollment_hash = $1 AND enrollment_expires>now() AND credential_hash IS NULL)
+    AND ((enrollment_hash = $1 AND enrollment_expires>now() AND credential_hash IS NULL
+            AND policy_approver_holds(workspace_id,enrollment_issuer_id,enrollment_issuer_auth_version,true))
         OR credential_hash = $4)
 FOR UPDATE
 `
@@ -436,7 +443,8 @@ type LockAgentEnrollmentRow struct {
 // unscoped: the enrollment token or existing credential establishes the workspace.
 // Accepts an unexpired enrollment token or the credential already issued for
 // this server, so an interrupted exchange can be retried. Only the code consumes anything: a retry
-// through the credential changes nothing.
+// through the credential changes nothing. A code counts only while the owner who issued it still
+// is one, with the same authentication version.
 func (q *Queries) LockAgentEnrollment(ctx context.Context, arg LockAgentEnrollmentParams) (LockAgentEnrollmentRow, error) {
 	row := q.db.QueryRow(ctx, lockAgentEnrollment,
 		arg.EnrollmentHash,
@@ -491,7 +499,7 @@ func (q *Queries) MoveEnvironmentVolumes(ctx context.Context, arg MoveEnvironmen
 const parkedMaintenanceOnPrimary = `-- name: ParkedMaintenanceOnPrimary :many
 SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
 WHERE o.workspace_id = $1 AND o.server_id = $2 AND o.parent_id IS NULL AND o.kind='crosshost'
-    AND o.state NOT IN ('succeeded','failed','cancelled') AND c.phase='maintenance-owner'
+    AND o.state IN ('queued','dispatched','running','needs_attention') AND c.phase='maintenance-owner'
 `
 
 type ParkedMaintenanceOnPrimaryParams struct {
@@ -523,22 +531,27 @@ func (q *Queries) ParkedMaintenanceOnPrimary(ctx context.Context, arg ParkedMain
 
 const prepareServerTransfer = `-- name: PrepareServerTransfer :one
 UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
+    enrollment_issuer_id = $3::uuid,enrollment_issuer_auth_version = $4::bigint,
     credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false
-WHERE workspace_id = $3 AND id = $4 AND awaiting_transfer
+WHERE workspace_id = $5 AND id = $6 AND awaiting_transfer
 RETURNING controller_generation
 `
 
 type PrepareServerTransferParams struct {
-	EnrollmentHash    []byte     `json:"enrollment_hash"`
-	EnrollmentExpires *time.Time `json:"enrollment_expires"`
-	WorkspaceID       uuid.UUID  `json:"workspace_id"`
-	ID                uuid.UUID  `json:"id"`
+	EnrollmentHash              []byte     `json:"enrollment_hash"`
+	EnrollmentExpires           *time.Time `json:"enrollment_expires"`
+	EnrollmentIssuerID          uuid.UUID  `json:"enrollment_issuer_id"`
+	EnrollmentIssuerAuthVersion int64      `json:"enrollment_issuer_auth_version"`
+	WorkspaceID                 uuid.UUID  `json:"workspace_id"`
+	ID                          uuid.UUID  `json:"id"`
 }
 
 func (q *Queries) PrepareServerTransfer(ctx context.Context, arg PrepareServerTransferParams) (int64, error) {
 	row := q.db.QueryRow(ctx, prepareServerTransfer,
 		arg.EnrollmentHash,
 		arg.EnrollmentExpires,
+		arg.EnrollmentIssuerID,
+		arg.EnrollmentIssuerAuthVersion,
 		arg.WorkspaceID,
 		arg.ID,
 	)
@@ -666,17 +679,20 @@ func (q *Queries) ReleaseRevokedRouteClaims(ctx context.Context, arg ReleaseRevo
 
 const renewServerEnrollment = `-- name: RenewServerEnrollment :one
 UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
+    enrollment_issuer_id = $3::uuid,enrollment_issuer_auth_version = $4::bigint,
     credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
-WHERE workspace_id = $3 AND id = $4
+WHERE workspace_id = $5 AND id = $6
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
 `
 
 type RenewServerEnrollmentParams struct {
-	EnrollmentHash    []byte     `json:"enrollment_hash"`
-	EnrollmentExpires *time.Time `json:"enrollment_expires"`
-	WorkspaceID       uuid.UUID  `json:"workspace_id"`
-	ID                uuid.UUID  `json:"id"`
+	EnrollmentHash              []byte     `json:"enrollment_hash"`
+	EnrollmentExpires           *time.Time `json:"enrollment_expires"`
+	EnrollmentIssuerID          uuid.UUID  `json:"enrollment_issuer_id"`
+	EnrollmentIssuerAuthVersion int64      `json:"enrollment_issuer_auth_version"`
+	WorkspaceID                 uuid.UUID  `json:"workspace_id"`
+	ID                          uuid.UUID  `json:"id"`
 }
 
 type RenewServerEnrollmentRow struct {
@@ -699,6 +715,8 @@ func (q *Queries) RenewServerEnrollment(ctx context.Context, arg RenewServerEnro
 	row := q.db.QueryRow(ctx, renewServerEnrollment,
 		arg.EnrollmentHash,
 		arg.EnrollmentExpires,
+		arg.EnrollmentIssuerID,
+		arg.EnrollmentIssuerAuthVersion,
 		arg.WorkspaceID,
 		arg.ID,
 	)
@@ -898,7 +916,7 @@ func (q *Queries) ServerCapabilities(ctx context.Context, arg ServerCapabilities
 
 const serverHasActiveOperations = `-- name: ServerHasActiveOperations :one
 SELECT EXISTS(SELECT 1 FROM execution_operations
-    WHERE workspace_id = $1 AND server_id = $2 AND state NOT IN ('succeeded','failed','cancelled'))
+    WHERE workspace_id = $1 AND server_id = $2 AND state IN ('queued','dispatched','running','needs_attention'))
 `
 
 type ServerHasActiveOperationsParams struct {
@@ -986,7 +1004,7 @@ func (q *Queries) SetServerBuildEgress(ctx context.Context, arg SetServerBuildEg
 
 const settleRevokedServerOperations = `-- name: SettleRevokedServerOperations :exec
 UPDATE execution_operations SET state='cancelled',cancel_requested=true,report_sequence = $1,note='The server was revoked before reporting, so what it did is unknown.'
-WHERE workspace_id = $2 AND server_id = $3 AND state NOT IN ('succeeded','failed','cancelled')
+WHERE workspace_id = $2 AND server_id = $3 AND state IN ('queued','dispatched','running','needs_attention')
     AND (parent_id IS NOT NULL OR kind NOT IN ('crosshost','network'))
 `
 
@@ -1052,4 +1070,37 @@ func (q *Queries) VerifyStagedRecoveryServer(ctx context.Context, arg VerifyStag
 		arg.ControllerGeneration,
 	)
 	return err
+}
+
+const withdrawIssuerEnrollmentCodes = `-- name: WithdrawIssuerEnrollmentCodes :many
+UPDATE servers SET enrollment_hash=NULL,enrollment_expires=NULL,enrollment_issuer_id=NULL,enrollment_issuer_auth_version=NULL
+WHERE workspace_id = $1 AND enrollment_issuer_id = $2::uuid AND enrollment_hash IS NOT NULL
+RETURNING id
+`
+
+type WithdrawIssuerEnrollmentCodesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	IssuerID    uuid.UUID `json:"issuer_id"`
+}
+
+// An owner's outstanding enrollment and transfer codes end with their ownership, in the
+// transaction that ends it. The server stays, waiting for a current owner to issue a new code.
+func (q *Queries) WithdrawIssuerEnrollmentCodes(ctx context.Context, arg WithdrawIssuerEnrollmentCodesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, withdrawIssuerEnrollmentCodes, arg.WorkspaceID, arg.IssuerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

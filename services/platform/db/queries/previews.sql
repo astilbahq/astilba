@@ -42,3 +42,12 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id;
 -- name: DelayPreviewDiscovery :exec
 -- Discovery waits a cycle while its workspace has a backlog of request jobs.
 UPDATE preview_policies SET next_discovery_at = now() + interval '5 minutes' WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: PreviewForkApproval :one
+-- A fork commit's approval counts only while the owner who gave it is still one with the same
+-- authentication version; otherwise it reads as no approval.
+SELECT CASE WHEN held THEN approved_head ELSE '' END::text AS head,
+    CASE WHEN held THEN approved_repository ELSE 0 END::bigint AS repository,
+    CASE WHEN held THEN approved_generation ELSE 0 END::bigint AS generation
+FROM preview_requests, LATERAL (SELECT policy_approver_holds(workspace_id,approved_by,approved_auth_version,true) AS held) approval
+WHERE workspace_id = @workspace_id AND id = @id;

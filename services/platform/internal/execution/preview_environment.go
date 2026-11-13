@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -50,7 +50,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p pre
 	for _, old := range domain.SecretReferences(template) {
 		var value string
 		if passwords[old] {
-			value, err = cryptobox.Token()
+			value, err = randtoken.New()
 		} else {
 			var v db.SecretVersion
 			v, err = q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: p.Workspace, EnvironmentID: p.Template, ID: old})
@@ -90,7 +90,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, p pre
 	if err != nil {
 		return err
 	}
-	if _, err = q.InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: rev, AuthorID: p.Actor, Specification: raw, ContentHash: hash(string(raw))}); err != nil {
+	if _, err = store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: rev, AuthorID: p.Actor, Specification: raw, ContentHash: hash(string(raw))}); err != nil {
 		return err
 	}
 	if err = q.InsertDeploymentUnit(ctx, db.InsertDeploymentUnitParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: unit}); err != nil {

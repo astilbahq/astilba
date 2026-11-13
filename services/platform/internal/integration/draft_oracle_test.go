@@ -124,10 +124,10 @@ func TestWriteOnlySaveCannotConfirmGuessesAboutTheDraft(t *testing.T) {
 		})
 	}
 
-	// Naming the current draft, a write-only credential still saves, and a wrong source is refused.
-	invalidField(t, guessedError(t, f, *composeWriter.Token, "PUT", composedPath+"/draft", api.DraftUpdate{BaseRevisionId: imported, Specification: claimBytes(t, bundle(composed.DeploymentUnit.Id, &otherCommit))}, 400), "compose.origin")
+	// Naming the current draft, a write-only credential still saves, leaving out the namespace and
+	// source, which the draft keeps. TestWriteWithoutReadSavesConfirmNothing covers what it may send.
 	var written api.Revision
-	edited := bundle(composed.DeploymentUnit.Id, &origin)
+	edited := bundle(uuid.Nil, nil)
 	edited.Compose.Files[0].Content = "services: {}\n# edited\n"
 	bearerCall(t, f, *composeWriter.Token, "PUT", composedPath+"/draft", api.DraftUpdate{BaseRevisionId: imported, Specification: claimBytes(t, edited)}, 200, &written)
 

@@ -6,8 +6,8 @@ FROM servers WHERE workspace_id = @workspace_id ORDER BY name,id LIMIT 100;
 SELECT count(*) FROM servers WHERE workspace_id = @workspace_id;
 
 -- name: InsertServer :one
-INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,preview_only)
-VALUES(@id,@workspace_id,@name,@role,@enrollment_hash,@enrollment_expires,@preview_only)
+INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,enrollment_issuer_id,enrollment_issuer_auth_version,preview_only)
+VALUES(@id,@workspace_id,@name,@role,@enrollment_hash,@enrollment_expires,@enrollment_issuer_id::uuid,@enrollment_issuer_auth_version::bigint,@preview_only)
 RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only;
 
 -- name: RenewServerEnrollment :one
@@ -15,6 +15,7 @@ RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_request
 -- comes back only as a clean host: without a machine binding, enrollment checks it has no
 -- containers. Every other renewal keeps the same machine.
 UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enrollment_expires,
+    enrollment_issuer_id = @enrollment_issuer_id::uuid,enrollment_issuer_auth_version = @enrollment_issuer_auth_version::bigint,
     credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = @workspace_id AND id = @id
@@ -31,6 +32,7 @@ RETURNING capabilities,update_generation;
 
 -- name: PrepareServerTransfer :one
 UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enrollment_expires,
+    enrollment_issuer_id = @enrollment_issuer_id::uuid,enrollment_issuer_auth_version = @enrollment_issuer_auth_version::bigint,
     credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false
 WHERE workspace_id = @workspace_id AND id = @id AND awaiting_transfer
 RETURNING controller_generation;
@@ -81,13 +83,16 @@ FROM servers WHERE servers.workspace_id = sqlc.arg(workspace_id)::uuid AND serve
 -- unscoped: the enrollment token or existing credential establishes the workspace.
 -- Accepts an unexpired enrollment token or the credential already issued for
 -- this server, so an interrupted exchange can be retried. Only the code consumes anything: a retry
--- through the credential changes nothing.
+-- through the credential changes nothing. A code counts only while the owner who issued it still
+-- is one, with the same authentication version.
 SELECT workspace_id,controller_generation,awaiting_transfer,preview_only,(machine_id IS NULL)::boolean AS fresh,
-    (enrollment_hash = @enrollment_hash AND enrollment_expires>now() AND credential_hash IS NULL)::boolean AS consuming,
+    (enrollment_hash = @enrollment_hash AND enrollment_expires>now() AND credential_hash IS NULL
+        AND policy_approver_holds(workspace_id,enrollment_issuer_id,enrollment_issuer_auth_version,true))::boolean AS consuming,
     role,rotation_requested
 FROM servers
 WHERE id = @server_id AND NOT revoked AND (machine_id IS NULL OR machine_id = @machine_id)
-    AND ((enrollment_hash = @enrollment_hash AND enrollment_expires>now() AND credential_hash IS NULL)
+    AND ((enrollment_hash = @enrollment_hash AND enrollment_expires>now() AND credential_hash IS NULL
+            AND policy_approver_holds(workspace_id,enrollment_issuer_id,enrollment_issuer_auth_version,true))
         OR credential_hash = @credential_hash)
 FOR UPDATE;
 
@@ -104,6 +109,7 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND machine_id = @
 
 -- name: CompleteAgentEnrollment :one
 UPDATE servers SET credential_hash = @credential_hash,enrollment_hash=NULL,enrollment_expires=NULL,
+    enrollment_issuer_id=NULL,enrollment_issuer_auth_version=NULL,
     machine_id = @machine_id,capabilities = @capabilities,preflight = @preflight,last_seen=now(),awaiting_transfer=false
 WHERE workspace_id = @workspace_id AND id = @server_id
 RETURNING role,rotation_requested,preview_only;
@@ -113,7 +119,7 @@ SELECT capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id
 
 -- name: ServerHasActiveOperations :one
 SELECT EXISTS(SELECT 1 FROM execution_operations
-    WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled'));
+    WHERE workspace_id = @workspace_id AND server_id = @server_id AND state IN ('queued','dispatched','running','needs_attention'));
 
 -- name: SettleRevokedServerOperations :exec
 -- A revoked server will never report again. Roots are left to the coordinator, which still has the
@@ -121,7 +127,7 @@ SELECT EXISTS(SELECT 1 FROM execution_operations
 -- The sequence answers any later report from a renewed host without letting it change the outcome,
 -- so that host can acknowledge its journal and take work again.
 UPDATE execution_operations SET state='cancelled',cancel_requested=true,report_sequence = @report_sequence,note='The server was revoked before reporting, so what it did is unknown.'
-WHERE workspace_id = @workspace_id AND server_id = @server_id AND state NOT IN ('succeeded','failed','cancelled')
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND state IN ('queued','dispatched','running','needs_attention')
     AND (parent_id IS NOT NULL OR kind NOT IN ('crosshost','network'));
 
 -- name: RejectRevokedServerUpgrades :exec
@@ -133,7 +139,7 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id AND status->>'phas
 -- choice left to make.
 SELECT o.id FROM execution_operations o JOIN cross_host_operations c ON c.id=o.id AND c.workspace_id=o.workspace_id
 WHERE o.workspace_id = @workspace_id AND o.server_id = @server_id AND o.parent_id IS NULL AND o.kind='crosshost'
-    AND o.state NOT IN ('succeeded','failed','cancelled') AND c.phase='maintenance-owner';
+    AND o.state IN ('queued','dispatched','running','needs_attention') AND c.phase='maintenance-owner';
 
 -- name: ResumeMaintenanceSource :exec
 UPDATE cross_host_operations SET phase='maintenance-resume-source' WHERE workspace_id = @workspace_id AND id = @id;
@@ -220,3 +226,10 @@ SELECT role,build_egress FROM servers WHERE workspace_id=$1 AND id=$2;
 
 -- name: SetServerBuildEgress :execrows
 UPDATE servers SET build_egress=$3 WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND role<>'deployment';
+
+-- name: WithdrawIssuerEnrollmentCodes :many
+-- An owner's outstanding enrollment and transfer codes end with their ownership, in the
+-- transaction that ends it. The server stays, waiting for a current owner to issue a new code.
+UPDATE servers SET enrollment_hash=NULL,enrollment_expires=NULL,enrollment_issuer_id=NULL,enrollment_issuer_auth_version=NULL
+WHERE workspace_id = @workspace_id AND enrollment_issuer_id = @issuer_id::uuid AND enrollment_hash IS NOT NULL
+RETURNING id;

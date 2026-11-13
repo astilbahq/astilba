@@ -1,6 +1,7 @@
 package portability
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -8,8 +9,8 @@ import (
 
 	"encoding/json/jsontext"
 
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker/brokertest"
 	"github.com/google/uuid"
 )
 
@@ -63,21 +64,21 @@ func TestImportedValueLimits(t *testing.T) {
 // Keys.Seal used to accept this, leaving a row that stopped wrapping-key rotation for the
 // whole installation.
 func TestImportRefusesACredentialThatCouldNotBeOpened(t *testing.T) {
-	keys, err := cryptobox.New("only")
+	broker, _ := brokertest.New(t)
+	ws := uuid.New()
+	keys, err := broker.Begin(context.Background(), secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(uuid.New()), Kinds: secretbroker.CredentialKinds, NewWorkspace: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Service{Store: &store.Store{Keys: keys}}
 	row := func(size int) Row {
 		value := `\\x` + hex.EncodeToString([]byte(strings.Repeat("x", size)))
 		r := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "encrypted_value": jsontext.Value(`"` + value + `"`)}
 		return r
 	}
-	ws := uuid.New()
-	if err = s.transformCredential("secret_versions", row(1024), ws, false); err != nil {
+	if err = transformCredential(keys, "secret_versions", row(1024), false); err != nil {
 		t.Fatal("refused an ordinary credential", err)
 	}
-	if err = s.transformCredential("secret_versions", row(2<<20), ws, false); !errors.Is(err, ErrArchive) {
+	if err = transformCredential(keys, "secret_versions", row(2<<20), false); !errors.Is(err, ErrArchive) {
 		t.Fatal("accepted an oversize credential", err)
 	}
 }

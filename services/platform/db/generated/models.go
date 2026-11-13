@@ -192,6 +192,8 @@ type BuildTarget struct {
 	RejectedCommit           pgtype.Text `json:"rejected_commit"`
 	RejectionReason          pgtype.Text `json:"rejection_reason"`
 	RejectedAt               *time.Time  `json:"rejected_at"`
+	PolicyAuthVersion        pgtype.Int8 `json:"policy_auth_version"`
+	PolicyOwner              bool        `json:"policy_owner"`
 }
 
 type CrossHostApproval struct {
@@ -396,15 +398,16 @@ type GitDelivery struct {
 }
 
 type GitSource struct {
-	WorkspaceID        uuid.UUID  `json:"workspace_id"`
-	EnvironmentID      uuid.UUID  `json:"environment_id"`
-	ConnectionID       uuid.UUID  `json:"connection_id"`
-	Configuration      []byte     `json:"configuration"`
-	ImportedRevisionID *uuid.UUID `json:"imported_revision_id"`
-	ImportedCommit     string     `json:"imported_commit"`
-	PendingCommit      string     `json:"pending_commit"`
-	Status             string     `json:"status"`
-	PolicyActor        uuid.UUID  `json:"policy_actor"`
+	WorkspaceID        uuid.UUID   `json:"workspace_id"`
+	EnvironmentID      uuid.UUID   `json:"environment_id"`
+	ConnectionID       uuid.UUID   `json:"connection_id"`
+	Configuration      []byte      `json:"configuration"`
+	ImportedRevisionID *uuid.UUID  `json:"imported_revision_id"`
+	ImportedCommit     string      `json:"imported_commit"`
+	PendingCommit      string      `json:"pending_commit"`
+	Status             string      `json:"status"`
+	PolicyActor        uuid.UUID   `json:"policy_actor"`
+	PolicyAuthVersion  pgtype.Int8 `json:"policy_auth_version"`
 }
 
 type GitSubmission struct {
@@ -494,12 +497,14 @@ type InstallationSecret struct {
 }
 
 type Invitation struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-	Email       string    `json:"email"`
-	Role        string    `json:"role"`
-	TokenHash   []byte    `json:"token_hash"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
+	ID                uuid.UUID `json:"id"`
+	Email             string    `json:"email"`
+	Role              string    `json:"role"`
+	TokenHash         []byte    `json:"token_hash"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	IssuerID          uuid.UUID `json:"issuer_id"`
+	IssuerAuthVersion int64     `json:"issuer_auth_version"`
 }
 
 type ManagedResource struct {
@@ -607,15 +612,16 @@ type PasswordReset struct {
 }
 
 type PipelineAutoDeployment struct {
-	ID            uuid.UUID  `json:"id"`
-	WorkspaceID   uuid.UUID  `json:"workspace_id"`
-	EnvironmentID uuid.UUID  `json:"environment_id"`
-	RevisionID    uuid.UUID  `json:"revision_id"`
-	ActorID       uuid.UUID  `json:"actor_id"`
-	PlanID        *uuid.UUID `json:"plan_id"`
-	OperationID   *uuid.UUID `json:"operation_id"`
-	State         string     `json:"state"`
-	Note          string     `json:"note"`
+	ID               uuid.UUID   `json:"id"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	EnvironmentID    uuid.UUID   `json:"environment_id"`
+	RevisionID       uuid.UUID   `json:"revision_id"`
+	ActorID          uuid.UUID   `json:"actor_id"`
+	PlanID           *uuid.UUID  `json:"plan_id"`
+	OperationID      *uuid.UUID  `json:"operation_id"`
+	State            string      `json:"state"`
+	Note             string      `json:"note"`
+	ActorAuthVersion pgtype.Int8 `json:"actor_auth_version"`
 }
 
 type PipelineRun struct {
@@ -685,6 +691,8 @@ type PreviewRequest struct {
 	CreatedAt            time.Time   `json:"created_at"`
 	UpdatedAt            time.Time   `json:"updated_at"`
 	ReleasedByRevocation bool        `json:"released_by_revocation"`
+	ApprovedBy           *uuid.UUID  `json:"approved_by"`
+	ApprovedAuthVersion  pgtype.Int8 `json:"approved_auth_version"`
 }
 
 type Project struct {
@@ -713,11 +721,43 @@ type RouteClaim struct {
 	EnvironmentID uuid.UUID `json:"environment_id"`
 }
 
+type SchemaAdditiveMigration struct {
+	Version    int64     `json:"version"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
 type Secret struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
 	ID            uuid.UUID `json:"id"`
 	Name          string    `json:"name"`
+}
+
+type SecretAccess struct {
+	ID            uuid.UUID   `json:"id"`
+	At            time.Time   `json:"at"`
+	WorkspaceID   *uuid.UUID  `json:"workspace_id"`
+	Purpose       string      `json:"purpose"`
+	PrincipalKind string      `json:"principal_kind"`
+	AccountID     *uuid.UUID  `json:"account_id"`
+	AutomationID  *uuid.UUID  `json:"automation_id"`
+	ServerID      *uuid.UUID  `json:"server_id"`
+	AgentInstance pgtype.Text `json:"agent_instance"`
+	Job           pgtype.Text `json:"job"`
+	OperatorRef   pgtype.Text `json:"operator_ref"`
+	OperationID   *uuid.UUID  `json:"operation_id"`
+	Items         []byte      `json:"items"`
+	ItemCount     int32       `json:"item_count"`
+	Generations   []byte      `json:"generations"`
+	BackendID     string      `json:"backend_id"`
+	Reason        string      `json:"reason"`
+}
+
+type SecretAccessOutcome struct {
+	AccessID           uuid.UUID `json:"access_id"`
+	At                 time.Time `json:"at"`
+	Outcome            string    `json:"outcome"`
+	ProviderRequestIds []byte    `json:"provider_request_ids"`
 }
 
 type SecretVersion struct {
@@ -730,39 +770,41 @@ type SecretVersion struct {
 }
 
 type Server struct {
-	ID                    uuid.UUID   `json:"id"`
-	WorkspaceID           uuid.UUID   `json:"workspace_id"`
-	Name                  string      `json:"name"`
-	Role                  string      `json:"role"`
-	EnrollmentHash        []byte      `json:"enrollment_hash"`
-	EnrollmentExpires     *time.Time  `json:"enrollment_expires"`
-	CredentialHash        []byte      `json:"credential_hash"`
-	PreviousHash          []byte      `json:"previous_hash"`
-	PreviousUntil         *time.Time  `json:"previous_until"`
-	MachineID             *uuid.UUID  `json:"machine_id"`
-	Revoked               bool        `json:"revoked"`
-	RotationRequested     bool        `json:"rotation_requested"`
-	Capabilities          []byte      `json:"capabilities"`
-	Preflight             []byte      `json:"preflight"`
-	LastSeen              *time.Time  `json:"last_seen"`
-	PollID                *uuid.UUID  `json:"poll_id"`
-	PollUntil             *time.Time  `json:"poll_until"`
-	UpdateGeneration      int64       `json:"update_generation"`
-	IngressPorts          []byte      `json:"ingress_ports"`
-	ControllerGeneration  int64       `json:"controller_generation"`
-	AwaitingTransfer      bool        `json:"awaiting_transfer"`
-	PreviewOnly           bool        `json:"preview_only"`
-	BuildEgress           []byte      `json:"build_egress"`
-	EnrollmentEpoch       int64       `json:"enrollment_epoch"`
-	KeyRotatedAt          *time.Time  `json:"key_rotated_at"`
-	RotateKeyRequested    bool        `json:"rotate_key_requested"`
-	RetiredBearerHash     []byte      `json:"retired_bearer_hash"`
-	BoundAt               *time.Time  `json:"bound_at"`
-	ConsumedCodeHash      []byte      `json:"consumed_code_hash"`
-	IdentityConflictAt    *time.Time  `json:"identity_conflict_at"`
-	IdentityConflictEpoch pgtype.Int8 `json:"identity_conflict_epoch"`
-	IdentityConflict      []byte      `json:"identity_conflict"`
-	IdentityHistoryUntil  *time.Time  `json:"identity_history_until"`
+	ID                          uuid.UUID   `json:"id"`
+	WorkspaceID                 uuid.UUID   `json:"workspace_id"`
+	Name                        string      `json:"name"`
+	Role                        string      `json:"role"`
+	EnrollmentHash              []byte      `json:"enrollment_hash"`
+	EnrollmentExpires           *time.Time  `json:"enrollment_expires"`
+	CredentialHash              []byte      `json:"credential_hash"`
+	PreviousHash                []byte      `json:"previous_hash"`
+	PreviousUntil               *time.Time  `json:"previous_until"`
+	MachineID                   *uuid.UUID  `json:"machine_id"`
+	Revoked                     bool        `json:"revoked"`
+	RotationRequested           bool        `json:"rotation_requested"`
+	Capabilities                []byte      `json:"capabilities"`
+	Preflight                   []byte      `json:"preflight"`
+	LastSeen                    *time.Time  `json:"last_seen"`
+	PollID                      *uuid.UUID  `json:"poll_id"`
+	PollUntil                   *time.Time  `json:"poll_until"`
+	UpdateGeneration            int64       `json:"update_generation"`
+	IngressPorts                []byte      `json:"ingress_ports"`
+	ControllerGeneration        int64       `json:"controller_generation"`
+	AwaitingTransfer            bool        `json:"awaiting_transfer"`
+	PreviewOnly                 bool        `json:"preview_only"`
+	BuildEgress                 []byte      `json:"build_egress"`
+	EnrollmentEpoch             int64       `json:"enrollment_epoch"`
+	KeyRotatedAt                *time.Time  `json:"key_rotated_at"`
+	RotateKeyRequested          bool        `json:"rotate_key_requested"`
+	RetiredBearerHash           []byte      `json:"retired_bearer_hash"`
+	BoundAt                     *time.Time  `json:"bound_at"`
+	ConsumedCodeHash            []byte      `json:"consumed_code_hash"`
+	IdentityConflictAt          *time.Time  `json:"identity_conflict_at"`
+	IdentityConflictEpoch       pgtype.Int8 `json:"identity_conflict_epoch"`
+	IdentityConflict            []byte      `json:"identity_conflict"`
+	IdentityHistoryUntil        *time.Time  `json:"identity_history_until"`
+	EnrollmentIssuerID          *uuid.UUID  `json:"enrollment_issuer_id"`
+	EnrollmentIssuerAuthVersion pgtype.Int8 `json:"enrollment_issuer_auth_version"`
 }
 
 type ServerDomain struct {
@@ -791,6 +833,21 @@ type Session struct {
 	Data    []byte    `json:"data"`
 	Expiry  time.Time `json:"expiry"`
 	Lineage uuid.UUID `json:"lineage"`
+}
+
+type SourceSubmission struct {
+	ID            uuid.UUID  `json:"id"`
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	RevisionID    uuid.UUID  `json:"revision_id"`
+	RequestKey    uuid.UUID  `json:"request_key"`
+	ActorID       uuid.UUID  `json:"actor_id"`
+	Configuration []byte     `json:"configuration"`
+	State         string     `json:"state"`
+	Note          string     `json:"note"`
+	Result        []byte     `json:"result"`
+	CreatedAt     time.Time  `json:"created_at"`
+	FinishedAt    *time.Time `json:"finished_at"`
 }
 
 type SpecificationRevision struct {

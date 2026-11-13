@@ -26,6 +26,7 @@ const (
 	TroubleshootingHostOptIn    = "host_opt_in"
 	TroubleshootingLimit        = "limit"
 	TroubleshootingTicket       = "ticket"
+	TroubleshootingElevated     = "elevated"
 )
 
 var troubleshootingMessages = map[string]string{
@@ -38,6 +39,7 @@ var troubleshootingMessages = map[string]string{
 	TroubleshootingHostOptIn:    "This server's owner has not enabled terminal sessions on the host.",
 	TroubleshootingLimit:        "Too many terminal sessions are open. Close one and try again.",
 	TroubleshootingTicket:       "This terminal session's ticket is not valid here. Open a new session.",
+	TroubleshootingElevated:     "This service is privileged or shares a volume or network with a privileged service, so a terminal in it could control the server.",
 }
 
 // TroubleshootingRefused names why a session cannot open; Fields carries the reason.

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { expect } from "@playwright/test";
+import { fixtureInfo } from "./fixtures/ports";
 
 export async function resetLinkFixture() {
   const accountId = randomUUID();
@@ -35,22 +36,14 @@ export async function invitationLinkFixture(
   const token = randomUUID();
   const hash = createHash("sha256").update(token).digest("hex");
   await authFixtureSQL(
-    `INSERT INTO accounts(id,email,name,password_hash) SELECT '${ownerId}','${ownerId}@example.test','Inviting owner',password_hash FROM accounts WHERE email='owner@example.test'; INSERT INTO workspaces(id,name) VALUES('${workspaceId}','Invited workspace'); INSERT INTO memberships(workspace_id,account_id,role) VALUES('${workspaceId}','${ownerId}','owner'); INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at) VALUES('${workspaceId}','${invitationId}','${email}','viewer',decode('${hash}','hex'),now()+interval '1 day')`,
+    `INSERT INTO accounts(id,email,name,password_hash) SELECT '${ownerId}','${ownerId}@example.test','Inviting owner',password_hash FROM accounts WHERE email='owner@example.test'; INSERT INTO workspaces(id,name) VALUES('${workspaceId}','Invited workspace'); INSERT INTO memberships(workspace_id,account_id,role) VALUES('${workspaceId}','${ownerId}','owner'); INSERT INTO invitations(workspace_id,id,email,role,token_hash,expires_at,issuer_id,issuer_auth_version) SELECT '${workspaceId}','${invitationId}','${email}','viewer',decode('${hash}','hex'),now()+interval '1 day',id,auth_version FROM accounts WHERE id='${ownerId}'`,
   );
   return { workspaceId, invitationId, email, token };
 }
 
 export async function authFixtureSQL(statement: string) {
   const fixture: { host: string; container: string; owner: string } =
-    JSON.parse(
-      await readFile(
-        new URL(
-          "../../../.artifacts/p8/browser/hosted-fixture.json",
-          import.meta.url,
-        ),
-        "utf8",
-      ),
-    );
+    JSON.parse(await readFile(fixtureInfo, "utf8"));
   const ownership = execFileSync(
     "docker",
     [

@@ -54,6 +54,16 @@ Restarting `make dev` after a change likewise rebuilds only what changed, throug
 
 The agent's journal moves forward with the code. Running an older checkout against a journal a newer agent has migrated may be refused, as it would be in production; start over in that case.
 
+## Tests beside the stack
+
+`make verify-app` and the other suites can run while the stack is up, and beside
+other checkouts' suites. Give them their own disposable daemon rather than the
+stack's VM, for example `colima start <profile> --activate=false` and
+`PLAT_APP_DOCKER_HOST="unix://$HOME/.colima/<profile>/docker.sock"`. Their fixtures
+publish no container ports and their browser suites reserve ports from 15180, so
+nothing they start meets the stack's ports or another run's; see
+[parallel runs](continuous-integration.md#parallel-runs-on-one-machine).
+
 ## Stop and start over
 
 Ctrl-C stops the dashboard, management, the tunnel and the database, then stops the VM. Data, the enrolled agent and deployed workloads stay. When the VM starts again, services come back as they would after a host reboot: those with a Compose `restart` policy, like the seeded app's `unless-stopped`, start with Docker, and the others stay stopped until the next deployment.
