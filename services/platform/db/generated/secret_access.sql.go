@@ -83,6 +83,18 @@ func (q *Queries) AddOperationNote(ctx context.Context, arg AddOperationNotePara
 	return err
 }
 
+const expireSecretAccess = `-- name: ExpireSecretAccess :one
+SELECT expire_secret_access($1::integer)::integer AS expired
+`
+
+// unscoped: retention applies to every workspace's records alike.
+func (q *Queries) ExpireSecretAccess(ctx context.Context, batch int32) (int32, error) {
+	row := q.db.QueryRow(ctx, expireSecretAccess, batch)
+	var expired int32
+	err := row.Scan(&expired)
+	return expired, err
+}
+
 const insertSecretAccess = `-- name: InsertSecretAccess :exec
 INSERT INTO secret_access(id,workspace_id,purpose,principal_kind,account_id,automation_id,server_id,agent_instance,job,operator_ref,operation_id,items,item_count,generations,backend_id,reason)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
@@ -172,6 +184,88 @@ func (q *Queries) InsertSecretRelease(ctx context.Context, arg InsertSecretRelea
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listSecretAccess = `-- name: ListSecretAccess :many
+SELECT a.id,a.at,a.purpose,a.principal_kind,a.account_id,acc.email AS account_email,a.automation_id,cred.name AS automation_name,
+    a.server_id,srv.name AS server_name,a.agent_instance,a.job,a.operation_id,a.items,a.item_count,a.reason,
+    COALESCE(o.outcome,'unknown')::text AS outcome
+FROM secret_access a
+LEFT JOIN memberships m ON m.workspace_id = a.workspace_id AND m.account_id = a.account_id
+LEFT JOIN accounts acc ON acc.id = m.account_id
+LEFT JOIN automation_credentials cred ON cred.workspace_id = a.workspace_id AND cred.id = a.automation_id
+LEFT JOIN servers srv ON srv.workspace_id = a.workspace_id AND srv.id = a.server_id
+LEFT JOIN LATERAL (SELECT outcome FROM secret_access_outcomes WHERE access_id = a.id ORDER BY at LIMIT 1) o ON true
+WHERE a.workspace_id = $1
+    AND ($2::uuid IS NULL OR (a.at,a.id) < (SELECT b.at,b.id FROM secret_access b WHERE b.workspace_id = $1 AND b.id = $2::uuid))
+ORDER BY a.at DESC,a.id DESC LIMIT $3
+`
+
+type ListSecretAccessParams struct {
+	WorkspaceID *uuid.UUID `json:"workspace_id"`
+	Before      *uuid.UUID `json:"before"`
+	PageSize    int32      `json:"page_size"`
+}
+
+type ListSecretAccessRow struct {
+	ID             uuid.UUID   `json:"id"`
+	At             time.Time   `json:"at"`
+	Purpose        string      `json:"purpose"`
+	PrincipalKind  string      `json:"principal_kind"`
+	AccountID      *uuid.UUID  `json:"account_id"`
+	AccountEmail   pgtype.Text `json:"account_email"`
+	AutomationID   *uuid.UUID  `json:"automation_id"`
+	AutomationName pgtype.Text `json:"automation_name"`
+	ServerID       *uuid.UUID  `json:"server_id"`
+	ServerName     pgtype.Text `json:"server_name"`
+	AgentInstance  pgtype.Text `json:"agent_instance"`
+	Job            pgtype.Text `json:"job"`
+	OperationID    *uuid.UUID  `json:"operation_id"`
+	Items          []byte      `json:"items"`
+	ItemCount      int32       `json:"item_count"`
+	Reason         string      `json:"reason"`
+	Outcome        string      `json:"outcome"`
+}
+
+// A workspace's records, newest first, a page at a time, with who they were for and how each
+// ended: the first outcome written, or unknown while a session is open or its end went
+// unrecorded. An account is named only while it is a member: one that left keeps its ID.
+func (q *Queries) ListSecretAccess(ctx context.Context, arg ListSecretAccessParams) ([]ListSecretAccessRow, error) {
+	rows, err := q.db.Query(ctx, listSecretAccess, arg.WorkspaceID, arg.Before, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSecretAccessRow{}
+	for rows.Next() {
+		var i ListSecretAccessRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.Purpose,
+			&i.PrincipalKind,
+			&i.AccountID,
+			&i.AccountEmail,
+			&i.AutomationID,
+			&i.AutomationName,
+			&i.ServerID,
+			&i.ServerName,
+			&i.AgentInstance,
+			&i.Job,
+			&i.OperationID,
+			&i.Items,
+			&i.ItemCount,
+			&i.Reason,
+			&i.Outcome,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockSecretRelease = `-- name: LockSecretRelease :one
@@ -267,6 +361,48 @@ func (q *Queries) RequestSecretRedelivery(ctx context.Context, arg RequestSecret
 	return result.RowsAffected(), nil
 }
 
+const secretAccessItemNames = `-- name: SecretAccessItemNames :many
+SELECT 'secret-version'::text AS kind,v.id,s.name FROM secret_versions v JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+    WHERE v.workspace_id = $1 AND v.id = ANY($2::uuid[])
+UNION ALL SELECT 'build-secret',id,name FROM build_secret_versions WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'git',id,COALESCE(configuration->>'name','') FROM git_connections WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'registry',id,COALESCE(configuration->>'name','') FROM registries WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'backup-destination',id,COALESCE(configuration->>'name','') FROM backup_destinations WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'backup-policy',id,COALESCE(configuration->>'name','') FROM backup_policies WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+`
+
+type SecretAccessItemNamesParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+type SecretAccessItemNamesRow struct {
+	Kind string    `json:"kind"`
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+// Names for the items a page of records names, where they still exist.
+func (q *Queries) SecretAccessItemNames(ctx context.Context, arg SecretAccessItemNamesParams) ([]SecretAccessItemNamesRow, error) {
+	rows, err := q.db.Query(ctx, secretAccessItemNames, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SecretAccessItemNamesRow{}
+	for rows.Next() {
+		var i SecretAccessItemNamesRow
+		if err := rows.Scan(&i.Kind, &i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const secretAccessMember = `-- name: SecretAccessMember :one
 SELECT role FROM memberships WHERE workspace_id = $1 AND account_id = $2
 `
@@ -349,4 +485,14 @@ func (q *Queries) SecretRelease(ctx context.Context, arg SecretReleaseParams) (S
 		&i.CheckedAt,
 	)
 	return i, err
+}
+
+const setSecretAccessRetention = `-- name: SetSecretAccessRetention :exec
+UPDATE secret_access_settings SET retention_days = $1::integer
+`
+
+// unscoped: one installation-wide setting, written only by `astilba migrate`.
+func (q *Queries) SetSecretAccessRetention(ctx context.Context, days int32) error {
+	_, err := q.db.Exec(ctx, setSecretAccessRetention, days)
+	return err
 }

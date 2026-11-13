@@ -36,6 +36,7 @@ For local development only, set `ASTILBA_DEVELOPMENT=true`, `ASTILBA_LISTEN=127.
 | `ASTILBA_ORIGIN` | Exact browser origin, without a path or trailing slash. HTTPS outside explicit local development. |
 | `ASTILBA_LISTEN` | HTTP listener; defaults to `127.0.0.1:8080`. Use a TLS-terminating reverse proxy in production. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Connections each process may hold, 4 to 1000; defaults to 12. See [database connections](../../docs/hosting.md#database-connections). |
+| `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` | Days to keep secret access records, 30 to 3650; defaults to 400, and hosted keeps 400. Read by `astilba migrate`, so set it where migrate runs. See [operational bounds and retention](../../docs/hosting.md#operational-bounds-and-retention). |
 | `ASTILBA_TROUBLESHOOTING` | Optional. `single-instance` declares that one instance serves this installation, which [interactive troubleshooting](../../docs/interactive-troubleshooting.md) requires. Off by default. |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated IPv4 or IPv6 CIDRs for reverse proxies allowed to supply `X-Forwarded-For`. Defaults to no trusted proxies. |
 | `ASTILBA_AGENT_RELEASES`, `ASTILBA_AGENT_RELEASE_KEY` | Optional read-only signed agent catalog directory and its trusted public PEM key. Both are required to offer downloadable agent updates. |
