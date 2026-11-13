@@ -375,10 +375,13 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = e.visualObservation(c, observed); err != nil {
 		return e.finish(c.Id, "needs_attention", "The runtime report exceeds its supported size. Inspect the host before retrying.")
 	}
-	if err = e.reindexPostgres(ctx, p.Plan); err != nil {
-		return e.finish(c.Id, "needs_attention", errPostgresReindex.Error()+".")
+	// The revision is applied either way. A rebuild that does not finish is retried by the next
+	// deployment, or by this one if the agent restarts first, and says so here.
+	note, err := e.reindexPostgres(ctx, p.Plan, func() error { return e.checkpoint(c.Id, "postgres-reindex") })
+	if err != nil {
+		return err
 	}
-	return e.finish(c.Id, "succeeded", "The reviewed revision is running and its routes were verified.")
+	return e.finish(c.Id, "succeeded", strings.TrimSpace("The reviewed revision is running and its routes were verified. "+note))
 }
 
 func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, retained map[string]string) (deployment.Observation, error) {
@@ -485,6 +488,9 @@ func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
 			_, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(vol.ID), Driver: "local", Labels: visualLabels(p, vol.ID)})
 			if err != nil {
 				return errors.New("Cannot create a data volume.")
+			}
+			if err = e.Journal.recordNewPostgresStorage(p, vol.ID); err != nil {
+				return err
 			}
 			v, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
 		}

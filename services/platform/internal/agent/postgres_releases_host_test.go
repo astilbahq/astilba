@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -92,34 +93,46 @@ func nativePostgresInPlaceUpdate(t *testing.T, e *Engine, base deployment.Plan, 
 		return created.ID
 	}
 	old := run(retired)
-	// Indexes the update must rebuild sit beside ones it must leave alone, in two databases.
-	fixture := `CREATE TABLE records(code bpchar, sized char(4), value text);
-INSERT INTO records VALUES ('a ', 'b', 'retained');
+	// Indexes the update must rebuild sit beside ones it must leave alone, in two databases, one
+	// of them named like a connection string. An exclusion constraint's index cannot be rebuilt
+	// concurrently, and a leftover of an interrupted rebuild is dropped rather than rebuilt.
+	fixture := `CREATE DOMAIN code AS bpchar;
+CREATE TABLE records(code bpchar, sized char(4), value text, tag code, slot bpchar, EXCLUDE USING btree (slot WITH =));
+INSERT INTO records VALUES ('a ', 'b', 'retained', 'c', 'd');
 CREATE INDEX unbounded ON records(code);
 CREATE INDEX sized ON records(sized);
-CREATE INDEX plain ON records(value);`
+CREATE INDEX plain ON records(value);
+CREATE INDEX tagged ON records(tag);
+CREATE INDEX unbounded_ccnew ON records(code);
+UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'unbounded_ccnew'::regclass;`
 	if _, err := e.pgQuery(ctx, old, a, fixture); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pgQuery(ctx, old, a, "CREATE DATABASE other"); err != nil {
+	if _, err := e.pgQuery(ctx, old, a, `CREATE DATABASE "a=b"`); err != nil {
 		t.Fatal(err)
 	}
 	other := a
 	otherDatabase := *a.Postgres
-	otherDatabase.Database = "other"
+	otherDatabase.Database = "dbname='a=b'"
 	other.Postgres = &otherDatabase
 	if _, err := e.pgQuery(ctx, old, other, fixture); err != nil {
 		t.Fatal(err)
 	}
-	files := func(container string, application domain.Application) string {
+	indexes := "('unbounded', 'sized', 'plain', 'tagged', 'records_slot_excl', 'unbounded_ccnew')"
+	files := func(container string, application domain.Application) map[string]string {
 		t.Helper()
-		raw, err := e.pgQuery(ctx, container, application, "SELECT string_agg(relname || '=' || relfilenode, ',' ORDER BY relname) FROM pg_class WHERE relname IN ('unbounded', 'sized', 'plain')")
+		raw, err := e.pgQuery(ctx, container, application, "SELECT string_agg(relname || '=' || relfilenode, ',' ORDER BY relname) FROM pg_class WHERE relname IN "+indexes)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return strings.TrimSpace(string(raw))
+		out := map[string]string{}
+		for entry := range strings.SplitSeq(strings.TrimSpace(string(raw)), ",") {
+			index, file, _ := strings.Cut(entry, "=")
+			out[index] = file
+		}
+		return out
 	}
-	initial := map[string]string{"app": files(old, a), "other": files(old, other)}
+	initial := map[string]map[string]string{"app": files(old, a), "a=b": files(old, other)}
 	// The unit applied the retired release; applying the update records what wrote the data.
 	if err := e.Journal.saveUnit(unitState{Plan: before, Expected: map[string]string{}}); err != nil {
 		t.Fatal(err)
@@ -137,20 +150,46 @@ CREATE INDEX plain ON records(value);`
 	if record, found, err := e.Journal.postgresData(volume); err != nil || !found || record.Image != retired.Image {
 		t.Fatalf("the release that wrote the data was not recorded: %+v, %v", record, err)
 	}
-	if err := e.reindexPostgres(ctx, after); err != nil {
+	// A transaction that holds the table makes the concurrent rebuild wait; the lock timeout ends
+	// the wait, the update stays, the record keeps the earlier release and the note says so.
+	holder, err := e.Docker.ExecCreate(ctx, updated, client.ExecCreateOptions{Cmd: []string{"psql", "-XAt", "-U", "app", "-d", "app", "-c", "BEGIN; LOCK TABLE records IN ROW EXCLUSIVE MODE; SELECT pg_sleep(20); COMMIT;"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	for name, application := range map[string]domain.Application{"app": a, "other": other} {
-		got := files(updated, application)
-		was := map[string]string{}
-		for _, entry := range strings.Split(initial[name], ",") {
-			index, file, _ := strings.Cut(entry, "=")
-			was[index] = file
+	if _, err = e.Docker.ExecStart(ctx, holder.ID, client.ExecStartOptions{Detach: true}); err != nil {
+		t.Fatal(err)
+	}
+	locked := func() bool {
+		raw, _ := e.pgQuery(ctx, updated, a, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'BEGIN; LOCK TABLE records%'")
+		return strings.TrimSpace(string(raw)) != "0"
+	}
+	for i := 0; i < 50 && !locked(); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	steps := 0
+	begin := func() error { steps++; return nil }
+	note, err := e.reindexPostgres(ctx, after, begin)
+	if err != nil || !strings.Contains(note, "did not finish") || steps != 1 {
+		t.Fatalf("a held rebuild was not reported: %q, %v, %d steps", note, err, steps)
+	}
+	if record, _, _ := e.Journal.postgresData(volume); record.Image != retired.Image {
+		t.Fatalf("an unfinished rebuild advanced the record to %s", record.Image)
+	}
+	for i := 0; i < 300 && locked(); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	note, err = e.reindexPostgres(ctx, after, begin)
+	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 {
+		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
+	}
+	for name, application := range map[string]domain.Application{"app": a, "a=b": other} {
+		got, was := files(updated, application), initial[name]
+		if _, left := got["unbounded_ccnew"]; left {
+			t.Errorf("%s: the leftover of an interrupted rebuild was kept", name)
 		}
-		for _, entry := range strings.Split(got, ",") {
-			index, file, _ := strings.Cut(entry, "=")
-			if rebuilt := file != was[index]; rebuilt != (index == "unbounded") {
-				t.Errorf("%s: index %s rebuilt is %v (%s, was %s)", name, index, rebuilt, got, initial[name])
+		for _, index := range []string{"unbounded", "tagged", "sized", "plain", "records_slot_excl"} {
+			if rebuilt := got[index] != was[index]; rebuilt != (index == "unbounded" || index == "tagged") {
+				t.Errorf("%s: index %s rebuilt is %v (%v, was %v)", name, index, rebuilt, got, was)
 			}
 		}
 	}
@@ -163,7 +202,7 @@ CREATE INDEX plain ON records(value);`
 	}
 	// Done once: a later deployment of the same release rebuilds nothing.
 	rebuilt := files(updated, a)
-	if err = e.reindexPostgres(ctx, after); err != nil || files(updated, a) != rebuilt {
-		t.Fatalf("a finished update rebuilt indexes again: %v", err)
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || note != "" || steps != 2 || fmt.Sprint(files(updated, a)) != fmt.Sprint(rebuilt) {
+		t.Fatalf("a finished update rebuilt indexes again: %q, %v", note, err)
 	}
 }

@@ -36,34 +36,73 @@ type PostgresRelease struct {
 // PostgreSQL's releases rather than Astilba's pins, so an update that skips a release still
 // rebuilds what that release named. Advice for indexes only suspected of damage, such as GIN
 // after a VACUUM race, is left to the owner.
-var postgresReindex = []struct {
-	Version int
-	Query   string
-}{
-	// 17.11 and 18.6: contrib/btree_gist on float4/float8 that may hold NaN (and, in 18, on
-	// bit/varbit, which sorted wrongly), and btree on contrib/ltree values with many labels.
-	{170011, reindexIndexes(gistOpclasses("gist_float4_ops", "gist_float8_ops") + " OR " + btreeType("ltree"))},
-	{180006, reindexIndexes(gistOpclasses("gist_float4_ops", "gist_float8_ops", "gist_bit_ops", "gist_vbit_ops") + " OR " + btreeType("ltree"))},
-	// 17.12 and 18.7: btree on unbounded bpchar, which deduplicated equal values that differ in
-	// trailing spaces, and contrib/pg_trgm's gist_trgm_ops, which could lose entries' format flag.
-	{170012, reindexIndexes(unboundedBpchar + " OR " + gistOpclasses("gist_trgm_ops"))},
-	{180007, reindexIndexes(unboundedBpchar + " OR " + gistOpclasses("gist_trgm_ops"))},
+var postgresReindex = func() []reindexAdvice {
+	advice := []reindexAdvice{
+		// 17.11 and 18.6: contrib/btree_gist on float4/float8 that may hold NaN (and, in 18, on
+		// bit/varbit, which sorted wrongly), and btree on contrib/ltree values with many labels.
+		{Version: 170011, condition: gistOpclasses("gist_float4_ops", "gist_float8_ops") + " OR " + btreeType("ltree")},
+		{Version: 180006, condition: gistOpclasses("gist_float4_ops", "gist_float8_ops", "gist_bit_ops", "gist_vbit_ops") + " OR " + btreeType("ltree")},
+		// 17.12 and 18.7: btree on unbounded bpchar, which deduplicated equal values that differ
+		// in trailing spaces, and contrib/pg_trgm's gist_trgm_ops, which could lose entries'
+		// format flag.
+		{Version: 170012, condition: unboundedBpchar + " OR " + gistOpclasses("gist_trgm_ops")},
+		{Version: 180007, condition: unboundedBpchar + " OR " + gistOpclasses("gist_trgm_ops")},
+	}
+	for i := range advice {
+		advice[i].Query = reindexIndexes(advice[i].condition)
+	}
+	return advice
+}()
+
+type reindexAdvice struct {
+	Version   int
+	Query     string
+	condition string
 }
 
+// reindexIndexes selects valid indexes in the database's own schemas that REINDEX INDEX
+// CONCURRENTLY can rebuild. An invalid index is left alone: it is either a leftover of an
+// interrupted concurrent rebuild, which ReindexLeftovers drops, or the owner's own, and rebuilding
+// it would make it valid. Temporary tables belong to their sessions, and an exclusion
+// constraint's index cannot be rebuilt concurrently; ExclusionIndexes lists those for the owner.
 func reindexIndexes(condition string) string {
-	return "SELECT DISTINCT c.oid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE c.relkind = 'i' AND c.relnamespace NOT IN ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace, 'information_schema'::regnamespace) AND (" + condition + ")"
+	return reindexSelect + " AND NOT EXISTS (SELECT 1 FROM pg_constraint x WHERE x.conindid = c.oid AND x.contype = 'x') AND (" + condition + ")"
 }
+
+const reindexSelect = "SELECT DISTINCT c.oid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE c.relkind = 'i' AND i.indisvalid AND c.relpersistence <> 't' AND c.relnamespace NOT IN ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace, 'information_schema'::regnamespace)"
 
 func gistOpclasses(names ...string) string {
 	return "am.amname = 'gist' AND EXISTS (SELECT 1 FROM unnest(i.indclass) AS k(opclass) JOIN pg_opclass o ON o.oid = k.opclass WHERE o.opcname IN ('" + strings.Join(names, "', '") + "'))"
 }
 
-// An index column keeps its table column's type modifier, so CHAR(n), which is not affected, has one.
-const unboundedBpchar = "am.amname = 'btree' AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.atttypid = 'bpchar'::regtype AND a.atttypmod < 0)"
+// indexColumnOf matches an index column whose type is, after resolving a domain to its base type
+// and an array to its element, the named type. An index column keeps its table column's type,
+// so a domain or an array uses the base type's operator class and shares its defect.
+func indexColumnOf(condition string) string {
+	return "EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid JOIN pg_type b ON b.oid = CASE WHEN t.typbasetype <> 0 THEN t.typbasetype ELSE t.oid END JOIN pg_type e ON e.oid = CASE WHEN b.typcategory = 'A' THEN b.typelem ELSE b.oid END WHERE a.attrelid = c.oid AND " + condition + ")"
+}
+
+// CHAR(n), which is not affected, keeps a type modifier on the column or on its domain.
+var unboundedBpchar = "am.amname = 'btree' AND " + indexColumnOf("e.oid = 'bpchar'::regtype AND a.atttypmod < 0 AND t.typtypmod < 0")
 
 // Extension types are matched by name, so the query runs where the extension is not installed.
 func btreeType(name string) string {
-	return "am.amname = 'btree' AND EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid WHERE a.attrelid = c.oid AND t.typname = '" + name + "')"
+	return "am.amname = 'btree' AND " + indexColumnOf("e.typname = '"+name+"'")
+}
+
+// ReindexLeftovers selects invalid indexes an interrupted REINDEX INDEX CONCURRENTLY left behind,
+// which PostgreSQL names <index>_ccnew or <index>_ccold. They are still updated on every write.
+const ReindexLeftovers = "SELECT c.oid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE NOT i.indisvalid AND c.relpersistence <> 't' AND c.relname ~ '_cc(new|old)[0-9]*$' AND c.relnamespace NOT IN ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace, 'information_schema'::regnamespace)"
+
+// ExclusionIndexes returns, for the advice in queries, the indexes it skips because they back an
+// exclusion constraint: rebuilding one blocks writes, so the owner chooses when.
+func ExclusionIndexes(query string) string {
+	for _, advice := range postgresReindex {
+		if advice.Query == query {
+			return reindexSelect + " AND EXISTS (SELECT 1 FROM pg_constraint x WHERE x.conindid = c.oid AND x.contype = 'x') AND (" + advice.condition + ")"
+		}
+	}
+	return ""
 }
 
 // postgresReleases lists every pinned release, oldest first within each major.
