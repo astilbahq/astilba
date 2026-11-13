@@ -4,7 +4,7 @@
 -- history, they are kept; only the account holder's own credential changes add them.
 CREATE TABLE account_security_events (
     id uuid PRIMARY KEY,
-    account_id uuid NOT NULL REFERENCES accounts(id),
+    account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     kind text NOT NULL CHECK (kind IN ('password_changed','password_reset','mfa_enabled','mfa_disabled','recovery_codes_regenerated','recovery_code_used')),
     created_at timestamptz NOT NULL DEFAULT now()
 );
