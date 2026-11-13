@@ -15,8 +15,8 @@ CREATE TABLE catalog_stagings (
     author_id uuid NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, id),
-    FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id),
-    FOREIGN KEY (workspace_id, environment_id, revision_id) REFERENCES specification_revisions(workspace_id, environment_id, id)
+    FOREIGN KEY (workspace_id, environment_id) REFERENCES environments(workspace_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (workspace_id, environment_id, revision_id) REFERENCES specification_revisions(workspace_id, environment_id, id) ON DELETE CASCADE
 );
 CREATE INDEX catalog_stagings_environment ON catalog_stagings (workspace_id, environment_id, created_at);
 INSERT INTO schema_additive_migrations (version) VALUES (47);

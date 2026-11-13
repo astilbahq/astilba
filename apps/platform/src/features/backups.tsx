@@ -10,6 +10,10 @@ import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 import {
+  BackupRecommendations,
+  type RecommendedBackup,
+} from "./backup-recommendations";
+import {
   ScheduleFields,
   scheduleInput,
   scheduleTimeout,
@@ -50,32 +54,7 @@ export function Backups({
     queryFn: () =>
       result(client.GET(`${root}/backup-policies`, { params: { path } })),
   });
-  const stagings = useQuery({
-    queryKey: ["catalog-stagings", path],
-    queryFn: () =>
-      result(client.GET(`${root}/catalog-stagings`, { params: { path } })),
-  });
-  // Backups the catalog recommends for services it staged that are still in the configuration
-  // and have no policy yet.
-  const recommended = (stagings.data ?? []).flatMap((staging) =>
-    staging.backups.flatMap((preset) => {
-      const app = revision.specification.applications.find(
-        (a) => a.id === preset.serviceId,
-      );
-      return app &&
-        policies.data &&
-        !policies.data.some((p) => p.resourceId === preset.serviceId)
-        ? [
-            {
-              ...preset,
-              app,
-              from: `${staging.recipeName} ${staging.recipeVersion}`,
-            },
-          ]
-        : [];
-    }),
-  );
-  const [preset, setPreset] = useState<(typeof recommended)[number]>();
+  const [preset, setPreset] = useState<RecommendedBackup>();
   const createPolicy = useRef<HTMLDetailsElement>(null);
   return (
     <section className={s.stack} aria-label="Backups and scheduled jobs">
@@ -160,38 +139,16 @@ export function Backups({
               <BusyButton busy={action.isPending}>Add destination</BusyButton>
             </Form>
           </details>
-          {recommended.length > 0 && (
-            <div
-              className={s.panel}
-              role="group"
-              aria-label="Recommended backups"
-            >
-              <h3>Recommended backups</h3>
-              <ul className={s.stack}>
-                {recommended.map((r) => (
-                  <li key={r.serviceId}>
-                    {r.app.name}: daily at {String(r.hour).padStart(2, "0")}:
-                    {String(r.minute).padStart(2, "0")}, keeping {r.retain}{" "}
-                    uploads, as the {r.from} template recommends.{" "}
-                    <Button
-                      onClick={() => {
-                        setPreset(r);
-                        setMethod(r.method);
-                        if (createPolicy.current)
-                          createPolicy.current.open = true;
-                      }}
-                    >
-                      Use for {r.app.name}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-              <p>
-                Choose a destination and a repository password to finish. The
-                policy installs after the service is deployed.
-              </p>
-            </div>
-          )}
+          <BackupRecommendations
+            path={path}
+            revision={revision}
+            policies={policies.data}
+            choose={(r) => {
+              setPreset(r);
+              setMethod(r.method);
+              if (createPolicy.current) createPolicy.current.open = true;
+            }}
+          />
           <details className={s.panel} ref={createPolicy}>
             <summary>Create backup policy or container job</summary>
             <p>
