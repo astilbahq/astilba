@@ -1,6 +1,6 @@
 # Fleet capacity measurement
 
-Measures the load connected agents put on the management application. It runs the real server binary against PostgreSQL 18.4 and drives it with synthetic agents over the public HTTP contract. It imports no application code and adds none. Results and the sizing built on them are in [RESULTS.md](RESULTS.md).
+Measures the load connected agents put on the management application. It runs the real server binary against PostgreSQL 18.7 and drives it with synthetic agents over the public HTTP contract. It imports no application code and adds none. Results and the sizing built on them are in [RESULTS.md](RESULTS.md).
 
 ## What it runs
 
