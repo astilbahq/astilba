@@ -203,7 +203,9 @@ func TestNativePullWatchStopsAPullBeyondItsMeasure(t *testing.T) {
 	f.overlong[layer] = true
 	image := f.host + "/fixture/app@" + manifest
 	var err error
-	used := f.leastFree(func() { err = (&Engine{Docker: f.docker}).pullWatched(f.ctx, image, "", imageCost{Bytes: 1 << 20}) })
+	used := f.leastFree(func() {
+		err = (&Engine{Docker: f.docker}).pullWatched(f.ctx, image, "", imageCost{Bytes: 1 << 20}, imageLoadLimit{reserveBytes: DefaultImageLoadReserveBytes})
+	})
 	var refused *imageLoadRefused
 	if !errors.As(err, &refused) || !strings.Contains(refused.why, "so the agent stopped it") {
 		t.Fatal("a pull beyond its measure was not stopped", err)

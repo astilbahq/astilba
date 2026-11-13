@@ -151,7 +151,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if credential != nil {
 		auth = encodedRegistryAuth(*credential)
 	}
-	if err = e.pullWatched(ctx, image, auth, measured); err != nil {
+	if err = e.pullWatched(ctx, image, auth, measured, limit); err != nil {
 		return refuse(err)
 	}
 	// The classic store names an image by its config's digest. One that differs is an image the

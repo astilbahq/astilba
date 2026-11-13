@@ -146,7 +146,8 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 			return nil, err
 		}
 	}
-	// The config says which platform the image is for, and an image for another would not run.
+	// The config says which platform the image is for. Docker would pull a single-platform image
+	// for another architecture, to run under emulation, but the agent refuses it.
 	data, err := fetchBlob(ctx, source, configDescriptor)
 	if err != nil {
 		return nil, err

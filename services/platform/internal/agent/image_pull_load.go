@@ -20,10 +20,12 @@ import (
 // loadRegistryImage puts the image plan describes into Docker's containerd image store by
 // loading it, so the agent is the image's only reader from its registry. The agent reads each
 // blob once, at most its descriptor's size, and passes it to Docker as an OCI archive while it
-// measures it as a local build's load is measured (image_archive.go). Docker imports nothing
-// before the archive ends, and the agent ends it only once the whole image is within limit and
-// every blob matches its digest. The image is named by the reference the deployment pulls, so
-// it resolves, and has the same ID, as if Docker had pulled it.
+// measures it as a local build's load is measured (image_archive.go). containerd stores each
+// blob as it arrives, all of them counted in plan, but imports and unpacks no image before the
+// archive ends, and the agent ends it only once the whole image is within limit and every blob
+// matches its digest. A refused load's blobs stay until containerd collects them. The image is
+// named by the reference the deployment pulls, so it resolves, and has the same ID, as if
+// Docker had pulled it.
 func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonical, source registryImage, plan *registryPlan, limit imageLoadLimit) error {
 	reader, writer := io.Pipe()
 	streamed := make(chan error, 1)
