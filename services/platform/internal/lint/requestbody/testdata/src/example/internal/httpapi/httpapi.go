@@ -1,0 +1,59 @@
+package httpapi
+
+import (
+	"encoding/json/v2"
+	"io"
+	"net/http"
+)
+
+type Server struct{}
+
+func decode[T any](r *http.Request) (T, error) {
+	var v T
+	err := json.UnmarshalRead(r.Body, &v)
+	return v, err
+}
+
+func (s *Server) limit(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+}
+
+func (s *Server) ReceiveGitPush(w http.ResponseWriter, r *http.Request) {
+	_, _ = io.ReadAll(r.Body)
+}
+
+func (s *Server) Rename(w http.ResponseWriter, r *http.Request) {
+	var v struct{ Name string }
+	_ = json.UnmarshalRead(r.Body, &v) // want `a request body read outside decode`
+	_, _ = decode[struct{ Name string }](r)
+}
+
+func (s *Server) swap(w http.ResponseWriter, r *http.Request, other io.ReadCloser) {
+	r.Body = other                                              // want `a request body read outside decode`
+	r.Body = http.MaxBytesReader(w, other, 1024)                // want `a request body read outside decode`
+	r.Body = http.MaxBytesReader(w, io.NopCloser(r.Body), 1024) // want `a request body read outside decode` `a request body read outside decode`
+}
+
+func (s *Server) form(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()              // want `a request body read outside decode`
+	_ = r.FormValue("name")        // want `a request body read outside decode`
+	_ = r.PostFormValue("name")    // want `a request body read outside decode`
+	_, _ = r.MultipartReader()     // want `a request body read outside decode`
+	_ = r.ParseMultipartForm(1024) // want `a request body read outside decode`
+	_, _, _ = r.FormFile("file")   // want `a request body read outside decode`
+	_ = r.URL.Query().Get("name")
+}
+
+func (s *Server) responses(res *http.Response) {
+	_, _ = io.ReadAll(res.Body)
+}
+
+var receive http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
+	_, _ = io.ReadAll(r.Body) // want `a request body read outside decode`
+}
+
+type wrapped struct{ *http.Request }
+
+func (s *Server) embedded(x wrapped) {
+	_, _ = io.ReadAll(x.Body) // want `a request body read outside decode`
+}

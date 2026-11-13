@@ -63,6 +63,7 @@ func newPolicyFixture(t *testing.T) *policyFixture {
 	yes := true
 	in.Capabilities.Build = &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	var project api.Project
 	p.owner.call("POST", prefix+"/projects", map[string]string{"name": "Policies"}, 201, &project)

@@ -11,7 +11,7 @@ Astilba's Go code reads JSON with `encoding/json/v2` and writes everything excep
 | Writing a value that is stored, journaled, exported or sent between Astilba processes that can be on different releases, an API response, or command output that scripts read | `stablejson.Marshal`, `stablejson.Encode` for a stream, `stablejson.MarshalIndent` or `stablejson.EncodeIndent`. |
 | Cloning a value through JSON, when the clone can reach a digest | `stablejson.Marshal`, so nil collections stay nil. |
 
-Requests to third parties, alert webhooks and Docker registry credentials use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced.
+Requests to third parties, alert webhooks, Docker registry credentials and the build container's seccomp profile use plain `encoding/json/v2`, because nothing hashes, stores or compares them. Compared with v1, `&`, `<`, `>`, U+2028 and U+2029 are no longer escaped, map order is random and invalid UTF-8 is an error rather than replaced.
 
 The `jsonguard` analyzer in `make check-app` checks this: `encoding/json` only in the files listed under [Remaining v1 use](#remaining-v1-use), and plain v2 writers only in the functions it names. A named function can still add a second writer, so a clean run does not rule that out.
 
@@ -101,6 +101,17 @@ Some readers stay looser, because other people or tools write their input and re
 ## Trust boundaries
 
 `httpapi.decode`, agent poll responses, `hostnetwork.Decode`, recovery records, specifications, archives and keyrings all use `RejectUnknownMembers`. A body such as `{"role":"viewer","ROLE":"owner"}` used to read as `owner` in `decode`. It was not exploitable before this work because every request object with named properties in the OpenAPI schema sets `additionalProperties: false`, so the validator refused `ROLE`, and kin-openapi refuses duplicate names when built with `goexperiment.jsonv2`. `decode` now refuses both on its own. It also refuses invalid UTF-8 and lone surrogates, which v1 replaced silently.
+
+## Text PostgreSQL cannot store
+
+PostgreSQL's `text` and `jsonb` cannot hold U+0000. A write with one fails with 22021, or 22P05 for the `\u0000` escape in `jsonb`, and the failure aborts its transaction. Input is kept clear of it where it enters:
+
+- **Request bodies.** `httpapi.decode` is the one reader of a request body, which the `requestbody` analyzer enforces. It walks every string the body decodes to, including map keys and the strings inside raw JSON members. A person's or program's request is refused with `invalid_input` naming the member. That includes values never stored as text, such as secret values, build secrets and passwords. A secret value becomes an environment variable, which cannot hold NUL. A build secret is mounted as a file and could, but binary content belongs in an encoding such as base64, and one rule for every body is what keeps a field added later covered. An agent's request, one authenticated as an agent or one of the requests an agent makes for its credentials, has each NUL replaced with a space instead. Its strings carry its host's output, such as os-release and Docker's version, and refusing them would refuse every heartbeat or report after it. The only refusal is a map in which a replacement would make two keys equal.
+- **Paths and query strings.** Every request whose path or query decodes to NUL is refused before a handler runs. Today every path and query parameter is a UUID, number or enumeration, which their binding refuses anyway; this covers a text parameter added later.
+- **Archives.** An export cannot write NUL, so an archive row holding one is refused as an invalid archive.
+- **Signed webhooks.** The Stripe, GitHub App and Git push handlers read their raw bytes to check the provider's signature, then decode a few identifiers from them. Only the provider can write those, and the store's refusal below covers them.
+
+`store.Normalize` maps 22021 and 22P05 to `domain.UnstorableText`, an `invalid_input` refusal, so a path these miss, such as a provider's reply, is refused rather than answered with a 500, and the API logs a warning naming the route. The recovery CLI reads hosts' exports from disk rather than through a request, so it is not covered yet (PLAT-321).
 
 ## Where third-party code keeps v1
 

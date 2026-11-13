@@ -45,6 +45,7 @@ func TestGiteaRunsTheGitPathAsFixturesDo(t *testing.T) {
 		enrolled, in, token := enrollment(t, f, b, ws, "build")
 		in.Capabilities.Build = &yes
 		in.Capabilities.BuildNetwork = &yes
+		in.Capabilities.RootlessBuilds = &yes
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 		runner := authorityAgent{t, f, token, in}
 		server, deployIn, deployToken := enrollment(t, f, b, ws, "deployment")
@@ -272,6 +273,7 @@ func TestGiteaRunsTheGitPathAsFixturesDo(t *testing.T) {
 		enrolled, in, token := enrollment(t, f, b, ws, "build")
 		in.Capabilities.Build = &yes
 		in.Capabilities.BuildNetwork = &yes
+		in.Capabilities.RootlessBuilds = &yes
 		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 		runner := authorityAgent{t, f, token, in}
 		var head struct {
