@@ -62,16 +62,19 @@ func TestBootstrapOrdersVersionsAsAgentsDo(t *testing.T) {
 	}
 }
 
-// collatingLocale names an installed locale that collates "a" before "B", unlike byte order, or
-// C.UTF-8 when none is installed, which still checks everything but the pinning.
+// collatingLocale names an installed locale whose collation isn't byte order, as glibc's
+// en_US.UTF-8 isn't, or C.UTF-8 when there is none, which still checks everything but the pinning.
 func collatingLocale(t *testing.T) string {
 	out, _ := exec.Command("locale", "-a").Output()
 	for _, name := range strings.Fields(string(out)) {
-		if strings.EqualFold(name, "en_US.utf8") || strings.EqualFold(name, "en_US.UTF-8") {
+		// In byte order "B" sorts before "a".
+		cmd := exec.Command("bash", "-c", `[[ a < B ]]`)
+		cmd.Env = append(os.Environ(), "LC_ALL="+name)
+		if cmd.Run() == nil {
 			return name
 		}
 	}
-	t.Log("no en_US.UTF-8 locale is installed, so this doesn't show version_compare pins its collation")
+	t.Log("no installed locale collates other than byte order, so this doesn't show version_compare pins its collation")
 	return "C.UTF-8"
 }
 

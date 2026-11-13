@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { client, result, type Schema } from "../api/client";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -33,6 +33,12 @@ export function ServerOnboarding({
   const [releaseSHA, setRelease] = useState("");
   const [fingerprint, setFingerprint] = useState("");
   const [minimumVersion, setMinimumVersion] = useState("");
+  // An unfinished version isn't flagged until the operator leaves the field.
+  const [minimumTouched, setMinimumTouched] = useState(false);
+  const minimumHelp = useId();
+  const minimumError = useId();
+  const minimumInvalid =
+    minimumTouched && minimumVersion !== "" && !validVersion(minimumVersion);
   const [contact, setContact] = useState("");
   const [runtime, setRuntime] = useState(false);
   const [backups, setBackups] = useState(false);
@@ -199,16 +205,25 @@ export function ServerOnboarding({
                 setMinimumVersion(e.target.value.trim());
                 setPrepared(false);
               }}
-              aria-invalid={!!minimumVersion && !validVersion(minimumVersion)}
-              aria-describedby="minimum-version-help"
+              onBlur={() => setMinimumTouched(true)}
+              aria-invalid={minimumInvalid}
+              aria-describedby={
+                minimumInvalid ? `${minimumError} ${minimumHelp}` : minimumHelp
+              }
               spellCheck={false}
             />
-            <small id="minimum-version-help">
-              {minimumVersion && !validVersion(minimumVersion)
-                ? "Enter a semantic version of at most 80 characters, such as 0.3.0."
-                : `From the same channel as the fingerprint. The bootstrap refuses a release that would let the agent go back below it.${release ? ` The selected release lets an agent go back to ${release.minimumVersion}.` : ""}`}
-            </small>
           </Label>
+          {minimumInvalid && (
+            <p id={minimumError} className={s.error}>
+              Enter a semantic version of at most 80 characters, such as 0.3.0.
+            </p>
+          )}
+          <p id={minimumHelp} className={s.muted}>
+            From the same channel as the fingerprint. The bootstrap refuses a
+            release that would let the agent go back below it.
+            {release &&
+              ` The selected release lets an agent go back to ${release.minimumVersion}.`}
+          </p>
           {role !== "build" && (
             <Label>
               Certificate contact email

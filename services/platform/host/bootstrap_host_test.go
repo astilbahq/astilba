@@ -148,7 +148,11 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	wrongCommit := release
 	wrongCommit.Commit = strings.Repeat("f", 40)
 	wrongCommit = signed(wrongCommit)
-	for _, v := range []api.AgentRelease{bad, wrongArch, wrongProtocol, wrongHash, wrongCommit} {
+	// Correctly signed, but with a minimum version later than its version, which agents refuse.
+	inverted := release
+	inverted.MinimumVersion = "1.0.0"
+	inverted = signed(inverted)
+	for _, v := range []api.AgentRelease{bad, wrongArch, wrongProtocol, wrongHash, wrongCommit, inverted} {
 		mu.Lock()
 		current = v
 		mu.Unlock()
