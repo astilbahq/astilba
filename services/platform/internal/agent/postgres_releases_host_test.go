@@ -108,7 +108,10 @@ UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'unbounded_ccnew'::reg
 	if _, err := e.pgQuery(ctx, old, a, fixture); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pgQuery(ctx, old, a, `CREATE DATABASE "a=b"`); err != nil {
+	if _, err := e.pgQuery(ctx, old, a, `CREATE ROLE tenant`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pgQuery(ctx, old, a, `CREATE DATABASE "a=b" OWNER tenant`); err != nil {
 		t.Fatal(err)
 	}
 	other := a
@@ -116,6 +119,14 @@ UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'unbounded_ccnew'::reg
 	otherDatabase.Database = "dbname='a=b'"
 	other.Postgres = &otherDatabase
 	if _, err := e.pgQuery(ctx, old, other, fixture); err != nil {
+		t.Fatal(err)
+	}
+	// The database's owner, not a superuser, plants closer matches for the functions the rebuild
+	// calls. The superuser session must never run them.
+	if _, err := e.pgQuery(ctx, old, other, `SET ROLE tenant;
+CREATE FUNCTION public.format(text, regclass) RETURNS text LANGUAGE sql AS $$ SELECT 'ALTER ROLE tenant SUPERUSER' $$;
+CREATE FUNCTION public.unnest(oidvector) RETURNS SETOF oid LANGUAGE sql AS $$ SELECT oid FROM pg_opclass $$;
+RESET ROLE;`); err != nil {
 		t.Fatal(err)
 	}
 	indexes := "('unbounded', 'sized', 'plain', 'tagged', 'records_slot_excl', 'unbounded_ccnew')"
@@ -215,5 +226,8 @@ UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'unbounded_ccnew'::reg
 	}
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
 		t.Fatalf("the rebuilt storage records %+v", record)
+	}
+	if raw, err := e.pgQuery(ctx, updated, a, "SELECT rolsuper FROM pg_roles WHERE rolname = 'tenant'"); err != nil || strings.TrimSpace(string(raw)) != "f" {
+		t.Fatalf("a database owner's function ran as superuser: %q, %v", raw, err)
 	}
 }

@@ -179,12 +179,24 @@ func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, 
 // INDEX CONCURRENTLY, which cannot run in a transaction. It returns the exclusion-constraint
 // indexes the queries skip, named database.index.
 func (e *Engine) runPostgresReindex(ctx context.Context, container string, a domain.Application, queries []string) ([]string, error) {
+	// Every session runs as the cluster's superuser in databases other roles may own, so it
+	// resolves names only in pg_catalog: a function an owner adds to public, such as a closer
+	// match for format(), must never run with these privileges. A connection's own options
+	// outrank database and role settings.
+	psql := func(input bool, database string, args ...string) []string {
+		out := []string{"exec", "-e", "PGOPTIONS=-c search_path=pg_catalog,pg_temp"}
+		if input {
+			out = append(out, "-i")
+		}
+		return append(append(out, container, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", database), args...)
+	}
+	listing := &boundedOutput{limit: 65536, stopOnLimit: true}
 	// Names travel hex-encoded, so a name holding a newline or an equals sign stays one name.
 	// inline-sql: runs in a managed customer database through psql, not in the platform database
-	raw, err := e.pgQuery(ctx, container, a, "SELECT encode(convert_to(datname, 'UTF8'), 'hex') FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname")
-	if err != nil {
+	if err := e.dataTool(ctx, nil, listing, psql(false, a.Postgres.Database, "-c", "SELECT encode(convert_to(datname, 'UTF8'), 'hex') FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname")...); err != nil {
 		return nil, err
 	}
+	raw := listing.b.Bytes()
 	var exclusions []string
 	for encoded := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
 		name, err := hex.DecodeString(encoded)
@@ -200,13 +212,13 @@ func (e *Engine) runPostgresReindex(ctx context.Context, container string, a dom
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
 			script += "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM (" + query + ") AS i(oid) ORDER BY 1 \\gexec\n"
 		}
-		if err = e.dataTool(ctx, strings.NewReader(script), io.Discard, "exec", "-i", container, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-f", "-"); err != nil {
+		if err = e.dataTool(ctx, strings.NewReader(script), io.Discard, psql(true, connection, "-f", "-")...); err != nil {
 			return nil, err
 		}
 		for _, query := range queries {
 			out := &boundedOutput{limit: 4096}
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			if err = e.dataTool(ctx, nil, out, "exec", container, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-c", "SELECT i.oid::regclass FROM ("+domain.ExclusionIndexes(query)+") AS i(oid) ORDER BY 1"); err != nil {
+			if err = e.dataTool(ctx, nil, out, psql(false, connection, "-c", "SELECT i.oid::regclass FROM ("+domain.ExclusionIndexes(query)+") AS i(oid) ORDER BY 1")...); err != nil {
 				return nil, err
 			}
 			for index := range strings.SplitSeq(strings.TrimSpace(out.b.String()), "\n") {
