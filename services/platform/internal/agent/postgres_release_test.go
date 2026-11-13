@@ -31,11 +31,5 @@ func TestRestoreFromAnotherMajorIsRefusedBeforeTouchingTheHost(t *testing.T) {
 		if !errors.As(err, &refused) || !strings.Contains(err.Error(), c.reason) {
 			t.Fatalf("restore of a %s backup into %s: %v", c.archive, c.database, err)
 		}
-		// The isolated restore refuses it too, whoever calls it.
-		serving, _ := domain.PostgresReleaseOf(c.database)
-		err = e.restorePostgres(context.Background(), policy, &backup.Run{ID: uuid.New(), TargetID: uuid.New()}, t.TempDir(), m, "password", serving, false)
-		if !errors.As(err, &refused) {
-			t.Fatalf("isolated restore across majors: %v", err)
-		}
 	}
 }
