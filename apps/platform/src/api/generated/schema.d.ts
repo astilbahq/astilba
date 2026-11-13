@@ -371,6 +371,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/postgres-releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listPostgresReleases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/session": {
         parameters: {
             query?: never;
@@ -3329,6 +3345,17 @@ export interface components {
             level: "tested" | "manual" | "not_applicable";
             detail: string;
         };
+        PostgresRelease: {
+            /** @description Exact digest-pinned image reference. */
+            image: string;
+            /** @description Version people read, such as 18.6. */
+            name: string;
+            major: number;
+            /** @description Whether a new database of this major runs this release. */
+            current: boolean;
+            /** @description Where the image keeps its data volume. */
+            mount: string;
+        };
         CatalogRecipe: {
             id: string;
             name: string;
@@ -5529,6 +5556,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CatalogRecipe"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listPostgresReleases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every PostgreSQL release a managed database can name, oldest first within each major. A new database runs its major's current release; a retired release stays valid for a database that already runs it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostgresRelease"][];
                 };
             };
             /** @description Error */

@@ -95,10 +95,14 @@ func (e *Engine) knownUpgradeWriters(ctx context.Context, id string, a domain.Ap
 }
 
 func (e *Engine) upgradeDump(ctx context.Context, s upgradeState, source string, a domain.Application, stage string, m *backup.Manifest) error {
+	target, err := s.Command.Plan.TargetRelease()
+	if err != nil {
+		return err
+	}
 	labels := visualLabels(s.Command.Plan.Source, a.ID)
 	labels[labelKind] = "upgrade-tools-v1"
 	labels["com.astilba.upgrade"] = s.Command.Plan.ID.String()
-	tool, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-upgrade-tools-" + s.Command.Plan.ID.String(), Config: &container.Config{Image: domain.PostgresImage, Cmd: []string{"sleep", "3600"}, Env: []string{"PGPASSWORD=" + s.Command.Installation.Access.DatabasePassword}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: 256 << 20, PidsLimit: ptr(int64(32))}}})
+	tool, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-upgrade-tools-" + s.Command.Plan.ID.String(), Config: &container.Config{Image: target.Image, Cmd: []string{"sleep", "3600"}, Env: []string{"PGPASSWORD=" + s.Command.Installation.Access.DatabasePassword}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: 256 << 20, PidsLimit: ptr(int64(32))}}})
 	if err != nil {
 		return err
 	}

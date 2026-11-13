@@ -24,8 +24,8 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 			if a.ID != p.ResourceID || a.Postgres == nil {
 				continue
 			}
-			if a.Source.Image == nil || r.Manifest.Image != *a.Source.Image || len(a.Mounts) != 1 || a.Mounts[0].Target != domain.PostgresMount(r.Manifest.Image) {
-				return uuid.Nil, errors.New("the restored PostgreSQL image and physical layout differ from the frozen target")
+			if err := OpensRestoredPostgres(a, r); err != nil {
+				return uuid.Nil, err
 			}
 			old, found = a.Mounts[0].VolumeID, true
 		}
@@ -42,4 +42,50 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 		}
 	}
 	return old, nil
+}
+
+// RestoredImage is the PostgreSQL image that filled a logical restore target.
+func (r Run) RestoredImage() string {
+	if r.RestoreImage != "" {
+		return r.RestoreImage
+	}
+	if r.Manifest == nil {
+		return ""
+	}
+	return r.Manifest.Image
+}
+
+// OpensRestoredPostgres says whether a managed database may serve the data a logical restore
+// wrote: its release must open data the restoring release wrote, mounted where it keeps it.
+func OpensRestoredPostgres(a domain.Application, r Run) error {
+	written, ok := domain.PostgresReleaseOf(r.RestoredImage())
+	if !ok {
+		return errors.New("the restored PostgreSQL release is unknown")
+	}
+	if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
+		return errors.New("the restored database is not a managed PostgreSQL service")
+	}
+	serving, ok := domain.PostgresReleaseOf(*a.Source.Image)
+	if !ok || a.Mounts[0].Target != serving.Mount {
+		return errors.New("the restored PostgreSQL image and physical layout differ from the frozen target")
+	}
+	return serving.OpensDataFrom(written)
+}
+
+// RestoreRelease is the release a logical PostgreSQL restore of the archive runs for the policy:
+// the database's own release, which then serves the data. It refuses an archive that release
+// cannot restore, such as one from another major.
+func RestoreRelease(p Policy, archive Manifest) (domain.PostgresRelease, error) {
+	for _, a := range p.Plan.Specification.Applications {
+		if a.ID != p.ResourceID || a.Postgres == nil || a.Source.Image == nil {
+			continue
+		}
+		serving, ok := domain.PostgresReleaseOf(*a.Source.Image)
+		source, known := domain.PostgresReleaseOf(archive.Image)
+		if !ok || !known {
+			return domain.PostgresRelease{}, errors.New("this backup or database uses a PostgreSQL release Astilba does not know")
+		}
+		return serving, serving.RestoresArchiveFrom(source)
+	}
+	return domain.PostgresRelease{}, errors.New("the policy has no managed PostgreSQL source")
 }

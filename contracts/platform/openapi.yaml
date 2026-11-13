@@ -769,6 +769,27 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/postgres-releases:
+    get:
+      operationId: listPostgresReleases
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Every PostgreSQL release a managed database can name, oldest first within each major. A new database runs its major's current release; a retired release stays valid for a database that already runs it.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/PostgresRelease'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/session":
     "get":
       "operationId": "session"
@@ -6879,6 +6900,16 @@
       properties:
         level: {type: string, enum: [tested, manual, not_applicable]}
         detail: {type: string}
+    PostgresRelease:
+      type: object
+      additionalProperties: false
+      required: [image, name, major, current, mount]
+      properties:
+        image: {type: string, description: Exact digest-pinned image reference.}
+        name: {type: string, description: 'Version people read, such as 18.6.'}
+        major: {type: integer}
+        current: {type: boolean, description: Whether a new database of this major runs this release.}
+        mount: {type: string, description: Where the image keeps its data volume.}
     CatalogRecipe:
       type: object
       additionalProperties: false

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -336,6 +337,13 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if m.Recipe != backup.Recipe || m.PolicyID != in.Policy.ID || m.ResourceID != in.Policy.ResourceID || m.Method != in.Policy.Method || m.Bytes <= 0 || m.Bytes > 1<<40 || !backup.SnapshotID(m.SHA256) {
 		return errors.New("invalid backup manifest")
 	}
+	var release domain.PostgresRelease
+	if m.Method == "postgres-logical" {
+		var err error
+		if release, err = backup.RestoreRelease(in.Policy, m); err != nil {
+			return restoreRefusal{err}
+		}
+	}
 	// Reserve headroom for the downloaded archive and expanded database, retaining
 	// both old and new volumes. Refuse unknown capacity rather than assuming room.
 	if freeBytes(e.Journal.dir) < m.Bytes*2+256<<20 || dockerFreeBytes(ctx, e.Docker) < m.Bytes*4+256<<20 {
@@ -392,7 +400,7 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 		return err
 	}
 	if m.Method == "postgres-logical" {
-		err = e.restorePostgres(ctx, in.Policy, r, dir, stored, in.Access.DatabasePassword)
+		err = e.restorePostgres(ctx, in.Policy, r, dir, stored, in.Access.DatabasePassword, release, false)
 	} else {
 		var name string
 		var cleanup func()
@@ -436,14 +444,49 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	}
 	r.Manifest = &stored
 	r.ManifestHash = backup.Hash(stored)
+	r.RestoreImage = release.Image
 	r.Verified = true
 	return nil
 }
-func quoteIdentifier(v string) string { return `"` + strings.ReplaceAll(v, `"`, `""`) + `"` }
-func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup.Run, dir string, m backup.Manifest, password string) error {
+
+// ensureImage pulls a pinned public image the host does not hold, such as the release a restore
+// or an upgrade runs when its database's container was removed.
+func (e *Engine) ensureImage(ctx context.Context, image string) error {
+	_, err := e.Docker.ImageInspect(ctx, image)
+	if errdefs.IsNotFound(err) {
+		return e.pullImageAuth(ctx, image, "")
+	}
+	return err
+}
+
+// restoreRefusal is a restore refused before it touched anything, with a reason the owner can act on.
+type restoreRefusal struct{ error }
+
+func (r restoreRefusal) Unwrap() error { return r.error }
+func quoteIdentifier(v string) string  { return `"` + strings.ReplaceAll(v, `"`, `""`) + `"` }
+
+// restorePostgres restores the archive into a fresh cluster of the given release, then proves the
+// cluster holds exactly what was archived. A restore stays within the archive's major, except for
+// the supported upgrade, which restores a PostgreSQL 17 archive into PostgreSQL 18.
+func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup.Run, dir string, m backup.Manifest, password string, release domain.PostgresRelease, upgrade bool) error {
 	a, err := sourceApp(p)
-	if err != nil || a.Postgres == nil || (m.Image != domain.PostgresImage && m.Image != domain.Postgres17Image) || m.Database != a.Postgres.Database || m.Username != a.Postgres.Username {
+	if err != nil || a.Postgres == nil || m.Database != a.Postgres.Database || m.Username != a.Postgres.Username {
 		return errors.New("unsupported restore recipe")
+	}
+	archive, known := domain.PostgresReleaseOf(m.Image)
+	if !known || release.Image == "" {
+		return errors.New("unsupported PostgreSQL release")
+	}
+	if upgrade {
+		err = archive.UpgradesTo(release)
+	} else {
+		err = release.RestoresArchiveFrom(archive)
+	}
+	if err != nil {
+		return restoreRefusal{err}
+	}
+	if err = e.ensureImage(ctx, release.Image); err != nil {
+		return err
 	}
 	if password == "" {
 		return errors.New("database initialization credential unavailable")
@@ -455,7 +498,7 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup
 	labels := visualLabels(p.Plan, r.TargetID)
 	labels[labelKind] = "backup-restore-v1"
 	labels["com.astilba.run"] = r.ID.String()
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-restore-" + r.ID.String(), Config: &container.Config{Image: m.Image, Env: []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(r.TargetID), Target: domain.PostgresMount(m.Image)}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-restore-" + r.ID.String(), Config: &container.Config{Image: release.Image, Env: []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(r.TargetID), Target: release.Mount}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
 	if err != nil {
 		return err
 	}
@@ -496,8 +539,8 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup
 	}
 	defer os.Remove(verify.Name())
 	dumpArgs := []string{"exec", created.ID, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", m.Username, "-d", m.Database}
-	crossMajor := a.Source.Image != nil && *a.Source.Image == domain.Postgres17Image && m.Image == domain.PostgresImage
-	if crossMajor {
+	// The upgrade dumped with every identifier quoted, so the comparison dump must too.
+	if upgrade {
 		dumpArgs = append(dumpArgs, "--quote-all-identifiers")
 	}
 	err = e.dataTool(ctx, nil, verify, dumpArgs...)
@@ -517,10 +560,7 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup
 		if err != nil {
 			return err
 		}
-		out := item.out
-		if crossMajor {
-			out = &upgradeSQLHeader{out: out}
-		}
+		out := &dumpVersionHeader{out: item.out}
 		err = e.dataTool(ctx, file, out, "exec", "-i", created.ID, "pg_restore", "--create", "--file=-", "--restrict-key=AstilbaRestoreVerification")
 		closeErr := file.Close()
 		if err != nil || closeErr != nil {
@@ -586,18 +626,16 @@ func (e *Engine) checkRestoreOwnership(ctx context.Context, p backup.Policy) err
 }
 
 func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Application, image string, m *backup.Manifest) error {
-	versionNumber, dataDirectory := "180004", "/var/lib/postgresql/18/docker"
-	if image == domain.Postgres17Image {
-		versionNumber, dataDirectory = "170010", "/var/lib/postgresql/data"
-	} else if image != domain.PostgresImage {
+	release, ok := domain.PostgresReleaseOf(image)
+	if !ok {
 		return errors.New("unsupported PostgreSQL image")
 	}
 	version, err := e.pgQuery(ctx, id, a, "SHOW server_version_num")
-	if err != nil || strings.TrimSpace(string(version)) != versionNumber {
+	if err != nil || strings.TrimSpace(string(version)) != strconv.Itoa(release.Version) {
 		return errors.New("unsupported PostgreSQL version")
 	}
 	layout, err := e.pgQuery(ctx, id, a, "SHOW data_directory")
-	if err != nil || strings.TrimSpace(string(layout)) != dataDirectory {
+	if err != nil || strings.TrimSpace(string(layout)) != release.DataDirectory {
 		return errors.New("unsupported PostgreSQL layout")
 	}
 	// Restore is intentionally limited to unprivileged NOLOGIN roles. SQL from a

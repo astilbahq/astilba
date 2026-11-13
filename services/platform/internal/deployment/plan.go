@@ -546,17 +546,46 @@ func routeConfig(sets map[string]RouteSet, host func(unit uuid.UUID, service str
 	return RouteFile(out)
 }
 
-// An image change cannot reinterpret an existing PostgreSQL data directory.
+// PostgresVersionChange refuses an image change that would make a release open a data
+// directory it cannot read. A later release of the same major and line replaces one in
+// place; anything else needs the supported upgrade or new storage.
 func PostgresVersionChange(old, next domain.Specification) error {
 	for _, a := range old.Applications {
 		if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
 			continue
 		}
 		for _, b := range next.Applications {
-			if b.Postgres != nil && b.Source.Image != nil && len(b.Mounts) == 1 && a.Mounts[0].VolumeID == b.Mounts[0].VolumeID && *a.Source.Image != *b.Source.Image {
+			if b.Postgres == nil || b.Source.Image == nil || len(b.Mounts) != 1 || a.Mounts[0].VolumeID != b.Mounts[0].VolumeID || *a.Source.Image == *b.Source.Image {
+				continue
+			}
+			from, okFrom := domain.PostgresReleaseOf(*a.Source.Image)
+			to, okTo := domain.PostgresReleaseOf(*b.Source.Image)
+			if !okFrom || !okTo {
 				return errors.New("changing a PostgreSQL version requires a supported upgrade or new storage")
+			}
+			if err := to.OpensDataFrom(from); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+// PostgresUpdates lists the managed databases a plan moves to a later release in place,
+// keyed by application, with the release that wrote their data.
+func PostgresUpdates(old, next domain.Specification) map[uuid.UUID]domain.PostgresRelease {
+	out := map[uuid.UUID]domain.PostgresRelease{}
+	for _, a := range old.Applications {
+		if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
+			continue
+		}
+		for _, b := range next.Applications {
+			if b.Postgres != nil && b.Source.Image != nil && len(b.Mounts) == 1 && a.Mounts[0].VolumeID == b.Mounts[0].VolumeID && *a.Source.Image != *b.Source.Image {
+				if from, ok := domain.PostgresReleaseOf(*a.Source.Image); ok {
+					out[b.ID] = from
+				}
+			}
+		}
+	}
+	return out
 }

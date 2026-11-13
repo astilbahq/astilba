@@ -9,10 +9,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const Postgres17Image = "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4"
-
-const PostgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
-
 type Volume struct {
 	ID   uuid.UUID `json:"id"`
 	Name string    `json:"name"`
@@ -59,15 +55,24 @@ func ValidateNewDraft(next, applied Specification) error {
 	if err := ValidateNewCompose(next); err != nil {
 		return err
 	}
-	held := map[uuid.UUID]string{}
+	held, running := map[uuid.UUID]string{}, map[uuid.UUID]string{}
 	for _, a := range applied.Applications {
 		if a.Health != nil {
 			held[a.ID] = a.Health.Path
+		}
+		if a.Postgres != nil && a.Source.Image != nil {
+			running[a.ID] = *a.Source.Image
 		}
 	}
 	for _, a := range next.Applications {
 		if a.Health != nil && strings.Contains(a.Health.Path, "{{") && held[a.ID] != a.Health.Path {
 			return Invalid("applications.health")
+		}
+		// A database may stay on a retired release until it moves, but none starts on one.
+		if a.Postgres != nil && a.Source.Image != nil && running[a.ID] != *a.Source.Image {
+			if r, ok := PostgresReleaseOf(*a.Source.Image); ok && r.Retired() {
+				return Invalid("applications.postgres.retired")
+			}
 		}
 	}
 	return nil
@@ -237,7 +242,7 @@ func ValidateVisual(s Specification) error {
 			}
 		}
 		if a.ServiceKind() == "postgres" {
-			if a.Postgres == nil || !dbName.MatchString(a.Postgres.Database) || !dbName.MatchString(a.Postgres.Username) || a.Postgres.PasswordSecretVersionID == uuid.Nil || a.Source.Kind != "image" || a.Source.Image == nil || (*a.Source.Image != PostgresImage && *a.Source.Image != Postgres17Image) || len(a.Command) != 0 {
+			if a.Postgres == nil || !dbName.MatchString(a.Postgres.Database) || !dbName.MatchString(a.Postgres.Username) || a.Postgres.PasswordSecretVersionID == uuid.Nil || a.Source.Kind != "image" || a.Source.Image == nil || !knownPostgres(*a.Source.Image) || len(a.Command) != 0 {
 				return Invalid("applications.postgres")
 			}
 			if len(a.Mounts) != 1 || a.Mounts[0].Target != PostgresMount(*a.Source.Image) || a.Mounts[0].ReadOnly {
@@ -410,11 +415,4 @@ func Dependencies(s Specification, a Application) []uuid.UUID {
 		}
 	}
 	return out
-}
-
-func PostgresMount(image string) string {
-	if image == Postgres17Image {
-		return "/var/lib/postgresql/data"
-	}
-	return "/var/lib/postgresql"
 }

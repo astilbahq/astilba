@@ -78,7 +78,8 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 			}
 			// These are the existing custom-format archives: no new manifest or
 			// dump option is required to recover their database metadata.
-			if err := e.restorePostgres(ctx, policy, &backup.Run{ID: uuid.New(), TargetID: volumes[1]}, dir, m, "metadata-fixture-password"); err != nil {
+			release, _ := domain.PostgresReleaseOf(fixture.image)
+			if err := e.restorePostgres(ctx, policy, &backup.Run{ID: uuid.New(), TargetID: volumes[1]}, dir, m, "metadata-fixture-password", release, false); err != nil {
 				t.Fatal(err)
 			}
 			restored := start(volumes[1])
