@@ -178,7 +178,8 @@ apt_use() {
   install -d -m 0700 -o _apt -g root "$apt_root/lists/partial" "$apt_root/cache/archives/partial"
   apt_options=(-o "Dir::State::Lists=$apt_root/lists" -o "Dir::Cache=$apt_root/cache")
   if ((!$#)); then
-    find "$host_lists" -maxdepth 1 -type f ! -name lock -exec cp -p {} "$apt_root/lists/" \;
+    # Batched through sh, so that a failed copy fails find and stops the script.
+    find "$host_lists" -maxdepth 1 -type f ! -name lock -exec sh -c 'exec cp -p "$@" "$0"' "$apt_root/lists/" {} +
     return 0
   fi
   install -d -m 0755 "$apt_root/sources"

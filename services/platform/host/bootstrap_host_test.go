@@ -164,7 +164,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	if canonical := func(name string) bool { return strings.HasSuffix(name, ".ubuntu.com") }; ubuntuSources == "blocked" && !slices.ContainsFunc(archives, canonical) {
 		// CI's own archive step has already moved this runner to a mirror, during an outage of
 		// Canonical's archive, and blocking that mirror too would leave too few to fall back to.
-		fmt.Printf("::warning::Canonical's Ubuntu archive is unavailable, so this runner uses %s. This lane checked the bootstrap's install from the host's own sources, not its fallback.\n", strings.Join(archives, ", "))
+		fmt.Println("::warning::Canonical's Ubuntu archive is unavailable, so CI moved this runner to a mirror. This lane checked the bootstrap's install from the host's own sources, not its fallback.")
 		ubuntuSources = "host"
 	}
 	if ubuntuSources == "blocked" || ubuntuSources == "host" {
