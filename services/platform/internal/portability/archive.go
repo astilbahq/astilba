@@ -25,6 +25,8 @@ type Archive struct {
 	RequireMFA bool             `json:"requireMfa"`
 	CreatedAt  time.Time        `json:"createdAt"`
 	Tables     map[string][]Row `json:"tables"`
+	// Recovery is a recovery base's applied history, from RecoveryArchiveVersion on.
+	Recovery *RecoveryHistory `json:"recovery,omitzero"`
 }
 type Service struct{ Store *store.Store }
 

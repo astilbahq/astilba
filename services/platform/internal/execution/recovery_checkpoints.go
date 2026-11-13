@@ -6,6 +6,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"log/slog"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -70,27 +71,13 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passK
 	for _, unit := range units {
 		d.Participants = append(d.Participants, unit.Plan.ServerID)
 	}
-	raw, captured, err := portability.CaptureRecoveryAt(ctx, tx, ws)
+	capture, envelope, compressed, err := sealRecoveryBase(ctx, tx, keys, ws, d)
 	if err != nil {
 		return d, err
-	}
-	defer clear(raw)
-	// A base that doesn't compress and read back exactly is refused like one too large to seal,
-	// so the root fails before any host effect rather than retrying forever.
-	compressed, err := portability.CompressRecovery(raw)
-	if err != nil {
-		return d, errors.Join(errRecoverySize, err)
 	}
 	defer clear(compressed)
-	envelope, err := sealCheckpoint(keys, d, compressed)
-	if errors.Is(err, secretbroker.ErrTooLarge) {
-		return d, errRecoverySize
-	}
-	if err != nil {
-		return d, err
-	}
-	if len(envelope) > deployment.RecoveryEnvelopeLimit {
-		return d, errRecoverySize
+	if short := capture.CapturedAt.Sub(capture.WindowStart); short < portability.RecoveryShortWindow {
+		slog.WarnContext(ctx, "recovery checkpoint window is shorter than the suggested backup retention", "workspace", ws, "parent", root.Id, "days", int(short.Hours()/24))
 	}
 	// Admission checks the final serialized envelope, including base64 overhead,
 	// against the actual recovery reader.
@@ -112,7 +99,50 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passK
 		return d, err
 	}
 	// The root's primary holds the base until it closes the root (recovery_bases).
-	return d, q.RegisterRecoveryBase(ctx, db.RegisterRecoveryBaseParams{WorkspaceID: ws, ID: id, ParentID: root.Id, EnvironmentID: root.EnvironmentId, PrimaryServerID: root.ServerId, CapturedAt: captured})
+	return d, q.RegisterRecoveryBase(ctx, db.RegisterRecoveryBaseParams{WorkspaceID: ws, ID: id, ParentID: root.Id, EnvironmentID: root.EnvironmentId, PrimaryServerID: root.ServerId, CapturedAt: capture.CapturedAt, WindowStart: &capture.WindowStart})
+}
+
+// recoverySeals is how many times a base is sealed before it is refused. Each seal after the first
+// captures a window shorter by how far the last envelope overflowed, so a workspace whose history
+// compresses worse than the capture's estimate still gets a base inside the coordinate job's time.
+const recoverySeals = 3
+
+// sealRecoveryBase captures and seals a base whose envelope fits, shortening the window when it
+// doesn't. A base that doesn't compress and read back exactly is refused like one too large to
+// seal, so the root fails before any host effect rather than retrying forever.
+func sealRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UUID, d deployment.RecoveryDescriptor) (portability.RecoveryCapture, []byte, []byte, error) {
+	window := portability.RecoveryWindowTarget
+	for range recoverySeals {
+		capture, err := portability.CaptureRecoveryBase(ctx, tx, ws, window)
+		if err != nil {
+			return capture, nil, nil, err
+		}
+		compressed, err := portability.CompressRecovery(capture.Raw)
+		clear(capture.Raw)
+		capture.Raw = nil
+		if err != nil {
+			return capture, nil, nil, errors.Join(errRecoverySize, err)
+		}
+		envelope, err := sealCheckpoint(keys, d, compressed)
+		size := len(envelope)
+		if errors.Is(err, secretbroker.ErrTooLarge) {
+			// The sealer refuses before writing anything: estimate its envelope from the input.
+			size, err = len(compressed)*4/3+1024, nil
+		}
+		if err != nil {
+			clear(compressed)
+			return capture, nil, nil, err
+		}
+		if size <= deployment.RecoveryEnvelopeLimit {
+			return capture, envelope, compressed, nil
+		}
+		clear(compressed)
+		// Ledger entries are about as compressible as the rest of the base, so the window shrinks
+		// in proportion to the overflow, with a tenth to spare.
+		actual := capture.CapturedAt.Sub(capture.WindowStart)
+		window = time.Duration(float64(actual) * float64(deployment.RecoveryEnvelopeLimit) / float64(size) * 0.9)
+	}
+	return portability.RecoveryCapture{}, nil, nil, errRecoverySize
 }
 
 func reserveRecoveryGeneration(ctx context.Context, tx pgx.Tx, ws uuid.UUID, parent api.ExecutionCommand, phase string) (int64, error) {

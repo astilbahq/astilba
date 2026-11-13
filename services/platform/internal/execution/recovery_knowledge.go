@@ -163,6 +163,11 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 				continue
 			}
 			selected := maps.Clone(row)
+			if table == "execution_operations" {
+				if selected, err = endRecoveryGapWork(selected, source.History); err != nil {
+					return err
+				}
+			}
 			if keep, err := applyRecoveryProjection(table, selected, projections); err != nil {
 				return err
 			} else if keep {

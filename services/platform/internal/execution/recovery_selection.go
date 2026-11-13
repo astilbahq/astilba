@@ -1,0 +1,342 @@
+package execution
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"time"
+
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+// RecoverySetAside is a base recovery authenticated and doesn't use: one the newest base lists as
+// superseded, or one that agrees with it but is older.
+type RecoverySetAside struct {
+	Checkpoint uuid.UUID `json:"checkpoint"`
+	Parent     uuid.UUID `json:"parent"`
+	CapturedAt time.Time `json:"capturedAt"`
+	Reason     string    `json:"reason"`
+}
+
+// recoveryWindowError refuses a copy of the workspace older than the newest base's window. The
+// newest base holds the applied history since its window opened, and nothing older, so it can't
+// show that the copy is its ancestor rather than a diverged one.
+type recoveryWindowError struct {
+	Environment string
+	Since       time.Time
+	// Recorded is when the copy's runtime for Environment was recorded. Retired says the copy
+	// shows Environment live where the newest base no longer carries it.
+	Recorded time.Time
+	Retired  bool
+}
+
+func (e recoveryWindowError) Error() string {
+	day := func(t time.Time) string { return t.UTC().Format("2 January 2006") }
+	if e.Retired {
+		return fmt.Sprintf("this copy shows environment %s live, but it was retired before the newest recovery checkpoint's window, which covers changes since %s; use a management backup taken after %s", e.Environment, day(e.Since), day(e.Since))
+	}
+	return fmt.Sprintf("this copy's runtime for environment %s is from %s, and the newest recovery checkpoint covers changes since %s; use a management backup taken after %s", e.Environment, day(e.Recorded), day(e.Since), day(e.Since))
+}
+
+// stagedBase decodes a base the loader authenticated and staged in this transaction.
+func stagedBase(ctx context.Context, tx pgx.Tx, parent uuid.UUID) (portability.Archive, error) {
+	var raw []byte
+	// inline-sql: recovery session temporary table
+	if err := tx.QueryRow(ctx, `SELECT decoded FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=0`, parent).Scan(&raw); err != nil {
+		return portability.Archive{}, err
+	}
+	defer clear(raw)
+	return portability.DecodeRecovery(raw)
+}
+
+// selectRecoveryBases chooses what recovery reads from the bases it loaded. The newest by capture
+// time, N, is the one it merges: N carries every unfinished root with its children and everything
+// they name, so an older base adds nothing to merge, and an older copy of a row N dropped would
+// overwrite the restored database's newer one. The base of a root that still needs recovery is
+// kept for its environment's applied runtime. Every other base is set aside, after a comparison
+// with N unless N lists it as superseded: N's management captured or recovered every base it
+// lists, so they are its ancestors, while an unlisted one may come from a diverged management.
+// Bases are compared only with N, whose applied history holds any older head of its own lineage.
+func selectRecoveryBases(ctx context.Context, tx pgx.Tx, ws uuid.UUID, out *recoverySource) error {
+	if len(out.Bases) == 0 {
+		return errors.New("no compatible base recovery capsule was supplied")
+	}
+	newest := newestRecoveryBase(out.Bases)
+	a, err := stagedBase(ctx, tx, newest.Parent)
+	if err != nil {
+		return err
+	}
+	if a.Workspace != ws {
+		return errors.New("no compatible base recovery capsule was supplied")
+	}
+	origin, err := buildAppliedOrigin(a, newest.Parent)
+	if err != nil {
+		return err
+	}
+	out.Origins = appliedOrigins{}
+	if err = out.Origins.add(origin); err != nil {
+		return err
+	}
+	out.Origins.Newest = origin
+	out.Archive, out.History = a, a.Recovery
+	needed := map[uuid.UUID]bool{}
+	for _, host := range out.Hosts {
+		if host.ActiveParent != uuid.Nil {
+			needed[host.ActiveParent] = true
+		}
+	}
+	for _, row := range a.Tables["execution_operations"] {
+		c, err := recoveryValue[api.ExecutionCommand](row, "command")
+		if err != nil {
+			return err
+		}
+		state, err := recoveryValue[api.ExecutionState](row, "state")
+		if err != nil {
+			return err
+		}
+		if c.Kind == "crosshost" && c.ParentId == nil && !Terminal(state) {
+			needed[c.Id] = true
+		}
+	}
+	for _, b := range out.Bases {
+		if b.ID == newest.ID {
+			continue
+		}
+		parent, listed := newest.Supersedes[b.ID]
+		vouched := listed && parent == b.Parent
+		if vouched && !needed[b.Parent] {
+			out.SetAside = append(out.SetAside, RecoverySetAside{Checkpoint: b.ID, Parent: b.Parent, CapturedAt: b.CapturedAt, Reason: "superseded by the newest checkpoint"})
+			continue
+		}
+		older, err := stagedBase(ctx, tx, b.Parent)
+		if err != nil {
+			return err
+		}
+		o, err := buildAppliedOrigin(older, b.Parent)
+		if err != nil {
+			return err
+		}
+		if !vouched {
+			if err = compareWithNewest(origin, o); err != nil {
+				return err
+			}
+		}
+		if needed[b.Parent] {
+			if err = out.Origins.add(o); err != nil {
+				return err
+			}
+			continue
+		}
+		out.SetAside = append(out.SetAside, RecoverySetAside{Checkpoint: b.ID, Parent: b.Parent, CapturedAt: b.CapturedAt, Reason: "older than the newest checkpoint, which agrees with it"})
+	}
+	return nil
+}
+
+// newestRecoveryBase is N: the base captured last among those no other loaded base lists as
+// superseded. Capture times come from the database clock, and a base a later one lists is older
+// whatever its time says, as when a recovered management's clock runs behind the failed one's.
+func newestRecoveryBase(bases []loadedBase) loadedBase {
+	listed := map[uuid.UUID]bool{}
+	for _, b := range bases {
+		for id := range b.Supersedes {
+			listed[id] = true
+		}
+	}
+	candidates := []loadedBase{}
+	for _, b := range bases {
+		if !listed[b.ID] {
+			candidates = append(candidates, b)
+		}
+	}
+	// Bases that list each other in a cycle come from no single lineage; capture time decides,
+	// and the comparison with the newest refuses them if they diverge.
+	if len(candidates) == 0 {
+		candidates = bases
+	}
+	newest := candidates[0]
+	for _, b := range candidates[1:] {
+		if b.CapturedAt.After(newest.CapturedAt) || b.CapturedAt.Equal(newest.CapturedAt) && bytes.Compare(b.ID[:], newest.ID[:]) > 0 {
+			newest = b
+		}
+	}
+	return newest
+}
+
+// compareWithNewest refuses an older base whose applied history N doesn't continue.
+func compareWithNewest(newest, older *appliedOrigin) error {
+	for env, tuple := range older.Environments {
+		head, carried := newest.Environments[env]
+		if !carried {
+			continue
+		}
+		order, err := compareApplied(newest, head, older, tuple)
+		if err != nil {
+			return err
+		}
+		if order < 0 {
+			return errors.New("an older recovery checkpoint holds a newer applied runtime than the newest one, so they come from diverged managements")
+		}
+	}
+	return nil
+}
+
+// refuseRetiredBeyondWindow refuses a restored database that shows an environment live that the
+// newest base doesn't carry. A base carries every standard environment and every preview that is
+// live or changed inside its window, so such an environment was retired before the window opened,
+// and the database is older than the window. An environment created after the base is the
+// database's own.
+func refuseRetiredBeyondWindow(before portability.Archive, source recoverySource) error {
+	if source.History == nil {
+		return nil
+	}
+	carried := map[uuid.UUID]bool{}
+	for _, e := range source.History.Environments {
+		carried[e.Environment] = true
+	}
+	operations := map[uuid.UUID]portability.Row{}
+	for _, row := range before.Tables["execution_operations"] {
+		id, err := recoveryValue[uuid.UUID](row, "id")
+		if err != nil {
+			return err
+		}
+		operations[id] = row
+	}
+	open := map[uuid.UUID]bool{}
+	for _, row := range before.Tables["preview_requests"] {
+		env, err := recoveryValue[*uuid.UUID](row, "environment_id")
+		if err != nil {
+			return err
+		}
+		state, err := recoveryValue[string](row, "state")
+		if err != nil {
+			return err
+		}
+		if env != nil && state != "deleted" {
+			open[*env] = true
+		}
+	}
+	for _, row := range before.Tables["environments"] {
+		id, err := recoveryValue[uuid.UUID](row, "id")
+		if err != nil {
+			return err
+		}
+		created, err := recoveryValue[time.Time](row, "created_at")
+		if err != nil {
+			return err
+		}
+		if carried[id] || !created.Before(source.Archive.CreatedAt) {
+			continue
+		}
+		purpose, err := recoveryValue[string](row, "purpose")
+		if err != nil {
+			return err
+		}
+		head, err := recoveryValue[*uuid.UUID](row, "runtime_operation_id")
+		if err != nil {
+			return err
+		}
+		live := purpose != "preview" || open[id]
+		if head != nil {
+			outcome, err := portability.ReadRuntimeOutcome(operations[*head])
+			if err != nil {
+				return err
+			}
+			live = live || outcome.Kind == "applied"
+		}
+		if live {
+			name, _ := recoveryValue[string](row, "name")
+			return recoveryWindowError{Environment: name, Since: source.History.WindowStart, Retired: true}
+		}
+	}
+	return nil
+}
+
+// endRecoveryGapWork gives an operation the restored database holds unfinished the final state the
+// newest base records for it, from its applied history or its settled list. The base carries every
+// unfinished operation as a row, so one it records only there ended before it was captured. Only
+// recorded states are applied, never inferred ones: the database may be newer than the base, so
+// one that progressed further conflicts, and one the base records nothing for is left to fencing.
+func endRecoveryGapWork(row portability.Row, history *portability.RecoveryHistory) (portability.Row, error) {
+	if history == nil {
+		return row, nil
+	}
+	state, err := recoveryValue[api.ExecutionState](row, "state")
+	if err != nil || Terminal(state) {
+		return row, err
+	}
+	id, err := recoveryValue[uuid.UUID](row, "id")
+	if err != nil {
+		return nil, err
+	}
+	final := portability.Row{}
+	found := false
+	for _, e := range history.Applied {
+		if e.Operation != id {
+			continue
+		}
+		identity, err := portability.CommandIdentity(row["command"], portability.CommandIdentityVersion)
+		if err != nil {
+			return nil, portability.ErrArchive
+		}
+		if identity != e.Identity {
+			return nil, errors.New("execution identity conflicts with the newest recovery checkpoint")
+		}
+		recoverySet(final, "state", e.State)
+		recoverySet(final, "report_sequence", e.Sequence)
+		e.Runtime().Set(final)
+		found = true
+	}
+	for _, s := range history.Settled {
+		if s.Operation == id {
+			recoverySet(final, "state", s.State)
+			recoverySet(final, "report_sequence", s.Sequence)
+			recoverySet(final, "runtime_outcome", s.Outcome)
+			recoverySet(final, "runtime_plan_id", s.RuntimePlan)
+			found = true
+		}
+	}
+	if !found {
+		return row, nil
+	}
+	ended, err := recoveryValue[api.ExecutionState](final, "state")
+	if err != nil || !Terminal(ended) {
+		return row, err
+	}
+	sequence, err := recoveryValue[int64](row, "report_sequence")
+	if err != nil {
+		return nil, err
+	}
+	last, err := recoveryValue[int64](final, "report_sequence")
+	if err != nil {
+		return nil, err
+	}
+	if sequence > last {
+		return nil, errors.New("execution outcome conflicts with the newest recovery checkpoint")
+	}
+	outcome, _, err := portability.MergeRuntimeOutcomes(row, final)
+	if err != nil {
+		return nil, err
+	}
+	out := maps.Clone(row)
+	out["state"], out["report_sequence"] = final["state"], final["report_sequence"]
+	outcome.Set(out)
+	return out, nil
+}
+
+// registerLoadedBases records every base recovery loaded that this database doesn't know, since a
+// host holds it and a later base must list it. A root recovery takes over keeps its base open.
+func registerLoadedBases(ctx context.Context, q *db.Queries, ws uuid.UUID, source recoverySource, roots map[uuid.UUID]recoveringRoot) error {
+	for _, b := range source.Bases {
+		_, resumed := roots[b.Parent]
+		if err := q.RegisterRecoveredBase(ctx, db.RegisterRecoveredBaseParams{WorkspaceID: ws, ID: b.ID, ParentID: b.Parent, EnvironmentID: b.Environment, PrimaryServerID: b.Primary, CapturedAt: b.CapturedAt, WindowStart: b.WindowStart, Open: resumed}); err != nil {
+			return err
+		}
+	}
+	return nil
+}

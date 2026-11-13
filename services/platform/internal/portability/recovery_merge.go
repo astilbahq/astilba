@@ -22,7 +22,7 @@ func DecodeRecovery(raw []byte) (Archive, error) {
 		return Archive{}, ErrArchive
 	}
 	a, err := decodeArchiveMode(raw, true)
-	if err == nil && (a.Version < 5 || a.Version > ArchiveVersion) {
+	if err == nil && a.Version < 5 {
 		return a, ErrArchive
 	}
 	return a, err

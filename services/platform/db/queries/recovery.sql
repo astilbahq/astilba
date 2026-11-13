@@ -112,13 +112,15 @@ VALUES(@id,@workspace_id,@parent_id,0,@descriptor,@envelope);
 
 -- name: RegisterRecoveryBase :exec
 -- The base's root is still being coordinated, so its primary hasn't closed it.
-INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
-VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at);
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at,@window_start);
 
 -- name: RegisterRecoveredBase :exec
--- A root recovery takes over is being coordinated again, so its primary hasn't closed its base.
-INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
-VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at)
+-- A base a recovery loaded that this database didn't know. A host holds it, so later bases list it.
+-- The base of a root recovery takes over stays open until its primary closes the root again; any
+-- other is closed now, which a host did no later.
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start,closed_at)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at,sqlc.narg(window_start),CASE WHEN @open::boolean THEN NULL ELSE clock_timestamp() END)
 ON CONFLICT DO NOTHING;
 
 -- name: CloseRecoveryBase :exec
@@ -344,3 +346,36 @@ WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: SetRecoveredOperationVisualPlan :exec
 UPDATE execution_operations SET visual_plan_id = @visual_plan_id WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: SupersededRecoveryBases :many
+-- The bases a host may still hold: an agent keeps a base until its primary closes the root, and
+-- then the two latest closed in its environment. Listing four gives room for an agent and this
+-- management to order closes differently, which a close sent after a recovery can do.
+SELECT b.id,b.parent_id,b.captured_at FROM (
+ SELECT r.id,r.parent_id,r.captured_at,r.closed_at,row_number() OVER (PARTITION BY r.environment_id,r.primary_server_id,r.closed_at IS NULL ORDER BY r.closed_at DESC,r.captured_at DESC,r.id) AS n
+ FROM recovery_bases r WHERE r.workspace_id = @workspace_id
+) b WHERE b.closed_at IS NULL OR b.n <= 4
+ORDER BY b.id;
+
+-- name: NewestRecoveryBase :one
+-- The newest base, whose window decides which management backups cross-host recovery can use.
+SELECT captured_at,window_start FROM recovery_bases WHERE workspace_id = @workspace_id
+ORDER BY captured_at DESC,id DESC LIMIT 1;
+
+-- name: FillRecoveredRuntimeTime :exec
+-- A merged row takes the time its change was recorded from the base's applied history, unless it
+-- has one.
+UPDATE execution_operations SET runtime_recorded_at = COALESCE(runtime_recorded_at, @recorded_at::timestamptz)
+WHERE workspace_id = @workspace_id AND id = @id AND runtime_outcome IS NOT NULL;
+
+-- name: KeepRecoveredRuntimeHistory :exec
+-- An applied-history entry whose operation row recovery didn't merge, so later bases carry it.
+INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
+SELECT @workspace_id,@operation_id,@environment_id,@generation,@recorded_at,@entry
+WHERE NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.id = @operation_id)
+ON CONFLICT DO NOTHING;
+
+-- name: RecoveredRuntimeHistory :many
+SELECT entry FROM recovered_runtime_history h WHERE h.workspace_id = @workspace_id
+AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = h.workspace_id AND o.id = h.operation_id)
+ORDER BY h.environment_id,h.generation;

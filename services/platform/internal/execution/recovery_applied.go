@@ -25,6 +25,9 @@ type appliedEvidence struct {
 	State                            api.ExecutionState
 	Runtime                          portability.RuntimeOutcome
 	Applied                          appliedTuple
+	Environment                      uuid.UUID
+	// Recorded is when the change was recorded, or for a row, when its operation was created.
+	Recorded time.Time
 }
 
 // Origins retain bounded evidence from each authenticated base independently.
@@ -34,10 +37,18 @@ type appliedOrigin struct {
 	At           time.Time
 	Operations   map[uuid.UUID]appliedEvidence
 	Environments map[uuid.UUID]appliedTuple
+	Names        map[uuid.UUID]string
+	// Window is a base's recovery section, which says where each environment's applied history
+	// starts, or nil when the origin holds every change, as a database or an older base does.
+	Window *portability.RecoveryHistory
+	Starts map[uuid.UUID]portability.RecoveryEnvironment
 }
 
+// appliedOrigins are the origins recovery reads: the newest base, and the bases of roots it
+// resumes, each compared with the newest when it was loaded.
 type appliedOrigins struct {
 	Values  []*appliedOrigin
+	Newest  *appliedOrigin
 	Records int
 }
 
@@ -79,7 +90,7 @@ func appliedFrom(a portability.Archive, env uuid.UUID) (appliedTuple, error) {
 }
 
 func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin, error) {
-	out := &appliedOrigin{Parent: parent, At: a.CreatedAt, Operations: map[uuid.UUID]appliedEvidence{}, Environments: map[uuid.UUID]appliedTuple{}}
+	out := &appliedOrigin{Parent: parent, At: a.CreatedAt, Operations: map[uuid.UUID]appliedEvidence{}, Environments: map[uuid.UUID]appliedTuple{}, Names: map[uuid.UUID]string{}, Starts: map[uuid.UUID]portability.RecoveryEnvironment{}}
 	operations := map[uuid.UUID]portability.Row{}
 	plans := map[uuid.UUID]jsontext.Value{}
 	generations := map[uuid.UUID]map[int64]uuid.UUID{}
@@ -123,7 +134,9 @@ func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin
 		if err != nil {
 			return nil, portability.ErrArchive
 		}
-		e := appliedEvidence{Identity: identity, Generation: operationGeneration, Controller: generation(c.ControllerGeneration), Sequence: sequence, State: state}
+		// Only a refusal's message reads it, so a row without one still compares.
+		created, _ := recoveryValue[time.Time](row, "created_at")
+		e := appliedEvidence{Identity: identity, Generation: operationGeneration, Controller: generation(c.ControllerGeneration), Sequence: sequence, State: state, Recorded: created}
 		if sequence < 0 || e.Controller < 0 {
 			return nil, portability.ErrArchive
 		}
@@ -146,6 +159,9 @@ func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin
 		parentID, err := recoveryValue[*uuid.UUID](row, "parent_id")
 		if err != nil {
 			return nil, err
+		}
+		if env != nil {
+			e.Environment = *env
 		}
 		if workspace == a.Workspace && env != nil && c.Id == id && c.ServerId == server && c.Kind == kind && sameID(c.ParentId, parentID) && c.EnvironmentId == *env && c.Generation == operationGeneration && operationGeneration > 0 {
 			if c.Kind != "network" {
@@ -174,10 +190,16 @@ func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin
 		}
 		out.Operations[id] = e
 	}
+	if err := addAppliedHistory(out, a.Recovery, generations); err != nil {
+		return nil, err
+	}
 	for _, row := range a.Tables["environments"] {
 		env, err := recoveryValue[uuid.UUID](row, "id")
 		if err != nil {
 			return nil, err
+		}
+		if name, err := recoveryValue[string](row, "name"); err == nil {
+			out.Names[env] = name
 		}
 		tuple, err := appliedFrom(a, env)
 		if err != nil {
@@ -192,6 +214,60 @@ func buildAppliedOrigin(a portability.Archive, parent uuid.UUID) (*appliedOrigin
 		out.Environments[env] = tuple
 	}
 	return out, nil
+}
+
+// addAppliedHistory adds the applied history a base carries without the rows. A carried row's own
+// evidence stands; an entry stands for the row the base left out. The entry's applied plan was
+// read back from the plan management stored when it captured the base, as buildAppliedOrigin reads
+// a row's, so an entry and its row agree wherever the row's applied runtime is valid.
+func addAppliedHistory(out *appliedOrigin, history *portability.RecoveryHistory, generations map[uuid.UUID]map[int64]uuid.UUID) error {
+	if history == nil {
+		return nil
+	}
+	if !history.WindowStart.IsZero() {
+		out.Window = history
+		for _, start := range history.Environments {
+			out.Starts[start.Environment] = start
+		}
+	}
+	for _, entry := range history.Applied {
+		if _, carried := out.Operations[entry.Operation]; carried {
+			continue
+		}
+		if generations[entry.Environment] == nil {
+			generations[entry.Environment] = map[int64]uuid.UUID{}
+		}
+		if prior, exists := generations[entry.Environment][entry.Generation]; exists && prior != entry.Operation {
+			return errors.New("equal-generation operation identities conflict")
+		}
+		generations[entry.Environment][entry.Generation] = entry.Operation
+		e := appliedEvidence{Identity: entry.Identity, Generation: entry.Generation, Controller: entry.Controller, Sequence: entry.Sequence, State: api.ExecutionState(entry.State), Runtime: entry.Runtime(), Environment: entry.Environment, Recorded: entry.RecordedAt}
+		switch {
+		case entry.Outcome == "removed" && Terminal(e.State):
+			e.Applied, e.Outcome = appliedTuple{Operation: entry.Operation}, Hash(e.Runtime)
+		case entry.Outcome == "applied" && entry.Revision != nil && e.State == "succeeded" && e.Sequence > 0:
+			e.Applied, e.Outcome, e.PlanHash = appliedTuple{*entry.Revision, *entry.RuntimePlan, entry.Operation}, Hash(e.Runtime), entry.PlanHash
+		}
+		out.Operations[entry.Operation] = e
+	}
+	return nil
+}
+
+// beyondWindow reports an older head the origin can't hold because it is older than the origin's
+// window: below where the history of its environment starts.
+func (o *appliedOrigin) beyondWindow(old appliedEvidence, names map[uuid.UUID]string) error {
+	if o.Window == nil {
+		return nil
+	}
+	start, carried := o.Starts[old.Environment]
+	if !carried || start.Whole || old.Generation >= start.Floor {
+		return nil
+	}
+	name := names[old.Environment]
+	if name == "" {
+		name = o.Names[old.Environment]
+	}
+	return recoveryWindowError{Environment: name, Since: o.Window.WindowStart, Recorded: old.Recorded}
 }
 
 func committedApplied(c api.ExecutionCommand, e appliedEvidence) (appliedTuple, string, string) {
@@ -289,60 +365,24 @@ func compareApplied(candidate *appliedOrigin, next appliedTuple, current *applie
 		return -order, err
 	}
 	ancestor, exists := candidate.Operations[old.Operation]
+	if !exists {
+		if err := candidate.beyondWindow(b, current.Names); err != nil {
+			return 0, err
+		}
+	}
 	if !exists || ancestor.Applied != old || ancestor.Identity != b.Identity || ancestor.Outcome != b.Outcome || ancestor.PlanHash != b.PlanHash || ancestor.Runtime != b.Runtime || ancestor.Runtime.Kind != "removed" && (ancestor.State != b.State || ancestor.Sequence < b.Sequence) || ancestor.Controller < b.Controller || a.Controller < ancestor.Controller {
 		return 0, errors.New("applied runtime histories diverge or omit the committed predecessor")
 	}
 	return 1, nil
 }
 
-func (p *appliedOrigins) add(a portability.Archive, parent uuid.UUID) error {
-	p.Records += len(a.Tables["execution_operations"]) + len(a.Tables["environments"])
+func (p *appliedOrigins) add(origin *appliedOrigin) error {
+	p.Records += len(origin.Operations) + len(origin.Environments)
 	if p.Records > maxAppliedOriginRecords {
 		return errors.New("recovery applied-history evidence exceeds its aggregate limit")
 	}
-	origin, err := buildAppliedOrigin(a, parent)
-	if err != nil {
-		return err
-	}
-	for _, prior := range p.Values {
-		for env, next := range origin.Environments {
-			old, exists := prior.Environments[env]
-			if !exists {
-				continue
-			}
-			_, err := compareApplied(origin, next, prior, old)
-			if err != nil {
-				return err
-			}
-		}
-	}
 	p.Values = append(p.Values, origin)
 	return nil
-}
-
-func (p appliedOrigins) latest(env uuid.UUID) (*appliedOrigin, error) {
-	var selected *appliedOrigin
-	for _, origin := range p.Values {
-		next, exists := origin.Environments[env]
-		if !exists {
-			continue
-		}
-		if selected == nil {
-			selected = origin
-			continue
-		}
-		order, err := compareApplied(origin, next, selected, selected.Environments[env])
-		if err != nil {
-			return nil, err
-		}
-		if order > 0 || order == 0 && origin.At.After(selected.At) {
-			selected = origin
-		}
-	}
-	if selected == nil {
-		return nil, errors.New("applied runtime has no authenticated source base")
-	}
-	return selected, nil
 }
 
 func (p appliedOrigins) origin(env uuid.UUID, tuple appliedTuple, parent uuid.UUID) (*appliedOrigin, error) {

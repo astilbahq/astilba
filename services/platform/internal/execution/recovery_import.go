@@ -34,6 +34,8 @@ type RecoveryPreview struct {
 	Handovers      map[uuid.UUID]deployment.RecoveryHandover `json:"handovers"`
 	Applied        bool                                      `json:"applied"`
 	AlreadyApplied bool                                      `json:"alreadyApplied"`
+	// SetAside names the checkpoints recovery authenticated and doesn't use.
+	SetAside []RecoverySetAside `json:"setAside"`
 }
 
 type recoveringRoot struct {
@@ -86,6 +88,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err != nil {
 		return out, err
 	}
+	out.SetAside = source.SetAside
 	if err = s.recoverSavedCheckpoints(ctx, tx, keys, before, &source); err != nil {
 		return out, err
 	}
@@ -191,6 +194,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = portability.MergeRecovery(ctx, tx, source.Archive, in.OwnerID); err != nil {
 		return out, err
 	}
+	if err = portability.StoreRecoveredHistory(ctx, tx, in.WorkspaceID, source.History); err != nil {
+		return out, err
+	}
 	for env, projection := range source.Projections {
 		if projection.tuple.Operation == uuid.Nil || projection.origin.Operations[projection.tuple.Operation].Runtime.Kind != "removed" {
 			continue
@@ -211,6 +217,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 		return out, err
 	}
 	if err = s.restoreRecoveryRoots(ctx, tx, in.WorkspaceID, roots, in.ExpectedState, inputHash, in.OwnerID); err != nil {
+		return out, err
+	}
+	if err = registerLoadedBases(ctx, q, in.WorkspaceID, source, roots); err != nil {
 		return out, err
 	}
 	if err = s.restoreRecoveryProofs(ctx, tx, in.WorkspaceID, roots, source.Hosts); err != nil {
@@ -358,6 +367,9 @@ func recoveryControllers(before portability.Archive, source recoverySource) (map
 }
 
 func validateRecoveryCompatibility(before portability.Archive, source recoverySource, roots map[uuid.UUID]recoveringRoot) error {
+	if err := refuseRetiredBeyondWindow(before, source); err != nil {
+		return err
+	}
 	current, err := buildAppliedOrigin(before, uuid.Nil)
 	if err != nil {
 		return err

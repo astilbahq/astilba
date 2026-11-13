@@ -710,6 +710,15 @@ type Project struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type RecoveredRuntimeHistory struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Generation    int64     `json:"generation"`
+	RecordedAt    time.Time `json:"recorded_at"`
+	Entry         []byte    `json:"entry"`
+}
+
 type RecoveryBasis struct {
 	WorkspaceID     uuid.UUID  `json:"workspace_id"`
 	ID              uuid.UUID  `json:"id"`
@@ -718,6 +727,7 @@ type RecoveryBasis struct {
 	PrimaryServerID uuid.UUID  `json:"primary_server_id"`
 	CapturedAt      time.Time  `json:"captured_at"`
 	ClosedAt        *time.Time `json:"closed_at"`
+	WindowStart     *time.Time `json:"window_start"`
 }
 
 type RecoveryCode struct {
