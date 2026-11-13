@@ -109,10 +109,18 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if _, err = tx.Exec(ctx, `CREATE TEMP TABLE recovery_selected_roots(id uuid PRIMARY KEY) ON COMMIT DROP; CREATE TEMP TABLE recovery_incoming_grants(endpoint_id uuid NOT NULL,server_id uuid NOT NULL,unit_id uuid NOT NULL,PRIMARY KEY(endpoint_id,server_id,unit_id)) ON COMMIT DROP; CREATE TEMP TABLE recovery_standalone_restrictions(id uuid PRIMARY KEY,source jsonb) ON COMMIT DROP; INSERT INTO recovery_standalone_restrictions(id) SELECT id FROM recovery_input_proofs WHERE parent_id='00000000-0000-0000-0000-000000000000'`); err != nil {
 		return out, err
 	}
+	// The input is what the hosts supplied and the chains of the roots recovery takes over. Other
+	// chains it loaded can come from management's own checkpoints, as for an unfinished root of a
+	// revoked primary that the newest base doesn't carry; applying fences that root, so a retry
+	// wouldn't load its chain again and couldn't recognise the recovery it repeats.
+	recovered := map[uuid.UUID]deployment.RecoveryDescriptor{}
+	for parent, root := range roots {
+		recovered[parent] = root.Descriptor
+	}
 	inputHash := Hash(struct {
 		Hosts map[uuid.UUID]deployment.RecoveryEvidence
 		Roots map[uuid.UUID]deployment.RecoveryDescriptor
-	}{source.Hosts, source.Roots})
+	}{source.Hosts, recovered})
 	if in.ExpectedState != "" && in.ExpectedState != out.StateHash {
 		if repeated, err := s.repeatedRecovery(ctx, tx, in, inputHash, roots, &out); err != nil {
 			return out, err
