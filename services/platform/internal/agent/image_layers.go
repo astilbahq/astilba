@@ -57,7 +57,7 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 			return cost, headers, err
 		}
 		headers++
-		if err = usualEntry(hdr, "a layer"); err != nil {
+		if err = usualEntry(hdr); err != nil {
 			return cost, headers, err
 		}
 		// Until the layer is unpacked, Docker holds each entry's name in two maps, and a
@@ -108,8 +108,9 @@ var errLayerHeaders = unmeasurableImage("a layer has a file with more than 64 Ki
 // usualEntry refuses tar features images do not use, rather than measure what Docker does with
 // them: entry types other than files, links, directories, devices and pipes, sparse files, PAX
 // records other than names, owners, times, sizes and extended attributes, more than a few of
-// them, and AUFS's metadata. subject says where the entry is, for the note.
-func usualEntry(h *tar.Header, subject string) error {
+// them, and AUFS's metadata.
+func usualEntry(h *tar.Header) error {
+	const subject = "a layer"
 	switch h.Typeflag {
 	case tar.TypeReg, tar.TypeLink, tar.TypeSymlink, tar.TypeChar, tar.TypeBlock, tar.TypeDir, tar.TypeFifo:
 	default:

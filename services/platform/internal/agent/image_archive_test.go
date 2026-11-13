@@ -414,6 +414,18 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 			image.image([]string{layer}, []string{layer})
 			return image.archive(t)
 		},
+		// Docker keeps every member's name while importing, with any PAX block behind it.
+		"archive member with PAX headers": func() []byte {
+			image := valid()
+			var out bytes.Buffer
+			w := tar.NewWriter(&out)
+			data := []byte("x")
+			sum := sha256.Sum256(data)
+			_ = w.WriteHeader(&tar.Header{Name: "blobs/sha256/" + hex.EncodeToString(sum[:]), Typeflag: tar.TypeReg, Mode: 0444, Size: 1, Uname: strings.Repeat("u", 1000)})
+			_, _ = w.Write(data)
+			_ = w.Flush()
+			return append(out.Bytes(), image.archive(t)...)
+		},
 		"AUFS metadata": func() []byte {
 			image := valid()
 			layer := image.blob(gzipOf(t, tarOf(t, testFile{".wh..wh.plnk/f", 1})))

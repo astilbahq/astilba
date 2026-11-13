@@ -130,7 +130,7 @@ Source operations have a 256 MiB tmpfs workspace and a 512 MiB memory limit. Bui
 
 It streams the archive to Docker, holding each member's header until its size is counted and the archive's end until the whole image is. A refusal fails the stream, so Docker never imports a refused image. It also refuses archives with features images do not need, rather than measure what Docker does with them. The refusal note names the feature. Refused features:
 
-- anything other than BuildKit's OCI layout;
+- anything other than BuildKit's OCI layout, including archive members with PAX or GNU extended headers;
 - blobs that differ from their digest;
 - manifests that name layers or documents the archive lacks;
 - layers compressed other than with gzip or zstd;
