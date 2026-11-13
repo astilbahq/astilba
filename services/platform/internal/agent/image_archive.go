@@ -185,7 +185,7 @@ func (g *imageArchiveGate) cause(err error, why string) error {
 	switch {
 	case g.failed != nil:
 		return g.failed
-	case errors.As(err, &refused), errors.Is(err, errImageOverBytes), errors.Is(err, errImageOverEntries):
+	case errors.As(err, &refused), errors.As(err, new(*layerMetadataRefused)), errors.Is(err, errImageOverBytes), errors.Is(err, errImageOverEntries):
 		return err
 	}
 	return unmeasurableImage(why)
@@ -269,6 +269,9 @@ func inspectImageArchive(gate *imageArchiveGate, limit imageLoadLimit) error {
 		// name says or the archive is refused.
 		digest := sha256.New()
 		member, err := inspectImageMember(io.TeeReader(releasing{tr, gate}, digest), gate, hdr.Size, limit.less(read))
+		if metadata := new(layerMetadataRefused); errors.As(err, &metadata) {
+			return metadata.note("sha256:" + match[2])
+		}
 		if err != nil {
 			return err
 		}

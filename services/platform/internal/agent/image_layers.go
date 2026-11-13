@@ -71,7 +71,7 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 			metadata += raw.n - before
 		}
 		if metadata > layerMetadataBytes {
-			return cost, headers, unmeasurableImage("a layer has more file metadata than Docker can hold while unpacking it")
+			return cost, headers, &layerMetadataRefused{metadata}
 		}
 		entry, err := paths.entry(hdr)
 		if err != nil {
@@ -99,6 +99,16 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 	}
 	cost.Bytes += n
 	return cost, headers, limit.check(cost)
+}
+
+// layerMetadataRefused is a layer with more names and headers than Docker should hold in memory
+// while unpacking it. The archive's inspection names the layer in the note.
+type layerMetadataRefused struct{ metadata int64 }
+
+func (e *layerMetadataRefused) Error() string { return "a layer has too much file metadata" }
+
+func (e *layerMetadataRefused) note(layer string) error {
+	return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: its layer %s has at least %d MiB of file names and directory headers, which Docker holds in memory while unpacking it, and the limit is %d MiB a layer. Split large copies, such as dependency directories, across several layers, or build to a registry instead. Existing workloads are unchanged.", truncated(layer, 19), e.metadata>>20, layerMetadataBytes>>20)}
 }
 
 // errLayerHeaders refuses an entry with more header data than any image needs, which also

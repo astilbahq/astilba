@@ -142,7 +142,7 @@ It streams the archive to Docker, holding each member's header until its size is
 - more than 64 KiB of headers for one file;
 - paths longer than Linux allows;
 - a layer that turns a directory it writes into a file or link, or the reverse, or writes through a link it creates (a file written twice is accepted, as flattened base images contain them);
-- more than 128 MiB of names and directory headers in one layer, which Docker holds in memory while unpacking it.
+- more than 128 MiB of names and directory headers in one layer, which Docker holds in memory while unpacking it. A single layer of a few hundred thousand files can reach this; split large copies, such as dependency directories, across several layers, or build to a registry.
 
 Registry builds are not loaded locally, and pulling them for a deployment is not bounded this way yet. Assignments expire after 30 minutes by default; a custom lifetime includes time spent queued and is frozen when the operation is created. Source operations retain their existing 30-minute lifetime. Custom budgets and watch paths require an agent advertising build-controls support. Older agents retain default Dockerfile builds; update them before selecting the new controls. New agents omit the capability extension until the controller advertises support in its `Astilba-Agent-Features` response header, keeping older controllers usable. A newly enrolled agent advertises build controls on its next heartbeat. Cancellation and expiry still reach an assigned agent that may hold the command without provider access or fresh credentials.
 

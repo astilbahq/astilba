@@ -558,8 +558,8 @@ func TestImageArchiveRefusesMoreMetadataThanDockerHolds(t *testing.T) {
 	image.image([]string{layer}, []string{layer})
 	_, err := inspectTest(image.archive(t), imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries})
 	var refused *imageLoadRefused
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "metadata") {
-		t.Fatal("not refused for its metadata", err)
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "its layer sha256:"+strings.TrimPrefix(layer, "sha256:")[:12]) {
+		t.Fatal("not refused for its layer's metadata", err)
 	}
 }
 
