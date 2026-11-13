@@ -394,10 +394,17 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				r.Note = boundedNote("Imported source needs a change at " + strings.Join(refused.Fields, ", ") + ": " + refused.Message)
 				break
 			}
-			id, err := s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, current, actor, spec)
+			var id uuid.UUID
+			why, err := refusedChange(ctx, tx, func(tx pgx.Tx) (err error) {
+				id, err = s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, current, actor, spec)
+				return err
+			})
 			if err != nil {
+				return err
+			}
+			if why != "" {
 				r.State = "failed"
-				r.Note = "Imported source is invalid for this environment."
+				r.Note = "Imported source was not saved: " + why
 				break
 			}
 			paths, _ := stablejson.Marshal(p.Source.Paths)
@@ -479,15 +486,22 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 					return head.Err
 				}
 				if v.Revision == p.RevisionID && head.Value == p.Commit {
-					if err = promoteSpecification(ctx, &v.Spec, p.AppID, artifact); err != nil {
-						return err
-					}
-					revision, err := s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, v.Revision, actor, v.Spec)
+					// The build stands, and its artifact can still be deployed by hand.
+					why, err := refusedChange(ctx, tx, func(tx pgx.Tx) error {
+						if err := promoteSpecification(ctx, &v.Spec, p.AppID, artifact); err != nil {
+							return err
+						}
+						revision, err := s.writePipelineRevision(ctx, tx, ws, c.EnvironmentId, v.Revision, actor, v.Spec)
+						if err != nil {
+							return err
+						}
+						return s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, revision, actor, approved)
+					})
 					if err != nil {
 						return err
 					}
-					if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, revision, actor, approved); err != nil {
-						return err
+					if why != "" {
+						r.Note = "Built, but not deployed automatically: " + why
 					}
 				}
 			}

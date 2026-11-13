@@ -423,8 +423,14 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if allocation, err = tx.Begin(ctx); err != nil {
 			return err
 		}
-		if err = s.createPreviewEnvironment(ctx, tx, copyKeys, p, r); err != nil {
+		// A pass that needs the copy keys returns the provider call, which is no refusal, so it
+		// passes through and the session begins between passes.
+		why, err := refusedChange(ctx, tx, func(tx pgx.Tx) error { return s.createPreviewEnvironment(ctx, tx, copyKeys, p, r) })
+		if err != nil {
 			return err
+		}
+		if why != "" {
+			return s.previewState(ctx, tx, id, "failed", "Preview environment was not created: "+why, 5*time.Minute)
 		}
 	}
 	if r.Config == nil || r.PolicyGeneration != p.Generation {
@@ -512,12 +518,21 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if err != nil {
 			return err
 		}
-		if err = promoteSpecification(ctx, &v.Spec, *r.App, artifact); err != nil {
+		// Only the revision is refused for good. Planning also refuses on the server's state, such
+		// as a preflight that is not ready, which a later pass can find changed.
+		var rev uuid.UUID
+		why, err := refusedChange(ctx, tx, func(tx pgx.Tx) (err error) {
+			if err = promoteSpecification(ctx, &v.Spec, *r.App, artifact); err != nil {
+				return err
+			}
+			rev, err = s.writePipelineRevision(ctx, tx, p.Workspace, *r.View.EnvironmentId, v.Revision, p.Actor, v.Spec)
 			return err
-		}
-		rev, err := s.writePipelineRevision(ctx, tx, p.Workspace, *r.View.EnvironmentId, v.Revision, p.Actor, v.Spec)
+		})
 		if err != nil {
 			return err
+		}
+		if why != "" {
+			return s.previewState(ctx, tx, id, "failed", "Preview was not deployed: "+why, 5*time.Minute)
 		}
 		status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
 		if err != nil {
