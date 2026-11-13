@@ -73,7 +73,7 @@ Three rules decide what data a release may use:
 
 ### Adding a release
 
-1. Pick the new tag in the same Alpine line, digest-pinned and older than the 7-day release-age cooldown.
+1. Pick the new tag in the same Alpine line, digest-pinned and older than the 7-day release-age cooldown. The `postgres` track in [`.github/pinned-releases.json`](../.github/pinned-releases.json) keeps the pin report to that line. Moving to another line, such as Alpine 3.24 with ICU 78.1, changes how text sorts, so it needs its own recipe rather than a new row.
 2. Add a row to the table and move `PostgresImage` or `Postgres17Image` to it. Never remove a row: give the old image its literal digest instead.
 3. Read the release notes of every release since the last pin. Add any post-update reindex advice to `postgresReindex`, and check for changes to dump output, the archive format or the data layout.
 4. List the old digest under `retired` in [`.github/pinned-releases.json`](../.github/pinned-releases.json), so [the pin report](continuous-integration.md#pinned-images-and-tools) stops offering it newer releases.

@@ -3,6 +3,10 @@
     "nginx": {
       "releases": "^\\d+\\.\\d*[02468]\\.\\d+(-|$)",
       "reason": "Astilba follows nginx's stable releases, whose minor version is even. Stable carries mainline's security fixes, so an odd mainline release is not an update."
+    },
+    "postgres": {
+      "releases": "-alpine3\\.23$",
+      "reason": "Managed PostgreSQL data moves to a later release in place only within one Alpine line, whose ICU (76.1 on 3.23) sorts indexes the same. Alpine 3.24 carries ICU 78.1, so moving lines needs its own recipe (docs/supported-upgrades.md#postgresql-releases)."
     }
   },
   "tools": {},
