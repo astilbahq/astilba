@@ -203,11 +203,15 @@ func recoveryMonotonic(out, a, b portability.Row, flags, counters []string) erro
 	return nil
 }
 func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Row, error) {
-	var a, b api.ExecutionCommand
-	if json.Unmarshal(prior["command"], &a) != nil || json.Unmarshal(incoming["command"], &b) != nil {
+	a, err := portability.CommandIdentity(prior["command"], portability.CommandIdentityVersion)
+	if err != nil {
 		return nil, portability.ErrArchive
 	}
-	if recoveryCommandIdentity(a) != recoveryCommandIdentity(b) {
+	b, err := portability.CommandIdentity(incoming["command"], portability.CommandIdentityVersion)
+	if err != nil {
+		return nil, portability.ErrArchive
+	}
+	if a != b {
 		return nil, errors.New("execution identity conflicts with known management metadata")
 	}
 	qa, err := recoveryValue[int64](prior, "report_sequence")

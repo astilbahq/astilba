@@ -338,28 +338,30 @@ type EnvironmentLayout struct {
 }
 
 type ExecutionOperation struct {
-	ID              uuid.UUID   `json:"id"`
-	WorkspaceID     uuid.UUID   `json:"workspace_id"`
-	ServerID        uuid.UUID   `json:"server_id"`
-	EnvironmentID   *uuid.UUID  `json:"environment_id"`
-	Generation      int64       `json:"generation"`
-	PlanID          *uuid.UUID  `json:"plan_id"`
-	RequestKey      uuid.UUID   `json:"request_key"`
-	Command         []byte      `json:"command"`
-	Kind            string      `json:"kind"`
-	State           string      `json:"state"`
-	CancelRequested bool        `json:"cancel_requested"`
-	ReportSequence  int64       `json:"report_sequence"`
-	Steps           []byte      `json:"steps"`
-	Note            string      `json:"note"`
-	JobID           pgtype.Int8 `json:"job_id"`
-	CreatedAt       time.Time   `json:"created_at"`
-	VisualPlanID    *uuid.UUID  `json:"visual_plan_id"`
-	AlertObserved   bool        `json:"alert_observed"`
-	ParentID        *uuid.UUID  `json:"parent_id"`
-	RuntimeOutcome  pgtype.Text `json:"runtime_outcome"`
-	RuntimePlanID   *uuid.UUID  `json:"runtime_plan_id"`
-	DispatchEpoch   int64       `json:"dispatch_epoch"`
+	ID                uuid.UUID   `json:"id"`
+	WorkspaceID       uuid.UUID   `json:"workspace_id"`
+	ServerID          uuid.UUID   `json:"server_id"`
+	EnvironmentID     *uuid.UUID  `json:"environment_id"`
+	Generation        int64       `json:"generation"`
+	PlanID            *uuid.UUID  `json:"plan_id"`
+	RequestKey        uuid.UUID   `json:"request_key"`
+	Command           []byte      `json:"command"`
+	Kind              string      `json:"kind"`
+	State             string      `json:"state"`
+	CancelRequested   bool        `json:"cancel_requested"`
+	ReportSequence    int64       `json:"report_sequence"`
+	Steps             []byte      `json:"steps"`
+	Note              string      `json:"note"`
+	JobID             pgtype.Int8 `json:"job_id"`
+	CreatedAt         time.Time   `json:"created_at"`
+	VisualPlanID      *uuid.UUID  `json:"visual_plan_id"`
+	AlertObserved     bool        `json:"alert_observed"`
+	ParentID          *uuid.UUID  `json:"parent_id"`
+	RuntimeOutcome    pgtype.Text `json:"runtime_outcome"`
+	RuntimePlanID     *uuid.UUID  `json:"runtime_plan_id"`
+	RuntimeRecordedAt *time.Time  `json:"runtime_recorded_at"`
+	EndedAt           *time.Time  `json:"ended_at"`
+	DispatchEpoch     int64       `json:"dispatch_epoch"`
 }
 
 type ExecutionPlan struct {
@@ -703,6 +705,16 @@ type Project struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type RecoveryBasis struct {
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	ID              uuid.UUID  `json:"id"`
+	ParentID        uuid.UUID  `json:"parent_id"`
+	EnvironmentID   uuid.UUID  `json:"environment_id"`
+	PrimaryServerID uuid.UUID  `json:"primary_server_id"`
+	CapturedAt      time.Time  `json:"captured_at"`
+	ClosedAt        *time.Time `json:"closed_at"`
+}
+
 type RecoveryCode struct {
 	AccountID uuid.UUID `json:"account_id"`
 	CodeHash  []byte    `json:"code_hash"`
@@ -850,9 +862,10 @@ type ServerMetric struct {
 }
 
 type Session struct {
-	Token  string    `json:"token"`
-	Data   []byte    `json:"data"`
-	Expiry time.Time `json:"expiry"`
+	Token   string    `json:"token"`
+	Data    []byte    `json:"data"`
+	Expiry  time.Time `json:"expiry"`
+	Lineage uuid.UUID `json:"lineage"`
 }
 
 type SourceSubmission struct {

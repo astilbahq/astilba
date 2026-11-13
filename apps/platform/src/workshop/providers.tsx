@@ -19,7 +19,7 @@ import projects from "../locales/en/projects.json";
 import secretAccess from "../locales/en/secret-access.json";
 import troubleshooting from "../locales/en/troubleshooting.json";
 import { ThemeContext, ThemeProvider, type ThemePreference } from "../theme";
-import { guest } from "./fixtures";
+import { guest, resetWorkshopSignOut } from "./fixtures";
 
 const availableLocales = [
   { code: "en", name: "English", direction: "ltr", language: "en" },
@@ -33,6 +33,7 @@ const availableLocales = [
 ] as const;
 
 export async function createWorkshopState(session: Session = guest) {
+  resetWorkshopSignOut();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Infinity },

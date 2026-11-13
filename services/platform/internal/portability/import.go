@@ -90,6 +90,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			if e != nil || ws != archive.Workspace.String() {
 				return archive, ErrArchive
 			}
+			// An export cannot write NUL, which PostgreSQL does not store, so an archive holding
+			// one was not written by an export, and its insert would fail.
+			if _, found := domain.NULField(row, ""); found {
+				return archive, ErrArchive
+			}
 			// A recovery checkpoint is management's own record and must stay restorable. Any
 			// other archive gets what an export would have written, so retention, which
 			// rebuilds rows with logs inside the shared database, only ever handles values
@@ -238,10 +243,14 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if _, e = q.LockAccount(ctx, p.Account.ID); e != nil {
 		return out, e
 	}
-	// Opening the archive is slow, so the session may have ended by now. Refuse before
-	// holding the account through the insert.
+	// Opening the archive is slow, and the lock may have waited behind a credential change,
+	// so the session may have ended or stopped being recent by now. Refuse before holding
+	// the account through the insert.
 	if e = store.AdmitBrowserSession(ctx, q, p); e != nil {
 		return out, e
+	}
+	if !p.Recent() {
+		return out, domain.RecentRequired
 	}
 	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: archive.Workspace, Name: archive.Name}); e != nil {
 		return out, store.Normalize(e)
