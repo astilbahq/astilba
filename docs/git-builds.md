@@ -137,7 +137,8 @@ It streams the archive to Docker, holding each member's header until its size is
 - layers that read both as compressed and as plain tar;
 - tar entries other than files, links, directories, devices and pipes;
 - sparse files;
-- PAX records other than names, owners, times, sizes and extended attributes;
+- PAX records other than names, owners, times, sizes and extended attributes, or more than 16 of them for one file;
+- AUFS metadata (`.wh..wh.` names other than an opaque directory's marker);
 - more than 64 KiB of headers for one file;
 - paths longer than Linux allows;
 - a layer that turns a directory it writes into a file or link, or the reverse, or writes through a link it creates (a file written twice is accepted, as flattened base images contain them);

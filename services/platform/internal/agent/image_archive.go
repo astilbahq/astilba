@@ -38,6 +38,8 @@ const (
 	// maps of the paths it has unpacked hold for each entry besides its name.
 	tarHeaderMemory = 256
 	tarEntryMemory  = 128
+	// PAX records one file may carry: a few names, owners and times, and its extended attributes.
+	layerPAXRecords = 16
 	// One entry's headers: its own, one PAX block of at most 64 KiB, and the padding before them.
 	layerEntryHeaderBytes = 64<<10 + 3*tarBlockBytes
 	// An image has a config, a manifest and a blob per layer; this many members is never one.
@@ -246,7 +248,7 @@ func inspectImageArchive(gate *imageArchiveGate, limit imageLoadLimit) error {
 		default:
 			return unmeasurableImage("its archive has a member other than OCI image content")
 		}
-		if err = usualEntry(hdr); err != nil {
+		if err = usualEntry(hdr, "its archive"); err != nil {
 			return err
 		}
 		cost := entryCost(hdr)

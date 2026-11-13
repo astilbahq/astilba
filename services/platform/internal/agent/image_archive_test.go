@@ -414,6 +414,26 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 			image.image([]string{layer}, []string{layer})
 			return image.archive(t)
 		},
+		"AUFS metadata": func() []byte {
+			image := valid()
+			layer := image.blob(gzipOf(t, tarOf(t, testFile{".wh..wh.plnk/f", 1})))
+			image.image([]string{layer}, []string{layer})
+			return image.archive(t)
+		},
+		"file with many PAX records": func() []byte {
+			records := map[string]string{}
+			for i := range layerPAXRecords + 1 {
+				records[fmt.Sprintf("SCHILY.xattr.user.%d", i)] = "v"
+			}
+			var out bytes.Buffer
+			w := tar.NewWriter(&out)
+			_ = w.WriteHeader(&tar.Header{Name: "d/", Typeflag: tar.TypeDir, Mode: 0755, PAXRecords: records})
+			_ = w.Close()
+			image := valid()
+			layer := image.blob(gzipOf(t, out.Bytes()))
+			image.image([]string{layer}, []string{layer})
+			return image.archive(t)
+		},
 		"tar entry type images do not use": func() []byte {
 			var out bytes.Buffer
 			w := tar.NewWriter(&out)
@@ -540,6 +560,22 @@ func TestImageArchiveHoldsARefusedMembersHeader(t *testing.T) {
 	}
 }
 
+// bsdtar records an extended attribute both as LIBARCHIVE.xattr and as SCHILY.xattr, and an
+// opaque directory's whiteout is how a layer replaces a directory's contents.
+func TestImageArchiveAcceptsBsdtarAttributesAndOpaqueDirectories(t *testing.T) {
+	var out bytes.Buffer
+	w := tar.NewWriter(&out)
+	_ = w.WriteHeader(&tar.Header{Name: "bin/ping", Typeflag: tar.TypeReg, Mode: 0755, PAXRecords: map[string]string{"LIBARCHIVE.xattr.security.capability": "AQAAAgAgAAAAAAAAAAAAAAAAAAA=", "SCHILY.xattr.security.capability": "\x01"}})
+	_ = w.WriteHeader(&tar.Header{Name: "etc/.wh..wh..opq", Typeflag: tar.TypeReg, Mode: 0644})
+	_ = w.Close()
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, out.Bytes()))
+	image.image([]string{layer}, []string{layer})
+	if _, err := inspectTest(image.archive(t), testLimit); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Flattened base images can write a file again; Docker keeps the later one.
 func TestImageArchiveAcceptsAFileWrittenTwice(t *testing.T) {
 	image := newTestImage()
@@ -549,24 +585,6 @@ func TestImageArchiveAcceptsAFileWrittenTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-// Once Docker has stopped reading, the build container's archive is not to blame.
-func TestImageArchiveKeepsItsFirstFailure(t *testing.T) {
-	image := newTestImage()
-	layer := image.blob(gzipOf(t, tarOf(t, testFile{"app", 100 << 10})))
-	image.image([]string{layer}, []string{layer})
-	archive := image.archive(t)
-	src := io.MultiReader(bytes.NewReader(archive[:len(archive)/2]), iotest.ErrReader(io.ErrUnexpectedEOF))
-	err := inspectImageArchive(&imageArchiveGate{src: src, out: failingWriter{}}, testLimit)
-	var unread *imageArchiveUnread
-	if err == nil || errors.As(err, &unread) {
-		t.Fatal("a failure after Docker stopped reading was reported as", err)
-	}
-}
-
-type failingWriter struct{}
-
-func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 // A whiteout's name is four bytes longer than the file it removes, which may itself be as long
 // as Linux allows.

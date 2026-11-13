@@ -57,7 +57,7 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 			return cost, headers, err
 		}
 		headers++
-		if err = usualEntry(hdr); err != nil {
+		if err = usualEntry(hdr, "a layer"); err != nil {
 			return cost, headers, err
 		}
 		// Until the layer is unpacked, Docker holds each entry's name in two maps, and a
@@ -65,7 +65,8 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 		metadata += tarEntryMemory + 2*int64(len(hdr.Name)+len(hdr.Linkname))
 		switch {
 		case hdr.Typeflag == tar.TypeDir:
-			metadata += raw.n - before + tarHeaderMemory
+			// Go keeps each record in a map, an extended attribute in a second one too.
+			metadata += raw.n - before + tarHeaderMemory + 2*tarEntryMemory*int64(len(hdr.PAXRecords))
 		case hdr.PAXRecords["path"] != "" || hdr.PAXRecords["linkpath"] != "":
 			metadata += raw.n - before
 		}
@@ -104,25 +105,42 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 // bounds the memory Docker holds for it.
 var errLayerHeaders = unmeasurableImage("a layer has a file with more than 64 KiB of tar headers")
 
-// usualEntry refuses tar features images do not need, rather than measure what Docker does with
-// them: entry types other than files, links, directories, devices and pipes, sparse files, and
-// PAX records other than names, owners, times, sizes and extended attributes.
-func usualEntry(h *tar.Header) error {
+// usualEntry refuses tar features images do not use, rather than measure what Docker does with
+// them: entry types other than files, links, directories, devices and pipes, sparse files, PAX
+// records other than names, owners, times, sizes and extended attributes, more than a few of
+// them, and AUFS's metadata. subject says where the entry is, for the note.
+func usualEntry(h *tar.Header, subject string) error {
 	switch h.Typeflag {
 	case tar.TypeReg, tar.TypeLink, tar.TypeSymlink, tar.TypeChar, tar.TypeBlock, tar.TypeDir, tar.TypeFifo:
 	default:
-		return unmeasurableImage(fmt.Sprintf("a layer has a tar entry of type %q, which images do not use", h.Typeflag))
+		return unmeasurableImage(fmt.Sprintf("%s has a tar entry of type %q, which images do not use", subject, h.Typeflag))
+	}
+	if len(h.PAXRecords) > layerPAXRecords {
+		return unmeasurableImage(fmt.Sprintf("%s has a file with more than %d PAX records, which images do not need", subject, layerPAXRecords))
 	}
 	for k := range h.PAXRecords {
 		switch {
-		case usualPAXRecords[k], strings.HasPrefix(k, "SCHILY.xattr."):
+		case usualPAXRecords[k], strings.HasPrefix(k, "SCHILY.xattr."), strings.HasPrefix(k, "LIBARCHIVE.xattr."):
 		case strings.HasPrefix(k, "GNU.sparse."):
-			return unmeasurableImage("a layer has a sparse file, which images do not use")
+			return unmeasurableImage(subject + " has a sparse file, which images do not use")
 		default:
-			return unmeasurableImage("a layer has a PAX record other than a name, owner, time, size or extended attribute")
+			return unmeasurableImage(fmt.Sprintf("%s has the PAX record %q, which images do not need", subject, truncated(k, 64)))
+		}
+	}
+	// Docker's legacy store keeps the headers of AUFS's hard link directory in memory.
+	for _, part := range strings.Split(path.Clean("/"+h.Name), "/") {
+		if strings.HasPrefix(part, ".wh..wh.") && part != ".wh..wh..opq" {
+			return unmeasurableImage(subject + " has AUFS metadata, which images do not use")
 		}
 	}
 	return nil
+}
+
+func truncated(s string, n int) string {
+	if len(s) > n {
+		return strings.ToValidUTF8(s[:n], "") + "..."
+	}
+	return s
 }
 
 var usualPAXRecords = map[string]bool{"path": true, "linkpath": true, "size": true, "uid": true, "gid": true, "uname": true, "gname": true, "mtime": true, "atime": true, "ctime": true}
@@ -189,9 +207,8 @@ func (l layerPaths) entry(h *tar.Header) (imageCost, error) {
 	return cost, nil
 }
 
-// entryCost is the storage one tar entry takes once written. Its size is the logical one, so a
-// sparse file counts in full, as Docker writes it. Docker's legacy store also records each
-// entry, its name again included, in the layer's metadata.
+// entryCost is the storage one tar entry takes once written. Docker's legacy store also records
+// each entry, its name again included, in the layer's metadata.
 func entryCost(h *tar.Header) imageCost {
 	bytes := int64(storageEntryBytes + 2*(len(h.Name)+len(h.Linkname)))
 	xattrs := false
