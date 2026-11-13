@@ -180,6 +180,7 @@ func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, 
 // indexes the queries skip, named database.index.
 func (e *Engine) runPostgresReindex(ctx context.Context, container string, a domain.Application, queries []string) ([]string, error) {
 	// Names travel hex-encoded, so a name holding a newline or an equals sign stays one name.
+	// inline-sql: runs in a managed customer database through psql, not in the platform database
 	raw, err := e.pgQuery(ctx, container, a, "SELECT encode(convert_to(datname, 'UTF8'), 'hex') FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname")
 	if err != nil {
 		return nil, err
@@ -193,8 +194,10 @@ func (e *Engine) runPostgresReindex(ctx context.Context, container string, a dom
 		database := string(name)
 		// psql reads its -d value as a connection string when it holds '='; quote it as one.
 		connection := "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(database) + "'"
+		// inline-sql: runs in a managed customer database through psql, not in the platform database
 		script := reindexSessionLimit + "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM (" + domain.ReindexLeftovers + ") AS i(oid) ORDER BY 1 \\gexec\n"
 		for _, query := range queries {
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
 			script += "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM (" + query + ") AS i(oid) ORDER BY 1 \\gexec\n"
 		}
 		if err = e.dataTool(ctx, strings.NewReader(script), io.Discard, "exec", "-i", container, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-f", "-"); err != nil {
@@ -202,6 +205,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, container string, a dom
 		}
 		for _, query := range queries {
 			out := &boundedOutput{limit: 4096}
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
 			if err = e.dataTool(ctx, nil, out, "exec", container, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-c", "SELECT i.oid::regclass FROM ("+domain.ExclusionIndexes(query)+") AS i(oid) ORDER BY 1"); err != nil {
 				return nil, err
 			}

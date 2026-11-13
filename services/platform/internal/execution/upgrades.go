@@ -101,7 +101,7 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 			group = &frozen
 			source = source.PrimaryPlan()
 		}
-		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, source.Specification); err != nil {
+		if err = requireAgentSupport(ctx, tx, ws, *v.Server, source.Specification); err != nil {
 			return err
 		}
 		if err = requireReplicas(ctx, tx, ws, *v.Server, source); err != nil {
@@ -115,6 +115,10 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		out.Plan.TargetImage = current.Image
 		if out.Plan.Validate() != nil {
 			return domain.Invalid("upgrade.source")
+		}
+		// An agent that does not know the target would build the plan's digest without it.
+		if err = requireAgentSupport(ctx, tx, ws, *v.Server, out.Plan.Target().Specification); err != nil {
+			return err
 		}
 		// The target must be storable before the host changes: completion has no way to refuse it.
 		stored, err := upgradeTargetSpecification(out.Plan.TargetGroup())

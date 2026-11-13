@@ -261,4 +261,6 @@ Agents advertise `safeReleases` only after a controller response includes `Astil
 
 Named output references use the separately negotiated `serviceOutputs` capability (`Astilba-Agent-Service-Outputs: v1`). Update the agent before deploying a specification with custom outputs or named bindings. Existing PostgreSQL bindings remain compatible; see [service connections and catalog](service-catalog.md).
 
+Agents list the PostgreSQL releases they know in `postgresReleases`, negotiated with `Astilba-Agent-Postgres-Releases: v1`, and only then report each restore's `restoreImage`. Management checks a managed database's release against that list when it prepares, applies or sends a plan, a backup or an upgrade; an agent without the list knows only 17.10 and 18.4. Update the agent before running a later release. See [PostgreSQL releases](supported-upgrades.md#postgresql-releases).
+
 Preview-capable agents advertise `previews` after feature negotiation, persist the immutable server reservation and reject commands crossing that boundary. Preview builds use `build-preview` and visual plans use recipe 2, which older agents reject. Cleanup receipts survive controller transfer until acknowledged or consumed by authenticated recovery enrollment. See [Pull-request previews](pull-request-previews.md).

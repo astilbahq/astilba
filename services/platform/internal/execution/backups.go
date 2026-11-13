@@ -144,7 +144,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			return err
 		}
 		plan = plan.PrimaryPlan()
-		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, plan.Specification); err != nil {
+		if err = requireAgentSupport(ctx, tx, ws, *v.Server, plan.Specification); err != nil {
 			return err
 		}
 		if err = requireReplicas(ctx, tx, ws, *v.Server, plan); err != nil {
@@ -341,7 +341,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	if err := requireGeneralSchedule(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy); err != nil {
 		return err
 	}
-	if err := requireServiceOutputs(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan.Specification); err != nil {
+	if err := requireAgentSupport(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan.Specification); err != nil {
 		return err
 	}
 	if err := requireReplicas(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan); err != nil {

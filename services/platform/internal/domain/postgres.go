@@ -69,6 +69,7 @@ func reindexIndexes(condition string) string {
 	return reindexSelect + " AND NOT EXISTS (SELECT 1 FROM pg_constraint x WHERE x.conindid = c.oid AND x.contype = 'x') AND (" + condition + ")"
 }
 
+// inline-sql: runs in a managed customer database through psql, not in the platform database
 const reindexSelect = "SELECT DISTINCT c.oid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE c.relkind = 'i' AND i.indisvalid AND c.relpersistence <> 't' AND c.relnamespace NOT IN ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace, 'information_schema'::regnamespace)"
 
 func gistOpclasses(names ...string) string {
@@ -92,6 +93,7 @@ func btreeType(name string) string {
 
 // ReindexLeftovers selects invalid indexes an interrupted REINDEX INDEX CONCURRENTLY left behind,
 // which PostgreSQL names <index>_ccnew or <index>_ccold. They are still updated on every write.
+// inline-sql: runs in a managed customer database through psql, not in the platform database
 const ReindexLeftovers = "SELECT c.oid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE NOT i.indisvalid AND c.relpersistence <> 't' AND c.relname ~ '_cc(new|old)[0-9]*$' AND c.relnamespace NOT IN ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace, 'information_schema'::regnamespace)"
 
 // ExclusionIndexes returns, for the advice in queries, the indexes it skips because they back an

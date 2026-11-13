@@ -36,6 +36,7 @@ type Client struct {
 	railpack                atomic.Bool
 	safeReleases            atomic.Bool
 	serviceOutputs          atomic.Bool
+	postgresReleases        atomic.Bool
 	previews                atomic.Bool
 	schedules               atomic.Bool
 	replicas                atomic.Bool
@@ -171,6 +172,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 		c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
 		c.safeReleases.Store(response.Header.Get("Astilba-Agent-Safe-Releases") == "v1")
 		c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
+		c.postgresReleases.Store(response.Header.Get("Astilba-Agent-Postgres-Releases") == "v1")
 		c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
 		c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
 		c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
@@ -257,6 +259,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.serviceOutputs.Load() {
 		v.ServiceOutputs = nil
+	}
+	if !c.postgresReleases.Load() {
+		v.PostgresReleases = nil
 	}
 	if !c.safeReleases.Load() {
 		v.SafeReleases = nil
@@ -413,6 +418,12 @@ func (c *Client) Run(ctx context.Context) error {
 				key := report.Status.PolicyId.String()
 				if sent[key] >= report.Sequence {
 					continue
+				}
+				// A controller from before restoreImage refuses a report that names it.
+				if !c.postgresReleases.Load() {
+					for i := range report.Status.Runs {
+						report.Status.Runs[i].RestoreImage = nil
+					}
 				}
 				if err = c.call(ctx, "POST", "/agent/v1/schedule-reports", report, nil, authAgent); err != nil {
 					return err

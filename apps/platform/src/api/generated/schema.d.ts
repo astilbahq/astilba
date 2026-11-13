@@ -2685,6 +2685,8 @@ export interface components {
             compose?: boolean;
             /** @description Supports named service output references; advertised only after Astilba-Agent-Service-Outputs v1. */
             serviceOutputs?: boolean;
+            /** @description The pinned PostgreSQL images this agent can run, restore and update, and whose restores it reports with restoreImage. Advertised only after Astilba-Agent-Postgres-Releases v1; an agent without it knows only postgres 17.10 and 18.4. */
+            postgresReleases?: string[];
             /** @description Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1. */
             safeReleases?: boolean;
             /** @description Supports replica recipe 3 and complete instance groups. Advertised only after Astilba-Agent-Replicas v1. */

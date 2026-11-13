@@ -109,6 +109,7 @@ export async function managedDatabase(
             backups: true,
             schedules: true,
             upgrades: true,
+            postgresReleases: releases.map((r) => r.image),
           },
           preflight: {
             ready: true,

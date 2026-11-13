@@ -34,6 +34,7 @@ test("private network and placement retain failed drafts and review both hosts",
       safeReleases: true,
       replicas: true,
       crossHost: true,
+      postgresReleases: f.releases.map((r) => r.image),
     },
     preflight: {
       ready: true,

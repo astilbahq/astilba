@@ -55,4 +55,35 @@ func TestPostgresReleasesAndRetiredReleaseDrafts(t *testing.T) {
 	}
 	var draft api.Revision
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec(domain.PostgresImage, domain.PostgresMount(domain.PostgresImage))}, 200, &draft)
+	// An agent from before the release list would refuse the plan as invalid; management says why.
+	enrolled, in, token := enrollment(t, f, b, ws, "deployment")
+	yes := true
+	in.Capabilities.Visual, in.Capabilities.PostgresReleases = &yes, nil
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	request := api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}
+	refused = string(b.call("POST", path+"/deployment-plans", request, 400, nil))
+	if !strings.Contains(refused, "Update this server's agent before running PostgreSQL "+retiredSuccessor(releases)) {
+		t.Fatalf("an agent that does not know the release was sent it: %s", refused)
+	}
+	in.Capabilities.PostgresReleases = agentPostgresReleases()
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
+	b.call("POST", path+"/deployment-plans", request, 201, nil)
+}
+
+func retiredSuccessor(releases []api.PostgresRelease) string {
+	for _, r := range releases {
+		if r.Current && r.Major == 18 {
+			return r.Name
+		}
+	}
+	return ""
+}
+
+// agentPostgresReleases is what a current agent advertises: every release it knows.
+func agentPostgresReleases() *[]string {
+	out := []string{}
+	for _, r := range domain.PostgresReleases() {
+		out = append(out, r.Image)
+	}
+	return &out
 }
