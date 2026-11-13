@@ -224,9 +224,10 @@ func marshalValue(value any) []byte {
 // effective is when a change counts as recorded, less its margin.
 // inline-sql: reads the base's transaction-local working set
 const recoveryChanges = `WITH changes AS (
-	SELECT o.environment_id AS env,o.id,o.generation,COALESCE(o.runtime_recorded_at,o.created_at) AS at,o.runtime_recorded_at IS NOT NULL AS exact,NULL::jsonb AS entry
+	SELECT o.environment_id AS env,o.id,o.generation,COALESCE(o.runtime_recorded_at,o.created_at) AS at,o.runtime_recorded_at IS NOT NULL AS exact,NULL::jsonb AS entry,
+		COALESCE(o.ended_at+interval '1 day',o.created_at+interval '7 days') AS ended
 	FROM execution_operations o WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND o.environment_id IS NOT NULL
-	UNION ALL SELECT h.environment_id,h.operation_id,h.generation,h.recorded_at,(h.entry->>'exact')::boolean,h.entry FROM recovered_runtime_history h
+	UNION ALL SELECT h.environment_id,h.operation_id,h.generation,h.recorded_at,(h.entry->>'exact')::boolean,h.entry,NULL FROM recovered_runtime_history h
 	WHERE h.workspace_id=$1 AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id=$1 AND o.id=h.operation_id AND o.runtime_outcome IS NOT NULL)
 ), carried AS (
 	SELECT c.*,c.at+CASE WHEN c.exact THEN interval '1 day' ELSE interval '7 days' END AS effective FROM changes c JOIN archive_keep k ON k.kind='env' AND k.id=c.env
@@ -236,23 +237,31 @@ const recoveryChanges = `WITH changes AS (
 // inline-sql: reads the base's transaction-local working set
 const recoveryFloors = `, floors AS (SELECT env,max(generation) AS floor FROM carried WHERE effective<$2 GROUP BY env)`
 
-// recoveryWindowStart moves start later until the ledger fits within limit entries beyond one per
-// carried environment. A change whose effective time is before the start isn't in the window, and
-// each environment adds at most the one it had when the window opened.
+// recoveryWindowStart moves start later until the window holds fewer than limit items: its
+// changes, and the roots that ended in it, which its settled list names. Both only shrink as the
+// window starts later. A change counts from when it was recorded or, if later, when it ended,
+// since one recorded before the window and ended inside it is settled; each environment adds at
+// most the one it had when the window opened. A root counts from when it ended. Both are read
+// with the same margins.
 func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, limit int) (time.Time, error) {
 	if limit < 1 {
 		return time.Time{}, ErrArchive
 	}
 	var cut *time.Time
 	// inline-sql: reads the base's transaction-local working set
-	err := tx.QueryRow(ctx, recoveryChanges+` SELECT effective FROM carried WHERE effective>=$2 ORDER BY effective DESC OFFSET $3 LIMIT 1`, ws, start, limit-1).Scan(&cut)
+	err := tx.QueryRow(ctx, recoveryChanges+`, items AS (
+		SELECT GREATEST(effective,ended) AS effective FROM carried
+		UNION ALL SELECT COALESCE(o.ended_at+interval '1 day',o.created_at+interval '7 days') FROM execution_operations o
+		WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='crosshost' AND o.runtime_outcome IS NULL AND o.state IN ('succeeded','failed','cancelled')
+		AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id)
+	) SELECT effective FROM items WHERE effective>=$2 ORDER BY effective DESC OFFSET $3 LIMIT 1`, ws, start, limit-1).Scan(&cut)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return start, nil
 	}
 	if err != nil {
 		return time.Time{}, err
 	}
-	// Past the limit-th newest: the window then holds at most limit-1 changes of its own.
+	// Past the limit-th newest: the window then holds at most limit-1 items.
 	return cut.Add(time.Microsecond), nil
 }
 
@@ -372,10 +381,8 @@ func recoveryIdentities(ctx context.Context, tx pgx.Tx, ws uuid.UUID, ids []uuid
 }
 
 // recoverySettled reads the final state of roots and runtime changes that ended since start, less
-// the margin, and that the base carries neither as a row nor in its ledger. Before the ledger is
-// read, roots alone bound the list: a runtime change that ended inside the window was recorded in
-// it too, unless it ran across the window's start.
-func recoverySettled(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, ledger []AppliedEntry, rootsOnly bool) ([]SettledOperation, error) {
+// the margin, and that the base carries neither as a row nor in its ledger.
+func recoverySettled(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, ledger []AppliedEntry) ([]SettledOperation, error) {
 	listed := []uuid.UUID{}
 	for _, e := range ledger {
 		listed = append(listed, e.Operation)
@@ -384,8 +391,8 @@ func recoverySettled(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Ti
 	rows, err := tx.Query(ctx, `SELECT o.id,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,COALESCE(o.ended_at,o.created_at) FROM execution_operations o
 	WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND (o.kind='crosshost' OR o.runtime_outcome IS NOT NULL) AND o.state IN ('succeeded','failed','cancelled')
 	AND (o.ended_at>=$2 OR o.ended_at IS NULL AND o.created_at>=$3)
-	AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id) AND NOT (o.id=ANY($4::uuid[])) AND NOT ($5 AND o.runtime_outcome IS NOT NULL)
-	ORDER BY o.id`, ws, start.Add(-recoveryMargin), start.Add(-recoveryFallbackMargin), listed, rootsOnly)
+	AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id) AND NOT (o.id=ANY($4::uuid[]))
+	ORDER BY o.id`, ws, start.Add(-recoveryMargin), start.Add(-recoveryFallbackMargin), listed)
 	if err != nil {
 		return nil, err
 	}

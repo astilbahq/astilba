@@ -103,7 +103,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passK
 }
 
 // recoverySeals is how many times a base is sealed before it is refused. A seal that doesn't fit
-// is followed by one with fewer changes in its window, so a workspace whose history compresses
+// is followed by one with fewer changes and settled operations in its window, so a workspace whose history compresses
 // worse than the capture's estimate still gets a base inside the coordinate job's time.
 const recoverySeals = 3
 
@@ -111,7 +111,7 @@ const recoverySeals = 3
 // doesn't. A base that doesn't compress and read back exactly is refused like one too large to
 // seal, so the root fails before any host effect rather than retrying forever.
 //
-// The envelope grows about linearly with the changes in the window. The first overflow scales them
+// The envelope grows about linearly with what the window holds. The first overflow scales them
 // down by it; later ones fit a line through the sizes measured so far, which also finds the part
 // of the base that doesn't shrink with the window.
 func sealRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UUID, d deployment.RecoveryDescriptor) (portability.RecoveryCapture, []byte, []byte, error) {

@@ -20,8 +20,9 @@ func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, erro
 	return capture.Raw, err
 }
 
-// RecoveryCapture is a captured base, the window its applied history covers, and how many changes
-// inside the window that history holds, beside each environment's change from before it.
+// RecoveryCapture is a captured base, the window its applied history covers, and how many items
+// that window holds: changes after each environment's change from before it, and settled
+// operations.
 type RecoveryCapture struct {
 	Raw         []byte
 	CapturedAt  time.Time
@@ -35,12 +36,12 @@ type RecoveryCapturing struct {
 	identities map[uuid.UUID]string
 }
 
-// AllChanges asks CaptureRecoveryBase for every change in its window that fits.
+// AllChanges asks CaptureRecoveryBase for everything in its window that fits.
 const AllChanges = -1
 
 // CaptureRecoveryBase captures a recovery base whose applied history reaches window back, or less
-// when that doesn't fit the archive's limits, or holds more than changes changes (unless changes
-// is AllChanges): the window then starts at the newest change that still fits, and the base carries
+// when that doesn't fit the archive's limits, or holds more than changes changes and settled
+// operations (unless changes is AllChanges): the window then starts at the newest change that still fits, and the base carries
 // only the retired previews and history that window needs. It refuses a workspace whose
 // configuration and fixed history windows alone don't fit, or that can't fit a day of changes.
 // The base is decoded as recovery will decode it before it is returned.
@@ -59,9 +60,10 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
 	start := archive.CreatedAt.Add(-window)
 	var selected time.Time
-	size, count, settled := 0, 0, 0
+	size, count, over := 0, 0, 0
 	history := &RecoveryHistory{TargetDays: int(RecoveryWindowTarget / (24 * time.Hour))}
-	// Each pass narrows the window or learns a larger settled list, so the window only moves later.
+	// Each pass narrows the window or learns that its settled list overflowed, so the window only
+	// moves later.
 	for range 6 {
 		if !start.Equal(selected) {
 			filters, err := baseSelection(ctx, tx, ws, start.Add(-recoveryFallbackMargin))
@@ -74,17 +76,11 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 			if history.Superseded, err = recoverySuperseded(ctx, tx, ws); err != nil {
 				return RecoveryCapture{}, err
 			}
-			// Before the ledger is read, the roots that ended inside the window bound the list.
-			roots, err := recoverySettled(ctx, tx, ws, start, nil, true)
-			if err != nil {
-				return RecoveryCapture{}, err
-			}
-			settled, selected = max(settled, len(roots)), start
+			selected = start
 		}
-		const listed = 160
 		environments := len(archive.Tables["environments"])
-		records := maxArchiveRecords - count - len(history.Superseded) - settled - 2*environments
-		bytes := (MaxArchiveBytes - size - listed*(len(history.Superseded)+settled+environments)) / recoveryEntryBytes
+		records := maxArchiveRecords - count - len(history.Superseded) - 2*environments - over
+		bytes := (MaxArchiveBytes-size)/recoveryEntryBytes - len(history.Superseded) - environments - over
 		limit := min(records, bytes)
 		if changes != AllChanges {
 			limit = min(limit, changes+1)
@@ -104,11 +100,12 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 		if history.Environments, history.Applied, err = recoveryLedger(ctx, tx, ws, start, capturing.identities); err != nil {
 			return RecoveryCapture{}, err
 		}
-		if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied, false); err != nil {
+		if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied); err != nil {
 			return RecoveryCapture{}, err
 		}
-		if count+history.Records() > maxArchiveRecords {
-			settled = len(history.Settled)
+		// A runtime change that ran across the window's start is settled without being counted.
+		if excess := count + history.Records() - maxArchiveRecords; excess > 0 {
+			over += excess
 			continue
 		}
 		archive.Recovery = history
@@ -127,7 +124,7 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 				floors++
 			}
 		}
-		return RecoveryCapture{Raw: raw, CapturedAt: archive.CreatedAt, WindowStart: start, Changes: len(history.Applied) - floors}, nil
+		return RecoveryCapture{Raw: raw, CapturedAt: archive.CreatedAt, WindowStart: start, Changes: len(history.Applied) - floors + len(history.Settled)}, nil
 	}
 	return RecoveryCapture{}, ErrArchive
 }

@@ -145,11 +145,23 @@ FROM specification_revisions r JOIN environments e ON e.workspace_id=r.workspace
 LATERAL (SELECT string_agg(md5(random()::text||i||j),'') AS text FROM generate_series(1,250) j) f WHERE e.id=$1`, env); err != nil {
 		t.Fatal(err)
 	}
-	// Each change is a command of its own, recorded inside the window.
-	if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at)
+	// Each change is a command of its own, recorded and ended inside the window. The trigger would
+	// date their end now, as for rows that arrive ended, so it is off while they are written.
+	tx, err := g.f.st.Pool.Begin(g.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(g.ctx)
+	if _, err = tx.Exec(g.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at,ended_at)
 SELECT n.id,p.workspace_id,$2,p.environment_id,(SELECT max(generation) FROM execution_operations WHERE environment_id=p.environment_id)+i,gen_random_uuid(),jsonb_build_object('id',n.id,'planHash',md5(random()::text)),
-	'visual','succeeded',1,'applied',p.id,now()-interval '30 days'+i*interval '1 second',now()-interval '30 days'+i*interval '1 second'
-FROM visual_plans p, (SELECT gen_random_uuid() AS id,i FROM generate_series(1,9500) i) n WHERE p.id=$1`, plan, a.id); err != nil {
+	'visual','succeeded',1,'applied',p.id,t,t,t
+FROM visual_plans p, (SELECT gen_random_uuid() AS id,i FROM generate_series(1,9500) i) n, LATERAL (SELECT now()-interval '30 days'+i*interval '1 second' AS t) at WHERE p.id=$1`, plan, a.id); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(g.ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE environments SET execution_generation=(SELECT max(generation) FROM execution_operations WHERE environment_id=$1) WHERE id=$1`, env); err != nil {
@@ -321,5 +333,51 @@ func TestRecoveredHistoryTravelsInLaterBases(t *testing.T) {
 	}
 	if !carries(inspected.Recovery.Applied) {
 		t.Fatal("the database's own applied history left out what a recovery kept")
+	}
+}
+
+// A coordinated backup is a cross-host root that records no runtime, so a base names each one
+// that ended inside its window in its settled list. Frequent backups shorten the window to fit,
+// as frequent deployments do, rather than refusing the base.
+func TestFrequentCoordinatedBackupsShortenTheWindow(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var project api.Project
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects", map[string]string{"name": "Backed up"}, 201, &project)
+	var environment api.Environment
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Web"}, 201, &environment)
+	_, in, _ := enrollment(t, f, b, ws, "deployment")
+	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	// Ended an hour apart over the last 80 days, as hourly backups of a few environments would.
+	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,i,gen_random_uuid(),'{}','crosshost','succeeded',0,t,t
+FROM generate_series(1,11000) i, LATERAL (SELECT now()-interval '80 days'+i*interval '10 minutes' AS t) at`, ws, in.ServerId, environment.Id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = origin`); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
+	if err != nil {
+		t.Fatal("frequent coordinated backups refused the base: ", err)
+	}
+	archive, err := portability.DecodeRecovery(captured.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window := captured.CapturedAt.Sub(captured.WindowStart); window >= 80*24*time.Hour || len(archive.Recovery.Settled) < 5000 {
+		t.Fatalf("the window covers %s with %d settled roots", window, len(archive.Recovery.Settled))
 	}
 }
