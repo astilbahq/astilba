@@ -1,11 +1,14 @@
 package integration
 
 import (
+	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/google/uuid"
 )
 
@@ -86,4 +89,25 @@ func agentPostgresReleases() *[]string {
 		out = append(out, r.Image)
 	}
 	return &out
+}
+
+// refuseOlderMember shows a cross-host plan refused, naming the member, when a member's agent does
+// not know the database's release: every member validates the whole specification. The member's
+// background heartbeat drops the list while flag holds its number.
+func refuseOlderMember(t *testing.T, f *fixture, b *browser, flag *atomic.Int32, member execution.Identity, in api.AgentEnrollment, name, path string, draft, primary uuid.UUID, ready func()) {
+	t.Helper()
+	flag.Store(2)
+	older := in.Capabilities
+	older.PostgresReleases = nil
+	if _, err := f.execution.Heartbeat(context.Background(), member, api.AgentHeartbeat{Capabilities: older, Preflight: in.Preflight}); err != nil {
+		t.Fatal(err)
+	}
+	ready()
+	if refused := string(b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: draft, ServerId: primary}, 400, nil)); !strings.Contains(refused, "Update the agent on "+name+" before running PostgreSQL") {
+		t.Fatalf("a member that does not know the release was planned onto: %s", refused)
+	}
+	flag.Store(0)
+	if _, err := f.execution.Heartbeat(context.Background(), member, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}); err != nil {
+		t.Fatal(err)
+	}
 }

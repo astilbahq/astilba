@@ -159,12 +159,8 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 		if _, err = s.visualServer(ctx, tx, ws, server); err != nil {
 			return out, err
 		}
-		// Every member's agent validates the whole specification, not only what it runs. The
-		// primary was checked before planning reached here.
-		if server != in.ServerId {
-			if err = requireAgentSupport(ctx, tx, ws, server, v.Spec); err != nil {
-				return out, err
-			}
+		if err = requireMemberSupport(ctx, tx, ws, server, in.ServerId, v.Spec); err != nil {
+			return out, err
 		}
 		var cap, pre []byte
 		var controller int64
@@ -515,11 +511,8 @@ func (s *Service) admitCrossHostApply(ctx context.Context, tx pgx.Tx, ws uuid.UU
 		if _, err = s.visualServer(ctx, tx, ws, u.Plan.ServerID); err != nil {
 			return err
 		}
-		// The apply checked the primary.
-		if u.Plan.ServerID != p.ServerID {
-			if err = requireAgentSupport(ctx, tx, ws, u.Plan.ServerID, u.Plan.Specification); err != nil {
-				return err
-			}
+		if err = requireMemberSupport(ctx, tx, ws, u.Plan.ServerID, p.ServerID, u.Plan.Specification); err != nil {
+			return err
 		}
 		var ready bool
 		var pre []byte

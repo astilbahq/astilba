@@ -68,3 +68,12 @@ func requirePostgresReleases(ctx context.Context, q db.DBTX, ws, server uuid.UUI
 	}
 	return nil
 }
+
+// requireMemberSupport checks a cross-host member's agent, which validates the whole
+// specification, not only what it runs. The primary's own check comes earlier.
+func requireMemberSupport(ctx context.Context, q db.DBTX, ws, server, primary uuid.UUID, spec domain.Specification) error {
+	if server == primary {
+		return nil
+	}
+	return requireAgentSupport(ctx, q, ws, server, spec)
+}
