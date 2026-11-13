@@ -3,15 +3,14 @@ package domain
 import "net/netip"
 
 // privateClientRanges are the networks a client allowlist may name at any width: RFC 1918,
-// carrier-grade NAT, loopback and IPv6 unique local addresses. The internet does not route
-// them, so naming one admits no stranger.
+// carrier-grade NAT, IPv4 loopback and IPv6 unique local addresses. The internet does not
+// route them, so naming one admits no stranger. IPv6 loopback is a /128, narrow enough anyway.
 var privateClientRanges = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("::1/128"),
 	netip.MustParsePrefix("fc00::/7"),
 }
 
@@ -40,7 +39,8 @@ func ValidateOwnerAllowlist(cidrs []string) error {
 		}
 		private := false
 		for _, r := range privateClientRanges {
-			private = private || r.Addr().Is4() == p.Addr().Is4() && r.Bits() <= p.Bits() && r.Contains(p.Addr())
+			// Contains never matches across address families.
+			private = private || r.Bits() <= p.Bits() && r.Contains(p.Addr())
 		}
 		widest := widestPublicIPv6
 		if p.Addr().Is4() {
