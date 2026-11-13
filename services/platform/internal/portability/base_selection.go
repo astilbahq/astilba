@@ -9,8 +9,9 @@ import (
 )
 
 // baseSelection chooses the rows a recovery base carries, so its size follows the workspace's
-// configuration and the recovery window rather than its age. Recovery merges only the newest
-// base, and a restored backup taken inside its window keeps every row the base leaves out. So a
+// configuration and the recovery window rather than its age. Recovery merges the newest base
+// (taking from an older one only a root of another management's that the newest doesn't know),
+// and a restored backup taken inside its window keeps every row the base leaves out. So a
 // base carries the rows recovery needs exact and that can differ between such a backup and this
 // database:
 //   - every standard environment, retired or not, and each preview environment that is still

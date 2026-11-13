@@ -170,16 +170,19 @@ follows the workspace's configuration, not its age.
 Recovery merges the newest checkpoint, N: the one no other supplied checkpoint lists as
 superseded, captured last. N carries every unfinished root of its own management's history with
 everything it names, so an older checkpoint of that history adds nothing to merge, and an older
-copy of a row N dropped would overwrite the backup's newer one. A root that hosts still run and
-that N doesn't carry was started by a management N's doesn't descend from, as when a management
-restored from a backup ran other work on other hosts. Its checkpoint is merged with N, and where
-both carry a row, the copy captured later wins. A base lists every base a host may still hold that its management captured
-or recovered before it, which vouches that they are its ancestors. Recovery sets those aside
-and names them in its preview. Any other older checkpoint, such as one from a management that
-diverged, is compared with N first: one whose applied history N doesn't continue, or doesn't
-reach back to, is refused, naming that checkpoint. An
-interrupted root's own checkpoint still supplies its frozen plan, its continuation and its
-environment's runtime.
+copy of a row N dropped would overwrite the backup's newer one. N also records every root of
+that history that ended inside its window. So a root that hosts still run and that N records
+nothing about was started by a management N's doesn't descend from, as when a management
+restored from a backup ran other work on other hosts. From that root's checkpoint, recovery
+merges only what the root needs and N lacks: the root and its work, their plans and revisions,
+and an environment N doesn't have, with that environment's own rows. Such a checkpoint captured
+before N's window is refused, since N can't show the root hadn't already ended. A base lists
+every base a host may still hold that its management captured or recovered before it, which
+vouches that they are its ancestors. Recovery sets those aside and names them in its preview.
+Any other older checkpoint, such as one from a management that diverged, is compared with N
+first: one whose applied history N doesn't continue, or doesn't reach back to, is refused,
+naming that checkpoint. An interrupted root's own checkpoint still supplies its frozen plan, its
+continuation and its environment's runtime.
 
 Checkpoints with a recovery window are a format a release before this one can't read, so once
 hosts hold them, run cross-host recovery with a current release. Checkpoints sealed before it

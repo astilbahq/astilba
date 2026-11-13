@@ -23,7 +23,8 @@ import (
 )
 
 type recoverySource struct {
-	// Archive is the newest base, the only one recovery merges, and later what recovery writes.
+	// Archive is the newest base, with what a forked management's root needs from its own base
+	// (forkedRootRows), and later what recovery writes.
 	Archive portability.Archive
 	// History is the newest base's recovery section, or nil for a base sealed before there was one.
 	History        *portability.RecoveryHistory
@@ -35,8 +36,8 @@ type recoverySource struct {
 	// Bases are every base loaded, and SetAside those recovery doesn't use.
 	Bases    []loadedBase
 	SetAside []RecoverySetAside
-	// ForkedEnvironments are those carried by the bases merged with the newest one for roots it
-	// doesn't carry, which a management it doesn't descend from started.
+	// ForkedEnvironments are the environments Archive takes from a forked management's root's
+	// base, because the newest base doesn't have them.
 	ForkedEnvironments map[uuid.UUID]bool
 }
 

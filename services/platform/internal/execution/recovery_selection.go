@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -59,14 +60,20 @@ func stagedBase(ctx context.Context, tx pgx.Tx, parent uuid.UUID) (portability.A
 // selectRecoveryBases chooses what recovery reads from the bases it loaded. The newest by capture
 // time, N, is merged: N carries every unfinished root of its own lineage with its children and
 // everything they name, so an older base of that lineage adds nothing to merge, and an older copy
-// of a row N dropped would overwrite the restored database's newer one. A root that still needs
-// recovery and that N doesn't carry was started by a management N's doesn't descend from, as when
-// a management restored from a backup ran other work on other hosts; its base is merged with N, the
-// newer copy of a shared row winning. The base of every root that still needs recovery is kept for
-// its environment's applied runtime. Every other base is set aside. A base is compared with N
-// first unless N lists it as superseded: N's management captured or recovered every base it lists,
-// so they are its ancestors, while an unlisted one may come from a diverged management. Bases are
-// compared only with N, whose applied history holds any older head of its own lineage.
+// of a row N dropped would overwrite the restored database's newer one.
+//
+// A root that still needs recovery and that N records nothing about, as a row, an applied change
+// or a settled operation, was started by a management N's doesn't descend from, as when a
+// management restored from a backup ran other work on other hosts: N records every root of its
+// own lineage that is unfinished or ended inside its window. Only a base captured inside that
+// window shows this, so an older one N records nothing about is refused. From a forked root's base
+// recovery merges only what the root needs and N lacks (forkedRootRows).
+//
+// The base of every root that still needs recovery is kept for its environment's applied runtime.
+// Every other base is set aside. A base is compared with N first unless N lists it as superseded:
+// N's management captured or recovered every base it lists, so they are its ancestors, while an
+// unlisted one may come from a diverged management. Bases are compared only with N, whose applied
+// history holds any older head of its own lineage.
 func selectRecoveryBases(ctx context.Context, tx pgx.Tx, ws uuid.UUID, out *recoverySource) error {
 	return chooseRecoveryBases(out, func(parent uuid.UUID) (portability.Archive, error) { return stagedBase(ctx, tx, parent) })
 }
@@ -97,13 +104,21 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 			needed[host.ActiveParent] = true
 		}
 	}
-	carried := map[uuid.UUID]bool{}
+	recorded := map[uuid.UUID]bool{}
+	if a.Recovery != nil {
+		for _, e := range a.Recovery.Applied {
+			recorded[e.Operation] = true
+		}
+		for _, e := range a.Recovery.Settled {
+			recorded[e.Operation] = true
+		}
+	}
 	for _, row := range a.Tables["execution_operations"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")
 		if err != nil {
 			return err
 		}
-		carried[id] = true
+		recorded[id] = true
 		c, err := recoveryValue[api.ExecutionCommand](row, "command")
 		if err != nil {
 			return err
@@ -116,7 +131,11 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 			needed[c.Id] = true
 		}
 	}
-	var forked []portability.Archive
+	type forkedBase struct {
+		base loadedBase
+		rows portability.Archive
+	}
+	var forked []forkedBase
 	for _, b := range out.Bases {
 		if b.ID == newest.ID {
 			continue
@@ -149,8 +168,11 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 			if err = out.Origins.add(o); err != nil {
 				return err
 			}
-			if !vouched && !carried[b.Parent] {
-				forked = append(forked, older)
+			if !vouched && !recorded[b.Parent] {
+				if a.Recovery != nil && b.CapturedAt.Before(a.Recovery.WindowStart) {
+					return fmt.Errorf("checkpoint %s of root %s, captured %s, is older than the newest checkpoint's window, which opened on %s and records nothing about that root, so it can't show whether the root already ended", b.ID, b.Parent, b.CapturedAt.UTC().Format(time.RFC3339), a.Recovery.WindowStart.UTC().Format(time.DateOnly))
+				}
+				forked = append(forked, forkedBase{b, older})
 			}
 			continue
 		}
@@ -159,25 +181,56 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 	if len(forked) == 0 {
 		return nil
 	}
-	var combined portability.RecoveryBases
-	if err = combined.Add(a); err != nil {
-		return err
-	}
-	out.ForkedEnvironments = map[uuid.UUID]bool{}
-	for _, base := range forked {
-		if err = combined.Add(base); err != nil {
-			return err
-		}
-		for _, row := range base.Tables["environments"] {
-			id, err := recoveryValue[uuid.UUID](row, "id")
+	keys := map[string]map[string]bool{}
+	environments := map[uuid.UUID]bool{}
+	merged := a
+	merged.Tables = map[string][]portability.Row{}
+	for table, rows := range a.Tables {
+		merged.Tables[table] = slices.Clone(rows)
+		keys[table] = map[string]bool{}
+		for _, row := range rows {
+			key, err := portability.RecoveryRowKey(table, row)
 			if err != nil {
 				return err
 			}
-			out.ForkedEnvironments[id] = true
+			keys[table][key] = true
+			if table == "environments" {
+				id, err := recoveryValue[uuid.UUID](row, "id")
+				if err != nil {
+					return err
+				}
+				environments[id] = true
+			}
 		}
 	}
-	out.Archive = combined.Archive()
-	out.Archive.Version, out.Archive.Recovery = a.Version, a.Recovery
+	out.ForkedEnvironments = map[uuid.UUID]bool{}
+	for _, f := range forked {
+		if f.rows.Workspace != a.Workspace {
+			return errors.New("recovery checkpoints belong to different workspaces")
+		}
+		root, err := forkedRootRows(f.rows, f.base.Parent, keys, environments)
+		if err != nil {
+			return err
+		}
+		for table, rows := range root.Tables {
+			if keys[table] == nil {
+				keys[table] = map[string]bool{}
+			}
+			for _, row := range rows {
+				key, err := portability.RecoveryRowKey(table, row)
+				if err != nil {
+					return err
+				}
+				if !keys[table][key] {
+					keys[table][key] = true
+					merged.Tables[table] = append(merged.Tables[table], row)
+				}
+			}
+		}
+		maps.Copy(out.ForkedEnvironments, root.Environments)
+		maps.Copy(environments, root.Environments)
+	}
+	out.Archive = merged
 	return nil
 }
 

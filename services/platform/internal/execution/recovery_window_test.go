@@ -3,6 +3,7 @@ package execution
 import (
 	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -223,8 +224,8 @@ func TestRecoveryRefusesABackupShowingARetiredPreviewLive(t *testing.T) {
 	}
 }
 
-// Recovery merges the newest base, and the base of a root still needing recovery only when the
-// newest doesn't carry that root. A base it lists is set aside unread, an unlisted one is compared
+// Recovery merges the newest base, and from the base of a root still needing recovery only that
+// root's own rows, when the newest base records nothing about the root. A base it lists is set aside unread, an unlisted one is compared
 // with it first, and a root still needing recovery keeps its own base for its runtime.
 func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
 	backup, full, plans := windowTestChain(t, 3)
@@ -300,13 +301,44 @@ func TestRecoveryUsesTheNewestBaseAndSetsTheRestAside(t *testing.T) {
 		if !merged || !out.ForkedEnvironments[other.EnvironmentID] || out.Archive.Recovery != newest.Recovery || out.Archive.Version != newest.Version || len(out.Archive.Tables["environments"]) != 2 {
 			t.Fatal("a root the newest base doesn't carry wasn't merged with it", merged, out.ForkedEnvironments)
 		}
-		// A root the newest base carries, as one it lists, is never merged from an older base.
+		// The forked base's own copy of the older deploy, which the newest base dropped, is not
+		// the root's to bring back.
+		stale, _ := recoveryValue[uuid.UUID](forkedArchive.Tables["execution_operations"][0], "id")
+		for _, row := range out.Archive.Tables["execution_operations"] {
+			if id, _ := recoveryValue[uuid.UUID](row, "id"); id == stale {
+				t.Fatal("a row outside the forked root's closure was merged")
+			}
+		}
+		// A root the newest base records as ended belongs to its own lineage, however old its
+		// base, and a stale host claiming it is still active doesn't bring it back.
+		history := *newest.Recovery
+		history.Settled = append(slices.Clone(history.Settled), portability.SettledOperation{Operation: root, State: "succeeded", Sequence: 1, EndedAt: newest.CreatedAt.Add(-time.Hour)})
+		settled := newest
+		settled.Recovery = &history
+		m := loadedBase{ID: uuid.New(), Parent: uuid.New(), CapturedAt: newest.CreatedAt}
+		archives[m.Parent] = settled
+		out = recoverySource{Bases: []loadedBase{forked, m}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: root}}}
+		if err := chooseRecoveryBases(&out, decode); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.ForkedEnvironments) != 0 || len(out.Archive.Tables["execution_operations"]) != len(newest.Tables["execution_operations"]) {
+			t.Fatal("a root the newest base records as ended was merged from its old base")
+		}
+		// A base from before the window that the newest base records nothing about can't be told
+		// from one of its own roots that ended before the window, so it is refused.
+		old := forked
+		old.ID, old.CapturedAt = uuid.New(), newest.Recovery.WindowStart.Add(-time.Hour)
+		out = recoverySource{Bases: []loadedBase{old, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: root}}}
+		if err := chooseRecoveryBases(&out, decode); err == nil || !strings.Contains(err.Error(), old.ID.String()) {
+			t.Fatal("an unrecorded root's base from before the window was merged", err)
+		}
+		// A base the newest one lists is its own lineage's and is never merged.
 		out = recoverySource{Bases: []loadedBase{listed, n}, Hosts: map[uuid.UUID]deployment.RecoveryEvidence{uuid.New(): {ActiveParent: listed.Parent}}}
 		if err := chooseRecoveryBases(&out, decode); err != nil {
 			t.Fatal(err)
 		}
 		if len(out.ForkedEnvironments) != 0 || len(out.Archive.Tables["execution_operations"]) != len(newest.Tables["execution_operations"]) {
-			t.Fatal("an older base of the newest one's own lineage was merged")
+			t.Fatal("an older base the newest one lists was merged")
 		}
 	})
 	t.Run("an unlisted fork", func(t *testing.T) {
