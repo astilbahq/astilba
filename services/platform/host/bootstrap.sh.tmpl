@@ -158,20 +158,22 @@ verify_hash() { printf '%s  %s\n' "$2" "$1" | sha256sum --check --status; }
 # host's apt configuration relaxes.
 ubuntu_keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
 host_lists=/var/lib/apt/lists
-# Ubuntu 24.04's release pocket was published on 25 April 2024; an index dated earlier is a replay
-# of a pre-release one.
-ubuntu_release_published=1714003200
-# A fresh VM's unattended-upgrades often holds dpkg's lock for its first few minutes. Downloading
-# and installing wait this long for it.
+# Ubuntu 24.04's release pocket was published at 15:10:33 UTC on 25 April 2024; an index dated
+# earlier is a replay of a pre-release one.
+ubuntu_release_published=1714057833
+# Updates and security indexes older than this many days are stale, as in scripts/ci-ubuntu-archive.sh.
+ubuntu_index_max_age_days=7
+# An apt-get step that downloads may take this many seconds: an apt source can hang without limit
+# or output, as a mirror list does when its first mirror drops packets.
+apt_limit=300
+# A fresh VM's unattended-upgrades often holds dpkg's lock for its first few minutes. Installing
+# waits this many seconds for it.
 apt_lock_wait=300
 apt_options=()
-# Runs apt-get within a time limit in seconds: an apt source can hang without limit or output, as
-# a mirror list does when its first mirror drops packets.
 apt_get() {
-  local limit=$1 status=0
-  shift
-  timeout --foreground --kill-after=30 "$limit" env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" "$@" || status=$?
-  ((status != 124)) || printf 'apt-get did not finish within %s minutes.\n' "$((limit / 60))" >&2
+  local status=0
+  timeout --foreground --kill-after=30 "$apt_limit" env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" "$@" || status=$?
+  ((status != 124)) || printf 'apt-get did not finish within %s minutes.\n' "$((apt_limit / 60))" >&2
   return "$status"
 }
 # Starts private package lists and an empty cache: for the host's own sources, from a copy of the
@@ -199,63 +201,82 @@ Allow-Insecure: no
 Allow-Weak: no
 Allow-Downgrade-To-Insecure: no
 Check-Date: yes
+Check-Valid-Until: yes
 SOURCES
   apt_options+=(-o Dir::Etc::SourceList=/dev/null -o "Dir::Etc::SourceParts=$apt_root/sources")
 }
 # Fails when any index fails, although apt still keeps the ones that refreshed. By default
 # apt-get update succeeds even when every index fails.
-apt_refresh() { apt_get 300 -o APT::Update::Error-Mode=any update; }
-apt_fetch() { apt_get "$((300 + apt_lock_wait))" -o "DPkg::Lock::Timeout=$apt_lock_wait" install --download-only --yes --no-remove --no-install-recommends "$@"; }
-# Fails unless the Ubuntu indexes apt now has are current: the release pocket, updates and
-# security suites are each there, as the suite asked for; updates and security were published in
-# the last week, so a stale or replaying source can't hold back fixes; and the release pocket is
-# no older than this release. Given "archive", every index must be Ubuntu's, since a fallback
-# archive serves nothing else, and a mirror could otherwise serve another suite Ubuntu genuinely
-# signed, such as a later release or -proposed, under this one's name, which apt only warns about.
-# Otherwise only this host's Ubuntu indexes for this release count.
+apt_refresh() { apt_get -o APT::Update::Error-Mode=any update; }
+# Downloads into the private cache without dpkg's lock, since it changes nothing dpkg owns, so a busy
+# dpkg can't hold it up or be taken for a failed source.
+apt_fetch() { apt_get -o Debug::NoLocking=1 install --download-only --yes --no-remove --no-install-recommends "$@"; }
+# Fails unless the Ubuntu indexes apt now has are current: the release pocket, updates and security
+# suites are each there; every index is the suite asked for, with this release's codename, as a
+# mirror could otherwise serve another suite Ubuntu genuinely signed, such as a later release or
+# -proposed, under this one's name, which apt only warns about; the newest updates and security
+# indexes were published in the last week, so a stale or replaying source can't hold back fixes;
+# and no release pocket predates this release. Given "archive", every index must be Ubuntu's,
+# since a fallback archive serves nothing else. Otherwise every index from a repository that serves
+# any Ubuntu index counts, whatever it claims to be, and other repositories don't.
 apt_current() {
-  local release suite codename origin list key rest file published now found=" "
+  local repository release suite codename list key origin file published now targets
+  local -A ubuntu=() dates=() newest=()
   now=$(date +%s)
-  while read -r release suite codename origin list key rest; do
-    if [[ "$origin" != Ubuntu || "$codename" != "$VERSION_CODENAME" ]] && [[ "${1:-}" != archive ]]; then
-      continue
+  targets=$(apt_get indextargets --format '$(REPO_URI) $(RELEASE) $(SUITE) $(CODENAME) $(FILENAME) $(METAKEY) $(ORIGIN)' 'Identifier: Packages') || return 1
+  while read -r repository release suite codename list key origin; do
+    [[ "$origin" != Ubuntu ]] || ubuntu[$repository]=1
+  done <<< "$targets"
+  while read -r repository release suite codename list key origin; do
+    [[ -n "$repository" ]] || continue
+    [[ "${1:-}" == archive || -n "${ubuntu[$repository]:-}" ]] || continue
+    if [[ "$suite" != "$release" || "$codename" != "$VERSION_CODENAME" || "$origin" != Ubuntu ]]; then
+      printf '%s served %s as suite %s, codename %s, from %s.\n' "$repository" "$release" "$suite" "$codename" "$origin" >&2
+      return 1
     fi
-    if [[ "$suite" != "$release" || "$codename" != "$VERSION_CODENAME" || "$origin" != Ubuntu || -n "$rest" ]]; then
-      printf 'An index for %s is suite %s, codename %s, from %s.\n' "$release" "$suite" "$codename" "$origin" >&2
+    if [[ "$release" != "$VERSION_CODENAME" && "$release" != "$VERSION_CODENAME"-* ]] || [[ "${1:-}" == archive && "$release" != "$VERSION_CODENAME" && "$release" != "$VERSION_CODENAME-updates" && "$release" != "$VERSION_CODENAME-security" ]]; then
+      printf '%s served %s, which was not asked for.\n' "$repository" "$release" >&2
       return 1
     fi
     # The release file apt verified sits beside the index, in place of the index's path within the
     # release and any compression suffix.
     file=${list%"${key//\//_}"*}InRelease
     [[ -f "$file" ]] || file=${file%InRelease}Release
-    published=$(sed -n 's/^Date: //p' "$file" 2>/dev/null | head -n 1)
-    # An empty date reads as today, so it counts as none.
-    [[ -n "$published" ]] && published=$(date --date "$published" +%s 2>/dev/null) || published=0
-    case $release in
-      "$VERSION_CODENAME")
-        ((published >= ubuntu_release_published)) || { printf 'The %s index predates Ubuntu %s.\n' "$release" "$VERSION_ID" >&2; return 1; } ;;
-      "$VERSION_CODENAME-updates" | "$VERSION_CODENAME-security")
-        ((now - published <= 7 * 86400)) || { printf 'The %s index was not published in the last week.\n' "$release" >&2; return 1; } ;;
-      *) [[ "${1:-}" != archive ]] || { printf 'The archive served %s, which was not asked for.\n' "$release" >&2; return 1; } ;;
-    esac
-    found+="$release "
-  done < <(apt_get 300 indextargets --format '$(RELEASE) $(SUITE) $(CODENAME) $(ORIGIN) $(FILENAME) $(METAKEY)' 'Identifier: Packages')
+    if [[ -z "${dates[$file]:-}" ]]; then
+      published=$(sed -n 's/^Date: //p' "$file" 2>/dev/null | head -n 1)
+      # An empty date reads as today, so it counts as none.
+      [[ -n "$published" ]] && published=$(date --date "$published" +%s 2>/dev/null) || published=0
+      dates[$file]=$published
+    fi
+    published=${dates[$file]}
+    if [[ "$release" == "$VERSION_CODENAME" ]] && ((published < ubuntu_release_published)); then
+      printf 'The %s index from %s predates Ubuntu %s.\n' "$release" "$repository" "$VERSION_ID" >&2
+      return 1
+    fi
+    ((published <= ${newest[$release]:--1})) || newest[$release]=$published
+  done <<< "$targets"
   for release in "$VERSION_CODENAME" "$VERSION_CODENAME-updates" "$VERSION_CODENAME-security"; do
-    [[ "$found" == *" $release "* ]] || { printf 'There is no current %s index.\n' "$release" >&2; return 1; }
+    [[ -n "${newest[$release]:-}" ]] || { printf 'There is no %s index.\n' "$release" >&2; return 1; }
+    [[ "$release" != "$VERSION_CODENAME" ]] || continue
+    if ((now - newest[$release] > ubuntu_index_max_age_days * 86400)); then
+      printf 'The newest %s index was published %s, more than %s days before this host'"'"'s clock, %s.\n' "$release" \
+        "$(date --utc --date "@${newest[$release]}" '+%F %R UTC')" "$ubuntu_index_max_age_days" "$(date --utc '+%F %R UTC')" >&2
+      return 1
+    fi
   done
 }
 # Succeeds unless everything the packages need is already installed or on this host.
 apt_needed() {
   local uri uris
   # Lists that don't yet have a package make this fail, which only means a refresh is needed.
-  uris=$(apt_get 300 install --print-uris --yes -qq --no-remove --no-install-recommends "$@" 2>/dev/null) || return 0
+  uris=$(apt_get install --print-uris --yes -qq --no-remove --no-install-recommends "$@" 2>/dev/null) || return 0
   while read -r uri _; do
     [[ -z "$uri" || "$uri" == "'file:"* ]] || return 0
   done <<< "$uris"
   return 1
 }
 apt_download() {
-  local archive refreshed=true
+  local archive reason refreshed=true
   apt_root=$(mktemp -d /tmp/astilba-bootstrap-apt.XXXXXXXX)
   chmod 0755 "$apt_root"
   apt_use
@@ -268,13 +289,13 @@ apt_download() {
       return 0
     fi
     "$refreshed" && die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
-    printf '%s\n' 'This host'"'"'s package sources failed.'
+    reason='This host'"'"'s package sources failed.'
   elif "$refreshed"; then
-    printf '%s\n' 'This host'"'"'s Ubuntu package indexes are not current.'
+    reason='This host'"'"'s Ubuntu package indexes are not current.'
   else
-    printf '%s\n' 'This host'"'"'s package sources failed.'
+    reason='This host'"'"'s package sources failed.'
   fi
-  printf '%s\n' 'Trying other Ubuntu archives, checked against Ubuntu'"'"'s archive key.'
+  printf '%s Trying other Ubuntu archives, checked against Ubuntu'"'"'s archive key.\n' "$reason"
   for archive in "${fallback_archives[@]}"; do
     printf 'Trying the Ubuntu archive at %s.\n' "$archive"
     apt_use "$archive"

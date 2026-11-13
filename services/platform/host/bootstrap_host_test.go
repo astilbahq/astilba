@@ -58,7 +58,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	}
 	run := func(env []string, args ...string) ([]byte, error) {
 		t.Helper()
-		return runBootstrap(t, env, append([]string{script}, args...)...)
+		return runBootstrap(t, env, nil, append([]string{script}, args...)...)
 	}
 	status, e := os.ReadFile("/var/lib/dpkg/status")
 	if e != nil {
@@ -209,9 +209,20 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		}
 	case "host":
 		// A fresh VM's unattended-upgrades often holds dpkg's lock for its first minutes. The
-		// bootstrap must wait for it rather than fail. 90 seconds outlasts its downloads before apt.
-		holdDpkgLock(t, 90*time.Second)
-		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
+		// bootstrap must wait for it rather than fail. The lock is held until the bootstrap is
+		// seen waiting, then for a few seconds more, and for at most four minutes.
+		unlock := holdDpkgLock(t)
+		stop := time.AfterFunc(4*time.Minute, unlock)
+		defer stop.Stop()
+		var seen bytes.Buffer
+		var waiting sync.Once
+		watch := func(chunk []byte) {
+			seen.Write(chunk)
+			if bytes.Contains(seen.Bytes(), []byte("Waiting for cache lock")) {
+				waiting.Do(func() { time.AfterFunc(5*time.Second, unlock) })
+			}
+		}
+		out, e := runBootstrap(t, []string{"CURL_CA_BUNDLE=" + ca}, watch, append([]string{script}, args(release)...)...)
 		if e != nil {
 			t.Fatalf("fresh production bootstrap while dpkg's lock was held: %s %v", out, e)
 		}
@@ -220,6 +231,11 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		}
 		if !bytes.Contains(out, []byte("Refreshing this host's package sources.")) {
 			t.Fatalf("the bootstrap did not refresh this host's sources: %s", out)
+		}
+		// The runner's sources were just refreshed, so judging them not current would be a fault in
+		// the check itself.
+		if bytes.Contains(out, []byte("indexes are not current")) {
+			t.Fatalf("the bootstrap judged this runner's just-refreshed indexes not current: %s", out)
 		}
 		// A brief failure of one of the runner's sources is no fault of the bootstrap, which then
 		// rightly falls back, but it means this lane didn't check the host's sources this time.
@@ -352,9 +368,9 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 
 }
 
-// holdDpkgLock takes dpkg's frontend lock as apt and unattended-upgrades do, with an fcntl lock,
-// and releases it after d.
-func holdDpkgLock(t *testing.T, d time.Duration) {
+// holdDpkgLock takes dpkg's frontend lock as apt and unattended-upgrades do, with an fcntl lock.
+// It returns a function that releases it, which also runs when the test ends.
+func holdDpkgLock(t *testing.T) func() {
 	t.Helper()
 	file, err := os.OpenFile("/var/lib/dpkg/lock-frontend", os.O_RDWR|os.O_CREATE, 0o640)
 	if err != nil {
@@ -365,12 +381,10 @@ func holdDpkgLock(t *testing.T, d time.Duration) {
 		file.Close()
 		t.Fatal("dpkg's lock is already held: ", err)
 	}
-	released := time.AfterFunc(d, func() { file.Close() })
-	t.Cleanup(func() {
-		if released.Stop() {
-			file.Close()
-		}
-	})
+	var once sync.Once
+	release := func() { once.Do(func() { file.Close() }) }
+	t.Cleanup(release)
+	return release
 }
 
 // aptSources reads this host's apt source files.
@@ -473,8 +487,8 @@ const (
 // log, so a timeout still shows how far it got. A customer's terminal or log pipe waits for
 // whatever holds the script's output, so anything still running once it has ended fails the
 // test, and is named. The pipe is created here for that: only its inode identifies a holder
-// that left the group.
-func runBootstrap(t *testing.T, env []string, args ...string) ([]byte, error) {
+// that left the group. watch, when given, sees the output as it arrives.
+func runBootstrap(t *testing.T, env []string, watch func([]byte), args ...string) ([]byte, error) {
 	t.Helper()
 	read, write, err := os.Pipe()
 	if err != nil {
@@ -506,7 +520,11 @@ func runBootstrap(t *testing.T, env []string, args ...string) ([]byte, error) {
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		_, _ = io.Copy(io.MultiWriter(&output, os.Stdout), read)
+		writers := []io.Writer{&output, os.Stdout}
+		if watch != nil {
+			writers = append(writers, watcher(watch))
+		}
+		_, _ = io.Copy(io.MultiWriter(writers...), read)
 	}()
 	err = cmd.Wait()
 	ended := time.Since(started).Round(time.Second)
@@ -532,6 +550,14 @@ func runBootstrap(t *testing.T, env []string, args ...string) ([]byte, error) {
 		t.Fatalf("bootstrap passed its %s limit: %v", bootstrapLimit, err)
 	}
 	return output.Bytes(), err
+}
+
+// watcher passes the bootstrap's output to a function as it arrives.
+type watcher func([]byte)
+
+func (w watcher) Write(p []byte) (int, error) {
+	w(p)
+	return len(p), nil
 }
 
 // bootstrapLeftovers lists processes in the script's group or holding its output.

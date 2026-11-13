@@ -747,7 +747,7 @@ the Ubuntu indexes it uses itself, for the host's sources and fallbacks alike.
 | Lanes | What the fresh installation does |
 | --- | --- |
 | `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, and must install nftables from a fallback archive. |
-| `recovery` | Removes nftables and must install it from the runner's own sources, while the test holds dpkg's lock for the first 90 seconds, as a fresh VM's unattended-upgrades does. |
+| `recovery` | Removes nftables and must install it from the runner's own sources, while the test holds dpkg's lock, as a fresh VM's unattended-upgrades does, until the bootstrap is seen waiting for it. |
 | `upgrade` | Leaves the runner as it is, which needs no Ubuntu package. |
 
 A runner already has every other Ubuntu package the bootstrap installs. If this step already moved the runner to a mirror because Canonical's archive is down, the blocked lanes install from the runner's sources instead, with a warning annotation, because blocking that mirror too would leave too few to fall back to. The `recovery` lane warns in the same way if it had to fall back.
