@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -161,7 +162,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		for _, file := range baseline.Files {
 			files = append(files, composeproject.File{Content: file.Content})
 		}
-		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: files}); err != nil {
+		if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, env, composeproject.Bundle{Files: files}); err != nil {
 			return err
 		}
 		frozen := submissionConfiguration{SubmissionID: uuid.NewSHA1(env, []byte("source/"+base.String())), Connection: head.Connection, Commit: commit, Branch: source.Branch, Bundle: *v.Spec.Compose, Paths: source.Paths, SubmittedAt: submittedAt}
@@ -223,7 +224,7 @@ func (w *submissionWorker) Work(ctx context.Context, job *river.Job[submissionAr
 
 func (s *Service) attemptSubmission(ctx context.Context, job *river.Job[submissionArgs]) error {
 	var work *submissionWork
-	err := s.withGit(ctx, job.Args.Workspace, func(git *gitAnswers) error {
+	err := s.withGit(ctx, job.Args.Workspace, s.brokerKeys(secretbroker.System("source-submission"), job.Args.Workspace), func(git *gitAnswers) error {
 		var err error
 		work, err = s.prepareSubmission(ctx, git, job)
 		return err
@@ -330,7 +331,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		return nil, err
 	}
 	// A value can become a runtime secret while the attempt waits.
-	if err = s.rejectRuntimeSecrets(ctx, tx, ws, row.EnvironmentID, c.Bundle); err != nil {
+	if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, row.EnvironmentID, c.Bundle); err != nil {
 		var invalid *domain.Error
 		if !errors.As(err, &invalid) {
 			return nil, err

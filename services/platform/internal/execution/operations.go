@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -283,6 +284,14 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 	if err := w.service.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM execution_operations WHERE id=$1", job.Args.ID).Scan(&ws); err != nil {
 		return err
 	}
+	// A coordinator seals recovery checkpoints. A pass that reaches one asks for keys and is made
+	// again once they are given; every other pass needs none and makes no record.
+	keys := w.service.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: secretbroker.System("coordinator"), Kinds: []secretbroker.Kind{secretbroker.RecoveryCheckpoint}, Operation: &job.Args.ID})
+	defer keys.close(ctx)
+	return withProviderCalls(ctx, func() error { return w.work(ctx, keys, ws, job) })
+}
+
+func (w *worker) work(ctx context.Context, keys *passKeys, ws uuid.UUID, job *river.Job[jobArgs]) error {
 	tx, done, err := w.service.Store.BeginWorkspaceWrite(ctx, ws)
 	if err != nil {
 		return err
@@ -309,7 +318,7 @@ func (w *worker) Work(ctx context.Context, job *river.Job[jobArgs]) error {
 		return err
 	}
 	if c.Kind == "crosshost" && c.ParentId == nil {
-		return w.service.coordinate(ctx, tx, job, ws, c, state, cancelled)
+		return w.service.coordinate(ctx, tx, keys, job, ws, c, state, cancelled)
 	}
 	if allowed, err := recoveryGateDelivery(ctx, tx, ws, c); err != nil {
 		return err
