@@ -55,12 +55,12 @@ case "$(uname -m)" in
     arch=amd64
     runtime_shas=(f811ab57d1f4bb0cce19df7d526da8c711d8ebea0447cc83da1999188e664122 74747b5c99000279b9b2c7eb82543b4121d8436a58aa3be7e78ac6681d74794f 95ddf7a2d8b8c0eb82d8597d4d604e294dcf741081f2e228524d5ab9bfd7c8ae 9725be1df7fd5ccc6b21ac24112885896c8d134345e3f4aa20b3c2064ef4620e)
     restic_sha=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
-    fallback_archives=(http://archive.ubuntu.com/ubuntu https://mirrors.edge.kernel.org/ubuntu https://mirrors.mit.edu/ubuntu) ;;
+    fallback_archives=(https://mirrors.edge.kernel.org/ubuntu https://mirrors.mit.edu/ubuntu http://archive.ubuntu.com/ubuntu) ;;
   aarch64)
     arch=arm64
     runtime_shas=(7837470e586f0b5d228a5eefdd9674b6bd0f127c47841ae808b086ae7fe3f41a de18f48f32758568af16d73aa758678af472c2e780dc2aaa9fd9279b8260f7a9 c34d0bd4a58891b1fd9bab57702d7ce84c0f0c77db5fbabcf192288fe52d2535 d138ccdb343121de4904f53af5c57baee5866f9aedc142c1f8c0d6448ce57a7b)
     restic_sha=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
-    fallback_archives=(http://ports.ubuntu.com/ubuntu-ports https://mirrors.mit.edu/ubuntu-ports https://ftp.tu-chemnitz.de/pub/linux/ubuntu-ports) ;;
+    fallback_archives=(https://mirrors.mit.edu/ubuntu-ports https://ftp.tu-chemnitz.de/pub/linux/ubuntu-ports http://ports.ubuntu.com/ubuntu-ports) ;;
   *) die 'Only amd64 and arm64 hosts are supported.' ;;
 esac
 inspect_agent_targets() {
@@ -147,65 +147,76 @@ fetch() {
   die "Could not download $1; the errors above give the cause. Nothing has been installed, so run this script again once it is resolved."
 }
 verify_hash() { printf '%s  %s\n' "$2" "$1" | sha256sum --check --status; }
-# Ubuntu packages come from this host's own sources. When those fail, as when the distribution's
-# mirror names stopped resolving on 11 November 2026, they come from the first archive in
-# fallback_archives that serves them; scripts/ci-ubuntu-archive.sh keeps the same independent
-# mirrors for CI. A fallback is used only for this run: its sources, package lists and cache live
-# in a private directory, and the host's own sources and lists stay as they are. apt verifies every
-# index and package against Ubuntu's archive key, as it does for the host's own sources. A
-# fallback's updates and security indexes must also be under a week old, so a stale mirror
-# can't hold back fixes.
+# Ubuntu packages come from this host's own sources. If they can't be downloaded because those
+# sources failed, as when the distribution's mirror names stopped resolving on 11 November 2026,
+# they come from the first archive in fallback_archives whose indexes all refresh: independent
+# mirrors first, because an outage of Canonical's names usually takes the host's own sources with
+# it, then Canonical's. scripts/ci-ubuntu-archive.sh uses the same archives for CI. Package lists
+# and downloads live in a private directory, so the host's sources and lists stay as they are, and
+# a scheduled apt run can't change what is installed between download and install. apt verifies
+# every index and package against Ubuntu's archive key, as it does for the host's own sources. A
+# fallback's updates and security indexes must also be under a week old, so a stale mirror can't
+# hold back fixes.
 ubuntu_keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
 apt_options=()
 apt_get() {
+  local status=0
   # An apt source can hang without limit or output, as a mirror list does when its first mirror drops packets.
-  timeout --foreground --kill-after=30 300 env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" "$@"
+  timeout --foreground --kill-after=30 300 env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" "$@" || status=$?
+  ((status != 124)) || printf '%s\n' 'apt-get did not finish within 5 minutes.' >&2
+  return "$status"
 }
-# Succeeds once every index of the current sources has refreshed and the packages and their
-# dependencies are downloaded. By default apt-get update succeeds even when every source fails.
-apt_fetch() {
-  apt_get -o APT::Update::Error-Mode=any update && apt_get install --download-only --yes --no-remove --no-install-recommends "$@"
-}
-apt_download() {
-  local archive
-  printf '%s\n' 'Downloading Ubuntu packages from this host'"'"'s package sources.'
-  apt_fetch "$@" && return 0
-  [[ -r "$ubuntu_keyring" ]] || die "This host's package sources failed, and Ubuntu's archive key at $ubuntu_keyring is missing, so no other archive can be checked. No packages were changed."
-  apt_root=$(mktemp -d /tmp/astilba-bootstrap-apt.XXXXXXXX)
-  chmod 0755 "$apt_root"
-  apt_options=(-o Dir::Etc::SourceList=/dev/null -o "Dir::Etc::SourceParts=$apt_root/sources" -o "Dir::State::Lists=$apt_root/lists" -o "Dir::Cache=$apt_root/cache")
-  printf '%s\n' 'This host'"'"'s package sources failed. Trying other Ubuntu archives, checked against Ubuntu'"'"'s archive key.'
-  for archive in "${fallback_archives[@]}"; do
-    printf 'Trying the Ubuntu archive at %s.\n' "$archive"
-    rm -rf "$apt_root/sources" "$apt_root/lists" "$apt_root/cache"
-    install -d -m 0755 "$apt_root/sources"
-    install -d -m 0700 -o _apt -g root "$apt_root/lists" "$apt_root/lists/partial" "$apt_root/cache" "$apt_root/cache/archives" "$apt_root/cache/archives/partial"
-    cat > "$apt_root/sources/ubuntu.sources" <<SOURCES
+# Starts empty package lists and cache, for the host's own sources or, given one, for that archive.
+# As in apt's own layout, only the partial directories belong to apt's unprivileged download user.
+apt_use() {
+  rm -rf "$apt_root/sources" "$apt_root/lists" "$apt_root/cache"
+  install -d -m 0755 "$apt_root/lists" "$apt_root/cache" "$apt_root/cache/archives"
+  install -d -m 0700 -o _apt -g root "$apt_root/lists/partial" "$apt_root/cache/archives/partial"
+  apt_options=(-o "Dir::State::Lists=$apt_root/lists" -o "Dir::Cache=$apt_root/cache")
+  (($#)) || return 0
+  install -d -m 0755 "$apt_root/sources"
+  cat > "$apt_root/sources/ubuntu.sources" <<SOURCES
 Types: deb
-URIs: $archive
+URIs: $1
 Suites: $VERSION_CODENAME
-Components: main restricted universe multiverse
+Components: main
 Signed-By: $ubuntu_keyring
 
 Types: deb
-URIs: $archive
+URIs: $1
 Suites: $VERSION_CODENAME-updates $VERSION_CODENAME-security
-Components: main restricted universe multiverse
+Components: main
 Signed-By: $ubuntu_keyring
 Valid-Until-Max: 604800
 SOURCES
-    chmod 0644 "$apt_root/sources/ubuntu.sources"
-    if apt_fetch "$@"; then
-      printf 'Ubuntu packages for this run come from %s. This host'"'"'s package sources are unchanged.\n' "$archive"
-      return 0
-    fi
-  done
-  die 'Neither this host'"'"'s package sources nor any fallback Ubuntu archive served current, correctly signed packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+  apt_options+=(-o Dir::Etc::SourceList=/dev/null -o "Dir::Etc::SourceParts=$apt_root/sources")
 }
-# Installs what apt_download fetched, from the same sources, so it needs no new downloads. It has
-# no time limit: stopping dpkg part way would leave packages half configured.
-apt_install() {
-  DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" -o APT::Keep-Downloaded-Packages=true install --yes --no-remove --no-install-recommends "$@"
+# Fails when any index fails, although apt still keeps the ones that refreshed. By default
+# apt-get update succeeds even when every index fails.
+apt_refresh() { apt_get -o APT::Update::Error-Mode=any update; }
+apt_fetch() { apt_get install --download-only --yes --no-remove --no-install-recommends "$@"; }
+apt_download() {
+  local archive= refreshed=true
+  apt_root=$(mktemp -d /tmp/astilba-bootstrap-apt.XXXXXXXX)
+  chmod 0755 "$apt_root"
+  apt_use
+  printf '%s\n' 'Refreshing this host'"'"'s package sources.'
+  apt_refresh || refreshed=false
+  if apt_fetch "$@"; then
+    "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; the packages come from the ones that did.'
+    return 0
+  fi
+  "$refreshed" && die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+  printf '%s\n' 'This host'"'"'s package sources failed. Trying other Ubuntu archives, checked against Ubuntu'"'"'s archive key.'
+  for archive in "${fallback_archives[@]}"; do
+    printf 'Trying the Ubuntu archive at %s.\n' "$archive"
+    apt_use "$archive"
+    apt_refresh && break
+    archive=
+  done
+  [[ -n "$archive" ]] || die 'Neither this host'"'"'s package sources nor any fallback Ubuntu archive served current, correctly signed indexes; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+  printf 'Ubuntu packages for this run come from %s. This host'"'"'s package sources are unchanged.\n' "$archive"
+  apt_fetch "$@" || die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
 }
 fetch "$management/agent-public-key.pem" "$scratch/public.pem" 4096
 openssl pkey -pubin -in "$scratch/public.pem" -outform DER -out "$scratch/public.der"
@@ -260,14 +271,16 @@ if ! "$docker_ready"; then
   command -v docker >/dev/null && die 'A Docker installation appeared during preparation; inspect it before retrying.'
   step='install the approved container runtime'
   printf '%s\n' 'Installing verified Docker packages and their Ubuntu dependencies; Docker may start and create networks and firewall rules.'
-  apt_install "${packages[@]}"
+  # Uses the package lists apt_download refreshed, so it needs no new downloads. There is no time
+  # limit: stopping dpkg part way would leave packages half configured.
+  DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install --yes --no-remove --no-install-recommends "${packages[@]}"
   [[ $(docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}') == 29.9.2 ]]
   [[ $(docker compose version --short) == 5.6.1 || $(docker compose version --short) == v5.6.1 ]]
 fi
 if ! command -v nft >/dev/null; then
   step='install nftables for build isolation'
   printf '%s\n' 'Installing Ubuntu'"'"'s nftables 1.0.9, which the agent uses to keep builds away from this host and private networks.'
-  apt_install "$nftables"
+  DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install --yes --no-remove --no-install-recommends "$nftables"
 fi
 inspect_agent_targets
 step='prepare the verified agent service'
