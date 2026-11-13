@@ -51,6 +51,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
         docker: true,
         build: true,
         buildNetwork: true,
+        rootlessBuilds: true,
         buildControls: true,
         ...acknowledgesReleases,
         railpackVersion: "0.43.0",

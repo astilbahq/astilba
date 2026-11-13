@@ -78,7 +78,7 @@ func TestRecoveryWritesStayInWorkspace(t *testing.T) {
 			return q.HoldRecoveredOperation(ctx, db.HoldRecoveredOperationParams{Note: "foreign", WorkspaceID: other, ID: parent})
 		},
 		"frame": func() error {
-			return q.SetRecoveryFrameCommand(ctx, db.SetRecoveryFrameCommandParams{Command: []byte(`{"foreign":true}`), WorkspaceID: other, ID: parent})
+			return q.SetRecoveryFrameCheckpoint(ctx, db.SetRecoveryFrameCheckpointParams{Descriptor: []byte(`{"foreign":true}`), WorkspaceID: other, ID: parent})
 		},
 	} {
 		if e := write(); e != nil {

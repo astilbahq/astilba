@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -15,21 +16,27 @@ import (
 // sealed with the management keyring before leaving the management process.
 // This is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
+	raw, _, err := CaptureRecoveryAt(ctx, tx, ws)
+	return raw, err
+}
+
+// CaptureRecoveryAt is CaptureRecovery, and also returns the base's capture time.
+func CaptureRecoveryAt(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, time.Time, error) {
 	archive := Archive{Version: ArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
 	archive, err = captureArchive(ctx, tx, archive, captureBase)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	raw, err := stablejson.Marshal(archive)
 	if err != nil || len(raw) > MaxArchiveBytes {
-		return nil, ErrArchive
+		return nil, time.Time{}, ErrArchive
 	}
-	return raw, nil
+	return raw, archive.CreatedAt, nil
 }
 
 // InspectRecovery reads trusted database state, including a union of individually

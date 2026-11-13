@@ -279,16 +279,15 @@ func combineRecoveryOperation(left, right recoveryBaseRow) (recoveryBaseRow, err
 			return recoveryBaseRow{}, conflict
 		}
 	}
-	var ca, cb api.ExecutionCommand
-	if json.Unmarshal(a["command"], &ca) != nil || json.Unmarshal(b["command"], &cb) != nil {
+	ia, err := CommandIdentity(a["command"], CommandIdentityVersion)
+	if err != nil {
 		return recoveryBaseRow{}, ErrArchive
 	}
-	ca.ControllerGeneration, cb.ControllerGeneration = nil, nil
-	ca.RecoveryCheckpoint, cb.RecoveryCheckpoint = nil, nil
-	ca.CancelRequested, cb.CancelRequested = false, false
-	ra, _ := stablejson.Marshal(ca)
-	rb, _ := stablejson.Marshal(cb)
-	if recoveryRowHash(ra) != recoveryRowHash(rb) {
+	ib, err := CommandIdentity(b["command"], CommandIdentityVersion)
+	if err != nil {
+		return recoveryBaseRow{}, ErrArchive
+	}
+	if ia != ib {
 		return recoveryBaseRow{}, conflict
 	}
 	var sa, sb api.ExecutionState

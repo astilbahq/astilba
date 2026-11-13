@@ -259,6 +259,7 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	yes := true
 	input.Capabilities.Build = &yes
 	input.Capabilities.BuildNetwork = &yes
+	input.Capabilities.RootlessBuilds = &yes
 	input.Capabilities.Compose = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
 	source := pipeline.Source{ConnectionID: imported, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}

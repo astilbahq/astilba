@@ -77,7 +77,9 @@ UPDATE backup_policies SET configuration=jsonb_set(configuration,'{enabled}','fa
 WHERE workspace_id = @workspace_id;
 
 -- name: RestoreRecoveryRoot :exec
-UPDATE execution_operations SET command = @command,state='running',job_id=NULL
+-- The stored command keeps its bytes, which its recovery identity is computed from; only the
+-- checkpoint it resumes from is attached.
+UPDATE execution_operations SET command=jsonb_set(command,'{recoveryCheckpoint}',@descriptor::jsonb,true),state='running',job_id=NULL
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: UpsertCrossHostRecovery :execrows
@@ -107,6 +109,23 @@ WHERE workspace_id = @workspace_id AND parent_id = @parent_id AND sequence = @se
 -- name: InsertRecoveryBaseCheckpoint :exec
 INSERT INTO cross_host_checkpoints(id,workspace_id,parent_id,sequence,descriptor,envelope)
 VALUES(@id,@workspace_id,@parent_id,0,@descriptor,@envelope);
+
+-- name: RegisterRecoveryBase :exec
+-- The base's root is still being coordinated, so its primary hasn't closed it.
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at);
+
+-- name: RegisterRecoveredBase :exec
+-- A root recovery takes over is being coordinated again, so its primary hasn't closed its base.
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at)
+ON CONFLICT DO NOTHING;
+
+-- name: CloseRecoveryBase :exec
+-- The primary acknowledged a closing phase, after which its agent keeps the base only while it is
+-- among the two latest closed in its environment.
+UPDATE recovery_bases SET closed_at=clock_timestamp()
+WHERE workspace_id = @workspace_id AND parent_id = @parent_id AND primary_server_id = @primary_server_id AND closed_at IS NULL;
 
 -- name: InsertRecoveryCheckpoint :exec
 INSERT INTO cross_host_checkpoints(id,workspace_id,parent_id,sequence,descriptor,envelope,phase)
@@ -171,11 +190,14 @@ SELECT command,report_sequence FROM execution_operations WHERE workspace_id = @w
 INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,parent_id)
 VALUES(@id,@workspace_id,@server_id,@environment_id,@generation,@request_key, @command, @kind,@state,@parent_id);
 
--- name: SetRecoveryFrameCommand :exec
-UPDATE execution_operations SET command = @command,job_id=NULL,dispatch_epoch=dispatch_epoch+1 WHERE workspace_id = @workspace_id AND id = @id;
+-- name: SetRecoveryFrameCheckpoint :exec
+-- A frame that already exists matches its frozen header, so only the checkpoint it belongs to is
+-- replaced; the stored command keeps its bytes, which its recovery identity is computed from.
+UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,job_id=NULL,dispatch_epoch=dispatch_epoch+1
+WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ResetRecoveryFrame :exec
-UPDATE execution_operations SET command = @command,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
+UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: OperationReportState :one

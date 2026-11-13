@@ -97,6 +97,12 @@ func Normalize(err error) error {
 	if errors.As(err, &pgerr) && (pgerr.Code == "23505" || pgerr.Code == "40001") {
 		return domain.Conflict
 	}
+	// 22021 is text holding NUL or invalid UTF-8, and 22P05 a jsonb value spelling NUL as an
+	// escape. Input is kept clear of both where it is decoded, so this answers a path that
+	// missed that with a refusal rather than a failure, keeping the cause for the log.
+	if errors.As(err, &pgerr) && (pgerr.Code == "22021" || pgerr.Code == "22P05") {
+		return fmt.Errorf("%w: %w", domain.UnstorableText, err)
+	}
 	return err
 }
 
