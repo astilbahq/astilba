@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -98,21 +96,16 @@ func (f *nativePullFixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func nativeDigest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
 // image adds a manifest for arch with one layer holding file, and returns its digest and its
 // layer's.
 func (f *nativePullFixture) image(arch, file string) (manifest, layer string) {
 	layerTar := tarOf(f.t, testFile{file, 10})
 	layerData := gzipOf(f.t, layerTar)
-	config := fmt.Appendf(nil, `{"architecture":%q,"os":"linux","config":{"Cmd":["/%s"]},"rootfs":{"type":"layers","diff_ids":[%q]}}`, arch, file, nativeDigest(layerTar))
-	layer = nativeDigest(layerData)
-	f.blobs[layer], f.blobs[nativeDigest(config)] = layerData, config
-	content := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[{"mediaType":%q,"digest":%q,"size":%d}]}`, ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageConfig, nativeDigest(config), len(config), ocispec.MediaTypeImageLayerGzip, layer, len(layerData))
-	manifest = nativeDigest([]byte(content))
+	config := fmt.Appendf(nil, `{"architecture":%q,"os":"linux","config":{"Cmd":["/%s"]},"rootfs":{"type":"layers","diff_ids":[%q]}}`, arch, file, sha(layerTar))
+	layer = sha(layerData)
+	f.blobs[layer], f.blobs[sha(config)] = layerData, config
+	content := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[{"mediaType":%q,"digest":%q,"size":%d}]}`, ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageConfig, sha(config), len(config), ocispec.MediaTypeImageLayerGzip, layer, len(layerData))
+	manifest = sha([]byte(content))
 	f.docs[manifest] = [2]string{ocispec.MediaTypeImageManifest, content}
 	return manifest, layer
 }
@@ -123,7 +116,7 @@ func (f *nativePullFixture) index(entries map[string]string) string {
 		list = append(list, fmt.Sprintf(`{"mediaType":%q,"digest":%q,"size":%d,"platform":{"os":"linux","architecture":%q}}`, ocispec.MediaTypeImageManifest, manifest, len(f.docs[manifest][1]), arch))
 	}
 	content := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[%s]}`, ocispec.MediaTypeImageIndex, strings.Join(list, ","))
-	d := nativeDigest([]byte(content))
+	d := sha([]byte(content))
 	f.docs[d] = [2]string{ocispec.MediaTypeImageIndex, content}
 	return d
 }

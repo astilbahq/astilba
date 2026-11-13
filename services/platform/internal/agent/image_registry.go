@@ -27,9 +27,9 @@ import (
 	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
-// registryImage is where the agent reads an image Docker is about to pull: the same registry,
-// or a mirror of it, that Docker reads. The image is named by digest, so whichever serves it,
-// Docker pulls the content the agent read.
+// registryImage is where the agent reads a deployment's image: the registry, or a mirror of it,
+// that Docker would read. The image is named by digest and the agent checks every blob against
+// its digest, so whichever serves it, the content is the image's.
 type registryImage interface {
 	// manifest is the manifest or index with this digest, of at most limit bytes.
 	manifest(ctx context.Context, d digest.Digest, limit int64) (data []byte, mediaType string, err error)
@@ -37,7 +37,17 @@ type registryImage interface {
 	blob(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error)
 }
 
-type orasImage struct{ repo *remote.Repository }
+type orasImage struct {
+	repo *remote.Repository
+	// fallback marks an insecure registry over plain HTTP, which Docker tries only when it
+	// cannot reach the registry over HTTPS at all.
+	fallback bool
+}
+
+func plainHTTPFallback(source registryImage) bool {
+	image, ok := source.(orasImage)
+	return ok && image.fallback
+}
 
 func (o orasImage) manifest(ctx context.Context, d digest.Digest, limit int64) ([]byte, string, error) {
 	desc, rc, err := o.repo.Manifests().FetchReference(ctx, d.String())
@@ -81,6 +91,15 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 		images = append(images, image)
 		return nil
 	}
+	fallback := func(host, repository string, credential *pipeline.Credential) error {
+		if err := add(host, repository, true, true, credential); err != nil {
+			return err
+		}
+		image := images[len(images)-1].(orasImage)
+		image.fallback = true
+		images[len(images)-1] = image
+		return nil
+	}
 	if domain == "docker.io" && config != nil {
 		for _, mirror := range config.Mirrors {
 			u, err := url.Parse(mirror)
@@ -105,7 +124,7 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 		return nil, err
 	}
 	if !secure {
-		if err = add(host, path, true, true, credential); err != nil {
+		if err = fallback(host, path, credential); err != nil {
 			return nil, err
 		}
 	}
@@ -214,5 +233,5 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if err := repo.Reference.ValidateRepository(); err != nil {
 		return nil, errors.New("the image's repository name is not valid")
 	}
-	return orasImage{repo}, nil
+	return orasImage{repo: repo}, nil
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -227,21 +228,36 @@ func TestPullReadsOnlyThisServersImage(t *testing.T) {
 	}
 }
 
-// The agent chooses the manifest containerd does: the first for the server's platform, in a
-// variant it runs.
+// The agent chooses the image Docker does, with containerd's normalization: the index's only
+// image for the server's architecture. An index Docker could resolve otherwise is refused.
 func TestPullChoosesThePlatformDockerDoes(t *testing.T) {
 	arm64 := ocispec.Platform{OS: "linux", Architecture: "arm64"}
+	plat := func(os, arch, variant string) *ocispec.Platform {
+		return &ocispec.Platform{OS: os, Architecture: arch, Variant: variant}
+	}
+	attestation := map[string]string{"vnd.docker.reference.type": "attestation-manifest"}
+	emptyOS := 1 // Normalized, an empty OS is the agent's own.
+	if runtime.GOOS == "linux" {
+		emptyOS = -1
+	}
 	for name, tc := range map[string]struct {
 		host     ocispec.Platform
 		children []ocispec.Descriptor
 		chosen   int
 	}{
-		"arm64 v8":                  {arm64, []ocispec.Descriptor{{Platform: &ocispec.Platform{OS: "linux", Architecture: "amd64"}}, {Platform: &ocispec.Platform{OS: "linux", Architecture: "arm64", Variant: "v8"}}}, 1},
-		"arm64 without a variant":   {arm64, []ocispec.Descriptor{{Platform: &ocispec.Platform{OS: "linux", Architecture: "arm", Variant: "v7"}}, {Platform: &ocispec.Platform{OS: "linux", Architecture: "arm64"}}}, 1},
-		"the first of two matching": {amd64Server, []ocispec.Descriptor{{Platform: &ocispec.Platform{OS: "linux", Architecture: "amd64"}}, {Platform: &ocispec.Platform{OS: "linux", Architecture: "amd64", Variant: "v1"}}}, 0},
-		"amd64 v1":                  {amd64Server, []ocispec.Descriptor{{Platform: &ocispec.Platform{OS: "linux", Architecture: "amd64", Variant: "v3"}}, {Platform: &ocispec.Platform{OS: "linux", Architecture: "amd64", Variant: "v1"}}}, 1},
-		"no other OS":               {amd64Server, []ocispec.Descriptor{{Platform: &ocispec.Platform{OS: "windows", Architecture: "amd64"}}}, -1},
-		"no unnamed platform":       {amd64Server, []ocispec.Descriptor{{}, {Platform: &ocispec.Platform{OS: "linux", Architecture: "amd64"}}}, -1},
+		"arm64 v8":                          {arm64, []ocispec.Descriptor{{Platform: plat("linux", "amd64", "")}, {Platform: plat("linux", "arm64", "v8")}}, 1},
+		"arm64 beside arm":                  {arm64, []ocispec.Descriptor{{Platform: plat("linux", "arm", "v7")}, {Platform: plat("linux", "arm64", "")}}, 1},
+		"amd64 v1":                          {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "386", "")}, {Platform: plat("linux", "amd64", "v1")}}, 1},
+		"x86_64 in capitals":                {amd64Server, []ocispec.Descriptor{{Platform: plat("Linux", "X86_64", "")}}, 0},
+		"attestations and unknown":          {amd64Server, []ocispec.Descriptor{{Annotations: attestation}, {Platform: plat("unknown", "unknown", "")}, {Platform: plat("linux", "amd64", "")}}, 2},
+		"an empty OS beside linux":          {amd64Server, []ocispec.Descriptor{{Platform: plat("", "amd64", "")}, {Platform: plat("linux", "amd64", "")}}, emptyOS},
+		"two for the architecture":          {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "amd64", "")}, {Platform: plat("linux", "x86_64", "")}}, -1},
+		"two variants":                      {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "amd64", "v3")}, {Platform: plat("linux", "amd64", "v1")}}, -1},
+		"only a newer variant":              {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "amd64", "v2")}}, -1},
+		"an attestation for the platform":   {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "amd64", ""), Annotations: attestation}}, -1},
+		"only another architecture it runs": {amd64Server, []ocispec.Descriptor{{Platform: plat("linux", "386", "")}}, -1},
+		"no other OS":                       {amd64Server, []ocispec.Descriptor{{Platform: plat("windows", "amd64", "")}}, -1},
+		"no unnamed platform":               {amd64Server, []ocispec.Descriptor{{}, {Platform: plat("linux", "amd64", "")}}, -1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for i := range tc.children {
@@ -527,5 +543,42 @@ func TestPullUsesDockersProxy(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://agent-proxy.example:3128")
 	if _, err = dockerProxy(system.Info{HTTPSProxy: "http://xxxxx:xxxxx@proxy.example:3128"}); err != nil {
 		t.Fatal("ignored the agent's own proxy", err)
+	}
+}
+
+// An insecure registry is read over plain HTTP only when it cannot be reached over HTTPS, so a
+// credential the registry refused over HTTPS is never sent in the clear.
+func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
+	registry := newTestRegistry()
+	root := registry.image(gzipOf(t, tarOf(t, testFile{"app", 10})))
+	credential := &pipeline.Credential{Username: "deployer", Password: "fixture-password"}
+	plain := httptest.NewServer(registry)
+	defer plain.Close()
+	host := strings.TrimPrefix(plain.URL, "http://")
+	fallback, err := newRegistryImage(host, "fixture/app", true, true, credential, http.ProxyFromEnvironment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := fallback.(orasImage)
+	image.fallback = true
+	refusing := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer refusing.Close()
+	answered, err := newRegistryImage(strings.TrimPrefix(refusing.URL, "https://"), "fixture/app", true, false, credential, http.ProxyFromEnvironment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = planFromSources(context.Background(), []registryImage{answered, image}, digest.Digest(root), amd64Server, pullTestLimit); err == nil || registry.count(root) != 0 {
+		t.Fatal("asked again in the clear after the registry answered over HTTPS", err)
+	}
+	closed := httptest.NewTLSServer(http.NotFoundHandler())
+	unreachable, err := newRegistryImage(strings.TrimPrefix(closed.URL, "https://"), "fixture/app", true, false, credential, http.ProxyFromEnvironment)
+	closed.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan, source, err := planFromSources(context.Background(), []registryImage{unreachable, image}, digest.Digest(root), amd64Server, pullTestLimit); err != nil || plan == nil || source != registryImage(image) {
+		t.Fatal("did not fall back to plain HTTP for an unreachable registry", err)
 	}
 }

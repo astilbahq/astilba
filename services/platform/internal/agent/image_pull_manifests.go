@@ -10,6 +10,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -40,6 +41,9 @@ type registryPlan struct {
 	layers []ocispec.Descriptor
 	// stored is each distinct blob as Docker stores it.
 	stored imageCost
+	// platform is the chosen manifest's platform in the image's index, normalized, or nil when
+	// the image has no index.
+	platform *ocispec.Platform
 }
 
 // planRegistryImage reads the image with digest root from source and chooses its manifest for
@@ -86,6 +90,8 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 		if err != nil {
 			return nil, err
 		}
+		normalized := platforms.Normalize(*chosen.Platform)
+		plan.platform = &normalized
 		if document, kind, err = fetchDocument(ctx, source, chosen); err != nil {
 			return nil, err
 		}
@@ -239,39 +245,54 @@ func fetchBlob(ctx context.Context, source registryImage, desc ocispec.Descripto
 	return data, nil
 }
 
-// choosePlatform chooses an index's manifest for platform as containerd does: the first, in the
-// index's order, for its OS and architecture in a variant it runs. An index that leaves a
-// manifest's platform out is refused, as which one Docker chooses then depends on its config.
+// choosePlatform chooses an index's manifest for platform as Docker does, with containerd's
+// platform normalization. Docker prefers an image for the server's own architecture to one for
+// another it can run, so it chooses the index's only image for the server's architecture, in
+// the variant every server of it runs; an index with no such image, or more than one, is
+// refused. Docker skips attestations and images for unknown platforms, and the agent refuses an
+// entry with no platform, as which image Docker chooses then depends on its config.
 func choosePlatform(children []ocispec.Descriptor, platform ocispec.Platform) (ocispec.Descriptor, error) {
-	for _, child := range children {
-		if child.Platform == nil && child.Annotations["vnd.docker.reference.type"] == "" {
+	host := platforms.Normalize(platform)
+	var chosen *ocispec.Descriptor
+	for i, child := range children {
+		_, attestation := child.Annotations["vnd.docker.reference.type"]
+		switch {
+		case child.Platform == nil && attestation:
+			continue
+		case child.Platform == nil:
 			return ocispec.Descriptor{}, unmeasurableImage("its image index has a manifest without a platform")
+		case child.Platform.OS == "unknown" && child.Platform.Architecture == "unknown":
+			continue
 		}
-	}
-	for _, child := range children {
-		if child.Platform != nil && platformMatches(*child.Platform, platform) {
-			if !pullManifestTypes[child.MediaType] && !pullIndexTypes[child.MediaType] {
-				return ocispec.Descriptor{}, &imageLoadRefused{why: "its image index names a document of the media type " + strconv.Quote(truncated(child.MediaType, 100)) + " for this server, which Docker does not pull"}
-			}
-			return child, nil
+		p := platforms.Normalize(*child.Platform)
+		if p.OS != host.OS || p.Architecture != host.Architecture {
+			continue
 		}
+		switch {
+		case chosen != nil:
+			return ocispec.Descriptor{}, unmeasurableImage("its image index has more than one image for this server's architecture")
+		case attestation:
+			// Docker's classic store pulls by platform alone, so it would choose this.
+			return ocispec.Descriptor{}, unmeasurableImage("its image index marks its image for this server's architecture as an attestation")
+		case p.Variant != "":
+			return ocispec.Descriptor{}, unmeasurableImage("its image for this server's architecture is for the variant " + strconv.Quote(truncated(p.Variant, 16)) + ", which not every such server runs")
+		}
+		chosen = &children[i]
 	}
-	return ocispec.Descriptor{}, unmeasurableImage("it has no image for this server's platform, " + platform.OS + "/" + platform.Architecture)
+	if chosen == nil {
+		return ocispec.Descriptor{}, unmeasurableImage("it has no image for this server's platform, " + host.OS + "/" + host.Architecture)
+	}
+	if !pullManifestTypes[chosen.MediaType] && !pullIndexTypes[chosen.MediaType] {
+		return ocispec.Descriptor{}, &imageLoadRefused{why: "its image index names a document of the media type " + strconv.Quote(truncated(chosen.MediaType, 100)) + " for this server, which Docker does not pull"}
+	}
+	return *chosen, nil
 }
 
-// platformMatches reports whether containerd runs an image for p on a server of platform host:
-// the same OS and architecture, with a variant that is the architecture's only one.
+// platformMatches reports whether an image for p runs on a server of platform host: the same
+// OS and architecture as containerd normalizes them, in the variant every such server runs.
 func platformMatches(p, host ocispec.Platform) bool {
-	if p.OS != host.OS || p.Architecture != host.Architecture {
-		return false
-	}
-	switch p.Architecture {
-	case "amd64":
-		return p.Variant == "" || p.Variant == "v1"
-	case "arm64":
-		return p.Variant == "" || p.Variant == "v8" || p.Variant == "8"
-	}
-	return p.Variant == host.Variant
+	p, host = platforms.Normalize(p), platforms.Normalize(host)
+	return p.OS == host.OS && p.Architecture == host.Architecture && p.Variant == ""
 }
 
 // foldedMember is the value of an object's member named name, ignoring case as Docker's JSON

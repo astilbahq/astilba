@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	"github.com/moby/moby/client"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -33,7 +34,14 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 		_ = writer.CloseWithError(err)
 		streamed <- err
 	}()
-	response, loaded := e.Docker.ImageLoad(ctx, reader)
+	// Docker unpacks every image in the loaded index for the platforms it loads, including
+	// any whose content it already holds from elsewhere. So it loads only the chosen image's
+	// platform, which the index has no other image for (choosePlatform).
+	var options []client.ImageLoadOption
+	if plan.platform != nil {
+		options = append(options, client.ImageLoadWithPlatforms(*plan.platform))
+	}
+	response, loaded := e.Docker.ImageLoad(ctx, reader, options...)
 	if loaded == nil {
 		loaded = imageLoadOutcome(response)
 		_ = response.Close()
@@ -45,17 +53,22 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 	case <-time.After(5 * time.Second):
 		// Docker has stopped reading, and a registry that stopped sending would hold the stream.
 		stop()
-		checked = <-streamed
+		if checked = <-streamed; checked != nil && !errors.As(checked, new(*imageLoadRefused)) {
+			checked = errDockerStopped
+		}
 	}
+	// The agent's own refusal comes first, then Docker's failure, which also ends the stream.
 	var refused *imageLoadRefused
 	var unread *imageArchiveUnread
 	switch {
 	case errors.As(checked, &refused):
 		return refused
-	case errors.As(checked, &unread):
-		return registryUnreachable(unread.err)
 	case loaded != nil:
 		return &imageLoadRefused{why: "Docker's image load failed: " + firstLine(loaded.Error(), 300)}
+	case errors.Is(checked, errDockerStopped):
+		return &imageLoadRefused{why: "Docker stopped reading it"}
+	case errors.As(checked, &unread):
+		return registryUnreachable(unread.err)
 	case checked != nil:
 		return &imageLoadRefused{why: "Docker stopped reading it"}
 	}
@@ -65,6 +78,9 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 	}
 	return nil
 }
+
+// errDockerStopped is Docker no longer reading the archive, for a reason its load reports.
+var errDockerStopped = errors.New("Docker stopped reading the image archive")
 
 // errorWriter records the first error writing to w.
 type errorWriter struct {
@@ -91,7 +107,7 @@ func streamRegistryArchive(ctx context.Context, out io.Writer, source registryIm
 	tw := tar.NewWriter(docker)
 	failed := func(err error) error {
 		if docker.err != nil {
-			return &imageLoadRefused{why: "Docker stopped reading it"}
+			return errDockerStopped
 		}
 		return err
 	}
@@ -192,11 +208,9 @@ func registryImageCost(plan *registryPlan, unpacked map[string]imageCost, limit 
 		cost, ok := unpacked[name]
 		return cost, ok
 	}, limit.less(plan.stored))
+	// chainsCost kept the chains within what the blobs left of limit.
 	total := plan.stored
 	total.add(chains)
-	if err == nil {
-		err = limit.check(total)
-	}
 	if errors.Is(err, errImageOverBytes) || errors.Is(err, errImageOverEntries) {
 		return total, limit.refusal(err)
 	}

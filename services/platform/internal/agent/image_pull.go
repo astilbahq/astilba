@@ -22,13 +22,14 @@ import (
 )
 
 // A deployment's image comes from a registry, where anyone who can push to it, or who runs it,
-// shapes what pulling it writes. Docker unpacks every layer it pulls onto its storage, so a
+// shapes what putting it into Docker writes. Docker unpacks every layer onto its storage, so a
 // layer of a sparse file, a highly compressed layer, millions of empty files or a layer listed
-// many times fills that storage however small the image is in the registry. Before Docker
-// pulls an image, the agent therefore reads what Docker will pull, from the same registry,
-// and counts what pulling it writes as it counts a local build's load (image_archive.go). The
-// image is named by digest and Docker verifies every blob it pulls, so Docker unpacks exactly
-// what the agent counted.
+// many times fills that storage however small the image is in the registry, and a registry can
+// send Docker more for a blob than the image says it holds. The agent therefore reads the image
+// from its registry itself and counts what Docker writes for it as it counts a local build's
+// load (image_archive.go), before Docker writes it: with Docker's containerd image store by
+// loading what it read (image_pull_load.go), and with the classic store by letting Docker pull
+// what it measured while watching Docker's storage (image_pull_watch.go).
 
 // imagePullRefused is why the agent did not pull an image; its message is the operation's note.
 type imagePullRefused struct{ note string }
@@ -93,7 +94,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 		return refuse(&imageLoadRefused{why: "its reference is not valid"})
 	}
 	pinned, ok := named.(reference.Digested)
-	if !ok || pinned.Digest().Algorithm() != digest.SHA256 || pinned.Digest().Validate() != nil {
+	if !ok || pinned.Digest().Algorithm() != digest.SHA256 {
 		return refuse(&imageLoadRefused{why: "it is not named by its sha256 digest"})
 	}
 	canonical, err := reference.WithDigest(reference.TrimNamed(named), pinned.Digest())
@@ -117,15 +118,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	}
 	// Docker pulls the image for its own platform.
 	platform := ocispec.Platform{OS: "linux", Architecture: dockerArchitecture(info.Info.Architecture)}
-	var plan *registryPlan
-	var source registryImage
-	for _, source = range sources {
-		plan, err = planRegistryImage(ctx, source, pinned.Digest(), platform, limit)
-		var unread *imageArchiveUnread
-		if !errors.As(err, &unread) {
-			break
-		}
-	}
+	plan, source, err := planFromSources(ctx, sources, pinned.Digest(), platform, limit)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -147,6 +140,13 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 		}
 		return refuse(err)
 	}
+	// Measuring read the whole image, while other writers may have filled Docker's storage.
+	if limit, err = e.imageLoadLimit(ctx); err != nil {
+		return refuse(err)
+	}
+	if err = limit.check(measured); err != nil {
+		return refuse(limit.refusal(err))
+	}
 	var auth string
 	if credential != nil {
 		auth = encodedRegistryAuth(*credential)
@@ -162,6 +162,26 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 		return refuse(&imageLoadRefused{why: "Docker pulled a different image for this server than the agent measured"})
 	}
 	return nil
+}
+
+// planFromSources plans the image from the first of sources that can be read: a mirror the
+// agent cannot read gives way to the next, and an insecure registry it cannot reach over HTTPS
+// to plain HTTP. A registry that answered over HTTPS is not asked again in the clear.
+func planFromSources(ctx context.Context, sources []registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit) (*registryPlan, registryImage, error) {
+	var err error
+	for _, source := range sources {
+		var answered *errcode.ErrorResponse
+		if plainHTTPFallback(source) && errors.As(err, &answered) {
+			break
+		}
+		var plan *registryPlan
+		plan, err = planRegistryImage(ctx, source, root, platform, limit)
+		var unread *imageArchiveUnread
+		if !errors.As(err, &unread) {
+			return plan, source, err
+		}
+	}
+	return nil, nil, err
 }
 
 // containerdImageStore reports whether Docker keeps images in containerd, as its info's driver
