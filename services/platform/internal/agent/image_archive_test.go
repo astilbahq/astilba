@@ -239,23 +239,6 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 		}
 		return docker
 	}
-	t.Run("sparse file in a layer", func(t *testing.T) {
-		image := newTestImage()
-		layer := image.blob(gzipOf(t, sparseTar(8<<30)))
-		image.image([]string{layer}, []string{layer})
-		archive := image.archive(t)
-		if len(archive) > 16<<10 {
-			t.Fatal("fixture is not small", len(archive))
-		}
-		refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries})
-	})
-	t.Run("sparse archive member", func(t *testing.T) {
-		// Docker's untar writes a member's holes from its header alone, so the header is held.
-		archive := append(sparseEntry("blobs/sha256/"+strings.Repeat("a", 64), 8<<30), make([]byte, 1024)...)
-		if docker := refused(t, archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries}); len(docker) != 0 {
-			t.Fatal("Docker received the sparse member's header")
-		}
-	})
 	t.Run("compressed zeros", func(t *testing.T) {
 		image := newTestImage()
 		layer := image.blob(gzipOf(t, tarOf(t, testFile{"zeros", 96 << 20})))
@@ -299,30 +282,19 @@ func TestImageArchiveRefusesWhatUnpacksBeyondItsLimit(t *testing.T) {
 		image.image([]string{layer}, []string{layer})
 		refused(t, image.archive(t), testLimit)
 	})
-	t.Run("headers Go folds into the next entry", func(t *testing.T) {
-		// Docker's legacy store keeps every header byte, superseded long names included.
-		var raw []byte
-		for range 80 {
-			raw = append(raw, tarBlock("././@LongLink", tar.TypeGNULongName, 1<<20)...)
-			raw = append(raw, make([]byte, 1<<20)...)
-		}
-		raw = append(append(raw, tarBlock("f", tar.TypeReg, 0)...), make([]byte, 1024)...)
-		image := newTestImage()
-		layer := image.blob(gzipOf(t, raw))
-		image.image([]string{layer}, []string{layer})
-		refused(t, image.archive(t), testLimit)
-	})
-	t.Run("PAX records spread over entries", func(t *testing.T) {
+	t.Run("header bytes spread over entries", func(t *testing.T) {
+		// Docker's legacy store keeps every header byte, so 900 files with a 60 KiB extended
+		// attribute each count for their headers, not their few blocks.
 		var out bytes.Buffer
 		w := tar.NewWriter(&out)
-		for i := range 80 {
-			_ = w.WriteHeader(&tar.Header{Name: fmt.Sprintf("f%d", i), Typeflag: tar.TypeReg, Mode: 0644, PAXRecords: map[string]string{"comment": strings.Repeat("a", 1<<20-64)}})
+		for i := range 900 {
+			_ = w.WriteHeader(&tar.Header{Name: fmt.Sprintf("f%d", i), Typeflag: tar.TypeReg, Mode: 0644, PAXRecords: map[string]string{"SCHILY.xattr.user.big": strings.Repeat(string(rune('a'+i%26)), 60<<10)}})
 		}
 		_ = w.Close()
 		image := newTestImage()
 		layer := image.blob(gzipOf(t, out.Bytes()))
 		image.image([]string{layer}, []string{layer})
-		refused(t, image.archive(t), testLimit)
+		refused(t, image.archive(t), imageLoadLimit{Bytes: 32 << 20, Entries: 10000})
 	})
 	t.Run("the name tar-split records again", func(t *testing.T) {
 		// 600 entries with 3 KiB paths: about 4 MiB of headers, but Docker's legacy store
@@ -415,9 +387,54 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 			image.image([]string{layer}, []string{layer})
 			return image.archive(t)
 		},
-		"layer writing a path twice": func() []byte {
+		"layer replacing a directory with a file": func() []byte {
+			var out bytes.Buffer
+			w := tar.NewWriter(&out)
+			_ = w.WriteHeader(&tar.Header{Name: "a/", Typeflag: tar.TypeDir, Mode: 0755})
+			_ = w.WriteHeader(&tar.Header{Name: "a", Typeflag: tar.TypeReg, Mode: 0644})
+			_ = w.Close()
 			image := valid()
-			layer := image.blob(gzipOf(t, tarOf(t, testFile{"a", 1}, testFile{"./a", 1})))
+			layer := image.blob(gzipOf(t, out.Bytes()))
+			image.image([]string{layer}, []string{layer})
+			return image.archive(t)
+		},
+		"sparse file in a layer": func() []byte {
+			image := valid()
+			layer := image.blob(gzipOf(t, sparseTar(8<<30)))
+			image.image([]string{layer}, []string{layer})
+			return image.archive(t)
+		},
+		"PAX record images do not use": func() []byte {
+			var out bytes.Buffer
+			w := tar.NewWriter(&out)
+			_ = w.WriteHeader(&tar.Header{Name: "f", Typeflag: tar.TypeReg, Mode: 0644, PAXRecords: map[string]string{"comment": "c"}})
+			_ = w.Close()
+			image := valid()
+			layer := image.blob(gzipOf(t, out.Bytes()))
+			image.image([]string{layer}, []string{layer})
+			return image.archive(t)
+		},
+		"tar entry type images do not use": func() []byte {
+			var out bytes.Buffer
+			w := tar.NewWriter(&out)
+			_ = w.WriteHeader(&tar.Header{Name: "g", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"mtime": "1"}})
+			_ = w.WriteHeader(&tar.Header{Name: "f", Typeflag: tar.TypeReg, Mode: 0644})
+			_ = w.Close()
+			image := valid()
+			layer := image.blob(gzipOf(t, out.Bytes()))
+			image.image([]string{layer}, []string{layer})
+			return image.archive(t)
+		},
+		// Go folds superseded long names into the next entry, but Docker's legacy store keeps them.
+		"file with more than 64 KiB of headers": func() []byte {
+			var raw []byte
+			for range 80 {
+				raw = append(raw, tarBlock("././@LongLink", tar.TypeGNULongName, 1<<20)...)
+				raw = append(raw, make([]byte, 1<<20)...)
+			}
+			raw = append(append(raw, tarBlock("f", tar.TypeReg, 0)...), make([]byte, 1024)...)
+			image := valid()
+			layer := image.blob(gzipOf(t, raw))
 			image.image([]string{layer}, []string{layer})
 			return image.archive(t)
 		},
@@ -500,8 +517,8 @@ func TestImageArchiveRefusesWhatItCannotMeasure(t *testing.T) {
 func TestImageArchiveRefusesMoreMetadataThanDockerHolds(t *testing.T) {
 	var out bytes.Buffer
 	w := tar.NewWriter(&out)
-	for i := range 130 {
-		_ = w.WriteHeader(&tar.Header{Name: fmt.Sprintf("d%d/", i), Typeflag: tar.TypeDir, Mode: 0755, PAXRecords: map[string]string{"comment": strings.Repeat("c", 1<<20-64)}})
+	for i := range 2200 {
+		_ = w.WriteHeader(&tar.Header{Name: fmt.Sprintf("d%d/", i), Typeflag: tar.TypeDir, Mode: 0755, PAXRecords: map[string]string{"SCHILY.xattr.user.big": strings.Repeat("x", 60<<10)}})
 	}
 	_ = w.Close()
 	image := newTestImage()
@@ -509,10 +526,47 @@ func TestImageArchiveRefusesMoreMetadataThanDockerHolds(t *testing.T) {
 	image.image([]string{layer}, []string{layer})
 	_, err := inspectTest(image.archive(t), imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries})
 	var refused *imageLoadRefused
-	if !errors.As(err, &refused) {
-		t.Fatal("not refused", err)
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "metadata") {
+		t.Fatal("not refused for its metadata", err)
 	}
 }
+
+// Docker's untar writes a sparse member's holes from its header alone, so the header is held.
+func TestImageArchiveHoldsARefusedMembersHeader(t *testing.T) {
+	archive := append(sparseEntry("blobs/sha256/"+strings.Repeat("a", 64), 8<<30), make([]byte, 1024)...)
+	docker, err := inspectTest(archive, imageLoadLimit{Bytes: DefaultImageLoadBytes, Entries: localImageLoadEntries})
+	if err == nil || len(docker) != 0 {
+		t.Fatal("Docker received a refused member's header", err)
+	}
+}
+
+// Flattened base images can write a file again; Docker keeps the later one.
+func TestImageArchiveAcceptsAFileWrittenTwice(t *testing.T) {
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, tarOf(t, testFile{"a", 1}, testFile{"./a", 1})))
+	image.image([]string{layer}, []string{layer})
+	if _, err := inspectTest(image.archive(t), testLimit); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Once Docker has stopped reading, the build container's archive is not to blame.
+func TestImageArchiveKeepsItsFirstFailure(t *testing.T) {
+	image := newTestImage()
+	layer := image.blob(gzipOf(t, tarOf(t, testFile{"app", 100 << 10})))
+	image.image([]string{layer}, []string{layer})
+	archive := image.archive(t)
+	src := io.MultiReader(bytes.NewReader(archive[:len(archive)/2]), iotest.ErrReader(io.ErrUnexpectedEOF))
+	err := inspectImageArchive(&imageArchiveGate{src: src, out: failingWriter{}}, testLimit)
+	var unread *imageArchiveUnread
+	if err == nil || errors.As(err, &unread) {
+		t.Fatal("a failure after Docker stopped reading was reported as", err)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 // A whiteout's name is four bytes longer than the file it removes, which may itself be as long
 // as Linux allows.

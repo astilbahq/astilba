@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/maphash"
 	"io"
 	"math"
@@ -43,7 +44,10 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 		// Docker's legacy store keeps every byte between entries' data: headers, including meta
 		// headers Go's reader folds into the next entry, long names and padding.
 		before := raw.n
-		raw.ceiling = before + limit.Bytes - cost.Bytes
+		raw.ceiling, raw.over = before+limit.Bytes-cost.Bytes, errImageOverBytes
+		if limit.Bytes-cost.Bytes > layerEntryHeaderBytes {
+			raw.ceiling, raw.over = before+layerEntryHeaderBytes, errLayerHeaders
+		}
 		hdr, err := tr.Next()
 		cost.Bytes += raw.n - before
 		if err == io.EOF {
@@ -53,11 +57,17 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 			return cost, headers, err
 		}
 		headers++
-		// Docker holds each entry's name, and a directory's whole header, in memory until the
-		// layer is unpacked.
-		metadata += int64(len(hdr.Name) + len(hdr.Linkname))
-		for k, v := range hdr.PAXRecords {
-			metadata += int64(len(k) + len(v))
+		if err = usualEntry(hdr); err != nil {
+			return cost, headers, err
+		}
+		// Until the layer is unpacked, Docker holds each entry's name in two maps, and a
+		// directory's whole header. A name from a PAX record keeps the record's block in memory.
+		metadata += tarEntryMemory + 2*int64(len(hdr.Name)+len(hdr.Linkname))
+		switch {
+		case hdr.Typeflag == tar.TypeDir:
+			metadata += raw.n - before + tarHeaderMemory
+		case hdr.PAXRecords["path"] != "" || hdr.PAXRecords["linkpath"] != "":
+			metadata += raw.n - before
 		}
 		if metadata > layerMetadataBytes {
 			return cost, headers, unmeasurableImage("a layer has more file metadata than Docker can hold while unpacking it")
@@ -89,6 +99,33 @@ func layerCost(r io.Reader, limit imageLoadLimit) (imageCost, int, error) {
 	cost.Bytes += n
 	return cost, headers, limit.check(cost)
 }
+
+// errLayerHeaders refuses an entry with more header data than any image needs, which also
+// bounds the memory Docker holds for it.
+var errLayerHeaders = unmeasurableImage("a layer has a file with more than 64 KiB of tar headers")
+
+// usualEntry refuses tar features images do not need, rather than measure what Docker does with
+// them: entry types other than files, links, directories, devices and pipes, sparse files, and
+// PAX records other than names, owners, times, sizes and extended attributes.
+func usualEntry(h *tar.Header) error {
+	switch h.Typeflag {
+	case tar.TypeReg, tar.TypeLink, tar.TypeSymlink, tar.TypeChar, tar.TypeBlock, tar.TypeDir, tar.TypeFifo:
+	default:
+		return unmeasurableImage(fmt.Sprintf("a layer has a tar entry of type %q, which images do not use", h.Typeflag))
+	}
+	for k := range h.PAXRecords {
+		switch {
+		case usualPAXRecords[k], strings.HasPrefix(k, "SCHILY.xattr."):
+		case strings.HasPrefix(k, "GNU.sparse."):
+			return unmeasurableImage("a layer has a sparse file, which images do not use")
+		default:
+			return unmeasurableImage("a layer has a PAX record other than a name, owner, time, size or extended attribute")
+		}
+	}
+	return nil
+}
+
+var usualPAXRecords = map[string]bool{"path": true, "linkpath": true, "size": true, "uid": true, "gid": true, "uname": true, "gname": true, "mtime": true, "atime": true, "ctime": true}
 
 // layerPaths is every path one layer writes, by its parent's id and its name, whether as an
 // entry or as a parent directory Docker creates for one. Keys are hashed with a random seed, so
@@ -136,8 +173,10 @@ func (l layerPaths) entry(h *tar.Header) (imageCost, error) {
 		switch {
 		case ok && !last && !existing.directory:
 			return imageCost{}, unmeasurableImage("a layer writes through a link or file it also writes")
-		case ok && last && !(existing.directory && h.Typeflag == tar.TypeDir):
-			return imageCost{}, unmeasurableImage("a layer writes the same path twice")
+		case ok && last && existing.directory != (h.Typeflag == tar.TypeDir):
+			// A file written again is counted twice; a directory turned into a file or link,
+			// or the reverse, would move what the layer has already written under it.
+			return imageCost{}, unmeasurableImage("a layer replaces a directory it writes with a file or link, or the reverse")
 		case !ok:
 			existing = layerPath{id: uint32(len(l.ids) + 1), directory: !last || h.Typeflag == tar.TypeDir}
 			l.ids[key] = existing

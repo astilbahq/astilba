@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 )
@@ -59,11 +60,21 @@ func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand, 
 	// Docker has stopped reading, so the inspection's next write fails rather than waits, and
 	// whatever the build container still sends after the archive's end is not needed.
 	_ = reader.CloseWithError(errors.New("Docker stopped reading the image archive"))
+	var checked error
+	var unread *imageArchiveUnread
+	select {
+	case checked = <-inspected:
+	case <-time.After(5 * time.Second):
+		// The build container stopped sending. Ending it ends the inspection, and the archive
+		// it then cannot read is the agent's doing, not the build's.
+		_ = cmd.Process.Kill()
+		if checked = <-inspected; errors.As(checked, &unread) {
+			checked = errors.New("the build container stopped sending the image archive")
+		}
+	}
 	_ = cmd.Process.Kill()
-	checked := <-inspected
 	_ = cmd.Wait()
 	var refused *imageLoadRefused
-	var unread *imageArchiveUnread
 	switch {
 	case errors.As(checked, &refused):
 		return refused

@@ -32,8 +32,14 @@ const (
 	// Files and directories a load may create, which also bounds the agent's memory per layer.
 	localImageLoadEntries = 1 << 20
 	dockerReserveInodes   = 1 << 18
-	// Names and PAX records in one layer, which Docker holds in memory while unpacking it.
+	// Names and directory headers in one layer, which Docker holds in memory while unpacking it.
 	layerMetadataBytes = 128 << 20
+	// What Go's tar reader holds for a header besides its names and records, and what Docker's
+	// maps of the paths it has unpacked hold for each entry besides its name.
+	tarHeaderMemory = 256
+	tarEntryMemory  = 128
+	// One entry's headers: its own, one PAX block of at most 64 KiB, and the padding before them.
+	layerEntryHeaderBytes = 64<<10 + 3*tarBlockBytes
 	// An image has a config, a manifest and a blob per layer; this many members is never one.
 	imageMembers = 4096
 	// Header blocks, PAX records and long names the gate holds before a member's size is known.
@@ -143,8 +149,10 @@ func (g *imageArchiveGate) Read(p []byte) (int, error) {
 	}
 	g.pending = append(g.pending, p[:n]...)
 	if err != nil && err != io.EOF {
-		g.failed = &imageArchiveUnread{err}
-		return n, g.failed
+		err = &imageArchiveUnread{err}
+		if g.failed == nil {
+			g.failed = err
+		}
 	}
 	return n, err
 }
@@ -162,7 +170,7 @@ func (g *imageArchiveGate) release() error {
 	}
 	_, err := g.out.Write(g.pending)
 	g.pending = g.pending[:0]
-	if err != nil {
+	if err != nil && g.failed == nil {
 		g.failed = err
 	}
 	return err
@@ -237,6 +245,9 @@ func inspectImageArchive(gate *imageArchiveGate, limit imageLoadLimit) error {
 		case hdr.Typeflag == tar.TypeReg && hdr.Name == name && match != nil:
 		default:
 			return unmeasurableImage("its archive has a member other than OCI image content")
+		}
+		if err = usualEntry(hdr); err != nil {
+			return err
 		}
 		cost := entryCost(hdr)
 		archive.add(cost)

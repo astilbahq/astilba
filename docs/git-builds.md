@@ -124,20 +124,24 @@ Each workspace can retain 100 repository connections, 100 registry connections a
 Source operations have a 256 MiB tmpfs workspace and a 512 MiB memory limit. Builds default to two CPUs, 2 GiB memory, 256 PIDs, a 256 MiB source workspace and a separate 1 GiB BuildKit state budget. **Build resource limits** can select 1–8 CPU cores, 512–8192 MiB memory, 64–1024 MiB source storage, 128–6144 MiB builder storage and a 1–30 minute assignment lifetime. Source and builder storage are memory-backed and, together with 96 MiB reserved for tools, must fit the memory limit. These are hard container ceilings, not a reservation of host capacity; size them for the runner and its other workloads. Builds reserve at least 4 GiB of free space on the local Docker data-root filesystem. Local image archives are capped at 512 MiB and must also fit the workspace budget. Loading a local image may write at most 8 GiB to Docker's storage, and create at most 1,048,576 files and directories. It must leave 4 GiB and 262,144 inodes free on Docker's data-root and on `/var/lib/containerd` where present. The host's owner can change the size and the reserve on the agent; see [local image loads](agent.md#local-image-loads). The agent counts what Docker writes, not what the archive claims. That includes:
 
 - archive members, with every member other than a layer counted twice, because Docker's legacy store writes configs twice;
-- every layer decompressed, with sparse files at their full size;
+- every layer decompressed;
 - every header byte, each entry's name again as Docker's legacy store records it, and the parent directories Docker creates;
 - each layer again for every distinct chain of layers that includes it, with a fixed allowance for each unpacked layer's bookkeeping.
 
-It streams the archive to Docker, holding each member's header until its size is counted and the archive's end until the whole image is. A refusal fails the stream, so Docker never imports a refused image. It also refuses archives it cannot measure:
+It streams the archive to Docker, holding each member's header until its size is counted and the archive's end until the whole image is. A refusal fails the stream, so Docker never imports a refused image. It also refuses archives with features images do not need, rather than measure what Docker does with them. The refusal note names the feature. Refused features:
 
 - anything other than BuildKit's OCI layout;
 - blobs that differ from their digest;
 - manifests that name layers or documents the archive lacks;
 - layers compressed other than with gzip or zstd;
 - layers that read both as compressed and as plain tar;
+- tar entries other than files, links, directories, devices and pipes;
+- sparse files;
+- PAX records other than names, owners, times, sizes and extended attributes;
+- more than 64 KiB of headers for one file;
 - paths longer than Linux allows;
-- layers that write the same path twice or write through a link they create;
-- layers with more than 128 MiB of names and PAX records, which Docker holds in memory while unpacking.
+- a layer that turns a directory it writes into a file or link, or the reverse, or writes through a link it creates (a file written twice is accepted, as flattened base images contain them);
+- more than 128 MiB of names and directory headers in one layer, which Docker holds in memory while unpacking it.
 
 Registry builds are not loaded locally, and pulling them for a deployment is not bounded this way yet. Assignments expire after 30 minutes by default; a custom lifetime includes time spent queued and is frozen when the operation is created. Source operations retain their existing 30-minute lifetime. Custom budgets and watch paths require an agent advertising build-controls support. Older agents retain default Dockerfile builds; update them before selecting the new controls. New agents omit the capability extension until the controller advertises support in its `Astilba-Agent-Features` response header, keeping older controllers usable. A newly enrolled agent advertises build controls on its next heartbeat. Cancellation and expiry still reach an assigned agent that may hold the command without provider access or fresh credentials.
 
