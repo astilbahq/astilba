@@ -38,7 +38,7 @@ func (s *Service) hydrateVisual(ctx context.Context, c *api.ExecutionCommand) er
 	if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
 		return err
 	}
-	if err := requireServiceOutputs(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan.Specification); err != nil {
+	if err := requireAgentSupport(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan.Specification); err != nil {
 		return err
 	}
 	if err := requireReplicas(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan); err != nil {

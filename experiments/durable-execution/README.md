@@ -23,7 +23,7 @@ Use a disposable Docker engine and Go 1.27.4. The fixture accepts only an explic
 ```sh
 colima start --profile astilba-plat-2 --activate=false --cpu 4 --memory 4 --disk 20 --vm-type vz --runtime docker
 
-docker --context colima-astilba-plat-2 pull postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+docker --context colima-astilba-plat-2 pull postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
 docker --context colima-astilba-plat-2 pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 docker --context colima-astilba-plat-2 pull traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
 
@@ -78,7 +78,7 @@ The High-risk review used three native same-model passes: general, durability/co
 
 `go.mod` and `go.sum` pin the Go dependencies. Principal dependencies are River/riverpgxv5 0.49.0 (MPL-2.0), bbolt 1.5.0 (MIT), pgx 5.11.0 (MIT), and Moby client 0.6.2/API 1.56.1 (Apache-2.0). These licence names were checked against the downloaded source notices; retain those notices if distributing their source or binaries. This fixture does not redistribute an image or a compiled application.
 
-The pinned database image is PostgreSQL 18.4 on Alpine 3.23; the effect image is BusyBox 1.37.0. The worker and agent processes run on macOS arm64; their Docker effects run in Colima's Linux arm64 VM using Docker Engine 29.5.2, API 1.54. SDK API negotiation is exercised against that engine. This does not establish the Ubuntu/systemd host matrix or amd64 support; P0 experiment 4 owns those checks.
+The pinned database image is PostgreSQL 18.7 on Alpine 3.23; the effect image is BusyBox 1.37.0. The worker and agent processes run on macOS arm64; their Docker effects run in Colima's Linux arm64 VM using Docker Engine 29.5.2, API 1.54. SDK API negotiation is exercised against that engine. This does not establish the Ubuntu/systemd host matrix or amd64 support; P0 experiment 4 owns those checks.
 
 The fixture tests process crashes, not power loss, disk corruption or loss of the journal itself. It exercises one create/start effect, not every deployment or destructive operation. It has one serialized agent and per-environment generations; it is not a production scheduler. HTTPS, enrollment, identity/credential rotation, controller transfer and host-wide coordination remain separate planned work. The private socket is not the production agent protocol.
 

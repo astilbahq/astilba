@@ -49,10 +49,9 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 	db.Close(ctx)
 
 	releaseVerified := false
-	nativeUpgradeJourney(t, f.engine, func(t *testing.T) (deployment.Plan, map[string]string) {
+	nativeUpgradeJourney(t, f.engine, func(t *testing.T, image string) (deployment.Plan, map[string]string) {
 		p, secrets := f.plan("upgrade-"+uuid.NewString(), true)
 		p.Specification.Routes = p.Specification.Routes[:1]
-		image := domain.Postgres17Image
 		p.Specification.Applications[1].Source.Image = &image
 		p.Specification.Applications[1].Mounts[0].Target = domain.PostgresMount(image)
 		p = p.WithHash()
@@ -96,7 +95,7 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 
 // The surrounding native fixture supplies real Docker, ingress and the same
 // monotonically increasing command stream used by deployments and backups.
-func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (deployment.Plan, map[string]string), next func(upgrade.Command) api.ExecutionCommand) {
+func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, string) (deployment.Plan, map[string]string), next func(upgrade.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
 	e.ResticCLI = "/opt/astilba-platform-tools/restic"
@@ -105,18 +104,37 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 		t.Fatal(err)
 	}
 	e.BackupRoots = append(e.BackupRoots, root)
-	for _, crash := range []string{"", "upgrade-admitted", "upgrade-preflight", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect", "upgrade-database-effect", "upgrade-routes-effect", "upgrade-writers-effect"} {
-		t.Run(strings.TrimPrefix(crash, "upgrade-"), func(t *testing.T) {
-			p, secrets := newSource(t)
+	var retired17 domain.PostgresRelease
+	for _, r := range domain.PostgresReleases() {
+		if r.Major() == 17 && r.Retired() {
+			retired17 = r
+		}
+	}
+	type journey struct{ name, crash, source, target string }
+	// The full journey starts from a retired PostgreSQL 17 release, as a database not yet
+	// updated in place does. A plan made before plans recorded their target still finishes
+	// on the 18.4 it was reviewed with. Each fault point runs the current pins.
+	journeys := []journey{{"complete", "", retired17.Image, domain.PostgresImage}, {"legacy_plan", "", retired17.Image, ""}}
+	for _, crash := range []string{"upgrade-admitted", "upgrade-preflight", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect", "upgrade-database-effect", "upgrade-routes-effect", "upgrade-writers-effect"} {
+		journeys = append(journeys, journey{strings.TrimPrefix(crash, "upgrade-"), crash, domain.Postgres17Image, domain.PostgresImage})
+	}
+	for _, j := range journeys {
+		crash := j.crash
+		t.Run(j.name, func(t *testing.T) {
+			p, secrets := newSource(t, j.source)
 			a := p.Specification.Applications[1]
 			policy := backup.Policy{ID: uuid.New(), Name: "Upgrade recovery", WorkspaceID: uuid.New(), EnvironmentID: p.EnvironmentID, ServerID: p.ServerID, DestinationID: uuid.New(), ResourceID: a.ID, Generation: 1, Method: "postgres-logical", Schedule: backup.Schedule{Timezone: "UTC"}, Retain: 1, Plan: p}
 			in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "Recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "upgrade-repository-password-canary"}}
-			plan := upgrade.Plan{ID: uuid.New(), Recipe: 1, PolicyID: policy.ID, ResourceID: a.ID, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 30, ExpiresAt: time.Now().Add(time.Hour), Source: p}
+			plan := upgrade.Plan{ID: uuid.New(), Recipe: 1, PolicyID: policy.ID, ResourceID: a.ID, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 30, ExpiresAt: time.Now().Add(time.Hour), Source: p, TargetImage: j.target}
+			target, err := plan.TargetRelease()
+			if err != nil || plan.Validate() != nil {
+				t.Fatal("invalid upgrade plan", err)
+			}
 			source, err := e.sourceContainer(ctx, policy, a.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if crash == "" {
+			if j.name == "complete" {
 				t.Run("managed_database_client", func(t *testing.T) {
 					// Share the managed application's network identity while holding a real TCP session.
 					writer, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
@@ -170,7 +188,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 						t.Fatal(err)
 					}
 					if condition.metadata {
-						err = e.postgresManifest(ctx, source.ID, a, domain.Postgres17Image, &backup.Manifest{})
+						err = e.postgresManifest(ctx, source.ID, a, j.source, &backup.Manifest{})
 					} else {
 						err = e.upgradeDatabaseChecks(ctx, source.ID, a)
 					}
@@ -325,6 +343,10 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 			current, err := e.sourceContainer(ctx, policy, a.ID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			// A deployment runs the plan's digest reference of the pinned release.
+			if want := map[bool]string{true: target.Image, false: j.source}[policy.Plan.Hash == plan.Target().Hash]; !deployment.ResolvedImage(want, current.Config.Image) {
+				t.Fatalf("the database runs %s, want %s", current.Config.Image, want)
 			}
 			value, err := e.pgQuery(ctx, current.ID, a, "SELECT value::text FROM reports.events")
 			if err != nil || !strings.Contains(string(value), `"a"=>"b"`) {

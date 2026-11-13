@@ -119,6 +119,10 @@ type Run struct {
 	ExitCode     *int       `json:"exitCode"`
 	Manifest     *Manifest  `json:"manifest"`
 	TargetID     uuid.UUID  `json:"targetId"`
+	// RestoreImage is the PostgreSQL image whose server filled the restore target, which may be a
+	// later release of the archive's major. Runs before it was recorded restored with the
+	// archive's own image.
+	RestoreImage string `json:"restoreImage,omitempty"`
 }
 type Status struct {
 	Enabled    bool      `json:"enabled"`

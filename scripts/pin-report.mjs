@@ -24,9 +24,11 @@ import {
   findGoTools,
   findImages,
   findReleases,
+  offTrackRelease,
   newestInLine,
   offTrack,
   parseTracks,
+  retiredKey,
   trackedFiles,
 } from "./pin-sources.mjs";
 import { clip, maxAliases, renderSections } from "./report-issue.mjs";
@@ -47,6 +49,7 @@ export const sections = {
   tools: "Tool updates",
   vulnerabilities: "Vulnerabilities to act on",
   other: "Other vulnerabilities",
+  retired: "Retired pins",
 };
 
 // One finding per advisory group and package in OSV Scanner's report on an image.
@@ -192,12 +195,26 @@ export function assemble({ images, tools }) {
         `image-error|${pin.image}|${pin.digest}|${error.step}`,
         `${name}: ${error.step} failed: ${error.message}`,
       );
+    // A newer release replaced it on purpose, so neither newer releases nor its
+    // advisories are something to act on in this pin.
+    if (pin.retired) {
+      info.push({
+        section: sections.retired,
+        text: `${name}@${short(pin.digest)} (${where(pin)}): ${pin.retired}`,
+      });
+      continue;
+    }
     if (pin.moved)
       problem(
         sections.images,
         `image-moved|${pin.image}|${pin.digest}|${pin.moved}`,
         `${name} was rebuilt upstream: the tag now points to ${short(pin.moved)}, pinned at ${short(pin.digest)} (${where(pin)})`,
       );
+    if (pin.offTrack)
+      info.push({
+        section: sections.images,
+        text: `${name} has a newer release off its track: ${pin.offTrack}. If its track has ended, the pin needs a new one (${where(pin)})`,
+      });
     if (pin.newer)
       problem(
         sections.images,
@@ -327,6 +344,8 @@ async function checkImage(client, scanner, pin, directory) {
   const manifest = await step("reading the pinned manifest", () =>
     client.manifest(pin, pin.digest),
   );
+  // A retired pin must stay pullable at its digest; nothing else about it is news.
+  if (pin.retired) return result;
   const targets = manifest
     ? ((await step("finding its platforms", () =>
         platformManifests(client, pin, manifest),
@@ -347,7 +366,12 @@ async function checkImage(client, scanner, pin, directory) {
   });
   await step("listing tags", async () => {
     offTrack(pin.tag, pin.track);
-    result.newer = newestInLine(pin.tag, await client.tags(pin), pin.track);
+    const tags = await client.tags(pin);
+    result.newer = newestInLine(pin.tag, tags, pin.track);
+    // A track can run dry, as an Alpine line does when upstream stops building it.
+    if (pin.track) {
+      result.offTrack = offTrackRelease(pin.tag, tags, pin.track, result.newer);
+    }
   });
   for (const target of targets) {
     const scan = await step(`scanning ${target.platform}`, () =>
@@ -430,6 +454,7 @@ if (
   const pins = findImages(files).map((pin) => ({
     ...pin,
     track: tracks.images.get(pin.image),
+    retired: tracks.retired.get(retiredKey(pin)),
   }));
   const goTools = findGoTools(
     files

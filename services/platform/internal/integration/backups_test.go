@@ -136,14 +136,22 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	status := backup.Status{PolicyID: policy.ID, Generation: 1, Next: time.Now().Add(time.Hour), Runs: []backup.Run{}}
 	now := time.Now()
 	target := uuid.New()
-	manifest := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg, Method: "postgres-logical", Image: image}
-	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
-	// A verified restore of an archive another PostgreSQL major wrote: its target was initialised
-	// with that major, which the deployed database cannot open.
-	older := manifest
-	older.Image = domain.Postgres17Image
+	// A backup an earlier 18 release took, restored by the database's own, later release.
+	var retired18 string
+	for _, r := range domain.PostgresReleases() {
+		if r.Major() == 18 && r.Retired() {
+			retired18 = r.Image
+		}
+	}
+	manifest := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg, Method: "postgres-logical", Image: retired18}
+	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, RestoreImage: image, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
+	// A verified restore an agent from before the release rule made of an archive another
+	// PostgreSQL major wrote: its target was initialised with that major, which the deployed
+	// database cannot open.
+	major17 := manifest
+	major17.Image = domain.Postgres17Image
 	crossMajor := run
-	crossMajor.ID, crossMajor.TargetID, crossMajor.Verified, crossMajor.Manifest, crossMajor.ManifestHash = uuid.New(), uuid.New(), true, &older, backup.Hash(older)
+	crossMajor.ID, crossMajor.TargetID, crossMajor.Verified, crossMajor.RestoreImage, crossMajor.Manifest, crossMajor.ManifestHash = uuid.New(), uuid.New(), true, "", &major17, backup.Hash(major17)
 	status.Runs = append(status.Runs, run, crossMajor)
 	send := func(seq int64, want int) {
 		raw, _ := stablejson.Marshal(status)
@@ -166,8 +174,27 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	uploadRecord.ID = upload.RunID
 	uploadRecord.TargetID = uuid.Nil
 	status.Runs = append(status.Runs, uploadRecord)
+	// A PostgreSQL 17 backup of this PostgreSQL 18 database, as one from before the upgrade.
+	older := uploadRecord
+	older.ID, older.TargetID, older.Snapshot, older.RestoreImage = uuid.New(), uuid.New(), strings.Repeat("c", 64), domain.Postgres17Image
+	olderManifest := *older.Manifest
+	olderManifest.Image = domain.Postgres17Image
+	older.Manifest = &olderManifest
+	status.Runs = append(status.Runs, older)
+	reported := status.Runs[0]
+	status.Runs[0].RestoreImage = "postgres:18.7-alpine3.23"
+	send(2, 400)
+	status.Runs[0] = reported
 	send(2, 204)
 	b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: upload.RunID}, 409, nil)
+	refused := string(b.call("POST", commandPath, api.BackupCommandRequest{Action: "restore", RequestKey: uuid.New(), Snapshot: older.Snapshot}, 400, nil))
+	if !strings.Contains(refused, "Restore refused: this backup was taken on PostgreSQL 17") || !strings.Contains(refused, "restore it into a PostgreSQL 17 database instead") {
+		t.Fatalf("a restore across majors was not refused with its reason: %s", refused)
+	}
+	refused = string(b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: older.ID}, 400, nil))
+	if !strings.Contains(refused, "restore.compatibility") || !strings.Contains(refused, "cannot open data PostgreSQL 17") {
+		t.Fatalf("data another major wrote was offered for cutover: %s", refused)
+	}
 	var next api.Revision
 	b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: run.ID}, 200, &next)
 	var restored domain.Specification

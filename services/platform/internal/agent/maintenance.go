@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -183,6 +184,16 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			note = "This host stopped nothing; its maintenance reservation is released."
 		} else if waived > 0 {
 			note = fmt.Sprintf("This host's maintenance reservation is released. %d instances were not required to be ready: they were already stopped or failing, or an operator accepted them.", waived)
+		}
+		// A restored volume may be served by a later release than the one that filled it. Other
+		// maintenance changes no release; an unfinished rebuild waits for the next deployment.
+		if command.UseTarget && s.Maintenance.Kind == "restore" {
+			rebuild, err := e.reindexPostgres(ctx, expected, func() error { return e.checkpoint(c.Id, "postgres-reindex") })
+			if err != nil {
+				return err
+			}
+			// The owner's instructions come first, so a clipped note never loses them.
+			note = strings.TrimSpace(rebuild + " " + note)
 		}
 		return e.finishCrossHost(c, command, o, note, true)
 	default:

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/moby/moby/client"
@@ -126,6 +127,13 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.Previews = &visual
 	h.Capabilities.Retirement = &visual
 	h.Capabilities.ServiceOutputs = &visual
+	if visual {
+		releases := []string{}
+		for _, r := range domain.PostgresReleases() {
+			releases = append(releases, r.Image)
+		}
+		h.Capabilities.PostgresReleases = &releases
+	}
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual
 	switch {

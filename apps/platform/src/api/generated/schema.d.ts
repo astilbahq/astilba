@@ -405,6 +405,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/postgres-releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listPostgresReleases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/session": {
         parameters: {
             query?: never;
@@ -2705,6 +2721,8 @@ export interface components {
             compose?: boolean;
             /** @description Supports named service output references; advertised only after Astilba-Agent-Service-Outputs v1. */
             serviceOutputs?: boolean;
+            /** @description The pinned PostgreSQL images this agent can run, restore and update, and whose restores it reports with restoreImage. Advertised only after Astilba-Agent-Postgres-Releases v1; an agent without it knows only postgres 17.10 and 18.4. */
+            postgresReleases?: string[];
             /** @description Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1. */
             safeReleases?: boolean;
             /** @description Supports replica recipe 3 and complete instance groups. Advertised only after Astilba-Agent-Replicas v1. */
@@ -3393,6 +3411,17 @@ export interface components {
             /** @enum {string} */
             level: "tested" | "manual" | "not_applicable";
             detail: string;
+        };
+        PostgresRelease: {
+            /** @description Exact digest-pinned image reference. */
+            image: string;
+            /** @description Version people read, such as 18.6. */
+            name: string;
+            major: number;
+            /** @description Whether a new database of this major runs this release. */
+            current: boolean;
+            /** @description Where the image keeps its data volume. */
+            mount: string;
         };
         CatalogRecipe: {
             id: string;
@@ -4225,6 +4254,8 @@ export interface components {
             manifest: components["schemas"]["BackupManifest"] | null;
             /** Format: uuid */
             targetId: string;
+            /** @description The pinned PostgreSQL image whose server filled the restore target. Absent on runs recorded before restores named it, which were filled by the archive's own image. */
+            restoreImage?: string;
         };
         BackupStatus: {
             enabled: boolean;
@@ -5672,6 +5703,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CatalogRecipe"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listPostgresReleases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every PostgreSQL release a managed database can name, oldest first within each major. A new database runs its major's current release; a retired release stays valid for a database that already runs it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostgresRelease"][];
                 };
             };
             /** @description Error */

@@ -384,6 +384,9 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   const agentHeaders = {
     Authorization: `Bearer ${enrollment.server.id}.${credential}`,
   };
+  const releases: { image: string }[] = await (
+    await page.request.get(`/api/v1/workspaces/${ws}/postgres-releases`)
+  ).json();
   const enrolled = await request.post(`${api}/agent/v1/enroll`, {
     data: {
       serverId: enrollment.server.id,
@@ -398,6 +401,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
         docker: true,
         visual: true,
         serviceOutputs: true,
+        postgresReleases: releases.map((r) => r.image),
       },
       preflight: {
         ready: true,

@@ -520,6 +520,49 @@ test("an upstream rebuild, a newer tag or tool, and anything not checked need at
   );
 });
 
+test("a release beyond a pin's track is listed for information", () => {
+  const { problems, info } = assemble({
+    images: [checked({ scans: [], offTrack: "18.8-alpine3.24" })],
+    tools: [],
+  });
+  assert.deepEqual(problems, []);
+  assert.match(
+    info.find(({ section }) => section === sections.images).text,
+    /postgres:18\.4-alpine3\.23 has a newer release off its track: 18\.8-alpine3\.24/,
+  );
+});
+
+test("a retired pin is listed for information, except a manifest that cannot be read", () => {
+  const retired = "PostgreSQL 18.4, replaced by 18.7; old databases and backups still name it.";
+  const { problems, summary, info } = assemble({
+    images: [
+      checked({ retired }),
+      checked({
+        digest: `sha256:${digest("c")}`,
+        retired,
+        scans: [],
+        errors: [{ step: "reading the pinned manifest", message: "HTTP 404" }],
+      }),
+    ],
+    tools: [],
+  });
+  assert.deepEqual(
+    problems.map(({ section, key }) => [section, key]),
+    [
+      [
+        sections.problems,
+        `image-error|postgres|sha256:${digest("c")}|reading the pinned manifest`,
+      ],
+    ],
+  );
+  assert.equal(summary.length, 1);
+  assert.deepEqual(
+    info.map(({ section }) => section),
+    [sections.retired, sections.retired],
+  );
+  assert.match(info[0].text, /postgres:18\.4-alpine3\.23@sha256:aaaaaaaaaaaa \(runtime: .*\): PostgreSQL 18\.4, replaced/);
+});
+
 test("an image and a tool of one name are separate, and a tag's newer release is one", () => {
   const pin = (fill, runtime) =>
     checked({

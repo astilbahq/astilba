@@ -135,6 +135,9 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 				a.DependsOn[j] = ids[a.DependsOn[j]]
 			}
 			if a.Postgres != nil {
+				// The clone's database is new storage, so it starts on its major's current release.
+				fresh := domain.FreshPostgresImage(*a.Source.Image)
+				a.Source.Image = &fresh
 				id, ok := secrets[a.Postgres.PasswordSecretVersionID]
 				if !ok {
 					pass, err := randtoken.New()

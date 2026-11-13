@@ -159,6 +159,9 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 		if _, err = s.visualServer(ctx, tx, ws, server); err != nil {
 			return out, err
 		}
+		if err = requireMemberSupport(ctx, tx, ws, server, in.ServerId, v.Spec); err != nil {
+			return out, err
+		}
 		var cap, pre []byte
 		var controller int64
 		var busy bool
@@ -506,6 +509,9 @@ func (s *Service) admitCrossHostApply(ctx context.Context, tx pgx.Tx, ws uuid.UU
 	}
 	for _, u := range p.Distributed.Units {
 		if _, err = s.visualServer(ctx, tx, ws, u.Plan.ServerID); err != nil {
+			return err
+		}
+		if err = requireMemberSupport(ctx, tx, ws, u.Plan.ServerID, p.ServerID, u.Plan.Specification); err != nil {
 			return err
 		}
 		var ready bool

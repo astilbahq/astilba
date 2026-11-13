@@ -67,6 +67,39 @@ export const noObservation: Schema["VisualObservation"] = {
   applied: false,
   stateHash: "",
 };
+// Placeholder digests, built so they never read as pins the pin report checks.
+const placeholderDigest = (c: string) => `@sha256:${c.repeat(64)}`;
+export const postgresReleases: Schema["PostgresRelease"][] = [
+  {
+    image: `postgres:17.10-alpine3.23${placeholderDigest("1")}`,
+    name: "17.10",
+    major: 17,
+    current: false,
+    mount: "/var/lib/postgresql/data",
+  },
+  {
+    image: `postgres:17.12-alpine3.23${placeholderDigest("2")}`,
+    name: "17.12",
+    major: 17,
+    current: true,
+    mount: "/var/lib/postgresql/data",
+  },
+  {
+    image: `postgres:18.4-alpine3.23${placeholderDigest("3")}`,
+    name: "18.4",
+    major: 18,
+    current: false,
+    mount: "/var/lib/postgresql",
+  },
+  {
+    image: `postgres:18.7-alpine3.23${placeholderDigest("4")}`,
+    name: "18.7",
+    major: 18,
+    current: true,
+    mount: "/var/lib/postgresql",
+  },
+];
+
 export const workshopError = (code = "not_found", status = 404) =>
   HttpResponse.json(
     { code, message: "Workshop request rejected", requestId: "workshop" },
@@ -164,6 +197,9 @@ export function environmentHandlers() {
       http.get(`/api/v1/workspaces/:workspaceId/${suffix}`, () =>
         HttpResponse.json([]),
       ),
+    ),
+    http.get("/api/v1/workspaces/:workspaceId/postgres-releases", () =>
+      HttpResponse.json(postgresReleases),
     ),
     http.get(
       `${environmentRoot}/events`,

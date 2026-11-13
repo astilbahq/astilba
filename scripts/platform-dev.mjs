@@ -88,7 +88,7 @@ const stateFile = join(directory, "state.json");
 const keyring = join(directory, "keyring.json");
 const binary = join(directory, "astilba");
 const image =
-  "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e";
+  "postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1";
 const label = "com.astilba.dev-owner";
 const email = "owner@example.test";
 const password = "correct horse battery staple";

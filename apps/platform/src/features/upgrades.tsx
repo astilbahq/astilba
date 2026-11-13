@@ -9,6 +9,7 @@ import { Label } from "../components/label";
 import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Form, text, useAction } from "../ui";
+import { currentReleases, usePostgresReleases } from "./postgres-releases";
 import type { EnvironmentPath } from "./visual-editor";
 
 const root =
@@ -32,6 +33,10 @@ export function Upgrades({
 }) {
   const queries = useQueryClient(),
     action = useAction();
+  const releases = usePostgresReleases(path.workspaceId);
+  const target =
+    currentReleases(releases.data ?? []).find((r) => r.major === 18)?.name ??
+    "18";
   const keys = useRef(new Map<string, string>());
   const [comparison, setComparison] = useState<{
     id: string;
@@ -71,7 +76,7 @@ export function Upgrades({
     <section className={s.stack} aria-label="Supported major upgrades">
       <h2>Supported major upgrades</h2>
       <p>
-        PostgreSQL 17.10 → 18.4 uses a logical backup and fresh storage. All
+        PostgreSQL 17 → {target} uses a logical backup and fresh storage. All
         services in this environment stop until you approve cutover or return to
         the old database. Duration depends on data size, storage and network
         speed.
@@ -81,7 +86,7 @@ export function Upgrades({
         <details className={s.panel}>
           <summary>Review a PostgreSQL 17 → 18 upgrade</summary>
           <p>
-            Requires one managed PostgreSQL 17.10 database, no external clients,
+            Requires one managed PostgreSQL 17 database, no external clients,
             local Docker storage, standard tablespaces and only plpgsql or
             hstore extensions. Additional login roles, role memberships,
             replication slots and subscriptions are unsupported. The server

@@ -145,7 +145,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			return err
 		}
 		plan = plan.PrimaryPlan()
-		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, plan.Specification); err != nil {
+		if err = requireAgentSupport(ctx, tx, ws, *v.Server, plan.Specification); err != nil {
 			return err
 		}
 		if err = requireReplicas(ctx, tx, ws, *v.Server, plan); err != nil {
@@ -301,8 +301,10 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 				return err
 			}
 		}
-		if b.Action == "restore" && !backup.SnapshotID(b.Snapshot) {
-			return domain.Invalid("snapshot")
+		if b.Action == "restore" {
+			if err = checkRestoreRequest(ctx, tx, ws, env, v, b.Snapshot); err != nil {
+				return err
+			}
 		}
 		if err = requireGeneralSchedule(ctx, tx, ws, v.ServerID, v); err != nil {
 			return err
@@ -340,7 +342,7 @@ func (s *Service) hydrateBackup(ctx context.Context, c *api.ExecutionCommand) er
 	if err := requireGeneralSchedule(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy); err != nil {
 		return err
 	}
-	if err := requireServiceOutputs(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan.Specification); err != nil {
+	if err := requireAgentSupport(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan.Specification); err != nil {
 		return err
 	}
 	if err := requireReplicas(ctx, s.Store.Pool, b.Installation.Policy.WorkspaceID, c.ServerId, b.Installation.Policy.Plan); err != nil {
@@ -434,7 +436,7 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 		}
 	}
 	for _, r := range status.Runs {
-		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) {
+		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) || unknownRestoreImage(r) {
 			return domain.Invalid("run")
 		}
 	}

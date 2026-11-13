@@ -64,25 +64,22 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 				return domain.Conflict
 			}
 		}
-		// The restored target is initialised by the archive's own PostgreSQL image, so the source the
-		// policy froze and the draft that will run on the target must both run that image.
-		source, err := backup.CutoverVolume(policy, run)
-		if err != nil {
-			return domain.Invalid("restore.compatibility")
-		}
+		// The release that restored the target wrote its data, so the draft that will run on the
+		// target, and the source the policy froze, must both open what that release wrote.
 		var major pgtype.Text
 		if policy.Method == "postgres-logical" {
-			opens := false
-			for _, a := range v.Spec.Applications {
-				if a.ID == policy.ResourceID {
-					opens = backup.OpensRestoredPostgres(a, *run.Manifest) && a.Mounts[0].VolumeID == source
-				}
+			if err = restoredDatabaseOpens(v.Spec, policy, run); err != nil {
+				return err
 			}
-			if !opens {
-				return domain.Invalid("restore.compatibility")
-			}
-			major.String = domain.PostgresMajor(run.Manifest.Image)
+			major.String = domain.PostgresMajor(run.RestoredImage())
 			major.Valid = major.String != ""
+		}
+		source, err := backup.CutoverVolume(policy, run)
+		if err != nil {
+			return restoreIncompatible(err)
+		}
+		if policy.Method == "postgres-logical" && !mountsVolume(v.Spec, policy.ResourceID, source) {
+			return domain.Invalid("restore.compatibility")
 		}
 		q := db.New(tx)
 		recorded, err := q.ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: policy.Plan.UnitID, ID: run.TargetID, PostgresMajor: major})

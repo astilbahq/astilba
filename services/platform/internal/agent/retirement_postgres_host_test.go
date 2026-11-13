@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
@@ -66,7 +65,8 @@ func TestRetiredPostgresVolumeRefusesAnotherMajor(t *testing.T) {
 			return volumeLabels(plan(domain.Postgres17Image, volume), volume)
 		}},
 		{"restored from an archive", func(volume uuid.UUID) map[string]string {
-			return restoreTargetLabels(identity, volume, backup.Manifest{Method: "postgres-logical", Image: domain.Postgres17Image})
+			release, _ := domain.PostgresReleaseOf(domain.Postgres17Image)
+			return restoreTargetLabels(identity, volume, release)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

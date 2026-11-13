@@ -510,7 +510,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 	if err = sourceGroup.Validate(true); err != nil {
 		t.Fatal("invalid fixture source group", err)
 	}
-	upgradePlan := upgrade.Plan{Group: &sourceGroup, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: uuid.New(), ResourceID: pg, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 7, ExpiresAt: time.Now().Add(time.Hour), Source: sourceGroup.PrimaryPlan()}
+	upgradePlan := upgrade.Plan{Group: &sourceGroup, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: uuid.New(), ResourceID: pg, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 7, ExpiresAt: time.Now().Add(time.Hour), Source: sourceGroup.PrimaryPlan(), TargetImage: domain.PostgresImage}
 	if err = upgradePlan.Validate(); err != nil {
 		t.Fatal(err)
 	}

@@ -28,10 +28,6 @@ import (
 // Packet reachability and installed-agent barriers are separate native gates.
 // This fixture proves tenant admission, frozen per-host authority and durable
 // parent/child transitions through the real PostgreSQL/River execution service.
-type coordinatedScheduleSweep struct{}
-
-func (coordinatedScheduleSweep) Kind() string { return "platform_coordinated_schedule_v1" }
-
 func TestCrossHostCoordinatedPlacement(t *testing.T) {
 	testCrossHostCoordinatedPlacement(t, "")
 }
@@ -81,7 +77,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	var holdRemoteReserve atomic.Bool
 	var holdRemoteResume atomic.Bool
 	var holdPrimaryResume atomic.Bool
-	var unsupportedMaintenanceHost atomic.Int32
+	var unsupportedMaintenanceHost, olderReleasesHost atomic.Int32
 	var failCandidate atomic.Bool
 	var expirePhase atomic.Value
 	var revokePrimary atomic.Bool
@@ -123,6 +119,9 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 					capabilities := in.Capabilities
 					if unsupportedMaintenanceHost.Load() == int32(i+1) {
 						capabilities.MaintenanceContinuation = nil
+					}
+					if olderReleasesHost.Load() == int32(i+1) {
+						capabilities.PostgresReleases = nil
 					}
 					if _, err := f.execution.Heartbeat(ctx, identity, api.AgentHeartbeat{Capabilities: capabilities, Preflight: in.Preflight}); err != nil {
 						if i == 0 && revokePrimary.Load() && errors.Is(err, domain.Unauthenticated) {
@@ -1001,6 +1000,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	deploy(databaseDraft.Id)
 	stack.Placement = &domain.Placement{NetworkID: network.ID, IngressServerID: servers[0].Server.Id, Applications: []domain.ApplicationPlacement{{ApplicationID: web, CPUMillis: 500, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: servers[0].Server.Id, Count: 1}, {ServerID: servers[1].Server.Id, Count: 1}}}}}
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseDraft.Id, "specification": stack}, 200, &databaseDraft)
+	refuseOlderMember(t, f, b, &olderReleasesHost, identities[1], enrollments[1], servers[1].Server.Name, databasePath, databaseDraft.Id, servers[0].Server.Id, func() { waitNetworkReady(); refreshAuthentication() })
 	source := deploy(databaseDraft.Id)
 	waitNetworkIdle()
 	var recovery backup.Policy

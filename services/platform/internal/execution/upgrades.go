@@ -104,7 +104,7 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 			group = &frozen
 			source = source.PrimaryPlan()
 		}
-		if err = requireServiceOutputs(ctx, tx, ws, *v.Server, source.Specification); err != nil {
+		if err = requireAgentSupport(ctx, tx, ws, *v.Server, source.Specification); err != nil {
 			return err
 		}
 		if err = requireReplicas(ctx, tx, ws, *v.Server, source); err != nil {
@@ -114,8 +114,25 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 			return domain.Invalid("policy")
 		}
 		out.Plan = upgrade.Plan{Group: group, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: policy.ID, ResourceID: in.ResourceId, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: in.RetainDays, ExpiresAt: time.Now().UTC().Add(10 * time.Minute), Source: source}
+		current, _ := domain.CurrentPostgres(18)
+		out.Plan.TargetImage = current.Image
 		if out.Plan.Validate() != nil {
 			return domain.Invalid("upgrade.source")
+		}
+		// An agent that does not know the target would build the plan's digest without it. A
+		// grouped upgrade sends the target to every member.
+		targets := []deployment.Plan{}
+		if group != nil {
+			for _, u := range out.Plan.TargetGroup().Distributed.Units {
+				targets = append(targets, u.Plan)
+			}
+		} else {
+			targets = append(targets, out.Plan.Target())
+		}
+		for _, target := range targets {
+			if err = requireAgentSupport(ctx, tx, ws, target.ServerID, target.Specification); err != nil {
+				return err
+			}
 		}
 		// The target must be storable before the host changes: completion has no way to refuse it.
 		stored, err := upgradeTargetSpecification(out.Plan.TargetGroup())

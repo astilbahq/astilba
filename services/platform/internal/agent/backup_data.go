@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -315,12 +315,6 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if in.Policy.Method == "container-job" || !backup.SnapshotID(r.Snapshot) || r.TargetID == uuid.Nil {
 		return errors.New("invalid restore")
 	}
-	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
-		return err
-	}
-	if err := e.prepareRepository(ctx, in, false); err != nil {
-		return err
-	}
 	var original *backup.Run
 	for i := range s.Runs {
 		v := &s.Runs[i]
@@ -335,6 +329,19 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	m := *original.Manifest
 	if m.Recipe != backup.Recipe || m.PolicyID != in.Policy.ID || m.ResourceID != in.Policy.ResourceID || m.Method != in.Policy.Method || m.Bytes <= 0 || m.Bytes > 1<<40 || !backup.SnapshotID(m.SHA256) {
 		return errors.New("invalid backup manifest")
+	}
+	var release domain.PostgresRelease
+	if m.Method == "postgres-logical" {
+		var err error
+		if release, err = backup.RestoreRelease(in.Policy, m); err != nil {
+			return restoreRefusal{err}
+		}
+	}
+	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
+		return err
+	}
+	if err := e.prepareRepository(ctx, in, false); err != nil {
+		return err
 	}
 	// Reserve headroom for the downloaded archive and expanded database, retaining
 	// both old and new volumes. Refuse unknown capacity rather than assuming room.
@@ -385,14 +392,14 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if err = checksumFile(filepath.Join(dir, filename), &checked); err != nil || checked.Bytes != m.Bytes || checked.SHA256 != m.SHA256 {
 		return errors.New("snapshot checksum mismatch")
 	}
-	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(r.TargetID), Driver: "local", Labels: restoreTargetLabels(in.Policy.Plan, r.TargetID, m)}); err != nil {
+	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(r.TargetID), Driver: "local", Labels: restoreTargetLabels(in.Policy.Plan, r.TargetID, release)}); err != nil {
 		return err
 	}
 	if _, err = e.volumePath(ctx, in.Policy, r.TargetID); err != nil {
 		return err
 	}
 	if m.Method == "postgres-logical" {
-		err = e.restorePostgres(ctx, in.Policy, r, dir, stored, in.Access.DatabasePassword)
+		err = e.restorePostgres(ctx, in.Policy, r, dir, stored, in.Access.DatabasePassword, release, false)
 	} else {
 		var name string
 		var cleanup func()
@@ -436,118 +443,14 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	}
 	r.Manifest = &stored
 	r.ManifestHash = backup.Hash(stored)
+	r.RestoreImage = release.Image
+	if release.Image != "" {
+		if err = e.Journal.savePostgresData(r.TargetID, postgresData{Image: release.Image}); err != nil {
+			return err
+		}
+	}
 	r.Verified = true
 	return nil
-}
-func quoteIdentifier(v string) string { return `"` + strings.ReplaceAll(v, `"`, `""`) + `"` }
-func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup.Run, dir string, m backup.Manifest, password string) error {
-	a, err := sourceApp(p)
-	if err != nil || a.Postgres == nil || (m.Image != domain.PostgresImage && m.Image != domain.Postgres17Image) || m.Database != a.Postgres.Database || m.Username != a.Postgres.Username {
-		return errors.New("unsupported restore recipe")
-	}
-	if password == "" {
-		return errors.New("database initialization credential unavailable")
-	}
-	maintenance := "postgres"
-	if m.Database == maintenance {
-		maintenance = "template1"
-	}
-	labels := visualLabels(p.Plan, r.TargetID)
-	labels[labelKind] = "backup-restore-v1"
-	labels["com.astilba.run"] = r.ID.String()
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-restore-" + r.ID.String(), Config: &container.Config{Image: m.Image, Env: []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(r.TargetID), Target: domain.PostgresMount(m.Image)}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
-	if err != nil {
-		return err
-	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_, _ = e.Docker.ContainerRemove(cleanup, created.ID, client.ContainerRemoveOptions{Force: true})
-	}()
-	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return err
-	}
-	if err = e.waitPostgresStartup(ctx, created.ID, m.Username, m.Database); err != nil {
-		return err
-	}
-	for _, role := range m.Roles {
-		if role.Name == m.Username || len(role.Name) > 63 || strings.ContainsRune(role.Name, 0) {
-			return errors.New("invalid role")
-		}
-		if _, err = e.pgQuery(ctx, created.ID, a, "CREATE ROLE "+quoteIdentifier(role.Name)+" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
-			return err
-		}
-	}
-	file, err := os.Open(filepath.Join(dir, "data.dump"))
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	// Recreate only inside this fresh, isolated cluster. CREATE DATABASE cannot
-	// run in a transaction; a failed restore never exposes this target to writers.
-	if err = e.dataTool(ctx, file, io.Discard, "exec", "-i", created.ID, "pg_restore", "--exit-on-error", "--clean", "--if-exists", "--create", "-U", m.Username, "-d", maintenance); err != nil {
-		return err
-	}
-	// Re-dump with the same pinned tool to verify all archived definitions and data,
-	// including database settings, owners, grants and sequence contents.
-	verify, err := os.CreateTemp(e.Journal.dir, "restore-verification-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(verify.Name())
-	dumpArgs := []string{"exec", created.ID, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", m.Username, "-d", m.Database}
-	crossMajor := a.Source.Image != nil && *a.Source.Image == domain.Postgres17Image && m.Image == domain.PostgresImage
-	if crossMajor {
-		dumpArgs = append(dumpArgs, "--quote-all-identifiers")
-	}
-	err = e.dataTool(ctx, nil, verify, dumpArgs...)
-	err = errors.Join(err, verify.Close())
-	if err != nil {
-		return err
-	}
-	// The pinned PostgreSQL tools can use a fixed restrict key for deterministic
-	// SQL. Hash complete streams, including COPY records, without retaining them.
-	originalSQL := sha256.New()
-	restoredSQL := sha256.New()
-	for _, item := range []struct {
-		path string
-		out  io.Writer
-	}{{filepath.Join(dir, "data.dump"), originalSQL}, {verify.Name(), restoredSQL}} {
-		file, err := os.Open(item.path)
-		if err != nil {
-			return err
-		}
-		out := item.out
-		if crossMajor {
-			out = &upgradeSQLHeader{out: out}
-		}
-		err = e.dataTool(ctx, file, out, "exec", "-i", created.ID, "pg_restore", "--create", "--file=-", "--restrict-key=AstilbaRestoreVerification")
-		closeErr := file.Close()
-		if err != nil || closeErr != nil {
-			return errors.Join(err, closeErr)
-		}
-	}
-	if !bytes.Equal(originalSQL.Sum(nil), restoredSQL.Sum(nil)) {
-		return errors.New("restored database differs from archived records or schema")
-	}
-	if _, err = e.Docker.ContainerStop(ctx, created.ID, client.ContainerStopOptions{}); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (e *Engine) waitPostgresStartup(ctx context.Context, container, user, database string) error {
-	for range 60 {
-		// The image's temporary initialization server accepts Unix-socket
-		// connections. TCP becomes available only after initialization finishes.
-		if _, err := e.dataOutput(ctx, container, "pg_isready", "-h", "127.0.0.1", "-U", user, "-d", database); err == nil {
-			return nil
-		}
-		if !wait(ctx, time.Second) {
-			return ctx.Err()
-		}
-	}
-	return errors.New("fresh database not ready")
 }
 
 func (e *Engine) checkRestoreOwnership(ctx context.Context, p backup.Policy) error {
@@ -586,18 +489,16 @@ func (e *Engine) checkRestoreOwnership(ctx context.Context, p backup.Policy) err
 }
 
 func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Application, image string, m *backup.Manifest) error {
-	versionNumber, dataDirectory := "180004", "/var/lib/postgresql/18/docker"
-	if image == domain.Postgres17Image {
-		versionNumber, dataDirectory = "170010", "/var/lib/postgresql/data"
-	} else if image != domain.PostgresImage {
+	release, ok := domain.PostgresReleaseOf(image)
+	if !ok {
 		return errors.New("unsupported PostgreSQL image")
 	}
 	version, err := e.pgQuery(ctx, id, a, "SHOW server_version_num")
-	if err != nil || strings.TrimSpace(string(version)) != versionNumber {
+	if err != nil || strings.TrimSpace(string(version)) != strconv.Itoa(release.Version) {
 		return errors.New("unsupported PostgreSQL version")
 	}
 	layout, err := e.pgQuery(ctx, id, a, "SHOW data_directory")
-	if err != nil || strings.TrimSpace(string(layout)) != dataDirectory {
+	if err != nil || strings.TrimSpace(string(layout)) != release.DataDirectory {
 		return errors.New("unsupported PostgreSQL layout")
 	}
 	// Restore is intentionally limited to unprivileged NOLOGIN roles. SQL from a

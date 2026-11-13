@@ -28,6 +28,37 @@ type Plan struct {
 	RetainDays       int              `json:"retainDays"`
 	ExpiresAt        time.Time        `json:"expiresAt"`
 	Source           deployment.Plan  `json:"source"`
+	// TargetImage is the PostgreSQL 18 release the plan restores into, fixed when the plan is made
+	// so a later pin does not change a plan already reviewed or under way.
+	TargetImage string `json:"targetImage,omitempty"`
+}
+
+// legacyTargetImage is the target of plans made before plans recorded theirs.
+const legacyTargetImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
+
+// TargetRelease is the release the plan restores into.
+func (p Plan) TargetRelease() (domain.PostgresRelease, error) {
+	image := p.TargetImage
+	if image == "" {
+		image = legacyTargetImage
+	}
+	r, ok := domain.PostgresReleaseOf(image)
+	if !ok {
+		return r, errors.New("unknown PostgreSQL target")
+	}
+	return r, nil
+}
+
+// SourceRelease is the release the database runs before the upgrade.
+func (p Plan) SourceRelease() (domain.PostgresRelease, error) {
+	for _, a := range p.Source.Specification.Applications {
+		if a.ID == p.ResourceID && a.Postgres != nil && a.Source.Image != nil {
+			if r, ok := domain.PostgresReleaseOf(*a.Source.Image); ok {
+				return r, nil
+			}
+		}
+	}
+	return domain.PostgresRelease{}, errors.New("unknown PostgreSQL source")
 }
 
 type Status struct {
@@ -89,16 +120,21 @@ func (p Plan) Validate() error {
 			return errors.New("target volume must be new")
 		}
 	}
+	source, sourceErr := p.SourceRelease()
+	target, targetErr := p.TargetRelease()
+	if sourceErr != nil || targetErr != nil || source.UpgradesTo(target) != nil {
+		return errors.New("recipe requires one managed PostgreSQL 17 database and a PostgreSQL 18 target")
+	}
 	for _, a := range p.Source.Specification.Applications {
 		if a.Postgres != nil {
 			count++
 		}
-		if a.ID == p.ResourceID && a.Postgres != nil && a.Source.Image != nil && *a.Source.Image == domain.Postgres17Image && deployment.ResolvedImage(domain.Postgres17Image, p.Source.Images[a.ID.String()]) {
+		if a.ID == p.ResourceID && a.Postgres != nil && a.Source.Image != nil && deployment.ResolvedImage(*a.Source.Image, p.Source.Images[a.ID.String()]) {
 			found = true
 		}
 	}
 	if !found || count != 1 {
-		return errors.New("recipe requires one managed PostgreSQL 17.10 database")
+		return errors.New("recipe requires one managed PostgreSQL 17 database")
 	}
 	return nil
 }
@@ -146,9 +182,11 @@ func (p Plan) targetPlan(source deployment.Plan, id uuid.UUID) deployment.Plan {
 	for i := range target.Specification.Applications {
 		a := &target.Specification.Applications[i]
 		if a.ID == p.ResourceID {
-			image := domain.PostgresImage
+			// Validate refuses a plan without a known target, and recovery never builds one.
+			release, _ := p.TargetRelease()
+			image := release.Image
 			a.Source.Image = &image
-			a.Mounts[0].VolumeID, a.Mounts[0].Target = p.TargetVolumeID, "/var/lib/postgresql"
+			a.Mounts[0].VolumeID, a.Mounts[0].Target = p.TargetVolumeID, release.Mount
 			if target.Distributed == nil && target.Runs(a.ID) {
 				target.Images[a.ID.String()] = image
 			}

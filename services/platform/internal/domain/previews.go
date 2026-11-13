@@ -143,6 +143,10 @@ func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, ho
 				return s, Invalid("preview.postgresPassword")
 			}
 			a.Postgres.PasswordSecretVersionID = id
+			// A preview's database is new storage, so it starts on its major's current release
+			// even while the template's own database stays on a retired one.
+			fresh := FreshPostgresImage(*a.Source.Image)
+			a.Source.Image = &fresh
 		}
 	}
 	for i := range s.Volumes {

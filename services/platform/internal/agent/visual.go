@@ -46,6 +46,9 @@ func (j *Journal) saveUnit(v unitState) error {
 		if err := j.get(tx, "units", v.Plan.UnitID.String(), &previous); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		if err := j.recordPostgresWriters(tx, previous.Plan); err != nil {
+			return err
+		}
 		if err := j.put(tx, "units", v.Plan.UnitID.String(), v); err != nil {
 			return err
 		}
@@ -193,6 +196,9 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		_, err = e.Docker.VolumeRemove(ctx, v.Volume.Name, client.VolumeRemoveOptions{Force: false})
 		if err != nil && !errdefs.IsNotFound(err) {
 			return e.visualFinish(ctx, c, p, "needs_attention", "The volume could not be removed. Confirm no container uses it before retrying.")
+		}
+		if err = e.Journal.forgetPostgresData(*p.VolumeID); err != nil {
+			return err
 		}
 		return e.visualFinish(ctx, c, p, "succeeded", "The explicitly selected unused volume was deleted.")
 	}
@@ -375,7 +381,13 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = e.visualObservation(c, observed); err != nil {
 		return e.finish(c.Id, "needs_attention", "The runtime report exceeds its supported size. Inspect the host before retrying.")
 	}
-	return e.finish(c.Id, "succeeded", "The reviewed revision is running and its routes were verified.")
+	// The revision is applied either way. A rebuild that does not finish is retried by the next
+	// deployment, or by this one if the agent restarts first, and says so here.
+	note, err := e.reindexPostgres(ctx, p.Plan, func() error { return e.checkpoint(c.Id, "postgres-reindex") })
+	if err != nil {
+		return err
+	}
+	return e.finish(c.Id, "succeeded", strings.TrimSpace("The reviewed revision is running and its routes were verified. "+note))
 }
 
 func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, retained map[string]string) (deployment.Observation, error) {
@@ -435,31 +447,6 @@ func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, 
 	}
 	observed = resolutionObservation(observed)
 	return observed, nil
-}
-
-func serviceOrder(spec domain.Specification) []domain.Application {
-	apps := map[uuid.UUID]domain.Application{}
-	for _, a := range spec.Applications {
-		apps[a.ID] = a
-	}
-	out := []domain.Application{}
-	done := map[uuid.UUID]bool{}
-	var visit func(uuid.UUID)
-	visit = func(id uuid.UUID) {
-		if done[id] {
-			return
-		}
-		done[id] = true
-		a := apps[id]
-		for _, dep := range domain.Dependencies(spec, a) {
-			visit(dep)
-		}
-		out = append(out, a)
-	}
-	for _, a := range spec.Applications {
-		visit(a.ID)
-	}
-	return out
 }
 
 func (e *Engine) observeUnit(ctx context.Context, p deployment.Plan, secrets map[string]string) (deployment.Observation, map[string]string, error) {

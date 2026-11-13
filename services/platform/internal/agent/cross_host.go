@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -300,7 +301,13 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		for i := range o.Resources {
 			o.Resources[i].Drift = false
 		}
-		return e.finishCrossHost(c, command, o, "The selected local pool is recorded and retirement is confirmed.", true)
+		// The group is complete either way; a database waiting on its rebuild says so, and the
+		// unit's next deployment retries it.
+		note, err := e.reindexPostgres(ctx, p, func() error { return e.checkpoint(c.Id, "postgres-reindex") })
+		if err != nil {
+			return err
+		}
+		return e.finishCrossHost(c, command, o, strings.TrimSpace("The selected local pool is recorded and retirement is confirmed. "+note), true)
 	case "abort":
 		if state.Publication || state.Phase == "publishing" || state.Phase == "published" || state.Phase == "retired" {
 			return finish("needs_attention", "Publication may have happened. Reconcile ingress before any candidate cleanup.")

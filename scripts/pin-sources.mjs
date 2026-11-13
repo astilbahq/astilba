@@ -176,10 +176,13 @@ export function newestInLine(current, candidates, track) {
 const trackFields = ["reason", "releases"];
 
 // .github/pinned-releases.json names the images and tools that follow a narrower
-// track than their line: a pattern every release on the track matches, and why.
+// track than their line: a pattern every release on the track matches, and why. Its
+// retired list names image pins kept on purpose after a newer release replaced them,
+// such as a PostgreSQL release that databases and backups made under it still name,
+// each keyed image@digest with the reason.
 export function parseTracks(document) {
   const unknown = Object.keys(document).filter(
-    (key) => !["images", "tools"].includes(key),
+    (key) => !["images", "tools", "retired"].includes(key),
   );
   if (unknown.length)
     throw new Error(
@@ -206,7 +209,43 @@ export function parseTracks(document) {
       tracks[kind].set(name, pattern);
     }
   }
+  tracks.retired = new Map();
+  for (const [key, reason] of Object.entries(document.retired ?? {})) {
+    if (!/^[^\s@]+@sha256:[0-9a-f]{64}$/.test(key))
+      throw new Error(
+        `pinned-releases.json retired ${key} must be image@sha256:digest`,
+      );
+    if (typeof reason !== "string" || !reason.trim())
+      throw new Error(`pinned-releases.json retired ${key} needs a reason`);
+    tracks.retired.set(key, reason);
+  }
   return tracks;
+}
+
+// The key a retired pin is listed under.
+export const retiredKey = (pin) => `${pin.image}@${pin.digest}`;
+
+// A track runs dry when upstream stops building it, as for an old Alpine line. A newer
+// release off the track counts only if that release would be on the track in the pin's own
+// form: 18.8-alpine3.24 does for 18.7-alpine3.23, because 18.8-alpine3.23 would match, but
+// nginx's mainline 1.31.8 never does for a stable track, whatever the suffix.
+export function beyondTrack(pinTag, candidate, track) {
+  const lead = (tag) => /^[0-9.]+/.exec(tag)?.[0] ?? "";
+  const version = lead(candidate);
+  if (!track || !version || version === lead(pinTag)) return false;
+  return track.test(version + pinTag.slice(lead(pinTag).length));
+}
+
+// The newest release beyond a pin's track that the track would take in the pin's form, when it
+// is newer than anything on the track: the sign that the track has run dry.
+export function offTrackRelease(pinTag, tags, track, newer) {
+  const beyond = newestInLine(
+    pinTag,
+    tags.filter((tag) => beyondTrack(pinTag, tag, track)),
+  );
+  return beyond && beyondTrack(newer ?? pinTag, beyond, track)
+    ? beyond
+    : undefined;
 }
 
 // A pin off its own track is a mistake in the pin or the track, so it is reported
