@@ -472,34 +472,12 @@ func TestNativePipeline(t *testing.T) {
 	// refusedWithin checks that refuse is refused with note, taking almost none of Docker's storage.
 	refusedWithin := func(what, note string, refuse func() string) {
 		t.Helper()
-		before, _, ok := imageStorage(ctx, docker)
-		if !ok {
-			t.Fatal("cannot observe Docker storage")
+		var got string
+		if used := storageTaken(t, ctx, docker, func() { got = refuse() }); used > 256<<20 {
+			t.Fatalf("refusing the %s took %d MiB of Docker storage", what, used>>20)
 		}
-		var lowest atomic.Int64
-		lowest.Store(before)
-		stopWatching, watched := make(chan struct{}), make(chan struct{})
-		go func() {
-			defer close(watched)
-			for {
-				select {
-				case <-stopWatching:
-					return
-				case <-time.After(50 * time.Millisecond):
-				}
-				if free, _, ok := imageStorage(ctx, docker); ok && free < lowest.Load() {
-					lowest.Store(free)
-				}
-			}
-		}()
-		got := refuse()
-		close(stopWatching)
-		<-watched
 		if !strings.Contains(got, note) {
 			t.Fatalf("%s: %q", what, got)
-		}
-		if used := before - lowest.Load(); used > 256<<20 {
-			t.Fatalf("refusing the %s took %d MiB of Docker storage", what, used>>20)
 		}
 		if current, err := docker.ImageInspect(ctx, result.Image); err != nil || current.ID != result.Digest {
 			t.Fatal("refused image changed previous artifact", err)

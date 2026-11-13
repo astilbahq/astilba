@@ -131,10 +131,16 @@ func (f *nativePullFixture) index(entries map[string]string) string {
 // leastFree runs fn and returns how much of Docker's storage it took at most.
 func (f *nativePullFixture) leastFree(fn func()) int64 {
 	f.t.Helper()
-	roots, ok := imageStorageRoots(f.ctx, f.docker)
+	return storageTaken(f.t, f.ctx, f.docker, fn)
+}
+
+// storageTaken runs fn and returns how much of Docker's storage it took at most while it ran.
+func storageTaken(t *testing.T, ctx context.Context, docker *client.Client, fn func()) int64 {
+	t.Helper()
+	roots, ok := imageStorageRoots(ctx, docker)
 	before, _, known := storageFree(roots)
 	if !ok || !known {
-		f.t.Fatal("cannot observe Docker storage")
+		t.Fatal("cannot observe Docker storage")
 	}
 	var lowest atomic.Int64
 	lowest.Store(before)
