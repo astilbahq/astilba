@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json/v2"
+	"errors"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -43,6 +44,10 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		}
 		if v.Purpose != "standard" {
 			return domain.Invalid("preview.cloneUnsupported")
+		}
+		// A clone can copy secret values, which nothing may use while the source is not active.
+		if err = requireActive(v.State); err != nil {
+			return err
 		}
 		if v.Spec.Compose != nil && len(v.Spec.Routes) > 0 {
 			return &domain.Error{Code: "invalid_input", Message: "Compose sources with routes cannot be cloned automatically. Create a Compose environment and copy the bundle with new routes.", Fields: []string{"compose.routes"}}
@@ -223,7 +228,12 @@ func (s *Service) ExportVisual(ctx context.Context, p store.Principal, ws, pid, 
 			return err
 		}
 		var id uuid.UUID
-		if err := tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id); err != nil {
+		err := tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A retired environment exports the configuration its retirement removed.
+			id, err = db.New(tx).RetiredEnvironmentPlan(ctx, db.RetiredEnvironmentPlanParams{WorkspaceID: ws, ID: env})
+		}
+		if err != nil {
 			return err
 		}
 		plan, err := readPlan(ctx, tx, ws, env, id)

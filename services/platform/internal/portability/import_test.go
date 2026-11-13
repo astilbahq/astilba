@@ -62,6 +62,7 @@ func TestPreSchedulingVersionTwoArchivesRemainReadable(t *testing.T) {
 		delete(row, "runtime_outcome")
 		delete(row, "runtime_plan_id")
 	}
+	withoutVersionEight(archive)
 	delete(archive.Tables, "source_submissions")
 	raw, err = stablejson.Marshal(archive)
 	if err != nil {
@@ -87,6 +88,7 @@ func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Version = 5
+	withoutVersionEight(a)
 	delete(a.Tables, "source_submissions")
 	for _, row := range a.Tables["environments"] {
 		delete(row, "runtime_operation_id")
@@ -123,6 +125,78 @@ func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
 	raw, _ = stablejson.Marshal(a)
 	if _, err = decodeArchive(raw); err != nil {
 		t.Fatal("version seven rejected its submissions", err)
+	}
+}
+
+// withoutVersionEight makes a decoded archive look as one written before retirement.
+func withoutVersionEight(a Archive) {
+	for _, row := range a.Tables["environments"] {
+		for _, field := range []string{"state", "retired_at", "retired_by", "retirement_operation_id", "retired_without_host"} {
+			delete(row, field)
+		}
+	}
+	for _, row := range a.Tables["managed_volumes"] {
+		delete(row, "postgres_major")
+	}
+}
+
+// An archive from before retirement imports every environment as active, with no retirement and no
+// recorded PostgreSQL major, and may not carry the newer fields itself.
+func TestVersionSevenArchiveImportsActiveEnvironments(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version = 7
+	withoutVersionEight(a)
+	raw, _ = stablejson.Marshal(a)
+	decoded, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal("version seven rejected", err)
+	}
+	env := decoded.Tables["environments"][0]
+	if string(env["state"]) != `"active"` || string(env["retired_at"]) != "null" || string(env["retired_by"]) != "null" || string(env["retirement_operation_id"]) != "null" || string(env["retired_without_host"]) != "false" {
+		t.Fatal("a version seven environment was not imported as active", env)
+	}
+	a.Tables["environments"][0]["state"] = jsontext.Value(`"retired"`)
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("version seven accepted a retirement field")
+	}
+}
+
+// A retirement its server confirmed released the environment's hostnames and ports, so an archive
+// that still has it claiming one is refused rather than taking them back.
+func TestArchiveRefusesClaimsOfAConfirmedRetirement(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version = ArchiveVersion
+	env := a.Tables["environments"][0]
+	a.Tables["route_claims"] = append(a.Tables["route_claims"], Row{"server_id": a.Tables["servers"][0]["id"], "claim": jsontext.Value(`"http:retired.example.test"`), "workspace_id": env["workspace_id"], "environment_id": env["id"]})
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err != nil {
+		t.Fatal("an active environment's claim was refused", err)
+	}
+	env["state"], env["retired_at"], env["retired_by"] = jsontext.Value(`"retired"`), jsontext.Value(`"2026-01-01T00:00:00Z"`), env["id"]
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("a released claim was imported")
+	}
+	// A server that could not be reached may still serve them, so they stay with it.
+	env["retired_without_host"] = jsontext.Value("true")
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err != nil {
+		t.Fatal("an unreachable server's claim was refused", err)
 	}
 }
 

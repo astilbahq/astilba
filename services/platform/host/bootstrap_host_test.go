@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	}
 	run := func(env []string, args ...string) ([]byte, error) {
 		t.Helper()
-		return runBootstrap(t, env, append([]string{script}, args...)...)
+		return runBootstrap(t, env, nil, append([]string{script}, args...)...)
 	}
 	status, e := os.ReadFile("/var/lib/dpkg/status")
 	if e != nil {
@@ -72,7 +73,8 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatal("check mode changed installed packages")
 	}
 	binary := filepath.Join(dir, "agent")
-	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version=onboarding-fixture", "-o", binary, "./cmd/agent")
+	const version, minimum, commit = "0.1.0-onboarding-fixture", "0.0.0", "0123456789abcdef0123456789abcdef01234567"
+	build := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version="+version+" -X main.minimumVersion="+minimum+" -X main.commit="+commit, "-o", binary, "./cmd/agent")
 	build.Dir = ".."
 	if out, e := build.CombinedOutput(); e != nil {
 		t.Fatalf("build: %s %v", out, e)
@@ -84,8 +86,14 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	public, private, _ := ed25519.GenerateKey(rand.Reader)
 	der, _ := x509.MarshalPKIXPublicKey(public)
 	key := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	// The served file puts another key first, in a block OpenSSL skips. The bootstrap must check
+	// and install the key whose fingerprint it was given, and nothing that a reader taking the
+	// first block would see.
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	otherDER, _ := x509.MarshalPKIXPublicKey(other)
+	served := append(pem.EncodeToMemory(&pem.Block{Type: "OTHER KEY", Bytes: otherDER}), key...)
 	digest := sha256.Sum256(data)
-	release := api.AgentRelease{Version: "onboarding-fixture", Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Sha256: hex.EncodeToString(digest[:]), Size: int64(len(data))}
+	release := api.AgentRelease{Version: version, MinimumVersion: minimum, Commit: commit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Sha256: hex.EncodeToString(digest[:]), Size: int64(len(data))}
 	signed := func(v api.AgentRelease) api.AgentRelease {
 		v.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, agentrelease.Message(v)))
 		return v
@@ -99,7 +107,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		mu.Unlock()
 		switch {
 		case r.URL.Path == "/agent-public-key.pem":
-			_, _ = w.Write(key)
+			_, _ = w.Write(served)
 		case strings.HasSuffix(r.URL.Path, "/message"):
 			_, _ = w.Write(agentrelease.Message(v))
 		case strings.HasSuffix(r.URL.Path, "/signature"):
@@ -120,7 +128,7 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		t.Fatal(e)
 	}
 	args := func(v api.AgentRelease) []string {
-		return []string{"--apply", "--management", server.URL, "--release", v.Sha256, "--key-fingerprint", agentrelease.Fingerprint(public), "--role", "combined", "--certificate-contact", "ops+fixture@example.test", "--install-runtime", "--install-backups"}
+		return []string{"--apply", "--management", server.URL, "--release", v.Sha256, "--key-fingerprint", agentrelease.Fingerprint(public), "--minimum-version", minimum, "--role", "combined", "--certificate-contact", "ops+fixture@example.test", "--install-runtime", "--install-backups"}
 	}
 	bad := release
 	bad.Signature = base64.StdEncoding.EncodeToString(make([]byte, 64))
@@ -137,7 +145,15 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	wrongHash := release
 	wrongHash.Sha256 = strings.Repeat("b", 64)
 	wrongHash = signed(wrongHash)
-	for _, v := range []api.AgentRelease{bad, wrongArch, wrongProtocol, wrongHash} {
+	// Correctly signed, but not what the binary was built from.
+	wrongCommit := release
+	wrongCommit.Commit = strings.Repeat("f", 40)
+	wrongCommit = signed(wrongCommit)
+	// Correctly signed, but with a minimum version later than its version, which agents refuse.
+	inverted := release
+	inverted.MinimumVersion = "1.0.0"
+	inverted = signed(inverted)
+	for _, v := range []api.AgentRelease{bad, wrongArch, wrongProtocol, wrongHash, wrongCommit, inverted} {
 		mu.Lock()
 		current = v
 		mu.Unlock()
@@ -153,9 +169,21 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 			t.Fatal("untrusted release installed runtime")
 		}
 	}
+	// The operator's minimum version, from the same trusted channel as the fingerprint, refuses a
+	// correctly signed release that would let the agent go back below it, before installing anything.
 	mu.Lock()
 	current = release
 	mu.Unlock()
+	floored := args(release)
+	floored[slices.Index(floored, "--minimum-version")+1] = "0.2.0"
+	if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, floored...); e == nil || !bytes.Contains(out, []byte("below 0.2.0, the minimum version you gave")) {
+		t.Fatalf("a release below the operator's minimum version was not refused: %s %v", out, e)
+	}
+	for _, p := range []string{"/usr/local/bin/astilba-agent", "/var/lib/docker"} {
+		if _, e = os.Lstat(p); !os.IsNotExist(e) {
+			t.Fatalf("a release below the operator's minimum version installed %s", p)
+		}
+	}
 	// The CI lanes divide what they check. "blocked" blocks this host's Ubuntu archives, so the
 	// bootstrap must install from a fallback archive; "host" installs from this host's own
 	// sources; anything else leaves the runner as it is, which needs nothing downloaded.
@@ -197,12 +225,36 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 			t.Fatal("the fallback changed this host's package sources")
 		}
 	case "host":
-		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
+		// A fresh VM's unattended-upgrades often holds dpkg's lock for its first minutes. The
+		// bootstrap must wait for it rather than fail. Ubuntu's apt waits without a word, so the
+		// lock is held until the bootstrap announces an install and for 15 seconds after: an
+		// install that didn't wait would fail in that time.
+		unlock := holdDpkgLock(t)
+		var seen bytes.Buffer
+		var installing sync.Once
+		var released atomic.Bool
+		watch := func(chunk []byte) {
+			seen.Write(chunk)
+			if bytes.Contains(seen.Bytes(), []byte("waits up to 5 minutes for it to finish")) {
+				installing.Do(func() {
+					time.AfterFunc(15*time.Second, func() { released.Store(true); unlock() })
+				})
+			}
+		}
+		out, e := runBootstrap(t, []string{"CURL_CA_BUNDLE=" + ca}, watch, append([]string{script}, args(release)...)...)
 		if e != nil {
-			t.Fatalf("fresh production bootstrap: %s %v", out, e)
+			t.Fatalf("fresh production bootstrap while dpkg's lock was held: %s %v", out, e)
+		}
+		if !released.Load() {
+			t.Fatalf("the bootstrap finished without installing while dpkg's lock was held: %s", out)
 		}
 		if !bytes.Contains(out, []byte("Refreshing this host's package sources.")) {
 			t.Fatalf("the bootstrap did not refresh this host's sources: %s", out)
+		}
+		// The runner's sources were just refreshed, so judging them not current would be a fault in
+		// the check itself.
+		if bytes.Contains(out, []byte("indexes are not current")) {
+			t.Fatalf("the bootstrap judged this runner's just-refreshed indexes not current: %s", out)
 		}
 		// A brief failure of one of the runner's sources is no fault of the bootstrap, which then
 		// rightly falls back, but it means this lane didn't check the host's sources this time.
@@ -218,6 +270,11 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		if out, e := exec.Command("dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", "nftables").Output(); e != nil || string(out) != "installed 1.0.9-1ubuntu0.1" {
 			t.Fatalf("the pinned nftables: %q %v", out, e)
 		}
+	}
+	if pinned, e := os.ReadFile("/etc/astilba/release-public.pem"); e != nil || !bytes.Equal(pinned, key) {
+		t.Fatalf("the bootstrap pinned %q, not the verified key alone: %v", pinned, e)
+	} else if k, e := agentrelease.PublicKey(pinned); e != nil || !k.Equal(public) {
+		t.Fatalf("the agent reads another key from the pinned file: %v", e)
 	}
 	// Cleanup is limited to paths just created by this fixture, after checking the
 	// installed binary/key and journal ownership; the runtime stays for host checks.
@@ -321,13 +378,36 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 			t.Error("refusing cleanup of changed backup tool")
 		}
 	}()
+	// Without backups, and without the optional minimum version, as the dashboard prepares it
+	// when the operator gives none.
 	withoutBackups := args(release)
 	withoutBackups = withoutBackups[:len(withoutBackups)-1]
+	at := slices.Index(withoutBackups, "--minimum-version")
+	withoutBackups = slices.Delete(withoutBackups, at, at+2)
 	out, e = run([]string{"CURL_CA_BUNDLE=" + ca}, withoutBackups...)
 	if e != nil || !bytes.Contains(out, []byte(`"backups":true`)) || !bytes.Contains(out, []byte(`"upgrades":true`)) {
 		t.Fatalf("normal-PATH backup capability omitted: %s %v", out, e)
 	}
 
+}
+
+// holdDpkgLock takes dpkg's frontend lock as apt and unattended-upgrades do, with an fcntl lock.
+// It returns a function that releases it, which also runs when the test ends.
+func holdDpkgLock(t *testing.T) func() {
+	t.Helper()
+	file, err := os.OpenFile("/var/lib/dpkg/lock-frontend", os.O_RDWR|os.O_CREATE, 0o640)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := syscall.Flock_t{Type: syscall.F_WRLCK}
+	if err = syscall.FcntlFlock(file.Fd(), syscall.F_SETLK, &lock); err != nil {
+		file.Close()
+		t.Fatal("dpkg's lock is already held: ", err)
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { file.Close() }) }
+	t.Cleanup(release)
+	return release
 }
 
 // aptSources reads this host's apt source files.
@@ -430,8 +510,8 @@ const (
 // log, so a timeout still shows how far it got. A customer's terminal or log pipe waits for
 // whatever holds the script's output, so anything still running once it has ended fails the
 // test, and is named. The pipe is created here for that: only its inode identifies a holder
-// that left the group.
-func runBootstrap(t *testing.T, env []string, args ...string) ([]byte, error) {
+// that left the group. watch, when given, sees the output as it arrives.
+func runBootstrap(t *testing.T, env []string, watch func([]byte), args ...string) ([]byte, error) {
 	t.Helper()
 	read, write, err := os.Pipe()
 	if err != nil {
@@ -463,7 +543,11 @@ func runBootstrap(t *testing.T, env []string, args ...string) ([]byte, error) {
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		_, _ = io.Copy(io.MultiWriter(&output, os.Stdout), read)
+		writers := []io.Writer{&output, os.Stdout}
+		if watch != nil {
+			writers = append(writers, watcher(watch))
+		}
+		_, _ = io.Copy(io.MultiWriter(writers...), read)
 	}()
 	err = cmd.Wait()
 	ended := time.Since(started).Round(time.Second)
@@ -489,6 +573,14 @@ func runBootstrap(t *testing.T, env []string, args ...string) ([]byte, error) {
 		t.Fatalf("bootstrap passed its %s limit: %v", bootstrapLimit, err)
 	}
 	return output.Bytes(), err
+}
+
+// watcher passes the bootstrap's output to a function as it arrives.
+type watcher func([]byte)
+
+func (w watcher) Write(p []byte) (int, error) {
+	w(p)
+	return len(p), nil
 }
 
 // bootstrapLeftovers lists processes in the script's group or holding its output.

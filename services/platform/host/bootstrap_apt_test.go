@@ -15,10 +15,18 @@ import (
 )
 
 // fakeAptGet records each call as the sources it used ("host", or a fallback archive's URI),
-// whether its package lists started from the host's, and its arguments. An update fails, as apt-get's does, when those sources are listed in
-// FAILING or PARTIAL. A download fails after a FAILING update, since apt then has no lists to
-// resolve from, and always when DOWNLOAD_FAILS is set. Unless NOTHING_NEEDED is set, a package
-// needs downloading. An archive listed in SUBSTITUTED serves -proposed as -security.
+// whether its package lists started from the host's, and its arguments.
+//   - An update fails, as apt-get's does, when its sources are listed in FAILING, PARTIAL or
+//     DEAD. Except for FAILING, it first writes the release files of noble and its updates and
+//     security suites: current, unless the sources are in STALE (security a month old) or
+//     PREPOCKET (a pre-release noble).
+//   - A download fails after a FAILING or DEAD update, and always when DOWNLOAD_FAILS is set.
+//   - Unless NOTHING_NEEDED is set, a package needs downloading.
+//   - An archive listed in SUBSTITUTED serves -proposed as -security.
+//   - EXTRAS adds to the host's sources: "ppa", a third-party repository; "backports", or
+//     "backports-resolute" for one that serves another release; "stale-mirror", a second Ubuntu
+//     repository whose security index is a month old; "release-file", a noble with a Release
+//     file rather than an InRelease.
 const fakeAptGet = `#!/usr/bin/env bash
 source=host
 for argument in "$@"; do
@@ -27,28 +35,44 @@ for argument in "$@"; do
       file=${argument#*=}/ubuntu.sources
       source=$(awk '/^URIs:/ { print $2; exit }' "$file")
       cp "$file" "$SAVED/$(printf '%s' "$source" | tr -c 'A-Za-z0-9' _)" ;;
+    Dir::State::Lists=*) lists=${argument#*=} ;;
   esac
 done
 seeded=unseeded
-for argument in "$@"; do
-  case $argument in Dir::State::Lists=*) [[ ! -e ${argument#*=}/host_InRelease ]] || seeded=seeded ;; esac
-done
+[[ ! -e $lists/host_InRelease ]] || seeded=seeded
+tag=$(printf '%s' "$source" | tr -c 'A-Za-z0-9' _)
+listed() { for listed in $1; do [[ $listed == "$2" ]] && return 0; done; return 1; }
+extra() { [[ $source == host ]] && listed "$EXTRAS" "$1"; }
+index() { echo "$1 $2 $3 $4 ${lists}/$5_dists_$2_main_binary-amd64_Packages.lz4 main/binary-amd64/Packages $6"; }
+release() { printf 'Origin: Ubuntu\nDate: %s\n' "$3" > "$lists/$1_dists_$2_${4:-InRelease}"; }
 printf '%s %s %s\n' "$source" "$seeded" "$*" >> "$LOG"
 case " $* " in
   *" indextargets "*)
-    printf '%s\n' 'noble noble noble Ubuntu' 'noble-updates noble-updates noble Ubuntu'
-    for substituted in $SUBSTITUTED; do
-      [[ $substituted == "$source" ]] && { echo 'noble-security noble-proposed noble Ubuntu'; exit 0; }
+    for release in noble noble-updates noble-security; do
+      suite=$release
+      [[ $release != noble-security ]] || ! listed "$SUBSTITUTED" "$source" || suite=noble-proposed
+      index "$source" "$release" "$suite" noble "$tag" Ubuntu
     done
-    echo 'noble-security noble-security noble Ubuntu' ;;
+    ! extra ppa || index https://ppa.test/ubuntu noble noble noble ppa "LP-PPA-example noble"
+    ! extra backports || index "$source" noble-backports noble-backports noble "$tag" Ubuntu
+    ! extra backports-resolute || index "$source" noble-backports resolute-backports resolute "$tag" Ubuntu
+    ! extra stale-mirror || index https://stale.test/ubuntu noble-security noble-security noble stale Ubuntu ;;
   *" --print-uris "*)
     printf "'file:/tmp/docker.deb' docker.deb 1 \n"
     [[ -n $NOTHING_NEEDED ]] || printf "'http://archive.test/nftables.deb' nftables.deb 1 \n" ;;
   *" update "*)
-    for failing in $FAILING; do [[ $failing == "$source" ]] && { touch "$SAVED/unrefreshed-${source//[^A-Za-z0-9]/_}"; exit 100; }; done
-    for failing in $PARTIAL; do [[ $failing == "$source" ]] && exit 100; done ;;
+    listed "$FAILING" "$source" && { touch "$SAVED/unrefreshed-$tag"; exit 100; }
+    pocket="Thu, 25 Apr 2024 15:10:33 UTC" security=$(date -u -R)
+    ! listed "$PREPOCKET" "$source" || pocket="Thu, 25 Apr 2024 09:00:00 UTC"
+    ! listed "$STALE" "$source" || security=$(date -u -R --date '30 days ago')
+    if extra release-file; then release "$tag" noble "$pocket" Release; else release "$tag" noble "$pocket"; fi
+    release "$tag" noble-updates "$(date -u -R)"
+    release "$tag" noble-security "$security"
+    ! extra stale-mirror || release stale noble-security "$(date -u -R --date '30 days ago')"
+    listed "$DEAD" "$source" && { touch "$SAVED/unrefreshed-$tag"; exit 100; }
+    ! listed "$PARTIAL" "$source" || exit 100 ;;
   *" --download-only "*)
-    [[ -z $DOWNLOAD_FAILS && ! -e "$SAVED/unrefreshed-${source//[^A-Za-z0-9]/_}" ]] || exit 100 ;;
+    [[ -z $DOWNLOAD_FAILS && ! -e "$SAVED/unrefreshed-$tag" ]] || exit 100 ;;
 esac
 exit 0
 `
@@ -59,10 +83,16 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 	script := string(Bootstrap())
 	die := regexp.MustCompile(`(?m)^die\(\) .*$`).FindString(script)
 	apt := regexp.MustCompile(`(?ms)^ubuntu_keyring=.*?^apt_download\(\) \{.*?^\}$`).FindString(script)
-	install := regexp.MustCompile(`(?m)^ +(DEBIAN_FRONTEND=noninteractive apt-get "\$\{apt_options\[@\]\}" install .*"\$\{apt_packages\[@\]\}")$`).FindStringSubmatch(script)
+	install := regexp.MustCompile(`(?m)^ +(DEBIAN_FRONTEND=noninteractive apt-get "\$\{apt_options\[@\]\}" .*install .*"\$\{apt_packages\[@\]\}")$`).FindStringSubmatch(script)
 	archives := regexp.MustCompile(`(?m)^ +fallback_archives=\(([^)]*)\) ;;$`).FindAllStringSubmatch(script, -1)
 	if die == "" || apt == "" || install == nil || len(archives) != 2 {
 		t.Fatal("the bootstrap no longer defines die, its apt functions, the runtime install and a fallback list per architecture")
+	}
+	// Both installs wait for dpkg's lock, which a fresh VM's unattended-upgrades often holds.
+	for _, line := range regexp.MustCompile(`(?m)^ +DEBIAN_FRONTEND=noninteractive apt-get .* install .*$`).FindAllString(script, -1) {
+		if !strings.Contains(line, `-o "DPkg::Lock::Timeout=$apt_lock_wait" install `) {
+			t.Errorf("an install that doesn't wait for dpkg's lock: %s", line)
+		}
 	}
 	amd64 := strings.Fields(archives[0][1])
 	for _, test := range []struct {
@@ -70,6 +100,12 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		failing       []string // Sources whose update fails, leaving nothing to download from.
 		partial       []string // Sources whose update fails for an unrelated index.
 		substituted   []string // Archives that serve another suite under a requested one's name.
+		stale         []string // Sources whose security index is a month old.
+		prePocket     []string // Sources that replay a pre-release noble.
+		dead          []string // Sources whose indexes are current but which no longer answer.
+		extras        []string // What else the host's sources hold; see fakeAptGet.
+		hostOnly      bool     // The operator gave --use-host-package-sources.
+		absent        string   // Output that must not appear.
 		downloadFails bool
 		nothingNeeded bool
 		used          string // The fallback archive the install uses, or empty for the host's sources.
@@ -83,7 +119,25 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		{name: "an unrelated host source fails", partial: []string{"host"}, ok: true, output: "Some of this host's package indexes failed to refresh"},
 		{name: "host sources fail", failing: []string{"host"}, used: amd64[0], ok: true},
 		{name: "host sources and the first archive fail", failing: []string{"host", amd64[0]}, used: amd64[1], ok: true},
-		{name: "the first archive serves another suite", failing: []string{"host"}, substituted: []string{amd64[0]}, used: amd64[1], ok: true, output: "The archive served noble-security as suite noble-proposed"},
+		{name: "the first archive serves another suite", failing: []string{"host"}, substituted: []string{amd64[0]}, used: amd64[1], ok: true, output: "served noble-security as suite noble-proposed"},
+		// A source that serves an old security index, as a stale mirror or a replay can, isn't used.
+		{name: "the host's security index is stale", stale: []string{"host"}, used: amd64[0], ok: true, output: "This host's Ubuntu package indexes are not current."},
+		{name: "the first archive's security index is stale", failing: []string{"host"}, stale: []string{amd64[0]}, used: amd64[1], ok: true, output: "The newest noble-security index was published"},
+		{name: "the first archive replays a pre-release noble", failing: []string{"host"}, prePocket: []string{amd64[0]}, used: amd64[1], ok: true, output: "predates Ubuntu 24.04."},
+		// The 11 November case: the host's lists are recent, but its sources stopped answering.
+		{name: "the host's sources stop answering", dead: []string{"host"}, used: amd64[0], ok: true, output: "This host's package sources failed. Trying"},
+		// Only Ubuntu's repositories count: a PPA, and a backports suite, don't stop the host's sources.
+		{name: "the host also has a PPA and backports", extras: []string{"ppa", "backports"}, ok: true},
+		{name: "the host's noble is a Release file", extras: []string{"release-file"}, ok: true},
+		// apt takes the newest versions, so a stale second mirror can't hold fixes back.
+		{name: "a second Ubuntu mirror on the host is stale", extras: []string{"stale-mirror"}, ok: true},
+		// Another release under a noble suite's name is refused, not skipped.
+		{name: "the host's backports serves another release", extras: []string{"backports-resolute"}, used: amd64[0], ok: true, output: "served noble-backports as suite resolute-backports, codename resolute", absent: "--use-host-package-sources"},
+		// An operator whose mirror lags on purpose takes its packages as they are, never a fallback's.
+		{name: "--use-host-package-sources on a lagging mirror", hostOnly: true, stale: []string{"host"}, ok: true, output: "Warning: Ubuntu packages come only from this host's own package sources, as they are"},
+		// Only stale indexes point to the option; other failures don't.
+		{name: "the host's security index is stale, so the option is named", stale: []string{"host"}, used: amd64[0], ok: true, output: "run this script again with --use-host-package-sources"},
+		{name: "--use-host-package-sources when the host's sources fail", hostOnly: true, failing: []string{"host"}, output: "apt could not resolve or download the Ubuntu packages from this host's own sources"},
 		{name: "everything fails", failing: append([]string{"host"}, amd64...), output: "Neither this host's package sources nor any fallback Ubuntu archive"},
 		// A download that fails although every index refreshed, such as a package apt can't
 		// resolve, would fail the same way from every archive.
@@ -121,15 +175,18 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				"set -euo pipefail",
 				// Production runs Ubuntu 24.04's bash 5.2; bash before 4.4 can't expand an empty array under set -u.
 				"((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404)) || exit 77",
+				// Production runs GNU date, which reads the dates in release files.
+				"date --date @0 >/dev/null 2>&1 || exit 77",
 				die, apt,
 				// Without root, apt's own user can't be given its directories, and macOS has no timeout.
 				`install() { local a=(); while (($#)); do case $1 in -o|-g) shift 2 ;; *) a+=("$1"); shift ;; esac; done; command install "${a[@]}"; }`,
 				`command -v timeout >/dev/null || timeout() { shift 3; "$@"; }`,
-				"VERSION_CODENAME=noble",
+				"VERSION_CODENAME=noble VERSION_ID=24.04",
 				"fallback_archives=(" + archives[0][1] + ")",
 				"ubuntu_keyring=" + keyring,
 				"host_lists=" + lists,
 				`trap 'rm -rf ${apt_root:+"$apt_root"}' EXIT`,
+				"host_sources_only=" + map[bool]string{true: "true", false: "false"}[test.hostOnly],
 				`apt_packages=(/tmp/docker.deb nftables=1.0.9-1ubuntu0.1)`,
 				`apt_download "${apt_packages[@]}"`,
 				install[1],
@@ -141,10 +198,13 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				return ""
 			}
 			cmd := exec.Command("bash", "-c", harness)
-			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+log, "SAVED="+saved, "FAILING="+strings.Join(test.failing, " "), "PARTIAL="+strings.Join(test.partial, " "), "SUBSTITUTED="+strings.Join(test.substituted, " "), "DOWNLOAD_FAILS="+flag(test.downloadFails), "NOTHING_NEEDED="+flag(test.nothingNeeded))
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+log, "SAVED="+saved, "FAILING="+strings.Join(test.failing, " "), "PARTIAL="+strings.Join(test.partial, " "), "SUBSTITUTED="+strings.Join(test.substituted, " "), "STALE="+strings.Join(test.stale, " "), "PREPOCKET="+strings.Join(test.prePocket, " "), "DEAD="+strings.Join(test.dead, " "), "EXTRAS="+strings.Join(test.extras, " "), "DOWNLOAD_FAILS="+flag(test.downloadFails), "NOTHING_NEEDED="+flag(test.nothingNeeded))
 			out, err := cmd.CombinedOutput()
 			if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 77 {
-				t.Skip("needs bash 4.4 or later, as production has")
+				t.Skip("needs bash 4.4 or later and GNU date, as production has")
+			}
+			if test.absent != "" && bytes.Contains(out, []byte(test.absent)) {
+				t.Fatalf("output names %q:\n%s", test.absent, out)
 			}
 			if (err == nil) != test.ok || !bytes.Contains(out, []byte(test.output)) {
 				t.Fatalf("apt_download ok=%v, want %v and %q:\n%s", err == nil, test.ok, test.output, out)
@@ -168,6 +228,11 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 					}
 					tried = append(tried, source)
 				}
+				// Downloads go to the private cache, so they take no dpkg lock, and a busy dpkg can't
+				// pass for a failed source.
+				if strings.Contains(args, " --download-only ") && !strings.Contains(args, "-o Debug::NoLocking=1 install ") {
+					t.Errorf("a download that takes dpkg's lock: %s", call)
+				}
 				// Every call keeps its package lists and downloads out of the host's own.
 				if !strings.Contains(args, "-o Dir::State::Lists=/tmp/astilba-bootstrap-apt.") || !strings.Contains(args, "-o Dir::Cache=/tmp/astilba-bootstrap-apt.") {
 					t.Errorf("a call that uses the host's package lists or cache: %s", call)
@@ -177,7 +242,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 			want := []string{"host"}
 			if test.nothingNeeded {
 				want = nil
-			} else if len(test.failing) > 0 {
+			} else if !test.hostOnly && (test.used != "" || !test.ok && len(test.failing) > 0) {
 				for _, archive := range amd64 {
 					want = append(want, archive)
 					if archive == test.used {
@@ -209,26 +274,25 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				t.Fatal(err)
 			}
 			// apt checks a fallback against Ubuntu's archive key alone, however this host's apt
-			// configuration relaxes checks, and its moving suites must be under a week old.
-			var suites []string
-			for _, stanza := range strings.Split(strings.TrimSpace(string(sources)), "\n\n") {
-				fields := map[string]string{}
-				for _, line := range strings.Split(stanza, "\n") {
-					key, value, _ := strings.Cut(line, ": ")
-					fields[key] = value
-				}
-				want := map[string]string{"Types": "deb", "URIs": test.used, "Suites": fields["Suites"], "Components": "main", "Signed-By": keyring, "Allow-Insecure": "no", "Allow-Weak": "no", "Allow-Downgrade-To-Insecure": "no", "Check-Date": "yes"}
-				if fields["Suites"] != "noble" {
-					want["Check-Valid-Until"], want["Valid-Until-Max"] = "yes", "604800"
-				}
-				if !maps.Equal(fields, want) {
-					t.Errorf("fallback stanza:\n%s", stanza)
-				}
-				suites = append(suites, fields["Suites"])
+			// configuration relaxes checks.
+			fields := map[string]string{}
+			for _, line := range strings.Split(strings.TrimSpace(string(sources)), "\n") {
+				key, value, _ := strings.Cut(line, ": ")
+				fields[key] = value
 			}
-			if !slices.Equal(suites, []string{"noble", "noble-updates noble-security"}) {
-				t.Errorf("fallback suites %q", suites)
+			wantFields := map[string]string{"Types": "deb", "URIs": test.used, "Suites": "noble noble-updates noble-security", "Components": "main", "Signed-By": keyring, "Allow-Insecure": "no", "Allow-Weak": "no", "Allow-Downgrade-To-Insecure": "no", "Check-Date": "yes", "Check-Valid-Until": "yes"}
+			if !maps.Equal(fields, wantFields) {
+				t.Errorf("fallback sources:\n%s", sources)
 			}
 		})
+	}
+}
+
+// --use-host-package-sources turns off a safeguard, so only the operator's own command line may
+// set it, never anything management serves.
+func TestBootstrapHostSourcesOnlyComesFromTheCommandLine(t *testing.T) {
+	sets := regexp.MustCompile(`(?m)^.*host_sources_only=true.*$`).FindAllString(string(Bootstrap()), -1)
+	if len(sets) != 1 || strings.TrimSpace(sets[0]) != "--use-host-package-sources) host_sources_only=true; shift ;;" {
+		t.Fatalf("host_sources_only is set by %q, not only by its command-line option", sets)
 	}
 }

@@ -175,6 +175,18 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					}
 				}
 			}
+			// A recovered retirement may name an account this database never had.
+			if t.Name == "environments" && string(row["retired_by"]) != "null" {
+				var account uuid.UUID
+				if json.Unmarshal(row["retired_by"], &account) != nil {
+					return ErrArchive
+				}
+				if _, err := db.New(tx).AccountByID(ctx, account); errors.Is(err, pgx.ErrNoRows) {
+					setValue(row, "retired_by", owner)
+				} else if err != nil {
+					return err
+				}
+			}
 			link := ""
 			if t.Name == "environments" {
 				link = "applied_revision_id"
@@ -249,5 +261,6 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 			}
 		}
 	}
-	return nil
+	// A checkpoint from before archive version 8 brings volumes without the major they record.
+	return backfillPostgresMajors(ctx, db.New(tx), a.Workspace)
 }

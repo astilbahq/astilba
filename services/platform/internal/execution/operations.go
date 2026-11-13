@@ -133,6 +133,17 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 	if err := s.commandAdmission(ctx, tx, ws, c); err != nil {
 		return out, err
 	}
+	// Every new operation for a retiring or retired environment is refused here, so each kind of
+	// work inherits it. Only the retirement command itself still reaches the environment's server.
+	if c.EnvironmentId != uuid.Nil {
+		state, err := db.New(tx).EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: c.EnvironmentId})
+		if err != nil {
+			return out, err
+		}
+		if state != "active" && !retirementCommand(c) {
+			return out, domain.EnvironmentInactive
+		}
+	}
 	var pending int
 	if err := tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled')", ws).Scan(&pending); err != nil {
 		return out, err

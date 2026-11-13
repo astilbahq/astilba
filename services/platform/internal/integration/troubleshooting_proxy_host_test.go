@@ -207,7 +207,7 @@ func (x troubleshootingFixture) proxied(t *testing.T, origin, caPath string) *br
 func proxyTestSetup(t *testing.T) (string, *client.Client, map[string][]string) {
 	t.Helper()
 	binary := filepath.Join(nativeRoot(t, "astilba-p17-build"), "agent")
-	buildNativeAgent(t, binary, "fixture.1")
+	buildNativeAgent(t, binary, "0.1.0-fixture.1")
 	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
 	if err != nil {
 		t.Fatal(err)
