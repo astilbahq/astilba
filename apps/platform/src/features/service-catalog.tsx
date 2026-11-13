@@ -314,8 +314,9 @@ function StageForm({
             {address.data?.prefix
               ? " Your network is filled in as management sees it; a server elsewhere may see you differently."
               : " Enter your network, such as 203.0.113.7/32."}{" "}
-            {recipe.name} makes the first account its administrator, so create
-            yours before opening the route.
+            {recipe.name} makes the first account its administrator, so public
+            ranges may be no wider than /16 (IPv4) or /48 (IPv6) until you have
+            created yours and widened the route.
           </p>
         </fieldset>
       )}

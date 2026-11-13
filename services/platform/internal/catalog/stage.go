@@ -140,8 +140,8 @@ func (r Recipe) Stage(in Stage, hostname func(service uuid.UUID) (string, error)
 		target := ids[r.Route.ServiceID]
 		route := domain.Route{ID: uuid.New(), TargetID: target, Protocol: "http", Domain: in.Route.Domain, Port: r.Route.Port, TLS: in.Route.TLS, AllowCIDRs: in.Route.AllowCIDRs}
 		// The allowlist is what keeps a new instance's first sign-up to its owner.
-		if len(route.AllowCIDRs) == 0 {
-			return out, domain.Invalid("route.allowCidrs")
+		if err = domain.ValidateOwnerAllowlist(route.AllowCIDRs); err != nil {
+			return out, err
 		}
 		if route.Domain == "" {
 			if route.Domain, err = hostname(target); err != nil {

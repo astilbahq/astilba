@@ -44,6 +44,11 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	open := request(env.DraftRevisionId, "Kaneo")
 	open.Route.AllowCidrs = []string{}
 	b.call("POST", stagings, open, 400, nil)
+	everyone := request(env.DraftRevisionId, "Kaneo")
+	everyone.Route.AllowCidrs = []string{"0.0.0.0/0"}
+	if refusal := b.call("POST", stagings, everyone, 400, nil); !strings.Contains(string(refusal), "Widen the route after that") {
+		t.Fatal("open allowlist refused without saying how to open the route later", string(refusal))
+	}
 	unrouted := request(env.DraftRevisionId, "Kaneo")
 	unrouted.Route = nil
 	b.call("POST", stagings, unrouted, 400, nil)
