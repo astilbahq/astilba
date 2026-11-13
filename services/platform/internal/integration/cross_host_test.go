@@ -972,7 +972,6 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	}, Volumes: []domain.Volume{{ID: data, Name: "Data"}}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: web, Variable: "DATABASE_URL"}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: web, Protocol: "http", Domain: "upgrade.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	var databaseDraft api.Revision
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseEnv.DraftRevisionId, "specification": stack}, 200, &databaseDraft)
-	refuseOlderMember(t, f, b, &olderReleasesHost, identities[1], enrollments[1], servers[1].Server.Name, databasePath, databaseDraft.Id, servers[0].Server.Id, func() { waitNetworkReady(); refreshAuthentication() })
 	deploy := func(revision uuid.UUID) deployment.Plan {
 		t.Helper()
 		var plan deployment.Status
@@ -1001,6 +1000,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	deploy(databaseDraft.Id)
 	stack.Placement = &domain.Placement{NetworkID: network.ID, IngressServerID: servers[0].Server.Id, Applications: []domain.ApplicationPlacement{{ApplicationID: web, CPUMillis: 500, MemoryMiB: 128, Targets: []domain.PlacementTarget{{ServerID: servers[0].Server.Id, Count: 1}, {ServerID: servers[1].Server.Id, Count: 1}}}}}
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseDraft.Id, "specification": stack}, 200, &databaseDraft)
+	refuseOlderMember(t, f, b, &olderReleasesHost, identities[1], enrollments[1], servers[1].Server.Name, databasePath, databaseDraft.Id, servers[0].Server.Id, func() { waitNetworkReady(); refreshAuthentication() })
 	source := deploy(databaseDraft.Id)
 	waitNetworkIdle()
 	var recovery backup.Policy
