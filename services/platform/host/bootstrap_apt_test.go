@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,8 +14,8 @@ import (
 	"testing"
 )
 
-// fakeAptGet records each call as the sources it used ("host", or a fallback archive's URI)
-// followed by its arguments. An update fails, as apt-get's does, when those sources are listed in
+// fakeAptGet records each call as the sources it used ("host", or a fallback archive's URI),
+// whether its package lists started from the host's, and its arguments. An update fails, as apt-get's does, when those sources are listed in
 // FAILING or PARTIAL. A download fails after a FAILING update, since apt then has no lists to
 // resolve from, and always when DOWNLOAD_FAILS is set.
 const fakeAptGet = `#!/usr/bin/env bash
@@ -27,7 +28,11 @@ for argument in "$@"; do
       cp "$file" "$SAVED/$(printf '%s' "$source" | tr -c 'A-Za-z0-9' _)" ;;
   esac
 done
-printf '%s %s\n' "$source" "$*" >> "$LOG"
+seeded=unseeded
+for argument in "$@"; do
+  case $argument in Dir::State::Lists=*) [[ ! -e ${argument#*=}/host_InRelease ]] || seeded=seeded ;; esac
+done
+printf '%s %s %s\n' "$source" "$seeded" "$*" >> "$LOG"
 case " $* " in
   *" update "*)
     for failing in $FAILING; do [[ $failing == "$source" ]] && { touch "$SAVED/unrefreshed-${source//[^A-Za-z0-9]/_}"; exit 100; }; done
@@ -68,7 +73,9 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 		// A download that fails although every index refreshed, such as a package apt can't
 		// resolve, would fail the same way from every archive.
 		{name: "packages can't be resolved", downloadFails: true, output: "apt could not resolve or download the Ubuntu packages"},
-		{name: "a fallback's packages can't be resolved", failing: []string{"host"}, downloadFails: true, used: amd64[0], output: "apt could not resolve or download the Ubuntu packages"},
+		// A fallback whose indexes refresh may still fail to serve a package, as a mirror part way
+		// through a sync can, so the next one is tried.
+		{name: "no fallback serves the packages", failing: []string{"host"}, downloadFails: true, output: "Neither this host's package sources nor any fallback Ubuntu archive"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -85,6 +92,15 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 			if err := os.WriteFile(keyring, []byte("key"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			lists := filepath.Join(dir, "lists")
+			if err := os.MkdirAll(filepath.Join(lists, "partial"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"host_InRelease", "lock"} {
+				if err := os.WriteFile(filepath.Join(lists, name), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			log := filepath.Join(dir, "log")
 			harness := strings.Join([]string{
 				"set -euo pipefail",
@@ -97,6 +113,7 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 				"VERSION_CODENAME=noble",
 				"fallback_archives=(" + archives[0][1] + ")",
 				"ubuntu_keyring=" + keyring,
+				"host_lists=" + lists,
 				`trap 'rm -rf ${apt_root:+"$apt_root"}' EXIT`,
 				`packages=(/tmp/docker.deb)`,
 				`apt_download "${packages[@]}" nftables=1.0.9-1ubuntu0.1`,
@@ -122,7 +139,12 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 			calls := strings.Split(strings.TrimSpace(string(raw)), "\n")
 			var tried []string
 			for _, call := range calls {
-				source, args, _ := strings.Cut(call, " ")
+				source, rest, _ := strings.Cut(call, " ")
+				seeded, args, _ := strings.Cut(rest, " ")
+				// apt refuses an index older than one it has, so the host's sources start from its lists.
+				if (seeded == "seeded") != (source == "host") {
+					t.Errorf("a call with %s lists: %s", seeded, call)
+				}
 				if strings.HasSuffix(args, " update") {
 					if !strings.Contains(args, "-o APT::Update::Error-Mode=any update") {
 						t.Errorf("an update that ignores failed indexes: %s", call)
@@ -167,17 +189,26 @@ func TestBootstrapTriesPinnedArchivesOnlyWhenHostSourcesFail(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// apt checks a fallback against Ubuntu's archive key alone, and its moving suites must be fresh.
+			// apt checks a fallback against Ubuntu's archive key alone, however this host's apt
+			// configuration relaxes checks, and its moving suites must be under a week old.
+			var suites []string
 			for _, stanza := range strings.Split(strings.TrimSpace(string(sources)), "\n\n") {
 				fields := map[string]string{}
 				for _, line := range strings.Split(stanza, "\n") {
 					key, value, _ := strings.Cut(line, ": ")
 					fields[key] = value
 				}
-				moving := strings.Contains(fields["Suites"], "-")
-				if fields["URIs"] != test.used || fields["Signed-By"] != keyring || moving != (fields["Valid-Until-Max"] == "604800") || len(fields) != 5+map[bool]int{true: 1}[moving] {
+				want := map[string]string{"Types": "deb", "URIs": test.used, "Suites": fields["Suites"], "Components": "main", "Signed-By": keyring, "Allow-Insecure": "no", "Allow-Weak": "no", "Allow-Downgrade-To-Insecure": "no", "Check-Date": "yes"}
+				if fields["Suites"] != "noble" {
+					want["Check-Valid-Until"], want["Valid-Until-Max"] = "yes", "604800"
+				}
+				if !maps.Equal(fields, want) {
 					t.Errorf("fallback stanza:\n%s", stanza)
 				}
+				suites = append(suites, fields["Suites"])
+			}
+			if !slices.Equal(suites, []string{"noble", "noble-updates noble-security"}) {
+				t.Errorf("fallback suites %q", suites)
 			}
 		})
 	}

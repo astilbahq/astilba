@@ -158,6 +158,11 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 	mu.Unlock()
 	// Half the CI lanes install from this host's own package sources; the others block them.
 	if os.Getenv("ASTILBA_BOOTSTRAP_BLOCK_UBUNTU_ARCHIVES") == "1" {
+		// A runner already has every other Ubuntu package the bootstrap needs. Without nftables
+		// it must download one, which only a fallback archive can then supply.
+		if out, e := exec.Command("dpkg", "--remove", "nftables").CombinedOutput(); e != nil {
+			t.Fatalf("remove nftables: %s %v", out, e)
+		}
 		sources := aptSources(t)
 		blocked, restore := blockUbuntuArchives(t)
 		out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...)
@@ -174,6 +179,9 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		}
 		if after := aptSources(t); !maps.Equal(sources, after) {
 			t.Fatal("the fallback changed this host's package sources")
+		}
+		if out, e := exec.Command("dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", "nftables").Output(); e != nil || string(out) != "installed 1.0.9-1ubuntu0.1" {
+			t.Fatalf("nftables from the fallback archive: %q %v", out, e)
 		}
 	} else if out, e := run([]string{"CURL_CA_BUNDLE=" + ca}, args(release)...); e != nil {
 		t.Fatalf("fresh production bootstrap: %s %v", out, e)

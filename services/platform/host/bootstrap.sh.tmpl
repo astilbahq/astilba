@@ -149,15 +149,16 @@ fetch() {
 verify_hash() { printf '%s  %s\n' "$2" "$1" | sha256sum --check --status; }
 # Ubuntu packages come from this host's own sources. If they can't be downloaded because those
 # sources failed, as when the distribution's mirror names stopped resolving on 11 November 2026,
-# they come from the first archive in fallback_archives whose indexes all refresh: independent
-# mirrors first, because an outage of Canonical's names usually takes the host's own sources with
-# it, then Canonical's. scripts/ci-ubuntu-archive.sh uses the same archives for CI. Package lists
-# and downloads live in a private directory, so the host's sources and lists stay as they are, and
-# a scheduled apt run can't change what is installed between download and install. apt verifies
-# every index and package against Ubuntu's archive key, as it does for the host's own sources. A
-# fallback's updates and security indexes must also be under a week old, so a stale mirror can't
-# hold back fixes.
+# they come from the first archive in fallback_archives that serves them: independent mirrors
+# first, because an outage of Canonical's names usually takes the host's own sources with it, then
+# Canonical's. scripts/ci-ubuntu-archive.sh uses the same archives for CI. Package lists and
+# downloads live in a private directory, so the host's sources and lists stay as they are, and a
+# scheduled apt run can't change what is installed between download and install. apt verifies
+# every index and package against Ubuntu's archive key, as it does for the host's own sources,
+# whatever this host's apt configuration relaxes. A fallback's updates and security indexes must
+# also be under a week old, so a stale mirror can't hold back fixes.
 ubuntu_keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+host_lists=/var/lib/apt/lists
 apt_options=()
 apt_get() {
   local status=0
@@ -166,14 +167,19 @@ apt_get() {
   ((status != 124)) || printf '%s\n' 'apt-get did not finish within 5 minutes.' >&2
   return "$status"
 }
-# Starts empty package lists and cache, for the host's own sources or, given one, for that archive.
-# As in apt's own layout, only the partial directories belong to apt's unprivileged download user.
+# Starts private package lists and an empty cache: for the host's own sources, from a copy of the
+# host's lists, so apt still refuses an index older than one it already has; given an archive, for
+# that archive alone. As in apt's own layout, only the partial directories belong to apt's
+# unprivileged download user.
 apt_use() {
   rm -rf "$apt_root/sources" "$apt_root/lists" "$apt_root/cache"
   install -d -m 0755 "$apt_root/lists" "$apt_root/cache" "$apt_root/cache/archives"
   install -d -m 0700 -o _apt -g root "$apt_root/lists/partial" "$apt_root/cache/archives/partial"
   apt_options=(-o "Dir::State::Lists=$apt_root/lists" -o "Dir::Cache=$apt_root/cache")
-  (($#)) || return 0
+  if ((!$#)); then
+    find "$host_lists" -maxdepth 1 -type f ! -name lock -exec cp --preserve=mode,timestamps -t "$apt_root/lists" {} +
+    return 0
+  fi
   install -d -m 0755 "$apt_root/sources"
   cat > "$apt_root/sources/ubuntu.sources" <<SOURCES
 Types: deb
@@ -181,12 +187,21 @@ URIs: $1
 Suites: $VERSION_CODENAME
 Components: main
 Signed-By: $ubuntu_keyring
+Allow-Insecure: no
+Allow-Weak: no
+Allow-Downgrade-To-Insecure: no
+Check-Date: yes
 
 Types: deb
 URIs: $1
 Suites: $VERSION_CODENAME-updates $VERSION_CODENAME-security
 Components: main
 Signed-By: $ubuntu_keyring
+Allow-Insecure: no
+Allow-Weak: no
+Allow-Downgrade-To-Insecure: no
+Check-Date: yes
+Check-Valid-Until: yes
 Valid-Until-Max: 604800
 SOURCES
   apt_options+=(-o Dir::Etc::SourceList=/dev/null -o "Dir::Etc::SourceParts=$apt_root/sources")
@@ -196,7 +211,7 @@ SOURCES
 apt_refresh() { apt_get -o APT::Update::Error-Mode=any update; }
 apt_fetch() { apt_get install --download-only --yes --no-remove --no-install-recommends "$@"; }
 apt_download() {
-  local archive= refreshed=true
+  local archive refreshed=true
   apt_root=$(mktemp -d /tmp/astilba-bootstrap-apt.XXXXXXXX)
   chmod 0755 "$apt_root"
   apt_use
@@ -211,12 +226,12 @@ apt_download() {
   for archive in "${fallback_archives[@]}"; do
     printf 'Trying the Ubuntu archive at %s.\n' "$archive"
     apt_use "$archive"
-    apt_refresh && break
-    archive=
+    if apt_refresh && apt_fetch "$@"; then
+      printf 'Ubuntu packages for this run come from %s. This host'"'"'s package sources are unchanged.\n' "$archive"
+      return 0
+    fi
   done
-  [[ -n "$archive" ]] || die 'Neither this host'"'"'s package sources nor any fallback Ubuntu archive served current, correctly signed indexes; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
-  printf 'Ubuntu packages for this run come from %s. This host'"'"'s package sources are unchanged.\n' "$archive"
-  apt_fetch "$@" || die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+  die 'Neither this host'"'"'s package sources nor any fallback Ubuntu archive supplied current, correctly signed packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
 }
 fetch "$management/agent-public-key.pem" "$scratch/public.pem" 4096
 openssl pkey -pubin -in "$scratch/public.pem" -outform DER -out "$scratch/public.der"
