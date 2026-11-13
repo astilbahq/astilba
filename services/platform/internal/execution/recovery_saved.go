@@ -9,13 +9,14 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/jackc/pgx/v5"
 )
 
 // A management backup can contain the next frozen segment before its primary
 // acknowledged retention. Reuse that exact envelope and child headers rather
 // than regenerating a competing segment at the same sequence.
-func (s *Service) recoverSavedCheckpoints(ctx context.Context, tx pgx.Tx, before portability.Archive, source *recoverySource) error {
+func (s *Service) recoverSavedCheckpoints(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, before portability.Archive, source *recoverySource) error {
 	for _, row := range before.Tables["execution_operations"] {
 		var current api.ExecutionCommand
 		if json.Unmarshal(row["command"], &current) != nil {
@@ -49,7 +50,10 @@ func (s *Service) recoverSavedCheckpoints(ctx context.Context, tx pgx.Tx, before
 			if recoveryDecode(descriptor, &next) != nil || next.Validate() != nil || !deployment.SameRecoveryRoot(next, retained) || next.Sequence != sequence || next.PreviousHash != retained.Digest || len(envelope) != next.Bytes || deployment.RecoveryDigest(envelope) != next.Digest {
 				return errors.New("saved checkpoint suffix is incomplete or divergent")
 			}
-			decoded, err := s.Store.Keys.Open(envelope, recoveryIdentity(next))
+			decoded, err := keys.Open(secretbroker.Checkpoint(next), envelope)
+			if secretbroker.SessionFailure(err) {
+				return err
+			}
 			if err != nil {
 				return errors.New("saved checkpoint requires its original management keyring")
 			}

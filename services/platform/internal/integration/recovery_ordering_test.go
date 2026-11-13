@@ -180,7 +180,7 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		if err := destination.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		destination.st.Keys = source.st.Keys
+		useKeys(t, destination.st, source.st.Keys)
 		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Ordering recovery')`, ws); err != nil {
 			t.Fatal(err)
 		}

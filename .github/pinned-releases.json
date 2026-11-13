@@ -1,0 +1,9 @@
+{
+  "images": {
+    "nginx": {
+      "releases": "^\\d+\\.\\d*[02468]\\.\\d+(-|$)",
+      "reason": "Astilba follows nginx's stable releases, whose minor version is even. Stable carries mainline's security fixes, so an odd mainline release is not an update."
+    }
+  },
+  "tools": {}
+}

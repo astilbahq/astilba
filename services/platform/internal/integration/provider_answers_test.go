@@ -2,6 +2,7 @@ package integration
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
@@ -59,4 +60,14 @@ func mergedAnswer(number int, commit string) map[string]any {
 		answer["state"], answer["merged"], answer["merge_commit_sha"] = "closed", true, commit
 	}
 	return answer
+}
+
+// answerReceivePack answers a Git server's push check as it does for a credential that can only
+// read, which is all a connection's clone credential may be.
+func answerReceivePack(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasSuffix(r.URL.Path, ".git/info/refs") {
+		return false
+	}
+	w.WriteHeader(http.StatusForbidden)
+	return true
 }

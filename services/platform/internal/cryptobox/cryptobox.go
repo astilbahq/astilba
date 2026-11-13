@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
 	jsonv1 "encoding/json"
 	"encoding/json/v2"
 	"errors"
@@ -214,12 +213,4 @@ func (r *Keyring) Rewrap(blob []byte, identity string) ([]byte, error) {
 		return nil, ErrTooLarge
 	}
 	return blob, nil
-}
-
-func Token() (string, error) {
-	var data [32]byte
-	if _, err := io.ReadFull(rand.Reader, data[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data[:]), nil
 }

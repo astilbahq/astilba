@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -366,7 +367,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   const ws = session.workspaces[0].id;
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:15181",
+    Origin: api,
   };
   const enrollmentResponse = await page.request.post(
     `/api/v1/workspaces/${ws}/servers`,
@@ -383,37 +384,34 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   const agentHeaders = {
     Authorization: `Bearer ${enrollment.server.id}.${credential}`,
   };
-  const enrolled = await request.post(
-    "http://127.0.0.1:15181/agent/v1/enroll",
-    {
-      data: {
-        serverId: enrollment.server.id,
-        token: enrollment.token,
-        credential,
-        machineId: crypto.randomUUID(),
-        capabilities: {
-          protocol: 1,
-          version: "fixture",
-          os: "linux",
-          arch: "arm64",
-          docker: true,
-          visual: true,
-          serviceOutputs: true,
-        },
-        preflight: {
-          ready: true,
-          osRelease: "ubuntu 24.04",
-          dockerVersion: "fixture",
-          composeVersion: "5.6.1",
-          freeBytes: 1073741824,
-          port80Busy: false,
-          port443Busy: false,
-          existingContainers: 0,
-          notes: [],
-        },
+  const enrolled = await request.post(`${api}/agent/v1/enroll`, {
+    data: {
+      serverId: enrollment.server.id,
+      token: enrollment.token,
+      credential,
+      machineId: crypto.randomUUID(),
+      capabilities: {
+        protocol: 1,
+        version: "fixture",
+        os: "linux",
+        arch: "arm64",
+        docker: true,
+        visual: true,
+        serviceOutputs: true,
+      },
+      preflight: {
+        ready: true,
+        osRelease: "ubuntu 24.04",
+        dockerVersion: "fixture",
+        composeVersion: "5.6.1",
+        freeBytes: 1073741824,
+        port80Busy: false,
+        port443Busy: false,
+        existingContainers: 0,
+        notes: [],
       },
     },
-  );
+  });
   expect(enrolled.status()).toBe(200);
   await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
@@ -499,7 +497,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await page.getByRole("button", { name: "Prepare plan", exact: true }).click();
   // A protocol fixture acts as the remote host; the native test covers Docker effects.
   const poll = async () => {
-    const response = await request.get("http://127.0.0.1:15181/agent/v1/poll", {
+    const response = await request.get(`${api}/agent/v1/poll`, {
       headers: agentHeaders,
     });
     expect(response.status()).toBe(200);
@@ -520,22 +518,19 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     observation: unknown,
     state = "succeeded",
   ) => {
-    const response = await request.post(
-      "http://127.0.0.1:15181/agent/v1/report",
-      {
-        headers: agentHeaders,
-        data: {
-          id: command.id,
-          generation: command.generation,
-          planHash: command.planHash,
-          sequence: 2,
-          state,
-          steps: [],
-          note: "Protocol fixture",
-          observation,
-        },
+    const response = await request.post(`${api}/agent/v1/report`, {
+      headers: agentHeaders,
+      data: {
+        id: command.id,
+        generation: command.generation,
+        planHash: command.planHash,
+        sequence: 2,
+        state,
+        steps: [],
+        note: "Protocol fixture",
+        observation,
       },
-    );
+    });
     expect(response.status()).toBe(204);
   };
   await report(resolve, {
@@ -624,10 +619,12 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await expect(
     page.getByText("The saved revision changed. Prepare a new plan."),
   ).toBeVisible();
-  await openEnvironmentSection(page, "Deployments");
+  await expect(
+    page.getByRole("region", { name: "Reviewed deployment plan" }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Apply reviewed plan" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await openEnvironmentSection(page, "Configuration");
   await page.getByLabel("Position x", { exact: true }).fill("99");

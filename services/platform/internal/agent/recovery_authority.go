@@ -55,7 +55,7 @@ func recoveryOpen(c api.ExecutionCommand) bool {
 		return false
 	}
 	body, err := crossHostCommand(c)
-	return err == nil && body.Phase == "recovery-open"
+	return err == nil && body.Phase == recoveryOpenPhase
 }
 
 // TransferRecovery replaces controller authority under the stopped agent's

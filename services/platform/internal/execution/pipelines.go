@@ -5,12 +5,10 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"slices"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -45,7 +43,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 		return uuid.Nil, err
 	}
 	var busy bool
-	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", primary).Scan(&busy); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", primary).Scan(&busy); err != nil {
 		return uuid.Nil, err
 	}
 	if fallback != nil && (!online || busy) {
@@ -54,7 +52,7 @@ func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallbac
 			return uuid.Nil, err
 		}
 		if ready {
-			if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", *fallback).Scan(&busy); err != nil {
+			if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", *fallback).Scan(&busy); err != nil {
 				return uuid.Nil, err
 			}
 			if !busy {
@@ -180,15 +178,29 @@ func existingBuild(ctx context.Context, tx pgx.Tx, ws, pid, env, app, key uuid.U
 
 func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) (map[string]any, error) {
 	out := map[string]any{}
-	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
+	err := s.scopeIn(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx, w store.Workspace) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
 		}
+		// Each statement here sees the latest commit. A submission's outcome and the source's
+		// status commit together, so reading the submission first means the status read after it
+		// is never older: a succeeded submission always comes with the status it set.
+		submission, err := latestSubmission(ctx, tx, ws, env)
+		if err != nil {
+			return err
+		}
 		var cfg []byte
+		var actor uuid.UUID
 		var revision *uuid.UUID
 		var commit, pending, status string
-		if err := tx.QueryRow(ctx, "SELECT configuration,imported_revision_id,imported_commit,pending_commit,status FROM git_sources WHERE workspace_id=$1 AND environment_id=$2", ws, env).Scan(&cfg, &revision, &commit, &pending, &status); err != nil {
+		var role *string
+		var current, approved *int64
+		// The approver's role and version explain, in the terms of policyApproval, why imports don't
+		// run; policy_approver_holds is what stops them.
+		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version
+ FROM git_sources g LEFT JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor LEFT JOIN accounts a ON a.id=g.policy_actor
+ WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current); err != nil {
 			return err
 		}
 		baseline, err := sourceBaseline(ctx, tx, ws, env, revision)
@@ -203,7 +215,8 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		if clean {
 			configuration = sourceSelection(configuration, v.Spec.Compose)
 		}
-		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status}
+		approval := policyApproval(role, current, approved, true, status == "approval_required", w.Role)
+		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "approval": approval, "sourceHash": sourceHash(cfg, actor), "submission": submission}
 		return nil
 	})
 	return out, err
@@ -211,7 +224,7 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source) (api.Operation, error) {
 	var out api.Operation
 	if err := c.Validate(); err != nil {
-		return out, domain.Invalid("source")
+		return api.Operation{}, domain.Invalid("source")
 	}
 	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
@@ -238,7 +251,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return err
 		}
 		raw, _ := stablejson.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor) VALUES($1,$2,$3,$4,$5)", ws, env, c.ConnectionID, raw, p.Account.ID)
+		_, err = tx.Exec(ctx, "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor,policy_auth_version) VALUES($1,$2,$3,$4,$5,$6)", ws, env, c.ConnectionID, raw, p.Account.ID, p.Account.AuthVersion)
 		if err != nil {
 			return err
 		}
@@ -246,7 +259,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, discard bool) (api.Operation, error) {
 	var out api.Operation
@@ -300,117 +313,27 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()})
 		return err
 	})
-	return out, err
-}
-func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, env, base, key uuid.UUID) (api.Operation, error) {
-	var out api.Operation
-	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true}, "git.source.submit", base, func(tx pgx.Tx, git *gitAnswers) error {
-		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
-		if err != nil {
-			return err
-		}
-		if v.Revision != base || v.Spec.Compose == nil {
-			return domain.Conflict
-		}
-		if old, exists, err := pipelineExisting(ctx, tx, ws, env, key, "submit"); err != nil || exists {
-			out = old
-			return err
-		}
-		var source pipeline.Source
-		var raw []byte
-		var imported *uuid.UUID
-		var commit string
-		if err = tx.QueryRow(ctx, "SELECT configuration,imported_revision_id,imported_commit FROM git_sources WHERE workspace_id=$1 AND environment_id=$2 FOR UPDATE", ws, env).Scan(&raw, &imported, &commit); err != nil {
-			return err
-		}
-		if err = json.Unmarshal(raw, &source); err != nil {
-			return err
-		}
-		baseline, err := sourceBaseline(ctx, tx, ws, env, imported)
-		if err != nil {
-			return err
-		}
-		if imported == nil || sameSourceFiles(v.Spec.Compose, baseline) || v.Spec.Compose.Origin == nil || v.Spec.Compose.Origin.Commit != commit {
-			return domain.Invalid("source.draft")
-		}
-		var existing uuid.UUID
-		var prior pipeline.Command
-		err = tx.QueryRow(ctx, "SELECT operation_id FROM git_submissions WHERE workspace_id=$1 AND environment_id=$2 AND revision_id=$3", ws, env, base).Scan(&existing)
-		if err == nil {
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND id=$2", ws, existing))
-			if err != nil {
-				return err
-			}
-			if out.State != "failed" && out.State != "cancelled" {
-				return nil
-			}
-			var frozen []byte
-			if err = tx.QueryRow(ctx, "SELECT configuration FROM pipeline_runs WHERE workspace_id=$1 AND id=$2", ws, existing).Scan(&frozen); err != nil {
-				return err
-			}
-			if err = json.Unmarshal(frozen, &prior); err != nil {
-				return err
-			}
-		}
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		head, err := git.head(ctx, tx, source.ConnectionID, source.Branch)
-		if err != nil {
-			return err
-		}
-		if head.Err != nil {
-			return head.failure(domain.Invalid("source.branch"))
-		}
-		if head.Value != commit {
-			return domain.Conflict
-		}
-		connection := head.Connection
-		// A baseline file's name is already in the repository, and a draft must stay able to
-		// rename it away, so only the names being submitted are checked.
-		files := slices.Clone(v.Spec.Compose.Files)
-		for _, file := range baseline.Files {
-			files = append(files, composeproject.File{Content: file.Content})
-		}
-		if err = s.rejectRuntimeSecrets(ctx, tx, ws, env, composeproject.Bundle{Files: files}); err != nil {
-			return err
-		}
-		server, err := selectRunner(ctx, tx, ws, source.RunnerID, source.FallbackRunnerID, "", false, false)
-		if err != nil {
-			return err
-		}
-		submittedAt := time.Now().UTC()
-		if !prior.SubmittedAt.IsZero() {
-			submittedAt = prior.SubmittedAt
-		}
-		out, err = s.insertPipeline(ctx, tx, git, ws, env, key, server, pipeline.Command{SubmissionID: uuid.NewSHA1(env, []byte("source/"+base.String())), Action: "submit", Connection: connection, Commit: commit, Branch: source.Branch, RevisionID: base, UnitID: v.Unit, Bundle: v.Spec.Compose, Source: &source, SubmittedAt: submittedAt})
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, "INSERT INTO git_submissions(workspace_id,environment_id,revision_id,operation_id,request_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,environment_id,revision_id) DO UPDATE SET operation_id=EXCLUDED.operation_id,request_key=EXCLUDED.request_key", ws, env, base, out.Id, key)
-		return err
-	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig) (api.Operation, error) {
 	var out api.Operation
 	if p.Automation != nil {
-		return out, domain.Forbidden
+		return api.Operation{}, domain.Forbidden
 	}
 	c = c.Canonical()
 	if err := c.Validate(); err != nil {
 		var validation *pipeline.BuildValidationError
 		if errors.As(err, &validation) {
-			return out, &domain.Error{Code: "invalid_input", Message: validation.Message, Fields: []string{"build." + validation.Field}}
+			return api.Operation{}, &domain.Error{Code: "invalid_input", Message: validation.Message, Fields: []string{"build." + validation.Field}}
 		}
-		return out, domain.Invalid("build")
+		return api.Operation{}, domain.Invalid("build")
 	}
 	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: c.AutoDeploy, Recent: c.AutoDeploy}, "build.create", app, func(tx pgx.Tx, git *gitAnswers) error {
 		var err error
 		out, err = s.admitBuild(ctx, tx, git, p, ws, pid, env, base, app, key, c, true)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig, persist bool) (api.Operation, error) {
@@ -466,7 +389,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 	}
 	if persist {
 		raw, _ := stablejson.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID)
+		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID, p.Account.AuthVersion)
 	} else {
 		_, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env, app, hash, commit)
 	}
@@ -549,23 +472,6 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 		return rows.Err()
 	})
 	return out, err
-}
-
-func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, enabled bool) error {
-	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled}, "git.source.policy", env, func(tx pgx.Tx) error {
-		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
-		if err != nil {
-			return err
-		}
-		if err = requireActive(v.State); err != nil {
-			return err
-		}
-		n, err := tx.Exec(ctx, "UPDATE git_sources SET configuration=jsonb_set(configuration,'{autoDeploy}',to_jsonb($3::boolean)),policy_actor=$4,status=CASE WHEN $3 AND status='approval_required' THEN 'ready' ELSE status END WHERE workspace_id=$1 AND environment_id=$2", ws, env, enabled, p.Account.ID)
-		if err == nil && n.RowsAffected() != 1 {
-			return domain.NotFound
-		}
-		return err
-	})
 }
 
 func pipelineLifetime(p pipeline.Command) time.Duration {

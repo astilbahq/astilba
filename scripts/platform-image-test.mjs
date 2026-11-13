@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { forward } from "./docker-forward.mjs";
 import {
   pullImages,
   runLogged,
@@ -82,6 +83,7 @@ let madeNetwork = false,
   madeVolume = false;
 const containers = [];
 const extraVolumes = [];
+const forwards = [];
 try {
   console.log("Building application image…");
   // Repeats the whole build for the fetches inside it; see docs/continuous-integration.md#image-downloads.
@@ -220,12 +222,14 @@ try {
     "ALL",
     "--security-opt",
     "no-new-privileges:true",
-    "-p",
-    "127.0.0.1::8080",
     image,
   ]);
   containers.push(app);
-  const address = docker(["port", app, "8080/tcp"]).trim();
+  // Nothing is published: the test reaches the server through the Docker API, from the
+  // database beside it, so the image itself needs no tools.
+  const appForward = await forward({ host, container: db, address: app, port: 8080 });
+  forwards.push(appForward);
+  const address = `127.0.0.1:${appForward.port}`;
   ready = false;
   for (let i = 0; i < 100; i++) {
     try {
@@ -296,9 +300,11 @@ try {
   docker(["run", "--rm", ...restoredCommon, image, "rewrap"]);
   docker(["run", "--rm", ...restoredCommon, image, "prepare-recovery", "--server", server.server.id, "--controller-generation", "1"]);
   const restoredApp = `astilba-restored-app-${id}`;
-  docker(["run", "-d", "--name", restoredApp, "--label", label, ...restoredCommon, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "-p", "127.0.0.1::8080", image]);
+  docker(["run", "-d", "--name", restoredApp, "--label", label, ...restoredCommon, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", image]);
   containers.push(restoredApp);
-  const restoredAddress = docker(["port", restoredApp, "8080/tcp"]).trim();
+  const restoredForward = await forward({ host, container: restoredDatabase, address: restoredApp, port: 8080 });
+  forwards.push(restoredForward);
+  const restoredAddress = `127.0.0.1:${restoredForward.port}`;
   restoredReady = false;
   for (let attempt = 0; attempt < 100; attempt++) {
     try { if ((await fetch(`http://${restoredAddress}/healthz`)).status === 204) { restoredReady = true; break; } }
@@ -319,6 +325,7 @@ try {
   await denied.body?.cancel();
   console.log("Image passed: non-root Node-free installation, HTTPS trust from the shipped bundle, explicit migrations/bootstrap, source notices, separate database/key restore and stale-work fencing.");
 } finally {
+  for (const opened of forwards) await opened.close();
   for (const name of containers.reverse()) {
     const actual = docker([
       "inspect",

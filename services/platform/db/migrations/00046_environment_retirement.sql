@@ -1,4 +1,5 @@
 -- +goose Up
+-- astilba: not additive: a release before it knows no environment state, so it would deploy, build and admit tokens for a retired environment, and its writes could break the new checks.
 -- Environments are never deleted, because revisions, plans and history refer to them.
 -- Retirement is a lifecycle state instead; docs/environment-retirement.md describes it.
 -- environment_state is named so that later states can be added to it.

@@ -117,6 +117,18 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		if out.Plan.Validate() != nil {
 			return domain.Invalid("upgrade.source")
 		}
+		// The target must be storable before the host changes: completion has no way to refuse it.
+		stored, err := upgradeTargetSpecification(out.Plan.TargetGroup())
+		if err != nil {
+			return err
+		}
+		fits, err := store.SpecificationFits(ctx, db.New(tx), stored)
+		if err != nil {
+			return err
+		}
+		if !fits {
+			return domain.SpecificationTooLarge
+		}
 		var count int
 		if err = tx.QueryRow(ctx, "SELECT count(*) FROM supported_upgrades WHERE workspace_id=$1", ws).Scan(&count); err != nil {
 			return err
@@ -213,7 +225,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 			return domain.Conflict
 		}
 		var active bool
-		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))", plan.Source.ServerID).Scan(&active); err != nil {
+		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", plan.Source.ServerID).Scan(&active); err != nil {
 			return err
 		}
 		if active {
@@ -274,7 +286,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 		_, err = tx.Exec(ctx, "UPDATE supported_upgrades SET status=$2 WHERE id=$1", id, raw)
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 func (s *Service) hydrateUpgrade(ctx context.Context, c *api.ExecutionCommand) error {
 	var cmd upgrade.Command
@@ -455,6 +467,16 @@ func (s *Service) upgradeReport(ctx context.Context, tx pgx.Tx, c api.ExecutionC
 	return err
 }
 
+// upgradeTargetSpecification is the canonical specification an upgrade stores as its target
+// revision when it completes.
+func upgradeTargetSpecification(target deployment.Plan) ([]byte, error) {
+	raw, _ := stablejson.Marshal(target.Specification)
+	_, canonical, err := domain.ParseSpec(raw)
+	return canonical, err
+}
+
+// saveUpgradeTarget records the target revision once the host serves it, so a refusal here would
+// leave the upgrade unrecordable. CreateUpgrade refuses the plan up front instead.
 func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.Command, operation uuid.UUID) error {
 	target := cmd.Plan.TargetGroup()
 	ws := cmd.Installation.Policy.WorkspaceID
@@ -463,16 +485,15 @@ func (s *Service) saveUpgradeTarget(ctx context.Context, tx pgx.Tx, cmd upgrade.
 	if err := tx.QueryRow(ctx, "SELECT author_id FROM supported_upgrades WHERE id=$1", cmd.Plan.ID).Scan(&author); err != nil {
 		return err
 	}
-	raw, _ := stablejson.Marshal(target.Specification)
-	_, canonical, err := domain.ParseSpec(raw)
+	canonical, err := upgradeTargetSpecification(target)
 	if err != nil {
 		return err
 	}
 	hash := sha256.Sum256(canonical)
-	if _, err = db.New(tx).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: target.RevisionID, AuthorID: author, Specification: canonical, ContentHash: hash[:]}); err != nil {
+	if _, err = store.InsertRevision(ctx, db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: target.RevisionID, AuthorID: author, Specification: canonical, ContentHash: hash[:]}); err != nil {
 		return err
 	}
-	raw, _ = stablejson.Marshal(target)
+	raw, _ := stablejson.Marshal(target)
 	if _, err = tx.Exec(ctx, "INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,candidate,operation_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", target.ID, ws, target.ServerID, env, target.UnitID, target.RevisionID, raw, operation); err != nil {
 		return err
 	}

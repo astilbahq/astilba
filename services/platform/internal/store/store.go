@@ -11,7 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
-	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,8 +19,12 @@ import (
 )
 
 type Store struct {
-	Pool              *pgxpool.Pool
-	Queries           *db.Queries
+	Pool    *pgxpool.Pool
+	Queries *db.Queries
+	// Broker is the one path to stored values.
+	Broker *secretbroker.Broker
+	// Keys is read only by the agent delivery paths that have not moved to the broker yet. The
+	// secretkeys analyzer allows no other use.
 	Keys              *cryptobox.Keyring
 	Hosted            bool
 	Hosting           hosting.Config
@@ -42,12 +46,28 @@ type Principal struct {
 	Automation  *domain.AutomationGrant
 }
 
+// Secrets is who the secret broker records for this principal: the account, or the automation
+// credential acting for it in the one workspace it was issued for.
+func (p Principal) Secrets() secretbroker.Principal {
+	if p.Automation != nil {
+		return secretbroker.Automation(p.Account.ID, p.Automation.ID, p.Automation.WorkspaceID)
+	}
+	return secretbroker.Account(p.Account.ID)
+}
+
 // Recent is decided when it is asked, because a request can wait for the workspace lock
 // for longer than its authentication stays recent.
 func (p Principal) Recent() bool { return time.Now().Before(p.RecentUntil) }
 
 // CredentialRecent is Recent for the changes that need the shorter window.
 func (p Principal) CredentialRecent() bool { return time.Now().Before(p.CredentialRecentUntil) }
+
+// MayReadEnvironment is whether the principal may read the environment it acts on: every browser
+// member, and an automation credential holding environment:read. Only such a principal is shown the
+// environment's configuration.
+func (p Principal) MayReadEnvironment() bool {
+	return p.Automation == nil || p.Automation.Allows(domain.EnvironmentRead)
+}
 
 type Workspace struct {
 	ID         uuid.UUID
@@ -67,8 +87,8 @@ type WorkspaceAccess struct {
 	Lock bool
 }
 
-func New(pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted bool) *Store {
-	return &Store{Pool: pool, Queries: db.New(pool), Keys: keys, Hosted: hosted, LogRetention: 30 * 24 * time.Hour}
+func New(pool *pgxpool.Pool, broker *secretbroker.Broker, hosted bool) *Store {
+	return &Store{Pool: pool, Queries: db.New(pool), Broker: broker, Hosted: hosted, LogRetention: 30 * 24 * time.Hour}
 }
 
 func Normalize(err error) error {
@@ -111,19 +131,19 @@ func (s *Store) InWorkspace(ctx context.Context, p Principal, id uuid.UUID, acce
 }
 
 func (s *Store) InWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceTx(ctx, p, id, access, "management", fn)
+	return s.inWorkspaceTx(ctx, p, id, access, admitManagement, fn)
 }
 
-func (s *Store) inWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+func (s *Store) inWorkspaceTx(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode admission, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
 	return s.inWorkspaceIsolation(ctx, p, id, access, mode, pgx.ReadCommitted, fn)
 }
 
 // InWorkspaceSnapshot holds a consistent view across all exported tables while
 // serializing permission changes and interactive workspace mutations.
 func (s *Store) InWorkspaceSnapshot(ctx context.Context, p Principal, id uuid.UUID, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
-	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Credential: true}, "recovery", pgx.RepeatableRead, fn)
+	return s.inWorkspaceIsolation(ctx, p, id, WorkspaceAccess{Write: true, Owner: true, Credential: true}, admitRecovery, pgx.RepeatableRead, fn)
 }
-func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode string, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
+func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, mode admission, isolation pgx.TxIsoLevel, fn func(pgx.Tx, *db.Queries, Workspace) error) error {
 	var tx pgx.Tx
 	var err error
 	if access.Write || access.Lock {
@@ -145,57 +165,9 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 	}
 	q := db.New(tx)
 	err = func() error {
-		var w Workspace
-		var r db.WorkspaceRow
-		if isolation == pgx.RepeatableRead {
-			// Locking the membership detects revocation committed after this
-			// transaction took its snapshot while waiting for the workspace lock.
-			var snapshot db.WorkspaceForSnapshotRow
-			snapshot, err = q.WorkspaceForSnapshot(ctx, db.WorkspaceForSnapshotParams{ID: id, AccountID: p.Account.ID})
-			r = db.WorkspaceRow(snapshot)
-		} else {
-			r, err = q.Workspace(ctx, db.WorkspaceParams{ID: id, AccountID: p.Account.ID})
-		}
+		w, err := s.workspaceAdmission(ctx, tx, q, p, id, access, mode, isolation)
 		if err != nil {
 			return err
-		}
-		w = Workspace{r.ID, r.Name, r.Role, r.RequireMfa}
-		mfa := p.MFA
-		if p.Automation != nil {
-			if access.Owner || access.Recent || access.Credential {
-				return domain.Forbidden
-			}
-			var e error
-			mfa, e = s.automationAdmission(ctx, tx, p, id)
-			if e != nil {
-				return e
-			}
-		} else if access.Write || access.Lock {
-			if e := browserAdmission(ctx, tx, p, isolation); e != nil {
-				return e
-			}
-		}
-
-		if (access.Owner && w.Role != "owner") || (access.Write && !domain.CanWrite(w.Role)) {
-			return domain.Forbidden
-		}
-		if access.Write && (s.Hosted || w.RequireMFA) && !mfa {
-			return domain.MFARequired
-		}
-		if access.Write && s.Hosted {
-			if p.Account.EmailVerifiedAt == nil {
-				return EmailVerificationRequired
-			}
-			entitlement, e := Entitlement(ctx, tx, id)
-			if e != nil {
-				return e
-			}
-			if mode == "management" && !entitlement.Active(time.Now()) || mode == "recovery" && !entitlement.Recoverable(time.Now()) {
-				return SubscriptionRequired
-			}
-		}
-		if access.Recent && !p.Recent() || access.Credential && !p.CredentialRecent() {
-			return domain.RecentRequired
 		}
 		return fn(tx, q, w)
 	}()
@@ -203,6 +175,89 @@ func (s *Store) inWorkspaceIsolation(ctx context.Context, p Principal, id uuid.U
 		return Normalize(err)
 	}
 	return Normalize(tx.Commit(ctx))
+}
+
+// admission decides whether p may act on the workspace with access, in tx: every check a
+// workspace transaction makes before its work.
+func (s *Store) workspaceAdmission(ctx context.Context, tx pgx.Tx, q *db.Queries, p Principal, id uuid.UUID, access WorkspaceAccess, mode admission, isolation pgx.TxIsoLevel) (Workspace, error) {
+	var err error
+	var w Workspace
+	var r db.WorkspaceRow
+	if isolation == pgx.RepeatableRead {
+		// Locking the membership detects revocation committed after this
+		// transaction took its snapshot while waiting for the workspace lock.
+		var snapshot db.WorkspaceForSnapshotRow
+		snapshot, err = q.WorkspaceForSnapshot(ctx, db.WorkspaceForSnapshotParams{ID: id, AccountID: p.Account.ID})
+		r = db.WorkspaceRow(snapshot)
+	} else {
+		r, err = q.Workspace(ctx, db.WorkspaceParams{ID: id, AccountID: p.Account.ID})
+	}
+	if err != nil {
+		return Workspace{}, err
+	}
+	w = Workspace{r.ID, r.Name, r.Role, r.RequireMfa}
+	mfa := p.MFA
+	if p.Automation != nil {
+		if access.Owner || access.Recent || access.Credential {
+			return Workspace{}, domain.Forbidden
+		}
+		var e error
+		mfa, e = s.automationAdmission(ctx, tx, p, id)
+		if e != nil {
+			return Workspace{}, e
+		}
+	} else if access.Write || access.Lock {
+		if e := browserAdmission(ctx, tx, p, isolation); e != nil {
+			return Workspace{}, e
+		}
+	}
+
+	if (access.Owner && w.Role != "owner") || (access.Write && !domain.CanWrite(w.Role)) {
+		return Workspace{}, domain.Forbidden
+	}
+	if access.Write && (s.Hosted || w.RequireMFA) && !mfa {
+		return Workspace{}, domain.MFARequired
+	}
+	if access.Write && s.Hosted {
+		if p.Account.EmailVerifiedAt == nil {
+			return Workspace{}, EmailVerificationRequired
+		}
+		if e := mode.admit(ctx, tx, id); e != nil {
+			return Workspace{}, e
+		}
+	}
+	if access.Recent && !p.Recent() || access.Credential && !p.CredentialRecent() {
+		return Workspace{}, domain.RecentRequired
+	}
+	return w, nil
+}
+
+// Admit makes the same decision as a workspace transaction with access, without its lock, so
+// that work which must be decided before that transaction, such as asking the secret broker for
+// keys, is refused to anyone the transaction would refuse. The transaction decides again.
+func (s *Store) Admit(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, recovery bool) error {
+	// Its row locks, if any, end with the rollback: it never commits.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	mode := admitManagement
+	if recovery {
+		mode = admitRecovery
+	}
+	_, err = s.workspaceAdmission(ctx, tx, db.New(tx), p, id, access, mode, pgx.ReadCommitted)
+	return Normalize(err)
+}
+
+// BeginKeys asks the secret broker for keys for p's work in a workspace, once p is admitted
+// with the access that work's transaction will need.
+func (s *Store) BeginKeys(ctx context.Context, p Principal, access WorkspaceAccess, recovery bool, r secretbroker.Request) (*secretbroker.Session, error) {
+	if err := s.Admit(ctx, p, r.Workspace, access, recovery); err != nil {
+		return nil, err
+	}
+	r.Principal = p.Secrets()
+	return s.Broker.Begin(ctx, r)
 }
 
 // AdmitBrowserSession revalidates a session in a transaction holding the lock its request
@@ -281,18 +336,10 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 	return id, err
 }
 
+// SecretIdentity is a secret version's identity, for the delivery paths that have not moved to
+// the broker yet, which builds its own.
 func SecretIdentity(workspace, id uuid.UUID) string {
 	return "secret:v1:" + workspace.String() + ":" + id.String()
-}
-func AlertWebhookIdentity(workspace uuid.UUID) string {
-	return "astilba/alert-webhook/" + workspace.String()
-}
-func TOTPIdentity(id uuid.UUID, pending bool) string {
-	p := "totp:v1:"
-	if pending {
-		p = "totp-pending:v1:"
-	}
-	return p + id.String()
 }
 
 // rewrapFailed names the row, because rotation stops until an operator deals with it and
@@ -301,7 +348,19 @@ func rewrapFailed(table string, workspace, id uuid.UUID, err error) error {
 	return fmt.Errorf("cannot rewrap %s row %s in workspace %s: %w", table, id, workspace, err)
 }
 
-func (s *Store) Rewrap(ctx context.Context) error {
+// Rewrap moves every stored value onto the active key, for an operator, as one recorded run.
+func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
+	rotation, err := s.Broker.BeginRotation(ctx, operator)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		outcome := secretbroker.Used
+		if err != nil {
+			outcome = secretbroker.Failed
+		}
+		rotation.Close(ctx, outcome)
+	}()
 	return s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
 			return err
@@ -311,7 +370,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range versions {
-			blob, err := s.Keys.Rewrap(v.EncryptedValue, SecretIdentity(v.WorkspaceID, v.ID))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.ID}, v.EncryptedValue)
 			if err != nil {
 				return rewrapFailed("secret_versions", v.WorkspaceID, v.ID, err)
 			}
@@ -325,7 +384,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range git {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "git"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.Git, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("git_connections", v.WorkspaceID, v.ID, err)
 			}
@@ -338,7 +397,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range authorizations {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "github-authorization"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.GitHubAuthorization, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("github_app_authorizations", v.WorkspaceID, v.ID, err)
 			}
@@ -351,7 +410,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range registries {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "registry"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.Registry, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("registries", v.WorkspaceID, v.ID, err)
 			}
@@ -364,7 +423,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range build {
-			blob, err := s.Keys.Rewrap(v.EncryptedValue, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "build-secret"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BuildSecret, ID: v.ID}, v.EncryptedValue)
 			if err != nil {
 				return rewrapFailed("build_secret_versions", v.WorkspaceID, v.ID, err)
 			}
@@ -378,7 +437,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range rowsBackupDestination {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "backup-destination"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("backup_destinations", v.WorkspaceID, v.ID, err)
 			}
@@ -392,7 +451,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range rowsBackupPolicy {
-			blob, err := s.Keys.Rewrap(v.EncryptedAccess, pipeline.EncryptionIdentity(v.WorkspaceID, v.ID, "backup-policy"))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: v.ID}, v.EncryptedAccess)
 			if err != nil {
 				return rewrapFailed("backup_policies", v.WorkspaceID, v.ID, err)
 			}
@@ -405,7 +464,7 @@ func (s *Store) Rewrap(ctx context.Context) error {
 			return err
 		}
 		for _, v := range hooks {
-			blob, err := s.Keys.Rewrap(v.EncryptedWebhook, AlertWebhookIdentity(v.WorkspaceID))
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.AlertWebhook, ID: v.WorkspaceID}, v.EncryptedWebhook)
 			if err != nil {
 				return rewrapFailed("alert_settings", v.WorkspaceID, v.WorkspaceID, err)
 			}
@@ -420,13 +479,13 @@ func (s *Store) Rewrap(ctx context.Context) error {
 		for _, a := range accounts {
 			active, pending := a.TotpSecret, a.TotpPending
 			if active != nil {
-				active, err = s.Keys.Rewrap(active, TOTPIdentity(a.ID, false))
+				active, err = rotation.Rewrap(uuid.Nil, secretbroker.Item{Kind: secretbroker.TOTP, ID: a.ID}, active)
 				if err != nil {
 					return rewrapFailed("accounts", uuid.Nil, a.ID, err)
 				}
 			}
 			if pending != nil {
-				pending, err = s.Keys.Rewrap(pending, TOTPIdentity(a.ID, true))
+				pending, err = rotation.Rewrap(uuid.Nil, secretbroker.Item{Kind: secretbroker.TOTPPending, ID: a.ID}, pending)
 				if err != nil {
 					return rewrapFailed("accounts", uuid.Nil, a.ID, err)
 				}

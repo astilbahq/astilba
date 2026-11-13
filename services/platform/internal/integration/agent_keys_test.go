@@ -14,7 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/agent"
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/google/uuid"
 )
 
@@ -377,7 +377,7 @@ func TestAccessTokenCannotUseTheLegacyRotation(t *testing.T) {
 	sealed, _ := a.keys.Unseal(context.Background(), cfg.Key)
 	key, _ := agentidentity.ParsePrivate(sealed)
 	out := coldStart(t, a.tls, v.Server.Id, key, 100, 200)
-	candidate, _ := cryptobox.Token()
+	candidate, _ := randtoken.New()
 	agentRequest(t, a.tls.Client(), a.tls.URL, "/agent/v1/rotate", v.Server.Id.String()+"."+out.Token, api.AgentRotation{Credential: candidate, MachineId: a.in.MachineId}, 403, nil)
 }
 

@@ -129,7 +129,7 @@ func TestRetirementRemovesUnitAndKeepsVolumes(t *testing.T) {
 
 	engine := &Engine{Journal: j, Docker: docker}
 	generation := int64(0)
-	retire := func() Record {
+	retire := func(deadline time.Time) Record {
 		t.Helper()
 		generation++
 		payload := deployment.Payload{Action: "retire", Plan: plan}
@@ -138,8 +138,7 @@ func TestRetirementRemovesUnitAndKeepsVolumes(t *testing.T) {
 			t.Fatal(err)
 		}
 		value := jsontext.Value(raw)
-		// A deadline long past: retirement waits for a server that was offline.
-		c := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, ResourceId: plan.UnitID, Generation: generation, Kind: "visual", Action: "inspect", PlanHash: payload.Digest(), Deadline: time.Now().Add(-time.Hour), Visual: &value}
+		c := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, ResourceId: plan.UnitID, Generation: generation, Kind: "visual", Action: "inspect", PlanHash: payload.Digest(), Deadline: deadline, Visual: &value}
 		if err := engine.Execute(ctx, c); err != nil {
 			t.Fatal(err)
 		}
@@ -161,8 +160,10 @@ func TestRetirementRemovesUnitAndKeepsVolumes(t *testing.T) {
 		return err == nil
 	}
 
-	for attempt := range 2 {
-		if r := retire(); r.Report.State != "succeeded" {
+	// The first arrives long after its deadline, as on a server that was offline and still holds the
+	// unit; the second, in time, finds nothing left and still succeeds.
+	for attempt, deadline := range []time.Time{time.Now().Add(-time.Hour), time.Now().Add(time.Hour)} {
+		if r := retire(deadline); r.Report.State != "succeeded" {
 			t.Fatalf("retirement %d: %+v", attempt, r.Report)
 		}
 		for _, name := range containers[:2] {
@@ -199,7 +200,7 @@ func TestRetirementRemovesUnitAndKeepsVolumes(t *testing.T) {
 	foreign[labelEnvironment] = uuid.NewString()
 	intruder := "astilba-" + uuid.NewString()
 	start(intruder, foreign, "none", nil)
-	if r := retire(); r.Report.State != "needs_attention" || !present(service) || !strings.Contains(r.Report.Note, "Nothing was removed") {
+	if r := retire(time.Now().Add(time.Hour)); r.Report.State != "needs_attention" || !present(service) || !strings.Contains(r.Report.Note, "Nothing was removed") {
 		t.Fatalf("an ownership mismatch was not refused before effects: %+v", r.Report)
 	}
 }

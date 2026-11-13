@@ -4,13 +4,14 @@ import { expect, test, type Page } from "@playwright/test";
 import { authFixtureSQL } from "./auth-fixture";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
+import { api } from "./fixtures/ports";
 
 async function deployedEnvironment(page: Page, name: string) {
   const session = await (await page.request.get("/api/v1/session")).json();
   const workspaceId: string = session.workspaces[0].id;
   const headers = {
     "X-CSRF-Token": session.csrfToken,
-    Origin: "http://127.0.0.1:15181",
+    Origin: api,
   };
   const root = `/api/v1/workspaces/${workspaceId}`;
   const post = async (url: string, data: unknown) => {

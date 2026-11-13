@@ -19,6 +19,9 @@ SELECT * FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$
 -- The revision only if it holds this specification. It compares the documents, not the stored
 -- content hash, which an import carries as the archive gave it.
 SELECT * FROM specification_revisions WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id AND specification = @specification::jsonb;
+-- name: SpecificationTextSize :one
+-- The bytes a specification takes as specification_revisions' size check measures them.
+SELECT octet_length(sqlc.arg(specification)::jsonb::text)::int AS size;
 -- name: ListRevisions :many
 SELECT id,author_id,content_hash,created_at FROM specification_revisions WHERE workspace_id=$1 AND environment_id=$2 ORDER BY created_at DESC,id DESC LIMIT 50;
 -- name: InsertRevision :one
@@ -60,7 +63,7 @@ WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;
 
 -- name: BackfillPostgresMajors :exec
 -- Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
--- runs on it, as migration 00040 did for volumes that existed then. An archive from before version 7
+-- runs on it, as migration 00046 did for volumes that existed then. An archive from before version 7
 -- records none. Run BackfillUpgradeTargetMajors after it.
 UPDATE managed_volumes v SET postgres_major = substring(a->'source'->>'image' FROM '^postgres:([0-9]{1,3})[.@-]')
 FROM environments e
@@ -71,7 +74,7 @@ WHERE v.workspace_id = @workspace_id AND e.workspace_id = @workspace_id AND v.en
  AND jsonb_typeof(a->'postgres') = 'object' AND a->'mounts'->0->>'volumeId' = v.id::text;
 
 -- name: BackfillUpgradeTargetMajors :exec
--- Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00040 did.
+-- Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00046 did.
 -- Planning an upgrade records its target's major from archive version 7; every upgrade planned
 -- before then targeted PostgreSQL 18. It runs after BackfillPostgresMajors, so an applied revision
 -- decides a volume that both name.
@@ -85,3 +88,8 @@ SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2
 -- name: VisualRequestHostReview :one
 -- Whether the planner found host changes the applied deployment does not already have.
 SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2;
+
+-- name: LockEnvironmentForUpdate :one
+-- Takes the environment's row lock that writing a revision or admitting a pipeline takes first, so
+-- a transaction that then locks a build target keeps their order and can't deadlock with them.
+SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR NO KEY UPDATE;

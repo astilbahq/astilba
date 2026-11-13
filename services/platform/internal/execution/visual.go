@@ -312,14 +312,24 @@ func (s *Service) VisualPlan(ctx context.Context, p store.Principal, ws, pid, en
 		}
 		var raw []byte
 		err := tx.QueryRow(ctx, `SELECT r.id,r.operation_id,o.state,p.plan,COALESCE(p.host_review,r.host_review) FROM visual_requests r JOIN execution_operations o ON o.id=r.operation_id LEFT JOIN visual_plans p ON p.id=r.id WHERE r.workspace_id=$1 AND r.environment_id=$2 AND r.id=$3`, ws, env, id).Scan(&out.ID, &out.OperationID, &out.State, &raw, &out.HostReview)
-		if err == nil && raw != nil {
-			var plan deployment.Plan
-			if err = json.Unmarshal(raw, &plan); err == nil {
-				out.Plan = &plan
-				out.State = "ready"
-			}
+		if err != nil || raw == nil {
+			return err
 		}
-		return err
+		var plan deployment.Plan
+		if err = json.Unmarshal(raw, &plan); err != nil {
+			return err
+		}
+		review, err := plan.Review()
+		if err != nil {
+			return err
+		}
+		out.Review, out.State = &review, "ready"
+		// The plan carries the draft it deploys, plaintext variables and Compose files included, so only
+		// a principal that may read the environment gets it. Planning and applying need only the review.
+		if p.MayReadEnvironment() {
+			out.Plan = &plan
+		}
+		return nil
 	})
 	return out, err
 }
@@ -470,7 +480,7 @@ func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env u
 			host := &out.Hosts[i]
 			var online bool
 			var phase string
-			if err := tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND last_seen>now()-interval '45 seconds',COALESCE((SELECT CASE WHEN o.command->'crosshost'->>'action'='observe' THEN 'inspection pending' WHEN o.command->'crosshost' ? 'maintenance' THEN 'maintenance' ELSE 'changing' END FROM cross_host_reservations r JOIN execution_operations o ON o.id=r.parent_id WHERE r.server_id=$2 AND o.environment_id=$3 AND o.state NOT IN ('succeeded','failed','cancelled')),'') FROM servers WHERE workspace_id=$1 AND id=$2`, ws, host.ServerID, env).Scan(&online, &phase); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT NOT revoked AND NOT awaiting_transfer AND last_seen>now()-interval '45 seconds',COALESCE((SELECT CASE WHEN o.command->'crosshost'->>'action'='observe' THEN 'inspection pending' WHEN o.command->'crosshost' ? 'maintenance' THEN 'maintenance' ELSE 'changing' END FROM cross_host_reservations r JOIN execution_operations o ON o.id=r.parent_id WHERE r.server_id=$2 AND o.environment_id=$3 AND o.state IN ('queued','dispatched','running','needs_attention')),'') FROM servers WHERE workspace_id=$1 AND id=$2`, ws, host.ServerID, env).Scan(&online, &phase); err != nil {
 				return err
 			}
 			if !online {
@@ -556,7 +566,7 @@ func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid,
 		out, err = s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: action, Plan: plan, VolumeID: volume})
 		return err
 	})
-	return out, err
+	return operationFor(p, out), err
 }
 
 func rawMessage(raw []byte) *jsontext.Value { v := jsontext.Value(raw); return &v }

@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -45,11 +46,18 @@ type recoveringRoot struct {
 // RecoverCrossHost is an offline operator action. An empty ExpectedState returns
 // a concrete preview; a write must name the exact current workspace state from
 // that preview. Accounts, sessions and installation keys are never imported.
-func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (RecoveryPreview, error) {
+func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ RecoveryPreview, err error) {
 	out := RecoveryPreview{WorkspaceID: in.WorkspaceID, Parents: []uuid.UUID{}, Handovers: map[uuid.UUID]deployment.RecoveryHandover{}}
 	if in.WorkspaceID == uuid.Nil || in.OwnerID == uuid.Nil {
 		return out, domain.Invalid("recovery.owner")
 	}
+	// An operator's command, on the owner's behalf. Every envelope and credential it reads is
+	// opened through this one recorded session.
+	keys, err := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: in.WorkspaceID, Purpose: secretbroker.Recover, Principal: secretbroker.Operator("recover-cross-host"), Kinds: secretbroker.RecoveryKinds})
+	if err != nil {
+		return out, err
+	}
+	defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
 	tx, err := s.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return out, err
@@ -74,11 +82,11 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 		return out, err
 	}
 	out.StateHash = stateHash
-	source, err := loadRecoverySource(ctx, tx, s.Store.Keys, in.WorkspaceID, before, in.HostExports)
+	source, err := loadRecoverySource(ctx, tx, keys, in.WorkspaceID, before, in.HostExports)
 	if err != nil {
 		return out, err
 	}
-	if err = s.recoverSavedCheckpoints(ctx, tx, before, &source); err != nil {
+	if err = s.recoverSavedCheckpoints(ctx, tx, keys, before, &source); err != nil {
 		return out, err
 	}
 	if err = ignoreRevokedExports(ctx, tx, before, &source); err != nil {
@@ -163,7 +171,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (Reco
 	if err = validateRecoveryRestrictionEvidence(ctx, tx, out.Handovers); err != nil {
 		return out, err
 	}
-	if err = portability.CheckRecoveryKeys(s.Store.Keys, source.Archive); err != nil {
+	if err = portability.CheckRecoveryKeys(keys, source.Archive); err != nil {
 		return out, err
 	}
 	if in.ExpectedState == "" {

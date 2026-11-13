@@ -21,6 +21,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -304,6 +305,22 @@ func TestAutomationConfiguredBuildPreservesAutomaticDeployment(t *testing.T) {
 	if replay.State != "succeeded" {
 		t.Fatal("branch advance rejected a completed one-shot artifact", replay.State)
 	}
+	// A build's note can quote its output, so a credential that may run builds but not read the
+	// environment gets a fixed note on every route that answers with the build. A member gets the note.
+	const canary = "build-note-canary"
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE execution_operations SET note=$2 WHERE id=$1", run.Id, "build output: "+canary); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range [][]byte{bearerCall(t, f, *grant.Token, "GET", path+"/operations/"+run.Id.String(), nil, 200, &replay), bearerCall(t, f, *grant.Token, "POST", route, request, 202, &replay)} {
+		var op api.Operation
+		if err := json.Unmarshal(raw, &op); err != nil || bytes.Contains(raw, []byte(canary)) || op.Id != run.Id || op.Note != execution.WithheldNote {
+			t.Fatalf("a build-only credential saw the build's note: %s", raw)
+		}
+	}
+	b.call("GET", path+"/operations/"+run.Id.String(), nil, 200, &replay)
+	if !strings.Contains(replay.Note, canary) {
+		t.Fatalf("a member lost the build's note: %+v", replay)
+	}
 	// The configuration stays as applied, which leaves automatic deployment free to run.
 	draft = resaveDraft(t, b, path, draft.Id, draft.Specification)
 	bearerCall(t, f, *grant.Token, "POST", route, request, 202, &replay)
@@ -463,7 +480,7 @@ func TestAutomationIsInstallationLocalAndRecoveryRevokesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var archive portability.Archive
-	if json.Unmarshal(plain, &archive) != nil || archive.Version != 7 || archive.Tables["automation_credentials"] != nil || bytes.Contains(plain, []byte(*grant.Token)) {
+	if json.Unmarshal(plain, &archive) != nil || archive.Version != portability.ArchiveVersion || archive.Tables["automation_credentials"] != nil || bytes.Contains(plain, []byte(*grant.Token)) {
 		t.Fatal("archive exported automation authority or an unexpected format")
 	}
 	destination := setup(t)

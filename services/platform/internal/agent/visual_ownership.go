@@ -7,6 +7,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -96,3 +97,17 @@ func postgresVolumeMatches(labels map[string]string, p deployment.Plan, volume u
 }
 
 var errPostgresVersionChange = errors.New("changing a PostgreSQL version requires a supported upgrade or new storage")
+
+func upgradeOwned(labels map[string]string, p deployment.Plan) bool {
+	return labels[labelServer] == p.ServerID.String() && labels[labelEnvironment] == p.EnvironmentID.String() && labels["com.astilba.unit"] == p.UnitID.String()
+}
+
+// upgradeVolumeLabels identifies the target volume as the source unit's, and records the major the
+// upgrade initialises on it.
+func upgradeVolumeLabels(p upgrade.Plan) map[string]string {
+	labels := visualLabels(p.Source, p.TargetVolumeID)
+	if major := postgresMajors(p.Target())[p.TargetVolumeID]; major != "" {
+		labels[labelPostgresMajor] = major
+	}
+	return labels
+}

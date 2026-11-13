@@ -2,18 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"errors"
 	"os"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
-	"github.com/astilbahq/astilba/services/platform/internal/execution"
-	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
-	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -182,11 +175,9 @@ func (j *Journal) retireSchedules(server, env uuid.UUID) error {
 	})
 }
 
-// retireUnit deletes the unit's applied plan and release records and the environment's finished
-// command records in this journal, which hold the secret values, registry access and backup
-// credentials its deployments, builds and upgrades here were sent. Only the unit's own server is
-// sent the retirement, so a build that ran on a separate runner keeps its record there until that
-// journal's bound ages it out. Generation fencing still refuses any older command for the unit.
+// retireUnit deletes the unit's applied plan and release records. Its finished command records stay
+// under the journal's bound like any others; their released values are already gone (see
+// journal_redaction.go). Generation fencing still refuses any older command for the unit.
 func (j *Journal) retireUnit(c api.ExecutionCommand) error {
 	return j.db.Update(func(tx *bolt.Tx) error {
 		var u unitState
@@ -199,139 +190,8 @@ func (j *Journal) retireUnit(c api.ExecutionCommand) error {
 		if err := tx.Bucket([]byte("units")).Delete([]byte(c.ResourceId.String())); err != nil {
 			return err
 		}
-		if err := tx.Bucket([]byte("releases")).Delete([]byte(c.ResourceId.String())); err != nil {
-			return err
-		}
-		if err := j.retireRecords(tx, c); err != nil {
-			return err
-		}
-		return j.retireUpgrades(tx, c)
+		return tx.Bucket([]byte("releases")).Delete([]byte(c.ResourceId.String()))
 	})
-}
-
-// retireRecords removes the environment's finished command records, as the bound on the journal
-// would in time. A record whose report management has not acknowledged stays for delivery, and the
-// retire command keeps its own. Forgetting raises the scope's forgotten ceiling, so a removed command
-// delivered again is still never run here. Cross-host phase records stay, because recovery reads
-// them as host receipts; they lose only their secret material, which nothing reads once they end.
-func (j *Journal) retireRecords(tx *bolt.Tx, c api.ExecutionCommand) error {
-	forget, redact := map[string]Record{}, map[string]Record{}
-	err := tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
-		key := string(k)
-		if key == c.Id.String() || j.isCrossHostSentinel(tx, key) || j.isDistributedFence(tx, key) || j.isRecoverySentinel(tx, key) {
-			return nil
-		}
-		var r Record
-		if err := j.get(tx, "operations", key, &r); err != nil {
-			return err
-		}
-		if r.Command.EnvironmentId != c.EnvironmentId || generationScope(r.Command) != c.EnvironmentId.String() || !r.Acknowledged || !execution.Terminal(r.Report.State) {
-			return nil
-		}
-		if r.Command.ParentId == nil {
-			forget[key] = r
-		} else if redactCommand(&r.Command) {
-			redact[key] = r
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	for key, r := range forget {
-		if err = j.forget(tx, []byte(key), r); err != nil {
-			return err
-		}
-	}
-	for key, r := range redact {
-		if err = j.put(tx, "operations", key, r); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// retireUpgrades drops the credentials an ended database upgrade of the environment kept. Management
-// refuses retirement until an upgrade's retention has ended by its own clock, so none of them can be
-// returned to. The host's clock is not asked again: one that lags would keep them for good.
-func (j *Journal) retireUpgrades(tx *bolt.Tx, c api.ExecutionCommand) error {
-	ended := map[string]upgradeState{}
-	if err := tx.Bucket([]byte("upgrades")).ForEach(func(k, _ []byte) error {
-		var s upgradeState
-		if err := j.get(tx, "upgrades", string(k), &s); err != nil {
-			return err
-		}
-		policy := s.Command.Installation.Policy
-		if policy.ServerID == c.ServerId && policy.EnvironmentID == c.EnvironmentId && !s.Status.Active() &&
-			(len(s.Command.Secrets) > 0 || s.Command.Installation.Access != (backup.Access{})) {
-			s.Command.Secrets, s.Command.Installation.Access = nil, backup.Access{}
-			ended[string(k)] = s
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	for key, s := range ended {
-		if err := j.put(tx, "upgrades", key, s); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// redactCommand removes a finished command's secret material and reports whether it held any. Each
-// digest leaves that material out, so the command still matches its plan hash when management
-// delivers it again; a body that would not is left as it is.
-func redactCommand(c *api.ExecutionCommand) bool {
-	var body any
-	var digest func() string
-	var raw **jsontext.Value
-	switch c.Kind {
-	case "visual":
-		var p deployment.Payload
-		if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || len(p.Secrets) == 0 && len(p.RegistryAccess) == 0 {
-			return false
-		}
-		p.Secrets, p.RegistryAccess = nil, nil
-		body, digest, raw = p, p.Digest, &c.Visual
-	case "crosshost":
-		var p deployment.CrossHostCommand
-		if c.Crosshost == nil || json.Unmarshal(*c.Crosshost, &p) != nil || len(p.Secrets) == 0 && len(p.RegistryAccess) == 0 {
-			return false
-		}
-		p.Secrets, p.RegistryAccess = nil, nil
-		body, digest, raw = p, p.Digest, &c.Crosshost
-	case "upgrade":
-		var p upgrade.Command
-		if c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &p) != nil || len(p.Secrets) == 0 && p.Installation.Access == (backup.Access{}) {
-			return false
-		}
-		p.Secrets, p.Installation.Access = nil, backup.Access{}
-		body, digest, raw = p, p.Digest, &c.Upgrade
-	case "backup", "schedule":
-		var p backup.Command
-		if c.Backup == nil || json.Unmarshal(*c.Backup, &p) != nil || p.Installation.Access == (backup.Access{}) {
-			return false
-		}
-		p.Installation.Access = backup.Access{}
-		body, digest, raw = p, p.Digest, &c.Backup
-	case "pipeline":
-		var p pipeline.Command
-		if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Access == nil && len(p.BuildSecrets) == 0 && p.RegistryAccess == nil {
-			return false
-		}
-		p.Access, p.BuildSecrets, p.RegistryAccess = nil, nil, nil
-		body, digest, raw = p, p.Digest, &c.Pipeline
-	default:
-		return false
-	}
-	encoded, err := stablejson.Marshal(body)
-	if err != nil || digest() != c.PlanHash {
-		return false
-	}
-	value := jsontext.Value(encoded)
-	*raw = &value
-	return true
 }
 
 // withdrawnRoutes is the plan without its routes, as retirement publishes it. Withdrawing never
@@ -344,9 +204,4 @@ func withdrawnRoutes(p deployment.Plan) deployment.Plan {
 	withdrawn.Specification.Routes = nil
 	withdrawn.AcceptDrift, withdrawn.HostChanges = false, false
 	return withdrawn
-}
-
-func retirement(c api.ExecutionCommand) bool {
-	var p deployment.Payload
-	return c.Kind == "visual" && c.Visual != nil && json.Unmarshal(*c.Visual, &p) == nil && p.Action == "retire"
 }

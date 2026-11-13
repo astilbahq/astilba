@@ -6,19 +6,18 @@ import (
 	"encoding/base64"
 	"encoding/json/v2"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
+	"github.com/moby/moby/client"
 )
 
 // giteaImage is the Gitea the Git provider experiment runs, so both check one release.
@@ -112,36 +111,28 @@ func startGitea(t *testing.T) *realGitea {
 	env := []string{"GITEA__security__INSTALL_LOCK=true", "GITEA__database__DB_TYPE=sqlite3", "GITEA__server__DISABLE_SSH=true", "GITEA__service__DISABLE_REGISTRATION=true", "GITEA__mailer__ENABLED=false",
 		// Gitea refuses to deliver to a private address unless one is allowed by name.
 		"GITEA__webhook__ALLOWED_HOST_LIST=private"}
-	// A port free here, rather than one Docker picks: Colima forwards each profile's ports to
-	// the same numbers on the host, so two profiles' choices can collide.
-	// Another process can take the port before Docker binds it, so a refused start tries another.
-	for attempt := 1; ; attempt++ {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		port := listener.Addr().(*net.TCPAddr).Port
-		listener.Close()
-		g.base = "http://127.0.0.1:" + strconv.Itoa(port)
-		args := []string{"run", "--detach", "--name", name, "--label", label, "--network", name, "--publish", g.base[len("http://"):] + ":3000"}
-		for _, e := range env {
-			args = append(args, "--env", e)
-		}
-		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-		out, err := exec.CommandContext(ctx, "docker", append([]string{"--host", os.Getenv("PLAT_APP_DOCKER_HOST")}, append(args, giteaImage)...)...).CombinedOutput()
-		cancel()
-		if err == nil {
-			break
-		}
-		if attempt == 3 || !bytes.Contains(out, []byte("already")) {
-			t.Fatalf("docker run: %v: %s", err, out)
-		}
-		// A container Docker created but could not start keeps the name; it may not exist.
-		_ = exec.CommandContext(t.Context(), "docker", "--host", os.Getenv("PLAT_APP_DOCKER_HOST"), "rm", "--force", name).Run()
+	// Nothing is published: the test reaches Gitea through the Docker API, from the
+	// receiver beside it on its network. The address is known before Gitea starts.
+	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
+	if err != nil {
+		t.Fatal(err)
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
+	t.Cleanup(func() { docker.Close() })
+	forward, err := startDockerForward(docker, g.receiver, name, "3000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(forward.Close)
+	g.base = "http://" + forward.Addr()
+	args := []string{"run", "--detach", "--name", name, "--label", label, "--network", name}
+	// Gitea links reviews from its root URL, which must be the address management uses.
+	for _, e := range append(env, "GITEA__server__ROOT_URL="+g.base+"/") {
+		args = append(args, "--env", e)
+	}
+	dockerRun(t, append(args, giteaImage)...)
+	probe := &http.Client{Timeout: 2 * time.Second}
 	waitFor(t, "Gitea", 2*time.Minute, func() bool {
-		res, err := client.Get(g.base + "/api/healthz")
+		res, err := probe.Get(g.base + "/api/healthz")
 		if err == nil {
 			res.Body.Close()
 		}
@@ -158,7 +149,7 @@ func startGitea(t *testing.T) *realGitea {
 // user creates an account and returns a token that can also create repositories and organizations.
 func (g *realGitea) user(name string, admin bool) string {
 	g.t.Helper()
-	password, _ := cryptobox.Token()
+	password, _ := randtoken.New()
 	args := []string{"exec", "--user", "git", g.name, "gitea", "admin", "user", "create", "--username", name, "--password", password, "--email", name + "@example.test", "--must-change-password=false"}
 	if admin {
 		args = append(args, "--admin")

@@ -240,7 +240,7 @@ func TestResetRequestDoesTheSameWorkForAnyEmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requests := &auth.Service{Store: store.New(pool, f.st.Keys, false), Now: time.Now, Queue: queue}
+	requests := &auth.Service{Store: store.New(pool, f.st.Broker, false), Now: time.Now, Queue: queue, Tokens: f.auth.Tokens}
 	work := func(email string) []string {
 		t.Helper()
 		trace.take()

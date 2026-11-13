@@ -21,10 +21,10 @@ FOR UPDATE OF e;
 -- themselves are never deleted.
 SELECT
  EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.environment_id = sqlc.arg(environment_id)::uuid
-  AND o.parent_id IS NULL AND o.state NOT IN ('succeeded','failed','cancelled'))::boolean AS active_operation,
+  AND o.parent_id IS NULL AND o.state IN ('queued','dispatched','running','needs_attention'))::boolean AS active_operation,
  EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.server_id = sqlc.narg(server_id)::uuid
   AND o.kind <> 'crosshost' AND NOT (o.kind = 'network' AND COALESCE(o.command->'network'->>'action','') = 'restrict')
-  AND o.state NOT IN ('succeeded','failed','cancelled') AND (o.kind <> 'pipeline' OR o.state <> 'queued'))::boolean AS server_busy,
+  AND o.state IN ('queued','dispatched','running','needs_attention') AND (o.kind <> 'pipeline' OR o.state <> 'queued'))::boolean AS server_busy,
  EXISTS(SELECT 1 FROM supported_upgrades u WHERE u.workspace_id = @workspace_id AND u.environment_id = @environment_id
   AND (u.status->>'phase' NOT IN ('planned','rejected','complete','returned') OR (u.status->>'keepUntil')::timestamptz > now()))::boolean AS upgrade_hold,
  EXISTS(SELECT 1 FROM backup_cutovers c JOIN environments e ON e.workspace_id = c.workspace_id AND e.id = c.environment_id

@@ -10,6 +10,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -21,7 +22,7 @@ func decodeArchive(raw []byte) (Archive, error) {
 
 func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
-	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > archiveVersion || archive.Workspace == uuid.Nil {
+	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > ArchiveVersion || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {
@@ -51,7 +52,14 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 		}
 	}
+	// Version 7 carries the submissions management makes. An older archive has only runners'.
 	if archive.Version < 7 {
+		if _, exists := archive.Tables["source_submissions"]; exists {
+			return archive, ErrArchive
+		}
+		archive.Tables["source_submissions"] = []Row{}
+	}
+	if archive.Version < 8 {
 		// An environment from before retirement is active, and nothing recorded which PostgreSQL
 		// major initialised a volume: its next deployment records it.
 		fields := map[string]map[string]any{
@@ -188,7 +196,28 @@ func (s *Service) AdmitImport(p store.Principal) error {
 	return nil
 }
 
-func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (store.Workspace, error) {
+// admitImportTransaction makes the checks Import's transaction makes before it writes, in a
+// transaction that never commits: the session is still current and, when hosted, the invitation
+// is valid and for this account. The transaction itself decides again.
+func (s *Service) admitImportTransaction(ctx context.Context, p store.Principal, invitation string) error {
+	tx, e := s.Store.Pool.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	if s.Store.Hosted {
+		email, e := s.Store.ConsumeWorkspaceInvitation(ctx, tx, invitation, time.Now())
+		if e != nil {
+			return e
+		}
+		if email != p.Account.Email {
+			return domain.Forbidden
+		}
+	}
+	return store.AdmitBrowserSession(ctx, db.New(tx), p)
+}
+
+func (s *Service) Import(ctx context.Context, p store.Principal, passphrase string, envelope []byte, invitation string) (_ store.Workspace, failure error) {
 	var out store.Workspace
 	if e := s.AdmitImport(p); e != nil {
 		return out, e
@@ -205,6 +234,16 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if archive.RequireMFA && !p.MFA {
 		return out, domain.MFARequired
 	}
+	// The credentials are sealed again for the workspace this import creates, once the import
+	// would be admitted: no record is made for a session or invitation it would refuse.
+	if e := s.admitImportTransaction(ctx, p, invitation); e != nil {
+		return out, e
+	}
+	keys, e := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: archive.Workspace, Purpose: secretbroker.Seal, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds, NewWorkspace: true})
+	if e != nil {
+		return out, e
+	}
+	defer func() { keys.Close(ctx, secretbroker.Done(failure)) }()
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return out, e
@@ -253,6 +292,17 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 			}
 			switch table.Name {
+			case "source_submissions":
+				// Its job stays behind, so an attempt still queued would never be made.
+				var state string
+				if json.Unmarshal(row["state"], &state) != nil {
+					return out, ErrArchive
+				}
+				if state == "queued" {
+					setValue(row, "state", "failed")
+					setValue(row, "note", "Imported before this attempt was made. Submit the draft again.")
+					setValue(row, "finished_at", time.Now().UTC())
+				}
 			case "network_members":
 				setValue(row, "acknowledged_generation", 0)
 				setValue(row, "note", "Imported private links require renewed owner approval after host transfer.")
@@ -332,7 +382,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 				setValue(row, "configuration", config)
 			}
-			if e = s.transformCredential(table.Name, row, archive.Workspace, false); e != nil {
+			if e = transformCredential(keys, table.Name, row, false); e != nil {
 				return out, e
 			}
 			raw, e := stablejson.Marshal(row)

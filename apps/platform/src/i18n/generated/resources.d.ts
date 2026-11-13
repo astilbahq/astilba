@@ -274,6 +274,7 @@ export default interface Resources {
       "invalidResetLink": "This reset link is invalid or has expired.",
       "invalidValue": "Check this value and try again.",
       "invitationSignIn": "Sign in as the invited account before accepting.",
+      "invitationSubscription": "This workspace's subscription has lapsed. Ask an owner to renew it, then accept again before the invitation expires.",
       "mfaRequired": "Set up two-factor authentication before changing this workspace.",
       "nameInvalid": "Enter a name without line breaks or control characters.",
       "nameRequired": "Enter your name.",

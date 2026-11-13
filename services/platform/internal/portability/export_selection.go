@@ -14,7 +14,7 @@ import (
 //     carried environment's state rows;
 //   - unfinished work and its children, each environment's runtime head and retirement, and the
 //     newest 100 operations;
-//   - per environment, the 20 releases, 50 revisions and 100 pipeline runs the app lists;
+//   - per environment, the 20 releases, 50 revisions, 100 pipeline runs and 100 submissions the app lists;
 //   - per preview template, the 100 preview requests the app lists;
 //   - the newest 100 audit events and build artifacts;
 //   - every version of each carried secret, as the app lists them;
@@ -60,6 +60,7 @@ const exportSeeds = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id FR
 	UNION ALL SELECT 'op',x.id FROM (SELECT o.id,row_number() OVER (PARTITION BY o.environment_id ORDER BY o.created_at DESC,o.id DESC) n FROM execution_operations o JOIN export_keep k ON k.kind='env' AND k.id=o.environment_id
 		WHERE o.workspace_id=$1 AND o.state='succeeded' AND o.visual_plan_id IS NOT NULL AND o.command->'visual'->>'action'='deploy') x WHERE x.n<=20
 	UNION ALL SELECT 'run',x.id FROM (SELECT r.id,row_number() OVER (PARTITION BY r.environment_id ORDER BY r.created_at DESC) n FROM pipeline_runs r JOIN export_keep k ON k.kind='env' AND k.id=r.environment_id WHERE r.workspace_id=$1) x WHERE x.n<=100
+	UNION ALL SELECT 'submission',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM source_submissions s JOIN export_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=100
 	UNION ALL SELECT 'revision',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM specification_revisions s JOIN export_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=50
 	UNION ALL SELECT 'preview',r.id FROM preview_requests r WHERE r.workspace_id=$1 AND r.state<>'deleted'
 	UNION ALL SELECT 'preview',x.id FROM (SELECT r.id,row_number() OVER (PARTITION BY p.environment_id ORDER BY (r.state='deleted'),r.updated_at DESC,r.id) n FROM preview_requests r JOIN preview_policies p ON p.workspace_id=r.workspace_id AND p.id=r.policy_id WHERE r.workspace_id=$1) x WHERE x.n<=100
@@ -134,6 +135,7 @@ const exportClosure = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id 
 	UNION ALL SELECT 'revision',g.imported_revision_id FROM git_sources g JOIN export_keep k ON k.kind='env' AND k.id=g.environment_id WHERE g.workspace_id=$1
 	UNION ALL SELECT 'revision',r.revision_id FROM pipeline_runs r JOIN export_keep k ON k.kind='run' AND k.id=r.id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'revision',s.revision_id FROM git_submissions s JOIN export_keep k ON k.kind='run' AND k.id=s.operation_id WHERE s.workspace_id=$1
+	UNION ALL SELECT 'revision',s.revision_id FROM source_submissions s JOIN export_keep k ON k.kind='submission' AND k.id=s.id WHERE s.workspace_id=$1
 	UNION ALL SELECT 'revision',d.revision_id FROM pipeline_auto_deployments d JOIN export_keep k ON k.kind='run' AND k.id=d.id WHERE d.workspace_id=$1
 	UNION ALL SELECT 'revision',p.revision_id FROM preview_policies p WHERE p.workspace_id=$1
 	UNION ALL SELECT 'revision',c.revision_id FROM backup_cutovers c JOIN export_keep k ON k.kind='env' AND k.id=c.environment_id WHERE c.workspace_id=$1
@@ -163,6 +165,7 @@ var exportFilters = func() map[string]string {
 		"pipeline_runs":             exportKept("run", "id"),
 		"build_artifacts":           exportKept("artifact", "id"),
 		"git_submissions":           exportKept("run", "operation_id"),
+		"source_submissions":        exportKept("submission", "id"),
 		"pipeline_auto_deployments": exportKept("run", "id"),
 		"preview_requests":          exportKept("preview", "id"),
 		"audit_events":              exportKept("audit", "id"),

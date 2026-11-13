@@ -10,7 +10,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -36,44 +36,42 @@ func rowString(row Row, key string) (string, error) {
 	return value, nil
 }
 func setValue(row Row, key string, value any) { row[key], _ = stablejson.Marshal(value) }
-func credential(table string, row Row, workspace uuid.UUID) (string, string, error) {
-	var field, purpose string
+
+// credential names a row's sealed column and the value it holds, or "" for a table with none.
+func credential(table string, row Row) (string, secretbroker.Item, error) {
+	var field string
+	var kind secretbroker.Kind
 	switch table {
 	case "secret_versions":
-		field = "encrypted_value"
+		field, kind = "encrypted_value", secretbroker.SecretVersion
 	case "git_connections":
-		field = "encrypted_access"
-		purpose = "git"
+		field, kind = "encrypted_access", secretbroker.Git
 	case "registries":
-		field = "encrypted_access"
-		purpose = "registry"
+		field, kind = "encrypted_access", secretbroker.Registry
 	case "build_secret_versions":
-		field = "encrypted_value"
-		purpose = "build-secret"
+		field, kind = "encrypted_value", secretbroker.BuildSecret
 	case "backup_destinations":
-		field = "encrypted_access"
-		purpose = "backup-destination"
+		field, kind = "encrypted_access", secretbroker.BackupDestination
 	case "backup_policies":
-		field = "encrypted_access"
-		purpose = "backup-policy"
+		field, kind = "encrypted_access", secretbroker.BackupPolicy
 	default:
-		return "", "", nil
+		return "", secretbroker.Item{}, nil
 	}
 	value, e := rowString(row, "id")
 	if e != nil {
-		return "", "", e
+		return "", secretbroker.Item{}, e
 	}
 	id, e := uuid.Parse(value)
 	if e != nil {
-		return "", "", ErrArchive
+		return "", secretbroker.Item{}, ErrArchive
 	}
-	if purpose == "" {
-		return field, store.SecretIdentity(workspace, id), nil
-	}
-	return field, pipeline.EncryptionIdentity(workspace, id, purpose), nil
+	return field, secretbroker.Item{Kind: kind, ID: id}, nil
 }
-func (s *Service) transformCredential(table string, row Row, ws uuid.UUID, export bool) error {
-	field, identity, e := credential(table, row, ws)
+
+// transformCredential opens a row's value for an export, or seals it for an import, through
+// keys for the workspace being exported or created.
+func transformCredential(keys *secretbroker.Session, table string, row Row, export bool) error {
+	field, item, e := credential(table, row)
 	if e != nil || field == "" {
 		return e
 	}
@@ -86,9 +84,12 @@ func (s *Service) transformCredential(table string, row Row, ws uuid.UUID, expor
 		return ErrArchive
 	}
 	if export {
-		value, e = s.Store.Keys.Open(value, identity)
+		value, e = keys.Open(item, value)
 	} else {
-		value, e = s.Store.Keys.Seal(value, identity)
+		value, e = keys.Seal(item, value)
+	}
+	if secretbroker.SessionFailure(e) {
+		return e
 	}
 	if e != nil {
 		return ErrArchive
@@ -114,9 +115,15 @@ func (s *Service) AdmitExport(ctx context.Context, p store.Principal, ws uuid.UU
 	})
 }
 
-func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) ([]byte, error) {
-	archive := Archive{Version: archiveVersion, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
-	e := s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
+func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, passphrase string) (_ []byte, failure error) {
+	archive := Archive{Version: ArchiveVersion, Workspace: ws, CreatedAt: time.Now().UTC(), Tables: map[string][]Row{}}
+	// The same access InWorkspaceSnapshot needs.
+	keys, e := s.Store.BeginKeys(ctx, p, store.WorkspaceAccess{Write: true, Owner: true, Credential: true}, true, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Export, Kinds: secretbroker.CredentialKinds})
+	if e != nil {
+		return nil, e
+	}
+	defer func() { keys.Close(ctx, secretbroker.Done(failure)) }()
+	e = s.Store.InWorkspaceSnapshot(ctx, p, ws, func(tx pgx.Tx, q *db.Queries, w store.Workspace) error {
 		reserved, err := q.WorkspaceHasReservations(ctx, ws)
 		if err != nil {
 			return err
@@ -135,7 +142,7 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 				if err := omitExportLogs(table.Name, row); err != nil {
 					return err
 				}
-				if err := s.transformCredential(table.Name, row, ws, true); err != nil {
+				if err := transformCredential(keys, table.Name, row, true); err != nil {
 					return err
 				}
 			}

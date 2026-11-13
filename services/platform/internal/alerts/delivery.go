@@ -18,7 +18,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/outbound"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -214,7 +214,13 @@ func (s *Service) send(ctx context.Context, d delivery) (string, error) {
 	if !webhookEnabled {
 		return "cancelled", nil
 	}
-	raw, err := s.Store.Keys.Open(cipher, store.AlertWebhookIdentity(d.workspace))
+	hookItem := secretbroker.Item{Kind: secretbroker.AlertWebhook, ID: d.workspace}
+	keys, err := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: d.workspace, Purpose: secretbroker.Operate, Principal: secretbroker.System("alert-delivery"), Items: []secretbroker.Item{hookItem}})
+	if err != nil {
+		return "", err
+	}
+	raw, err := keys.Open(hookItem, cipher)
+	keys.Close(ctx, secretbroker.Done(err))
 	if err != nil {
 		return "", err
 	}
