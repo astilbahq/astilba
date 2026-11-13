@@ -288,12 +288,22 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		action := "git.source.rebind"
 		bound, err := db.New(tx).LockGitSourcePolicy(ctx, db.LockGitSourcePolicyParams{WorkspaceID: ws, EnvironmentID: env})
 		switch {
+		case errors.Is(err, pgx.ErrNoRows) && hash != "":
+			// A hash names a source that was shown; one that is gone since was removed.
+			return sourceChangedSinceShown
 		case errors.Is(err, pgx.ErrNoRows):
 			action = "git.source.bind"
 		case err != nil:
 			return err
 		case sourceHash(bound.Configuration, bound.PolicyActor) != hash:
-			return domain.Conflict
+			return sourceChangedSinceShown
+		}
+		running, err := db.New(tx).EnvironmentOperationRunning(ctx, db.EnvironmentOperationRunningParams{WorkspaceID: ws, EnvironmentID: env})
+		if err != nil {
+			return err
+		}
+		if running {
+			return sourceImporting
 		}
 		if err = store.Audit(ctx, db.New(tx), p, ws, action, env); err != nil {
 			return err
@@ -301,6 +311,11 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		raw, _ := stablejson.Marshal(c)
 		if err = db.New(tx).BindGitSource(ctx, db.BindGitSourceParams{WorkspaceID: ws, EnvironmentID: env, ConnectionID: c.ConnectionID, Configuration: raw, PolicyActor: p.Account.ID, PolicyAuthVersion: p.Account.AuthVersion}); err != nil {
 			return err
+		}
+		if action == "git.source.rebind" {
+			if err = s.refreshLeftBranch(ctx, tx, ws, bound.Configuration, &c); err != nil {
+				return err
+			}
 		}
 		command := pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()}
 		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command)
@@ -379,11 +394,14 @@ func (s *Service) UnbindSource(ctx context.Context, p store.Principal, ws, pid, 
 		if err = requireActive(v.State); err != nil {
 			return err
 		}
-		n, err := db.New(tx).UnbindGitSource(ctx, db.UnbindGitSourceParams{WorkspaceID: ws, EnvironmentID: env})
-		if err == nil && n != 1 {
-			return domain.NotFound
+		bound, err := db.New(tx).LockGitSourcePolicy(ctx, db.LockGitSourcePolicyParams{WorkspaceID: ws, EnvironmentID: env})
+		if err != nil {
+			return err
 		}
-		return err
+		if _, err = db.New(tx).UnbindGitSource(ctx, db.UnbindGitSourceParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
+			return err
+		}
+		return s.refreshLeftBranch(ctx, tx, ws, bound.Configuration, nil)
 	})
 }
 func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig) (api.Operation, error) {

@@ -96,19 +96,31 @@ func runnerUnavailable(err error) bool {
 }
 
 // runnerWaits reports whether a runner selection that failed for want of a credential is only
-// waiting for one of the runners to finish enrolling again or moving to another management.
+// waiting for the runner that lacks one to finish enrolling again or moving to another management.
+// selectRunner asks about the fallback only once the primary has its credential, so that is the
+// runner whose answer counts.
 func runnerWaits(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, err error) (bool, error) {
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	ids := []uuid.UUID{primary}
-	if fallback != nil {
-		ids = append(ids, *fallback)
+	q := db.New(tx)
+	state, err := q.RunnerCredential(ctx, db.RunnerCredentialParams{WorkspaceID: ws, ID: primary})
+	if err != nil || !state.Enrolled || fallback == nil {
+		return state.Enrolling, err
 	}
-	return db.New(tx).RunnerReenrolling(ctx, db.RunnerReenrollingParams{WorkspaceID: ws, Ids: ids})
+	state, err = q.RunnerCredential(ctx, db.RunnerCredentialParams{WorkspaceID: ws, ID: *fallback})
+	return state.Enrolling, err
 }
 
-const runnerUnavailableReason = "The source's runner, or its fallback, was removed or revoked, or can no longer run imports. Bind the source again with another runner."
+// sourceChangedSinceShown refuses binding a source again from a configuration that is no longer
+// the source's, or a source that is gone, so another owner's change is never overwritten unseen.
+var sourceChangedSinceShown = &domain.Error{Code: "conflict", Message: "The source changed since it was shown, for example because another owner bound it again or removed it. Look at it as it is now, then bind it again.", Fields: []string{"sourceHash"}}
+
+// sourceImporting refuses binding a source again while an operation of its environment runs, since
+// an environment runs one at a time.
+var sourceImporting = &domain.Error{Code: "conflict", Message: "An import or another operation of this environment is running. Bind the source again once it finishes.", Fields: []string{"environment.operation"}}
+
+const runnerUnavailableReason = "The source's runner, or its fallback, was removed or revoked, has no credential and isn't enrolling, or can no longer run imports. Enroll the runner again, or bind the source again with another runner."
 
 // importRefusal is the outcome of management refusing to start an import. Invalid input, such as a
 // file the commit doesn't hold or a clone credential that can push, fails the source until its

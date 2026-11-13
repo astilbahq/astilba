@@ -418,6 +418,24 @@ func (s *Service) refreshBehindBuilds(ctx context.Context, tx pgx.Tx, ws, env uu
 	return s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: ws}, refreshArgs{ws, p.Connection.ID, p.Branch}, refreshOpts, false)
 }
 
+// refreshLeftBranch starts a refresh of the branch a source no longer imports, when something still
+// tracks it there, such as automatic builds an earlier failure of the source held back. now is the
+// source's new binding, or nil when it was unbound.
+func (s *Service) refreshLeftBranch(ctx context.Context, tx pgx.Tx, ws uuid.UUID, raw []byte, now *pipeline.Source) error {
+	var left pipeline.Source
+	if err := json.Unmarshal(raw, &left); err != nil {
+		return err
+	}
+	if now != nil && now.ConnectionID == left.ConnectionID && now.Branch == left.Branch {
+		return nil
+	}
+	tracked, err := db.New(tx).GitBranchTracked(ctx, db.GitBranchTrackedParams{WorkspaceID: ws, ConnectionID: left.ConnectionID, Branch: left.Branch})
+	if err != nil || !tracked {
+		return err
+	}
+	return s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: ws}, refreshArgs{ws, left.ConnectionID, left.Branch}, refreshOpts, false)
+}
+
 func rejectTarget(ctx context.Context, tx pgx.Tx, ws, env, app uuid.UUID, commit, reason string) error {
 	return db.New(tx).RejectBuildTarget(ctx, db.RejectBuildTargetParams{Commit: commit, Reason: reason, WorkspaceID: ws, EnvironmentID: env, ApplicationID: app})
 }

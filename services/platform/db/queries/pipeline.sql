@@ -151,12 +151,20 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
 UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp()
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
 
--- name: RunnerReenrolling :one
--- A runner that is enrolling again, or moving to another management, has no credential until it
--- finishes, but it is still the workspace's: work for it waits rather than fails.
-SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]) AND NOT revoked AND credential_hash IS NULL)::boolean AS reenrolling;
+-- name: RunnerCredential :one
+-- Whether a runner has its credential, or is enrolling again or moving to another management with
+-- a code that is still valid: it has no credential until it finishes, but it is still the
+-- workspace's, so work for it waits rather than fails. A runner whose credential was withdrawn with
+-- no enrollment under way, or whose code expired, is neither.
+SELECT COALESCE(bool_or(NOT revoked AND credential_hash IS NOT NULL), false)::boolean AS enrolled,
+    COALESCE(bool_or(NOT revoked AND credential_hash IS NULL AND enrollment_hash IS NOT NULL AND enrollment_expires > now()), false)::boolean AS enrolling
+FROM servers WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AutomaticBuildsBehind :one
 -- Whether an environment builds this branch automatically and has not yet been asked to build commit.
 SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND connection_id = @connection_id
     AND configuration->>'branch' = @branch::text AND configuration->>'autoBuild' = 'true' AND automatic_requested_commit <> @commit::text)::boolean AS behind;
+
+-- name: EnvironmentOperationRunning :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND environment_id = @environment_id::uuid
+    AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled'))::boolean AS running;

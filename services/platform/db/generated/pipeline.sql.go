@@ -294,6 +294,23 @@ func (q *Queries) EnvironmentHoldsAutomaticWork(ctx context.Context, arg Environ
 	return busy, err
 }
 
+const environmentOperationRunning = `-- name: EnvironmentOperationRunning :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND environment_id = $2::uuid
+    AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled'))::boolean AS running
+`
+
+type EnvironmentOperationRunningParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) EnvironmentOperationRunning(ctx context.Context, arg EnvironmentOperationRunningParams) (bool, error) {
+	row := q.db.QueryRow(ctx, environmentOperationRunning, arg.WorkspaceID, arg.EnvironmentID)
+	var running bool
+	err := row.Scan(&running)
+	return running, err
+}
+
 const finishSourceSubmission = `-- name: FinishSourceSubmission :exec
 UPDATE source_submissions SET state = $1, note = $2, result = $3, finished_at = now()
 WHERE workspace_id = $4 AND id = $5 AND state = 'queued'
@@ -671,22 +688,31 @@ func (q *Queries) RewrapRegistryAccess(ctx context.Context, arg RewrapRegistryAc
 	return err
 }
 
-const runnerReenrolling = `-- name: RunnerReenrolling :one
-SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND NOT revoked AND credential_hash IS NULL)::boolean AS reenrolling
+const runnerCredential = `-- name: RunnerCredential :one
+SELECT COALESCE(bool_or(NOT revoked AND credential_hash IS NOT NULL), false)::boolean AS enrolled,
+    COALESCE(bool_or(NOT revoked AND credential_hash IS NULL AND enrollment_hash IS NOT NULL AND enrollment_expires > now()), false)::boolean AS enrolling
+FROM servers WHERE workspace_id = $1 AND id = $2
 `
 
-type RunnerReenrollingParams struct {
-	WorkspaceID uuid.UUID   `json:"workspace_id"`
-	Ids         []uuid.UUID `json:"ids"`
+type RunnerCredentialParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
 }
 
-// A runner that is enrolling again, or moving to another management, has no credential until it
-// finishes, but it is still the workspace's: work for it waits rather than fails.
-func (q *Queries) RunnerReenrolling(ctx context.Context, arg RunnerReenrollingParams) (bool, error) {
-	row := q.db.QueryRow(ctx, runnerReenrolling, arg.WorkspaceID, arg.Ids)
-	var reenrolling bool
-	err := row.Scan(&reenrolling)
-	return reenrolling, err
+type RunnerCredentialRow struct {
+	Enrolled  bool `json:"enrolled"`
+	Enrolling bool `json:"enrolling"`
+}
+
+// Whether a runner has its credential, or is enrolling again or moving to another management with
+// a code that is still valid: it has no credential until it finishes, but it is still the
+// workspace's, so work for it waits rather than fails. A runner whose credential was withdrawn with
+// no enrollment under way, or whose code expired, is neither.
+func (q *Queries) RunnerCredential(ctx context.Context, arg RunnerCredentialParams) (RunnerCredentialRow, error) {
+	row := q.db.QueryRow(ctx, runnerCredential, arg.WorkspaceID, arg.ID)
+	var i RunnerCredentialRow
+	err := row.Scan(&i.Enrolled, &i.Enrolling)
+	return i, err
 }
 
 const setGitSourcePendingCommit = `-- name: SetGitSourcePendingCommit :exec

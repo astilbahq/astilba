@@ -4093,7 +4093,7 @@ export interface components {
             railpack?: components["schemas"]["RailpackBuildSummary"];
         };
         /**
-         * @description Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner, or its fallback, was removed or revoked or can no longer build it. `registry_unavailable`: the target's registry was removed.
+         * @description Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner, or its fallback, was removed or revoked, lost its credential with no enrollment under way, or can no longer build it. `registry_unavailable`: the target's registry was removed.
          * @enum {string}
          */
         BuildRejectionReason: "missing_build_secret" | "build_secret_budget" | "arguments_contain_secret" | "runtime_secret_budget" | "runner_unavailable" | "registry_unavailable";

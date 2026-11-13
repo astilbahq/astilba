@@ -226,7 +226,11 @@ func TestUnbindingDuringAnImportSavesNothing(t *testing.T) {
 	i.source.tree.record(latest, importHonest)
 	i.source.head.Store(latest)
 	running := i.refresh(t)
-	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}, "sourceHash": i.sourceStatus(t, i.path).SourceHash}, 409, nil)
+	shown := i.sourceStatus(t, i.path).SourceHash
+	var refused api.Error
+	if err := json.Unmarshal(i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}, "sourceHash": shown}, 409, nil), &refused); err != nil || refused.Fields == nil || (*refused.Fields)[0] != "environment.operation" {
+		t.Fatalf("binding again during an import was not refused for it: %+v %v", refused, err)
+	}
 	i.b.call("DELETE", i.path+"/source", nil, 204, nil)
 	i.runner.reportImport(running, latest, importHonest)
 	if unbound := i.operation(t, running.Id); unbound.State != "failed" || !strings.Contains(unbound.Note, "unbound") {
@@ -243,6 +247,8 @@ func TestUnbindingDuringAnImportSavesNothing(t *testing.T) {
 	if count := i.importOperations(t, next); count != 0 {
 		t.Fatal("an unbound source imported a push")
 	}
+	// A form opened before the source was removed can't bind it back unseen.
+	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}, "sourceHash": shown}, 409, nil)
 	// Binding it again imports the branch.
 	var op api.Operation
 	i.b.call("PUT", i.path+"/source", map[string]any{"baseRevisionId": i.draft.Id, "configuration": pipeline.Source{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 202, &op)
@@ -335,4 +341,46 @@ func TestBuildsHeldByAFailedImportRunAfterRebinding(t *testing.T) {
 	i.runner.reportImport(c, latest, renamed)
 	i.succeeded(t, i.path, c)
 	waitFor(t, "the held build", 20*time.Second, func() bool { return builds() == 1 })
+}
+
+// A runner whose credential was withdrawn with no enrollment under way won't come back by itself,
+// so its source fails and says why rather than waiting.
+func TestRefreshFailsASourceWhoseRunnerIsNotEnrolling(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	head := i.source.head.Load().(string)
+	all := append(append([]composeproject.File{}, importHonest...), otherSourceFile)
+	i.source.tree.record(head, all)
+	fencedID, fenced := i.addRunner(t)
+	otherPath := i.addSourceOn(t, "Other", otherSourceFile, fencedID, fenced)
+	// As an identity conflict fences a server: the credential goes, and nothing is enrolling.
+	if _, err := i.f.st.Pool.Exec(t.Context(), "UPDATE servers SET credential_hash=NULL,previous_hash=NULL WHERE id=$1", fencedID); err != nil {
+		t.Fatal(err)
+	}
+	latest := strings.Repeat("e", 40)
+	i.source.tree.record(latest, all)
+	i.source.push(latest)
+	c := i.runner.next()
+	i.runner.reportImport(c, latest, importHonest)
+	i.refreshEnded(t)
+	if failure := i.sourceStatus(t, otherPath).Failure; failure == nil || !strings.Contains(failure.Reason, "runner") {
+		t.Fatalf("a runner with no credential coming did not fail its source: %+v", failure)
+	}
+}
+
+// Unbinding a source that failed lets the automatic builds it held build the branch's head.
+func TestUnbindingAFailedSourceLetsItsBuildsRun(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	_, spec := draftSpec(t, i.b, i.path)
+	cfg := pipeline.BuildConfig{ConnectionID: i.source.connection.ID, Branch: "main", RunnerID: i.runnerID, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
+	i.b.call("POST", i.path+"/builds", map[string]any{"baseRevisionId": i.draft.Id, "applicationId": spec.Applications[0].ID, "requestKey": uuid.New(), "configuration": cfg}, 202, nil)
+	i.runner.finishPipeline(i.runner.next(), "cancelled", pipeline.Result{})
+	latest := strings.Repeat("e", 40)
+	i.source.tree.record(latest, []composeproject.File{{Path: "docker-compose.yaml", Content: importHonest[0].Content}, importHonest[1]})
+	i.source.push(latest)
+	i.refreshEnded(t)
+	i.b.call("DELETE", i.path+"/source", nil, 204, nil)
+	c := i.runner.next()
+	if command := importCommand(t, c); command.Action != "build" || command.Commit != latest {
+		t.Fatal("unbinding did not start the held build", command.Action, command.Commit)
+	}
 }

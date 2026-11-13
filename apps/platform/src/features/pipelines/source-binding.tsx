@@ -19,6 +19,7 @@ import { Select } from "../../components/select";
 import { Textarea } from "../../components/textarea";
 import * as s from "../../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../../ui";
+import { AutomaticDeploymentScope } from "./automatic-deployment-scope";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
@@ -47,11 +48,194 @@ const lines = (value: string) =>
     .map((line) => line.trim())
     .filter(Boolean);
 
+type Choice = [string, (value: string) => void];
+
+// SourceFields are a Git source's settings, for importing one or binding it again. The caller holds
+// the connection and runner, which the import shares with the page's other Git forms. The options
+// load after the form, so each choice is held in state rather than by the form, and a stored choice
+// that is gone is shown as such, so what is sent is what is shown.
+function SourceFields({
+  workspaceId,
+  connection: [connection, setConnection],
+  runner: [runner, setRunner],
+  initial,
+}: {
+  workspaceId: string;
+  connection: Choice;
+  runner: Choice;
+  initial?: Schema["GitSourceConfiguration"];
+}) {
+  const connections = useQuery(gitConnectionsOptions(workspaceId));
+  const servers = useQuery(serversOptions(workspaceId));
+  const [fallback, setFallback] = useState(initial?.fallbackRunnerId ?? "");
+  const runners = servers.data?.filter(
+    (v) => v.role !== "deployment" && v.capabilities?.build,
+  );
+  const fallbacks = runners?.filter((v) => v.id !== runner);
+  const fallbackGone =
+    !!fallback && !!fallbacks && !fallbacks.some((v) => v.id === fallback);
+  return (
+    <>
+      <Label>
+        Repository connection
+        <Select
+          name="connection"
+          required
+          value={connection}
+          onChange={(e) => setConnection(e.target.value)}
+        >
+          {!connections.data?.some((c) => c.id === connection) && (
+            <option value="">Choose a repository</option>
+          )}
+          {connections.data?.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name} · {c.repository}
+            </option>
+          ))}
+        </Select>
+      </Label>
+      <Field name="branch" label="Branch" defaultValue={initial?.branch} />
+      <Label>
+        Build runner
+        <Select
+          name="runner"
+          required
+          value={runner}
+          onChange={(e) => {
+            setRunner(e.target.value);
+            // A runner can't be its own fallback.
+            if (e.target.value === fallback) setFallback("");
+          }}
+        >
+          {!runners?.some((v) => v.id === runner) && (
+            <option value="">Choose a runner</option>
+          )}
+          {runners?.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.name} · {v.status} · {v.capabilities?.arch}
+            </option>
+          ))}
+        </Select>
+      </Label>
+      <Label>
+        Fallback runner
+        <Select
+          name="fallback"
+          value={fallback}
+          onChange={(e) => setFallback(e.target.value)}
+        >
+          <option value="">Queue on selected runner</option>
+          {fallbackGone && (
+            <option value={fallback}>
+              A runner no longer in this workspace
+            </option>
+          )}
+          {fallbacks?.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.name} · {v.status}
+            </option>
+          ))}
+        </Select>
+      </Label>
+      <Label>
+        Compose entrypoints, one path per line
+        <Textarea
+          name="entrypoints"
+          required
+          defaultValue={initial?.entrypoints.join("\n") ?? "compose.yaml"}
+        />
+      </Label>
+      <Label>
+        Selected source files, one path per line
+        <Textarea
+          name="paths"
+          required
+          defaultValue={initial?.paths.join("\n") ?? "compose.yaml"}
+        />
+      </Label>
+      <Label>
+        <Checkbox name="autoDeploy" defaultChecked={initial?.autoDeploy} />
+        Automatically deploy future imported commits after the first reviewed
+        deployment
+      </Label>
+    </>
+  );
+}
+
+// sourceConfiguration reads SourceFields' settings from their form.
+const sourceConfiguration = (
+  d: FormData,
+): Schema["GitSourceConfiguration"] => ({
+  connectionId: text(d, "connection"),
+  branch: text(d, "branch"),
+  runnerId: text(d, "runner"),
+  fallbackRunnerId: text(d, "fallback") || undefined,
+  entrypoints: lines(text(d, "entrypoints")),
+  paths: lines(text(d, "paths")),
+  autoDeploy: d.has("autoDeploy"),
+});
+
+// ImportSource binds an environment that has no Git source yet and imports the branch.
+export function ImportSource({
+  path,
+  revisionId,
+  dirty,
+  action,
+  connection,
+  runner,
+  imported,
+}: {
+  path: EnvironmentPath;
+  revisionId: string;
+  dirty: boolean;
+  action: ReturnType<typeof useAction>;
+  connection: Choice;
+  runner: Choice;
+  imported: (message: string) => Promise<void>;
+}) {
+  return (
+    <details>
+      <summary>Import Compose from Git</summary>
+      <Form
+        action={action}
+        label="Import Compose from Git"
+        onSubmit={(d) =>
+          action.run(async () => {
+            await result(
+              client.PUT(`${root}/source`, {
+                params: { path },
+                body: {
+                  baseRevisionId: revisionId,
+                  configuration: sourceConfiguration(d),
+                },
+              }),
+            );
+            await imported(
+              "Import queued. Configure the push webhook shown when creating the connection. Use Reload current after import.",
+            );
+          })
+        }
+      >
+        <SourceFields
+          workspaceId={path.workspaceId}
+          connection={connection}
+          runner={runner}
+        />
+        <AutomaticDeploymentScope />
+        <Button type="submit" disabled={dirty || action.isPending}>
+          Import source
+        </Button>
+      </Form>
+    </details>
+  );
+}
+
 // ChangeSource lets an owner bind the environment's source again, with other files, a branch, a
 // connection or a runner, as a file renamed upstream needs, or stop importing from Git. Both
 // confirm the owner's identity first. changed runs after either succeeds, or after the server
 // says the source changed since it was shown, with what to say. Its form starts from the source
-// as shown, so its parent keys it by the source's hash: a change made elsewhere starts it again.
+// as it was when opened and binds only that: a change made elsewhere since is shown, keeping what
+// the owner typed, until they start again from the source as it is.
 export function ChangeSource({
   path,
   revisionId,
@@ -68,156 +252,50 @@ export function ChangeSource({
   const action = useAction({ recentAuth: true });
   // Removal has its own action, so its refusal is shown in its dialog, not as the form's error.
   const removal = useAction({ recentAuth: true });
-  const connections = useQuery(gitConnectionsOptions(path.workspaceId));
-  const servers = useQuery(serversOptions(path.workspaceId));
-  const current = source.configuration;
-  // The options load after the form, so each choice is held here rather than by the form.
-  const [connection, setConnection] = useState(current.connectionId);
-  const [runner, setRunner] = useState(current.runnerId);
-  const [fallback, setFallback] = useState(current.fallbackRunnerId ?? "");
+  // adopt takes the next source as shown, after this form's own binding changed it.
+  const [view, setView] = useState({ shown: source, adopt: false });
+  if (view.adopt && source.sourceHash !== view.shown.sourceHash)
+    setView({ shown: source, adopt: false });
+  const shown = view.shown;
   const [removing, setRemoving] = useState(false);
   const remove = useRef<HTMLButtonElement>(null);
-  const runners = servers.data?.filter(
-    (v) => v.role !== "deployment" && v.capabilities?.build,
-  );
-  const fallbacks = runners?.filter((v) => v.id !== runner);
-  // A stored fallback that is no longer a runner here is shown as such, so what is sent is what is
-  // shown.
-  const fallbackGone =
-    !!fallback && !!fallbacks && !fallbacks.some((v) => v.id === fallback);
+  // After a removal the page says so and moves focus there, so the dialog doesn't take it back.
+  const removed = useRef(false);
+  const summary = useRef<HTMLElement>(null);
   return (
     <details>
-      <summary>Change or remove the Git source</summary>
+      <summary ref={summary}>Change or remove the Git source</summary>
       <div className={s.stack}>
         <ErrorNotice error={action.error} />
-        <Form
-          action={action}
-          label="Change the Git source"
-          onSubmit={(d) =>
-            action.run(async () => {
-              const request = client.PUT(`${root}/source`, {
-                params: { path },
-                body: {
-                  baseRevisionId: revisionId,
-                  sourceHash: source.sourceHash,
-                  configuration: {
-                    connectionId: connection,
-                    branch: text(d, "branch"),
-                    runnerId: runner,
-                    fallbackRunnerId: fallback || undefined,
-                    entrypoints: lines(text(d, "entrypoints")),
-                    paths: lines(text(d, "paths")),
-                    autoDeploy: d.has("autoDeploy"),
-                  },
-                },
-              });
-              try {
-                await result(request);
-              } catch (e) {
-                if (!(e instanceof ApiError) || e.status !== 409) throw e;
-                await changed(
-                  "The source was not bound again: it changed since it was shown, or an import of this environment is running. It now shows as it is; try again once any import finishes.",
-                );
-                return;
-              }
-              await changed(
-                "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
-              );
-            })
-          }
-        >
-          <p className={s.muted}>
-            Binding the source again imports the branch&rsquo;s current commit,
-            replacing the Compose files in the saved draft, and makes automatic
-            imports and deployments yours. Deployments wait for that import.
-            Earlier revisions stay in history.
-          </p>
-          <Label>
-            Repository connection
-            <Select
-              name="connection"
-              required
-              value={connection}
-              onChange={(e) => setConnection(e.target.value)}
-            >
-              {!connections.data?.some((c) => c.id === connection) && (
-                <option value="">Choose a repository</option>
-              )}
-              {connections.data?.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} · {c.repository}
-                </option>
-              ))}
-            </Select>
-          </Label>
-          <Field name="branch" label="Branch" defaultValue={current.branch} />
-          <Label>
-            Build runner
-            <Select
-              name="runner"
-              required
-              value={runner}
-              onChange={(e) => {
-                setRunner(e.target.value);
-                // A runner can't be its own fallback.
-                if (e.target.value === fallback) setFallback("");
+        {!view.adopt && source.sourceHash !== shown.sourceHash && (
+          <div className={s.notice} role="status">
+            <p>
+              The source changed since this form was opened, for example because
+              another owner bound it again or turned automatic deployment off.
+              Binding it again from this form is refused until you start again
+              from the source as it is now.
+            </p>
+            <Button
+              type="button"
+              onClick={() => {
+                setView({ shown: source, adopt: false });
+                summary.current?.focus();
               }}
             >
-              {!runners?.some((v) => v.id === runner) && (
-                <option value="">Choose a runner</option>
-              )}
-              {runners?.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name} · {v.status} · {v.capabilities?.arch}
-                </option>
-              ))}
-            </Select>
-          </Label>
-          <Label>
-            Fallback runner
-            <Select
-              name="fallback"
-              value={fallback}
-              onChange={(e) => setFallback(e.target.value)}
-            >
-              <option value="">Queue on selected runner</option>
-              {fallbackGone && (
-                <option value={fallback}>
-                  A runner no longer in this workspace
-                </option>
-              )}
-              {fallbacks?.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name} · {v.status}
-                </option>
-              ))}
-            </Select>
-          </Label>
-          <Label>
-            Compose entrypoints, one path per line
-            <Textarea
-              name="entrypoints"
-              required
-              defaultValue={current.entrypoints.join("\n")}
-            />
-          </Label>
-          <Label>
-            Selected source files, one path per line
-            <Textarea
-              name="paths"
-              required
-              defaultValue={current.paths.join("\n")}
-            />
-          </Label>
-          <Label>
-            <Checkbox name="autoDeploy" defaultChecked={current.autoDeploy} />
-            Automatically deploy future imported commits after the first
-            reviewed deployment
-          </Label>
-          <Button type="submit" disabled={dirty || action.isPending}>
-            Bind again and import
-          </Button>
-        </Form>
+              Start again from the current source
+            </Button>
+          </div>
+        )}
+        <BindAgain
+          key={shown.sourceHash}
+          path={path}
+          revisionId={revisionId}
+          source={shown}
+          dirty={dirty}
+          action={action}
+          changed={changed}
+          bound={() => setView({ shown, adopt: true })}
+        />
         <div>
           <Button
             ref={remove}
@@ -226,6 +304,7 @@ export function ChangeSource({
             disabled={action.isPending || removal.isPending}
             onClick={() => {
               removal.reset();
+              removed.current = false;
               setRemoving(true);
             }}
           >
@@ -238,7 +317,9 @@ export function ChangeSource({
             if (!next && !removal.isPending) setRemoving(false);
           }}
         >
-          <AlertDialogContent finalFocus={remove}>
+          <AlertDialogContent
+            finalFocus={() => (removed.current ? false : remove.current)}
+          >
             <AlertDialogTitle>Remove the Git source?</AlertDialogTitle>
             <AlertDialogDescription>
               Pushes stop importing into this environment. The saved draft keeps
@@ -263,6 +344,7 @@ export function ChangeSource({
                     await result(
                       client.DELETE(`${root}/source`, { params: { path } }),
                     );
+                    removed.current = true;
                     setRemoving(false);
                     await changed(
                       "Git source removed. The saved draft keeps its Compose files.",
@@ -277,5 +359,81 @@ export function ChangeSource({
         </AlertDialogRoot>
       </div>
     </details>
+  );
+}
+
+// BindAgain is ChangeSource's form. It starts from the source as shown and sends that source's
+// hash, so a change made since is refused rather than overwritten.
+function BindAgain({
+  path,
+  revisionId,
+  source,
+  dirty,
+  action,
+  changed,
+  bound,
+}: {
+  path: EnvironmentPath;
+  revisionId: string;
+  source: Schema["GitSourceStatus"];
+  dirty: boolean;
+  action: ReturnType<typeof useAction>;
+  changed: (message: string) => Promise<void>;
+  bound: () => void;
+}) {
+  const connection = useState(source.configuration.connectionId);
+  const runner = useState(source.configuration.runnerId);
+  return (
+    <Form
+      action={action}
+      label="Change the Git source"
+      onSubmit={(d) =>
+        action.run(async () => {
+          const request = client.PUT(`${root}/source`, {
+            params: { path },
+            body: {
+              baseRevisionId: revisionId,
+              sourceHash: source.sourceHash,
+              configuration: sourceConfiguration(d),
+            },
+          });
+          try {
+            await result(request);
+          } catch (e) {
+            // Only a source changed since the form was opened is this form's to explain; any
+            // other refusal, such as a running import or a retired environment, says why itself.
+            if (
+              !(e instanceof ApiError) ||
+              !e.detail.fields?.includes("sourceHash")
+            )
+              throw e;
+            await changed(
+              "The source was not bound again: it changed since this form was opened. Your changes are kept; start again from the current source to bind it.",
+            );
+            return;
+          }
+          bound();
+          await changed(
+            "Source changed. Its import is queued; when it succeeds, use Reload current to load it.",
+          );
+        })
+      }
+    >
+      <p className={s.muted}>
+        Binding the source again imports the branch&rsquo;s current commit,
+        replacing the Compose files in the saved draft, and makes automatic
+        imports and deployments yours. Deployments wait for that import. Earlier
+        revisions stay in history.
+      </p>
+      <SourceFields
+        workspaceId={path.workspaceId}
+        connection={connection}
+        runner={runner}
+        initial={source.configuration}
+      />
+      <Button type="submit" disabled={dirty || action.isPending}>
+        Bind again and import
+      </Button>
+    </Form>
   );
 }

@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
 import { http, HttpResponse } from "msw/http";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Schema, Session } from "../../api/client";
 import type { EnvironmentPath } from "../../api/environment";
@@ -56,26 +57,47 @@ const refusal = (status: number) =>
       code: status === 409 ? "conflict" : "not_found",
       message:
         status === 409
-          ? "The resource changed. Review the current version before saving."
+          ? "The source changed since it was shown, for example because another owner bound it again or removed it. Look at it as it is now, then bind it again."
           : "The requested resource was not found.",
+      ...(status === 409 && { fields: ["sourceHash"] }),
       requestId: "00000000-0000-4000-8000-00000000000a",
     } satisfies Schema["Error"],
     { status },
   );
 
-function Panel({ shown }: { shown: Schema["GitSourceStatus"] }) {
+// Panel behaves as the page does: after a change it shows the source as the server now holds it,
+// which next is, and moves focus to what it says.
+function Panel({
+  shown,
+  next,
+}: {
+  shown: Schema["GitSourceStatus"];
+  next?: Schema["GitSourceStatus"];
+}) {
   const [said, setSaid] = useState("");
+  const [current, setCurrent] = useState(shown);
+  const status = useRef<HTMLParagraphElement>(null);
   return (
     <main id="main">
-      <SourceFailure failure={shown.failure} />
+      <SourceFailure failure={current.failure} />
       <ChangeSource
         path={path}
         revisionId={revisionId}
-        source={shown}
+        source={current}
         dirty={false}
-        changed={async (message) => setSaid(message)}
+        changed={async (message) => {
+          flushSync(() => {
+            setSaid(message);
+            if (next) setCurrent(next);
+          });
+          status.current?.focus();
+        }}
       />
-      {said && <p role="status">{said}</p>}
+      {said && (
+        <p ref={status} role="status" tabIndex={-1}>
+          {said}
+        </p>
+      )}
     </main>
   );
 }
@@ -191,9 +213,11 @@ export const RebindRenamedFile: Story = {
         },
       ]),
     );
-    await expect(await canvas.findByRole("status")).toHaveTextContent(
-      /Source changed/,
-    );
+    // The page then shows the source as bound, which isn't someone else's change.
+    await expect(await canvas.findByText(/Source changed/)).toHaveFocus();
+    await expect(
+      canvas.queryByText(/The source changed since this form was opened/),
+    ).toBeNull();
   },
 };
 
@@ -227,15 +251,21 @@ export const RemoveSource: Story = {
     await waitFor(() =>
       expect(requests).toEqual([{ method: "DELETE", body: null }]),
     );
-    await expect(await canvas.findByRole("status")).toHaveTextContent(
-      /Git source removed/,
-    );
+    await expect(await canvas.findByText(/Git source removed/)).toHaveFocus();
   },
 };
 
-// A source changed since it was shown, or an import still running, is refused. The panel says so
-// and keeps what the owner typed.
+// Another owner changed the source while this form was open, so binding from it is refused. The
+// owner's typing is kept, the form says why, and starting again shows the source as it is now and
+// binds that.
 export const ChangedSinceShown: Story = {
+  args: {
+    next: {
+      ...source,
+      sourceHash: "e".repeat(64),
+      configuration: { ...source.configuration, autoDeploy: true },
+    },
+  },
   beforeEach: () => {
     refusePut = 409;
   },
@@ -248,10 +278,33 @@ export const ChangedSinceShown: Story = {
     await userEvent.click(
       canvas.getByRole("button", { name: "Bind again and import" }),
     );
-    await expect(await canvas.findByRole("status")).toHaveTextContent(
-      /was not bound again: it changed since it was shown/,
-    );
+    await expect(await canvas.findByText(/was not bound again/)).toHaveFocus();
+    await expect(
+      canvas.getByText(/The source changed since this form was opened/),
+    ).toBeVisible();
     await expect(branch).toHaveValue("release");
+    refusePut = null;
+    await userEvent.click(
+      canvas.getByRole("button", {
+        name: "Start again from the current source",
+      }),
+    );
+    await expect(
+      canvas.getByText("Change or remove the Git source"),
+    ).toHaveFocus();
+    await expect(canvas.getByRole("textbox", { name: "Branch" })).toHaveValue(
+      "main",
+    );
+    await expect(
+      canvas.getByRole("checkbox", { name: /Automatically deploy/ }),
+    ).toBeChecked();
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Bind again and import" }),
+    );
+    await waitFor(() => expect(requests).toHaveLength(2));
+    await expect(
+      (requests[1]!.body as Schema["BindGitSource"]).sourceHash,
+    ).toBe("e".repeat(64));
   },
 };
 

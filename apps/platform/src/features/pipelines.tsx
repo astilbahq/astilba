@@ -9,7 +9,6 @@ import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
 import { Anchor } from "../components/link";
 import { Select } from "../components/select";
-import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { IntegrationSettings } from "./integrations";
@@ -20,7 +19,11 @@ import {
 } from "./pipelines/automation-approval";
 import { BuildServiceForm } from "./pipelines/build-service-form";
 import { PipelineJobs } from "./pipelines/pipeline-jobs";
-import { ChangeSource, SourceFailure } from "./pipelines/source-binding";
+import {
+  ChangeSource,
+  ImportSource,
+  SourceFailure,
+} from "./pipelines/source-binding";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
@@ -383,7 +386,6 @@ export function Pipelines({
               )}
               {owner && (
                 <ChangeSource
-                  key={source.data.sourceHash}
                   path={path}
                   revisionId={revision.id}
                   source={source.data}
@@ -394,70 +396,18 @@ export function Pipelines({
             </div>
           ) : (
             owner && (
-              <details>
-                <summary>Import Compose from Git</summary>
-                <Form
-                  action={action}
-                  label="Import Compose from Git"
-                  onSubmit={(d) =>
-                    action.run(async () => {
-                      await result(
-                        client.PUT(`${root}/source`, {
-                          params: { path },
-                          body: {
-                            baseRevisionId: revision.id,
-                            configuration: {
-                              connectionId: connection,
-                              branch: text(d, "branch"),
-                              runnerId: runner,
-                              fallbackRunnerId:
-                                text(d, "fallback") || undefined,
-                              entrypoints: text(d, "entrypoints")
-                                .split("\n")
-                                .filter(Boolean),
-                              paths: text(d, "paths")
-                                .split("\n")
-                                .filter(Boolean),
-                              autoDeploy: d.has("autoDeploy"),
-                            },
-                          },
-                        }),
-                      );
-                      setNotice(
-                        "Import queued. Configure the push webhook shown when creating the connection. Use Reload current after import.",
-                      );
-                      await refresh();
-                    })
-                  }
-                >
-                  {repositoryFields}
-                  <Label>
-                    Compose entrypoints, one path per line
-                    <Textarea
-                      name="entrypoints"
-                      required
-                      defaultValue="compose.yaml"
-                    />
-                  </Label>
-                  <Label>
-                    Selected source files, one path per line
-                    <Textarea
-                      name="paths"
-                      required
-                      defaultValue="compose.yaml"
-                    />
-                  </Label>
-                  <Label>
-                    <Checkbox name="autoDeploy" />
-                    Automatically deploy future imported commits after the first
-                    reviewed deployment
-                  </Label>
-                  <AutomaticDeploymentScope />
-                  <Button type="submit" disabled={dirty || action.isPending}>
-                    Import source
-                  </Button>
-                </Form>
-              </details>
+              <ImportSource
+                path={path}
+                revisionId={revision.id}
+                dirty={dirty}
+                action={action}
+                connection={[connection, setConnection]}
+                runner={[runner, setRunner]}
+                imported={async (message) => {
+                  setNotice(message);
+                  await refresh();
+                }}
+              />
             )
           ))}
         <BuildTargetApprovals
