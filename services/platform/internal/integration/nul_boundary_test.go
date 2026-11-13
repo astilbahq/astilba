@@ -143,9 +143,11 @@ func TestNULIsRefusedFromPeopleAndReplacedFromHosts(t *testing.T) {
 	// 5. A report's steps, which the host's output can name and describe.
 	b.call("POST", commandPath, api.BackupCommandRequest{Action: "install", RequestKey: uuid.New(), Snapshot: ""}, 202, &op)
 	installed := poll(op.Id)
-	// A plan hash is matched, not shown. Its schema refuses a NUL there before decode would
-	// replace it, and a replaced one would match nothing: a well-formed agent never sends one.
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: installed.Id, Generation: installed.Generation, PlanHash: installed.PlanHash + nul, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}}, 400, nil)
+	// A plan hash is matched, not shown, so a NUL in it, replaced, matches nothing and the report
+	// is refused: a well-formed agent never sends one. The hash keeps its length, which the
+	// schema bounds.
+	hash := installed.PlanHash[:len(installed.PlanHash)-1] + nul
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: installed.Id, Generation: installed.Generation, PlanHash: hash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}}, 403, nil)
 	report(installed, nil, []api.ExecutionStep{{Name: "install" + nul, Detail: "restic" + nul + "said", State: api.Done}})
 	var steps []byte
 	if err := f.st.Pool.QueryRow(ctx, "SELECT steps FROM execution_operations WHERE id=$1", op.Id).Scan(&steps); err != nil {
