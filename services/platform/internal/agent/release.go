@@ -242,7 +242,7 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return e.abortRelease(ctx, c, p, &s, "failed", "The proxy rejected the candidate. Previous routing was restored.")
+			return e.abortRelease(ctx, c, p, &s, "failed", proxyImageNote(err, "The proxy rejected the candidate. Previous routing was restored.", " The candidate was not routed; previous routing was kept. Release again once the host can pull the image."))
 		}
 		e.point("release-route-acknowledged")
 		observed, expected, err := e.observeVisualPlan(ctx, p.Plan, p.Secrets, true)
@@ -386,8 +386,14 @@ func (e *Engine) abortRelease(ctx context.Context, c api.ExecutionCommand, p dep
 		if err := e.waitHTTP(ctx, c, old, application(old, p.Plan.Release.ApplicationID)); err != nil {
 			return e.finish(c.Id, "needs_attention", "Cannot confirm previous readiness. Both revisions are retained.")
 		}
-		if err := e.publishReleaseRoutes(ctx, old); err != nil {
-			return e.finish(c.Id, "needs_attention", "Routing recovery is uncertain. Both revisions are retained.")
+		// A candidate publish that failed before its routes changed, or whose previous routes
+		// were restored, leaves the old routes serving. Republishing them would change only the
+		// route revision, and could fail again for what failed the candidate, such as a proxy
+		// image the host can't pull.
+		if serving, err := e.routesServe(ctx, old); err != nil || !serving {
+			if err = e.publishReleaseRoutes(ctx, old); err != nil {
+				return e.finish(c.Id, "needs_attention", proxyImageNote(err, "Routing recovery is uncertain. Both revisions are retained.", " Both revisions are retained. Retry once the host can pull the image."))
+			}
 		}
 	}
 	candidates, err := e.candidateContainers(ctx, p.Plan, p.Plan.Release.ApplicationID)

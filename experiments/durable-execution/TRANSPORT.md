@@ -8,7 +8,7 @@ The host test process runs the agent. A compiled Linux test helper runs the cont
 
 The certificate and its private key are generated for each run. The client trusts that certificate explicitly and checks its IP identity; an ordinary client without that trust must fail. Traefik's default certificate is configured because an IP-address client does not send DNS SNI. No certificate, key or credential is committed.
 
-Traefik is pinned to `v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953`. Its release source is MIT licensed. The image index includes Linux amd64 and arm64; this experiment's execution evidence must be read separately from the production host support matrix. The [proxy configuration](transport_proxy.yml) is the complete static configuration used by the test, with its file-provider routes in `transport_harness_test.go`.
+Traefik is pinned to `v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf`. Its release source is MIT licensed. The image index includes Linux amd64 and arm64; this experiment's execution evidence must be read separately from the production host support matrix. The [proxy configuration](transport_proxy.yml) is the complete static configuration used by the test, with its file-provider routes in `transport_harness_test.go`.
 
 ## Identity and delivery contracts
 
@@ -46,7 +46,7 @@ The empty-poll and reconnect check requires the first poll to complete without a
 Use the disposable engine and pinned PostgreSQL/BusyBox images in the [PLAT-2 instructions](README.md#reproduce), plus the proxy image:
 
 ```sh
-docker --context colima-astilba-plat-2 pull traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
+docker --context colima-astilba-plat-2 pull traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
 
 export PLAT2_DOCKER_HOST="$(docker context inspect colima-astilba-plat-2 --format '{{.Endpoints.docker.Host}}')"
 make verify
@@ -68,6 +68,6 @@ High-risk peer review used three native same-model passes: general, security/pri
 
 ## References
 
-- [Traefik v3.7.16 release](https://github.com/traefik/traefik/releases/tag/v3.7.16) and [licence](https://github.com/traefik/traefik/blob/v3.7.16/LICENSE.md).
+- [Traefik v3.7.19 release](https://github.com/traefik/traefik/releases/tag/v3.7.19) and [licence](https://github.com/traefik/traefik/blob/v3.7.19/LICENSE.md).
 - [Traefik entrypoint timeouts](https://doc.traefik.io/traefik/reference/install-configuration/entrypoints/) and [upstream transport timeouts](https://doc.traefik.io/traefik/reference/routing-configuration/http/load-balancing/serverstransport/).
 - [Platform architecture](../../docs/platform-architecture.md) and [P0 implementation plan](../../docs/platform-implementation-plan.md).

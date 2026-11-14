@@ -36,7 +36,7 @@ import (
 const (
 	nginxImage   = "nginx:1.30.6-alpine3.24@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949"
 	caddyImage   = "caddy:2.11.8-alpine@sha256:3db3a09e418f86a8fce8de4bc0026fccd2b4cd925aef00cc7d843d9fdc75e442"
-	traefikImage = "traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953"
+	traefikImage = "traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf"
 	// Longer than a stream ping's interval twice over, and than the 60 seconds that nginx
 	// and Traefik use as defaults for their own timeouts.
 	proxySilence = 62 * time.Second

@@ -96,9 +96,8 @@ func (e *Engine) executePreviewCleanup(ctx context.Context, c api.ExecutionComma
 	if p.Plan.Preview == nil || p.Plan.Specification.Compose != nil {
 		return e.finish(c.Id, "failed", "A preview cleanup requires its frozen isolated identity.")
 	}
-	fail := func() error {
-		return e.finish(c.Id, "needs_attention", "Preview cleanup could not verify ownership or removal. Its resource slot and data records remain reserved.")
-	}
+	const failed = "Preview cleanup could not verify ownership or removal. Its resource slot and data records remain reserved."
+	fail := func() error { return e.finish(c.Id, "needs_attention", failed) }
 	if err := e.Journal.previewProofCapacity(c.Id); err != nil {
 		return fail()
 	}
@@ -122,7 +121,7 @@ func (e *Engine) executePreviewCleanup(ctx context.Context, c api.ExecutionComma
 	withdrawn.Specification.Routes = nil
 	// The cleanup grant covers only withdrawing this unit; it never adopts drift.
 	if err = e.publishReleaseRoutes(ctx, withdrawn); err != nil {
-		return fail()
+		return e.finish(c.Id, "needs_attention", proxyImageNote(err, failed, " Its resource slot and data records remain reserved. Retry once the host can pull the image."))
 	}
 	if e.cancelled(c.Id) {
 		return e.finish(c.Id, "cancelled", "Cleanup stopped after withdrawing preview traffic; resources are retained.")

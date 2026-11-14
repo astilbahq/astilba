@@ -250,6 +250,72 @@ func TestNativeFailedPublishKeepsOtherTraffic(t *testing.T) {
 	h.f.answers(proxyName, steady.domain, "steady")
 }
 
+// An agent that pins a proxy image its host can't pull, as after an update while the
+// registry refuses, must keep the proxy it runs serving every environment's routes without
+// a restart, and say what it couldn't pull. Removing the proxy before the pull took every
+// environment offline for as long as the registry refused.
+func TestNativeUnpullableProxyImageKeepsServing(t *testing.T) {
+	h := newIsolationHost(t)
+	steady, next := h.f.unit("3", "steady"), h.f.unit("4", "next")
+	h.removeProxy()
+	if err := h.e.publishVisualRoutes(t.Context(), h.plan(steady, steady.set().Routes)); err != nil {
+		t.Fatal(err)
+	}
+	h.f.answers(proxyName, steady.domain, "steady")
+	before, err := h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := h.settled()
+
+	watch := watchTraffic(t, steady.domain, "steady")
+	time.Sleep(500 * time.Millisecond)
+	// No registry answers on the discard port, so every pull fails at once.
+	h.e.ingressImage = "127.0.0.1:9/astilba-test/unpullable-proxy:" + uuid.NewString()
+	for _, publish := range []func(context.Context, deployment.Plan) error{h.e.publishVisualRoutes, h.e.publishReleaseRoutes} {
+		err = publish(t.Context(), h.plan(next, next.set().Routes))
+		if unavailable := new(*proxyImageUnavailable); !errors.As(err, unavailable) || (*unavailable).image != h.e.ingressImage {
+			t.Fatalf("the publish did not name the image it couldn't pull: %v", err)
+		}
+		if !strings.Contains(err.Error(), "previous routes were restored") {
+			t.Fatalf("the publish did not restore the previous routes: %v", err)
+		}
+		if state := h.settled(); state.Current.ProxyHash != recorded.Current.ProxyHash || !reflect.DeepEqual(state.Current.Sets, recorded.Current.Sets) {
+			t.Fatal("the failed publish changed the recorded routes or proxy")
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	failures, dials, requests := watch.finish()
+	if len(failures) > 0 || dials != 1 || requests < 20 {
+		t.Fatalf("traffic was interrupted: %d failures in %d requests over %d connections, first %q", len(failures), requests, dials, failures[:min(len(failures), 3)])
+	}
+	after, err := h.f.docker.ContainerInspect(t.Context(), proxyName, client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Container.ID != before.Container.ID || after.Container.State.StartedAt != before.Container.State.StartedAt || !after.Container.State.Running {
+		t.Fatal("the proxy was replaced or restarted")
+	}
+	if got, err := h.f.request(proxyName, next.domain); err == nil {
+		t.Fatalf("the failed publish's route answered with %q", got)
+	}
+	// A release abort tells that the steady routes still serve, so it leaves them alone.
+	if serving, err := h.e.routesServe(t.Context(), h.plan(steady, steady.set().Routes)); err != nil || !serving {
+		t.Fatalf("the steady routes are not taken as serving: %v", err)
+	}
+	if serving, err := h.e.routesServe(t.Context(), h.plan(next, next.set().Routes)); err != nil || serving {
+		t.Fatalf("routes the host doesn't serve are taken as serving: %v", err)
+	}
+
+	// Once the host can pull the image, the environment publishes.
+	h.e.ingressImage = ""
+	if err = h.e.publishVisualRoutes(t.Context(), h.plan(next, next.set().Routes)); err != nil {
+		t.Fatal(err)
+	}
+	h.f.answers(proxyName, next.domain, "next")
+	h.f.answers(proxyName, steady.domain, "steady")
+}
+
 // A host whose routes a preceding agent recorded in one record, with an attempt of its
 // own left unfinished, keeps serving through the upgrade. The next publish, from another
 // environment, settles that attempt without restarting the proxy and moves the host to
@@ -463,7 +529,7 @@ func TestNativeFailedPublishRestoresTheProxyGateway(t *testing.T) {
 	steady, failing := h.f.unit("e", "steady"), h.f.unit("f", "failing")
 	h.removeProxy()
 	previous := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, QualifiedBackends: true, Sets: map[string]deployment.RouteSet{steady.id.String(): steady.set()}}
-	if _, err := h.e.applyRoutes(t.Context(), previous, false, ""); err != nil {
+	if _, err := h.e.applyRoutes(t.Context(), previous, proxyAsNeeded, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.e.rememberProxy(t.Context(), &previous); err != nil {
