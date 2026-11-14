@@ -163,7 +163,7 @@ export function BuildServiceForm({
                 )?.capabilities;
                 // Management sends a Railpack build only to a runner on this release's pins.
                 if (
-                  !capabilities?.railpackInputs ||
+                  !capabilities ||
                   capabilities.railpackInputs !==
                     railpackInputs[capabilities.arch]
                 ) {

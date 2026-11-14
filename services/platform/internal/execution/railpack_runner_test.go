@@ -44,10 +44,10 @@ func TestRailpackRunnerOnThePreviousReleaseIsRefused(t *testing.T) {
 	// An agent from before the digest was advertised is refused too.
 	version := current.Version
 	refusedForPins(t, railpackRunner(api.AgentCapabilities{RailpackVersion: &version}, current), current.Digest(), "none")
-	other := advertising(current)
-	otherVersion := "0.42.0"
-	other.RailpackVersion = &otherVersion
-	refusedForPins(t, railpackRunner(other, current), current.Digest(), current.Digest())
+	// Another Railpack version is other pins, so its digest differs.
+	other := current
+	other.Version = "0.42.0"
+	refusedForPins(t, railpackRunner(advertising(other), current), current.Digest(), other.Digest())
 	if err := railpackRunner(advertising(current), current); err != nil {
 		t.Fatal("a runner on this release was refused", err)
 	}

@@ -50,7 +50,8 @@ func railpackRunner(c api.AgentCapabilities, need pipeline.RailpackInputs) error
 	if c.RailpackInputs != nil {
 		advertised = *c.RailpackInputs
 	}
-	if c.RailpackVersion != nil && *c.RailpackVersion == need.Version && advertised == need.Digest() {
+	// The digest covers the version too.
+	if advertised == need.Digest() {
 		return nil
 	}
 	return &domain.Error{Code: "invalid_input", Fields: []string{"runner.railpackUpgradeRequired"}, Message: "The runner does not run the Railpack pins this build needs (" + need.Digest() + "); it advertises " + advertised + ". Run the same Astilba release on management and the runner."}
