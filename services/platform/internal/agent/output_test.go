@@ -107,7 +107,7 @@ func TestToolCapturesRejectOverflowAndKeepCompleteDiagnostics(t *testing.T) {
 			case "data":
 				var raw []byte
 				e.Docker = outputDaemon(t, tc.stdout)
-				raw, err = e.dataOutput(ctx, "fixture", "emit")
+				raw, err = e.dataOutput(ctx, pgClient{container: "fixture"}, "emit")
 				got = string(raw)
 			}
 			if (err != nil) != tc.wantErr || got != tc.want {
@@ -117,8 +117,7 @@ func TestToolCapturesRejectOverflowAndKeepCompleteDiagnostics(t *testing.T) {
 	}
 }
 
-// outputDaemon is a Docker whose one exec in container fixture prints its PID, then stdout, and
-// exits.
+// outputDaemon is a Docker whose one exec in container fixture prints stdout and exits.
 func outputDaemon(t *testing.T, stdout string) *client.Client {
 	t.Helper()
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,12 +137,12 @@ func outputDaemon(t *testing.T, stdout string) *client.Client {
 			defer conn.Close()
 			fmt.Fprint(buffered, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 			// One stdout frame: its stream, three zero bytes, then its big-endian length.
-			frame := []byte("4242\n" + stdout)
+			frame := []byte(stdout)
 			_, _ = buffered.Write(binary.BigEndian.AppendUint32([]byte{1, 0, 0, 0}, uint32(len(frame))))
 			_, _ = buffered.Write(frame)
 			_ = buffered.Flush()
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/exec/fixture-exec/json"):
-			fmt.Fprint(w, `{"ID":"fixture-exec","Running":false,"ExitCode":0,"Pid":4242}`)
+			fmt.Fprint(w, `{"ID":"fixture-exec","Running":false,"ExitCode":0}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"absent"}`)
