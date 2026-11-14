@@ -179,6 +179,8 @@ func (b *RecoveryBases) Archive() Archive {
 // operation they name, as retainedOperations does.
 var operationReferences = []struct{ table, column string }{
 	{"environments", "runtime_operation_id"},
+	{"environments", "retirement_operation_id"},
+	{"environments", "purge_operation_id"},
 	{"execution_operations", "parent_id"},
 	{"cross_host_operations", "id"},
 	{"cross_host_approvals", "parent_id"},

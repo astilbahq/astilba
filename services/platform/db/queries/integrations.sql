@@ -101,7 +101,7 @@ ORDER BY application_id;
 -- name: PageEnvironmentSecretVersions :many
 SELECT v.id,v.encrypted_value FROM secret_versions v
 JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id AND v.id > @after_id
+WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id AND v.id > @after_id AND v.erased_at IS NULL
 ORDER BY v.id LIMIT @page_size;
 
 -- name: DeleteEnvironmentSecretVersions :exec
