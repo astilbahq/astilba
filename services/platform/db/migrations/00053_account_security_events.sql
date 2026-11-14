@@ -9,8 +9,8 @@ CREATE TABLE account_security_events (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 -- An older release neither reads nor writes the table.
-INSERT INTO schema_additive_migrations (version) VALUES (51);
+INSERT INTO schema_additive_migrations (version) VALUES (53);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 51;
+DELETE FROM schema_additive_migrations WHERE version = 53;
 DROP TABLE account_security_events;
