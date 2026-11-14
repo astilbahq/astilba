@@ -166,7 +166,10 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 			return finish("failed", "The reviewed private-link configuration has not been acknowledged on this host.")
 		}
 		if err = e.prepareCrossHost(ctx, c, payload, command.Unit.Previous); err != nil {
-			return finish("needs_attention", safeVisualError(err, command.Secrets))
+			// The operation aborts once preparation fails, removing candidates, but a candidate
+			// may have replaced a shared service, which abort does not restore.
+			unchanged := errors.As(err, new(*imagePullRefused)) && state.Phase == "reserved" && (r.Checkpoint == "accepted" || r.Checkpoint == "cross-host-prepare")
+			return finish(pullFailure(unchanged), safeVisualError(err, command.Secrets))
 		}
 		for _, app := range p.LocalApplications() {
 			if app.Health != nil {
@@ -356,6 +359,9 @@ func (e *Engine) prepareCrossHost(ctx context.Context, c api.ExecutionCommand, p
 	}
 	unchanged, err := unchangedCrossHostServices(p, previous, body)
 	if err != nil {
+		return err
+	}
+	if err = e.checkpoint(c.Id, "cross-host-candidates"); err != nil {
 		return err
 	}
 	for _, app := range serviceOrder(p.Plan.Specification) {
