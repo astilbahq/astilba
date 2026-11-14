@@ -168,7 +168,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		if err = e.prepareCrossHost(ctx, c, payload, command.Unit.Previous); err != nil {
 			// The operation aborts once preparation fails, removing candidates, but a candidate
 			// may have replaced a shared service, which abort does not restore.
-			outcome, note := pullFailure(err, command.Secrets, state.Phase == "reserved" && !r.reached("cross-host-candidates"))
+			outcome, note := pullFailure(err, command.Secrets, !r.reached("cross-host-candidates"))
 			return finish(outcome, note)
 		}
 		for _, app := range p.LocalApplications() {
