@@ -238,7 +238,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = restoreRecoveryGrants(ctx, tx, in.WorkspaceID, source.Projections, roots); err != nil {
 		return out, err
 	}
-	if err = s.settleRevokedParticipants(ctx, tx, in.WorkspaceID, roots); err != nil {
+	if err = s.settleRecoveredRevocations(ctx, tx, in.WorkspaceID, before, revoked, roots); err != nil {
 		return out, err
 	}
 	// inline-sql: recovery session temporary tables
