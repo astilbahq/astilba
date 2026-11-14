@@ -58,6 +58,8 @@ type Payload struct {
 	Plan           Plan                           `json:"plan"`
 	Secrets        map[string]string              `json:"secrets,omitempty"`
 	VolumeID       *uuid.UUID                     `json:"volumeId,omitempty"`
+	// VolumeIDs are the retained volumes a purge deletes, exactly as the owner confirmed them.
+	VolumeIDs []uuid.UUID `json:"volumeIds,omitempty"`
 }
 
 func (p Payload) Digest() string { p.Secrets = nil; p.RegistryAccess = nil; return Hash(p) }

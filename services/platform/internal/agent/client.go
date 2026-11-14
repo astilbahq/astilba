@@ -39,6 +39,7 @@ type Client struct {
 	serviceOutputs          atomic.Bool
 	previews                atomic.Bool
 	retirement              atomic.Bool
+	purge                   atomic.Bool
 	schedules               atomic.Bool
 	replicas                atomic.Bool
 	crossHost               atomic.Bool

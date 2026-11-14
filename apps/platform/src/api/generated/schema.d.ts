@@ -340,6 +340,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Owner with recent identity confirmation. Deletes a retired environment's retained data volumes and erases its secret values. It cannot be undone, and a purged environment cannot be restored. volumeIds must list exactly the volumes the environment keeps. Asking again re-queues a purge whose operation ended without success. Backups at the workspace's destination are kept. */
+        post: operations["purgeEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets": {
         parameters: {
             query?: never;
@@ -913,6 +930,23 @@ export interface paths {
         put?: never;
         post: operations["createSecret"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Owner with recent identity confirmation, on an active environment. Erases the value of every version of the secret and frees its name. Refused with a conflict on secret while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names one of its versions. Version rows are kept for the revisions that name them. */
+        delete: operations["retireSecret"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2728,6 +2762,8 @@ export interface components {
             previews?: boolean;
             /** @description Removes a retired environment's routes, services and networks while keeping its volumes. Advertised only after Astilba-Agent-Retirement v1. */
             retirement?: boolean;
+            /** @description Deletes a retired environment's retained data volumes after verifying their ownership. Advertised only after Astilba-Agent-Purge v1. */
+            purge?: boolean;
             /** @enum {integer} */
             protocol: 1;
             version: string;
@@ -3259,10 +3295,10 @@ export interface components {
             deploymentUnit: components["schemas"]["DeploymentUnit"];
             appliedRevisionId?: string | null;
             /**
-             * @description Lifecycle state. A retiring or retired environment is read-only until it is restored.
+             * @description Lifecycle state. A retiring or retired environment is read-only until it is restored. Purging and purged are one-way and never restored.
              * @enum {string}
              */
-            state: "active" | "retiring" | "retired";
+            state: "active" | "retiring" | "retired" | "purging" | "purged";
             /**
              * Format: date-time
              * @description When retirement was last requested.
@@ -3280,6 +3316,23 @@ export interface components {
             retirementOperationId?: string | null;
             /** @description Retirement finished without contacting the server because the server was revoked. Its containers may still run there. */
             retiredWithoutHost?: boolean;
+            /**
+             * Format: date-time
+             * @description When the purge was requested. Its secret values were erased then.
+             */
+            purgedAt?: string | null;
+            /**
+             * Format: uuid
+             * @description The owner who requested the purge.
+             */
+            purgedBy?: string | null;
+            /**
+             * Format: uuid
+             * @description The operation that deletes the retained volumes from the server.
+             */
+            purgeOperationId?: string | null;
+            /** @description The purge finished without contacting the server because the server was revoked. Its volumes may still be there. */
+            purgedWithoutHost?: boolean;
         };
         ApplicationSource: {
             /** @enum {string} */
@@ -3731,6 +3784,12 @@ export interface components {
         EnvironmentLifecycleRequest: {
             /** @description The environment's exact current name. */
             confirmName: string;
+        };
+        EnvironmentPurgeRequest: {
+            /** @description The environment's exact current name. */
+            confirmName: string;
+            /** @description Exactly the data volumes the environment keeps, as the owner was shown them. */
+            volumeIds: string[];
         };
         CloneEnvironment: {
             name: string;
@@ -5655,6 +5714,43 @@ export interface operations {
             };
         };
     };
+    purgeEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentPurgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Environment"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listConfiguredBuildTargets: {
         parameters: {
             query?: never;
@@ -7076,6 +7172,38 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SecretVersion"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    retireSecret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                secretId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

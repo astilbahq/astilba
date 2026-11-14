@@ -132,6 +132,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.Replicas = &visual
 	h.Capabilities.Previews = &visual
 	h.Capabilities.Retirement = &visual
+	h.Capabilities.Purge = &visual
 	h.Capabilities.ServiceOutputs = &visual
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual

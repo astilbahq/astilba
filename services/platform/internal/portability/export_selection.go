@@ -98,6 +98,7 @@ const exportClosure = `INSERT INTO export_keep(kind,id) SELECT DISTINCT kind,id 
 	SELECT 'op' AS kind,o.parent_id AS id FROM execution_operations o JOIN export_keep k ON k.kind='op' AND k.id=o.id WHERE o.workspace_id=$1
 	UNION ALL SELECT 'op',e.runtime_operation_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id WHERE e.workspace_id=$1
 	UNION ALL SELECT 'op',e.retirement_operation_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id WHERE e.workspace_id=$1
+	UNION ALL SELECT 'op',e.purge_operation_id FROM environments e JOIN export_keep k ON k.kind='env' AND k.id=e.id WHERE e.workspace_id=$1
 	UNION ALL SELECT 'op',r.id FROM pipeline_runs r JOIN export_keep k ON k.kind='run' AND k.id=r.id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'op',v.operation_id FROM visual_requests v JOIN export_keep k ON k.kind='request' AND k.id=v.id WHERE v.workspace_id=$1
 	UNION ALL SELECT 'op',r.build_id FROM preview_requests r JOIN export_keep k ON k.kind='preview' AND k.id=r.id WHERE r.workspace_id=$1

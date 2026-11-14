@@ -1,8 +1,16 @@
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { type FormEvent, useId, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { ApiError, client, result, type Schema } from "../../api/client";
-import type { EnvironmentPath } from "../../api/environment";
+import {
+  type EnvironmentPath,
+  previewsOptions,
+  volumesOptions,
+} from "../../api/environment";
 import { environmentsOptions } from "../../api/environments";
 import {
   AlertDialogActions,
@@ -19,10 +27,27 @@ import * as s from "../../styles";
 import { useAction } from "../../ui";
 import * as e from "./environment.styles";
 
-export type LifecycleChange = "retire" | "restore";
+export type LifecycleChange = "retire" | "restore" | "purge";
 
 const root =
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}";
+
+const previewStates = [
+  "approval_required",
+  "queued",
+  "building",
+  "deploying",
+  "ready",
+  "failed",
+  "closing",
+  "deleting",
+  "deleted",
+  "blocked",
+] as const;
+const isPreviewState = (
+  state: string,
+): state is (typeof previewStates)[number] =>
+  (previewStates as readonly string[]).includes(state);
 
 const hasCode = (error: unknown, code: string) =>
   error instanceof ApiError && error.detail.code === code;
@@ -88,6 +113,12 @@ function useLifecycleErrorText() {
         return t(($) => $.lifecycle.refusal.serverTransfer);
       case "retirement.state":
         return t(($) => $.lifecycle.refusal.state);
+      case "retirement.volumes":
+        return t(($) => $.lifecycle.refusal.volumes);
+      case "retirement.purge_agent_update":
+        return t(($) => $.lifecycle.refusal.purgeAgentUpdate);
+      case "retirement.previews":
+        return t(($) => $.lifecycle.refusal.previews);
       default:
         return t(($) => $.lifecycle.refusal.unknown);
     }
@@ -142,9 +173,9 @@ export function RetireSection({
   );
 }
 
-// Retiring and restoring both need the environment's exact name and a recent identity
-// confirmation, which the shared step-up dialog asks for over this one. The typed name
-// survives it and any refused request.
+// Retiring, restoring and purging all need the environment's exact name and a recent identity
+// confirmation, which the shared step-up dialog asks for over this one. The typed name survives
+// it and any refused request.
 export function LifecycleDialog({
   change,
   open,
@@ -165,33 +196,68 @@ export function LifecycleDialog({
   const { t } = useTranslation("environment");
   const message = useLifecycleErrorText();
   const queries = useQueryClient();
-  // Both always need recent authentication, so a stale session confirms before the request.
+  // Each always needs recent authentication, so a stale session confirms before the request.
   const action = useAction({ recentAuth: true });
   const [name, setName] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
+  const volumeItem = useRef<HTMLLIElement>(null);
+  const previewItem = useRef<HTMLLIElement>(null);
   const formId = useId();
   const inputId = useId();
   const hintId = useId();
   const errorId = useId();
-  const retire = change === "retire";
+  const purge = change === "purge";
+  // A purge names exactly the volumes it deletes: the owner confirms the list shown here, which
+  // the banner behind the dialog shows too, and the request sends that list and no other.
+  const volumes = useQuery({ ...volumesOptions(path), enabled: purge });
+  const kept = volumes.data?.filter((volume) => !volume.deleted);
+  // A preview template's previews hold copies of its secrets until each is deleted, and the server
+  // refuses its purge until then. The list refreshes while the dialog is open.
+  const template = purge && environment.purpose === "preview_template";
+  const previews = useQuery({ ...previewsOptions(path), enabled: template });
+  // Only a preview that was allocated an environment holds copies, as the server counts them.
+  const pending = previews.data?.filter(
+    (preview) => !!preview.environmentId && preview.state !== "deleted",
+  );
+  const ready =
+    name === environment.name &&
+    (!purge || !!kept) &&
+    (!template || pending?.length === 0);
+  const volumesFailed = purge && !kept && volumes.isError;
+  const previewsFailed = template && !pending && previews.isError;
   const mismatch = nameMismatch(action.error);
   const dismiss = () => {
     action.reset();
     setName("");
     onClose();
   };
+  const request = (confirmName: string, volumeIds: string[]) => {
+    switch (change) {
+      case "retire":
+        return client.POST(`${root}/retire`, {
+          params: { path },
+          body: { confirmName },
+        });
+      case "restore":
+        return client.POST(`${root}/restore`, {
+          params: { path },
+          body: { confirmName },
+        });
+      case "purge":
+        return client.POST(`${root}/purge`, {
+          params: { path },
+          body: { confirmName, volumeIds },
+        });
+    }
+  };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (name !== environment.name || action.isPending) return;
-    const body = { confirmName: name };
+    if (!ready || action.isPending) return;
+    const volumeIds = kept?.map((volume) => volume.id) ?? [];
     action.run(async () => {
       try {
-        const next = await result(
-          retire
-            ? client.POST(`${root}/retire`, { params: { path }, body })
-            : client.POST(`${root}/restore`, { params: { path }, body }),
-        );
+        const next = await result(request(name, volumeIds));
         publishEnvironment(queries, path, next);
         onChanged(next);
         dismiss();
@@ -204,6 +270,17 @@ export function LifecycleDialog({
           void queries.invalidateQueries({
             queryKey: environmentQueries(path),
           });
+        // The kept volumes may have changed as well, and the owner confirms the current list. A
+        // template's previews show again what each one waits for.
+        if (purge && hasCode(error, "conflict")) {
+          void queries.invalidateQueries({
+            queryKey: volumesOptions(path).queryKey,
+          });
+          if (template)
+            void queries.invalidateQueries({
+              queryKey: previewsOptions(path).queryKey,
+            });
+        }
         throw error;
       }
     });
@@ -221,16 +298,22 @@ export function LifecycleDialog({
         finalFocus={finalFocus}
       >
         <AlertDialogTitle ref={title} tabIndex={-1} className={e.dialogTitle}>
-          {retire ? (
+          {change === "retire" ? (
             <Trans
               t={t}
               i18nKey={($) => $.lifecycle.retireDialogTitle}
               components={nameComponents}
             />
-          ) : (
+          ) : change === "restore" ? (
             <Trans
               t={t}
               i18nKey={($) => $.lifecycle.restoreDialogTitle}
+              components={nameComponents}
+            />
+          ) : (
+            <Trans
+              t={t}
+              i18nKey={($) => $.lifecycle.purgeDialogTitle}
               components={nameComponents}
             />
           )}
@@ -240,7 +323,7 @@ export function LifecycleDialog({
           render={<div />}
           className={e.dialogDescription}
         >
-          {retire ? (
+          {change === "retire" ? (
             <>
               <p>{t(($) => $.lifecycle.retireDialogDescription)}</p>
               <ul className={e.effects}>
@@ -255,7 +338,7 @@ export function LifecycleDialog({
                 <li>{t(($) => $.lifecycle.retireEffects.kept)}</li>
               </ul>
             </>
-          ) : (
+          ) : change === "restore" ? (
             <>
               <p>{t(($) => $.lifecycle.restoreDialogDescription)}</p>
               <ul className={e.effects}>
@@ -264,8 +347,115 @@ export function LifecycleDialog({
                 <li>{t(($) => $.lifecycle.restoreEffects.volumes)}</li>
               </ul>
             </>
+          ) : (
+            <>
+              <p>{t(($) => $.lifecycle.purgeDialogDescription)}</p>
+              <ul className={e.effects}>
+                {/* A retry focuses this item, so focus stays in the dialog on what loads. */}
+                <li ref={volumeItem} tabIndex={-1} className={e.recoveryTarget}>
+                  {kept ? (
+                    kept.length ? (
+                      <>
+                        {t(($) => $.lifecycle.purgeEffects.volumes)}
+                        <ul className={e.purgeItems}>
+                          {kept.map((volume) => (
+                            <li key={volume.id} className={e.code}>
+                              <bdi>{volume.name}</bdi>
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : (
+                      t(($) => $.lifecycle.purgeEffects.noVolumes)
+                    )
+                  ) : volumes.isError ? (
+                    t(($) => $.lifecycle.status.volumesFailed)
+                  ) : (
+                    t(($) => $.lifecycle.status.volumesLoading)
+                  )}
+                </li>
+                {/* Whether the server is revoked only shows once the purge is accepted. */}
+                {!!kept?.length && (
+                  <li>{t(($) => $.lifecycle.purgeEffects.revoked)}</li>
+                )}
+                {template && (
+                  <li
+                    ref={previewItem}
+                    tabIndex={-1}
+                    className={e.recoveryTarget}
+                  >
+                    {pending ? (
+                      pending.length ? (
+                        <>
+                          {t(($) => $.lifecycle.purgeEffects.previews)}
+                          <ul className={e.purgeItems}>
+                            {pending.map((preview) => {
+                              const known = preview.state;
+                              // A state this dashboard does not know yet reads as the server
+                              // names it.
+                              const state = isPreviewState(known)
+                                ? t(($) => $.lifecycle.previewStates[known])
+                                : known.replaceAll("_", " ");
+                              return (
+                                <li key={preview.id}>
+                                  {preview.note
+                                    ? t(
+                                        ($) =>
+                                          $.lifecycle.purgeEffects
+                                            .previewWithNote,
+                                        {
+                                          number: preview.number,
+                                          state,
+                                          note: preview.note,
+                                        },
+                                      )
+                                    : t(
+                                        ($) => $.lifecycle.purgeEffects.preview,
+                                        { number: preview.number, state },
+                                      )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </>
+                      ) : (
+                        t(($) => $.lifecycle.purgeEffects.noPreviews)
+                      )
+                    ) : previews.isError ? (
+                      t(($) => $.lifecycle.status.previewsFailed)
+                    ) : (
+                      t(($) => $.lifecycle.status.previewsLoading)
+                    )}
+                  </li>
+                )}
+                <li>{t(($) => $.lifecycle.purgeEffects.secrets)}</li>
+                <li>{t(($) => $.lifecycle.purgeEffects.kept)}</li>
+                <li>{t(($) => $.lifecycle.purgeEffects.backups)}</li>
+              </ul>
+            </>
           )}
         </AlertDialogDescription>
+        {/* The purge cannot be confirmed without these lists. A failed read of the volumes is not
+            retried on its own, and the previews' next poll is seconds away, so either can be asked
+            for again. Each read's own progress disables the button, not the previews' polling. */}
+        {(volumesFailed || previewsFailed) && (
+          <div>
+            <Button
+              size="sm"
+              disabled={
+                (volumesFailed && volumes.isFetching) ||
+                (previewsFailed && previews.isFetching)
+              }
+              onClick={() => {
+                (volumesFailed ? volumeItem : previewItem).current?.focus();
+                if (volumesFailed) void volumes.refetch();
+                if (previewsFailed) void previews.refetch();
+              }}
+            >
+              {t(($) => $.retry)}
+            </Button>
+          </div>
+        )}
         <form id={formId} className={s.stack} onSubmit={submit}>
           <div className={e.confirmField}>
             <Label htmlFor={inputId}>
@@ -311,16 +501,20 @@ export function LifecycleDialog({
           <Button
             type="submit"
             form={formId}
-            variant={retire ? "danger" : "primary"}
-            disabled={name !== environment.name || action.isPending}
+            variant={change === "restore" ? "primary" : "danger"}
+            disabled={!ready || action.isPending}
           >
-            {action.isPending
-              ? retire
+            {change === "retire"
+              ? action.isPending
                 ? t(($) => $.lifecycle.retiring)
-                : t(($) => $.lifecycle.restoring)
-              : retire
-                ? t(($) => $.lifecycle.retire)
-                : t(($) => $.lifecycle.restore)}
+                : t(($) => $.lifecycle.retire)
+              : change === "restore"
+                ? action.isPending
+                  ? t(($) => $.lifecycle.restoring)
+                  : t(($) => $.lifecycle.restore)
+                : action.isPending
+                  ? t(($) => $.lifecycle.purging)
+                  : t(($) => $.lifecycle.purge)}
           </Button>
         </AlertDialogActions>
       </AlertDialogContent>
