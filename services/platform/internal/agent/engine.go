@@ -99,15 +99,16 @@ func (e *Engine) checkpoint(id uuid.UUID, name string) error {
 	return err
 }
 func (e *Engine) finish(id uuid.UUID, state api.ExecutionState, note string) error {
-	return e.Journal.Mutate(id, func(r *Record) {
-		r.Report.State = state
-		r.Report.Note = note
-		if state == "succeeded" {
-			for i := range r.Report.Steps {
-				r.Report.Steps[i].State = "done"
-			}
+	return e.Journal.Mutate(id, func(r *Record) { settleReport(r, state, note) })
+}
+func settleReport(r *Record, state api.ExecutionState, note string) {
+	r.Report.State = state
+	r.Report.Note = note
+	if state == "succeeded" {
+		for i := range r.Report.Steps {
+			r.Report.Steps[i].State = "done"
 		}
-	})
+	}
 }
 
 // finishPhase records a coordinated phase's outcome, unless the agent is stopping: it reruns

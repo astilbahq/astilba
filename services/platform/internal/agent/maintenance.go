@@ -73,7 +73,7 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 	case "reserve":
 		if s.Maintenance.Kind == "restore" && p.Local.Primary {
 			if _, err := e.validateLocalRestore(s); err != nil {
-				return fail(err)
+				return refuse(err)
 			}
 		}
 		if _, err := e.maintenanceWriters(ctx, s); err != nil {
@@ -87,6 +87,11 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			return fail(errors.New("restored-volume activation requires the frozen primary writer pause"))
 		}
 		if err := e.activateRestoreCutover(ctx, c, command.Secrets, &s); err != nil {
+			// Until the cutover records its intent, it has only checked: the parent returns to
+			// the source as it does for an effect that never started.
+			if s.Restore == nil {
+				return refuse(err)
+			}
 			return fail(err)
 		}
 	case "pause":
