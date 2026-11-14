@@ -2,41 +2,84 @@ package agent
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
 )
 
 // olderProxyImage is the proxy image a preceding agent pinned.
 const olderProxyImage = "traefik:v3.7.16@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 
-// proxyImageDaemon is Docker running a proxy from olderProxyImage, without the pinned proxy
-// image, failing every pull with refusal. It records every request that changes a container.
-type proxyImageDaemon struct {
+// ingressDaemon is Docker running an owned proxy for s, from image, joined to the networks
+// of s's units. It has the pinned proxy image only when pinned, and fails every pull with
+// refusal. The proxy reports s's routes as enabled, and readiness probes succeed. It records
+// every request that would change the proxy.
+type ingressDaemon struct {
+	server  uuid.UUID
+	s       routeSnapshot
+	image   string
+	pinned  bool
+	refusal string
+
 	mu      sync.Mutex
 	changes []string
 	pulls   int
 }
 
-func (d *proxyImageDaemon) serve(t *testing.T, server uuid.UUID, s routeSnapshot, refusal string) *client.Client {
+func (d *ingressDaemon) serve(t *testing.T) *client.Client {
 	t.Helper()
+	bindings := map[string]any{}
+	for _, port := range d.s.Ports {
+		bindings[strconv.Itoa(port)+"/tcp"] = []map[string]string{{"HostIp": "0.0.0.0", "HostPort": strconv.Itoa(port)}}
+	}
+	gateway := 0
+	if d.s.ManagedEgress {
+		gateway = 100
+	}
+	networks := map[string]any{"astilba-ingress-network": map[string]any{"GwPriority": gateway}}
+	units := map[string]any{}
+	for key, set := range d.s.Sets {
+		name := deployment.NetworkName(set.UnitID)
+		networks[name] = map[string]any{}
+		units[name] = map[string]any{"Name": name, "Id": name, "Driver": "bridge", "Labels": map[string]string{labelServer: d.server.String(), labelKind: "visual-v1", "com.astilba.unit": key, labelEnvironment: set.EnvironmentID.String()}, "Containers": map[string]any{"running-proxy": map[string]any{}}}
+	}
 	proxy := map[string]any{
 		"Id":              "running-proxy",
 		"State":           map[string]any{"Running": true, "Status": "running"},
-		"Config":          map[string]any{"Image": olderProxyImage, "Cmd": proxyArgs(s), "Labels": map[string]string{labelServer: server.String(), labelKind: "ingress-v1"}},
-		"HostConfig":      map[string]any{"PortBindings": map[string]any{}},
-		"NetworkSettings": map[string]any{"Networks": map[string]any{"astilba-ingress-network": map[string]any{"GwPriority": 100}}},
+		"Config":          map[string]any{"Image": d.image, "Cmd": proxyArgs(d.s), "Labels": map[string]string{labelServer: d.server.String(), labelKind: "ingress-v1"}},
+		"HostConfig":      map[string]any{"PortBindings": bindings},
+		"NetworkSettings": map[string]any{"Networks": networks},
 	}
-	bridge := map[string]any{"Name": "astilba-ingress-network", "Id": "ingress-network", "Driver": "bridge", "Labels": map[string]string{labelServer: server.String(), labelKind: "ingress-v1"}, "Containers": map[string]any{"running-proxy": map[string]any{}}}
+	bridge := map[string]any{"Name": "astilba-ingress-network", "Id": "ingress-network", "Driver": "bridge", "Labels": map[string]string{labelServer: d.server.String(), labelKind: "ingress-v1"}, "Containers": map[string]any{"running-proxy": map[string]any{}}}
+	enabled := map[string]string{"status": "enabled"}
+	runtime := map[string]map[string]any{"routers": {"activation-" + d.s.Revision + "@file": enabled}, "services": {}}
+	for _, set := range d.s.Sets {
+		for _, r := range set.Routes {
+			name := deployment.UnitName(set.UnitID) + "-" + r.ID.String() + "@file"
+			runtime["routers"][name], runtime["services"][name] = enabled, enabled
+		}
+	}
+	rawdata, err := stablejson.Marshal(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -47,26 +90,80 @@ func (d *proxyImageDaemon) serve(t *testing.T, server uuid.UUID, s routeSnapshot
 			_ = stablejson.Encode(w, proxy)
 		case r.Method == "GET" && path == "/networks/astilba-ingress-network":
 			_ = stablejson.Encode(w, bridge)
+		case r.Method == "GET" && strings.HasPrefix(path, "/networks/") && units[strings.TrimPrefix(path, "/networks/")] != nil:
+			_ = stablejson.Encode(w, units[strings.TrimPrefix(path, "/networks/")])
+		case r.Method == "GET" && path == "/images/"+deployment.ProxyImage+"/json" && d.pinned:
+			fmt.Fprint(w, `{"Id":"sha256:pinned"}`)
 		case r.Method == "GET" && strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/json"):
 			w.WriteHeader(404)
-			_, _ = w.Write([]byte(`{"message":"No such image"}`))
+			fmt.Fprint(w, `{"message":"No such image"}`)
 		case r.Method == "POST" && path == "/images/create":
 			d.pulls++
 			w.WriteHeader(500)
-			_ = stablejson.Encode(w, map[string]string{"message": refusal})
+			_ = stablejson.Encode(w, map[string]string{"message": d.refusal})
+		// The proxy's runtime API, which route checks read through an exec.
+		case r.Method == "POST" && path == "/containers/"+proxyName+"/exec":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"Id":"routes"}`)
+		case r.Method == "POST" && path == "/exec/routes/start":
+			_, _ = io.Copy(io.Discard, r.Body)
+			conn, stream, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = stream.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+			// One frame on standard output, as Docker multiplexes an exec without a TTY.
+			header := []byte{byte(stdcopy.Stdout), 0, 0, 0, 0, 0, 0, 0}
+			binary.BigEndian.PutUint32(header[4:], uint32(len(rawdata)))
+			_, _ = stream.Write(append(header, rawdata...))
+			_ = stream.Flush()
+			// Ending only the output, and closing once the client has, never resets a
+			// connection the client is still reading.
+			_ = conn.(*net.TCPConn).CloseWrite()
+			go func() {
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+				_, _ = io.Copy(io.Discard, conn)
+			}()
+		case r.Method == "GET" && path == "/exec/routes/json":
+			fmt.Fprint(w, `{"Running":false,"ExitCode":0}`)
+		// Readiness probes, which answer at once.
+		case r.Method == "POST" && path == "/containers/create" && strings.HasPrefix(r.URL.Query().Get("name"), "astilba-health-"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"Id":"probe"}`)
+		case r.Method == "POST" && path == "/containers/probe/start":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "POST" && path == "/containers/probe/wait":
+			fmt.Fprint(w, `{"StatusCode":0}`)
+		case r.Method == "DELETE" && path == "/containers/probe":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "DELETE" && path == "/containers/running-proxy":
+			d.changes = append(d.changes, r.Method+" "+path)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "GET":
+			// Candidates, release commands and observations the test doesn't run.
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"message":"absent"}`)
 		default:
 			d.changes = append(d.changes, r.Method+" "+path)
 			w.WriteHeader(500)
-			_, _ = w.Write([]byte(`{"message":"unexpected request"}`))
+			fmt.Fprint(w, `{"message":"unexpected request"}`)
 		}
 	}))
 	t.Cleanup(daemon.Close)
-	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+	docker, err := client.New(client.WithHost("tcp://"+daemon.Listener.Addr().String()), client.WithAPIVersion("1.54"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = docker.Close() })
 	return docker
+}
+
+// portlessRoutes keep a proxy running on the egress gateway without routes, as a
+// coordinated primary's do.
+func portlessRoutes() routeSnapshot {
+	return routeSnapshot{ManagedEgress: true, PrivateIngress: true, Sets: map[string]deployment.RouteSet{}, Ports: []int{}, Revision: uuid.NewString(), QualifiedBackends: true}
 }
 
 // An updated agent that can't pull the proxy image it pins must leave the running proxy,
@@ -85,9 +182,9 @@ func TestUnpullableProxyImageKeepsTheRunningProxy(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			j, plan := testVisualJournal(t)
-			previous := routeSnapshot{ManagedEgress: true, PrivateIngress: true, Sets: map[string]deployment.RouteSet{}, Ports: []int{}, Revision: uuid.NewString(), QualifiedBackends: true}
-			var d proxyImageDaemon
-			e := &Engine{Journal: j, Docker: d.serve(t, plan.ServerID, previous, refusal)}
+			previous := portlessRoutes()
+			d := &ingressDaemon{server: plan.ServerID, s: previous, image: olderProxyImage, refusal: refusal}
+			e := &Engine{Journal: j, Docker: d.serve(t)}
 			if err := e.rememberProxy(t.Context(), &previous); err != nil {
 				t.Fatal(err)
 			}
@@ -139,6 +236,67 @@ func TestUnpullableProxyImageKeepsTheRunningProxy(t *testing.T) {
 				}
 			} else if !after.Pending || published != 0 || raw != nil {
 				t.Fatalf("recovery from an unrecorded proxy settled or changed the routes: pending %v, %d publishes", after.Pending, published)
+			}
+		})
+	}
+}
+
+// A publish that adds a port another service holds must fail before it removes the running
+// proxy. Only the ports that proxy holds itself have to wait for its removal to be checked.
+func TestProxyPortsAreCheckedBeforeTheProxyGoes(t *testing.T) {
+	hold := func(t *testing.T) int {
+		t.Helper()
+		listener, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { listener.Close() })
+		return listener.Addr().(*net.TCPAddr).Port
+	}
+	free := func(t *testing.T) int {
+		t.Helper()
+		listener, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		return listener.Addr().(*net.TCPAddr).Port
+	}
+	for _, c := range []struct {
+		name string
+		// held is whether the running proxy holds the port in use.
+		held bool
+	}{
+		{"a new port in use keeps the proxy", false},
+		{"a port the proxy holds waits for its removal", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			j, plan := testVisualJournal(t)
+			busy := hold(t)
+			previous := portlessRoutes()
+			next := portlessRoutes()
+			next.Ports = []int{busy}
+			if c.held {
+				// The test holds the port as the running proxy would.
+				previous.Ports = []int{busy}
+				port := free(t)
+				for port == busy {
+					port = free(t)
+				}
+				next.Ports = []int{min(busy, port), max(busy, port)}
+			}
+			d := &ingressDaemon{server: plan.ServerID, s: previous, image: deployment.ProxyImage, pinned: true}
+			e := &Engine{Journal: j, Docker: d.serve(t)}
+			_, err := e.applyRoutes(t.Context(), next, proxyAsNeeded, "")
+			if err == nil || err.Error() != fmt.Sprintf("ingress port %d is already in use", busy) {
+				t.Fatalf("the publish did not refuse the port in use: %v", err)
+			}
+			removed := slices.Equal(d.changes, []string{"DELETE /containers/running-proxy"})
+			if c.held && !removed {
+				t.Fatalf("a port the proxy holds was refused before its removal: %q", d.changes)
+			}
+			if !c.held && len(d.changes) > 0 {
+				t.Fatalf("the agent changed the running proxy: %q", d.changes)
 			}
 		})
 	}

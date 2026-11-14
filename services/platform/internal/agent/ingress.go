@@ -422,6 +422,21 @@ func (e *Engine) prepareProxy(ctx context.Context, s routeSnapshot, policy proxy
 	return p, err
 }
 
+// portsFree checks that the host can listen on each of ports that which picks.
+func portsFree(ports []int, which func(int) bool) error {
+	for _, port := range ports {
+		if !which(port) {
+			continue
+		}
+		listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		if err != nil {
+			return fmt.Errorf("ingress port %d is already in use", port)
+		}
+		listener.Close()
+	}
+	return nil
+}
+
 // ensureProxy runs the proxy s needs, as prepareProxy prepared it, joined to its units'
 // networks, and says whether it created the container. It removes a proxy it replaces only
 // once nothing else stands in the way of its replacement.
@@ -464,17 +479,27 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, p preparedPro
 		if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 			return created, errors.New("ingress data directory is not private")
 		}
+		// Only the ports the running proxy holds wait for its removal to be checked.
+		held := map[int]bool{}
+		if p.exists && v.Container.HostConfig != nil {
+			for _, bindings := range v.Container.HostConfig.PortBindings {
+				for _, binding := range bindings {
+					if port, err := strconv.Atoi(binding.HostPort); err == nil {
+						held[port] = true
+					}
+				}
+			}
+		}
+		if err = portsFree(s.Ports, func(port int) bool { return !held[port] }); err != nil {
+			return created, err
+		}
 		if p.exists {
 			if _, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 				return created, err
 			}
 		}
-		for _, port := range s.Ports {
-			listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-			if err != nil {
-				return created, fmt.Errorf("ingress port %d is already in use", port)
-			}
-			listener.Close()
+		if err = portsFree(s.Ports, func(port int) bool { return held[port] }); err != nil {
+			return created, err
 		}
 		networking := &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{bridgeName: {GwPriority: p.gatewayPriority}}}
 		container, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{NetworkingConfig: networking, Name: proxyName, Config: &container.Config{Image: e.proxyImage(), Cmd: p.args, ExposedPorts: p.exposed, Labels: map[string]string{labelServer: p.cfg.ServerID.String(), labelKind: "ingress-v1"}}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(bridgeName), PortBindings: p.bindings, Mounts: []mount.Mount{{Type: mount.TypeBind, Source: filepath.Dir(e.routePath()), Target: "/etc/astilba", ReadOnly: true}, {Type: mount.TypeBind, Source: data, Target: "/data"}}, RestartPolicy: container.RestartPolicy{Name: "unless-stopped"}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}}})
