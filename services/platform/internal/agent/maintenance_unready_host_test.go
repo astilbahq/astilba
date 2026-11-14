@@ -17,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
@@ -62,6 +63,9 @@ func newUnreadyWriter(t *testing.T, app domain.Application, health *container.He
 	placed, networkID, remote := uuid.New(), uuid.New(), uuid.New()
 	p.Recipe = deployment.CrossHostRecipe
 	p.Images = map[string]string{app.ID.String(): image}
+	for _, m := range app.Mounts {
+		p.Specification.Volumes = append(p.Specification.Volumes, domain.Volume{ID: m.VolumeID, Name: "Data"})
+	}
 	p.Specification.Applications = []domain.Application{app, {ID: placed, Name: "Remote", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}
 	p.Specification.Routes = []domain.Route{{ID: uuid.New(), TargetID: placed, Protocol: "http", Domain: "maintenance.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}
 	p.Specification.Placement = &domain.Placement{NetworkID: networkID, IngressServerID: p.ServerID, Applications: []domain.ApplicationPlacement{{ApplicationID: placed, CPUMillis: 100, MemoryMiB: 64, Targets: []domain.PlacementTarget{{ServerID: remote, Count: 1}}}}}
@@ -75,7 +79,19 @@ func newUnreadyWriter(t *testing.T, app domain.Application, health *container.He
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = docker.NetworkRemove(context.Background(), name, client.NetworkRemoveOptions{}) })
-	created, err := docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: deployment.UnitName(app.ID), Config: &container.Config{Image: image, Cmd: app.Command, Labels: visualLabels(p, app.ID), Healthcheck: health}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(name), Resources: container.Resources{Memory: 128 << 20, MemorySwap: 128 << 20}}, NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{name: {Aliases: []string{deployment.ServiceName(app.ID)}}}}})
+	// The writer's volumes, created as a deployment creates them.
+	mounts := []mount.Mount{}
+	for _, m := range app.Mounts {
+		volume := deployment.VolumeName(m.VolumeID)
+		if _, err = docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: volume, Driver: "local", Labels: volumeLabels(p, m.VolumeID)}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = docker.VolumeRemove(context.Background(), volume, client.VolumeRemoveOptions{Force: true})
+		})
+		mounts = append(mounts, mount.Mount{Type: mount.TypeVolume, Source: volume, Target: m.Target})
+	}
+	created, err := docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: deployment.UnitName(app.ID), Config: &container.Config{Image: image, Cmd: app.Command, Labels: visualLabels(p, app.ID), Healthcheck: health}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(name), Mounts: mounts, Resources: container.Resources{Memory: 128 << 20, MemorySwap: 128 << 20}}, NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{name: {Aliases: []string{deployment.ServiceName(app.ID)}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
