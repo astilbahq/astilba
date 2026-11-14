@@ -3,7 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json/jsontext"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -16,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
+	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -33,32 +37,32 @@ func scheduleCommand(p backup.Policy, b backup.Command, deadline time.Time) api.
 	return api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.ID, Kind: kind, Generation: testCommandGeneration.Add(1), PlanHash: b.Digest(), Backup: &payload, Deadline: deadline}
 }
 
-// PLAT-357. A run its command stops after the first effect is never left running, which nothing
-// settles on a reserved host. It needs attention, as its command does, unless its outcome was
-// confirmed: a job whose container was stopped and removed, with its exit recorded, has failed.
+// PLAT-357 and PLAT-366. A run its command stops after the first effect is never left running,
+// which nothing settles on a reserved host. It fails once its cleanup is confirmed, with every
+// container labelled with the run removed, and needs attention, as its command does, otherwise.
 func TestRunStoppedAfterItsFirstEffectSettlesByWhatItConfirmed(t *testing.T) {
 	cases := []struct {
 		name, mode, run string
 		cancel          bool
 		command         api.ExecutionState
 	}{
-		{name: "deadline, cleanup confirmed", mode: "running", run: "failed", command: "cancelled"},
 		{name: "cancel, cleanup confirmed", mode: "running", cancel: true, run: "failed", command: "cancelled"},
-		{name: "deadline, cleanup unconfirmed", mode: "running-remove", run: "needs_attention", command: "needs_attention"},
 		{name: "cancel, cleanup unconfirmed", mode: "running-remove", cancel: true, run: "needs_attention", command: "needs_attention"},
+		{name: "timeout, cleanup unconfirmed", mode: "running-remove", run: "needs_attention", command: "needs_attention"},
+		// The job exits 0 when stopped, and only the sweep removes its container: it still
+		// stopped part way, so it failed.
+		{name: "timeout, own removal failed", mode: "running-remove-once", run: "failed", command: "failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e, p, created := scheduledJobFixture(t, tc.mode)
-			p.TimeoutSeconds = 60
+			if tc.cancel {
+				p.TimeoutSeconds = 60
+			}
 			if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: time.Now().Add(time.Hour)}}); err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(2 * time.Second)
-			if tc.cancel {
-				deadline = time.Now().Add(time.Minute)
-			}
-			c := scheduleCommand(p, backup.Command{Action: "backup", RunID: uuid.New()}, deadline)
+			c := scheduleCommand(p, backup.Command{Action: "backup", RunID: uuid.New()}, time.Now().Add(time.Minute))
 			if tc.cancel {
 				e.Point = func(point string) {
 					if point == "backup-effects-begun" {
@@ -83,6 +87,9 @@ func TestRunStoppedAfterItsFirstEffectSettlesByWhatItConfirmed(t *testing.T) {
 			}
 			if tc.run == "failed" {
 				return
+			}
+			if !strings.Contains(stored.Runs[0].Note, "container astilba-job could not be removed") {
+				t.Fatal("the run's note doesn't name the container it couldn't remove:", stored.Runs[0].Note)
 			}
 			// resolve-run settles the command with its run, so neither holds the host's schedules.
 			if err = e.ResolveScheduledRun(context.Background(), p.ID, c.Id); err == nil {
@@ -110,26 +117,25 @@ func TestRunStoppedAfterItsFirstEffectSettlesByWhatItConfirmed(t *testing.T) {
 	}
 }
 
-// A command's deadline outlasts its run's own timeout, so a run that runs long ends by that
-// timeout: failed, with its cleanup confirmed, rather than stopped by its command and left to
-// inspect. A command delivered late can still reach its deadline first, which the cases above
-// cover.
-func TestRunReachingItsTimeoutBeforeItsDeadlineFails(t *testing.T) {
+// PLAT-369. A command's work is bounded from when the agent took it up and outlasts its run's
+// own timeout, so a run still going when its command's deadline passes runs on and ends by that
+// timeout: failed, with its cleanup confirmed.
+func TestRunOutlivingItsDeadlineEndsByItsTimeout(t *testing.T) {
 	e, p, created := scheduledJobFixture(t, "running")
+	p.TimeoutSeconds = 2
 	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: time.Now().Add(time.Hour)}}); err != nil {
 		t.Fatal(err)
 	}
-	b := backup.Command{Action: "backup", RunID: uuid.New(), Installation: backup.Installation{Policy: p}}
-	c := scheduleCommand(p, b, time.Now().Add(b.Lifetime()))
+	c := scheduleCommand(p, backup.Command{Action: "backup", RunID: uuid.New()}, time.Now().Add(500*time.Millisecond))
 	if err := e.Execute(context.Background(), c); err != nil {
 		t.Fatal(err)
 	}
-	if record, err := e.Journal.Record(c.Id); err != nil || record.Report.State != "failed" {
-		t.Fatal("a run that reached its own timeout settled its command as", record.Report.State, err)
+	if record, err := e.Journal.Record(c.Id); err != nil || record.Report.State != "failed" || !time.Now().After(c.Deadline) {
+		t.Fatal("a run outliving its command's deadline settled its command as", record.Report.State, record.Report.Note, err)
 	}
 	stored, err := e.Journal.schedule(p.ID)
-	if err != nil || *created != 1 || len(stored.Runs) != 1 || stored.Runs[0].State != "failed" || stored.Runs[0].ExitCode == nil || hasUncertainRun(stored) {
-		t.Fatal("a run that reached its own timeout was left to inspect", stored.Runs, err)
+	if err != nil || *created != 1 || len(stored.Runs) != 1 || stored.Runs[0].State != "failed" || !strings.Contains(stored.Runs[0].Note, "exceeded its timeout") || stored.Runs[0].ExitCode == nil || hasUncertainRun(stored) {
+		t.Fatal("a run outliving its command's deadline did not end by its own timeout", stored.Runs, err)
 	}
 }
 
@@ -303,5 +309,37 @@ func TestRestorePhaseFailingBeforeItsIntentIsRefused(t *testing.T) {
 		if r, err := j.Record(c.Id); err != nil || r.Report.State != want {
 			t.Fatal("a restore phase with intent", intent, "was settled as", r.Report.State, err)
 		}
+	}
+}
+
+// PLAT-366. A process the agent couldn't confirm ended still holds the run while its container
+// exists, as a source database does, and not once its container is gone, as a run's own restore
+// database is after its cleanup removed it.
+func TestRunCleanupKeepsOnlyProcessesInContainersThatRemain(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/containers/source/json"):
+			fmt.Fprint(w, `{"Id":"source","State":{"Running":true}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"absent"}`)
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	docker, err := client.New(client.WithHost("tcp://"+daemon.Listener.Addr().String()), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	e := &Engine{Docker: docker}
+	p := backup.Policy{ServerID: uuid.New()}
+	if left := e.runCleanupLeft(p, uuid.New(), errors.Join(errors.New("stopped"), &processLeft{what: "pg_dump left", container: "source"})); left != "pg_dump left" {
+		t.Fatal("a process in a remaining container was taken as ended:", left)
+	}
+	if left := e.runCleanupLeft(p, uuid.New(), &processLeft{what: "psql left", container: "removed"}); left != "" {
+		t.Fatal("a process in a removed container was taken as running:", left)
 	}
 }

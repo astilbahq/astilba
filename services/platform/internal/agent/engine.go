@@ -417,8 +417,9 @@ func (e *Engine) inspectOrRemove(ctx context.Context, c api.ExecutionCommand) er
 	return e.finish(c.Id, "succeeded", "Managed probe removed. No networks or volumes were removed.")
 }
 
-func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand) (context.Context, func()) {
-	ctx, cancel := context.WithDeadline(parent, c.Deadline)
+// commandContext ends at end, or once the command's owner cancels it.
+func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, end time.Time) (context.Context, func()) {
+	ctx, cancel := context.WithDeadline(parent, end)
 	done := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(200 * time.Millisecond)

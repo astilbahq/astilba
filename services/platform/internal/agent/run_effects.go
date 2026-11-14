@@ -5,11 +5,14 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
 )
@@ -98,12 +101,62 @@ var errRunUncertain = errors.New("the run's outcome needs local inspection")
 
 const interruptedBackupNote = "An interrupted backup command needs local inspection. Scheduled run history records its outcome; it will not be repeated automatically."
 
-// confirmedJobOutcome reports a container job whose run container was stopped, its exit result
-// recorded and the container removed, so nothing of it can still be running. Other methods
-// don't confirm their cleanup.
-func (s scheduleState) confirmedJobOutcome(r backup.Run, err error) bool {
-	return s.Installation.Policy.Method == "container-job" && r.ExitCode != nil && !errors.Is(err, errJobCleanup)
+// runCleanupLeft says what a run that began changing things may have left running, or "" once
+// nothing it started can be. Every container on this server labelled with the run, including one
+// whose create failed as the run stopped, is force-removed and confirmed gone. A process it ran
+// through containerExec was confirmed ended where it ran, or its container is gone now
+// (processLeft). restic needs no check: the agent waits for it to exit, and kills it when the run
+// stops.
+func (e *Engine) runCleanupLeft(p backup.Policy, run uuid.UUID, err error) string {
+	var left []string
+	containers := e.removeRunContainers(p, run)
+	if process := (*processLeft)(nil); errors.As(err, &process) && !e.containerGone(process.container) {
+		left = append(left, process.what)
+	}
+	if containers != "" {
+		left = append(left, containers)
+	}
+	return strings.Join(left, "; ")
 }
+
+// containerGone reports a container Docker confirms no longer exists, so nothing runs in it.
+func (e *Engine) containerGone(id string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	return errdefs.IsNotFound(err)
+}
+
+func (e *Engine) removeRunContainers(p backup.Policy, run uuid.UUID) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// A container already being removed may take a moment to go.
+	for attempt := 0; ; attempt++ {
+		list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: runContainers(p.ServerID, run)})
+		if err != nil {
+			return "Docker could not list the run's containers"
+		}
+		if len(list.Items) == 0 {
+			return ""
+		}
+		if attempt == 5 || attempt > 0 && !wait(ctx, time.Second) {
+			names := make([]string, 0, len(list.Items))
+			for _, c := range list.Items {
+				names = append(names, containerName(c))
+			}
+			return "container " + strings.Join(names, ", ") + " could not be removed"
+		}
+		for _, c := range list.Items {
+			_, _ = e.Docker.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
+		}
+	}
+}
+
+// processLeft is a run's error when a process it ran in a container, such as pg_dump in its source
+// database, could not be confirmed ended (containerExec).
+type processLeft struct{ what, container string }
+
+func (p *processLeft) Error() string { return p.what }
 
 const backupSucceededNote = "Backup action completed. Snapshot upload and restore verification are recorded separately. Cutover requires a new deployment review."
 
@@ -149,7 +202,7 @@ func (e *Engine) ResolveScheduledRun(ctx context.Context, policy, run uuid.UUID)
 	if err = e.resumeBackupWriters(ctx, &s); err != nil {
 		return err
 	}
-	list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", labelServer+"="+s.Installation.Policy.ServerID.String(), "com.astilba.run="+run.String())})
+	list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: runContainers(s.Installation.Policy.ServerID, run)})
 	if err != nil {
 		return err
 	}
@@ -207,4 +260,17 @@ func (j *Journal) failRunCommands(tx *bolt.Tx, policy, run uuid.UUID, note strin
 		}
 	}
 	return nil
+}
+
+// runContainers selects the containers a run made on this server, which carry its run label.
+func runContainers(server, run uuid.UUID) client.Filters {
+	return make(client.Filters).Add("label", labelServer+"="+server.String(), "com.astilba.run="+run.String())
+}
+
+// containerName is a listed container's name, or its short ID when it has none.
+func containerName(c container.Summary) string {
+	if len(c.Names) > 0 {
+		return strings.TrimPrefix(c.Names[0], "/")
+	}
+	return c.ID[:min(12, len(c.ID))]
 }

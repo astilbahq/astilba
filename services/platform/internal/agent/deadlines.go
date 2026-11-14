@@ -4,15 +4,21 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/google/uuid"
+	bolt "go.etcd.io/bbolt"
 )
 
 // deadlineRule is what a command's admission deadline means for it. The deadline decides whether
-// a host may start something, never whether work it already holds can end. Every command kind,
+// a host may start something, never whether work it already holds can end. A backup command this
+// host started is bounded by its own lifetime from when it took it up (Record.workEnd), so time it
+// waited here for the host doesn't shorten it; pipeline commands still end at their deadline.
+// Management withholds a backup's access once its deadline passes, so a command that reaches a
+// host late, after the agent was silent, never starts there. Every command kind,
 // network action and coordinated phase that reaches the deadline has a rule below, so adding one
 // means choosing one. Anything not listed keeps its deadline. Recovery opening and closing are
 // decided before the deadline, in Execute. See docs/cross-host-placement.md.
@@ -186,4 +192,37 @@ func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
 		return e.Journal.holdsUnit(c)
 	}
 	return false, nil
+}
+
+// workEnd is when the work of a command this host took up must end: lifetime after it was first
+// taken up, and never before its issue deadline, whichever clock is ahead. A record an older agent
+// began has no start and keeps its deadline.
+func (r Record) workEnd(lifetime time.Duration) time.Time {
+	if r.StartedAt == nil || r.StartedAt.Add(lifetime).Before(r.Command.Deadline) {
+		return r.Command.Deadline
+	}
+	return r.StartedAt.Add(lifetime)
+}
+
+// startWork records when this host first takes a command up, unless an earlier execution already
+// began it, and returns the time it was first taken up. A record an older agent began has none.
+// It changes nothing management reads, so the report's sequence stays.
+func (j *Journal) startWork(id uuid.UUID) (*time.Time, error) {
+	var started *time.Time
+	err := j.db.Update(func(tx *bolt.Tx) error {
+		var r Record
+		if e := j.get(tx, "operations", id.String(), &r); e != nil {
+			return e
+		}
+		if r.StartedAt == nil && r.Checkpoint == "accepted" {
+			now := time.Now().UTC()
+			r.StartedAt = &now
+			if e := j.put(tx, "operations", id.String(), r); e != nil {
+				return e
+			}
+		}
+		started = r.StartedAt
+		return nil
+	})
+	return started, err
 }

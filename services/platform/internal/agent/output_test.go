@@ -2,6 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +106,7 @@ func TestToolCapturesRejectOverflowAndKeepCompleteDiagnostics(t *testing.T) {
 				got = string(raw)
 			case "data":
 				var raw []byte
+				e.Docker = outputDaemon(t, tc.stdout)
 				raw, err = e.dataOutput(ctx, "fixture", "emit")
 				got = string(raw)
 			}
@@ -109,4 +115,45 @@ func TestToolCapturesRejectOverflowAndKeepCompleteDiagnostics(t *testing.T) {
 			}
 		})
 	}
+}
+
+// outputDaemon is a Docker whose one exec in container fixture prints its PID, then stdout, and
+// exits.
+func outputDaemon(t *testing.T, stdout string) *client.Client {
+	t.Helper()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/fixture/exec"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"Id":"fixture-exec"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/exec/fixture-exec/start"):
+			// Closing a connection with its request unread would reset it before the client reads.
+			_, _ = io.Copy(io.Discard, r.Body)
+			conn, buffered, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer conn.Close()
+			fmt.Fprint(buffered, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+			// One stdout frame: its stream, three zero bytes, then its big-endian length.
+			frame := []byte("4242\n" + stdout)
+			_, _ = buffered.Write(binary.BigEndian.AppendUint32([]byte{1, 0, 0, 0}, uint32(len(frame))))
+			_, _ = buffered.Write(frame)
+			_ = buffered.Flush()
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/exec/fixture-exec/json"):
+			fmt.Fprint(w, `{"ID":"fixture-exec","Running":false,"ExitCode":0,"Pid":4242}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"absent"}`)
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	docker, err := client.New(client.WithHost("tcp://"+daemon.Listener.Addr().String()), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	return docker
 }

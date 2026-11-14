@@ -42,7 +42,7 @@ func (e *Engine) dataTool(ctx context.Context, input io.Reader, out io.Writer, a
 }
 func (e *Engine) dataOutput(ctx context.Context, id string, args ...string) ([]byte, error) {
 	out := &boundedOutput{limit: 65536, stopOnLimit: true}
-	if err := e.dataTool(ctx, nil, out, append([]string{"exec", id}, args...)...); err != nil {
+	if err := e.containerExec(ctx, id, out, args...); err != nil {
 		return nil, err
 	}
 	return out.b.Bytes(), nil
@@ -66,7 +66,7 @@ func (e *Engine) dumpPostgres(ctx context.Context, p backup.Policy, stage string
 	if err != nil {
 		return err
 	}
-	err = e.dataTool(ctx, nil, file, "exec", c.ID, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", a.Postgres.Username, "-d", a.Postgres.Database)
+	err = e.containerExec(ctx, c.ID, file, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", a.Postgres.Username, "-d", a.Postgres.Database)
 	if err == nil {
 		err = file.Sync()
 	}
@@ -503,13 +503,14 @@ func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Appli
 	} else if image != domain.PostgresImage {
 		return errors.New("unsupported PostgreSQL image")
 	}
+	// Each refusal keeps its query's error, which may be a processLeft.
 	version, err := e.pgQuery(ctx, id, a, "SHOW server_version_num")
 	if err != nil || strings.TrimSpace(string(version)) != versionNumber {
-		return errors.New("unsupported PostgreSQL version")
+		return errors.Join(errors.New("unsupported PostgreSQL version"), err)
 	}
 	layout, err := e.pgQuery(ctx, id, a, "SHOW data_directory")
 	if err != nil || strings.TrimSpace(string(layout)) != dataDirectory {
-		return errors.New("unsupported PostgreSQL layout")
+		return errors.Join(errors.New("unsupported PostgreSQL layout"), err)
 	}
 	// Restore is intentionally limited to unprivileged NOLOGIN roles. SQL from a
 	// source database is never passed through as arbitrary cluster administration.
@@ -532,11 +533,11 @@ func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Appli
 	}
 	members, err := e.pgQuery(ctx, id, a, "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member WHERE r.rolname NOT LIKE 'pg_%' OR u.rolname NOT LIKE 'pg_%'")
 	if err != nil || strings.TrimSpace(string(members)) != "0" {
-		return errors.New("role memberships require a separate recipe")
+		return errors.Join(errors.New("role memberships require a separate recipe"), err)
 	}
 	raw, err = e.pgQuery(ctx, id, a, "SELECT coalesce(json_agg(extname ORDER BY extname),'[]') FROM pg_extension")
 	if err != nil || json.Unmarshal(raw, &m.Extensions) != nil {
-		return errors.New("extension query failed")
+		return errors.Join(errors.New("extension query failed"), err)
 	}
 	for _, ext := range m.Extensions {
 		if ext != "plpgsql" && ext != "hstore" {
@@ -545,7 +546,7 @@ func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Appli
 	}
 	supported, err := e.pgQuery(ctx, id, a, "SELECT coalesce(bool_and(extversion=CASE extname WHEN 'plpgsql' THEN '1.0' WHEN 'hstore' THEN '1.8' ELSE '' END),false) FROM pg_extension")
 	if err != nil || strings.TrimSpace(string(supported)) != "t" {
-		return errors.New("unsupported extension version")
+		return errors.Join(errors.New("unsupported extension version"), err)
 	}
 
 	m.Image = image
