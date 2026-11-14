@@ -184,6 +184,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 	if err = settleRevokedServers(prepared, revoked); err != nil {
 		return err
 	}
+	if err = dropReleasedPreviewSecrets(&prepared); err != nil {
+		return err
+	}
 	source.Archive = prepared
 	source.Projections = projections
 	return preflightRecoveryKnownProofs(ctx, tx)
