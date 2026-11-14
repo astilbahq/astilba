@@ -2,9 +2,9 @@
   "apps/platform/src/features/deployments.tsx": 662,
   "apps/platform/tests/auth.spec.ts": 922,
   "services/platform/internal/agent/cross_host_host_test.go": 1142,
-  "services/platform/internal/agent/visual.go": 812,
+  "services/platform/internal/agent/visual.go": 742,
   "services/platform/internal/composeproject/source.go": 601,
   "services/platform/internal/integration/cross_host_physical_recovery_test.go": 969,
-  "services/platform/internal/integration/cross_host_recovery_test.go": 1342,
+  "services/platform/internal/integration/cross_host_recovery_test.go": 1340,
   "services/platform/internal/integration/cross_host_test.go": 1338
 }

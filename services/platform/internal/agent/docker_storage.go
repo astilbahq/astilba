@@ -40,14 +40,28 @@ const containerdRoot = "/var/lib/containerd"
 // filesystem allocates them dynamically and reports none. ok is false when the daemon's
 // storage cannot be observed from here.
 func imageStorage(ctx context.Context, docker *client.Client) (bytes, inodes int64, ok bool) {
-	root, ok := dockerRoot(ctx, docker)
+	roots, ok := imageStorageRoots(ctx, docker)
 	if !ok {
 		return 0, 0, false
+	}
+	return storageFree(roots)
+}
+
+// imageStorageRoots are the directories whose filesystems Docker writes an image to.
+func imageStorageRoots(ctx context.Context, docker *client.Client) ([]string, bool) {
+	root, ok := dockerRoot(ctx, docker)
+	if !ok {
+		return nil, false
 	}
 	roots := []string{root}
 	if _, err := os.Stat(containerdRoot); err == nil {
 		roots = append(roots, containerdRoot)
 	}
+	return roots, true
+}
+
+// storageFree is the least free space and inodes on the filesystems of roots.
+func storageFree(roots []string) (bytes, inodes int64, ok bool) {
 	bytes, inodes = -1, -1
 	for _, root := range roots {
 		b, i, known := freeSpace(root)

@@ -694,6 +694,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/cross-host-recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        /** @description Owners and operators only. */
+        get: operations["getCrossHostRecovery"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/members": {
         parameters: {
             query?: never;
@@ -3196,6 +3215,20 @@ export interface components {
             role: components["schemas"]["Role"];
             requireMfa: boolean;
         };
+        CrossHostRecovery: {
+            /**
+             * Format: date-time
+             * @description When the newest recovery checkpoint was taken, or null before the first.
+             */
+            checkpointAt: string | null;
+            /**
+             * Format: date-time
+             * @description Cross-host recovery can use a management backup taken after this. Null with no checkpoint, or when the newest one predates recovery windows.
+             */
+            windowStart: string | null;
+            /** @description The window is shorter than 35 days, the backup retention the docs suggest, because the workspace's applied history is busy. */
+            shortWindow: boolean;
+        };
         Session: {
             /** Format: uuid */
             readonly createdWorkspaceId?: string;
@@ -4620,7 +4653,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */
@@ -6468,6 +6501,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getCrossHostRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest recovery checkpoint and the management backups recovery can use with it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrossHostRecovery"];
                 };
             };
             /** @description Error */
