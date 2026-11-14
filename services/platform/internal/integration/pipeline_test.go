@@ -274,65 +274,10 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			t.Fatal("cancelled/expired result published artifact")
 		}
 	}
-	// A build whose runner reported starting it by its deadline, after waiting behind other work
-	// on the host, may run for its lifetime past the deadline, though no values leave after it.
-	// One whose start management hears of only after the deadline is stopped, whatever the
-	// runner's clock read, and publishes nothing, as is one its runner lost after the deadline.
-	for _, run := range []string{"started", "unacknowledged", "late", "lost"} {
+	buildDeadlineRuns(t, f, token, func() uuid.UUID {
 		b.call("POST", path+"/builds", map[string]any{"baseRevisionId": promoted.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 202, &op)
-		c = poll(op.Id)
-		started := func() {
-			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "running", Steps: []api.ExecutionStep{{Name: pipeline.StartStep, State: "intent"}}}, 204, nil)
-		}
-		if run != "late" {
-			started()
-		}
-		// The stored command, which holds no credentials, reaches its deadline.
-		var raw []byte
-		var frozen api.ExecutionCommand
-		if err := f.st.Pool.QueryRow(context.Background(), "SELECT command FROM execution_operations WHERE id=$1", c.Id).Scan(&raw); err != nil || json.Unmarshal(raw, &frozen) != nil {
-			t.Fatal("stored command unreadable", err)
-		}
-		frozen.Deadline = time.Now().Add(-time.Second)
-		raw, _ = stablejson.Marshal(frozen)
-		if _, err := f.st.Pool.Exec(context.Background(), "UPDATE execution_operations SET command=$2 WHERE id=$1", c.Id, raw); err != nil {
-			t.Fatal(err)
-		}
-		switch run {
-		case "late":
-			started()
-		case "unacknowledged":
-			// Its runner never acknowledged the values, so they are due again: it holds them.
-			if _, err := f.st.Pool.Exec(context.Background(), "UPDATE secret_releases SET last_attempt_at=now()-interval '1 minute' WHERE operation_id=$1", c.Id); err != nil {
-				t.Fatal(err)
-			}
-		case "lost":
-			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: c.Id, Epoch: c.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
-		}
-		running := run == "started" || run == "unacknowledged"
-		again := poll(op.Id)
-		if again.CancelRequested == running {
-			t.Fatal("a build's cancellation did not follow when its start was reported", run)
-		}
-		if run == "unacknowledged" && (again.SecretRelease == nil || again.SecretRelease.Values) {
-			t.Fatal("a build delivered without its values after its deadline claimed to carry them", again.SecretRelease)
-		}
-		for _, value := range []string{"clone-read-canary", "build-only-canary", "push-canary"} {
-			if strings.Contains(string(*again.Pipeline), value) {
-				t.Fatal("a build's credentials left management after its deadline", run, value)
-			}
-		}
-		raw, _ = stablejson.Marshal(pipeline.Result{Commit: head, Image: registry.Repository + "@" + digest, Digest: digest, Architecture: "arm64"})
-		msg := jsontext.Value(raw)
-		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 3, State: "succeeded", Steps: []api.ExecutionStep{{Name: pipeline.StartStep, State: "done"}}, Pipeline: &msg}, 204, nil)
-		var state string
-		var count int
-		_ = f.st.Pool.QueryRow(context.Background(), "SELECT state FROM execution_operations WHERE id=$1", op.Id).Scan(&state)
-		_ = f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM build_artifacts WHERE id=$1", op.Id).Scan(&count)
-		if running && (state != "succeeded" || count != 1) || !running && (state != "cancelled" || count != 0) {
-			t.Fatal("a build's result did not follow when its start was reported", run, state, count)
-		}
-	}
+		return op.Id
+	}, poll, pipeline.Result{Commit: head, Image: registry.Repository + "@" + digest, Digest: digest, Architecture: "arm64"})
 	// Authentication and repository identity are checked before delivery retention or queue insertion.
 	delivery := []byte(`{"ref":"refs/heads/main","after":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repository":{"id":12}}`)
 	deliveryID := "one"
