@@ -3246,13 +3246,23 @@ export interface components {
         Code: {
             code: string;
         };
-        /** @description Exactly one credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it. */
-        Reauthenticate: {
+        Reauthenticate: components["schemas"]["Credential"];
+        /** @description Exactly one current credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it. */
+        Credential: {
             password?: string;
             code?: string;
         };
         NewPassword: {
             password: string;
+            current: components["schemas"]["Credential"];
+        };
+        MFAConfirmation: {
+            /** @description A code from the authenticator being added. */
+            code: string;
+            current: components["schemas"]["Credential"];
+        };
+        CredentialConfirmation: {
+            current: components["schemas"]["Credential"];
         };
         ResetRequest: {
             /** Format: email */
@@ -6333,7 +6343,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Code"];
+                "application/json": components["schemas"]["MFAConfirmation"];
             };
         };
         responses: {
@@ -6364,7 +6374,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialConfirmation"];
+            };
+        };
         responses: {
             /** @description Success */
             200: {
@@ -6393,7 +6407,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialConfirmation"];
+            };
+        };
         responses: {
             /** @description Success */
             200: {

@@ -152,19 +152,21 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		}
 		return e.finish(c.Id, "needs_attention", interruptedBackupNote)
 	}
+	// Any other command runs again from the start, whether or not it was stopped part way: an
+	// install's repository steps are idempotent, and a schedule an install or disable writes is
+	// committed with the command's success.
 	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+		if r.Checkpoint != "accepted" {
+			return e.finish(c.Id, "cancelled", "Cancelled. No schedule was changed.")
+		}
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
-	}
-	if r.Checkpoint != "accepted" {
-		return e.finish(c.Id, "needs_attention", interruptedBackupNote)
 	}
 	parent := ctx
 	ctx, stop := e.commandContext(ctx, c)
 	defer stop()
 	// The checkpoint is written just before the first effect outside the journal: the repository
-	// an install may create, or the run a backup or restore records. Until then a stopped command
-	// changed nothing and runs again; after it, one that is not settled by its run needs inspection.
-	// A schedule an install or disable writes is committed with the command's success.
+	// an install may create, or the run a backup or restore records. Until then a stopped backup
+	// or restore changed nothing and runs again; after it, it is settled by what its run did.
 	effect := func() error { return e.checkpoint(c.Id, "backup-effect") }
 	var err error
 	switch b.Action {

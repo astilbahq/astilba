@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { client, result, type Schema, setSession } from "../../api/client";
 import { sessionOptions } from "../../api/session";
+import { useConfirmCredential } from "../../api/step-up";
 import { subscriptionOptions } from "../../api/subscription";
 import { useSessionRequest } from "../../api/use-session-request";
 import { Button } from "../../components/button";
@@ -32,8 +33,10 @@ function RecoveryStep({
 }) {
   const { t } = useTranslation("auth");
   const queries = useQueryClient();
-  const action = useAction({ recentAuth: true });
-  const request = useSessionRequest({ renewal: true });
+  const action = useAction();
+  const confirmCredential = useConfirmCredential();
+  // The dialog holds signed-out reads while the change renews the session, not while it waits.
+  const request = useSessionRequest();
   const validation = useAuthValidation();
   const regenerate = () => {
     onCreated(undefined);
@@ -41,8 +44,18 @@ function RecoveryStep({
     action.run(() =>
       request(
         (signal) =>
-          result(client.POST("/api/v1/auth/mfa/recovery-codes", { signal })),
+          confirmCredential(
+            (current, signal) =>
+              result(
+                client.POST("/api/v1/auth/mfa/recovery-codes", {
+                  signal,
+                  body: { current },
+                }),
+              ),
+            { signal },
+          ),
         (next) => {
+          if (!next) return;
           queries.setQueryData(
             sessionOptions.queryKey,
             setSession(next.session),

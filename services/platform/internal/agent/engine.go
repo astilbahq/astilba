@@ -8,6 +8,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"io"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,6 +80,12 @@ func (e *Engine) point(p string) {
 	if e.Point != nil {
 		e.Point(p)
 	}
+}
+
+// reached reports whether any execution of the command recorded step. A command run again moves
+// its checkpoint back through its earlier steps, but the steps it recorded are kept.
+func (r Record) reached(step string) bool {
+	return slices.ContainsFunc(r.Report.Steps, func(s api.ExecutionStep) bool { return s.Name == step })
 }
 func Name(c api.ExecutionCommand) string { return "astilba-probe-" + c.ResourceId.String() }
 func (e *Engine) checkpoint(id uuid.UUID, name string) error {
