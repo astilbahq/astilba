@@ -465,7 +465,8 @@ func TestSkippedHistoryAndAdmissionClock(t *testing.T) {
 	now := s.Installation.Next
 	_ = e.tickSchedules(context.Background(), func() time.Time { return now })
 	s, _ = j.schedule(p.ID)
-	if s.Runs[len(s.Runs)-1].State != "needs_attention" {
+	// Admitted, then failed before any effect: this engine has no Docker.
+	if last := s.Runs[len(s.Runs)-1]; last.ID != backup.RunID(p, now) || last.State != "failed" {
 		t.Fatal("a timely job could not be admitted after bounded skipped history")
 	}
 }

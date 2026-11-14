@@ -318,6 +318,11 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 	var reports atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/agent/v1/challenge" {
+			// A controller that predates agent keys has no challenge to negotiate with.
+			w.WriteHeader(404)
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer "+p.ServerID.String()+".fixture" {
 			t.Error("missing assigned-agent authentication")
 			w.WriteHeader(401)
