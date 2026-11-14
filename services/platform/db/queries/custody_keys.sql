@@ -60,10 +60,10 @@ ORDER BY w.id LIMIT @batch;
 -- name: TryLockKeyCreation :one
 -- A session lock, so it covers wrapping the key before the transaction that stores it. Workers
 -- creating keys skip a holder another has, rather than wrapping a key that would lose.
-SELECT pg_try_advisory_lock(4281642306, hashtext(@holder::text));
+SELECT pg_try_advisory_lock(hashtextextended(@holder::text, 4281642306));
 
 -- name: UnlockKeyCreation :one
-SELECT pg_advisory_unlock(4281642306, hashtext(@holder::text));
+SELECT pg_advisory_unlock(hashtextextended(@holder::text, 4281642306));
 
 -- name: KeyProgress :one
 -- unscoped: how far creating keys has got across the installation.

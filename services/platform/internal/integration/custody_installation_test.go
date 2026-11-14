@@ -165,6 +165,10 @@ func TestRewrapRecordsStartAndFinish(t *testing.T) {
 func TestCustodyStatusReportsPendingWork(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
+	// The stage is complete once every key exists.
+	if more, err := f.st.Broker.InitKeys(ctx, func() bool { return true }); err != nil || more {
+		t.Fatal(more, err)
+	}
 	s, err := f.st.Broker.Status(ctx, f.st.Pool, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)

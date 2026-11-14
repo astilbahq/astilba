@@ -372,7 +372,7 @@ func (q *Queries) ShareCustodyBackendsVersion(ctx context.Context) (int64, error
 }
 
 const tryLockKeyCreation = `-- name: TryLockKeyCreation :one
-SELECT pg_try_advisory_lock(4281642306, hashtext($1::text))
+SELECT pg_try_advisory_lock(hashtextextended($1::text, 4281642306))
 `
 
 // A session lock, so it covers wrapping the key before the transaction that stores it. Workers
@@ -385,7 +385,7 @@ func (q *Queries) TryLockKeyCreation(ctx context.Context, holder string) (bool, 
 }
 
 const unlockKeyCreation = `-- name: UnlockKeyCreation :one
-SELECT pg_advisory_unlock(4281642306, hashtext($1::text))
+SELECT pg_advisory_unlock(hashtextextended($1::text, 4281642306))
 `
 
 func (q *Queries) UnlockKeyCreation(ctx context.Context, holder string) (bool, error) {

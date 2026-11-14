@@ -66,12 +66,20 @@ func Up(ctx context.Context, dsn string) error {
 }
 
 // checkStage refuses to migrate an installation more than one custody stage behind this release.
-// A database from before stages were recorded has completed none.
+// A database from before stages were recorded has completed none. One no migration has run on is
+// a new installation, which has nothing to bring through earlier stages.
 func checkStage(ctx context.Context, db *sql.DB) error {
-	var recorded bool
+	var fresh, recorded bool
 	completed := 0
-	// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
-	err := db.QueryRowContext(ctx, `SELECT to_regclass('custody_stage') IS NOT NULL`).Scan(&recorded)
+	// inline-sql: goose's own table, which a new installation does not have yet.
+	err := db.QueryRowContext(ctx, `SELECT to_regclass('goose_db_version') IS NULL`).Scan(&fresh)
+	if err == nil && fresh {
+		return nil
+	}
+	if err == nil {
+		// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
+		err = db.QueryRowContext(ctx, `SELECT to_regclass('custody_stage') IS NOT NULL`).Scan(&recorded)
+	}
 	if err == nil && recorded {
 		// inline-sql: as above, sqlc's queries assume the current schema.
 		err = db.QueryRowContext(ctx, `SELECT stage FROM custody_stage`).Scan(&completed)
