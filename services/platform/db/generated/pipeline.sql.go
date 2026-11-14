@@ -274,26 +274,21 @@ func (q *Queries) ClearGitSourcePendingCommit(ctx context.Context, arg ClearGitS
 }
 
 const endBranchBuildWaits = `-- name: EndBranchBuildWaits :exec
-UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL
-WHERE workspace_id = $1 AND connection_id = $2 AND configuration->>'branch' = $3::text AND waiting_commit = $4::text
+UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = $1 AND connection_id = $2 AND configuration->>'branch' = $3::text AND waiting_commit IS NOT NULL
 `
 
 type EndBranchBuildWaitsParams struct {
 	WorkspaceID  uuid.UUID `json:"workspace_id"`
 	ConnectionID uuid.UUID `json:"connection_id"`
 	Branch       string    `json:"branch"`
-	Commit       string    `json:"commit"`
 }
 
-// A refresh that stops looking ends the waits it recorded at its commit, as when the source they
-// build on failed and holds them: a wait it no longer looks at would never end.
+// A branch's refresh that ends ends every wait it recorded, at any commit, as when the source they
+// build on failed and holds them: a wait it no longer looks at would never end. One job refreshes
+// a branch at a time.
 func (q *Queries) EndBranchBuildWaits(ctx context.Context, arg EndBranchBuildWaitsParams) error {
-	_, err := q.db.Exec(ctx, endBranchBuildWaits,
-		arg.WorkspaceID,
-		arg.ConnectionID,
-		arg.Branch,
-		arg.Commit,
-	)
+	_, err := q.db.Exec(ctx, endBranchBuildWaits, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
 	return err
 }
 
@@ -513,8 +508,9 @@ func (q *Queries) LatestSourceSubmission(ctx context.Context, arg LatestSourceSu
 
 const listBuildWaits = `-- name: ListBuildWaits :many
 SELECT application_id, waiting_commit::text AS waiting_commit, waiting_reason::text AS waiting_reason,
-    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since
-FROM build_targets WHERE workspace_id = $1 AND environment_id = $2 AND waiting_since IS NOT NULL
+    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since, waiting_until::timestamptz AS waiting_until
+FROM build_targets WHERE workspace_id = $1 AND environment_id = $2 AND waiting_until > now()
+    AND configuration->>'autoBuild' = 'true'
 ORDER BY application_id
 `
 
@@ -529,8 +525,11 @@ type ListBuildWaitsRow struct {
 	WaitingReason   string    `json:"waiting_reason"`
 	WaitingRunnerID uuid.UUID `json:"waiting_runner_id"`
 	WaitingSince    time.Time `json:"waiting_since"`
+	WaitingUntil    time.Time `json:"waiting_until"`
 }
 
+// A wait whose refresh ended without saying so, as when it was discarded or recovery removed it, or
+// whose target no longer builds automatically, is over, so it isn't shown.
 func (q *Queries) ListBuildWaits(ctx context.Context, arg ListBuildWaitsParams) ([]ListBuildWaitsRow, error) {
 	rows, err := q.db.Query(ctx, listBuildWaits, arg.WorkspaceID, arg.EnvironmentID)
 	if err != nil {
@@ -546,6 +545,7 @@ func (q *Queries) ListBuildWaits(ctx context.Context, arg ListBuildWaitsParams) 
 			&i.WaitingReason,
 			&i.WaitingRunnerID,
 			&i.WaitingSince,
+			&i.WaitingUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -676,7 +676,7 @@ func (q *Queries) RecordGitSourceFailure(ctx context.Context, arg RecordGitSourc
 
 const rejectBuildTarget = `-- name: RejectBuildTarget :exec
 UPDATE build_targets SET rejected_commit = $1::text, rejection_reason = $2::text, rejected_at = clock_timestamp(),
-    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL
+    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
 WHERE workspace_id = $3 AND environment_id = $4 AND application_id = $5
 `
 
@@ -957,27 +957,30 @@ func (q *Queries) UnbindGitSource(ctx context.Context, arg UnbindGitSourceParams
 
 const waitBuildTarget = `-- name: WaitBuildTarget :exec
 UPDATE build_targets SET waiting_commit = $1::text, waiting_reason = $2::text, waiting_runner_id = $3::uuid,
+    waiting_until = $4::timestamptz,
     waiting_since = CASE WHEN waiting_commit = $1::text AND waiting_reason = $2::text AND waiting_runner_id = $3::uuid
         THEN waiting_since ELSE clock_timestamp() END
-WHERE workspace_id = $4 AND environment_id = $5 AND application_id = $6
+WHERE workspace_id = $5 AND environment_id = $6 AND application_id = $7
 `
 
 type WaitBuildTargetParams struct {
 	Commit        string    `json:"commit"`
 	Reason        string    `json:"reason"`
 	RunnerID      uuid.UUID `json:"runner_id"`
+	Until         time.Time `json:"until"`
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
 	ApplicationID uuid.UUID `json:"application_id"`
 }
 
-// A target waits for its runner at a commit. It keeps the time it started waiting while it waits
-// for the same runner, for the same reason, at the same commit.
+// A target waits for its runner at a commit, until the refresh stops waiting. It keeps the time it
+// started waiting while it waits for the same runner, for the same reason, at the same commit.
 func (q *Queries) WaitBuildTarget(ctx context.Context, arg WaitBuildTargetParams) error {
 	_, err := q.db.Exec(ctx, waitBuildTarget,
 		arg.Commit,
 		arg.Reason,
 		arg.RunnerID,
+		arg.Until,
 		arg.WorkspaceID,
 		arg.EnvironmentID,
 		arg.ApplicationID,

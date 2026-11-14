@@ -231,3 +231,27 @@ func TestBuildWaitingADayForItsRunnerIsRejected(t *testing.T) {
 		t.Fatal("a build was sent to a runner on other Railpack pins")
 	}
 }
+
+// A target the refresh stops looking at while it waits, as when the owner who approved it loses
+// that standing, has its wait ended with the refresh, rather than shown for good.
+func TestAWaitEndsWithTheRefreshThatStoppedLookingAtIt(t *testing.T) {
+	i := newImportedEnvironment(t, "github")
+	path, _, _ := i.waitsForUpdate(t)
+
+	if _, err := i.f.st.Pool.Exec(t.Context(), "UPDATE build_targets SET policy_auth_version=policy_auth_version+1000 WHERE workspace_id=$1 AND waiting_commit IS NOT NULL", i.ws); err != nil {
+		t.Fatal(err)
+	}
+	// A later push joins the waiting refresh, which ends at that commit, not the one it waited at.
+	next := strings.Repeat("f", 40)
+	i.source.tree.record(next, importHonest)
+	i.source.push(next)
+	i.retryRefresh(t)
+	i.refreshEnded(t)
+	if waits, rejections := i.notices(t, path); len(waits) != 0 || len(rejections) != 0 {
+		t.Fatalf("a target the refresh no longer builds still shows a wait: %+v %+v", waits, rejections)
+	}
+	var left int
+	if err := i.f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM build_targets WHERE workspace_id=$1 AND waiting_commit IS NOT NULL", i.ws).Scan(&left); err != nil || left != 0 {
+		t.Fatal("the wait was not ended", left, err)
+	}
+}

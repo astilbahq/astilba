@@ -150,27 +150,32 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
 -- name: RejectBuildTarget :exec
 -- A rejection ends any wait, since it says why the commit was not built.
 UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp(),
-    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL
+    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
 
 -- name: WaitBuildTarget :exec
--- A target waits for its runner at a commit. It keeps the time it started waiting while it waits
--- for the same runner, for the same reason, at the same commit.
+-- A target waits for its runner at a commit, until the refresh stops waiting. It keeps the time it
+-- started waiting while it waits for the same runner, for the same reason, at the same commit.
 UPDATE build_targets SET waiting_commit = @commit::text, waiting_reason = @reason::text, waiting_runner_id = @runner_id::uuid,
+    waiting_until = @until::timestamptz,
     waiting_since = CASE WHEN waiting_commit = @commit::text AND waiting_reason = @reason::text AND waiting_runner_id = @runner_id::uuid
         THEN waiting_since ELSE clock_timestamp() END
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
 
 -- name: EndBranchBuildWaits :exec
--- A refresh that stops looking ends the waits it recorded at its commit, as when the source they
--- build on failed and holds them: a wait it no longer looks at would never end.
-UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL
-WHERE workspace_id = @workspace_id AND connection_id = @connection_id AND configuration->>'branch' = @branch::text AND waiting_commit = @commit::text;
+-- A branch's refresh that ends ends every wait it recorded, at any commit, as when the source they
+-- build on failed and holds them: a wait it no longer looks at would never end. One job refreshes
+-- a branch at a time.
+UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = @workspace_id AND connection_id = @connection_id AND configuration->>'branch' = @branch::text AND waiting_commit IS NOT NULL;
 
 -- name: ListBuildWaits :many
+-- A wait whose refresh ended without saying so, as when it was discarded or recovery removed it, or
+-- whose target no longer builds automatically, is over, so it isn't shown.
 SELECT application_id, waiting_commit::text AS waiting_commit, waiting_reason::text AS waiting_reason,
-    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since
-FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND waiting_since IS NOT NULL
+    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since, waiting_until::timestamptz AS waiting_until
+FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND waiting_until > now()
+    AND configuration->>'autoBuild' = 'true'
 ORDER BY application_id;
 
 -- name: RunnerCredential :one

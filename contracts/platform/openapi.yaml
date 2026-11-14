@@ -8828,13 +8828,17 @@
     BuildWait:
       type: object
       additionalProperties: false
-      required: [applicationId, commit, reason, runnerId, since]
+      required: [applicationId, commit, reason, runnerId, since, until]
       properties:
         applicationId: {type: string, format: uuid}
         commit: {type: string, minLength: 1, maxLength: 64}
         reason: {$ref: '#/components/schemas/BuildWaitReason'}
         runnerId: {type: string, format: uuid}
         since: {type: string, format: date-time}
+        until:
+          type: string
+          format: date-time
+          description: When the build stops waiting and is rejected as `runner_unavailable`, a day after the refresh began.
     PipelineRun:
       type: object
       additionalProperties: false

@@ -4268,6 +4268,11 @@ export interface components {
             runnerId: string;
             /** Format: date-time */
             since: string;
+            /**
+             * Format: date-time
+             * @description When the build stops waiting and is rejected as `runner_unavailable`, a day after the refresh began.
+             */
+            until: string;
         };
         PipelineRun: {
             /** Format: uuid */

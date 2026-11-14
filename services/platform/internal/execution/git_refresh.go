@@ -107,6 +107,9 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	// this transaction, under the connection lock, so a push that recreates the branch while it
 	// ends waits for it and then starts a refresh of its own.
 	if errors.Is(resolved.Err, pipeline.ErrBranchNotFound) && job.Attempt > 1 {
+		if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch}); err != nil {
+			return err
+		}
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
 			return err
 		}
@@ -149,12 +152,14 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	// A source whose files cannot be read, or whose runner or workspace can't take an import yet,
 	// waits for this job to look again, each minute for a day. Work elsewhere starts now, but its
 	// environment's builds wait for it, because they build on the imported draft. A build target
-	// whose runner is enrolling again waits the same way.
+	// whose runner is enrolling again, or must be updated before it can build, waits the same way
+	// and says so.
 	lookAgain := false
 	waitingToImport := map[uuid.UUID]bool{}
 	// Past its limit the job stops reading a source already shown as waiting, whatever else keeps
 	// it alive, and shows any source it did not reach before it ends.
-	expired := time.Since(job.CreatedAt) > refreshWaitLimit
+	deadline := job.CreatedAt.Add(refreshWaitLimit)
+	expired := time.Now().After(deadline)
 	for _, v := range sources {
 		// The branch can move back to the source's commit while another commit imports, as
 		// when a force-push removes it. That import would leave the source on a commit the
@@ -319,7 +324,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		}
 		// Only the primary is refused here: a fallback that can't take the build is passed over.
 		if wait || runnerUpgradeRequired(err) {
-			waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, cfg.RunnerID, runnerWait(wait), expired)
+			waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, cfg.RunnerID, runnerWait(wait), deadline)
 			if err != nil {
 				return err
 			}
@@ -364,9 +369,15 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			if rollbackErr := target.Rollback(ctx); rollbackErr != nil {
 				return rollbackErr
 			}
-			// The runner chosen must be updated before it can build without root, for example.
+			// The runner chosen must be updated before it can build without root, for example,
+			// although selectRunner found it could. A fallback chosen is passed over at the next
+			// look, so only the primary is waited for.
+			if runnerUpgradeRequired(err) && runner != cfg.RunnerID {
+				lookAgain = lookAgain || !expired
+				continue
+			}
 			if runnerUpgradeRequired(err) {
-				waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, runner, "runner_update", expired)
+				waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, runner, "runner_update", deadline)
 				if err != nil {
 					return err
 				}
@@ -378,7 +389,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			if errors.As(err, &rejected) {
 				reason = rejected.reason
 			} else if runnerUnavailable(err) {
-				// Such as a runner that needs an upgrade before it can build without root.
+				// Such as a runner that is no longer a build runner.
 				reason = "runner_unavailable"
 			}
 			// Any other refusal, such as its runner upgrading or the workspace's operation limit,
@@ -403,7 +414,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			}
 			continue
 		}
-		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL,waiting_until=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
 			return err
 		}
 		if err = target.Commit(ctx); err != nil {
@@ -415,9 +426,10 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		return unanswered
 	}
 	if !waiting && (!lookAgain || expired) {
-		// A target this job stopped looking at, as when the source it builds on failed, no
-		// longer waits for anything this job would see.
-		if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch, Commit: head}); err != nil {
+		// The branch's one job ends, so any wait it recorded, at this commit or an earlier one,
+		// ends too: a target it stopped looking at, as when the source it builds on failed or it
+		// no longer builds automatically, waits for nothing this job would see.
+		if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch}); err != nil {
 			return err
 		}
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {

@@ -47,6 +47,7 @@ export const WaitingForTheirRunner: Story = {
         reason: "runner_update",
         runnerId: builder,
         since: "2026-11-14T10:00:00Z",
+        until: "2026-11-15T09:30:00Z",
       },
       {
         applicationId: worker,
@@ -54,6 +55,7 @@ export const WaitingForTheirRunner: Story = {
         reason: "runner_enrollment",
         runnerId: enrolling,
         since: "2026-11-14T10:00:00Z",
+        until: "2026-11-15T09:30:00Z",
       },
     ],
   },
@@ -68,7 +70,9 @@ export const WaitingForTheirRunner: Story = {
     await expect(waiting).toHaveTextContent(
       `worker · ${"b".repeat(12)} · Waiting for runner builder-2 to finish enrolling.`,
     );
-    await expect(waiting).toHaveTextContent("within a day");
+    await expect(waiting).toHaveTextContent(
+      `If it isn't updated by ${new Date("2026-11-15T09:30:00Z").toLocaleString()}, this commit isn't built automatically.`,
+    );
     // A build that waited its day is rejected, and the rejection says so.
     await expect(
       canvas.getByRole("status", { name: "Automatic build rejections" }),
@@ -89,6 +93,7 @@ export const WaitingForARunnerNotListed: Story = {
         reason: "runner_update",
         runnerId: gone,
         since: "2026-11-14T10:00:00Z",
+        until: "2026-11-15T09:30:00Z",
       },
     ],
   },

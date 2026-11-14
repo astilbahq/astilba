@@ -13,13 +13,17 @@ const buildRejectionMessages = {
     "Its runner was removed or revoked, lost its credential, or can no longer build it, or the build waited a day for it to be updated or to finish enrolling.",
   registry_unavailable: "Its registry was removed.",
 } satisfies Record<Schema["BuildRejectionReason"], string>;
-// A build waits for its runner for a day at most (refreshWaitLimit in git_refresh.go).
+// A build waits for its runner until a day after its refresh began (refreshWaitLimit in
+// git_refresh.go), which until says.
 const buildWaitMessages = {
-  runner_update: (runner: string) =>
-    `Waiting for runner ${runner} to update to the release management runs. If it isn't updated within a day, this commit isn't built automatically.`,
-  runner_enrollment: (runner: string) =>
-    `Waiting for runner ${runner} to finish enrolling. If it doesn't within a day, this commit isn't built automatically.`,
-} satisfies Record<Schema["BuildWaitReason"], (runner: string) => string>;
+  runner_update: (runner: string, until: string) =>
+    `Waiting for runner ${runner} to update to the release management runs. If it isn't updated by ${until}, this commit isn't built automatically.`,
+  runner_enrollment: (runner: string, until: string) =>
+    `Waiting for runner ${runner} to finish enrolling. If it doesn't by ${until}, this commit isn't built automatically.`,
+} satisfies Record<
+  Schema["BuildWaitReason"],
+  (runner: string, until: string) => string
+>;
 export function AutomaticBuildRejections({
   rejections,
   waits,
@@ -48,6 +52,7 @@ export function AutomaticBuildRejections({
                 {buildWaitMessages[wait.reason](
                   servers?.find((server) => server.id === wait.runnerId)
                     ?.name ?? wait.runnerId.slice(0, 8),
+                  new Date(wait.until).toLocaleString(),
                 )}
               </p>
             ))}

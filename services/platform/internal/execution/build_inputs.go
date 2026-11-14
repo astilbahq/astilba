@@ -74,7 +74,7 @@ func (s *Service) BuildWaits(ctx context.Context, p store.Principal, ws, pid, en
 		}
 		for _, row := range rows {
 			if current[row.ApplicationID] {
-				out = append(out, api.BuildWait{ApplicationId: row.ApplicationID, Commit: row.WaitingCommit, Reason: api.BuildWaitReason(row.WaitingReason), RunnerId: row.WaitingRunnerID, Since: row.WaitingSince})
+				out = append(out, api.BuildWait{ApplicationId: row.ApplicationID, Commit: row.WaitingCommit, Reason: api.BuildWaitReason(row.WaitingReason), RunnerId: row.WaitingRunnerID, Since: row.WaitingSince, Until: row.WaitingUntil})
 			}
 		}
 		return nil

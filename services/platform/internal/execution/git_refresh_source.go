@@ -79,13 +79,6 @@ func (w *refreshWorker) refreshSource(ctx context.Context, tx pgx.Tx, git *gitAn
 		return sourceSettled, db.New(tx).MarkGitSourceConflict(ctx, db.MarkGitSourceConflictParams{Commit: head, WorkspaceID: a.Workspace, EnvironmentID: v.env})
 	}
 	if expired && v.pending == head {
-		// A source that waited its day for its runner to be updated fails, saying so. One whose
-		// files couldn't be read stays pending, so no file is read again.
-		if _, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, nil, false); runnerUpgradeRequired(err) {
-			return sourceSettled, failedSource(runnerNotUpdatedReason)
-		} else if err != nil && !runnerUnavailable(err) {
-			return sourceSettled, err
-		}
 		return sourceHeld, nil
 	}
 	blobs, err := git.sourceBlobs(ctx, tx, a.Connection, head, cfg.Paths)
@@ -106,9 +99,6 @@ func (w *refreshWorker) refreshSource(ctx context.Context, tx pgx.Tx, git *gitAn
 	if wait {
 		return sourceSettled, errRefreshWaits
 	}
-	if runnerUpgradeRequired(err) {
-		return sourceSettled, runnerNotUpdated(expired)
-	}
 	if runnerUnavailable(err) {
 		return sourceSettled, failedSource(runnerUnavailableReason)
 	}
@@ -118,7 +108,7 @@ func (w *refreshWorker) refreshSource(ctx context.Context, tx pgx.Tx, git *gitAn
 	op, err := w.service.insertPipeline(ctx, tx, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
 	var refused *domain.Error
 	if errors.As(err, &refused) {
-		return sourceSettled, importRefusal(refused, expired)
+		return sourceSettled, importRefusal(refused)
 	}
 	if err != nil {
 		return sourceSettled, err

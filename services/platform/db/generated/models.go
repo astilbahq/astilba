@@ -205,6 +205,7 @@ type BuildTarget struct {
 	WaitingReason            pgtype.Text `json:"waiting_reason"`
 	WaitingRunnerID          *uuid.UUID  `json:"waiting_runner_id"`
 	WaitingSince             *time.Time  `json:"waiting_since"`
+	WaitingUntil             *time.Time  `json:"waiting_until"`
 }
 
 type CrossHostApproval struct {

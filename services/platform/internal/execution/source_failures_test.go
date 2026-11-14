@@ -63,37 +63,28 @@ func TestMissingSourceFilesNamesAFewAndFitsItsColumn(t *testing.T) {
 // upgrading or the workspace's operation limit, waits.
 func TestOnlyInvalidInputFailsAnImport(t *testing.T) {
 	for _, refused := range []*domain.Error{domain.Conflict, domain.RateLimited, domain.EnvironmentInactive, sourceFilesUnavailable} {
-		if err := importRefusal(refused, false); !errors.Is(err, errRefreshWaits) {
+		if err := importRefusal(refused); !errors.Is(err, errRefreshWaits) {
 			t.Errorf("%s: %v, want a wait", refused.Code, err)
 		}
 	}
 	for _, refused := range []*domain.Error{errCloneCanPush, missingSourceFiles(strings.Repeat("e", 40), []string{"a.yaml"})} {
 		var failed *sourceFailure
-		if err := importRefusal(refused, false); !errors.As(err, &failed) || failed.reason != refused.Message {
+		if err := importRefusal(refused); !errors.As(err, &failed) || failed.reason != refused.Message {
 			t.Errorf("%s: %v, want the source to fail with its message", refused.Fields, err)
 		}
 	}
 	var failed *sourceFailure
-	if err := importRefusal(domain.Invalid("pipeline").(*domain.Error), false); !errors.As(err, &failed) || !strings.Contains(failed.reason, "(pipeline)") {
+	if err := importRefusal(domain.Invalid("pipeline").(*domain.Error)); !errors.As(err, &failed) || !strings.Contains(failed.reason, "(pipeline)") {
 		t.Errorf("a refusal without its own message: %v", err)
 	}
 }
 
-// A runner that must be updated before it can take the work waits for it, then fails the source,
-// saying so, once the refresh has waited its day. Only refusals that name nothing but such updates
-// count.
-func TestAnImportWaitsADayForItsRunnerToBeUpdated(t *testing.T) {
-	upgrade := railpackRunner(api.AgentCapabilities{}, pipeline.RailpackFor("arm64"))
-	for _, refused := range []*domain.Error{upgrade, domain.Invalid("runner.buildControlsUpgradeRequired").(*domain.Error)} {
+// Only a refusal that names nothing but runner updates, such as a runner on other Railpack pins,
+// makes an automatic build wait for its runner.
+func TestOnlyARunnerUpdateMakesABuildWait(t *testing.T) {
+	for _, refused := range []error{railpackRunner(api.AgentCapabilities{}, pipeline.RailpackFor("arm64")), domain.Invalid("runner.buildControlsUpgradeRequired"), domain.Invalid("runner.rootlessBuildsUpgradeRequired")} {
 		if !runnerUpgradeRequired(refused) {
-			t.Fatalf("%s: not an update", refused.Fields)
-		}
-		if err := importRefusal(refused, false); !errors.Is(err, errRefreshWaits) {
-			t.Errorf("%s: %v, want a wait", refused.Fields, err)
-		}
-		var failed *sourceFailure
-		if err := importRefusal(refused, true); !errors.As(err, &failed) || failed.reason != runnerNotUpdatedReason {
-			t.Errorf("%s past its day: %v, want the source to fail saying why", refused.Fields, err)
+			t.Errorf("%v: not taken for an update", refused)
 		}
 	}
 	both := &domain.Error{Code: "invalid_input", Fields: []string{"runner.railpackUpgradeRequired", "configuration.paths"}}
