@@ -406,8 +406,9 @@ type cachedToken struct {
 const tokenReuse = 35 * time.Minute
 
 // tokenFresh is how long a token stays the best GitHub would give: one minted again sooner
-// would last at most this much longer. It bounds how often a key is minted, however its
-// callers' times compare with GitHub's clock.
+// would last at most this much longer. Reusing it, while it has tokenReuse left, keeps a key
+// to one mint a minute when callers ask for longer than GitHub gives, as when management's
+// clock runs ahead of GitHub's.
 const tokenFresh = time.Minute
 
 func (c *Client) Mint(ctx context.Context, installation, repository int64, write bool) (string, error) {

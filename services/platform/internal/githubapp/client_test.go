@@ -258,4 +258,11 @@ func TestReadTokenOutlastsItsUse(t *testing.T) {
 	if ordinary, e := c.Mint(context.Background(), 2, 12, false); e != nil || ordinary != token || minted.Load() != 2 {
 		t.Fatal("ordinary use did not reuse the longer token", e)
 	}
+	// However freshly minted, a token without 35 minutes left is not what Mint promises.
+	c.mu.Lock()
+	c.tokens[tokenKey{2, 12, false, false}].expires = time.Now().Add(tokenReuse - time.Minute)
+	c.mu.Unlock()
+	if ordinary, e := c.Mint(context.Background(), 2, 12, false); e != nil || ordinary == token || minted.Load() != 3 {
+		t.Fatal("a fresh token with too little left was reused", e)
+	}
 }
