@@ -22,7 +22,15 @@ func decodeArchive(raw []byte) (Archive, error) {
 
 func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
-	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > ArchiveVersion || archive.Workspace == uuid.Nil {
+	newest := ArchiveVersion
+	if recovery {
+		newest = RecoveryArchiveVersion
+	}
+	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > newest || archive.Workspace == uuid.Nil {
+		return archive, ErrArchive
+	}
+	// Only a recovery base carries a recovery section, from the version that added it.
+	if (archive.Recovery != nil) != (archive.Version >= RecoveryArchiveVersion) {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {
@@ -105,7 +113,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	if e != nil || name != archive.Name {
 		return archive, ErrArchive
 	}
-	count := 0
+	count := archive.Recovery.Records()
 	for _, table := range tables {
 		rows, ok := archive.Tables[table.Name]
 		if !ok || rows == nil {
@@ -114,7 +122,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		columns := strings.Split(table.Columns, ",")
 		for _, row := range rows {
 			count++
-			if count > 10000 || len(row) != len(columns) {
+			if count > maxArchiveRecords || len(row) != len(columns) {
 				return archive, ErrArchive
 			}
 			for _, column := range columns {
@@ -203,6 +211,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			if e != nil || !ids[id] {
 				return archive, ErrArchive
 			}
+		}
+	}
+	if archive.Recovery != nil {
+		if e = validateRecoveryHistory(archive); e != nil {
+			return archive, e
 		}
 	}
 	return archive, nil

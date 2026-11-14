@@ -898,5 +898,18 @@ export default interface Resources {
     "target": "{{service}}, instance {{instance}}",
     "title": "Terminal sessions",
     "you": "You"
+  },
+  "workspace": {
+    "crossHostRecovery": {
+      "checkpoint": "Newest checkpoint: {{date}}.",
+      "description": "A deployment across servers leaves a recovery checkpoint on them. Recovering that work after losing management needs a management backup taken inside the newest checkpoint’s window.",
+      "loadFailed": "Cross-host recovery could not be loaded.",
+      "loading": "Loading cross-host recovery…",
+      "none": "No checkpoint yet. The first deployment across servers takes one.",
+      "short": "This window is shorter than the 35 days of management backups the documentation suggests keeping, because this workspace’s applied history is busy. Keep a backup newer than {{date}}.",
+      "title": "Cross-host recovery",
+      "whole": "This checkpoint was taken by an earlier release and carries all applied history, so it doesn’t limit which management backup recovery can use.",
+      "window": "Recovery can use a management backup taken after {{date}}."
+    }
   }
 }
