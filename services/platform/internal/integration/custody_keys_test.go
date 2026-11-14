@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -79,16 +78,7 @@ func insertWorkspace(t *testing.T, f *fixture, name string) uuid.UUID {
 // keys in the background for ten minutes.
 func keysJobDone(t *testing.T, f *fixture) {
 	t.Helper()
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		var done bool
-		if err := f.st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_custody_keys_v1' AND state='completed')`).Scan(&done); err != nil {
-			t.Fatal(err)
-		}
-		if done {
-			return
-		}
-	}
-	t.Fatal("the key job did not run")
+	keysSettled(t, f.st)
 }
 
 func initKeys(t *testing.T, b *secretbroker.Broker) {
@@ -505,6 +495,7 @@ func TestRewrapMovesKeyWrappings(t *testing.T) {
 		t.Fatal("a v2 value changed in a rewrap", err)
 	}
 	rotation.Close(ctx, secretbroker.Used)
+	keysJobDone(t, f)
 	ring := keysOf(f.st)
 	next, err := cryptobox.New("next")
 	if err != nil {

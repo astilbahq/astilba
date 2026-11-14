@@ -373,6 +373,7 @@ func TestAlertDeliveryAuthorizationAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	keysSettled(t, f.st)
 	previous := keysOf(f.st).Active
 	keysOf(f.st).Keys[rotated.Active] = rotated.Keys[rotated.Active]
 	keysOf(f.st).Active = rotated.Active

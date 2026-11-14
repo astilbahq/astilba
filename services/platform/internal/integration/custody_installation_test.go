@@ -127,6 +127,7 @@ func TestRewrapRecordsStartAndFinish(t *testing.T) {
 	ctx := context.Background()
 	owner, _, path := secretEnvironment(t, f)
 	owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "rewrapped-canary"}, 201, nil)
+	keysSettled(t, f.st)
 	ring := keysOf(f.st)
 	rotated, _ := cryptobox.New("rotated")
 	previous := ring.Active
