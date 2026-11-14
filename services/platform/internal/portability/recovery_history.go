@@ -15,9 +15,9 @@ import (
 )
 
 // RecoveryArchiveVersion is the format recovery bases write: ArchiveVersion 9's tables and a
-// recovery section, which an export never carries, so no export format can take its number. A
-// release before it refuses such a base, so cross-host recovery has to run on the release that
-// sealed the newest base or a newer one.
+// recovery section, which an export never carries, so an export format stays below it
+// (TestExportVersionsStayBelowTheRecoveryBaseVersion). A release before it refuses such a base, so
+// cross-host recovery has to run on the release that sealed the newest base or a newer one.
 const RecoveryArchiveVersion = 10
 
 const (

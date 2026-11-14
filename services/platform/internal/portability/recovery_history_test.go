@@ -11,6 +11,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// Exports and recovery bases share one sequence of archive versions, and decodeArchiveMode reads
+// any archive from RecoveryArchiveVersion on as a recovery base, which needs a recovery section. An
+// export format at or past it would be refused on import.
+func TestExportVersionsStayBelowTheRecoveryBaseVersion(t *testing.T) {
+	if ArchiveVersion >= RecoveryArchiveVersion {
+		t.Fatalf("export archive version %d reaches recovery base version %d; give recovery bases a later number and decide how a base names the tables it carries", ArchiveVersion, RecoveryArchiveVersion)
+	}
+}
+
 // Only a recovery base carries a recovery section, from the version that added it, and the section
 // must describe the environments the base carries.
 func TestRecoverySectionIsCheckedAgainstItsBase(t *testing.T) {
