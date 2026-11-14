@@ -513,4 +513,3 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 	})
 	return out, err
 }
-

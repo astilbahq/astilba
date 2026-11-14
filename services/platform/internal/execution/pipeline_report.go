@@ -235,6 +235,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	c.Pipeline = rawMessage(raw)
 	return true, tx.Commit(ctx)
 }
+
 // pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
 // management has heard its runner started it. The start must reach management by the deadline
 // (pipelineReport cancels one heard of later), so an agent whose clock lags can neither start a
