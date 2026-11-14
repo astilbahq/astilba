@@ -398,7 +398,7 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	if e.Docker == nil {
 		return e.finish(c.Id, "failed", "Docker is unavailable.")
 	}
-	ctx, stopCommand := e.commandContext(ctx, c)
+	ctx, stopCommand := e.commandContext(ctx, c, c.Deadline)
 	defer stopCommand()
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)

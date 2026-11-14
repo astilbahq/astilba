@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -96,9 +97,23 @@ NOT EXISTS (SELECT 1 FROM pg_database, LATERAL aclexplode(coalesce(datacl,acldef
 	}
 }
 
-func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func(backup.Command) Record) {
+func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command func(backup.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
+	deliver := func(c api.ExecutionCommand) api.AgentReport {
+		t.Helper()
+		if err := e.Execute(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		r, err := e.Journal.Record(c.Id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = e.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
+			t.Fatal(err)
+		}
+		return r.Report
+	}
 	e.ResticCLI = "/opt/astilba-platform-tools/restic"
 	nativePostgresStartup(t, e, p)
 	root := t.TempDir()
@@ -115,8 +130,11 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	if _, err = e.pgQuery(ctx, c.ID, a, `CREATE ROLE backup_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reporting; CREATE TABLE reporting.records(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload hstore NOT NULL); INSERT INTO reporting.records(payload) VALUES ('a=>b'); ALTER TABLE reporting.records OWNER TO backup_reader; GRANT USAGE ON SCHEMA reporting TO backup_reader; CREATE TABLE large_records AS SELECT repeat('x',70*1024*1024) AS payload`); err != nil {
 		t.Fatal(err)
 	}
+	nativeStoppedSourceExec(t, e, c.ID, a)
 	in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "External recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "native-repository-password-canary"}}
-	finish(backup.Command{Action: "install", Installation: in, RunID: uuid.New(), TargetID: uuid.New()})
+	if r := deliver(command(backup.Command{Action: "install", Installation: in, RunID: uuid.New(), TargetID: uuid.New()})); r.State != "succeeded" {
+		t.Fatalf("install ended %s: %s", r.State, r.Note)
+	}
 	// Stop this policy before its temporary repository is removed; later
 	// journeys exercise the same journal's scheduler.
 	t.Cleanup(func() {
@@ -269,9 +287,10 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	e.ResticCLI = interrupted
 	expiring, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = e.runScheduled(expiring, &s, time.Now().UTC(), uuid.New(), "", uuid.Nil)
+	expired := errors.Is(expiring.Err(), context.DeadlineExceeded)
 	cancel()
 	e.ResticCLI = originalRestic
-	if !errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || !expired {
 		t.Fatalf("upload did not expire: %v", err)
 	}
 	rawReceipt, receiptErr := os.ReadFile(receipt)
@@ -285,13 +304,12 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	if err != nil {
 		t.Fatal(err)
 	}
-	uncertain := s.Runs[len(s.Runs)-1]
-	if uncertain.State != "needs_attention" || uncertain.Snapshot != "" {
-		t.Fatal("expired upload became usable or retryable without inspection")
+	// restic was killed and waited for, and the run started no container, so nothing of it is
+	// left running: it failed, and its uncatalogued snapshot is not a usable record.
+	if expired := s.Runs[len(s.Runs)-1]; expired.State != "failed" || expired.Snapshot != "" {
+		t.Fatalf("expired upload became usable or held the host: %+v", expired)
 	}
-	if err = e.ResolveScheduledRun(ctx, policy.ID, uncertain.ID); err != nil {
-		t.Fatal(err)
-	}
+	nativeQueuedRunNow(t, e, in, command, deliver)
 	reports, err := e.Journal.ScheduleReports()
 	if err != nil {
 		t.Fatal(err)

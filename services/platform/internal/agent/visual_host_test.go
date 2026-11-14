@@ -296,11 +296,11 @@ func TestNativeVisualDeployment(t *testing.T) {
 		nativePostgresMetadataRestore(t, f.engine, p)
 	})
 	t.Run("backup_and_fresh_restore", func(t *testing.T) {
-		nativeBackupJourney(t, f.engine, p, func(b backup.Command) Record {
+		nativeBackupJourney(t, f.engine, p, func(b backup.Command) api.ExecutionCommand {
 			f.generation++
 			raw, _ := stablejson.Marshal(b)
 			value := jsontext.Value(raw)
-			return finish(api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: "backup", Action: "inspect", Generation: f.generation, PlanHash: b.Digest(), Backup: &value, Deadline: time.Now().Add(time.Minute)})
+			return api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: "backup", Action: "inspect", Generation: f.generation, PlanHash: b.Digest(), Backup: &value, Deadline: time.Now().Add(time.Minute)}
 		})
 	})
 	nativeFilesAndJobs(t, f.engine, server)

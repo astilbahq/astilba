@@ -71,11 +71,10 @@ const commandMargin = 10 * time.Minute
 // commandLifetime is how long a command may wait to start when its run, if any, is short.
 const commandLifetime = 30 * time.Minute
 
-// Lifetime is how long after it is issued a command may still start or run, the deadline its
-// agent enforces. A backup or restore outlives its run's own timeout by a margin, so a run that
-// runs long ends by that timeout, failed with its cleanup done, rather than by a deadline that
-// leaves its outcome to inspect. Only a run that starts late, because its command reached the
-// agent late or waited behind other work there, reaches the deadline.
+// Lifetime is how long after it is issued a command may start, its deadline, and how long after
+// its agent admits it the command may run. A backup or restore outlives its run's own timeout by a
+// margin, so a run that runs long ends by that timeout however long its command waited for the
+// host, rather than by its command's bound.
 func (c Command) Lifetime() time.Duration {
 	switch c.Action {
 	case "backup":
