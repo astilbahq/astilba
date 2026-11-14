@@ -164,23 +164,29 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 }
 
 // refuseUnknownActiveRoots refuses hosts that report running a cross-host root the newest base
-// doesn't carry. N carries every unfinished root of its own management, so such a root was started
-// by a management N's doesn't descend from, as when a management restored from a backup ran other
-// work on other hosts, or it ended, as N records by listing its base or by its applied or settled
-// history or, before its window, no longer records at all, and the hosts' report is stale. A base captured when the root started always shows it
-// unfinished, and only the hosts' unsigned reports say it still is, so recovery takes neither over.
-// Every such root is named with its servers, so the operator can revoke them, leave their exports
-// out, and enrol them again afterwards.
+// doesn't carry as unfinished. N carries every unfinished root of its own management, so such a
+// root was started by a management N's doesn't descend from, as when a management restored from a
+// backup ran other work on other hosts, or it ended. N records an ended root as a finished row, by
+// listing its base, or by its applied or settled history, or, before its window, no longer records
+// it at all. A host releases a root's reservation in the same step as the report management needs
+// to finish it, so a host that still holds one is stale, and resuming the root would revive
+// finished work. A base captured when the root started always shows it unfinished, and only the
+// hosts' unsigned reports say it still is, so recovery takes neither over. Every such root is named
+// with its servers, so the operator can revoke them, leave their exports out, and enrol them again
+// afterwards.
 func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts map[uuid.UUID]deployment.RecoveryEvidence) error {
-	carried := map[uuid.UUID]bool{}
+	carried, ended := map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
 	for _, row := range a.Tables["execution_operations"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")
 		if err != nil {
 			return err
 		}
-		carried[id] = true
+		state, err := recoveryValue[api.ExecutionState](row, "state")
+		if err != nil {
+			return err
+		}
+		carried[id], ended[id] = !Terminal(state), Terminal(state)
 	}
-	ended := map[uuid.UUID]bool{}
 	for _, parent := range newest.Supersedes {
 		ended[parent] = true
 	}
