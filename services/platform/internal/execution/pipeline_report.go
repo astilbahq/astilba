@@ -35,7 +35,6 @@ func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKey
 	}
 	err = s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
-		carried = false
 		deliver, err = s.decidePipelineDelivery(ctx, git, a, c, &carried)
 		return err
 	})

@@ -131,10 +131,19 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 		if err != nil || !deliver {
 			return waitForRelease, err
 		}
-		// A pipeline past its deadline goes without values: only an instance that already
-		// holds it may go on with it, and one that doesn't asks again rather than accept it.
 		if !c.CancelRequested {
-			c.SecretRelease = &api.SecretRelease{Epoch: key.DispatchEpoch, Values: false}
+			// A pipeline past its deadline goes without values, and only an instance that
+			// holds it may go on with it. One whose values went unacknowledged holds it. One
+			// asking for them, having none or having lost them, can never start it again: it
+			// stops there rather than idle, holding the runner's queue, until its end.
+			if reason == "unacknowledged" {
+				c.SecretRelease = &api.SecretRelease{Epoch: key.DispatchEpoch, Values: false}
+				return sendCommand, nil
+			}
+			if err = s.Store.Queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: a.Workspace, ID: c.Id, Note: "Stopped: the runner lost this pipeline after its deadline, so it could not start it again."}); err != nil {
+				return waitForRelease, err
+			}
+			c.CancelRequested = true
 		}
 		return sendCommand, nil
 	}

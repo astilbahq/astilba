@@ -421,8 +421,8 @@ func (c *Client) MintPreview(ctx context.Context, installation, repository int64
 
 // MintReadUntil is Mint for a read-only token that must stay valid until a given time, such as
 // one a runner may use only some time after it is sent. A cached token that expires sooner is
-// replaced by a fresh one, which is as long-lived as GitHub makes them. It also returns when the
-// token expires.
+// replaced by a fresh one, which is as long-lived as GitHub makes them, unless it was itself
+// minted within tokenFresh. It also returns when the token expires.
 func (c *Client) MintReadUntil(ctx context.Context, installation, repository int64, until time.Time) (string, time.Time, error) {
 	if least := time.Now().Add(tokenReuse); until.Before(least) {
 		until = least
@@ -431,8 +431,8 @@ func (c *Client) MintReadUntil(ctx context.Context, installation, repository int
 }
 
 // mintCached returns a token for key that is valid until at least until, from the cache when
-// it holds one, and otherwise freshly minted. A token minted within tokenFresh is used whatever
-// until asks: no fresh one could do much better.
+// it holds one, and otherwise freshly minted. A token minted within tokenFresh, and with
+// tokenReuse left, is used for a later until too: no fresh one could do much better.
 func (c *Client) mintCached(ctx context.Context, key tokenKey, until time.Time) (string, time.Time, error) {
 	c.mu.Lock()
 	if v := c.tokens[key]; v != nil {
@@ -446,7 +446,7 @@ func (c *Client) mintCached(ctx context.Context, key tokenKey, until time.Time) 
 				return v.token, v.expires, v.err
 			}
 		}
-		if !v.expires.Before(until) || time.Since(v.minted) < tokenFresh {
+		if !v.expires.Before(until) || time.Since(v.minted) < tokenFresh && time.Until(v.expires) >= tokenReuse {
 			token, expires := v.token, v.expires
 			c.mu.Unlock()
 			return token, expires, nil
