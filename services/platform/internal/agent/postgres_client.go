@@ -54,7 +54,10 @@ func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[str
 	// The image declares its data directory a volume. A read-only tmpfs there keeps Docker from
 	// giving each helper a writable anonymous volume that removing the helper would leave behind.
 	data := mount.Mount{Type: mount.TypeTmpfs, Target: domain.PostgresMount(image), ReadOnly: true, TmpfsOptions: &mount.TmpfsOptions{SizeBytes: 1 << 20}}
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: image, User: "postgres", Cmd: []string{"sleep", sleep}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, Mounts: []mount.Mount{data}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: database.Container.HostConfig.Memory, MemorySwap: database.Container.HostConfig.MemorySwap, PidsLimit: ptr(int64(32))}}})
+	// sleep, as the container's first process, ignores the stop signal Docker sends by default,
+	// so stopping the helper, or Docker itself, would wait out the stop timeout. The helper keeps
+	// nothing a stop could save, so it is killed at once.
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: image, User: "postgres", Cmd: []string{"sleep", sleep}, StopSignal: "SIGKILL", Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, Mounts: []mount.Mount{data}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: database.Container.HostConfig.Memory, MemorySwap: database.Container.HostConfig.MemorySwap, PidsLimit: ptr(int64(32))}}})
 	if err != nil {
 		return pgClient{}, err
 	}
