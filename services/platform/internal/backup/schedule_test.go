@@ -90,3 +90,23 @@ func TestLegacyBlankTimezonePreservesWireAndUTCBehavior(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A backup or restore command outlives its run's own timeout, so a run that runs long ends by
+// that timeout, not by its command's deadline.
+func TestCommandLifetimeOutlastsItsRun(t *testing.T) {
+	for _, seconds := range []int{0, 1, 1800} {
+		c := Command{Action: "backup", Installation: Installation{Policy: Policy{TimeoutSeconds: seconds}}}
+		if c.Lifetime() < c.Installation.Policy.RunTimeout()+5*time.Minute {
+			t.Fatal("a backup's deadline does not outlast its run timeout of", c.Installation.Policy.RunTimeout())
+		}
+		c.Action = "restore"
+		if c.Lifetime() < RestoreTimeout+5*time.Minute {
+			t.Fatal("a restore's deadline does not outlast its run timeout")
+		}
+	}
+	for _, action := range []string{"install", "disable", "check"} {
+		if (Command{Action: action}).Lifetime() != 30*time.Minute {
+			t.Fatal("a command without a run changed its lifetime:", action)
+		}
+	}
+}

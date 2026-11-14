@@ -425,7 +425,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	index := len(s.Runs) - 1
 	timeout := s.Installation.Policy.RunTimeout()
 	if snapshot != "" {
-		timeout = 30 * time.Minute
+		timeout = backup.RestoreTimeout
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

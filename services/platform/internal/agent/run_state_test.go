@@ -110,6 +110,29 @@ func TestRunStoppedAfterItsFirstEffectSettlesByWhatItConfirmed(t *testing.T) {
 	}
 }
 
+// A command's deadline outlasts its run's own timeout, so a run that runs long ends by that
+// timeout: failed, with its cleanup confirmed, rather than stopped by its command and left to
+// inspect. A command delivered late can still reach its deadline first, which the cases above
+// cover.
+func TestRunReachingItsTimeoutBeforeItsDeadlineFails(t *testing.T) {
+	e, p, created := scheduledJobFixture(t, "running")
+	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: time.Now().Add(time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+	b := backup.Command{Action: "backup", RunID: uuid.New(), Installation: backup.Installation{Policy: p}}
+	c := scheduleCommand(p, b, time.Now().Add(b.Lifetime()))
+	if err := e.Execute(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if record, err := e.Journal.Record(c.Id); err != nil || record.Report.State != "failed" {
+		t.Fatal("a run that reached its own timeout settled its command as", record.Report.State, err)
+	}
+	stored, err := e.Journal.schedule(p.ID)
+	if err != nil || *created != 1 || len(stored.Runs) != 1 || stored.Runs[0].State != "failed" || stored.Runs[0].ExitCode == nil || hasUncertainRun(stored) {
+		t.Fatal("a run that reached its own timeout was left to inspect", stored.Runs, err)
+	}
+}
+
 // PLAT-358. A snapshot is protected from retention only while a restore of it is running or
 // unresolved, whatever ended the restore, and history an earlier agent left protected is released.
 func TestRestoreProtectionLastsOnlyWhileTheRestoreIsUnsettled(t *testing.T) {

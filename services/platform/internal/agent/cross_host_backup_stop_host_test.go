@@ -15,10 +15,12 @@ import (
 )
 
 // PLAT-357 and PLAT-360. A coordinated backup leaf whose command stops while the agent runs on
-// (the owner cancels it, or it reaches its deadline) settles by what its run did. Stopped before
-// its first effect, the leaf is cancelled with its run failed, and the parent resumes the
-// source. Stopped part way through its upload, the leaf and its run need attention, the hosts
-// stay held with their writers stopped, and rejecting the leaf lets the parent resume them.
+// settles by what its run did. Stopped by the owner before its first effect, the leaf is cancelled
+// with its run failed, and the parent resumes the source. Stopped part way through its upload,
+// by the owner or by a deadline it reached because it was delivered late, the leaf and its run
+// need attention, the hosts stay held with their writers stopped, and rejecting the leaf lets
+// the parent resume them. A run that reaches its own timeout first, as one delivered on time
+// does, fails, and the parent resumes the writers with no one inspecting the host.
 func nativeCoordinatedBackupStops(t *testing.T, hosts []*nativePlacementHost, units []deployment.DistributedUnit, completed []deployment.Observation, app uuid.UUID, secrets map[string]string, installation backup.Installation) {
 	t.Helper()
 	ctx := context.Background()
@@ -33,16 +35,29 @@ func nativeCoordinatedBackupStops(t *testing.T, hosts []*nativePlacementHost, un
 			}
 		}
 	}
+	// A policy of its own, so its short run timeout leaves the shared policy's generation alone.
+	timed := installation
+	timed.Policy.ID, timed.Policy.TimeoutSeconds = uuid.New(), 20
+	if err := timed.Policy.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	install := primary.backupCommand(backup.Command{Action: "install", Installation: timed}, nil)
+	install.Kind = "schedule"
+	primary.command(t, install)
 	for _, stop := range []struct {
-		name, at  string
-		deadline  bool
-		leaf, run api.ExecutionState
+		name, at, by string
+		leaf, run    api.ExecutionState
 	}{
-		{name: "owner_cancel_before_first_effect", at: "backup-run-recorded", leaf: "cancelled", run: "failed"},
-		{name: "owner_cancel_mid_upload", at: "backup-uploading", leaf: "needs_attention", run: "needs_attention"},
-		{name: "deadline_mid_upload", at: "backup-uploading", deadline: true, leaf: "needs_attention", run: "needs_attention"},
+		{name: "owner_cancel_before_first_effect", at: "backup-run-recorded", by: "owner", leaf: "cancelled", run: "failed"},
+		{name: "owner_cancel_mid_upload", at: "backup-uploading", by: "owner", leaf: "needs_attention", run: "needs_attention"},
+		{name: "late_delivery_reaching_its_deadline_mid_upload", at: "backup-uploading", by: "deadline", leaf: "needs_attention", run: "needs_attention"},
+		{name: "run_timeout_mid_upload", at: "backup-uploading", by: "timeout", leaf: "failed", run: "failed"},
 	} {
 		t.Run("coordinated_backup_"+stop.name, func(t *testing.T) {
+			installation := installation
+			if stop.by == "timeout" {
+				installation = timed
+			}
 			parent, run := uuid.New(), uuid.New()
 			effect := backup.Command{Action: "backup", Installation: installation, RunID: run}
 			intents := make([]deployment.Maintenance, len(hosts))
@@ -64,12 +79,21 @@ func nativeCoordinatedBackupStops(t *testing.T, hosts []*nativePlacementHost, un
 			writersRunning(t, false)
 			primary.command(t, command(0, "effect"))
 			leaf := primary.backupCommand(effect, &parent)
-			request := hostRequest{Command: &leaf, StallAt: stop.at, StallUntil: time.Now().Add(time.Second)}
-			if stop.deadline {
+			if installation.Policy.GeneralSchedule() {
+				leaf.Kind = "schedule"
+			}
+			// As management issues it: the leaf outlives its run's own timeout.
+			leaf.Deadline = time.Now().Add(effect.Lifetime())
+			request := hostRequest{Command: &leaf, StallAt: stop.at}
+			switch stop.by {
+			case "owner":
+				request.OwnerCancelAt, request.StallUntil = stop.at, time.Now().Add(time.Second)
+			case "deadline":
+				// The agent was silent for all but the last seconds of the leaf's life.
 				leaf.Deadline = time.Now().Add(10 * time.Second)
 				request.StallUntil = leaf.Deadline.Add(500 * time.Millisecond)
-			} else {
-				request.OwnerCancelAt = stop.at
+			case "timeout":
+				request.StallUntil = time.Now().Add(installation.Policy.RunTimeout() + 3*time.Second)
 			}
 			reply := primary.call(t, request)
 			if reply.Report == nil || reply.Report.State != stop.leaf {

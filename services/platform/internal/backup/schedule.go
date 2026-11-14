@@ -60,6 +60,28 @@ func (p Policy) RunTimeout() time.Duration {
 	return time.Duration(p.TimeoutSeconds) * time.Second
 }
 
+// RestoreTimeout bounds a restore run, whatever its policy's upload or job timeout.
+const RestoreTimeout = 30 * time.Minute
+
+// commandMargin covers what a command does outside its run: delivery to the agent, the checks
+// before its run starts, and the cleanup and record after the run stops, such as a job's thirty
+// seconds to confirm its container is gone.
+const commandMargin = 10 * time.Minute
+
+// Lifetime is how long after it is issued a command may still start or run, the deadline its
+// agent enforces. A backup or restore outlives its run's own timeout by a margin, so a run that
+// runs long ends by that timeout, failed with its cleanup done, rather than by a deadline that
+// leaves its outcome to inspect. Only a command its agent receives late reaches the deadline.
+func (c Command) Lifetime() time.Duration {
+	switch c.Action {
+	case "backup":
+		return c.Installation.Policy.RunTimeout() + commandMargin
+	case "restore":
+		return RestoreTimeout + commandMargin
+	}
+	return 30 * time.Minute
+}
+
 // Next is exclusive. Intervals begin at installation and subsequently advance
 // from the persisted cursor, rather than from each execution's completion time.
 func (s Schedule) Next(after time.Time) time.Time {
