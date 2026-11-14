@@ -205,7 +205,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	for _, schedule := range schedules {
-		if len(schedule.Writers) > 0 || hasUncertainRun(schedule.Runs) {
+		if len(schedule.Writers) > 0 || hasUncertainRun(schedule) {
 			return errors.New("resolve interrupted local schedules before upgrading")
 		}
 	}
