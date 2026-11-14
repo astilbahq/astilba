@@ -381,6 +381,12 @@ func TestKeyGenerationsOnlyMoveForward(t *testing.T) {
 	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM workspace_keys WHERE workspace_id=$1`, gone).Scan(&all); err != nil || all != 0 {
 		t.Fatal(all, err)
 	}
+	// TRUNCATE skips row triggers, so it is refused outright, as is one cascading from workspaces.
+	for _, table := range []string{"workspace_keys CASCADE", "workspace_key_wrappings", "installation_keys CASCADE", "installation_key_wrappings", "workspaces CASCADE"} {
+		if err := exec(`TRUNCATE ` + table); err == nil || !strings.Contains(err.Error(), "key tables are never truncated") {
+			t.Errorf("TRUNCATE %s was not refused by the guard: %v", table, err)
+		}
+	}
 	// The installation's keys are never deleted.
 	if err := exec(`DELETE FROM installation_keys`); err == nil {
 		t.Error("installation keys were deleted")

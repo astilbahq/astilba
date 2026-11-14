@@ -199,6 +199,20 @@ $$;
 CREATE TRIGGER workspace_key_wrappings_guard BEFORE INSERT OR UPDATE OR DELETE ON workspace_key_wrappings FOR EACH ROW EXECUTE FUNCTION custody_wrapping_guard();
 CREATE TRIGGER installation_key_wrappings_guard BEFORE INSERT OR UPDATE OR DELETE ON installation_key_wrappings FOR EACH ROW EXECUTE FUNCTION custody_wrapping_guard();
 
+-- TRUNCATE skips row triggers, so it is refused outright, including when it cascades from
+-- truncating workspaces: keys and wrappings go only as the guards above allow.
+-- +goose StatementBegin
+CREATE FUNCTION custody_keys_truncate_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+    RAISE EXCEPTION 'key tables are never truncated';
+END
+$$;
+-- +goose StatementEnd
+CREATE TRIGGER workspace_keys_truncate BEFORE TRUNCATE ON workspace_keys FOR EACH STATEMENT EXECUTE FUNCTION custody_keys_truncate_guard();
+CREATE TRIGGER workspace_key_wrappings_truncate BEFORE TRUNCATE ON workspace_key_wrappings FOR EACH STATEMENT EXECUTE FUNCTION custody_keys_truncate_guard();
+CREATE TRIGGER installation_keys_truncate BEFORE TRUNCATE ON installation_keys FOR EACH STATEMENT EXECUTE FUNCTION custody_keys_truncate_guard();
+CREATE TRIGGER installation_key_wrappings_truncate BEFORE TRUNCATE ON installation_key_wrappings FOR EACH STATEMENT EXECUTE FUNCTION custody_keys_truncate_guard();
+
 INSERT INTO schema_additive_migrations (version) VALUES (55);
 
 -- +goose Down
@@ -209,6 +223,7 @@ DROP TABLE installation_key_wrappings;
 DROP TABLE installation_keys;
 DROP TABLE workspace_key_wrappings;
 DROP TABLE workspace_keys;
+DROP FUNCTION custody_keys_truncate_guard();
 DROP FUNCTION custody_wrapping_guard();
 DROP FUNCTION custody_key_prune();
 DROP FUNCTION custody_key_guard();

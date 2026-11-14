@@ -24,7 +24,7 @@ var (
 	// A column compared with string constants, which no row an older release writes can fail.
 	constantPredicate = regexp.MustCompile(`^[A-Z_][A-Z0-9_]* (?:NOT )?IN ?\('[^']*'(?:, ?'[^']*')*\)$`)
 	createFunc        = regexp.MustCompile(`^CREATE FUNCTION [A-Z_][A-Z0-9_]* ?\(`)
-	createTrigger     = regexp.MustCompile(`^CREATE TRIGGER [A-Z0-9_]+ (?:BEFORE|AFTER) .*? ON ([A-Z_][A-Z0-9_]*) FOR EACH ROW EXECUTE FUNCTION [A-Z_][A-Z0-9_]* ?\(\)$`)
+	createTrigger     = regexp.MustCompile(`^CREATE TRIGGER [A-Z0-9_]+ (?:BEFORE|AFTER) .*? ON ([A-Z_][A-Z0-9_]*) FOR EACH (?:ROW|STATEMENT) EXECUTE FUNCTION [A-Z_][A-Z0-9_]* ?\(\)$`)
 	addColumn         = regexp.MustCompile(`^ALTER TABLE ([A-Z_][A-Z0-9_]*) ADD COLUMN [A-Z_][A-Z0-9_]* (.*)$`)
 	insertValues      = regexp.MustCompile(`^INSERT INTO ([A-Z_][A-Z0-9_]*) ?(?:\([A-Z0-9_, ]*\) ?)?VALUES ?\(`)
 )
@@ -337,6 +337,8 @@ func TestAdditiveClaims(t *testing.T) {
 		{"replaced function", "CREATE OR REPLACE FUNCTION immutable_specification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;", false},
 		{"trigger on new table", "CREATE TABLE a (at timestamptz);\nCREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN DELETE FROM a; UPDATE b SET c=1; RETURN NEW; END; $$;\nCREATE TRIGGER t BEFORE INSERT ON a FOR EACH ROW EXECUTE FUNCTION f();", true},
 		{"trigger on existing table", "CREATE TRIGGER t BEFORE INSERT ON secret_versions FOR EACH ROW EXECUTE FUNCTION f();", false},
+		{"statement trigger on new table", "CREATE TABLE a (at timestamptz);\nCREATE TRIGGER t BEFORE TRUNCATE ON a FOR EACH STATEMENT EXECUTE FUNCTION f();", true},
+		{"statement trigger on existing table", "CREATE TRIGGER t BEFORE TRUNCATE ON workspaces FOR EACH STATEMENT EXECUTE FUNCTION f();", false},
 		{"update", "UPDATE secret_versions SET n=1;", false},
 		{"seed existing table", "INSERT INTO workspaces (id) VALUES (gen_random_uuid());", false},
 		{"seed new table", "CREATE TABLE a (n integer);\nINSERT INTO a (n) VALUES (1);", true},
