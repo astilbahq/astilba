@@ -62,7 +62,7 @@ Protected stateless releases do not replace a source with bound consumers: those
 | PostgreSQL 18.4 | Private database and built-in outputs | Tested logical backup and fresh restore | Existing 17.10 → 18.4 workflow only |
 | Valkey 9.1.3 cache | Private Redis-compatible cache, `HOST`/`PORT`/`URL` | Not applicable: persistence disabled, data lost on restart | Manual compatibility review |
 | Nginx 1.30.6 | HTTP readiness, private HTTP outputs | Not applicable to the welcome-page recipe | Manual compatibility review |
-| Uptime Kuma 2.5.9 (slim, rootless) | HTTP readiness, private HTTP outputs, local retained volume | Manual: stopped-volume tools available; recipe-specific recovery unverified | Manual compatibility review |
+| Uptime Kuma 2.5.11 (slim, rootless) | HTTP readiness, private HTTP outputs, local retained volume | Manual: stopped-volume tools available; recipe-specific recovery unverified | Manual compatibility review |
 | OCI Distribution 3.1.2 | `/v2/` readiness, private HTTP outputs, local retained volume | Manual: stopped-volume tools available; recipe-specific recovery unverified | Manual compatibility review |
 
 “Tested” describes the pinned recipe on the supported Docker baseline, not every future image tag or user modification. Deployment, binding, backup, restore and upgrade support appear separately in the catalog. An image starting successfully does not establish a maintenance guarantee.

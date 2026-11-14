@@ -28,14 +28,14 @@ type Recipe struct {
 	Support       Maintenance          `json:"support"`
 }
 
-const NginxImage = "nginx:1.30.6-alpine3.24@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311"
+const NginxImage = "nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a"
 const ValkeyImage = "valkey/valkey:9.1.3-alpine3.24@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b"
 
 // The slim image leaves out Chromium and the embedded MariaDB, which the recipe does not
 // use and which carry most of the full image's advisories. The rootless image runs as
 // node (uid 1000) and ships /app/data owned by it, so a new volume is writable.
-const UptimeKumaImage = "louislam/uptime-kuma:2.5.9-slim-rootless@sha256:053a48927ee714b1da78c6810041a44a266bd8c06dc30ead5b3f459d0f219fb0"
-const RegistryImage = "registry:3.1.2@sha256:01cd312e67026f06f5d89c3e133a4a9adc7cb9eeb9b1194e0b2954dfd770efd2"
+const UptimeKumaImage = "louislam/uptime-kuma:2.5.11-slim-rootless@sha256:ebc6299a1bc8bd4a29e0bddcc04f11440e3690b1c52e19558006eeefb5a8b019"
+const RegistryImage = "registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c"
 
 // Template identities are public placeholders. Staging replaces them with fresh
 // IDs and replaces the PostgreSQL credential with an existing environment secret.
