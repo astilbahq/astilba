@@ -962,7 +962,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** @description Owner with recent identity confirmation, on an active environment. Erases one version's value, which then stops counting toward the runtime-secret check. Refused with a conflict on secretVersion.current for the secret's current version, which a new version replaces, and on secretVersion.inUse while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names it. The version's row is kept for the revisions that name it. */
+        /** @description Owner with recent identity confirmation, on an active environment. Erases one version's value, which the runtime-secret check then no longer searches for. The version still counts toward which of the secret's versions are recent. Refused with a conflict on secretVersion.current for the secret's current version, which a new version replaces, and on secretVersion.inUse while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names it. The version's row is kept for the revisions that name it. */
         delete: operations["retireSecretVersion"];
         options?: never;
         head?: never;

@@ -257,6 +257,27 @@ func TestSubmissionRechecksRuntimeSecretsBeforeWriting(t *testing.T) {
 			t.Fatal("the retired version still blocked the submission", note)
 		}
 	})
+	// A value replaced three times is no longer searched for, and retiring a version between never
+	// makes it recent again: retired versions still count toward recency.
+	t.Run("retiring a version does not bring an older one back", func(t *testing.T) {
+		b := *b
+		b.t = t
+		canary := "aged-out-secret-canary"
+		path, draft := prepare(t, "Aged out", inContent(canary))
+		var first, second api.SecretVersion
+		b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": canary}, 201, &first)
+		for i, value := range []string{"aged-out-second-value", "aged-out-third-value", "aged-out-fourth-value"} {
+			var v api.SecretVersion
+			b.call("POST", path+"/secrets/"+first.SecretId.String()+"/versions", map[string]string{"value": value}, 201, &v)
+			if i == 0 {
+				second = v
+			}
+		}
+		b.call("DELETE", path+"/secrets/"+second.SecretId.String()+"/versions/"+second.Id.String(), nil, 204, nil)
+		if _, note := await(t, submit(t, path, draft).Id, retrying); strings.Contains(note, "runtime secret") {
+			t.Fatal("retiring a version brought an aged-out value back into the check", note)
+		}
+	})
 	// The check searches for a bounded number of versions, and fails closed past it until an owner
 	// retires secrets the environment no longer needs.
 	t.Run("more current versions than the check searches for are refused", func(t *testing.T) {
