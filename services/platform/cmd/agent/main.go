@@ -126,6 +126,9 @@ func run() error {
 		var h api.AgentHeartbeat
 		if j == nil {
 			h = agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+			if note := agent.SealedJournalNote(ctx, *dir, agent.SystemKeyStore); note != "" {
+				h.Preflight.Notes = append(h.Preflight.Notes, note)
+			}
 		} else {
 			h = j.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
 		}

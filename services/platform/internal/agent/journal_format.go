@@ -122,15 +122,7 @@ func (j *Journal) openSealedKeys(ctx context.Context, open func(context.Context)
 	if open == nil {
 		return fmt.Errorf("%w: only the agent's own commands can open it", ErrSealedJournal)
 	}
-	store, err := open(ctx)
-	if err != nil {
-		return fmt.Errorf("%w: the key store is unavailable: %v", ErrSealedJournal, err)
-	}
-	plain, err := store.Unseal(ctx, journalCredentialName, sealed)
-	if err != nil {
-		return fmt.Errorf("%w: the key store can't read it, as when it was sealed on another machine, or this host's TPM or systemd host key changed: %v", ErrSealedJournal, err)
-	}
-	keys, err := cryptobox.Parse(plain)
+	store, keys, err := unsealKeys(ctx, open, sealed)
 	if err != nil {
 		return err
 	}
@@ -138,6 +130,40 @@ func (j *Journal) openSealedKeys(ctx context.Context, open func(context.Context)
 	j.formatVersion.Store(sealedStateVersion)
 	j.sealing, j.store = true, store
 	return syncLocalStateDirectory(j.dir)
+}
+
+// unsealKeys opens a sealed keyring with the store open returns.
+func unsealKeys(ctx context.Context, open func(context.Context) (KeyStore, error), sealed []byte) (KeyStore, *cryptobox.Keyring, error) {
+	store, err := open(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: the key store is unavailable (%v). The agent service waits for it and tries again every minute", ErrSealedJournal, err)
+	}
+	plain, err := store.Unseal(ctx, journalCredentialName, sealed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: the key store can't read it (%v). It was sealed on another machine, or this host's TPM or systemd host key has changed. If that key is gone for good, the journal can't be opened again: revoke the server and enroll this host as a new server with a fresh state directory", ErrSealedJournal, err)
+	}
+	keys, err := cryptobox.Parse(plain)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, keys, nil
+}
+
+// SealedJournalNote says why the journal in dir can't be opened now, for preflight, or returns ""
+// when nothing seals it shut. It opens the keyring only to check, and keeps nothing.
+func SealedJournalNote(ctx context.Context, dir string, open func(context.Context) (KeyStore, error)) string {
+	raw, err := os.ReadFile(filepath.Join(dir, "keyring.json"))
+	if err != nil {
+		return ""
+	}
+	var envelope localStateKeys
+	if json.Unmarshal(raw, &envelope, json.RejectUnknownMembers(true)) != nil || envelope.Version != sealedStateVersion || len(envelope.SealedKeyring) == 0 {
+		return ""
+	}
+	if _, _, err = unsealKeys(ctx, open, envelope.SealedKeyring); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // sealWith seals keyring.json, holding keys, to store from now on. The caller holds stateMu.

@@ -586,3 +586,37 @@ func TestSealedLocalStateRejectsMixedEnvelopes(t *testing.T) {
 		}
 	}
 }
+
+func TestPreflightSaysWhyASealedJournalCannotOpen(t *testing.T) {
+	here := InsecureKeyStore()
+	dir := privateDir(t)
+	if note := SealedJournalNote(context.Background(), dir, storeOpener(here)); note != "" {
+		t.Fatal("a host without a journal has a note:", note)
+	}
+	j, err := OpenSealed(context.Background(), dir, storeOpener(here))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	if note := SealedJournalNote(context.Background(), dir, storeOpener(here)); note != "" {
+		t.Fatal("a journal the store opens has a note:", note)
+	}
+	if note := SealedJournalNote(context.Background(), dir, storeOpener(nil)); !strings.Contains(note, "waits for it") {
+		t.Fatal("an unavailable store isn't explained:", note)
+	}
+	note := SealedJournalNote(context.Background(), dir, storeOpener(InsecureKeyStore()))
+	if !strings.Contains(note, "enroll this host as a new server with a fresh state directory") {
+		t.Fatal("a store that can't read the keyring doesn't say how to recover:", note)
+	}
+	if _, err = OpenSealed(context.Background(), dir, storeOpener(InsecureKeyStore())); err == nil || err.Error() != note {
+		t.Fatal("preflight and the agent disagree about why the journal can't open", err)
+	}
+	clear := privateDir(t)
+	if j, err = Open(clear); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	if note := SealedJournalNote(context.Background(), clear, storeOpener(nil)); note != "" {
+		t.Fatal("a journal in the clear has a note:", note)
+	}
+}
