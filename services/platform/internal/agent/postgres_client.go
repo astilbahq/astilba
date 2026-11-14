@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 )
 
@@ -43,7 +44,16 @@ func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[str
 		return pgClient{}, errors.New("a database helper needs a bounded command")
 	}
 	sleep := strconv.Itoa(int(time.Until(end).Seconds()) + 60)
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: image, User: "postgres", Cmd: []string{"sleep", sleep}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: 256 << 20, PidsLimit: ptr(int64(32))}}})
+	// pg_dump's memory grows with the database's objects, so the helper gets the database's own
+	// memory limit, none when it has none, as when the tools ran inside the database container.
+	database, err := e.Docker.ContainerInspect(ctx, source, client.ContainerInspectOptions{})
+	if err != nil {
+		return pgClient{}, err
+	}
+	// The image declares its data directory a volume. A read-only tmpfs there keeps Docker from
+	// giving each helper a writable anonymous volume that removing the helper would leave behind.
+	data := mount.Mount{Type: mount.TypeTmpfs, Target: domain.PostgresMount(image), ReadOnly: true, TmpfsOptions: &mount.TmpfsOptions{SizeBytes: 1 << 20}}
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: image, User: "postgres", Cmd: []string{"sleep", sleep}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, Mounts: []mount.Mount{data}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: database.Container.HostConfig.Memory, PidsLimit: ptr(int64(32))}}})
 	if err != nil {
 		return pgClient{}, err
 	}
@@ -57,8 +67,8 @@ func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[str
 	return helper, nil
 }
 
-// removeHelper force-removes a helper, which ends anything still running in it and so closes its
-// connections to the database.
+// removeHelper force-removes a helper, which ends anything still running in it. The database ends
+// their connections within a second.
 func (e *Engine) removeHelper(helper pgClient) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

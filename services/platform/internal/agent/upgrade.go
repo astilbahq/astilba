@@ -402,7 +402,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 func (e *Engine) removeUpgradeHelpers(ctx context.Context, s upgradeState) error {
 	p := s.Command.Plan
 	for _, entry := range []struct{ name, kind, image string }{
-		{"astilba-upgrade-preflight-" + p.ID.String(), "upgrade-preflight-v1", domain.PostgresImage},
+		{"astilba-upgrade-preflight-" + p.ID.String(), "upgrade-preflight-v1", domain.Postgres17Image},
 		{"astilba-upgrade-tools-" + p.ID.String(), "upgrade-tools-v1", domain.PostgresImage},
 		{"astilba-restore-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
 		{"astilba-upgrade-source-" + p.ID.String(), "upgrade-source-v1", domain.Postgres17Image},

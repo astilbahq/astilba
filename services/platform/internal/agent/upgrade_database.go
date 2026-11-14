@@ -89,9 +89,11 @@ func (e *Engine) knownUpgradeWriters(ctx context.Context, db pgClient, a domain.
 
 // upgradePreflight checks the live source database from a helper in its network namespace, so
 // nothing runs in the source and removing the helper ends whatever a stopped check left running.
-// It returns the database's size in bytes, as PostgreSQL prints it.
+// The helper runs the source's own PostgreSQL 17 image, which the host already has: PostgreSQL 18
+// is pulled only once the checks pass. It returns the database's size in bytes, as PostgreSQL
+// prints it.
 func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source string, a domain.Application) ([]byte, error) {
-	helper, err := e.postgresHelper(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-preflight-v1"), source, domain.PostgresImage, s.Command.Installation.Access.DatabasePassword)
+	helper, err := e.postgresHelper(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-preflight-v1"), source, domain.Postgres17Image, s.Command.Installation.Access.DatabasePassword)
 	if err != nil {
 		return nil, err
 	}

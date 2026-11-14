@@ -124,7 +124,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 				// The checks run as the preflight runs them: from a helper in the source's namespace.
 				checks, stopChecks := context.WithTimeout(ctx, 10*time.Minute)
 				defer stopChecks()
-				helper, err := e.postgresHelper(checks, "astilba-upgrade-preflight-"+plan.ID.String(), upgradeHelperLabels(state, a, "upgrade-preflight-v1"), source.ID, domain.PostgresImage, state.Command.Installation.Access.DatabasePassword)
+				helper, err := e.postgresHelper(checks, "astilba-upgrade-preflight-"+plan.ID.String(), upgradeHelperLabels(state, a, "upgrade-preflight-v1"), source.ID, domain.Postgres17Image, state.Command.Installation.Access.DatabasePassword)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -236,6 +236,8 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 				}
 				stopWriter()
 				<-writerDone
+				// Prepare makes its own preflight helper under the same name.
+				e.removeHelper(helper)
 			}
 			if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, `CREATE ROLE upgrade_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reports; CREATE TABLE reports.events(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value hstore NOT NULL UNIQUE); INSERT INTO reports.events(value) VALUES ('a=>b'); ALTER TABLE reports.events OWNER TO upgrade_reader; GRANT USAGE ON SCHEMA reports TO upgrade_reader`); err != nil {
 				t.Fatal(err)

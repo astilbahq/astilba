@@ -103,8 +103,9 @@ const interruptedBackupNote = "An interrupted backup command needs local inspect
 // removeRunContainers says what a run that began changing things may have left running, or ""
 // once nothing it started can be. Every container on this server labelled with the run, including
 // one whose create failed as the run stopped, is force-removed and confirmed gone. That ends
-// whatever ran in it, such as pg_dump in the run's helper, and closes its connections. restic
-// needs no check: the agent waits for it to exit, and kills it when the run stops.
+// whatever ran in it, such as pg_dump in the run's helper, and the database ends that dump's
+// connection within a second (postgresHelper). restic needs no check: the agent waits for it to
+// exit, and kills it when the run stops.
 func (e *Engine) removeRunContainers(p backup.Policy, run uuid.UUID) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

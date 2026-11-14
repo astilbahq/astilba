@@ -16,13 +16,14 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 )
 
 // PLAT-388. A backup's pg_dump runs in a helper labelled with its run, sharing the source's
 // network namespace, so nothing runs in the source. Stopped while its dump waits on a lock, the
-// run fails once its helper is gone and the dump's backend has ended, though the lock is still
-// held. Neither the helper's configuration nor its exec shows the database's password.
+// run fails once its helper is gone, and the dump's backend ends soon after, though the lock is
+// still held. Neither the helper's configuration nor its exec shows the database's password.
 func nativeStoppedDump(t *testing.T, e *Engine, in backup.Installation, source string, a domain.Application, command func(backup.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
@@ -76,8 +77,14 @@ func nativeStoppedDump(t *testing.T, e *Engine, in backup.Installation, source s
 	if err != nil {
 		t.Fatal(err)
 	}
-	if helper.Container.Config.Labels["com.astilba.run"] != run.String() || helper.Container.Config.Image != *a.Source.Image || !helper.Container.HostConfig.ReadonlyRootfs || helper.Container.HostConfig.NetworkMode != container.NetworkMode("container:"+source) {
+	if helper.Container.Config.Labels["com.astilba.run"] != run.String() || helper.Container.Config.Image != *a.Source.Image || !helper.Container.HostConfig.ReadonlyRootfs || helper.Container.HostConfig.NetworkMode != container.NetworkMode("container:"+source) || helper.Container.HostConfig.Memory != inspected.Container.HostConfig.Memory {
 		t.Fatalf("the dump helper is not the run's: %+v", helper.Container.Config)
+	}
+	// The image's data volume is covered, so the helper leaves no anonymous volume behind.
+	for _, m := range helper.Container.Mounts {
+		if m.Type == mount.TypeVolume {
+			t.Fatalf("the dump helper has a volume at %s", m.Destination)
+		}
 	}
 	views := []string{"/containers/" + helper.Container.ID + "/json"}
 	for _, id := range helper.Container.ExecIDs {
