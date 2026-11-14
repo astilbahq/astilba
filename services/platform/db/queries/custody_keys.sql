@@ -45,10 +45,8 @@ INSERT INTO installation_keys(scope,generation,state,kcv) VALUES(@scope,@generat
 INSERT INTO installation_key_wrappings(scope,generation,purpose,backend_id,wrapped)
 VALUES(@scope,@generation,@purpose,@backend_id,@wrapped);
 
--- name: WorkspaceKeyState :one
--- Whether the workspace still exists, and whether it has keys yet.
-SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = @workspace_id) AS present,
-    EXISTS(SELECT 1 FROM workspace_keys WHERE workspace_id = @workspace_id) AS has_keys;
+-- name: WorkspaceHasKeys :one
+SELECT EXISTS(SELECT 1 FROM workspace_keys WHERE workspace_id = @workspace_id);
 
 -- name: InstallationScopeHasKeys :one
 SELECT EXISTS(SELECT 1 FROM installation_keys WHERE scope = @scope);

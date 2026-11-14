@@ -358,10 +358,9 @@ func (b *Broker) completeStage(ctx context.Context, stage int) error {
 const initBatch = 100
 
 // initHolder makes and stores generation 1 for one holder that has none, and reports whether it
-// did. It skips a holder another worker holds, and one that has keys or is gone by the time its
-// transaction runs. The holder's lock is what keeps creators apart, so the transaction waits on
-// no workspace row: creating a new workspace never names an existing one, and the key's reference
-// to its workspace refuses one deleted meanwhile.
+// did. It skips a holder another worker holds, and one that has keys by the time its transaction
+// runs. The holder's lock is what keeps creators apart, so the transaction waits on no workspace
+// row: creating a new workspace never names an existing one.
 func (b *Broker) initHolder(ctx context.Context, scope custody.Scope, holder uuid.UUID) (bool, error) {
 	conn, err := b.pool.Acquire(ctx)
 	if err != nil {
@@ -393,12 +392,11 @@ func (b *Broker) initHolder(ctx context.Context, scope custody.Scope, holder uui
 	q := db.New(tx)
 	var has bool
 	if scope == custody.ScopeWorkspace {
-		state, err := q.WorkspaceKeyState(ctx, holder)
-		if err != nil {
-			return false, err
-		}
-		has = state.HasKeys || !state.Present
-	} else if has, err = q.InstallationScopeHasKeys(ctx, string(scope)); err != nil {
+		has, err = q.WorkspaceHasKeys(ctx, holder)
+	} else {
+		has, err = q.InstallationScopeHasKeys(ctx, string(scope))
+	}
+	if err != nil {
 		return false, err
 	}
 	if has {
