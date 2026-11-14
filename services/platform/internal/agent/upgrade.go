@@ -143,7 +143,7 @@ func (e *Engine) executeUpgrade(ctx context.Context, c api.ExecutionCommand, r R
 		}
 		return e.upgradeReport(c, s, false)
 	}
-	ctx, stop := e.commandContext(ctx, c)
+	ctx, stop := e.commandContext(ctx, c, c.Deadline)
 	defer stop()
 	s.Status.Phase = "running"
 	s.OperationID = c.Id

@@ -41,29 +41,42 @@ func scheduledJobFixture(t *testing.T, mode string) (*Engine, backup.Policy, *in
 		t.Fatal("fixture policy invalid", err)
 	}
 	created, jobInspects := 0, 0
+	// A create that fails may still have made the container, as Docker's can.
+	exists := false
 	var jobLabels map[string]string
 	source := map[string]any{"Id": "source", "Image": image, "Config": map[string]any{"Image": image, "Labels": visualLabels(p, app)}, "HostConfig": map[string]any{}, "State": map[string]any{"Running": true, "Status": "running"}}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
 		switch {
+		case strings.HasSuffix(path, "/containers/json") && strings.Contains(r.URL.Query().Get("filters"), "com.astilba.run="):
+			jobs := []any{}
+			if exists {
+				state := "exited"
+				if running && !stopped {
+					state = "running"
+				}
+				jobs = append(jobs, map[string]any{"Id": "job", "Labels": jobLabels, "Names": []string{"/astilba-job"}, "State": state})
+			}
+			stablejson.Encode(w, jobs)
 		case strings.HasSuffix(path, "/containers/json"):
 			stablejson.Encode(w, []any{map[string]any{"Id": "source", "Labels": visualLabels(p, app), "Names": []string{"/" + p.ContainerName(app)}}})
 		case strings.HasSuffix(path, "/containers/source/json"):
 			stablejson.Encode(w, source)
 		case strings.HasSuffix(path, "/containers/create"):
 			created++
-			if cleanupFailure == "create" {
-				w.WriteHeader(500)
-				fmt.Fprint(w, `{"message":"create failed"}`)
-				return
-			}
+			exists = true
 			var b struct {
 				Labels map[string]string `json:"Labels"`
 			}
 			json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &b)
 			jobLabels = b.Labels
 			jobInspects = 0
+			if cleanupFailure == "create" {
+				w.WriteHeader(500)
+				fmt.Fprint(w, `{"message":"create failed"}`)
+				return
+			}
 			w.WriteHeader(201)
 			fmt.Fprint(w, `{"Id":"job","Warnings":[]}`)
 		case strings.HasSuffix(path, "/containers/job/start"):
@@ -89,6 +102,7 @@ func scheduledJobFixture(t *testing.T, mode string) (*Engine, backup.Policy, *in
 				fmt.Fprint(w, `{"message":"cleanup remove failed"}`)
 				return
 			}
+			exists = false
 			w.WriteHeader(204)
 		default:
 			w.WriteHeader(404)
@@ -262,8 +276,8 @@ func TestJobFailingBeforeItsContainerDoesNotHoldTheHost(t *testing.T) {
 }
 
 // A run is uncertain only once it may have changed something outside the journal: one the agent
-// stopped during before that fails, and one stopped after it, or whose container create failed,
-// still needs inspection.
+// stopped during before that fails, and one it stopped after it still needs inspection. A job
+// whose container create failed fails once the container Docker made anyway is found and removed.
 func TestJobUncertaintyStartsAtItsFirstEffect(t *testing.T) {
 	t.Run("restart before effects", func(t *testing.T) {
 		e, p, created := scheduledJobFixture(t, "")
@@ -305,8 +319,11 @@ func TestJobUncertaintyStartsAtItsFirstEffect(t *testing.T) {
 			t.Fatal(err)
 		}
 		state, err := e.Journal.schedule(p.ID)
-		if err != nil || *created != 1 || len(state.Runs) != 1 || state.Runs[0].State != "needs_attention" {
-			t.Fatal("a failed create was taken to have made nothing", err, state.Runs)
+		if err != nil || *created != 1 || len(state.Runs) != 1 || state.Runs[0].State != "failed" {
+			t.Fatal("a failed create's container was not found and removed", err, state.Runs)
+		}
+		if left, err := e.Docker.ContainerList(context.Background(), client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", "com.astilba.run="+state.Runs[0].ID.String())}); err != nil || len(left.Items) != 0 {
+			t.Fatal("the container a failed create made was left", left.Items, err)
 		}
 	})
 }

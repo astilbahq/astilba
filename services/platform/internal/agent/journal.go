@@ -539,11 +539,10 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 		if e := j.put(tx, "generations", key, max(generation, c.Generation)); e != nil {
 			return e
 		}
-		out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "accepted"}
-		if c.Kind == "update" {
-			accepted := time.Now().UTC()
-			out.AcceptedAt = &accepted
-		}
+		// Only an update admitted in time continues across a restart, and a backup command's work
+		// is bounded from its admission (Record.workEnd).
+		accepted := time.Now().UTC()
+		out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "accepted", AcceptedAt: &accepted}
 		return j.put(tx, "operations", c.Id.String(), out)
 	})
 	return out, err

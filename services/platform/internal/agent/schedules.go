@@ -162,7 +162,7 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
 	}
 	parent := ctx
-	ctx, stop := e.commandContext(ctx, c)
+	ctx, stop := e.commandContext(ctx, c, r.workEnd(b.Lifetime()))
 	defer stop()
 	// The checkpoint is written just before the first effect outside the journal: the repository
 	// an install may create, or the run a backup or restore records. Until then a stopped backup
@@ -440,20 +440,9 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	} else {
 		err = e.backupSnapshot(runCtx, s, &r)
 	}
-	if err != nil && ctx.Err() != nil {
-		// A run stopped before its first effect changed nothing. Any other may have left work
-		// behind, unless it confirmed its outcome as a container job does, so it is left to
-		// inspect, never to stay running: nothing settles a running run on a reserved host.
-		if settleUnstarted(s, time.Now().UTC()) {
-			return errors.Join(ctx.Err(), e.Journal.saveSchedule(*s))
-		}
-		if !s.confirmedJobOutcome(r, err) {
-			r.State = "needs_attention"
-			r.Note = "The run was stopped by a cancel, its command's deadline or the agent stopping after it began changing things. Inspect containers with its com.astilba.run label and any target volume, then resolve the run."
-			compactManifest(&r)
-			s.Runs[index] = r
-			return errors.Join(ctx.Err(), errRunUncertain, e.Journal.saveSchedule(*s))
-		}
+	if err != nil && ctx.Err() != nil && settleUnstarted(s, time.Now().UTC()) {
+		// A run stopped before its first effect changed nothing.
+		return errors.Join(ctx.Err(), e.Journal.saveSchedule(*s))
 	}
 	end := time.Now().UTC()
 	r.FinishedAt = &end
@@ -470,20 +459,27 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	s.BeforeEffects = uuid.Nil
 	if err != nil {
 		r.State = "failed"
-		if s.Installation.Policy.Method == "container-job" && effects && !s.confirmedJobOutcome(r, err) {
-			r.State = "needs_attention"
-		}
-		r.Note = "Run failed. Inspect storage access, supported source state and available capacity. Incomplete output is not a usable backup."
-		if ctx.Err() != nil {
+		job := s.Installation.Policy.Method == "container-job" && r.ExitCode != nil
+		switch timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded); {
+		case ctx.Err() != nil && job:
 			r.Note = "Container job stopped because its command was cancelled or reached its deadline; its owned container was stopped and the exit result recorded."
-		} else if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		case ctx.Err() != nil:
+			r.Note = "Run stopped by a cancel, its command's deadline or the agent stopping, and nothing it started is still running. Incomplete output is not a usable backup."
+		case timedOut && job:
+			r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
+		case timedOut:
 			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
-			if s.Installation.Policy.Method == "container-job" && r.ExitCode != nil {
-				r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
-			}
+		default:
+			r.Note = "Run failed. Inspect storage access, supported source state and available capacity. Incomplete output is not a usable backup."
 		}
-		if errors.Is(err, errJobCleanup) {
-			r.Note = "Job cleanup could not be confirmed. Inspect the owned run container and resolve the run locally before further host operations."
+		// However a run that began changing things ended, something it started may still be
+		// running, so it fails only once its cleanup is confirmed. Otherwise it is left to
+		// inspect, never to stay running: nothing settles a running run on a reserved host.
+		if effects {
+			if left := e.runCleanupLeft(s.Installation.Policy, r.ID, err); left != "" {
+				r.State = "needs_attention"
+				r.Note = "The run's cleanup could not be confirmed: " + left + ". Inspect containers with its com.astilba.run label and any target volume, then resolve the run."
+			}
 		}
 	}
 	compactManifest(&r)

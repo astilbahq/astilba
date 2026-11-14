@@ -66,7 +66,7 @@ func (e *Engine) dumpPostgres(ctx context.Context, p backup.Policy, stage string
 	if err != nil {
 		return err
 	}
-	err = e.dataTool(ctx, nil, file, "exec", c.ID, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", a.Postgres.Username, "-d", a.Postgres.Database)
+	err = e.sourceExec(ctx, c.ID, file, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", a.Postgres.Username, "-d", a.Postgres.Database)
 	if err == nil {
 		err = file.Sync()
 	}

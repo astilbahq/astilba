@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -12,7 +13,11 @@ import (
 )
 
 // deadlineRule is what a command's admission deadline means for it. The deadline decides whether
-// a host may start something, never whether work it already holds can end. Every command kind,
+// a host may start something, never whether work it already holds can end. A backup command this
+// host started is bounded by its own lifetime from its admission (Record.workEnd), so time it
+// waited here for the host doesn't shorten it; pipeline commands still end at their deadline.
+// Management withholds a backup's access once its deadline passes, so a command that reaches a
+// host late, after the agent was silent, never starts there. Every command kind,
 // network action and coordinated phase that reaches the deadline has a rule below, so adding one
 // means choosing one. Anything not listed keeps its deadline. Recovery opening and closing are
 // decided before the deadline, in Execute. See docs/cross-host-placement.md.
@@ -186,4 +191,14 @@ func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
 		return e.Journal.holdsUnit(c)
 	}
 	return false, nil
+}
+
+// workEnd is when the work of a command this host admitted must end: lifetime after its
+// admission, and never before its issue deadline, whichever clock is ahead. A record an older
+// agent accepted has no admission time and keeps its deadline.
+func (r Record) workEnd(lifetime time.Duration) time.Time {
+	if r.AcceptedAt == nil || r.AcceptedAt.Add(lifetime).Before(r.Command.Deadline) {
+		return r.Command.Deadline
+	}
+	return r.AcceptedAt.Add(lifetime)
 }

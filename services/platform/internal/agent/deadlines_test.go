@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -362,4 +363,43 @@ func TestLateRetirementNeedsTheHostToHoldItsUnit(t *testing.T) {
 			t.Fatal("a late retirement ran for another environment's unit")
 		}
 	})
+}
+
+// PLAT-369. Every command records when this host admitted it, and its work can be bounded by a
+// lifetime from then, never ending before its deadline. A record an older agent accepted has no
+// admission time: it reads back without one and keeps its deadline.
+func TestWorkIsBoundedFromAdmission(t *testing.T) {
+	j, p := testVisualJournal(t)
+	command := func() api.ExecutionCommand {
+		return api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: uuid.New(), Kind: "test", Action: "inspect", Generation: 1, PlanHash: strings.Repeat("a", 64), Deadline: time.Now().Add(time.Minute)}
+	}
+	c := command()
+	before := time.Now()
+	r, err := j.Accept(c)
+	if err != nil || r.AcceptedAt == nil || r.AcceptedAt.Before(before) || r.AcceptedAt.After(time.Now()) {
+		t.Fatalf("a command's admission was not recorded: %v (%v)", r.AcceptedAt, err)
+	}
+	if stored, err := j.Record(c.Id); err != nil || stored.AcceptedAt == nil || !stored.AcceptedAt.Equal(*r.AcceptedAt) {
+		t.Fatal("the admission time did not survive the journal", err)
+	}
+	if end := r.workEnd(time.Hour); !end.Equal(r.AcceptedAt.Add(time.Hour)) {
+		t.Fatal("a command's work is not bounded from its admission:", end)
+	}
+	if end := r.workEnd(time.Second); !end.Equal(c.Deadline) {
+		t.Fatal("a command's work ended before its deadline:", end)
+	}
+	// An older agent's record, which has no field for its admission, as AcceptedAt is omitted
+	// when empty.
+	legacy := command()
+	old := Record{Command: legacy, Report: api.AgentReport{Id: legacy.Id, Generation: legacy.Generation, PlanHash: legacy.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "accepted"}
+	if err = j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "operations", legacy.Id.String(), old) }); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := j.Accept(legacy)
+	if err != nil || stored.AcceptedAt != nil || deployment.Hash(stored) != deployment.Hash(old) {
+		t.Fatal("redelivering an older agent's record changed it", err)
+	}
+	if end := stored.workEnd(time.Hour); !end.Equal(legacy.Deadline) {
+		t.Fatal("an older agent's record was not bounded by its deadline:", end)
+	}
 }
