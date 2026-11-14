@@ -131,8 +131,9 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	// current ones, which a management upgrade or rollback may have moved since, so no other
 	// runner receives its hydrated inputs. Refusing the poll would hold every later command
 	// for the runner, its update included, until the build expired, so a build never
-	// delivered fails instead. One the runner may already hold keeps being refused: supported
-	// updates wait for it, so only a runner replaced by hand can be there.
+	// delivered fails instead. One the runner may already hold keeps being refused until it
+	// ends: supported updates wait for it, so this is a build delivered by an earlier
+	// management to an agent that advertises no digest, or a runner replaced by hand.
 	if p.Build != nil && p.Build.UsesRailpack() {
 		if p.Railpack == nil {
 			return false, errors.New("invalid pipeline payload")
