@@ -46,15 +46,18 @@ func refusingPulls(t *testing.T, e *Engine) {
 }
 
 // PLAT-364. A deploy whose images can't be pulled has changed nothing the unit runs, so it fails
-// and the host takes the next command. One run again after it began changing the unit's storage
-// needs attention, as any later step does.
+// and the host takes the next command. One run again after any attempt began changing the unit's
+// storage needs attention, as any later step does, even once a later attempt has moved its
+// checkpoint back to the pull.
 func TestDeployWhosePullFailsFails(t *testing.T) {
 	for _, tc := range []struct {
-		name, checkpoint string
-		state            api.ExecutionState
+		name        string
+		checkpoints []string
+		state       api.ExecutionState
 	}{
 		{name: "first attempt", state: "failed"},
-		{name: "run again after its storage step", checkpoint: "storage", state: "needs_attention"},
+		{name: "run again after its storage step", checkpoints: []string{"preflight", "pull", "storage"}, state: "needs_attention"},
+		{name: "run again after a later attempt stopped in its pull", checkpoints: []string{"preflight", "pull", "storage", "services", "preflight", "pull"}, state: "needs_attention"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j, plan := testVisualJournal(t)
@@ -67,11 +70,13 @@ func TestDeployWhosePullFailsFails(t *testing.T) {
 			plan.ExpectedState = observed.StateHash
 			plan = plan.WithHash()
 			deploy := visualCommand(plan, "deploy", 1)
-			if tc.checkpoint != "" {
+			if len(tc.checkpoints) > 0 {
 				if _, err = j.Accept(deploy); err != nil {
 					t.Fatal(err)
 				}
-				if err = e.checkpoint(deploy.Id, tc.checkpoint); err != nil {
+			}
+			for _, checkpoint := range tc.checkpoints {
+				if err = e.checkpoint(deploy.Id, checkpoint); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -81,6 +86,9 @@ func TestDeployWhosePullFailsFails(t *testing.T) {
 			r, err := j.Record(deploy.Id)
 			if err != nil || r.Report.State != tc.state || !strings.Contains(r.Report.Note, "was not pulled") {
 				t.Fatalf("the deploy ended %s: %s (%v)", r.Report.State, r.Report.Note, err)
+			}
+			if strings.Contains(r.Report.Note, "Existing workloads are unchanged.") != (tc.state == "failed") {
+				t.Fatal("the note misstates what the deploy changed:", r.Report.Note)
 			}
 			if tc.state != "failed" {
 				return
@@ -139,6 +147,9 @@ func TestCrossHostPreparationWhosePullFails(t *testing.T) {
 			r, err := j.Record(c.Id)
 			if err != nil || r.Report.State != tc.state || !strings.Contains(r.Report.Note, "was not pulled") {
 				t.Fatalf("the preparation ended %s: %s (%v)", r.Report.State, r.Report.Note, err)
+			}
+			if strings.Contains(r.Report.Note, "Existing workloads are unchanged.") != (tc.state == "failed") {
+				t.Fatal("the note misstates what the preparation changed:", r.Report.Note)
 			}
 		})
 	}

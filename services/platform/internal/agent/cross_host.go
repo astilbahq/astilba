@@ -168,8 +168,8 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		if err = e.prepareCrossHost(ctx, c, payload, command.Unit.Previous); err != nil {
 			// The operation aborts once preparation fails, removing candidates, but a candidate
 			// may have replaced a shared service, which abort does not restore.
-			unchanged := errors.As(err, new(*imagePullRefused)) && state.Phase == "reserved" && (r.Checkpoint == "accepted" || r.Checkpoint == "cross-host-prepare")
-			return finish(pullFailure(unchanged), safeVisualError(err, command.Secrets))
+			outcome, note := pullFailure(err, command.Secrets, state.Phase == "reserved" && !r.reached("cross-host-candidates"))
+			return finish(outcome, note)
 		}
 		for _, app := range p.LocalApplications() {
 			if app.Health != nil {

@@ -36,10 +36,13 @@ import (
 // loading what it read (image_pull_load.go), and with the classic store by letting Docker pull
 // what it measured while watching Docker's storage (image_pull_watch.go).
 
-// imagePullRefused is why the agent did not pull an image; its message is the operation's note.
-type imagePullRefused struct{ note string }
+// imagePullRefused is why the agent did not pull image; its message is the operation's note.
+type imagePullRefused struct {
+	image   string
+	refusal *imageLoadRefused
+}
 
-func (r *imagePullRefused) Error() string { return r.note }
+func (r *imagePullRefused) Error() string { return r.refusal.pulled(r.image) }
 
 // layerCosts remembers what unpacking each layer the agent has measured writes, by its digest,
 // so a new version of an image does not download its unchanged layers twice.
@@ -81,7 +84,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	refuse := func(err error) error {
 		var refused *imageLoadRefused
 		if errors.As(err, &refused) {
-			return &imagePullRefused{refused.pulled(image)}
+			return &imagePullRefused{image, refused}
 		}
 		return err
 	}
@@ -330,21 +333,32 @@ func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) err
 	return nil
 }
 
-// pullFailure is the outcome of a deployment command whose images could not be pulled. A pull
-// changes nothing that a deployment runs, so it fails a command that had changed nothing before
-// it. One run again after it began changing the deployment needs attention, as any later step
-// does.
-func pullFailure(changedNothing bool) api.ExecutionState {
-	if changedNothing {
-		return "failed"
+// pullFailure is the outcome and note of a deployment command that failed with err. A pull
+// changes nothing that a deployment runs, so a refused pull fails a command that had changed
+// nothing before it. Any other failure needs attention, as does a refused pull in a command run
+// again after it began changing the deployment, whose note then says so.
+func pullFailure(err error, secrets map[string]string, changedNothing bool) (api.ExecutionState, string) {
+	var refused *imagePullRefused
+	switch {
+	case !errors.As(err, &refused):
+		return "needs_attention", safeVisualError(err, secrets)
+	case changedNothing:
+		return "failed", safeVisualError(err, secrets)
 	}
-	return "needs_attention"
+	note := refused.refusal.cause("The image "+truncated(refused.image, 300), "pulled") + " An earlier attempt of this operation had begun changing the deployment, so inspect it before retrying."
+	return "needs_attention", safeVisualError(errors.New(note), secrets)
+}
+
+// finishVisualPull finishes a deploy whose images could not be pulled.
+func (e *Engine) finishVisualPull(ctx context.Context, c api.ExecutionCommand, p deployment.Payload, changedNothing bool, err error) error {
+	state, note := pullFailure(err, p.Secrets, changedNothing)
+	return e.visualFinish(ctx, c, p, state, note)
 }
 
 // notPulled is the refusal for not putting image into Docker because of why; fix says what to do,
 // with {retry} for deploying again.
 func notPulled(image, why, fix string) error {
-	return &imagePullRefused{(&imageLoadRefused{why: why, fix: fix}).pulled(image)}
+	return &imagePullRefused{image, &imageLoadRefused{why: why, fix: fix}}
 }
 
 func (e *Engine) pullImage(ctx context.Context, image string) error {
