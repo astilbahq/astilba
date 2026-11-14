@@ -3,7 +3,6 @@ package integration
 import (
 	"bytes"
 	"encoding/json/v2"
-	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 

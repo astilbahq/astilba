@@ -259,7 +259,13 @@ export function ChangeSource({
     shown: Schema["GitSourceStatus"];
     replacing: string | null;
   }>({ shown: source, replacing: null });
-  if (view.replacing && source.sourceHash === view.shown.sourceHash)
+  // Once the page shows anything but the replaced source, the binding has settled: its own source,
+  // or a change made elsewhere, which the notice then shows.
+  if (
+    view.replacing &&
+    (source.sourceHash === view.shown.sourceHash ||
+      source.sourceHash !== view.replacing)
+  )
     setView({ shown: view.shown, replacing: null });
   const shown = view.shown;
   const [removing, setRemoving] = useState(false);
@@ -301,7 +307,11 @@ export function ChangeSource({
           action={action}
           changed={changed}
           bound={(next) =>
-            setView({ shown: next, replacing: shown.sourceHash })
+            setView((v) => ({
+              shown: next,
+              // Binding again before the page caught up still replaces what the page shows.
+              replacing: v.replacing ?? v.shown.sourceHash,
+            }))
           }
         />
         <div>
