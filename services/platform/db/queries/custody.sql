@@ -47,9 +47,9 @@ ORDER BY s.at;
 
 -- name: SampleSealedValues :many
 -- unscoped: before a backend's first canaries, start-up checks the keyring against one stored value
--- of every kind a rewrap covers, from any workspace. The installation's own values have the nil
+-- of every kind a rewrap covers, from any workspace, passing over erased values as a rewrap does. The installation's own values have the nil
 -- workspace, as their identities do.
-(SELECT 'secret-version'::text AS kind,workspace_id,id,encrypted_value AS sealed FROM secret_versions LIMIT 1)
+(SELECT 'secret-version'::text AS kind,workspace_id,id,encrypted_value AS sealed FROM secret_versions WHERE erased_at IS NULL LIMIT 1)
 UNION ALL (SELECT 'git',workspace_id,id,encrypted_access FROM git_connections WHERE encrypted_access IS NOT NULL LIMIT 1)
 UNION ALL (SELECT 'github-authorization',workspace_id,id,encrypted_access FROM github_app_authorizations WHERE encrypted_access IS NOT NULL LIMIT 1)
 UNION ALL (SELECT 'registry',workspace_id,id,encrypted_access FROM registries WHERE encrypted_access IS NOT NULL LIMIT 1)

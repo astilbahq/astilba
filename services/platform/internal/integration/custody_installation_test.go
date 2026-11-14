@@ -472,3 +472,23 @@ func TestConcurrentFirstStartsAgreeOnOneKeyring(t *testing.T) {
 		}
 	}
 }
+
+// An erased secret version holds no value, so the keyring check passes over it rather than
+// refusing the right keyring.
+func TestKeyringCheckPassesOverErasedValues(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	owner, _, path := secretEnvironment(t, f)
+	owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "erased-before-canaries"}, 201, nil)
+	for _, statement := range []string{
+		"UPDATE secret_versions SET encrypted_value=NULL,erased_at=now(),plaintext_bytes=NULL,json_bytes=NULL",
+		"DELETE FROM custody_backends",
+	} {
+		if _, err := f.st.Pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := restart(f, keysOf(f.st), uuid.Nil); err != nil {
+		t.Fatalf("right keyring with only erased values: %v", err)
+	}
+}
