@@ -249,14 +249,28 @@ Changing the pool never moves an existing network. Running environments keep the
 
 The agent checks routes only when it creates a network. If a route appears later, for example when a VPN connects, any container network inside it takes precedence on the host: traffic from the host and its containers to those addresses goes to the containers, not through the VPN. Give the host a persistent route for networks it must reach, or set a pool outside them, before deploying. When choosing a managed network prefix, avoid ranges the workspace's hosts already use for container networks. A host won't join a managed network whose prefix overlaps any of its routes, or any of its local bridge, macvlan or ipvlan L2 networks, routed or not. It changes nothing and the member's note names the conflict. Remove the overlapping network or route on that host, then save the network again. Until then the host still receives removals, and the network's next change tries the whole configuration again. A host reserved for a cross-host placement keeps every network created on it out of that placement's prefix until it joins.
 
-## Local image loads
+## Image loads and pulls
 
-A local build, one that does not push to a registry, is loaded into the host's Docker. A build can make an image that unpacks to far more than its archive, so the agent bounds what one load may write. Two settings on the agent's `run` command control the bound. Only the host's owner can set them; management can't.
+A local build, one that does not push to a registry, is loaded into the host's Docker. A deployment's image is pulled from its registry. Either can unpack to far more than its archive or its registry size, so the agent bounds what one load or pull may write. Two settings on the agent's `run` command control the bound for both. Only the host's owner can set them; management can't.
 
-- `--image-load-gib` is the most one load may write to Docker's storage, in GiB. The default is 8. A load may also create at most 1,048,576 files and directories, whatever this setting is.
-- `--image-load-reserve-gib` is the free space a load must leave on Docker's data-root and on `/var/lib/containerd`, in GiB. The default is 4. A load must also leave 262,144 inodes free. This reserve applies only to loads: a build still needs 4 GiB free on the data-root to start.
+- `--image-load-gib` is the most one load or pull may write to Docker's storage, in GiB. The default is 8. A load or pull may also create at most 1,048,576 files and directories, whatever this setting is.
+- `--image-load-reserve-gib` is the free space a load or pull must leave on Docker's data-root and on `/var/lib/containerd`, in GiB. The default is 4. It must also leave 262,144 inodes free. A build still needs 4 GiB free on the data-root to start, whatever this setting is.
 
-Both take whole numbers from 1 to 1024. Set them with an inspected `ExecStart` override that keeps the existing arguments, as for [certificate contact](#certificate-contact), and restart the agent. A refused build's note names the limit it hit and the setting that changes it. [Git builds](git-builds.md#budgets-and-recovery) describes what a load counts.
+Both take whole numbers from 1 to 1024. Set them with an inspected `ExecStart` override that keeps the existing arguments, as for [certificate contact](#certificate-contact), and restart the agent. A refused build's or deployment's note names the limit it hit and the setting that changes it. [Git builds](git-builds.md#budgets-and-recovery) describes what a load counts, and [pulling deployment images](git-builds.md#pulling-deployment-images) what a pull counts.
+
+The agent reads a deployment's image from its registry itself; see [pulling deployment images](git-builds.md#pulling-deployment-images). So the host must reach the registry as Docker does. The agent uses what Docker uses for it:
+
+- the system's certificate authorities;
+- those in `/etc/docker/certs.d/<registry>/`, with any client certificate there;
+- the daemon's insecure registries;
+- Docker Hub's mirrors from the daemon's configuration;
+- the daemon's proxy, as `docker info` shows it.
+
+Docker's info hides a proxy's password. If the daemon's proxy has one, set the same proxy in the agent's environment with `HTTPS_PROXY` and `NO_PROXY`, or the agent can't read registries and refuses pulls. A daemon without a proxy leaves the agent to its environment's.
+
+With Docker's classic image store, preflight notes that the agent can only watch a pull there. Switch Docker to the containerd image store for exact bounds. With the containerd store, Docker 28 or later is needed; preflight notes an older one.
+
+The agent reads a deployment's images from Docker Hub anonymously unless the deployment gives it credentials, and Docker Hub limits anonymous pulls by IP address. On a busy host, give deployments that use Docker Hub images Docker Hub credentials.
 
 ## Optional cross-host networking
 

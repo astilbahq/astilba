@@ -34,6 +34,8 @@ type RecoveryPreview struct {
 	Handovers      map[uuid.UUID]deployment.RecoveryHandover `json:"handovers"`
 	Applied        bool                                      `json:"applied"`
 	AlreadyApplied bool                                      `json:"alreadyApplied"`
+	// SetAside names the checkpoints recovery authenticated and doesn't use.
+	SetAside []RecoverySetAside `json:"setAside"`
 }
 
 type recoveringRoot struct {
@@ -86,6 +88,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err != nil {
 		return out, err
 	}
+	out.SetAside = source.SetAside
 	if err = s.recoverSavedCheckpoints(ctx, tx, keys, before, &source); err != nil {
 		return out, err
 	}
@@ -106,10 +109,18 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if _, err = tx.Exec(ctx, `CREATE TEMP TABLE recovery_selected_roots(id uuid PRIMARY KEY) ON COMMIT DROP; CREATE TEMP TABLE recovery_incoming_grants(endpoint_id uuid NOT NULL,server_id uuid NOT NULL,unit_id uuid NOT NULL,PRIMARY KEY(endpoint_id,server_id,unit_id)) ON COMMIT DROP; CREATE TEMP TABLE recovery_standalone_restrictions(id uuid PRIMARY KEY,source jsonb) ON COMMIT DROP; INSERT INTO recovery_standalone_restrictions(id) SELECT id FROM recovery_input_proofs WHERE parent_id='00000000-0000-0000-0000-000000000000'`); err != nil {
 		return out, err
 	}
+	// The input is what the hosts supplied and the chains of the roots recovery takes over. Other
+	// chains it loaded can come from management's own checkpoints, as for an unfinished root of a
+	// revoked primary that the newest base doesn't carry; applying fences that root, so a retry
+	// wouldn't load its chain again and couldn't recognise the recovery it repeats.
+	recovered := map[uuid.UUID]deployment.RecoveryDescriptor{}
+	for parent, root := range roots {
+		recovered[parent] = root.Descriptor
+	}
 	inputHash := Hash(struct {
 		Hosts map[uuid.UUID]deployment.RecoveryEvidence
 		Roots map[uuid.UUID]deployment.RecoveryDescriptor
-	}{source.Hosts, source.Roots})
+	}{source.Hosts, recovered})
 	if in.ExpectedState != "" && in.ExpectedState != out.StateHash {
 		if repeated, err := s.repeatedRecovery(ctx, tx, in, inputHash, roots, &out); err != nil {
 			return out, err
@@ -191,6 +202,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = portability.MergeRecovery(ctx, tx, source.Archive, in.OwnerID); err != nil {
 		return out, err
 	}
+	if err = portability.StoreRecoveredHistory(ctx, tx, in.WorkspaceID, source.History); err != nil {
+		return out, err
+	}
 	for env, projection := range source.Projections {
 		if projection.tuple.Operation == uuid.Nil || projection.origin.Operations[projection.tuple.Operation].Runtime.Kind != "removed" {
 			continue
@@ -211,6 +225,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 		return out, err
 	}
 	if err = s.restoreRecoveryRoots(ctx, tx, in.WorkspaceID, roots, in.ExpectedState, inputHash, in.OwnerID); err != nil {
+		return out, err
+	}
+	if err = registerLoadedBases(ctx, q, in.WorkspaceID, source); err != nil {
 		return out, err
 	}
 	if err = s.restoreRecoveryProofs(ctx, tx, in.WorkspaceID, roots, source.Hosts); err != nil {
@@ -358,6 +375,9 @@ func recoveryControllers(before portability.Archive, source recoverySource) (map
 }
 
 func validateRecoveryCompatibility(before portability.Archive, source recoverySource, roots map[uuid.UUID]recoveringRoot) error {
+	if err := refuseRetiredBeyondWindow(before, source); err != nil {
+		return err
+	}
 	current, err := buildAppliedOrigin(before, uuid.Nil)
 	if err != nil {
 		return err
