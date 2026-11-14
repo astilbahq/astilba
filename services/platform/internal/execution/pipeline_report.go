@@ -123,7 +123,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil, false); err != nil {
 			return false, err
 		}
 	}
@@ -384,7 +384,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			var current uuid.UUID
 			var actor uuid.UUID
 			var approved *int64
-			if err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved); err != nil {
+			err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved)
+			// An owner can unbind the source while it imports.
+			if errors.Is(err, pgx.ErrNoRows) {
+				r.State = "failed"
+				r.Note = "The Git source was unbound while this import ran. Nothing was saved."
+				break
+			}
+			if err != nil {
 				return err
 			}
 			if current != p.RevisionID {
@@ -426,6 +433,11 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, id, actor, approved); err != nil {
 					return err
 				}
+			}
+			// A refresh holds an environment's automatic builds while its source can't import, and
+			// ends. An import started by hand or by binding the source again then lets them build.
+			if err = s.refreshBehindBuilds(ctx, tx, ws, c.EnvironmentId, p); err != nil {
+				return err
 			}
 
 		case "build", "build-preview":

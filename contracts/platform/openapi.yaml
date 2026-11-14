@@ -3476,6 +3476,13 @@
                 $ref: '#/components/schemas/Error'
     put:
       operationId: bindGitSource
+      description: >-
+        Bind the environment to a Git source, or bind it again: a new connection, branch, runner, selected files or
+        entrypoints. Either imports the branch's current commit, replacing the Compose files in the saved draft, and
+        makes the automatic imports and deployments yours. Binding again also forgets the earlier import, so deployments
+        wait for this one, and is refused while an import of the environment runs. Binding again needs the source's
+        `sourceHash`, and is refused if the source changed since. Needs an owner with recent authentication. A selected
+        file the branch doesn't hold is refused by name.
       parameters:
         - name: workspaceId
           in: path
@@ -3496,8 +3503,12 @@
             type: string
             format: uuid
       responses:
-        '201':
-          description: Success
+        '202':
+          description: Bound; the import is queued.
+          headers:
+            Astilba-Source-Hash:
+              description: The source's hash as now bound, as returned with the source, so a client can tell its own binding from a change made elsewhere since.
+              schema: {type: string, pattern: '^[a-f0-9]{64}$'}
           content:
             application/json:
               schema:
@@ -3514,6 +3525,23 @@
           application/json:
             schema:
               $ref: '#/components/schemas/BindGitSource'
+    delete:
+      operationId: unbindGitSource
+      description: >-
+        Stop importing the environment from Git. The saved draft keeps its Compose files, and an import still running
+        saves nothing. Needs an owner with recent authentication.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204':
+          description: Unbound
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/source/refresh:
     post:
       operationId: refreshGitSource
@@ -3609,6 +3637,28 @@
           content:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/BuildRejection'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-waits:
+    get:
+      operationId: listBuildWaits
+      description: >-
+        Automatic builds of a commit that wait for their runner, for each current application. A build waits while its
+        runner finishes enrolling again or until an owner updates it, for a day at most, and is then rejected as
+        `runner_unavailable`.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Automatic builds waiting for their runner.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/BuildWait'}}
         default:
           description: Error
           content:
@@ -8396,6 +8446,13 @@
           nullable: true
           allOf:
             - $ref: '#/components/schemas/SourceSubmission'
+        failure:
+          description: >-
+            Why automatic imports could not import the branch's latest commit, if they could not. They don't try that
+            commit again; the next push, a refresh or binding the source again does.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/GitSourceFailure'
       required:
         - configuration
         - importedCommit
@@ -8406,6 +8463,15 @@
         - approval
         - sourceHash
         - submission
+        - failure
+    GitSourceFailure:
+      type: object
+      additionalProperties: false
+      required: [commit, reason, failedAt]
+      properties:
+        commit: {type: string, minLength: 1, maxLength: 64}
+        reason: {type: string, maxLength: 1000}
+        failedAt: {type: string, format: date-time}
     PolicyApproval:
       type: string
       description: >-
@@ -8437,6 +8503,12 @@
         baseRevisionId:
           type: string
           format: uuid
+        sourceHash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: >-
+            The hash returned with the source, needed to bind it again, so a change made since it was shown is refused
+            rather than overwritten.
       required:
         - configuration
         - baseRevisionId
@@ -8733,7 +8805,11 @@
       x-go-type-import: {path: encoding/json/jsontext}
     BuildRejectionReason:
       type: string
-      enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget]
+      description: >-
+        Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner was removed or
+        revoked, lost its credential with no enrollment under way, or can no longer build it, or the build waited a day
+        for it to finish enrolling or to be updated. `registry_unavailable`: the target's registry was removed.
+      enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget, runner_unavailable, registry_unavailable]
     BuildRejection:
       type: object
       additionalProperties: false
@@ -8743,6 +8819,26 @@
         commit: {type: string, minLength: 1, maxLength: 64}
         reason: {$ref: '#/components/schemas/BuildRejectionReason'}
         rejectedAt: {type: string, format: date-time}
+    BuildWaitReason:
+      type: string
+      description: >-
+        What an automatic build waits for. `runner_update`: an owner to update the runner, which doesn't yet run what
+        the build needs of this release, such as its Railpack pins. `runner_enrollment`: the runner to finish enrolling again.
+      enum: [runner_update, runner_enrollment]
+    BuildWait:
+      type: object
+      additionalProperties: false
+      required: [applicationId, commit, reason, runnerId, since, until]
+      properties:
+        applicationId: {type: string, format: uuid}
+        commit: {type: string, minLength: 1, maxLength: 64}
+        reason: {$ref: '#/components/schemas/BuildWaitReason'}
+        runnerId: {type: string, format: uuid}
+        since: {type: string, format: date-time}
+        until:
+          type: string
+          format: date-time
+          description: When the build stops waiting and is rejected as `runner_unavailable`, a day after the refresh began.
     PipelineRun:
       type: object
       additionalProperties: false

@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -447,17 +448,30 @@ func (g *gitAnswers) pullRequest(ctx context.Context, tx pgx.Tx, id uuid.UUID, n
 	})
 }
 
-// mergedAt asks whether any of these reviews merged as exactly this commit.
+// mergedAt asks whether any of these reviews merged as exactly this commit. A review the provider
+// no longer has, as a GitLab owner can delete one, leaves the others to answer; its not-found
+// answer stands only when the provider has none of them.
 func (g *gitAnswers) mergedAt(ctx context.Context, tx pgx.Tx, id uuid.UUID, reviews []int, head string) (gitAnswer[bool], error) {
 	return askProvider(ctx, tx, g, id, false, fmt.Sprintf("merged/%s/%v", head, reviews), func(ctx context.Context, p *pipeline.Provider) (bool, error) {
+		var gone error
+		missing := 0
 		for _, number := range reviews {
 			merged, err := p.MergedCommit(ctx, number)
+			var status *pipeline.ProviderError
+			if errors.As(err, &status) && status.Status == http.StatusNotFound {
+				gone = err
+				missing++
+				continue
+			}
 			if err != nil {
 				return false, err
 			}
 			if merged == head {
 				return true, nil
 			}
+		}
+		if missing == len(reviews) && gone != nil {
+			return false, gone
 		}
 		return false, nil
 	})
