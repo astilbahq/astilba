@@ -132,11 +132,11 @@ func (r *imageLoadRefused) render(subject, verb, retry string) string {
 func (l imageLoadLimit) refusal(over error) error {
 	switch {
 	case errors.Is(over, errImageOverBytes) && l.bytesByStorage:
-		return &imageLoadRefused{fmt.Sprintf("unpacking it would leave less than %d GiB free in this server's Docker storage, which the agent keeps in reserve", l.reserveBytes>>30), "Free space on the server and {retry}; the server's owner sets the reserve with the agent's --image-load-reserve-gib."}
+		return &imageLoadRefused{fmt.Sprintf("unpacking it would leave less than %d GiB free in this server's Docker storage, which the agent keeps in reserve", l.reserveBytes>>30), "The agent counts every layer of the image, even those Docker already has, so a nearly full server can refuse even a small update. Free space on the server and {retry}; the server's owner sets the reserve with the agent's --image-load-reserve-gib."}
 	case errors.Is(over, errImageOverBytes):
 		return &imageLoadRefused{fmt.Sprintf("unpacked, it would write more than %d GiB to this server's Docker storage, the most one image may write here", l.loadBytes>>30), "Make the image smaller, for example with a multi-stage build, or ask the server's owner to raise the agent's --image-load-gib."}
 	case l.entriesByStorage:
-		return &imageLoadRefused{fmt.Sprintf("unpacking it would leave fewer than %d inodes free in this server's Docker storage", dockerReserveInodes), "Free space on the server, such as unused images, and {retry}."}
+		return &imageLoadRefused{fmt.Sprintf("unpacking it would leave fewer than %d inodes free in this server's Docker storage", dockerReserveInodes), "The agent counts every layer of the image, even those Docker already has, so a nearly full server can refuse even a small update. Free space on the server, such as unused images, and {retry}."}
 	}
 	return &imageLoadRefused{fmt.Sprintf("unpacked, it would create more than %d files and directories, the most one image may create", localImageLoadEntries), "Make the image smaller, for example with a multi-stage build that copies only what the application needs."}
 }

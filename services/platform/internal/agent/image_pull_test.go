@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -234,9 +235,10 @@ func TestPullReadsOnlyThisServersImage(t *testing.T) {
 	// A load reads the other entries' manifests, to check nothing below them is an image, but
 	// none of their blobs, and remembers them. It also takes the chosen image's attestation,
 	// which Docker reads as its referrer and stores but never unpacks.
-	checked := &checkedManifests{}
+	// The second load is after the agent restarted.
+	path := filepath.Join(t.TempDir(), checkedManifestsFile)
 	for range 2 {
-		if plan, err = planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, pullTestLimit, true, checked); err != nil {
+		if plan, err = planRegistryImage(context.Background(), source, digest.Digest(root), amd64Server, pullTestLimit, true, &checkedManifests{path: path}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -376,7 +378,7 @@ func TestPullRefusesWhatItCannotMeasure(t *testing.T) {
 		}, "not an image's"},
 		"a config for another platform": {func(r *testRegistry) string {
 			return r.imageFor("arm64", layer)
-		}, "built for \"linux/arm64\""},
+		}, "built for \"linux/arm64\", and this server runs linux/amd64 images"},
 		"a layer that differs from its digest": {func(r *testRegistry) string {
 			d := r.blob(layer)
 			r.overrides[d] = gzipOf(t, tarOf(t, testFile{"app", 11}))[:len(layer)]

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"sync"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -226,7 +227,12 @@ func (e *Engine) measureRegistryImage(ctx context.Context, source registryImage,
 }
 
 func (e *Engine) checkedManifests() *checkedManifests {
-	e.checkedOnce.Do(func() { e.checkedSiblings = &checkedManifests{} })
+	e.checkedOnce.Do(func() {
+		e.checkedSiblings = &checkedManifests{}
+		if e.Journal != nil && e.Journal.dir != "" {
+			e.checkedSiblings.path = filepath.Join(e.Journal.dir, checkedManifestsFile)
+		}
+	})
 	return e.checkedSiblings
 }
 

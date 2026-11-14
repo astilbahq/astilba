@@ -268,7 +268,9 @@ The agent reads a deployment's image from its registry itself; see [pulling depl
 
 Docker's info hides a proxy's password. If the daemon's proxy has one, set the same proxy in the agent's environment with `HTTPS_PROXY` and `NO_PROXY`, or the agent can't read registries and refuses pulls. A daemon without a proxy leaves the agent to its environment's.
 
-With Docker's classic image store, preflight notes that the agent can only watch a pull there. Switch Docker to the containerd image store for exact bounds.
+With Docker's classic image store, preflight notes that the agent can only watch a pull there. Switch Docker to the containerd image store for exact bounds. With the containerd store, Docker 28 or later is needed; preflight notes an older one.
+
+The agent reads a deployment's images from Docker Hub anonymously unless the deployment gives it credentials, and Docker Hub limits anonymous pulls by IP address. On a busy host, give deployments that use Docker Hub images Docker Hub credentials.
 
 ## Optional cross-host networking
 

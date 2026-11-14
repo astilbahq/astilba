@@ -11,6 +11,10 @@ import (
 // classic store, where the agent can only watch a pull rather than feed it.
 const classicImageStoreNote = "Docker uses its classic image store, where the agent can only watch a pull: a registry can make one write 1 GiB more than its image and leave a partial download. Switch Docker to the containerd image store for exact bounds."
 
+// oldContainerdDockerNote is preflight's note for a Docker that keeps images in containerd but
+// cannot load one platform of an image, which the agent needs for any image with an index.
+const oldContainerdDockerNote = "Docker on this server is older than version 28 and uses its containerd image store, so the agent refuses to deploy images with an index there, including most images. Upgrade Docker to 28 or later."
+
 // pullSlack is how much more than the agent measured a pull may take of Docker's storage, for
 // other writers on the server, before the agent stops it: at most half the reserve, so a pull
 // the agent stops still leaves half the reserve free.

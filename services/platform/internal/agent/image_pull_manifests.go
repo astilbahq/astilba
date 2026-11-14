@@ -11,7 +11,6 @@ import (
 	"io"
 	"slices"
 	"strconv"
-	"sync"
 
 	"github.com/containerd/platforms"
 	"github.com/opencontainers/go-digest"
@@ -78,6 +77,7 @@ func leafBlobs(blobs ...ocispec.Descriptor) error {
 // one that names a manifest or index below it (leafBlobs). Docker never pulls these, but its
 // load walks them when it holds their content from elsewhere.
 func checkSiblings(ctx context.Context, source registryImage, children []ocispec.Descriptor, plan *registryPlan, checked *checkedManifests) error {
+	defer checked.flush()
 	for _, child := range children {
 		if checked.has(child.Digest) || slices.ContainsFunc(plan.documents, func(d registryDocument) bool { return d.desc.Digest == child.Digest }) {
 			continue
@@ -120,34 +120,6 @@ func checkSiblings(ctx context.Context, source registryImage, children []ocispec
 func missing(err error) bool {
 	var unread *imageArchiveUnread
 	return errors.As(err, &unread) && errors.Is(unread.err, errdef.ErrNotFound)
-}
-
-// checkedManifests are manifests checkSiblings found harmless, by digest, so a redeploy does
-// not read them from the registry again.
-type checkedManifests struct {
-	mu      sync.Mutex
-	digests map[digest.Digest]bool
-}
-
-func (c *checkedManifests) has(d digest.Digest) bool {
-	if c == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.digests[d]
-}
-
-func (c *checkedManifests) add(d digest.Digest) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.digests == nil || len(c.digests) >= layerCostEntries {
-		c.digests = map[digest.Digest]bool{}
-	}
-	c.digests[d] = true
 }
 
 // planAttestations adds the attestations of chosen in the index to plan. Docker's load of one
@@ -356,7 +328,8 @@ func planRegistryImage(ctx context.Context, source registryImage, root digest.Di
 		}
 	}
 	if !platformMatches(configPlatform, platform) {
-		return nil, unmeasurableImage("its image for this server's platform is built for " + strconv.Quote(truncated(configPlatform.OS+"/"+configPlatform.Architecture, 64)))
+		host := platforms.Normalize(platform)
+		return nil, &imageLoadRefused{why: "it is built for " + strconv.Quote(truncated(configPlatform.OS+"/"+configPlatform.Architecture, 64)) + ", and this server runs " + host.OS + "/" + host.Architecture + " images", fix: "Build or choose an image for " + host.OS + "/" + host.Architecture + ", then {retry}."}
 	}
 	return plan, nil
 }
