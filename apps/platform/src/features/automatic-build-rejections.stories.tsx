@@ -24,6 +24,17 @@ const meta = {
   title: "Pipelines/Automatic build notices",
   component: AutomaticBuildRejections,
   args: { applications, servers, error: null },
+  // The notices sit on the pipelines page under its headings, as in pipeline-jobs.tsx.
+  decorators: [
+    (Story) => (
+      <main>
+        <h1>Pipelines</h1>
+        <h2>Git and builds</h2>
+        <h3>Source and build jobs</h3>
+        <Story />
+      </main>
+    ),
+  ],
 } satisfies Meta<typeof AutomaticBuildRejections>;
 export default meta;
 type Story = StoryObj<typeof meta>;
