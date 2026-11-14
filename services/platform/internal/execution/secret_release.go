@@ -14,7 +14,9 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -131,19 +133,11 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 		if err != nil || !deliver {
 			return waitForRelease, err
 		}
+		// A pipeline past its deadline goes without values: an instance that holds it, such as
+		// one whose key has changed since, goes on with it, and one that doesn't says so
+		// (stopLostPipeline) rather than accept it.
 		if !c.CancelRequested {
-			// A pipeline past its deadline goes without values, and only an instance that
-			// holds it may go on with it. One whose values went unacknowledged holds it. One
-			// asking for them, having none or having lost them, can never start it again: it
-			// stops there rather than idle, holding the runner's queue, until its end.
-			if reason == "unacknowledged" {
-				c.SecretRelease = &api.SecretRelease{Epoch: key.DispatchEpoch, Values: false}
-				return sendCommand, nil
-			}
-			if err = s.Store.Queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: a.Workspace, ID: c.Id, Note: "Stopped: the runner lost this pipeline after its deadline, so it could not start it again."}); err != nil {
-				return waitForRelease, err
-			}
-			c.CancelRequested = true
+			c.SecretRelease = &api.SecretRelease{Epoch: key.DispatchEpoch, Values: false}
 		}
 		return sendCommand, nil
 	}
@@ -234,8 +228,53 @@ func (s *Service) NoticeSecretReleases(ctx context.Context, a Identity, notice a
 		if _, err := q.RequestSecretRedelivery(ctx, db.RequestSecretRedeliveryParams{WorkspaceID: a.Workspace, OperationID: r.OperationId, DispatchEpoch: r.Epoch, AgentInstance: a.instance()}); err != nil {
 			return err
 		}
+		if r.Reason == api.JournalMissing {
+			if err := s.stopLostPipeline(ctx, a, r.OperationId); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+// stopLostPipeline stops a pipeline that this agent's runner, to which it may have been
+// delivered, says it no longer holds once its deadline has passed. The runner can never start
+// it again, and would otherwise be offered it without values until its end, holding every later
+// command for the runner. Before the deadline the values are released again instead, and a
+// pipeline never delivered is finished by the next poll.
+func (s *Service) stopLostPipeline(ctx context.Context, a Identity, id uuid.UUID) error {
+	tx, err := s.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// Match delivery's identity-before-operation lock order.
+	valid, err := lockAgentCredential(ctx, tx, a)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return domain.Unauthenticated
+	}
+	q := db.New(tx)
+	op, err := q.LockDeliveredPipeline(ctx, db.LockDeliveredPipelineParams{WorkspaceID: a.Workspace, ID: id, ServerID: a.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var c api.ExecutionCommand
+	if err = json.Unmarshal(op.Command, &c); err != nil {
+		return err
+	}
+	if Terminal(api.ExecutionState(op.State)) || op.CancelRequested || !time.Now().After(c.Deadline) {
+		return nil
+	}
+	if err = q.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: a.Workspace, ID: id, Note: "Stopped: the runner lost this pipeline after its deadline, so it could not start it again."}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // agentKeys are the keys an agent's poll or report uses for the decisions it makes about the

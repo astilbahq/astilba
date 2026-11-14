@@ -18,11 +18,12 @@ import (
 // deadline, after waiting behind other work on the host, may run for its lifetime past the
 // deadline, though no values leave after it. One whose start management hears of only after
 // the deadline is stopped, whatever the runner's clock read, and publishes nothing, as is one
-// its runner lost after the deadline. admit queues a build on the runner token polls as, and
-// result is a success it may report.
-func buildDeadlineRuns(t *testing.T, f *fixture, token string, admit func() uuid.UUID, poll func(uuid.UUID) api.ExecutionCommand, result pipeline.Result) {
+// its runner lost after the deadline, though no other server can say so. admit queues a build
+// on the runner token polls as, other is another server's token, and result is a success the
+// runner may report.
+func buildDeadlineRuns(t *testing.T, f *fixture, token, other string, admit func() uuid.UUID, poll func(uuid.UUID) api.ExecutionCommand, result pipeline.Result) {
 	t.Helper()
-	for _, run := range []string{"started", "unacknowledged", "late", "lost"} {
+	for _, run := range []string{"started", "unacknowledged", "rekeyed", "late", "lost"} {
 		id := admit()
 		c := poll(id)
 		started := func() {
@@ -42,7 +43,13 @@ func buildDeadlineRuns(t *testing.T, f *fixture, token string, admit func() uuid
 		if _, err := f.st.Pool.Exec(context.Background(), "UPDATE execution_operations SET command=$2 WHERE id=$1", c.Id, raw); err != nil {
 			t.Fatal(err)
 		}
+		lost := func(token string) {
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: c.Id, Epoch: c.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
+		}
 		switch run {
+		case "started":
+			// Another server saying it lost the build changes nothing.
+			lost(other)
 		case "late":
 			started()
 		case "unacknowledged":
@@ -50,15 +57,21 @@ func buildDeadlineRuns(t *testing.T, f *fixture, token string, admit func() uuid
 			if _, err := f.st.Pool.Exec(context.Background(), "UPDATE secret_releases SET last_attempt_at=now()-interval '1 minute' WHERE operation_id=$1", c.Id); err != nil {
 				t.Fatal(err)
 			}
+		case "rekeyed":
+			// As after the runner's key changes: management holds no release for the instance
+			// that polls, though the runner holds the build and goes on with it.
+			if _, err := f.st.Pool.Exec(context.Background(), "DELETE FROM secret_releases WHERE operation_id=$1", c.Id); err != nil {
+				t.Fatal(err)
+			}
 		case "lost":
-			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: c.Id, Epoch: c.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
+			lost(token)
 		}
-		running := run == "started" || run == "unacknowledged"
+		running := run == "started" || run == "unacknowledged" || run == "rekeyed"
 		again := poll(id)
 		if again.CancelRequested == running {
 			t.Fatal("a build's cancellation did not follow when its start was reported", run)
 		}
-		if run == "unacknowledged" && (again.SecretRelease == nil || again.SecretRelease.Values) {
+		if (run == "unacknowledged" || run == "rekeyed") && (again.SecretRelease == nil || again.SecretRelease.Values) {
 			t.Fatal("a build delivered without its values after its deadline claimed to carry them", again.SecretRelease)
 		}
 		for _, value := range []string{"clone-read-canary", "build-only-canary", "push-canary"} {

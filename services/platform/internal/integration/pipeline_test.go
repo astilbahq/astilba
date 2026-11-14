@@ -274,7 +274,9 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			t.Fatal("cancelled/expired result published artifact")
 		}
 	}
-	buildDeadlineRuns(t, f, token, func() uuid.UUID {
+	_, otherEnrollment, otherToken := enrollment(t, f, b, ws, "build")
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", otherEnrollment, 200, nil)
+	buildDeadlineRuns(t, f, token, otherToken, func() uuid.UUID {
 		b.call("POST", path+"/builds", map[string]any{"baseRevisionId": promoted.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 202, &op)
 		return op.Id
 	}, poll, pipeline.Result{Commit: head, Image: registry.Repository + "@" + digest, Digest: digest, Architecture: "arm64"})
