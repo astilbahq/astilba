@@ -384,8 +384,10 @@ func (j *Journal) HoldsKey(cfg Config) bool {
 // StateVersion is the format the journal is in.
 func (j *Journal) StateVersion() int { return int(j.formatVersion.Load()) }
 
-// InstallStateVersion is the format a release must read to run on this journal. A journal that
-// seals its keyring may be sealed at any moment, even while an update installs.
+// InstallStateVersion is the format a release the agent service installs must read to run on this
+// journal. The service seals its journal's keyring as soon as it can, even while an update
+// installs. A command run with the service stopped never seals an existing keyring, so for it the
+// journal's own format is exact.
 func (j *Journal) InstallStateVersion() int {
 	j.stateMu.Lock()
 	defer j.stateMu.Unlock()

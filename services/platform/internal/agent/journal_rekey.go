@@ -22,6 +22,10 @@ var journalRekeyInterval = time.Hour
 // journalRekeyCheck is how often a running agent checks whether its journal is due a rekey.
 var journalRekeyCheck = time.Minute
 
+// journalStoreSettleCheck is how often the first rekey checks whether the key store's first
+// attempt has finished.
+const journalStoreSettleCheck = 100 * time.Millisecond
+
 // maxJournalKeys is the most keys a cryptobox keyring holds.
 const maxJournalKeys = 32
 
@@ -105,9 +109,10 @@ func (j *Journal) resealUnder(ctx context.Context, next *cryptobox.Keyring, id s
 		return err
 	}
 	// A read that began before the records were re-sealed may still open one under a replaced
-	// key, so the journal holds those keys until no such read can remain.
+	// key, so the journal holds those keys until no such read can remain. Stopping first ends the
+	// rekey: the keys on disk are final, and none may be added to those still held.
 	if !j.db.awaitReads(ctx) {
-		return nil
+		return ctx.Err()
 	}
 	j.keys.Store(final)
 	return nil
@@ -212,7 +217,7 @@ func (c *Client) keepJournalRekeyed(ctx context.Context) {
 	for {
 		// The first rekey waits for the key store's first attempt, so that it can seal at once.
 		if !c.keyStoreSettled() {
-			if !wait(ctx, journalRekeyCheck) {
+			if !wait(ctx, min(journalStoreSettleCheck, journalRekeyCheck)) {
 				return
 			}
 			continue
