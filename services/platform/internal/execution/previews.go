@@ -224,7 +224,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = s.validateVisualSecrets(ctx, tx, git.keys.inspect, ws, env, v.Spec); err != nil {
 			return err
 		}
-		if _, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, cfg.Build); err != nil {
+		if _, err = s.buildInputs(ctx, tx, git, ws, env, cfg.Build); err != nil {
 			return err
 		}
 		id, gen := uuid.New(), int64(1)

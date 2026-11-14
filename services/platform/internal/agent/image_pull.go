@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -35,19 +36,13 @@ import (
 // loading what it read (image_pull_load.go), and with the classic store by letting Docker pull
 // what it measured while watching Docker's storage (image_pull_watch.go).
 
-// imagePullRefused is why the agent did not pull an image; its message is the operation's note.
-type imagePullRefused struct{ note string }
-
-func (r *imagePullRefused) Error() string { return r.note }
-
-// imagePullNote is the note for failing to pull an image: the refusal's note followed by
-// after when the agent refused it, and otherwise otherwise.
-func imagePullNote(err error, otherwise, after string) string {
-	if refused := new(imagePullRefused); errors.As(err, &refused) {
-		return refused.note + after
-	}
-	return otherwise
+// imagePullRefused is why the agent did not pull image; its message is the operation's note.
+type imagePullRefused struct {
+	image   string
+	refusal *imageLoadRefused
 }
+
+func (r *imagePullRefused) Error() string { return r.refusal.pulled(r.image) }
 
 // layerCosts remembers what unpacking each layer the agent has measured writes, by its digest,
 // so a new version of an image does not download its unchanged layers twice.
@@ -89,7 +84,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	refuse := func(err error) error {
 		var refused *imageLoadRefused
 		if errors.As(err, &refused) {
-			return &imagePullRefused{refused.pulled(image)}
+			return &imagePullRefused{image, refused}
 		}
 		return err
 	}
@@ -279,6 +274,9 @@ func encodedRegistryAuth(c pipeline.Credential) string {
 	return base64.URLEncoding.EncodeToString(raw)
 }
 
+// pullVisualImages puts a deployment's images into Docker. Any image it cannot put there ends
+// in an *imagePullRefused whose note says why: a pull changes nothing that a deployment runs, so
+// its callers fail the deployment rather than hold the host for inspection.
 func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) error {
 	images := make([]string, 0, len(p.Plan.Images)+1)
 	for _, image := range p.Plan.Images {
@@ -296,19 +294,19 @@ func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) err
 		if a, ok := p.Plan.Artifacts[key]; ok && a.ServerID != nil {
 			v, err := e.Docker.ImageInspect(ctx, image)
 			if err != nil || v.ID != a.Digest || v.Architecture != a.Architecture {
-				return errors.New("local artifact identity is unavailable")
+				return notPulled(image, "the image built on this server is no longer in Docker or differs from that build", "Build it again, then {retry}.")
 			}
 			continue
 		}
 		if _, err := e.Docker.ImageInspect(ctx, image); err == nil {
 			continue
 		} else if !errdefs.IsNotFound(err) {
-			return errors.New("cannot inspect reviewed image")
+			return notPulled(image, "the agent could not ask Docker whether it already has it", "Check Docker on this server, then {retry}.")
 		}
 		if _, planned := p.Plan.Images[key]; !planned {
 			// Astilba's own images are pinned by digest in the agent itself.
 			if err := e.pullImageAuth(ctx, image, ""); err != nil {
-				return errors.New("image pull failed or was interrupted")
+				return notPulled(image, "pulling it failed or was interrupted", "Check that this server can reach its registry, then {retry}.")
 			}
 			continue
 		}
@@ -321,17 +319,46 @@ func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) err
 			if errors.As(err, &refused) {
 				return err
 			}
-			return errors.New("image pull failed or was interrupted")
+			return notPulled(image, "pulling it failed or was interrupted", "Check that this server can reach its registry, then {retry}.")
 		}
 	}
 
 	for key, artifact := range p.Plan.Artifacts {
-		v, err := e.Docker.ImageInspect(ctx, p.Plan.Images[key])
+		image := p.Plan.Images[key]
+		v, err := e.Docker.ImageInspect(ctx, image)
 		if err != nil || v.Architecture != artifact.Architecture {
-			return errors.New("artifact architecture differs from the reviewed target")
+			return notPulled(image, "Docker holds it for an architecture other than the reviewed build's", "Build it for this server, then {retry}.")
 		}
 	}
 	return nil
+}
+
+// pullFailure is the outcome and note of a deployment command that failed with err. A pull
+// changes nothing that a deployment runs, so a refused pull fails a command that had changed
+// nothing before it. Any other failure needs attention, as does a refused pull in a command run
+// again after it began changing the deployment, whose note then says so.
+func pullFailure(err error, secrets map[string]string, changedNothing bool) (api.ExecutionState, string) {
+	var refused *imagePullRefused
+	switch {
+	case !errors.As(err, &refused):
+		return "needs_attention", safeVisualError(err, secrets)
+	case changedNothing:
+		return "failed", safeVisualError(err, secrets)
+	}
+	note := refused.refusal.cause("The image "+truncated(refused.image, 300), "pulled") + " An earlier attempt of this operation had begun changing the deployment, so inspect it before retrying."
+	return "needs_attention", safeVisualError(errors.New(note), secrets)
+}
+
+// finishVisualPull finishes a deploy whose images could not be pulled.
+func (e *Engine) finishVisualPull(ctx context.Context, c api.ExecutionCommand, p deployment.Payload, changedNothing bool, err error) error {
+	state, note := pullFailure(err, p.Secrets, changedNothing)
+	return e.visualFinish(ctx, c, p, state, note)
+}
+
+// notPulled is the refusal for not putting image into Docker because of why; fix says what to do,
+// with {retry} for deploying again.
+func notPulled(image, why, fix string) error {
+	return &imagePullRefused{image, &imageLoadRefused{why: why, fix: fix}}
 }
 
 func (e *Engine) pullImage(ctx context.Context, image string) error {

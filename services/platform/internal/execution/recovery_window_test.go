@@ -319,8 +319,9 @@ func TestLedgerEntryAgreesWithAFailedRootsRow(t *testing.T) {
 	}
 }
 
-// Hosts that report running a root the newest base doesn't carry are refused by name, whether
-// another management started it or the newest base records that it ended.
+// Hosts that report running a root the newest base doesn't carry unfinished are refused by name,
+// whether another management started it or the newest base records that it ended, as a finished row
+// or otherwise.
 func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) {
 	_, full, plans := windowTestChain(t, 2)
 	newest := windowTestHistory(t, full, plans, 1)
@@ -332,11 +333,19 @@ func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) 
 	running := func(parent uuid.UUID) map[uuid.UUID]deployment.RecoveryEvidence {
 		return map[uuid.UUID]deployment.RecoveryEvidence{server: {ServerID: server, ActiveParent: parent}}
 	}
-	for _, parent := range []uuid.UUID{uuid.Nil, carried} {
-		if err := refuseUnknownActiveRoots(newest, n, running(parent)); err != nil {
-			t.Fatal("a root the newest base carries was refused", err)
-		}
+	if err := refuseUnknownActiveRoots(newest, n, running(uuid.Nil)); err != nil {
+		t.Fatal("a host running no root was refused", err)
 	}
+	// A root the newest base carries finished stays finished, whatever a host reports.
+	if err := refuseUnknownActiveRoots(newest, n, running(carried)); err == nil || !strings.Contains(err.Error(), carried.String()) || !strings.Contains(err.Error(), "records as ended") || !strings.Contains(err.Error(), "revoke those servers") {
+		t.Fatal("a stale report of a root the newest base carries finished wasn't refused by name", err)
+	}
+	finished := newest.Tables["execution_operations"][0]["state"]
+	recoverySet(newest.Tables["execution_operations"][0], "state", "running")
+	if err := refuseUnknownActiveRoots(newest, n, running(carried)); err != nil {
+		t.Fatal("a root the newest base carries unfinished was refused", err)
+	}
+	newest.Tables["execution_operations"][0]["state"] = finished
 	// A listed base's root that the newest base no longer carries has ended.
 	if err := refuseUnknownActiveRoots(newest, n, running(listed)); err == nil || !strings.Contains(err.Error(), "records as ended") || !strings.Contains(err.Error(), "revoke those servers") {
 		t.Fatal("a stale report of a listed root that ended wasn't refused by name", err)

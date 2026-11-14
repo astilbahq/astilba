@@ -153,13 +153,12 @@ func TestAgentReportedHostChangesNeedApproval(t *testing.T) {
 }
 
 // Confirming identity covers fifteen minutes of ordinary security-sensitive changes, such as
-// saving a secret, but only five of changes that could outlast the session: the account's own
-// credentials, and host changes, which can give root on the server.
+// saving a secret, but only five of changes that could outlast the session, such as host
+// changes, which can give root on the server.
 func TestRecentConfirmationWindows(t *testing.T) {
 	x := newHostReview(t)
 	first := x.plan()
 	x.later(10 * time.Minute)
-	x.b.call("POST", "/api/v1/auth/password", map[string]string{"password": "a replacement password here"}, 403, nil)
 	x.apply(first, true, 403)
 	x.b.call("POST", x.path+"/secrets", map[string]string{"name": "TOKEN", "value": "secret-for-window-test"}, 201, nil)
 	x.later(16 * time.Minute)

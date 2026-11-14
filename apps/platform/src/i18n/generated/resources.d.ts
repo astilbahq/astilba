@@ -248,6 +248,9 @@ export default interface Resources {
     "stepUp": {
       "authenticatorDescription": "Security-sensitive actions need a recent confirmation. Enter the six-digit code from your authenticator app.",
       "cancel": "Cancel",
+      "changeAuthenticatorDescription": "Changing how you sign in needs your current credential. Enter the six-digit code from your authenticator app.",
+      "changePasswordDescription": "Changing how you sign in needs your current credential. Enter your current password.",
+      "changeRecoveryDescription": "Changing how you sign in needs your current credential. Enter one of your saved recovery codes. Each code works once.",
       "code": "Authentication code",
       "confirm": "Confirm",
       "password": "Password",
@@ -553,6 +556,8 @@ export default interface Resources {
       "cancel": "Cancel",
       "created": "Version created {{date}}",
       "description": "Values are write-only. Reference a version ID in your specification with <field/>.",
+      "earlierTooShortToCheck": "Too short to check.",
+      "earlierVersions": "{{count}} earlier version of {{name}}" | "{{count}} earlier versions of {{name}}",
       "hint": "Reusing a name adds a version. You’ll be asked to confirm your identity before saving.",
       "name": "Secret name",
       "refusal": {
@@ -564,7 +569,9 @@ export default interface Resources {
         "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
         "unavailable": "This secret is no longer available. It may have been retired already.",
         "unknown": "This secret cannot be retired right now. Check the environment’s current state, then try again.",
-        "verifyEmail": "Verify your email address in Account security, then try again."
+        "verifyEmail": "Verify your email address in Account security, then try again.",
+        "versionInUse": "This version is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses it. Replace it there, then try again.",
+        "versionUnavailable": "This version is no longer available. It may have been retired already."
       },
       "retire": "Retire secret",
       "retireDialogDescription": "Retiring a secret cannot be undone. When you retire it:",
@@ -576,12 +583,25 @@ export default interface Resources {
         "values": "The value of every version is erased."
       },
       "retireNamed": "Retire secret {{name}}",
+      "retireVersion": "Retire version",
+      "retireVersionDialogDescription": "Retiring version {{id}} cannot be undone. When you retire it:",
+      "retireVersionDialogInUse": "A version cannot be retired while the draft, the running deployment, a deployment plan, an operation or a database upgrade uses it.",
+      "retireVersionDialogTitle": "Retire this version of <name/>?",
+      "retireVersionEffects": {
+        "current": "The secret keeps its current version and its other versions.",
+        "revisions": "Earlier revisions that use this version can no longer be deployed.",
+        "value": "Its value is erased, and files you submit and public build arguments are no longer checked against it."
+      },
+      "retireVersionNamed": "Retire version {{id}} of {{name}}",
       "retired": "Secret {{name}} retired. The values of all its versions are erased.",
       "retiring": "Retiring…",
       "save": "Save secret version",
       "saved": "Secret version saved. Its value cannot be read back.",
+      "savedTooShort": "Secret version saved. Its value cannot be read back. It is shorter than 12 bytes, so files you submit and public build arguments are not checked for it. Use 12 or more characters to have them checked.",
       "title": "Secrets",
-      "value": "Secret value"
+      "tooShortToCheck": "Too short to check: this value is shorter than 12 bytes, so files you submit and public build arguments are not checked for it. Save a value of 12 or more characters to have them checked.",
+      "value": "Secret value",
+      "versionRetired": "Version {{id}} of {{name}} retired. Its value is erased."
     },
     "sections": "Environment sections",
     "server": "Server",

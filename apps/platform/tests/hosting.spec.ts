@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import jsQR from "jsqr";
+import { confirmCredential } from "./confirm-credential";
 import { openEnvironmentSection } from "./environment-section";
 import { fixtureInfo, hosted as hostedOrigin } from "./fixtures/ports";
 import { totp } from "./fixtures/totp";
@@ -297,6 +298,9 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     await hosted
       .getByRole("button", { name: "Enable two-factor authentication" })
       .click();
+    await confirmCredential(hosted, {
+      password: "correct horse battery staple",
+    });
     await expect(
       hosted
         .getByRole("group", { name: "Authentication code", exact: true })
@@ -331,6 +335,9 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     await hosted
       .getByRole("button", { name: "Enable two-factor authentication" })
       .click();
+    await confirmCredential(hosted, {
+      password: "correct horse battery staple",
+    });
     await expect(
       hosted.getByRole("heading", { name: "Save your recovery codes" }),
     ).toBeFocused();
@@ -348,6 +355,10 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
     await hosted
       .getByRole("button", { name: "Generate replacement codes" })
       .click();
+    // Enabling spent the authenticator's current step, so this confirms with the next one.
+    await confirmCredential(hosted, {
+      code: totp(secret ?? "", Date.now() + 30000),
+    });
     await expect(
       hosted
         .getByRole("list", { name: "Recovery codes", exact: true })
