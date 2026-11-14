@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -74,6 +75,22 @@ func insertWorkspace(t *testing.T, f *fixture, name string) uuid.UUID {
 	return ws
 }
 
+// keysJobDone waits for the key job the fixture's workers run at start, after which nothing makes
+// keys in the background for ten minutes.
+func keysJobDone(t *testing.T, f *fixture) {
+	t.Helper()
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		var done bool
+		if err := f.st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_custody_keys_v1' AND state='completed')`).Scan(&done); err != nil {
+			t.Fatal(err)
+		}
+		if done {
+			return
+		}
+	}
+	t.Fatal("the key job did not run")
+}
+
 func initKeys(t *testing.T, b *secretbroker.Broker) {
 	t.Helper()
 	if more, err := b.InitKeys(context.Background(), func() bool { return true }); err != nil || more {
@@ -100,8 +117,9 @@ func TestNewWorkspacesHaveKeys(t *testing.T) {
 	if err != nil || !slices.Equal(purposes, custody.Purposes(custody.ScopeWorkspace)) || len(purposes) != 8 {
 		t.Fatal(purposes, err)
 	}
-	created := keyEvents(t, f, "key-created")
-	if len(created) != 1 || created[0].WorkspaceID == nil || *created[0].WorkspaceID != ws || created[0].Generation.Int64 != 1 || details(t, created[0])["source"] != "new-workspace" {
+	// The installation's own keys may be made meanwhile, in the background.
+	created := slices.DeleteFunc(keyEvents(t, f, "key-created"), func(e db.InstallationKeyEvent) bool { return e.WorkspaceID == nil })
+	if len(created) != 1 || *created[0].WorkspaceID != ws || created[0].Generation.Int64 != 1 || details(t, created[0])["source"] != "new-workspace" {
 		t.Fatalf("events %+v", created)
 	}
 	// Each wrapping opens to the key its check value names, under its own purpose only.
@@ -121,16 +139,16 @@ func TestNewWorkspacesHaveKeys(t *testing.T) {
 }
 
 // Creating keys reaches every workspace without them, and the installation and token keys, once
-// each however many run at once; then it records the stage as complete.
+// each however many run at once, and records the stage as complete once.
 func TestInitKeysIsResumableAndRunsOnce(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
+	// The job the workers run at start has made the installation's keys and completed the stage;
+	// workspaces an older release creates afterwards are left for the next run.
+	keysJobDone(t, f)
 	var older []uuid.UUID
 	for i := range 5 {
 		older = append(older, insertWorkspace(t, f, "Older "+string(rune('a'+i))))
-	}
-	if stage, err := db.New(f.st.Pool).CustodyStage(ctx); err != nil || stage != dbmigrate.CustodyStage-1 {
-		t.Fatal(stage, err)
 	}
 	// A run out of time leaves the rest for the next.
 	calls := 0
@@ -227,12 +245,13 @@ func TestSessionsOpenV2ValuesOfTheirOwnWorkspace(t *testing.T) {
 	if _, err = open(b, moved); !errors.Is(err, cryptobox.ErrKey) {
 		t.Fatal("a value sealed under another workspace's key opened", err)
 	}
-	// A generation the session does not hold sends the caller to begin again.
+	// A generation that is not live does not open, and does not read as a session that ended:
+	// another session would hold the same generations.
 	later, err := cryptobox.SealUnder(workspaceKey(t, f, a, 1), cryptobox.ScopeWorkspace, 2, []byte("x"), secretIdentity(a, item))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = open(a, later); !errors.Is(err, secretbroker.ErrNeedKeys) {
+	if _, err = open(a, later); !errors.Is(err, cryptobox.ErrKey) || secretbroker.SessionFailure(err) {
 		t.Fatal(err)
 	}
 	// The record names the generations the session held.

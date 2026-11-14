@@ -84,9 +84,8 @@ func (s *Session) allowed(item Item, kinds []Kind) (*cryptobox.Keyring, string, 
 }
 
 // Open returns an item's value, whether it is sealed under the installation keyring (v1) or a
-// generation of its scope's key (v2). ErrNeedKeys means the session has ended, or does not hold
-// the generation, and the caller begins another; ErrNotAllowed means the item was never part of
-// the request.
+// live generation of its scope's key (v2). ErrNeedKeys means the session has ended and the caller
+// begins another; ErrNotAllowed means the item was never part of the request.
 func (s *Session) Open(item Item, ciphertext []byte) ([]byte, error) {
 	ring, identity, err := s.allowed(item, s.rule.open)
 	if err != nil {

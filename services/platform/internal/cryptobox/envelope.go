@@ -78,8 +78,10 @@ func decodeV2(blob []byte) (envelopeV2, error) {
 	switch env.Scope {
 	case ScopeWorkspace, ScopeInstallation, ScopeToken:
 		return env, nil
+	case scopeEnvironment:
+		// Reserved until its reader exists.
+		return env, ErrKey
 	}
-	// scopeEnvironment, and anything else, is refused.
 	return env, ErrKey
 }
 

@@ -11,7 +11,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 var (
@@ -334,11 +333,25 @@ func (b *Broker) InitKeys(ctx context.Context, more func() bool) (bool, error) {
 	if progress.WithKeys < progress.Workspaces || !progress.Installation || !progress.Token {
 		return true, nil
 	}
-	n, err := q.AdvanceCustodyStage(ctx, keysStage-1)
-	if err == nil && n == 1 {
-		err = b.event(ctx, q, keyEvent{run: uuid.New(), kind: "stage-completed", details: map[string]string{"stage": strconv.Itoa(keysStage)}})
+	return false, b.completeStage(ctx, keysStage)
+}
+
+// completeStage records stage as complete once, with its event in the same transaction.
+func (b *Broker) completeStage(ctx context.Context, stage int) error {
+	tx, err := b.pool.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	return false, err
+	defer tx.Rollback(ctx)
+	q := db.New(tx)
+	n, err := q.AdvanceCustodyStage(ctx, int32(stage-1))
+	if err != nil || n == 0 {
+		return err
+	}
+	if err = b.event(ctx, q, keyEvent{run: uuid.New(), kind: "stage-completed", details: map[string]string{"stage": strconv.Itoa(stage)}}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // initBatch is how many workspaces InitKeys reads at a time.
@@ -346,7 +359,9 @@ const initBatch = 100
 
 // initHolder makes and stores generation 1 for one holder that has none, and reports whether it
 // did. It skips a holder another worker holds, and one that has keys or is gone by the time its
-// transaction runs.
+// transaction runs. The holder's lock is what keeps creators apart, so the transaction waits on
+// no workspace row: creating a new workspace never names an existing one, and the key's reference
+// to its workspace refuses one deleted meanwhile.
 func (b *Broker) initHolder(ctx context.Context, scope custody.Scope, holder uuid.UUID) (bool, error) {
 	conn, err := b.pool.Acquire(ctx)
 	if err != nil {
@@ -378,20 +393,16 @@ func (b *Broker) initHolder(ctx context.Context, scope custody.Scope, holder uui
 	q := db.New(tx)
 	var has bool
 	if scope == custody.ScopeWorkspace {
-		if _, err = q.LockWorkspaceByID(ctx, holder); errors.Is(err, pgx.ErrNoRows) {
-			return true, nil
-		} else if err != nil {
+		state, err := q.WorkspaceKeyState(ctx, holder)
+		if err != nil {
 			return false, err
 		}
-		has, err = q.WorkspaceHasKeys(ctx, holder)
-	} else {
-		if err = q.LockCustody(ctx); err != nil {
-			return false, err
-		}
-		has, err = q.InstallationScopeHasKeys(ctx, string(scope))
+		has = state.HasKeys || !state.Present
+	} else if has, err = q.InstallationScopeHasKeys(ctx, string(scope)); err != nil {
+		return false, err
 	}
-	if err != nil || has {
-		return err == nil, err
+	if has {
+		return true, nil
 	}
 	if err = k.Insert(ctx, q); err != nil {
 		return false, err
@@ -400,7 +411,9 @@ func (b *Broker) initHolder(ctx context.Context, scope custody.Scope, holder uui
 }
 
 // openV2 opens a v2 envelope with the key its header names, which must be one the session holds
-// for the item's scope.
+// for the item's scope. A generation the session does not hold is a value it cannot open, like a
+// damaged one, not a session that has ended: a new session holds the same live generations, and an
+// envelope naming any other came from somewhere else, such as a revoked host's export.
 func openV2(keys map[keyRef][]byte, item Item, header cryptobox.Header, ciphertext []byte, identity string) ([]byte, error) {
 	want := custody.ScopeWorkspace
 	if item.installation() {
@@ -411,7 +424,7 @@ func openV2(keys map[keyRef][]byte, item Item, header cryptobox.Header, cipherte
 	}
 	key, ok := keys[keyRef{want, header.Generation}]
 	if !ok {
-		return nil, ErrNeedKeys
+		return nil, cryptobox.ErrKey
 	}
 	return cryptobox.OpenUnder(key, ciphertext, identity)
 }

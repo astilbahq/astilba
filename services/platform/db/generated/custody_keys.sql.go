@@ -395,15 +395,22 @@ func (q *Queries) UnlockKeyCreation(ctx context.Context, holder string) (bool, e
 	return pg_advisory_unlock, err
 }
 
-const workspaceHasKeys = `-- name: WorkspaceHasKeys :one
-SELECT EXISTS(SELECT 1 FROM workspace_keys WHERE workspace_id = $1)
+const workspaceKeyState = `-- name: WorkspaceKeyState :one
+SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1) AS present,
+    EXISTS(SELECT 1 FROM workspace_keys WHERE workspace_id = $1) AS has_keys
 `
 
-func (q *Queries) WorkspaceHasKeys(ctx context.Context, workspaceID uuid.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, workspaceHasKeys, workspaceID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
+type WorkspaceKeyStateRow struct {
+	Present bool `json:"present"`
+	HasKeys bool `json:"has_keys"`
+}
+
+// Whether the workspace still exists, and whether it has keys yet.
+func (q *Queries) WorkspaceKeyState(ctx context.Context, workspaceID uuid.UUID) (WorkspaceKeyStateRow, error) {
+	row := q.db.QueryRow(ctx, workspaceKeyState, workspaceID)
+	var i WorkspaceKeyStateRow
+	err := row.Scan(&i.Present, &i.HasKeys)
+	return i, err
 }
 
 const workspaceKeyWrappings = `-- name: WorkspaceKeyWrappings :many

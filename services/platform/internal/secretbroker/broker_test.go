@@ -411,7 +411,7 @@ func TestNoKeyOutlivesItsSession(t *testing.T) {
 	if n := counting.unwraps.Load(); n != 2 {
 		t.Fatalf("a seal session with no seal wrapping unwrapped %d keys", n-2)
 	}
-	// Any other purpose with no wrapping for a live generation is refused, after its record.
+	// Any other purpose with no wrapping for a live generation is refused, before any record.
 	q.keys[ws.String()+":inspect"][0].Wrapped = nil
 	before := len(q.inserted)
 	if _, err = b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}}); !errors.Is(err, ErrMissingWrapping) {

@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // keyEvents are the installation's key events of one kind, oldest first.
@@ -250,6 +251,33 @@ func TestKeyEventsAreAppendOnly(t *testing.T) {
 }
 
 // Migrating reads the stage the installation completed, from a database that records one.
+// A database another command looked at before the first migration, which leaves goose's own table
+// behind, is still a new installation.
+func TestFirstMigrationAfterAnotherCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("disposable PostgreSQL integration requires verify")
+	}
+	ctx := context.Background()
+	if err := migrated(); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	name := "test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err = admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		t.Fatal(err)
+	}
+	if err = dbmigrate.Check(ctx, databaseDSN(name)); err == nil {
+		t.Fatal("an empty database passed the schema check")
+	}
+	if err = dbmigrate.Up(ctx, databaseDSN(name)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMigrateReadsTheRecordedStage(t *testing.T) {
 	f := setup(t)
 	if err := dbmigrate.Up(context.Background(), databaseDSN(f.st.Pool.Config().ConnConfig.Database)); err != nil {

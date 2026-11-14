@@ -80,6 +80,9 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 		if len(args) > 1 {
 			return errors.New("usage: astilba custody init-keys")
 		}
+		if err := c.RequirePinnedInstallation(); err != nil {
+			return err
+		}
 		if err := st.Broker.Install(ctx, pool, c.InstallationID, false); err != nil {
 			return err
 		}

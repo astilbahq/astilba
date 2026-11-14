@@ -66,13 +66,18 @@ func Up(ctx context.Context, dsn string) error {
 }
 
 // checkStage refuses to migrate an installation more than one custody stage behind this release.
-// A database from before stages were recorded has completed none. One no migration has run on is
-// a new installation, which has nothing to bring through earlier stages.
+// A database from before stages were recorded has completed none. One with no account yet is a new
+// installation, whatever has run on it, such as a command started before the first migration or a
+// first migration that stopped part way: it holds nothing earlier stages would bring through.
 func checkStage(ctx context.Context, db *sql.DB) error {
 	var fresh, recorded bool
 	completed := 0
-	// inline-sql: goose's own table, which a new installation does not have yet.
-	err := db.QueryRowContext(ctx, `SELECT to_regclass('goose_db_version') IS NULL`).Scan(&fresh)
+	// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
+	err := db.QueryRowContext(ctx, `SELECT to_regclass('accounts') IS NULL`).Scan(&fresh)
+	if err == nil && !fresh {
+		// inline-sql: as above.
+		err = db.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM accounts)`).Scan(&fresh)
+	}
 	if err == nil && fresh {
 		return nil
 	}
