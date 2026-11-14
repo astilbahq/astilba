@@ -34,9 +34,12 @@ export function releasesToCheck(before, after, changed) {
   );
 }
 
+// Files the branch changed since it left the base, so what the base changed since is not
+// counted against it.
 function changedPaths(base) {
+  const fork = execFileSync("git", ["merge-base", base, "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   return new Set(
-    execFileSync("git", ["diff", "--name-only", "-z", base, "--"], { cwd: root, encoding: "utf8" })
+    execFileSync("git", ["diff", "--name-only", "-z", fork, "--"], { cwd: root, encoding: "utf8" })
       .split("\0")
       .filter(Boolean),
   );
@@ -65,7 +68,8 @@ export function verdicts(releases, { times, now, minimumMs }) {
   });
 }
 
-const downloads = "/releases/download/";
+// Every file with a GitHub release link, so findReleases stops on one it cannot read.
+const downloads = "/releases/";
 
 function baseFiles(base) {
   let listed;
