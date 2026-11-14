@@ -95,7 +95,8 @@ function Panel({
   const [current, setCurrent] = useState(shown);
   const status = useRef<HTMLParagraphElement>(null);
   return (
-    <main id="main">
+    // The source the page holds, which a story waits on rather than on time.
+    <main id="main" data-source={current.sourceHash}>
       <SourceFailure failure={current.failure} />
       <ChangeSource
         path={path}
@@ -283,7 +284,12 @@ export const RebindRenamedFile: Story = {
     // The page then shows the source as bound, which isn't someone else's change.
     await expect(await canvas.findByText(/Source changed/)).toHaveFocus();
     // The page's refreshed source arrives after the binding settles, and is the binding's own.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() =>
+      expect(canvasElement.querySelector("main")).toHaveAttribute(
+        "data-source",
+        rebound.sourceHash,
+      ),
+    );
     watch.disconnect();
     await expect(noticed).toBe(false);
     await expect(
@@ -456,8 +462,9 @@ export const ChangedSinceShown: Story = {
       canvas.getByRole("button", { name: "Bind again and import" }),
     );
     await expect(await canvas.findByText(/was not bound again/)).toHaveFocus();
+    // The page shows the other owner's change once its refreshed source arrives.
     await expect(
-      canvas.getByText(/The source changed since this form was opened/),
+      await canvas.findByText(/The source changed since this form was opened/),
     ).toBeVisible();
     await expect(branch).toHaveValue("release");
     refusePut = null;
