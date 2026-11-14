@@ -298,19 +298,14 @@ func bytesCompareUUID(a, b uuid.UUID) int {
 
 func requiredRecoveryRoots(source recoverySource) (map[uuid.UUID]recoveringRoot, error) {
 	out := map[uuid.UUID]recoveringRoot{}
-	active := map[uuid.UUID]bool{}
-	for _, host := range source.Hosts {
-		if host.ActiveParent != uuid.Nil {
-			active[host.ActiveParent] = true
-		}
-	}
 	for _, row := range source.Archive.Tables["execution_operations"] {
 		var c api.ExecutionCommand
 		var state api.ExecutionState
 		if json.Unmarshal(row["command"], &c) != nil || json.Unmarshal(row["state"], &state) != nil {
 			return out, portability.ErrArchive
 		}
-		if c.Kind != "crosshost" || c.ParentId != nil || Terminal(state) && !active[c.Id] {
+		// A finished root stays finished: refuseUnknownActiveRoots refused any host that reports it.
+		if c.Kind != "crosshost" || c.ParentId != nil || Terminal(state) {
 			continue
 		}
 		var body coordinationCommand
@@ -328,8 +323,8 @@ func requiredRecoveryRoots(source recoverySource) (map[uuid.UUID]recoveringRoot,
 		c.RecoveryCheckpoint = rawMessage(raw)
 		out[c.Id] = recoveringRoot{Command: c, Body: body, Descriptor: d, KnownSequence: source.KnownSequences[c.Id]}
 	}
-	for parent := range active {
-		if _, ok := out[parent]; !ok {
+	for _, host := range source.Hosts {
+		if _, ok := out[host.ActiveParent]; host.ActiveParent != uuid.Nil && !ok {
 			return out, errors.New("active host parent is absent from the selected checkpoint")
 		}
 	}

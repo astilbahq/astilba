@@ -179,12 +179,15 @@ diverged, is compared with N first: one whose applied history N doesn't continue
 reach back to, is refused, naming that checkpoint. An interrupted root's own checkpoint still
 supplies its frozen plan, its continuation and its environment's runtime. Work another
 management started is refused, as diverged. When servers report running a cross-host deployment
-that N doesn't carry, a management N's doesn't descend from started it, as when a management
-restored from a backup ran other work on other servers, or it has ended and their report is
-stale. A server N shows revoked is not asked. Either way only the servers' unsigned reports say
-it still runs, so recovery refuses, naming the deployment and its servers. To proceed, revoke
-those servers in the restored management and leave their exports out. Recovery then continues
-without them, and afterwards you enrol them again and redeploy what they ran.
+that N doesn't carry unfinished, a management N's doesn't descend from started it, as when a
+management restored from a backup ran other work on other servers, or it has ended and their
+report is stale. A server releases a deployment in the same step as the report that lets
+management finish it, so one that N records as finished, as a finished row or in its history, is
+never resumed. A server N shows revoked is not asked. Either way only the servers' unsigned
+reports say it still runs, so recovery refuses before it changes anything, naming the deployment
+and its servers. To proceed, revoke those servers in the restored management and leave their
+exports out. Recovery then continues without them, and afterwards you enrol them again and
+redeploy what they ran.
 
 Checkpoints with a recovery window are a format a release before this one can't read, so once
 hosts hold them, run cross-host recovery with a current release. Checkpoints sealed before it
