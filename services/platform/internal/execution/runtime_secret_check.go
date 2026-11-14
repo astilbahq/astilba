@@ -122,13 +122,7 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 		return err
 	}
 	key := secretCheckKey(env, texts, chosen)
-	if answer, ok := git.secretChecks[key]; ok {
-		// The broker refused keys for the search: not the text's answer.
-		var refused *keysUnavailable
-		if errors.As(answer, &refused) {
-			delete(git.secretChecks, key)
-			return refused.err
-		}
+	if answer, ok := git.secretCheckAnswer(key); ok {
 		return answer
 	}
 	return &providerCall{fetch: func(ctx context.Context) {
@@ -138,8 +132,34 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 	}}
 }
 
+// secretCheckAnswer returns the kept answer for exactly the search key names. An answer is kept
+// only for the texts and versions it searched, so one chosen differently finds none and is
+// searched again. A broker refusal is returned once and not kept; a search that missed a chosen
+// version is no answer at all.
+func (g *gitAnswers) secretCheckAnswer(key [32]byte) (error, bool) {
+	answer, ok := g.secretChecks[key]
+	if !ok {
+		return nil, false
+	}
+	var refused *keysUnavailable
+	if errors.As(answer, &refused) {
+		delete(g.secretChecks, key)
+		return refused.err, true
+	}
+	if errors.Is(answer, errCheckedVersionsChanged) {
+		delete(g.secretChecks, key)
+		return nil, false
+	}
+	return answer, true
+}
+
+// errCheckedVersionsChanged is a search that could not read every version chosen, such as one
+// erased meanwhile. The pass that finds it chooses and searches again.
+var errCheckedVersionsChanged = errors.New("the versions chosen for the runtime-secret check changed")
+
 // searchRuntimeSecrets opens the chosen versions and searches texts for each. It runs with no
-// transaction open. A version erased since it was chosen is skipped: the next pass chooses again.
+// transaction open. Its answer covers exactly the versions chosen, or it is
+// errCheckedVersionsChanged.
 func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, env uuid.UUID, texts []string, chosen []checkedVersion) error {
 	ids := make([]uuid.UUID, len(chosen))
 	for i, c := range chosen {
@@ -158,7 +178,7 @@ func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, 
 	for _, c := range chosen {
 		cipher, ok := ciphers[c.id]
 		if !ok {
-			continue
+			return errCheckedVersionsChanged
 		}
 		value, err := keys.openBetweenPasses(ctx, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id}, cipher)
 		if err != nil {

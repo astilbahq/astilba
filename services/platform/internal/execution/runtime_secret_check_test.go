@@ -183,3 +183,35 @@ func BenchmarkSecretCheckWorstCase(b *testing.B) {
 		}
 	}
 }
+
+// A kept answer is used only for the very search it answered, and a search that missed a chosen
+// version, or that the broker refused, leaves nothing to reuse.
+func TestSecretCheckAnswersAreReusedOnlyForTheSameSearch(t *testing.T) {
+	env, a, b := uuid.New(), uuid.New(), uuid.New()
+	git := &gitAnswers{secretChecks: map[[32]byte]error{}}
+	searched := secretCheckKey(env, []string{"text"}, []checkedVersion{{id: a, required: true}})
+	git.secretChecks[searched] = nil
+	if answer, ok := git.secretCheckAnswer(secretCheckKey(env, []string{"text"}, []checkedVersion{{id: a, required: true}, {id: b}})); ok {
+		t.Fatal("a clean answer was reused for a version it never searched:", answer)
+	}
+	if answer, ok := git.secretCheckAnswer(searched); !ok || answer != nil {
+		t.Fatal("the same search did not reuse its answer:", answer, ok)
+	}
+
+	git.secretChecks[searched] = errCheckedVersionsChanged
+	if _, ok := git.secretCheckAnswer(searched); ok {
+		t.Fatal("a search that missed a chosen version was taken as an answer")
+	}
+	if _, kept := git.secretChecks[searched]; kept {
+		t.Fatal("a search that missed a chosen version was kept")
+	}
+
+	refusal := errors.New("broker refused")
+	git.secretChecks[searched] = &keysUnavailable{refusal}
+	if answer, ok := git.secretCheckAnswer(searched); !ok || !errors.Is(answer, refusal) {
+		t.Fatal("a broker refusal was not returned:", answer)
+	}
+	if _, ok := git.secretCheckAnswer(searched); ok {
+		t.Fatal("a broker refusal was kept as the text's answer")
+	}
+}
