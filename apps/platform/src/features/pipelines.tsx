@@ -80,6 +80,12 @@ export function Pipelines({
       result(client.GET(`${root}/build-rejections`, { params: { path } })),
     refetchInterval: 3000,
   });
+  const waits = useQuery({
+    queryKey: ["build-waits", path],
+    queryFn: () =>
+      result(client.GET(`${root}/build-waits`, { params: { path } })),
+    refetchInterval: 3000,
+  });
   const artifacts = useQuery({
     queryKey: ["build-artifacts", path.workspaceId],
     queryFn: () =>
@@ -104,6 +110,7 @@ export function Pipelines({
   const refresh = async () => {
     await queries.invalidateQueries({ queryKey: ["pipeline-runs", path] });
     await queries.invalidateQueries({ queryKey: ["build-rejections", path] });
+    await queries.invalidateQueries({ queryKey: ["build-waits", path] });
     await queries.invalidateQueries({ queryKey: ["git-source", path] });
     await queries.invalidateQueries({ queryKey: ["build-targets", path] });
   };
@@ -497,7 +504,8 @@ export function Pipelines({
         applications={revision.specification.applications}
         runs={runs.data}
         rejections={rejections.data}
-        rejectionsError={rejections.error}
+        waits={waits.data}
+        rejectionsError={rejections.error ?? waits.error}
         servers={servers.data}
         write={write}
         dirty={dirty}

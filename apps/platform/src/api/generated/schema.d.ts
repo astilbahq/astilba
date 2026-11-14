@@ -1746,6 +1746,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-waits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Automatic builds of a commit that wait for their runner, for each current application. A build waits while its runner finishes enrolling again or until an owner updates it, for a day at most, and is then rejected as `runner_unavailable`. */
+        get: operations["listBuildWaits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/builds": {
         parameters: {
             query?: never;
@@ -4225,7 +4242,7 @@ export interface components {
             railpack?: components["schemas"]["RailpackBuildSummary"];
         };
         /**
-         * @description Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner was removed or revoked, lost its credential with no enrollment under way, or can no longer build it. `registry_unavailable`: the target's registry was removed.
+         * @description Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner was removed or revoked, lost its credential with no enrollment under way, or can no longer build it, or the build waited a day for it to finish enrolling or to be updated. `registry_unavailable`: the target's registry was removed.
          * @enum {string}
          */
         BuildRejectionReason: "missing_build_secret" | "build_secret_budget" | "arguments_contain_secret" | "runtime_secret_budget" | "runner_unavailable" | "registry_unavailable";
@@ -4236,6 +4253,21 @@ export interface components {
             reason: components["schemas"]["BuildRejectionReason"];
             /** Format: date-time */
             rejectedAt: string;
+        };
+        /**
+         * @description What an automatic build waits for. `runner_update`: an owner to update the runner, which doesn't yet run what the build needs of this release, such as its Railpack pins. `runner_enrollment`: the runner to finish enrolling again.
+         * @enum {string}
+         */
+        BuildWaitReason: "runner_update" | "runner_enrollment";
+        BuildWait: {
+            /** Format: uuid */
+            applicationId: string;
+            commit: string;
+            reason: components["schemas"]["BuildWaitReason"];
+            /** Format: uuid */
+            runnerId: string;
+            /** Format: date-time */
+            since: string;
         };
         PipelineRun: {
             /** Format: uuid */
@@ -9126,6 +9158,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BuildRejection"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBuildWaits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Automatic builds waiting for their runner. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildWait"][];
                 };
             };
             /** @description Error */

@@ -11,6 +11,7 @@ export function PipelineJobs({
   applications,
   runs,
   rejections,
+  waits,
   rejectionsError,
   servers,
   write,
@@ -22,6 +23,7 @@ export function PipelineJobs({
   applications: Schema["Specification"]["applications"];
   runs: Schema["PipelineRun"][] | undefined;
   rejections: Schema["BuildRejection"][] | undefined;
+  waits: Schema["BuildWait"][] | undefined;
   rejectionsError: unknown;
   servers: Schema["Server"][] | undefined;
   write: boolean;
@@ -38,6 +40,8 @@ export function PipelineJobs({
       <h3>Source and build jobs</h3>
       <AutomaticBuildRejections
         rejections={rejections}
+        waits={waits}
+        servers={servers}
         error={rejectionsError}
         applications={applications}
       />

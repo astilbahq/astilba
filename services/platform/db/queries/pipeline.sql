@@ -148,8 +148,30 @@ UPDATE git_sources SET pending_commit = @commit::text, status = 'conflict', fail
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
 
 -- name: RejectBuildTarget :exec
-UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp()
+-- A rejection ends any wait, since it says why the commit was not built.
+UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp(),
+    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
+
+-- name: WaitBuildTarget :exec
+-- A target waits for its runner at a commit. It keeps the time it started waiting while it waits
+-- for the same runner, for the same reason, at the same commit.
+UPDATE build_targets SET waiting_commit = @commit::text, waiting_reason = @reason::text, waiting_runner_id = @runner_id::uuid,
+    waiting_since = CASE WHEN waiting_commit = @commit::text AND waiting_reason = @reason::text AND waiting_runner_id = @runner_id::uuid
+        THEN waiting_since ELSE clock_timestamp() END
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
+
+-- name: EndBranchBuildWaits :exec
+-- A refresh that stops looking ends the waits it recorded at its commit, as when the source they
+-- build on failed and holds them: a wait it no longer looks at would never end.
+UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL
+WHERE workspace_id = @workspace_id AND connection_id = @connection_id AND configuration->>'branch' = @branch::text AND waiting_commit = @commit::text;
+
+-- name: ListBuildWaits :many
+SELECT application_id, waiting_commit::text AS waiting_commit, waiting_reason::text AS waiting_reason,
+    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since
+FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND waiting_since IS NOT NULL
+ORDER BY application_id;
 
 -- name: RunnerCredential :one
 -- Whether a runner has its credential, or is enrolling again or moving to another management with

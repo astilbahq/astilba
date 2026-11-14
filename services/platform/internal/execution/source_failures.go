@@ -115,13 +115,62 @@ var sourceChangedSinceShown = &domain.Error{Code: "conflict", Message: "The sour
 // an environment runs one at a time.
 var sourceImporting = &domain.Error{Code: "conflict", Message: "An import or another operation of this environment is running. Bind the source again once it finishes.", Fields: []string{"environment.operation"}}
 
+// runnerUpgradeRequired reports whether a runner was refused only because it must be updated to
+// run the work, as between upgrading management and upgrading its agents. That passes once an owner
+// updates the runner, so the work waits for it, for a day at most, rather than failing.
+func runnerUpgradeRequired(err error) bool {
+	var refused *domain.Error
+	if !errors.As(err, &refused) || len(refused.Fields) == 0 {
+		return false
+	}
+	for _, field := range refused.Fields {
+		if !strings.HasPrefix(field, "runner.") || !strings.HasSuffix(field, "UpgradeRequired") {
+			return false
+		}
+	}
+	return true
+}
+
+// runnerNotUpdated is an import's outcome when its runner must be updated first: it waits, and
+// fails once the refresh has waited its day.
+func runnerNotUpdated(expired bool) error {
+	if expired {
+		return failedSource(runnerNotUpdatedReason)
+	}
+	return errRefreshWaits
+}
+
+const runnerNotUpdatedReason = "The source's runner wasn't updated within a day, and can't run this import until it is. Update the runner to the release management runs, then refresh the source."
+
+// runnerWait is why a build target waits for its runner.
+func runnerWait(enrolling bool) string {
+	if enrolling {
+		return "runner_enrollment"
+	}
+	return "runner_update"
+}
+
+// waitForRunner records that a build target waits for its runner at a commit, and reports whether
+// the refresh should look again. Once the refresh has waited its day, it rejects the target as
+// having no runner instead, which the dashboard explains.
+func waitForRunner(ctx context.Context, tx pgx.Tx, ws, env, app uuid.UUID, commit string, runner uuid.UUID, reason string, expired bool) (bool, error) {
+	if expired {
+		return false, rejectTarget(ctx, tx, ws, env, app, commit, "runner_unavailable")
+	}
+	return true, db.New(tx).WaitBuildTarget(ctx, db.WaitBuildTargetParams{Commit: commit, Reason: reason, RunnerID: runner, WorkspaceID: ws, EnvironmentID: env, ApplicationID: app})
+}
+
 const runnerUnavailableReason = "The source's runner was removed or revoked, has no credential and isn't enrolling, or can no longer run imports. Enroll the runner again, or bind the source again with another runner."
 
-// importRefusal is the outcome of management refusing to start an import. Invalid input, such as a
-// file the commit doesn't hold or a clone credential that can push, fails the source until its
-// configuration changes. Any other refusal, such as its runner upgrading or the workspace's
-// operation limit, passes by itself, so the import waits.
-func importRefusal(refused *domain.Error) error {
+// importRefusal is the outcome of management refusing to start an import. A runner that must be
+// updated first waits for it, for a day at most. Other invalid input, such as a file the commit
+// doesn't hold or a clone credential that can push, fails the source until its configuration
+// changes. Any other refusal, such as its runner upgrading or the workspace's operation limit,
+// passes by itself, so the import waits.
+func importRefusal(refused *domain.Error, expired bool) error {
+	if runnerUpgradeRequired(refused) {
+		return runnerNotUpdated(expired)
+	}
 	if refused.Code != "invalid_input" {
 		return errRefreshWaits
 	}

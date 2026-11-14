@@ -201,6 +201,10 @@ type BuildTarget struct {
 	RejectedAt               *time.Time  `json:"rejected_at"`
 	PolicyAuthVersion        pgtype.Int8 `json:"policy_auth_version"`
 	PolicyOwner              bool        `json:"policy_owner"`
+	WaitingCommit            pgtype.Text `json:"waiting_commit"`
+	WaitingReason            pgtype.Text `json:"waiting_reason"`
+	WaitingRunnerID          *uuid.UUID  `json:"waiting_runner_id"`
+	WaitingSince             *time.Time  `json:"waiting_since"`
 }
 
 type CrossHostApproval struct {

@@ -3642,6 +3642,28 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-waits:
+    get:
+      operationId: listBuildWaits
+      description: >-
+        Automatic builds of a commit that wait for their runner, for each current application. A build waits while its
+        runner finishes enrolling again or until an owner updates it, for a day at most, and is then rejected as
+        `runner_unavailable`.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Automatic builds waiting for their runner.
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/BuildWait'}}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/builds:
     get:
       operationId: listPipelineRuns
@@ -8785,7 +8807,8 @@
       type: string
       description: >-
         Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner was removed or
-        revoked, lost its credential with no enrollment under way, or can no longer build it. `registry_unavailable`: the target's registry was removed.
+        revoked, lost its credential with no enrollment under way, or can no longer build it, or the build waited a day
+        for it to finish enrolling or to be updated. `registry_unavailable`: the target's registry was removed.
       enum: [missing_build_secret, build_secret_budget, arguments_contain_secret, runtime_secret_budget, runner_unavailable, registry_unavailable]
     BuildRejection:
       type: object
@@ -8796,6 +8819,22 @@
         commit: {type: string, minLength: 1, maxLength: 64}
         reason: {$ref: '#/components/schemas/BuildRejectionReason'}
         rejectedAt: {type: string, format: date-time}
+    BuildWaitReason:
+      type: string
+      description: >-
+        What an automatic build waits for. `runner_update`: an owner to update the runner, which doesn't yet run what
+        the build needs of this release, such as its Railpack pins. `runner_enrollment`: the runner to finish enrolling again.
+      enum: [runner_update, runner_enrollment]
+    BuildWait:
+      type: object
+      additionalProperties: false
+      required: [applicationId, commit, reason, runnerId, since]
+      properties:
+        applicationId: {type: string, format: uuid}
+        commit: {type: string, minLength: 1, maxLength: 64}
+        reason: {$ref: '#/components/schemas/BuildWaitReason'}
+        runnerId: {type: string, format: uuid}
+        since: {type: string, format: date-time}
     PipelineRun:
       type: object
       additionalProperties: false

@@ -66,10 +66,12 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 }
 
 // A later push for the branch joins this job rather than starting another, so a source waiting
-// to be read looks again often, and gives up in time for a new refresh to take over.
+// to be read looks again often, and gives up in time for a new refresh to take over. Work waiting
+// for its runner to finish enrolling or to be updated waits as long, then is refused, saying why.
+// docs/git-builds.md states the limit.
 const (
 	sourceRetryDelay = time.Minute
-	sourceWaitLimit  = 24 * time.Hour
+	refreshWaitLimit = 24 * time.Hour
 )
 
 // work holds the workspace turn and the connection only between provider calls. The pass
@@ -152,7 +154,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	waitingToImport := map[uuid.UUID]bool{}
 	// Past its limit the job stops reading a source already shown as waiting, whatever else keeps
 	// it alive, and shows any source it did not reach before it ends.
-	expired := time.Since(job.CreatedAt) > sourceWaitLimit
+	expired := time.Since(job.CreatedAt) > refreshWaitLimit
 	for _, v := range sources {
 		// The branch can move back to the source's commit while another commit imports, as
 		// when a force-push removes it. That import would leave the source on a commit the
@@ -315,8 +317,13 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		if waitErr != nil {
 			return waitErr
 		}
-		if wait {
-			lookAgain = true
+		// Only the primary is refused here: a fallback that can't take the build is passed over.
+		if wait || runnerUpgradeRequired(err) {
+			waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, cfg.RunnerID, runnerWait(wait), expired)
+			if err != nil {
+				return err
+			}
+			lookAgain = lookAgain || waits
 			continue
 		}
 		if runnerUnavailable(err) {
@@ -357,6 +364,15 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			if rollbackErr := target.Rollback(ctx); rollbackErr != nil {
 				return rollbackErr
 			}
+			// The runner chosen must be updated before it can build without root, for example.
+			if runnerUpgradeRequired(err) {
+				waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, runner, "runner_update", expired)
+				if err != nil {
+					return err
+				}
+				lookAgain = lookAgain || waits
+				continue
+			}
 			reason := ""
 			var rejected *buildInputRejection
 			if errors.As(err, &rejected) {
@@ -387,7 +403,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			}
 			continue
 		}
-		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
 			return err
 		}
 		if err = target.Commit(ctx); err != nil {
@@ -399,6 +415,11 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		return unanswered
 	}
 	if !waiting && (!lookAgain || expired) {
+		// A target this job stopped looking at, as when the source it builds on failed, no
+		// longer waits for anything this job would see.
+		if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch, Commit: head}); err != nil {
+			return err
+		}
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
 			return err
 		}
@@ -448,111 +469,6 @@ func (s *Service) refreshLeftBranch(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 
 func rejectTarget(ctx context.Context, tx pgx.Tx, ws, env, app uuid.UUID, commit, reason string) error {
 	return db.New(tx).RejectBuildTarget(ctx, db.RejectBuildTargetParams{Commit: commit, Reason: reason, WorkspaceID: ws, EnvironmentID: env, ApplicationID: app})
-}
-
-// refreshedSource is a source on the pushed branch, as the refresh found it.
-type refreshedSource struct {
-	env, pid, base, actor uuid.UUID
-	imported              *uuid.UUID
-	raw                   []byte
-	commit, pending       string
-	// failed is the commit a refresh last failed to import, which it does not try again.
-	failed string
-	// importing is whether an import of a commit other than the head is running.
-	importing bool
-}
-
-// sourceOutcome is what a refresh did with a source, when nothing failed.
-type sourceOutcome int
-
-const (
-	// sourceSettled needs nothing more from this job, as when the branch conflicts with the draft.
-	sourceSettled sourceOutcome = iota
-	// sourceAdmitted started an import.
-	sourceAdmitted
-	// sourceUnreadable waits for the provider to answer about its files or reviews.
-	sourceUnreadable
-	// sourceHeld is shown as waiting already, and the job is past its limit.
-	sourceHeld
-)
-
-// refreshSource starts an import of head for one source. A failure that is the source's own
-// comes back as a *sourceFailure, for the caller to roll back and record; a question for a
-// provider comes back as a *providerCall.
-func (w *refreshWorker) refreshSource(ctx context.Context, tx pgx.Tx, git *gitAnswers, job *river.Job[refreshArgs], connection pipeline.Connection, head string, expired bool, v refreshedSource) (sourceOutcome, error) {
-	a := job.Args
-	var cfg pipeline.Source
-	if err := json.Unmarshal(v.raw, &cfg); err != nil {
-		return sourceSettled, err
-	}
-	env, err := loadVisualEnvironment(ctx, tx, a.Workspace, v.pid, v.env)
-	if err != nil {
-		return sourceSettled, err
-	}
-	baseline, err := sourceBaseline(ctx, tx, a.Workspace, v.env, v.imported)
-	if err != nil {
-		return sourceSettled, err
-	}
-	clean := v.imported == nil || sameSourceFiles(env.Spec.Compose, baseline)
-	if clean && v.imported != nil {
-		cfg = sourceSelection(cfg, env.Spec.Compose)
-	}
-	if !clean {
-		cfg, clean, err = mergedSourceSelection(ctx, tx, git, a.Workspace, v.env, env.Spec.Compose, head, cfg)
-		var unanswered *reviewUnanswered
-		if errors.As(err, &unanswered) {
-			if unanswered.gone() {
-				return sourceSettled, failedSource(reviewGoneReason)
-			}
-			// The provider may answer next time, as for files it could not read.
-			return sourceUnreadable, db.New(tx).SetGitSourcePendingCommit(ctx, db.SetGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Commit: head})
-		}
-		if err != nil {
-			return sourceSettled, err
-		}
-	}
-	if !clean {
-		return sourceSettled, db.New(tx).MarkGitSourceConflict(ctx, db.MarkGitSourceConflictParams{Commit: head, WorkspaceID: a.Workspace, EnvironmentID: v.env})
-	}
-	if expired && v.pending == head {
-		return sourceHeld, nil
-	}
-	blobs, err := git.sourceBlobs(ctx, tx, a.Connection, head, cfg.Paths)
-	if err != nil {
-		return sourceSettled, err
-	}
-	if blobs.Err != nil {
-		if errors.Is(blobs.Err, errSourceBlobsNotAsked) && !expired {
-			return sourceUnreadable, nil
-		}
-		return sourceUnreadable, db.New(tx).SetGitSourcePendingCommit(ctx, db.SetGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Commit: head})
-	}
-	runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, nil, false)
-	wait, waitErr := runnerWaits(ctx, tx, a.Workspace, cfg.RunnerID, err)
-	if waitErr != nil {
-		return sourceSettled, waitErr
-	}
-	if wait {
-		return sourceSettled, errRefreshWaits
-	}
-	if runnerUnavailable(err) {
-		return sourceSettled, failedSource(runnerUnavailableReason)
-	}
-	if err != nil {
-		return sourceSettled, err
-	}
-	op, err := w.service.insertPipeline(ctx, tx, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
-	var refused *domain.Error
-	if errors.As(err, &refused) {
-		return sourceSettled, importRefusal(refused)
-	}
-	if err != nil {
-		return sourceSettled, err
-	}
-	if err = explainImportAgain(ctx, tx, a.Workspace, v.env, op.Id, v.commit, head); err != nil {
-		return sourceSettled, err
-	}
-	return sourceAdmitted, db.New(tx).ClearGitSourcePendingCommit(ctx, db.ClearGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env})
 }
 
 // Requested commits include cancelled, failed and skipped work; only an actual
