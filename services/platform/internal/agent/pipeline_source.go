@@ -41,8 +41,8 @@ func (e *Engine) pipelineGit(ctx context.Context, c api.ExecutionCommand, p pipe
 var errCloneExpired = errors.New("the repository access token for this run expired before the runner fetched the source; run it again")
 
 // cloneExpired says whether the pipeline's minted clone credential has expired by this host's
-// clock. Its expiry only ever stops a fetch: it never lets one go ahead, nor extends anything
-// management issued.
+// clock. It only explains a fetch that failed: the Git server decides whether the credential
+// works, and the expiry extends nothing management issued.
 func cloneExpired(p pipeline.Command) bool {
 	return p.Access != nil && p.Access.CloneExpires != nil && !time.Now().Before(*p.Access.CloneExpires)
 }
@@ -60,9 +60,6 @@ func (e *Engine) clonePipeline(ctx context.Context, c api.ExecutionCommand, p pi
 	fetch := p.Commit
 	if p.Preview != nil {
 		fetch = pipeline.PullRequestRef(p.Connection.Provider, p.Preview.Number)
-	}
-	if cloneExpired(p) {
-		return errCloneExpired
 	}
 	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", fetch); err != nil {
 		if cloneExpired(p) {

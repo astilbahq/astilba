@@ -335,9 +335,6 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 // Only a complete diff against a fetched successful artifact may skip a build.
 // Force-pushed or unavailable baselines and bounded-output failures rebuild.
 func (e *Engine) watchedSourceChanged(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) bool {
-	if cloneExpired(p) {
-		return true
-	}
 	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", p.CompareCommit); err != nil {
 		return true
 	}
