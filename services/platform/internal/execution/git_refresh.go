@@ -86,7 +86,11 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	defer done()
 	if err = w.service.Store.ManagementAdmission(ctx, tx, a.Workspace); err != nil {
 		if errors.Is(err, store.SubscriptionRequired) {
-			return nil
+			// The job ends without looking, so the waits it recorded end with it.
+			if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch}); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
 		}
 		return err
 	}

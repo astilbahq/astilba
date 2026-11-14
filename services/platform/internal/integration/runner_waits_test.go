@@ -191,6 +191,14 @@ func (i *importedEnvironment) waitsForUpdate(t *testing.T) (string, uuid.UUID, s
 	if i.builds(t, env) != 0 {
 		t.Fatal("a build was sent to a runner on other Railpack pins")
 	}
+	// It waits until a day after its refresh began, as it says.
+	var began time.Time
+	if err := i.f.st.Pool.QueryRow(t.Context(), "SELECT created_at FROM river_job WHERE kind='platform_git_refresh_v1' ORDER BY id DESC LIMIT 1").Scan(&began); err != nil {
+		t.Fatal(err)
+	}
+	if !waits[0].Until.Equal(began.Add(24 * time.Hour)) {
+		t.Fatalf("the wait ends at %s, not a day after its refresh began at %s", waits[0].Until, began)
+	}
 	return path, env, latest
 }
 
