@@ -85,6 +85,24 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 		}
 	}
+	if archive.Version < 9 {
+		// Nothing was purged, retired or erased before version 9.
+		fields := map[string]map[string]any{
+			"environments":    {"purged_at": nil, "purged_by": nil, "purge_operation_id": nil, "purged_without_host": false},
+			"secrets":         {"retired_at": nil},
+			"secret_versions": {"erased_at": nil},
+		}
+		for table, values := range fields {
+			for _, row := range archive.Tables[table] {
+				for field, value := range values {
+					if _, exists := row[field]; exists {
+						return archive, ErrArchive
+					}
+					setValue(row, field, value)
+				}
+			}
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -145,6 +163,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	refs := []struct{ table, column, target string }{
 		{"environments", "runtime_operation_id", "execution_operations"},
 		{"environments", "retirement_operation_id", "execution_operations"},
+		{"environments", "purge_operation_id", "execution_operations"},
 		{"backup_cutovers", "source_plan_id", "visual_requests"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
@@ -363,9 +382,12 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				if e != nil {
 					return out, e
 				}
-				// The account that retired it is not in this installation; the importer answers for it.
-				if string(row["retired_by"]) != "null" {
-					setValue(row, "retired_by", p.Account.ID)
+				// The account that retired or purged it is not in this installation; the importer
+				// answers for it.
+				for _, field := range []string{"retired_by", "purged_by"} {
+					if string(row[field]) != "null" {
+						setValue(row, field, p.Account.ID)
+					}
 				}
 				applied[id] = row["applied_revision_id"]
 				appliedOperations[id] = row["runtime_operation_id"]
@@ -529,7 +551,8 @@ func checkReleasedRoutes(a Archive) error {
 		if json.Unmarshal(row["state"], &state) != nil || json.Unmarshal(row["retired_without_host"], &withoutHost) != nil {
 			return ErrArchive
 		}
-		if state == "retired" && !withoutHost {
+		// A purge follows a confirmed retirement, which released them.
+		if (state == "retired" || state == "purging" || state == "purged") && !withoutHost {
 			id, err := rowString(row, "id")
 			if err != nil {
 				return err

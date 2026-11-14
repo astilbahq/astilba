@@ -70,8 +70,9 @@ var version5Tables = func() []table {
 
 // ArchiveVersion is the format exports write, and the tables recovery bases carry
 // (RecoveryArchiveVersion). Version 7 added source_submissions; version 8 added each environment's
-// retirement and the PostgreSQL major each managed volume was initialised by.
-const ArchiveVersion = 8
+// retirement and the PostgreSQL major each managed volume was initialised by; version 9 added
+// purges, retired secrets and erased secret values.
+const ArchiveVersion = 9
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -89,7 +90,7 @@ var version7Tables = func() []table {
 
 // Version 8 carries each environment's retirement and the PostgreSQL major each managed volume
 // was initialised by. docs/environment-retirement.md says how an import treats them.
-var tables = func() []table {
+var version8Tables = func() []table {
 	out := append([]table{}, version7Tables...)
 	for i := range out {
 		switch out[i].Name {
@@ -97,6 +98,23 @@ var tables = func() []table {
 			out[i].Columns += ",state,retired_at,retired_by,retirement_operation_id,retired_without_host"
 		case "managed_volumes":
 			out[i].Columns += ",postgres_major"
+		}
+	}
+	return out
+}()
+
+// Version 9 carries each environment's purge, each secret's retirement and which secret versions
+// were erased. An erased version has no value to carry, and imports erased.
+var tables = func() []table {
+	out := append([]table{}, version8Tables...)
+	for i := range out {
+		switch out[i].Name {
+		case "environments":
+			out[i].Columns += ",purged_at,purged_by,purge_operation_id,purged_without_host"
+		case "secrets":
+			out[i].Columns += ",retired_at"
+		case "secret_versions":
+			out[i].Columns += ",erased_at"
 		}
 	}
 	return out

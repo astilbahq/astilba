@@ -11,7 +11,7 @@ export default defineConfig({
       "src/features/troubleshooting/**/*.{ts,tsx}",
       "src/features/cross-host-recovery.tsx",
       "src/features/secret-access/**/*.{ts,tsx}",
-      "src/features/environments/{environment-detail,environment-overview,environment-lifecycle,retirement-status}.tsx",
+      "src/features/environments/{environment-detail,environment-overview,environment-lifecycle,environment-secrets,retirement-status}.tsx",
       "src/components/{password-input,theme-menu,locale-menu}.tsx",
       "src/{router,hosting,ui}.tsx",
       "!src/**/*.stories.tsx",

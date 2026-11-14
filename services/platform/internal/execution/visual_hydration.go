@@ -94,6 +94,8 @@ func (s *Service) hydrateVisual(ctx context.Context, keys valueKeys, c *api.Exec
 	return nil
 }
 
+// validateVisualSecrets checks a plan's secrets fit a deployment payload from their stored
+// lengths, opening only a version whose lengths are not stored yet.
 func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, spec domain.Specification) error {
 	if len(domain.SecretReferences(spec)) > 100 {
 		return domain.Invalid("secrets")
@@ -104,13 +106,20 @@ func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, keys val
 		if err != nil {
 			return store.IfMissing(err, domain.Invalid("secretVersionId"))
 		}
+		if secret.PlaintextBytes.Valid && secret.JsonBytes.Valid {
+			total += int(secret.PlaintextBytes.Int32)
+			encodedTotal += int(secret.JsonBytes.Int32)
+			continue
+		}
+		// A version the measuring job has not reached yet is opened to measure it.
 		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, secret.EncryptedValue)
 		if err != nil {
 			return err
 		}
-		total += len(plain)
-		escaped, _ := stablejson.Marshal(string(plain))
-		encodedTotal += len(escaped)
+		n, encoded := domain.SecretLengths(plain)
+		clear(plain)
+		total += n
+		encodedTotal += encoded
 	}
 	if total > 65536 || encodedTotal > 140000 {
 		return domain.Invalid("secrets")

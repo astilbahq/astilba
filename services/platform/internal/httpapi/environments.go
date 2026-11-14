@@ -27,9 +27,10 @@ func project(v db.Project) api.Project {
 }
 func environment(v db.GetEnvironmentRow) api.Environment {
 	purpose := api.EnvironmentPurpose(v.Purpose)
-	withoutHost := v.RetiredWithoutHost
+	withoutHost, purgedWithoutHost := v.RetiredWithoutHost, v.PurgedWithoutHost
 	return api.Environment{Purpose: &purpose, Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID},
-		State: api.EnvironmentState(v.State), RetiredAt: v.RetiredAt, RetiredBy: v.RetiredBy, RetirementOperationId: v.RetirementOperationID, RetiredWithoutHost: &withoutHost}
+		State: api.EnvironmentState(v.State), RetiredAt: v.RetiredAt, RetiredBy: v.RetiredBy, RetirementOperationId: v.RetirementOperationID, RetiredWithoutHost: &withoutHost,
+		PurgedAt: v.PurgedAt, PurgedBy: v.PurgedBy, PurgeOperationId: v.PurgeOperationID, PurgedWithoutHost: &purgedWithoutHost}
 }
 func revision(v db.SpecificationRevision) api.Revision {
 	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: jsontext.Value(v.Specification)}
@@ -484,7 +485,8 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 			return nil, e
 		}
 		sealed = true
-		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID})
+		plain, encoded := store.SecretLengths([]byte(value))
+		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID, PlaintextBytes: plain, JsonBytes: encoded})
 		if e != nil {
 			return nil, e
 		}

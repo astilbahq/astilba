@@ -20,6 +20,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -39,7 +40,8 @@ func seedFirstSecretPage(t *testing.T, f *fixture, ws, env uuid.UUID) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: id, EncryptedValue: cipher, AuthorID: f.owner}); err != nil {
+		plain, encoded := store.SecretLengths([]byte("first-page-decoy"))
+		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: id, EncryptedValue: cipher, AuthorID: f.owner, PlaintextBytes: plain, JsonBytes: encoded}); err != nil {
 			t.Fatal(err)
 		}
 	}

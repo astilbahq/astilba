@@ -730,6 +730,30 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/purge:
+    post:
+      operationId: purgeEnvironment
+      description: Owner with recent identity confirmation. Deletes a retired environment's retained data volumes and erases its secret values. It cannot be undone, and a purged environment cannot be restored. volumeIds must list exactly the volumes the environment keeps. Asking again re-queues a purge whose operation ended without success. Backups at the workspace's destination are kept.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnvironmentPurgeRequest'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Environment'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets:
     get:
       operationId: listConfiguredBuildTargets
@@ -1945,6 +1969,23 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}:
+    delete:
+      operationId: retireSecret
+      description: Owner with recent identity confirmation, on an active environment. Erases the value of every version of the secret and frees its name. Refused with a conflict on secret while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names one of its versions. Version rows are kept for the revisions that name them.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: secretId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions":
     "post":
       "operationId": "createSecretVersion"
@@ -5358,6 +5399,9 @@
         retirement:
           type: boolean
           description: Removes a retired environment's routes, services and networks while keeping its volumes. Advertised only after Astilba-Agent-Retirement v1.
+        purge:
+          type: boolean
+          description: Deletes a retired environment's retained data volumes after verifying their ownership. Advertised only after Astilba-Agent-Purge v1.
 
         "protocol":
           "type": "integer"
@@ -6591,12 +6635,16 @@
           "nullable": true
         state:
           type: string
-          enum: [active, retiring, retired]
-          description: Lifecycle state. A retiring or retired environment is read-only until it is restored.
+          enum: [active, retiring, retired, purging, purged]
+          description: Lifecycle state. A retiring or retired environment is read-only until it is restored. Purging and purged are one-way and never restored.
         retiredAt: {type: string, format: date-time, nullable: true, description: When retirement was last requested.}
         retiredBy: {type: string, format: uuid, nullable: true, description: The owner who last requested retirement.}
         retirementOperationId: {type: string, format: uuid, nullable: true, description: The operation that removes the environment from its server.}
         retiredWithoutHost: {type: boolean, description: Retirement finished without contacting the server because the server was revoked. Its containers may still run there.}
+        purgedAt: {type: string, format: date-time, nullable: true, description: When the purge was requested. Its secret values were erased then.}
+        purgedBy: {type: string, format: uuid, nullable: true, description: The owner who requested the purge.}
+        purgeOperationId: {type: string, format: uuid, nullable: true, description: The operation that deletes the retained volumes from the server.}
+        purgedWithoutHost: {type: boolean, description: The purge finished without contacting the server because the server was revoked. Its volumes may still be there.}
       "required":
         - "id"
         - "projectId"
@@ -7639,6 +7687,18 @@
       required: [confirmName]
       properties:
         confirmName: {type: string, minLength: 1, maxLength: 80, description: The environment's exact current name.}
+    EnvironmentPurgeRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmName, volumeIds]
+      properties:
+        confirmName: {type: string, minLength: 1, maxLength: 80, description: The environment's exact current name.}
+        volumeIds:
+          type: array
+          maxItems: 1000
+          uniqueItems: true
+          items: {type: string, format: uuid}
+          description: Exactly the data volumes the environment keeps, as the owner was shown them.
     "CloneEnvironment":
       "type": "object"
       "additionalProperties": false

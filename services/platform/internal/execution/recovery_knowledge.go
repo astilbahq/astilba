@@ -115,6 +115,8 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"generation"})
 				case "network_members":
 					selected, err = recoveryMemberKnowledge(prior, row, source, revoked)
+				case "secrets":
+					recoverySecretKnowledge(selected, prior, row)
 				case "managed_volumes":
 					err = recoveryMonotonic(selected, prior, row, []string{"deleted"}, nil)
 					// Recorded once, by the first deployment of a PostgreSQL major on the volume.

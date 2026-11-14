@@ -333,6 +333,10 @@ type Environment struct {
 	RetiredBy             *uuid.UUID `json:"retired_by"`
 	RetirementOperationID *uuid.UUID `json:"retirement_operation_id"`
 	RetiredWithoutHost    bool       `json:"retired_without_host"`
+	PurgedAt              *time.Time `json:"purged_at"`
+	PurgedBy              *uuid.UUID `json:"purged_by"`
+	PurgeOperationID      *uuid.UUID `json:"purge_operation_id"`
+	PurgedWithoutHost     bool       `json:"purged_without_host"`
 }
 
 type EnvironmentLayout struct {
@@ -756,10 +760,11 @@ type SchemaAdditiveMigration struct {
 }
 
 type Secret struct {
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	ID            uuid.UUID `json:"id"`
-	Name          string    `json:"name"`
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	ID            uuid.UUID  `json:"id"`
+	Name          string     `json:"name"`
+	RetiredAt     *time.Time `json:"retired_at"`
 }
 
 type SecretAccess struct {
@@ -808,12 +813,15 @@ type SecretRelease struct {
 }
 
 type SecretVersion struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	SecretID       uuid.UUID `json:"secret_id"`
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-	AuthorID       uuid.UUID `json:"author_id"`
-	CreatedAt      time.Time `json:"created_at"`
+	WorkspaceID    uuid.UUID   `json:"workspace_id"`
+	SecretID       uuid.UUID   `json:"secret_id"`
+	ID             uuid.UUID   `json:"id"`
+	EncryptedValue []byte      `json:"encrypted_value"`
+	AuthorID       uuid.UUID   `json:"author_id"`
+	CreatedAt      time.Time   `json:"created_at"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
+	JsonBytes      pgtype.Int4 `json:"json_bytes"`
+	ErasedAt       *time.Time  `json:"erased_at"`
 }
 
 type Server struct {

@@ -130,7 +130,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId {
 		return e.finish(c.Id, "failed", "Visual command identity does not match its reviewed plan.")
 	}
-	if err := p.Plan.Validate(p.Action != "resolve" && p.Action != "preview-cleanup" && p.Action != "retire"); err != nil {
+	if err := p.Plan.Validate(p.Action != "resolve" && p.Action != "preview-cleanup" && p.Action != "retire" && p.Action != "purge"); err != nil {
 		return e.finish(c.Id, "failed", "The deployment plan is invalid.")
 	}
 	if e.Docker == nil {
@@ -143,10 +143,10 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		return e.executePreviewCleanup(ctx, c, p, r)
 	}
 	if p.Action == "retire" {
-		if e.cancelled(c.Id) {
-			return e.finish(c.Id, "cancelled", "Retirement cancelled before execution. Nothing was removed.")
-		}
 		return e.executeRetirement(ctx, c, p, r)
+	}
+	if p.Action == "purge" {
+		return e.executePurge(ctx, c, p)
 	}
 	if p.Action == "deploy" && p.Plan.Release != nil {
 		return e.executeRelease(ctx, c, p, r)
@@ -175,22 +175,19 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		if err != nil {
 			return err
 		}
-		for _, u := range upgrades {
-			if (*p.VolumeID == u.Command.Plan.OldVolume() || *p.VolumeID == u.Command.Plan.TargetVolumeID) && time.Now().Before(u.Status.KeepUntil) {
-				return e.finish(c.Id, "failed", "Upgrade retention protects this volume.")
-			}
-		}
-		v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(*p.VolumeID), client.VolumeInspectOptions{})
-		if errdefs.IsNotFound(err) {
+		name, state := e.deletableVolume(ctx, *p.VolumeID, p.Plan, upgrades)
+		switch state {
+		case volumeRetained:
+			return e.finish(c.Id, "failed", "Upgrade retention protects this volume.")
+		case volumeAbsent:
 			return e.visualFinish(ctx, c, p, "succeeded", "The volume is absent.")
-		}
-		if err != nil || !visualOwned(v.Volume.Labels, p.Plan) || v.Volume.Labels[labelResource] != p.VolumeID.String() {
+		case volumeUnverified:
 			return e.visualFinish(ctx, c, p, "needs_attention", "Volume ownership could not be verified. Nothing was deleted.")
 		}
 		if err = e.checkpoint(c.Id, "delete-volume"); err != nil {
 			return err
 		}
-		_, err = e.Docker.VolumeRemove(ctx, v.Volume.Name, client.VolumeRemoveOptions{Force: false})
+		_, err = e.Docker.VolumeRemove(ctx, name, client.VolumeRemoveOptions{Force: false})
 		if err != nil && !errdefs.IsNotFound(err) {
 			return e.visualFinish(ctx, c, p, "needs_attention", "The volume could not be removed. Confirm no container uses it before retrying.")
 		}

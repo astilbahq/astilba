@@ -234,6 +234,16 @@ function EnvironmentRow({
             {environment.state === "retiring" && (
               <span>{t(($) => $.environments.retiringState)}</span>
             )}
+            {environment.state === "purging" && (
+              <span>{t(($) => $.environments.purgingState)}</span>
+            )}
+            {environment.state === "purged" && (
+              <span>
+                {environment.purgedWithoutHost
+                  ? t(($) => $.environments.purgedWithoutHostState)
+                  : t(($) => $.environments.purgedState)}
+              </span>
+            )}
           </span>
         </div>
         <span className={s.open}>
