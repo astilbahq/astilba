@@ -2,7 +2,7 @@ package agent
 
 import (
 	"bytes"
-	"encoding/json/jsontext"
+	"context"
 	"encoding/json/v2"
 	"errors"
 	"os"
@@ -68,17 +68,35 @@ type Record struct {
 	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
 }
 type Journal struct {
-	db             *bolt.DB
-	keys           *cryptobox.Keyring
-	dir            string
-	recoveryMu     sync.Mutex
-	formatVersion  atomic.Int64
+	db *bolt.DB
+	// keys seals and opens records. A rekey replaces it rather than changing it.
+	keys          atomic.Pointer[cryptobox.Keyring]
+	dir           string
+	recoveryMu    sync.Mutex
+	formatVersion atomic.Int64
+	// stateMu serializes changes to keyring.json and to the keys the journal holds.
+	stateMu sync.Mutex
+	// sealing says the journal seals its keyring to this machine's key store once one works. store
+	// is that store once it has, and from then on. Both are guarded by stateMu.
+	sealing bool
+	store   KeyStore
+	// rekeyedAt is the transaction that last re-sealed every record.
+	rekeyedAt      atomic.Uint64
 	startupUpdates map[uuid.UUID]bool
 }
 
-func Open(dir string) (*Journal, error) { return openJournal(dir, nil) }
+// Open opens a journal whose keyring is never sealed, for tests and development. It refuses one
+// that is.
+func Open(dir string) (*Journal, error) { return openJournal(context.Background(), dir, nil, nil) }
 
-func openJournal(dir string, point func(string) error) (*Journal, error) {
+// OpenSealed opens the journal with this machine's key store, which store opens. A keyring sealed to
+// it needs the store; one in the clear is sealed to it now if the store works, or else once a rekey
+// finds that it does.
+func OpenSealed(ctx context.Context, dir string, store func(context.Context) (KeyStore, error)) (*Journal, error) {
+	return openJournal(ctx, dir, store, nil)
+}
+
+func openJournal(ctx context.Context, dir string, store func(context.Context) (KeyStore, error), point func(string) error) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -92,7 +110,7 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 	}
 	fail := func(err error) (*Journal, error) { db.Close(); return nil, err }
 	j := &Journal{db: db, dir: dir}
-	if err = j.openLocalKeys(point); err != nil {
+	if err = j.openLocalKeys(ctx, store, point); err != nil {
 		return fail(err)
 	}
 	// Only a clean close vouches that nothing wrote since: not an earlier agent, which forgets
@@ -189,30 +207,6 @@ func (j *Journal) dropSubmissionCredentials(tx *bolt.Tx) error {
 	return j.put(tx, "identity", done, true)
 }
 
-// withoutSubmissionAccess drops the access block from a runner submission. Agents refuse them, but
-// an older management, as after a rollback, still sends one hydrated with a write credential.
-func withoutSubmissionAccess(c api.ExecutionCommand) (api.ExecutionCommand, bool, error) {
-	if c.Kind != "pipeline" || c.Pipeline == nil {
-		return c, false, nil
-	}
-	var fields map[string]jsontext.Value
-	var action string
-	if json.Unmarshal(*c.Pipeline, &fields) != nil || json.Unmarshal(fields["action"], &action) != nil || action != "submit" {
-		return c, false, nil
-	}
-	if _, held := fields["access"]; !held {
-		return c, false, nil
-	}
-	delete(fields, "access")
-	raw, err := stablejson.Marshal(fields)
-	if err != nil {
-		return c, false, err
-	}
-	message := jsontext.Value(raw)
-	c.Pipeline = &message
-	return c, true, nil
-}
-
 // seedForgotten raises each forgotten ceiling to its counter, because any command up to it may have
 // been forgotten without a record.
 func (j *Journal) seedForgotten(tx *bolt.Tx) error {
@@ -250,7 +244,7 @@ func (j *Journal) get(tx *bolt.Tx, bucket, key string, out any) error {
 	if b == nil {
 		return os.ErrNotExist
 	}
-	plain, e := j.keys.Open(b, bucket+":"+key)
+	plain, e := j.keys.Load().Open(b, bucket+":"+key)
 	if e != nil {
 		return e
 	}
@@ -272,7 +266,7 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 	if len(raw) > limit {
 		return errors.New("journal record limit exceeded")
 	}
-	data, e := j.keys.Seal(raw, bucket+":"+key)
+	data, e := j.keys.Load().Seal(raw, bucket+":"+key)
 	if e != nil {
 		return e
 	}

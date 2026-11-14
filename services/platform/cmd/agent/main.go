@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/mail"
 	"net/netip"
 	"os"
@@ -64,7 +65,7 @@ func run() error {
 	}
 	command := os.Args[1]
 	if command == "describe" {
-		return stablejson.Encode(os.Stdout, agentrelease.Identity{Version: version, MinimumVersion: releaseMinimumVersion(), Commit: commit, Protocol: 1, Arch: runtime.GOARCH, KeyAuth: 1})
+		return stablejson.Encode(os.Stdout, agentrelease.Identity{Version: version, MinimumVersion: releaseMinimumVersion(), Commit: commit, Protocol: 1, Arch: runtime.GOARCH, KeyAuth: 1, StateVersion: agent.StateVersion})
 	}
 	if command == "release-keygen" || command == "release-manifest" || command == "release-sign" {
 		return releaseCommand(command, os.Args[2:])
@@ -135,7 +136,27 @@ func run() error {
 	if command == "preflight" {
 		return stablejson.Encode(os.Stdout, preflight(ctx))
 	}
-	j, e = agent.Open(*dir)
+	if command == "enroll" || command == "transfer" {
+		// The service's sandbox can't create systemd's host key, so enrollment does, outside it,
+		// before the journal opens, so that a new journal's keyring is sealed from the start.
+		if err := agent.SetupSystemKeyStore(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
+		}
+	}
+	// A journal sealed to this machine opens only once its key store does, which can take a while
+	// early in boot. The service waits for it rather than failing; a command run by hand reports why.
+	for {
+		j, e = agent.OpenSealed(ctx, *dir, agent.SystemKeyStore)
+		if command != "run" || !errors.Is(e, agent.ErrSealedJournal) {
+			break
+		}
+		slog.Warn("the agent is waiting for its key store to open its journal", "error", e)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(time.Minute):
+		}
+	}
 	if e != nil {
 		return e
 	}
@@ -267,11 +288,7 @@ func run() error {
 		c.Observe = func(ctx context.Context) api.AgentHeartbeat {
 			return preflight(ctx)
 		}
-		// The service's sandbox can't create systemd's host key, so enrollment does, outside it.
-		if err := agent.SetupSystemKeyStore(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
-		}
-		c.OpenKeys = agent.SystemKeyStore
+		c.Keys, c.OpenKeys = j.KeyStore(), agent.SystemKeyStore
 		c.OpenKeyStore(ctx)
 		if e = c.Enroll(ctx, string(token)); e != nil {
 			return e
@@ -343,7 +360,7 @@ func run() error {
 			return e
 		}
 		defer f.Close()
-		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: releaseMinimumVersion()})
+		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: releaseMinimumVersion(), StateVersion: j.StateVersion()})
 	}
 	if command == "resolve-run" {
 		policy, err := uuid.Parse(*policyID)
@@ -373,7 +390,7 @@ func run() error {
 	c := agent.NewClient(j, engine)
 	// Run opens the key store in the background, and again while it is unavailable, so a store
 	// that isn't ready never stops the agent's local work.
-	c.OpenKeys = agent.SystemKeyStore
+	c.Keys, c.OpenKeys = j.KeyStore(), agent.SystemKeyStore
 	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {
 		cfg, err := j.Config()
