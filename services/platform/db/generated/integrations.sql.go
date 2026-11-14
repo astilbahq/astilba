@@ -46,6 +46,23 @@ func (q *Queries) CountRegistries(ctx context.Context, workspaceID uuid.UUID) (i
 	return count, err
 }
 
+const countSecretVersions = `-- name: CountSecretVersions :one
+SELECT count(*) FROM secret_versions WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+`
+
+type CountSecretVersionsParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+// How many of ids exist, as the connection running it sees them.
+func (q *Queries) CountSecretVersions(ctx context.Context, arg CountSecretVersionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countSecretVersions, arg.WorkspaceID, arg.Ids)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteEnvironmentSecretVersions = `-- name: DeleteEnvironmentSecretVersions :exec
 DELETE FROM secret_versions v USING secrets s
 WHERE s.workspace_id = $1 AND s.environment_id = $2

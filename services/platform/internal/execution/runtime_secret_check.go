@@ -90,7 +90,8 @@ func chooseCheckedVersions(candidates []db.RuntimeSecretCheckCandidatesRow) ([]c
 // secrets. Choosing the versions reads only stored lengths, under the caller's locks. Opening and
 // searching them runs between passes, with nothing held, and its answer is kept for the versions
 // it searched: versions never change, so a later pass that chooses the same ones under its own
-// locks takes the answer without opening anything again.
+// locks takes the answer without opening anything again. Versions the caller's transaction
+// created are searched in the pass instead.
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, bundle composeproject.Bundle) error {
 	q := db.New(tx)
 	// A submission pushes both: the path names a tree entry, the content fills its blob.
@@ -124,6 +125,26 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 	key := secretCheckKey(env, texts, chosen)
 	if answer, ok := git.secretCheckAnswer(key); ok {
 		return answer
+	}
+	ids := make([]uuid.UUID, len(chosen))
+	for i, c := range chosen {
+		ids[i] = c.id
+	}
+	// Versions this transaction created, such as a new preview environment's copies, can't be
+	// read between passes, and the next pass creates them again under new IDs, so they are
+	// searched here. Only a new environment has them, holding no more than a deployment's secrets.
+	committed, err := db.New(s.Store.Pool).CountSecretVersions(ctx, db.CountSecretVersionsParams{WorkspaceID: ws, Ids: ids})
+	if err != nil {
+		return err
+	}
+	if committed < int64(len(ids)) {
+		rows, err := q.SecretVersionValues(ctx, db.SecretVersionValuesParams{WorkspaceID: ws, EnvironmentID: env, Ids: ids})
+		if err != nil {
+			return err
+		}
+		return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
+			return git.keys.inspect.open(item, cipher)
+		}))
 	}
 	return &providerCall{fetch: func(ctx context.Context) {
 		if _, ok := git.secretChecks[key]; !ok {
@@ -169,17 +190,25 @@ func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, 
 	if err != nil {
 		return err
 	}
+	return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
+		return keys.openBetweenPasses(ctx, item, cipher)
+	}))
+}
+
+// openChosen opens a chosen version from rows with open; one missing from rows was erased since
+// it was chosen.
+func openChosen(rows []db.SecretVersionValuesRow, open func(secretbroker.Item, []byte) ([]byte, error)) func(checkedVersion) ([]byte, error) {
 	ciphers := make(map[uuid.UUID][]byte, len(rows))
 	for _, row := range rows {
 		ciphers[row.ID] = row.EncryptedValue
 	}
-	return searchSecretValues(domain.NewSecretText(texts...), chosen, func(c checkedVersion) ([]byte, error) {
+	return func(c checkedVersion) ([]byte, error) {
 		cipher, ok := ciphers[c.id]
 		if !ok {
 			return nil, errCheckedVersionsChanged
 		}
-		return keys.openBetweenPasses(ctx, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id}, cipher)
-	})
+		return open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id}, cipher)
+	}
 }
 
 // searchSecretValues searches for each chosen version's value, opened by open, in order.
