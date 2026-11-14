@@ -546,6 +546,8 @@ func TestStalledRouteCheckHoldsNeitherHeartbeatsNorShutdown(t *testing.T) {
 
 	heartbeat := make(chan struct{}, 16)
 	management := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every controller marks its answers; this one offers no extension.
+		w.Header().Set("Astilba-Agent-Features", "none")
 		if strings.HasSuffix(r.URL.Path, "/heartbeat") {
 			select {
 			case heartbeat <- struct{}{}:

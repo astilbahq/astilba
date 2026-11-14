@@ -143,6 +143,9 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if err := e.checkBackupSource(ctx, in.Policy); err != nil {
 		return err
 	}
+	if err := e.beginEffects(ctx, s, r); err != nil {
+		return err
+	}
 	if err := e.prepareRepository(ctx, in, false); err != nil {
 		return err
 	}
