@@ -11,7 +11,7 @@ import (
 // A coordinated backup's leaf lives past its run's own timeout, so with a default policy a long
 // upload fails by that timeout and the parent resumes the writers. Other children keep theirs.
 func TestMaintenanceChildLifetime(t *testing.T) {
-	for _, seconds := range []int{0, 600, 1800} {
+	for _, seconds := range []int{0, 60, 600, 1800} {
 		effect := backup.Command{Action: "backup", Installation: backup.Installation{Policy: backup.Policy{TimeoutSeconds: seconds}}}
 		m := &coordinatedMaintenance{Effect: maintenanceEffect{Backup: &effect}}
 		for _, kind := range []api.ExecutionCommandKind{"backup", "schedule"} {

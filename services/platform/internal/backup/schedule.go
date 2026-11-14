@@ -68,18 +68,22 @@ const RestoreTimeout = 30 * time.Minute
 // seconds to confirm its container is gone.
 const commandMargin = 10 * time.Minute
 
+// commandLifetime is how long a command may wait to start when its run, if any, is short.
+const commandLifetime = 30 * time.Minute
+
 // Lifetime is how long after it is issued a command may still start or run, the deadline its
 // agent enforces. A backup or restore outlives its run's own timeout by a margin, so a run that
 // runs long ends by that timeout, failed with its cleanup done, rather than by a deadline that
-// leaves its outcome to inspect. Only a command its agent receives late reaches the deadline.
+// leaves its outcome to inspect. Only a run that starts late, because its command reached the
+// agent late or waited behind other work there, reaches the deadline.
 func (c Command) Lifetime() time.Duration {
 	switch c.Action {
 	case "backup":
-		return c.Installation.Policy.RunTimeout() + commandMargin
+		return max(commandLifetime, c.Installation.Policy.RunTimeout()+commandMargin)
 	case "restore":
-		return RestoreTimeout + commandMargin
+		return max(commandLifetime, RestoreTimeout+commandMargin)
 	}
-	return 30 * time.Minute
+	return commandLifetime
 }
 
 // Next is exclusive. Intervals begin at installation and subsequently advance

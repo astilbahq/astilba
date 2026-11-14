@@ -96,8 +96,8 @@ func TestLegacyBlankTimezonePreservesWireAndUTCBehavior(t *testing.T) {
 func TestCommandLifetimeOutlastsItsRun(t *testing.T) {
 	for _, seconds := range []int{0, 1, 1800} {
 		c := Command{Action: "backup", Installation: Installation{Policy: Policy{TimeoutSeconds: seconds}}}
-		if c.Lifetime() < c.Installation.Policy.RunTimeout()+5*time.Minute {
-			t.Fatal("a backup's deadline does not outlast its run timeout of", c.Installation.Policy.RunTimeout())
+		if c.Lifetime() < c.Installation.Policy.RunTimeout()+5*time.Minute || c.Lifetime() < 30*time.Minute {
+			t.Fatal("a backup's deadline does not outlast its run timeout of", c.Installation.Policy.RunTimeout(), "or waits less than before")
 		}
 		c.Action = "restore"
 		if c.Lifetime() < RestoreTimeout+5*time.Minute {
