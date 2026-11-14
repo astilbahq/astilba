@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -32,7 +33,37 @@ type hostRequest struct {
 	Reject      *uuid.UUID            `json:"reject,omitempty"`
 	CrashAt     string                `json:"crashAt,omitempty"`
 	CancelAt    string                `json:"cancelAt,omitempty"`
+	// OwnerCancelAt records the owner's cancel of Command at a point, and StallAt holds the
+	// agent there until StallUntil: together they stop a command, not the agent, part way.
+	OwnerCancelAt string    `json:"ownerCancelAt,omitempty"`
+	StallAt       string    `json:"stallAt,omitempty"`
+	StallUntil    time.Time `json:"stallUntil,omitzero"`
 }
+
+// point is the helper engine's hook for one request. At the points the request names, it exits
+// as a crash does, stops the agent as a SIGTERM does (stop), records the owner's cancel of the
+// command, and stalls.
+func (request hostRequest) point(j *Journal, stop context.CancelFunc) func(string) {
+	return func(point string) {
+		if point == request.CrashAt && point != "" {
+			os.Exit(77)
+		}
+		if point == request.CancelAt {
+			stop()
+		}
+		if point == request.OwnerCancelAt && request.Command != nil {
+			cancelled := *request.Command
+			cancelled.CancelRequested = true
+			if _, err := j.Accept(cancelled); err != nil {
+				panic(err)
+			}
+		}
+		if point == request.StallAt {
+			time.Sleep(time.Until(request.StallUntil))
+		}
+	}
+}
+
 type hostReply struct {
 	Report    *api.AgentReport        `json:"report,omitempty"`
 	Identity  *hostnetwork.Identity   `json:"identity,omitempty"`

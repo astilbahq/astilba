@@ -23,7 +23,13 @@ import (
 type scheduleTransport func(*http.Request) (*http.Response, error)
 
 func (f scheduleTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-func scheduledJobFixture(t *testing.T, cleanupFailure string) (*Engine, backup.Policy, *int) {
+
+// scheduledJobFixture fails one Docker call named by mode. A mode prefixed "running" keeps the
+// job running until it is stopped.
+func scheduledJobFixture(t *testing.T, mode string) (*Engine, backup.Policy, *int) {
+	running := strings.HasPrefix(mode, "running")
+	cleanupFailure := strings.TrimPrefix(strings.TrimPrefix(mode, "running"), "-")
+	stopped := false
 	j, p := testVisualJournal(t)
 	app := uuid.New()
 	image := execution.TestImage
@@ -63,12 +69,17 @@ func scheduledJobFixture(t *testing.T, cleanupFailure string) (*Engine, backup.P
 		case strings.HasSuffix(path, "/containers/job/start"):
 			w.WriteHeader(204)
 		case strings.HasSuffix(path, "/containers/job/stop"):
+			stopped = true
 			w.WriteHeader(204)
 		case strings.HasSuffix(path, "/containers/job/json"):
 			jobInspects++
 			if cleanupFailure == "inspect" && jobInspects == 2 {
 				w.WriteHeader(500)
 				fmt.Fprint(w, `{"message":"cleanup inspect failed"}`)
+				return
+			}
+			if running && !stopped {
+				stablejson.Encode(w, map[string]any{"Id": "job", "Config": map[string]any{"Labels": jobLabels}, "State": map[string]any{"Running": true, "Status": "running"}})
 				return
 			}
 			stablejson.Encode(w, map[string]any{"Id": "job", "Config": map[string]any{"Labels": jobLabels}, "State": map[string]any{"Running": false, "Status": "exited", "ExitCode": 0}})
