@@ -407,7 +407,8 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	var allocation pgx.Tx
 	if r.View.EnvironmentId == nil {
 		var active, serverActive int
-		if err = tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER(WHERE p.server_id=$2) FROM preview_requests r JOIN preview_policies p ON p.id=r.policy_id WHERE r.workspace_id=$1 AND r.environment_id IS NOT NULL AND r.state<>'deleted'", p.Workspace, p.Server).Scan(&active, &serverActive); err != nil {
+		// A host's slots are the previews running on it, wherever their policies now point.
+		if err = tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER(WHERE EXISTS(SELECT 1 FROM deployment_units u WHERE u.workspace_id=r.workspace_id AND u.environment_id=r.environment_id AND u.primary_unit AND u.server_id=$2)) FROM preview_requests r WHERE r.workspace_id=$1 AND r.environment_id IS NOT NULL AND r.state<>'deleted'", p.Workspace, p.Server).Scan(&active, &serverActive); err != nil {
 			return err
 		}
 		var own int

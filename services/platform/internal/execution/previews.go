@@ -430,10 +430,15 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 			}
 		case "cleanup":
 			var controller int64
-			// A host waiting for a verified agent transfer already carries the controller generation the
-			// transfer completes with, so the request waits for it rather than being refused. The
-			// cleanup reconcile checks the authority before anything is sent.
-			if err = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE workspace_id=$1 AND id=$2 AND NOT revoked", ws, policy.Server).Scan(&controller); err != nil {
+			// The cleanup is bound to the host the preview runs on. A host waiting for a verified agent
+			// transfer already carries the controller generation the transfer completes with, so the
+			// request waits for it rather than being refused. The cleanup reconcile checks the authority
+			// before anything is sent.
+			var host uuid.UUID
+			if host, err = db.New(tx).PreviewHost(ctx, db.PreviewHostParams{WorkspaceID: ws, EnvironmentID: out.EnvironmentId, PolicyHost: policy.Server}); err != nil {
+				return err
+			}
+			if err = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE workspace_id=$1 AND id=$2 AND NOT revoked", ws, host).Scan(&controller); err != nil {
 				return err
 			}
 			_, err = tx.Exec(ctx, "UPDATE preview_requests SET cleanup_requested=true,cleanup_at=now(),next_check_at=now(),cleanup_actor=$2,cleanup_auth_version=$3,cleanup_controller=$4 WHERE id=$1", id, p.Account.ID, p.Account.AuthVersion, controller)
