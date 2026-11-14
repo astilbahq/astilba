@@ -399,7 +399,8 @@ later needs no list:
   `runtime`, any other `CI`;
 - every `tool` directive in a tracked `go.mod`, with the requirement that provides it;
 - every GitHub release download in a tracked file, with the version in its URL or in a
-  constant of the same file. A version it cannot read stops the report.
+  constant of the same file. A release link it cannot read, such as `releases/latest`, stops
+  the report.
 
 For each image it reads the pinned manifest and checks its bytes against the digest. It
 pulls the `linux/amd64` and `linux/arm64` images, the platforms Astilba runs, by their
@@ -441,10 +442,14 @@ change by themselves. An image or a release binary waits seven days, the Docker
 cooldown in `.github/dependabot.yml`, judged by when the pinned digest was pushed or the
 release was published, or by an asset's later replacement. A bump of either is held
 until then, and its pull request names the date. `node scripts/release-age.mjs origin/main`
-fails for any release binary a branch adds that is younger than that cooldown. No script
+fails for any release binary a branch adds, or that a file it changes downloads, that is
+younger than that cooldown. No script
 checks an image's age: Docker Hub gives a push time only for a tag, not for each digest,
-so whoever bumps an image reads it from the tag's last push on Docker Hub, or from the
-image configuration's creation time on other registries. Registry requests, pulls and scans repeat like
+so whoever bumps an image reads it from the registry's own record of the push: the tag's
+last push on Docker Hub, or the package version's creation on GitHub's container registry
+(`gh api /orgs/<owner>/packages/container/<name>/versions`). An image configuration's
+`created` time is set by whoever builds the image and can be backdated, so it counts only
+where the registry keeps no record of its own, and the pull request says so. Registry requests, pulls and scans repeat like
 [host downloads](#host-downloads) until one has failed for that long; the rest of the
 run then tries each a few times. A registry request ends within a minute, and no image
 check starts or runs past 90 minutes; the tool checks after them are bounded by their

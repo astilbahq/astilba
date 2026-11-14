@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { addedReleases, cooldownMs, releaseTime, verdicts } from "./release-age.mjs";
+import { cooldownMs, releasesToCheck, releaseTime, verdicts } from "./release-age.mjs";
 
 const day = 86_400_000;
 
@@ -30,14 +30,20 @@ updates:
   );
 });
 
-test("only a release the base did not download is checked", () => {
-  const before = [{ repository: "moby/buildkit", version: "v0.34.1", paths: ["a.sh"] }];
+test("a release the base did not download, or one a changed file downloads, is checked", () => {
+  const before = [
+    { repository: "moby/buildkit", version: "v0.34.1", paths: ["a.sh"] },
+    { repository: "restic/restic", version: "v0.19.1", paths: ["b.sh"] },
+  ];
   const after = [
     { repository: "moby/buildkit", version: "v0.35.0", paths: ["a.sh"] },
     { repository: "jdx/mise", version: "v2026.10.14", paths: ["a.sh"] },
+    { repository: "restic/restic", version: "v0.19.1", paths: ["b.sh"] },
   ];
-  assert.deepEqual(addedReleases(before, after), [after[0], after[1]]);
-  assert.deepEqual(addedReleases(after, after), []);
+  assert.deepEqual(releasesToCheck(before, after, new Set(["a.sh"])), [after[0], after[1]]);
+  assert.deepEqual(releasesToCheck(after, after, new Set()), []);
+  // b.sh pinned a new checksum for the same version: upstream replaced the asset.
+  assert.deepEqual(releasesToCheck(after, after, new Set(["b.sh"])), [after[2]]);
 });
 
 test("a replaced asset makes a release as new as the replacement", () => {

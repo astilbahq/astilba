@@ -7,7 +7,8 @@ import { findReleases, trackedFiles } from "./pin-sources.mjs";
 
 // Release binaries downloaded from GitHub wait as long as images and actions do, so a
 // bad release has time to be caught: the Docker cooldown in .github/dependabot.yml.
-// This applies that gate to every release a branch's files gained since a base commit.
+// This applies that gate to every release a branch's files gained or touched since a base
+// commit.
 // See docs/continuous-integration.md#pinned-images-and-tools.
 
 const root = resolve(import.meta.dirname, "..");
@@ -23,10 +24,22 @@ export function cooldownMs(dependabotText) {
 
 const key = ({ repository, version }) => `${repository}@${version}`;
 
-// Releases the working tree downloads that the base commit did not.
-export function addedReleases(before, after) {
+// Releases the working tree downloads that the base commit did not, and every release a
+// changed file downloads: a checksum pinned again for the same version means upstream
+// replaced an asset, which is as new as the replacement.
+export function releasesToCheck(before, after, changed) {
   const old = new Set(before.map(key));
-  return after.filter((release) => !old.has(key(release)));
+  return after.filter(
+    (release) => !old.has(key(release)) || release.paths.some((path) => changed.has(path)),
+  );
+}
+
+function changedPaths(base) {
+  return new Set(
+    execFileSync("git", ["diff", "--name-only", "-z", base, "--"], { cwd: root, encoding: "utf8" })
+      .split("\0")
+      .filter(Boolean),
+  );
 }
 
 // When a release became what a download fetches: published, or later if an asset was
@@ -79,7 +92,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const base = process.argv[2] ?? "origin/main";
   const minimumMs = cooldownMs(readFileSync(join(root, ".github/dependabot.yml"), "utf8"));
   const current = trackedFiles(root).filter(({ text }) => text.includes(downloads));
-  const releases = addedReleases(findReleases(baseFiles(base)), findReleases(current));
+  const releases = releasesToCheck(findReleases(baseFiles(base)), findReleases(current), changedPaths(base));
   if (releases.length === 0) {
     console.log(`No release binary changed since ${base}.`);
   } else {
