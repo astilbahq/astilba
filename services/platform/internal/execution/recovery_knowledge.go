@@ -265,63 +265,6 @@ func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Ro
 	return out, nil
 }
 
-// recoveryRevokedServers names every server revoked in any of the archives. Recovery keeps a
-// revocation whichever side knew of it.
-func recoveryRevokedServers(archives ...portability.Archive) (map[uuid.UUID]bool, error) {
-	out := map[uuid.UUID]bool{}
-	for _, archive := range archives {
-		for _, row := range archive.Tables["servers"] {
-			id, err := recoveryValue[uuid.UUID](row, "id")
-			if err != nil {
-				return nil, err
-			}
-			value, err := recoveryValue[bool](row, "revoked")
-			if err != nil {
-				return nil, err
-			}
-			out[id] = out[id] || value
-		}
-	}
-	return out, nil
-}
-
-// settleRevokedServers makes the merged history agree with the revocations it carries. A revoked
-// server stays out of the network, whichever row was selected for it. A removal waiting on one ends
-// here, because nothing can deliver it and nothing it reports counts, and a host that stalled on
-// purpose must not be able to hold recovery back.
-func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool) error {
-	for _, row := range a.Tables["network_members"] {
-		server, err := recoveryValue[uuid.UUID](row, "server_id")
-		if err != nil {
-			return err
-		}
-		if revoked[server] {
-			recoverySet(row, "enabled", false)
-		}
-	}
-	for _, row := range a.Tables["execution_operations"] {
-		server, err := recoveryValue[uuid.UUID](row, "server_id")
-		if err != nil {
-			return err
-		}
-		if !revoked[server] {
-			continue
-		}
-		state, err := recoveryValue[api.ExecutionState](row, "state")
-		if err != nil {
-			return err
-		}
-		command, err := recoveryValue[api.ExecutionCommand](row, "command")
-		if err != nil {
-			return err
-		}
-		if !Terminal(state) && standaloneRestrictionFrame(command) {
-			recoverySet(row, "state", api.ExecutionState("cancelled"))
-		}
-	}
-	return nil
-}
-
 func recoveryMemberKnowledge(prior, incoming portability.Row, source *recoverySource, revoked map[uuid.UUID]bool) (portability.Row, error) {
 	server, err := recoveryValue[uuid.UUID](prior, "server_id")
 	if err != nil {
