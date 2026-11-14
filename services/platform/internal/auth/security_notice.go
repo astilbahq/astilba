@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/diagnostic"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 )
 
@@ -39,12 +40,19 @@ const (
 // securityEvent records a change to how the account signs in and queues its notice in the same
 // transaction, so the notice is sent exactly when the change commits.
 func (s *Service) securityEvent(ctx context.Context, tx pgx.Tx, account uuid.UUID, kind string) error {
+	_, err := s.recordSecurityEvent(ctx, tx, account, kind, pgtype.Text{})
+	return err
+}
+
+// recordSecurityEvent is securityEvent with a reason, which only an operator's reset has. It
+// returns the event's ID.
+func (s *Service) recordSecurityEvent(ctx context.Context, tx pgx.Tx, account uuid.UUID, kind string, reason pgtype.Text) (uuid.UUID, error) {
 	id := uuid.New()
-	if err := db.New(tx).InsertAccountSecurityEvent(ctx, db.InsertAccountSecurityEventParams{ID: id, AccountID: account, Kind: kind, CreatedAt: s.Now()}); err != nil {
-		return err
+	if err := db.New(tx).InsertAccountSecurityEvent(ctx, db.InsertAccountSecurityEventParams{ID: id, AccountID: account, Kind: kind, Reason: reason, CreatedAt: s.Now()}); err != nil {
+		return uuid.Nil, err
 	}
 	_, err := s.Queue.InsertTx(ctx, tx, SecurityNoticeArgs{Event: id}, nil)
-	return err
+	return id, err
 }
 
 // SecurityNoticeArgs names the event to tell the account holder about. The worker reads the
@@ -99,10 +107,7 @@ func (w *SecurityNoticeWorker) Work(ctx context.Context, job *river.Job[Security
 		w.Log.Warn("account security notice not sent: email is not configured", "job", job.ID)
 		return river.JobCancel(errors.New("email is not configured"))
 	}
-	subject, change, remedy := securityNoticeText(notice.Kind)
-	body := change + " on " + notice.CreatedAt.UTC().Format("2 January 2006 at 15:04 UTC") + ".\n\n" +
-		"If this was you, there is nothing to do. If it was not, someone else may have access to your account: " +
-		remedy + " at " + w.Origin + "/reset and tell your workspace owners."
+	subject, body := securityNotice(notice, w.Origin)
 	// A relay that failed may succeed later, and a notice that might arrive twice is better than
 	// one that never arrives, so every failure is retried until the patience runs out.
 	if err := s.Mail.Send(ctx, notice.Email, subject, body); err != nil {
@@ -110,6 +115,23 @@ func (w *SecurityNoticeWorker) Work(ctx context.Context, job *river.Job[Security
 		return err
 	}
 	return nil
+}
+
+// securityNotice is a notice's subject and body.
+func securityNotice(notice db.AccountSecurityNoticeRow, origin string) (subject, body string) {
+	when := " on " + notice.CreatedAt.UTC().Format("2 January 2006 at 15:04 UTC") + ".\n\n"
+	if notice.Kind == MFAReset {
+		// The holder has to act whoever asked for the reset, since the password went with it.
+		return "Two-factor authentication was reset", "The operator of this Astilba installation turned off two-factor authentication " +
+			"for your Astilba account, deleted its recovery codes and replaced its password" + when +
+			"The reason they gave: " + notice.Reason.String + "\n\n" +
+			"Every session and automation token for your account has ended. To sign in again, choose a new password at " +
+			origin + "/reset, then set up two-factor authentication again. If you did not ask for this, tell the operator " +
+			"and your workspace owners."
+	}
+	subject, change, remedy := securityNoticeText(notice.Kind)
+	return subject, change + when + "If this was you, there is nothing to do. If it was not, someone else may have access to your account: " +
+		remedy + " at " + origin + "/reset and tell your workspace owners."
 }
 
 // securityNoticeText is a notice's subject, what changed, and what to do if it was not the

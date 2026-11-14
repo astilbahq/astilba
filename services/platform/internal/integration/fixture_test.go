@@ -340,7 +340,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 }
 
 // securityNoticeMarker is in every account security notice, which smtpFixture keeps apart.
-const securityNoticeMarker = "If this was you, there is nothing to do."
+const securityNoticeMarker = "your workspace owners."
 
 func smtpFixture(t *testing.T) (chan string, chan string, string) {
 	t.Helper()
