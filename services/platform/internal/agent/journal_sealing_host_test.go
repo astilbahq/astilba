@@ -47,14 +47,15 @@ func TestNativeJournalSealedToTheMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The service seals it when it rekeys with its store.
+	if err = j.Rekey(ctx, store); err != nil {
+		t.Fatal(err)
+	}
 	if state := readLocalState(t, dir); state.Version != sealedStateVersion || state.Keyring != nil {
 		t.Fatal("upgrading didn't seal the keyring with systemd-creds", state.Version)
 	}
 	if j.KeyStore().Protection() != store.Protection() {
 		t.Fatal("the journal is sealed with another protection than the agent key")
-	}
-	if err = j.Rekey(ctx, nil); err != nil {
-		t.Fatal(err)
 	}
 	if openableCanaries(t, dir, clear) != 0 || openableCanaries(t, dir, j.keys.Load()) != 0 {
 		t.Fatal("a key opens a version the rekey replaced")

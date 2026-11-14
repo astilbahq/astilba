@@ -68,7 +68,7 @@ type Record struct {
 	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
 }
 type Journal struct {
-	db *bolt.DB
+	db *journalDB
 	// keys seals and opens records. A rekey replaces it rather than changing it.
 	keys          atomic.Pointer[cryptobox.Keyring]
 	dir           string
@@ -109,7 +109,7 @@ func openJournal(ctx context.Context, dir string, store func(context.Context) (K
 		return nil, err
 	}
 	fail := func(err error) (*Journal, error) { db.Close(); return nil, err }
-	j := &Journal{db: db, dir: dir}
+	j := &Journal{db: &journalDB{DB: db}, dir: dir}
 	if err = j.openLocalKeys(ctx, store, point); err != nil {
 		return fail(err)
 	}

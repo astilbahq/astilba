@@ -363,7 +363,7 @@ func run() error {
 			return e
 		}
 		defer f.Close()
-		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: releaseMinimumVersion(), StateVersion: j.StateVersion()})
+		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: releaseMinimumVersion(), StateVersion: j.InstallStateVersion()})
 	}
 	if command == "resolve-run" {
 		policy, err := uuid.Parse(*policyID)

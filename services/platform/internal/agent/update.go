@@ -41,8 +41,8 @@ type Running struct {
 	// MinimumVersion is the minimum version of the release this agent runs. It never installs
 	// an older release.
 	MinimumVersion string
-	// StateVersion is the format of the agent's journal. It only installs a release that reads it:
-	// an earlier one would refuse to start.
+	// StateVersion is the format a release must read to run on the agent's journal. It only installs
+	// a release that reads it: an earlier one would refuse to start.
 	StateVersion int
 }
 
@@ -108,7 +108,7 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 	}
 	// Releases from before the field read every format up to the keyed one, which Keyed covers.
 	if running.StateVersion > keyedStateVersion && identity.StateVersion < running.StateVersion {
-		return errors.New("this agent's journal is sealed to this machine, and this release can't read it; install a release that can")
+		return errors.New("this agent seals its journal's keyring to this machine, and this release can't read a sealed keyring; install a release that can")
 	}
 	backup := temp.Name() + ".previous"
 	if e = os.Link(executable, backup); e != nil {
@@ -156,5 +156,5 @@ func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable
 	if response.StatusCode != 200 {
 		return errors.New("artifact unavailable")
 	}
-	return Install(ctx, r, key, response.Body, executable, Running{Keyed: c.Journal.HoldsKey(cfg), MinimumVersion: minimumVersion, StateVersion: c.Journal.StateVersion()})
+	return Install(ctx, r, key, response.Body, executable, Running{Keyed: c.Journal.HoldsKey(cfg), MinimumVersion: minimumVersion, StateVersion: c.Journal.InstallStateVersion()})
 }

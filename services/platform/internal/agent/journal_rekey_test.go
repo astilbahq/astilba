@@ -198,37 +198,47 @@ func TestJournalInTheClearIsSealedOnUpgrade(t *testing.T) {
 		j.Close()
 		before := encryptedJournalRows(t, dir)
 
-		// The key store can't seal yet, so the keyring stays as it was, and the agent runs.
-		j, err = OpenSealed(context.Background(), dir, storeOpener(nil))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if j.StateVersion() == sealedStateVersion || j.KeyStore() != nil {
-			t.Fatal("a journal was sealed without a key store")
-		}
-		j.Close()
-		if state := readLocalState(t, dir); state.Version == sealedStateVersion {
-			t.Fatal("an unavailable store sealed the keyring")
-		}
-
+		// Opening doesn't seal a keyring already in the clear, even with a store that works, so a
+		// command run by hand never changes the format under an installed service.
 		store := InsecureKeyStore()
+		raw, _ := os.ReadFile(filepath.Join(dir, "keyring.json"))
 		j, err = OpenSealed(context.Background(), dir, storeOpener(store))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if j.StateVersion() != sealedStateVersion || !j.HoldsKey(Config{}) {
-			t.Fatal("upgrading didn't seal the journal or mark it keyed")
+		if j.StateVersion() == sealedStateVersion || j.KeyStore() != nil {
+			t.Fatal("opening sealed a journal in the clear")
+		}
+		if after, _ := os.ReadFile(filepath.Join(dir, "keyring.json")); !bytes.Equal(raw, after) {
+			t.Fatal("opening rewrote a keyring in the clear")
+		}
+		// But no release that can't read a sealed keyring may be installed: the agent seals it as
+		// soon as it rekeys with a store.
+		if j.InstallStateVersion() != sealedStateVersion {
+			t.Fatal("an agent that may seal its journal would install a release that can't read it")
 		}
 		legacyKeys, _ := cryptobox.Parse(legacy)
 		if !rowsOpen(t, j, legacyKeys) || !unchangedRows(before, openRows(t, j)) {
-			t.Fatal("sealing the keyring changed records")
+			t.Fatal("opening changed records")
+		}
+
+		// A rekey without a store keeps the keyring in the clear.
+		if err = j.Rekey(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if j.StateVersion() == sealedStateVersion || readLocalState(t, dir).Version == sealedStateVersion {
+			t.Fatal("a journal was sealed without a key store")
+		}
+		// The service rekeys with its store: the journal is sealed, and the key that sat in the
+		// clear opens nothing after.
+		if err = j.Rekey(context.Background(), store); err != nil {
+			t.Fatal(err)
+		}
+		if j.StateVersion() != sealedStateVersion || !j.HoldsKey(Config{}) || j.KeyStore() != store {
+			t.Fatal("the rekey didn't seal the journal or mark it keyed")
 		}
 		if cfg, err := j.Config(); err != nil || cfg.Credential != sealingCanary {
 			t.Fatal("the sealed journal lost a record", err)
-		}
-		// The service rekeys once it runs: the key that sat in the clear opens nothing after.
-		if err = j.Rekey(context.Background(), store); err != nil {
-			t.Fatal(err)
 		}
 		j.Close()
 		for k, v := range encryptedJournalRows(t, dir) {
@@ -420,7 +430,8 @@ func TestRekeyKeepsReplacedKeysForReadsAlreadyOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The journal file only remaps to grow while no read is open, so a read held across the rekey,
-	// as here, would wait for it forever. Free space first, so that the rekey's write fits.
+	// as here, would wait for it forever. Growing the file first leaves the mapping room for the
+	// rekey's write.
 	if err := j.db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucket([]byte("scratch"))
 		if err != nil {
@@ -619,4 +630,117 @@ func TestPreflightSaysWhyASealedJournalCannotOpen(t *testing.T) {
 	if note := SealedJournalNote(context.Background(), clear, storeOpener(nil)); note != "" {
 		t.Fatal("a journal in the clear has a note:", note)
 	}
+}
+
+func TestRekeyThatFailsAfterSealingLeavesTheJournalSealed(t *testing.T) {
+	store := InsecureKeyStore()
+	j, err := OpenSealed(context.Background(), privateDir(t), storeOpener(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if err = j.Rekey(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	// Syncing the directory fails once the sealed keyring has replaced the old one.
+	synced := errors.New("directory sync failed")
+	if err = j.rekey(context.Background(), store, func(at string) error {
+		if at == "local-state-renamed" {
+			return synced
+		}
+		return nil
+	}); !errors.Is(err, synced) {
+		t.Fatal("the rekey didn't fail", err)
+	}
+	if readLocalState(t, j.dir).Version != sealedStateVersion {
+		t.Fatal("the test proves nothing: the keyring isn't sealed on disk")
+	}
+	if j.KeyStore() != store || j.StateVersion() != sealedStateVersion {
+		t.Fatal("the journal forgot that its keyring is sealed on disk")
+	}
+	if err = j.Rekey(context.Background(), nil); err != nil || readLocalState(t, j.dir).Version != sealedStateVersion {
+		t.Fatal("the next rekey wrote the keyring in the clear", err)
+	}
+}
+
+func TestFullKeyringStillLeavesOnlyANewKey(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	if err := j.SetConfig(Config{Credential: sealingCanary}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.SetConfig(Config{Credential: "replaced"}); err != nil {
+		t.Fatal(err)
+	}
+	// Rekeys cut short after adding their key fill the keyring.
+	for len(j.keys.Load().Keys) < maxJournalKeys {
+		cut := errors.New("cut short")
+		if err := j.rekey(context.Background(), nil, func(at string) error {
+			if at == "rekey-key-added" {
+				return cut
+			}
+			return nil
+		}); !errors.Is(err, cut) {
+			t.Fatal(err)
+		}
+	}
+	full := j.keys.Load()
+	if err := j.Rekey(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	keys := j.keys.Load()
+	if len(keys.Keys) != 1 || full.Keys[keys.Active] != nil {
+		t.Fatal("a full keyring kept a key it held before the rekey")
+	}
+	if openableCanaries(t, j.dir, keys) != 0 || !rowsOpen(t, j, keys) {
+		t.Fatal("the rekey of a full keyring left versions open or records closed")
+	}
+}
+
+func TestOpenRemovesKeyringWritesCutShort(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	dir := j.dir
+	held := j.keys.Load()
+	j.Close()
+	leftover := filepath.Join(dir, localStateLeftover+"123")
+	raw, _ := stablejson.Marshal(localStateKeys{Version: localStateVersion, Keyring: must(stablejson.Marshal(held))})
+	if err := os.WriteFile(leftover, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if _, err = os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a keyring write cut short survived the next open", err)
+	}
+}
+
+func TestRekeyWaitsForReadsThatBeganBeforeIt(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	j.db.reads.Add(1)
+	done := make(chan error, 1)
+	go func() { done <- j.Rekey(context.Background(), nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(j.keys.Load().Keys) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if len(j.keys.Load().Keys) < 2 {
+		t.Fatal("the rekey dropped replaced keys while a read was open")
+	}
+	j.db.reads.Add(-1)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(j.keys.Load().Keys) != 1 {
+		t.Fatal("the rekey kept replaced keys once no read was open")
+	}
+}
+
+func must(raw []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"sync/atomic"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -40,72 +41,81 @@ func (j *Journal) Rekey(ctx context.Context, store KeyStore) error {
 }
 
 func (j *Journal) rekey(ctx context.Context, store KeyStore, point func(string) error) error {
+	j.stateMu.Lock()
+	defer j.stateMu.Unlock()
+	adopting := j.sealing && j.store == nil && store != nil
+	if adopting {
+		j.store = store
+	}
+	err := j.rotate(ctx, point)
+	// Once a sealed keyring has replaced the file, the journal stays sealed whatever failed after.
+	if err != nil && adopting && j.formatVersion.Load() != sealedStateVersion {
+		j.store = nil
+	}
+	return err
+}
+
+// rotate replaces the journal's keys with a new one. A keyring that rekeys cut short have filled
+// is first left holding its active key alone, so that the new key still replaces every other.
+func (j *Journal) rotate(ctx context.Context, point func(string) error) error {
+	if keys := j.keys.Load(); len(keys.Keys) >= maxJournalKeys {
+		if err := j.resealUnder(ctx, keys, keys.Active, point); err != nil {
+			return err
+		}
+	}
+	next, id, err := withNewKey(j.keys.Load())
+	if err != nil {
+		return err
+	}
+	return j.resealUnder(ctx, next, id, point)
+}
+
+// resealUnder makes next durable, re-seals every record under its key id, then keeps id alone.
+func (j *Journal) resealUnder(ctx context.Context, next *cryptobox.Keyring, id string, point func(string) error) error {
 	at := func(name string) error {
 		if point != nil {
 			return point(name)
 		}
 		return nil
 	}
-	j.stateMu.Lock()
-	defer j.stateMu.Unlock()
-	version := int(j.formatVersion.Load())
-	adopting := j.sealing && j.store == nil && store != nil
-	if adopting {
-		j.store = store
-	}
-	old := j.keys.Load()
-	next, id, err := withNewKey(old)
-	if err != nil {
-		return err
-	}
 	// The new key is durable before anything is sealed with it.
-	if err = j.writeKeys(ctx, next, version, point); err != nil {
-		if adopting {
-			j.store = nil
-		}
+	if err := j.writeKeys(ctx, next, int(j.formatVersion.Load()), point); err != nil {
 		return err
 	}
 	j.keys.Store(next)
-	if err = at("rekey-key-added"); err != nil {
+	if err := at("rekey-key-added"); err != nil {
 		return err
 	}
 	var resealed uint64
-	if err = j.db.Update(func(tx *bolt.Tx) error {
+	if err := j.db.Update(func(tx *bolt.Tx) error {
 		resealed = uint64(tx.ID())
 		return resealAll(tx, next)
 	}); err != nil {
 		return err
 	}
-	if err = at("rekey-resealed"); err != nil {
+	if err := at("rekey-resealed"); err != nil {
 		return err
 	}
 	final := &cryptobox.Keyring{Active: id, Keys: map[string][]byte{id: next.Keys[id]}}
-	if err = j.writeKeys(ctx, final, version, point); err != nil {
+	if err := j.writeKeys(ctx, final, int(j.formatVersion.Load()), point); err != nil {
 		return err
 	}
 	j.rekeyedAt.Store(resealed)
-	if err = at("rekey-keys-dropped"); err != nil {
+	if err := at("rekey-keys-dropped"); err != nil {
 		return err
 	}
 	// A read that began before the records were re-sealed may still open one under a replaced
 	// key, so the journal holds those keys until no such read can remain.
-	for j.db.Stats().OpenTxN > 0 {
-		if !wait(ctx, 10*time.Millisecond) {
-			return nil
-		}
+	if !j.db.awaitReads(ctx) {
+		return nil
 	}
 	j.keys.Store(final)
 	return nil
 }
 
 // withNewKey adds a new active key to keys, keeping every other: until the records are re-sealed,
-// any of them may still need one. Only a run of rekeys each cut short before re-sealing fills the
-// keyring; the active key then stays, and the rekey still drops the rest.
+// any of them may still need one.
 func withNewKey(keys *cryptobox.Keyring) (*cryptobox.Keyring, string, error) {
-	next := &cryptobox.Keyring{Active: keys.Active, Keys: maps.Clone(keys.Keys)}
-	if len(next.Keys) >= maxJournalKeys {
-		return next, next.Active, nil
-	}
 	random := make([]byte, 8)
 	if _, err := rand.Read(random); err != nil {
 		return nil, "", err
@@ -115,8 +125,34 @@ func withNewKey(keys *cryptobox.Keyring) (*cryptobox.Keyring, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	next.Keys[id], next.Active = fresh.Keys[id], id
+	next := &cryptobox.Keyring{Active: id, Keys: maps.Clone(keys.Keys)}
+	next.Keys[id] = fresh.Keys[id]
 	return next, id, nil
+}
+
+// journalDB is the journal's database. It counts the reads open on it, which bbolt's own count
+// takes only after a read has its snapshot.
+type journalDB struct {
+	*bolt.DB
+	reads atomic.Int64
+}
+
+// View counts the read before it takes its snapshot, and until it ends.
+func (d *journalDB) View(fn func(*bolt.Tx) error) error {
+	d.reads.Add(1)
+	defer d.reads.Add(-1)
+	return d.DB.View(fn)
+}
+
+// awaitReads waits until no read is open, so that none began before it was called. It reports
+// false if ctx ends first.
+func (d *journalDB) awaitReads(ctx context.Context) bool {
+	for d.reads.Load() > 0 {
+		if !wait(ctx, 10*time.Millisecond) {
+			return false
+		}
+	}
+	return true
 }
 
 // resealAll seals every record again under the active key, each with a new data key.
@@ -174,6 +210,13 @@ func (c *Client) keepJournalRekeyed(ctx context.Context) {
 	var last time.Time
 	sealTried := false
 	for {
+		// The first rekey waits for the key store's first attempt, so that it can seal at once.
+		if !c.keyStoreSettled() {
+			if !wait(ctx, journalRekeyCheck) {
+				return
+			}
+			continue
+		}
 		store := c.keyStore()
 		seal := c.Journal.sealPending(store)
 		due := last.IsZero() || seal && !sealTried || time.Since(last) >= journalRekeyInterval && (seal || c.Journal.changedSinceRekey())
