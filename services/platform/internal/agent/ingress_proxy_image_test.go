@@ -80,7 +80,7 @@ func TestUnpullableProxyImageKeepsTheRunningProxy(t *testing.T) {
 		recorded bool
 		want     string
 	}{
-		{"the recorded proxy serves the previous routes again", true, "previous routes were restored"},
+		{"the recorded proxy serves the previous routes again", true, "the ingress proxy image is unavailable; previous routes were restored"},
 		{"another proxy needs attention", false, "previous-route recovery require attention"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

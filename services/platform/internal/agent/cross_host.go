@@ -235,7 +235,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 				return err
 			}
 			if err = e.publishVisualRoutes(ctx, p); err != nil {
-				return finish("needs_attention", "Ingress publication requires reconciliation; no old pool may be retired.")
+				return finish("needs_attention", proxyImageNote(err, "Ingress publication requires reconciliation; no old pool may be retired.", " No old pool was retired. Deploy again once the host can pull the image."))
 			}
 			state.Publication = true
 			state.Phase = "published"

@@ -59,7 +59,7 @@ func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next route
 			return e2
 		}
 		if errors.As(reloadErr, new(*proxyImageUnavailable)) {
-			return fmt.Errorf("the ingress proxy was not updated and previous routes were restored; deploy again once this host can pull its image: %w", reloadErr)
+			return fmt.Errorf("the ingress proxy image is unavailable; previous routes were restored: %w", reloadErr)
 		}
 		return fmt.Errorf("ingress reload was rejected; previous routes were restored: %w", reloadErr)
 	}
