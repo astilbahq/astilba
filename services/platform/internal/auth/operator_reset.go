@@ -39,7 +39,7 @@ var ErrMailUnconfigured = errors.New("email is not configured, so the account ho
 // sent before ends, as at any other password change. The reason is kept with the account
 // security event, which emails it to the holder.
 func (s *Service) ResetMFA(ctx context.Context, email, reason string) (uuid.UUID, error) {
-	if s.Mail == nil || !s.Mail.Configured() {
+	if !s.Mail.Configured() {
 		return uuid.Nil, ErrMailUnconfigured
 	}
 	address, err := domain.Email(email)
