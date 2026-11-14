@@ -10,36 +10,44 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const accountSecurityNotice = `-- name: AccountSecurityNotice :one
-SELECT e.kind,e.created_at,a.email FROM account_security_events e JOIN accounts a ON a.id = e.account_id
+SELECT e.kind,e.reason,e.created_at,a.email FROM account_security_events e JOIN accounts a ON a.id = e.account_id
 WHERE e.id = $1
 `
 
 type AccountSecurityNoticeRow struct {
-	Kind      string    `json:"kind"`
-	CreatedAt time.Time `json:"created_at"`
-	Email     string    `json:"email"`
+	Kind      string      `json:"kind"`
+	Reason    pgtype.Text `json:"reason"`
+	CreatedAt time.Time   `json:"created_at"`
+	Email     string      `json:"email"`
 }
 
 // unscoped: account security events belong to an account, not a workspace.
 func (q *Queries) AccountSecurityNotice(ctx context.Context, id uuid.UUID) (AccountSecurityNoticeRow, error) {
 	row := q.db.QueryRow(ctx, accountSecurityNotice, id)
 	var i AccountSecurityNoticeRow
-	err := row.Scan(&i.Kind, &i.CreatedAt, &i.Email)
+	err := row.Scan(
+		&i.Kind,
+		&i.Reason,
+		&i.CreatedAt,
+		&i.Email,
+	)
 	return i, err
 }
 
 const insertAccountSecurityEvent = `-- name: InsertAccountSecurityEvent :exec
-INSERT INTO account_security_events(id,account_id,kind,created_at) VALUES($1,$2,$3,$4)
+INSERT INTO account_security_events(id,account_id,kind,reason,created_at) VALUES($1,$2,$3,$4,$5)
 `
 
 type InsertAccountSecurityEventParams struct {
-	ID        uuid.UUID `json:"id"`
-	AccountID uuid.UUID `json:"account_id"`
-	Kind      string    `json:"kind"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID   `json:"id"`
+	AccountID uuid.UUID   `json:"account_id"`
+	Kind      string      `json:"kind"`
+	Reason    pgtype.Text `json:"reason"`
+	CreatedAt time.Time   `json:"created_at"`
 }
 
 // unscoped: account security events belong to an account, not a workspace.
@@ -48,6 +56,7 @@ func (q *Queries) InsertAccountSecurityEvent(ctx context.Context, arg InsertAcco
 		arg.ID,
 		arg.AccountID,
 		arg.Kind,
+		arg.Reason,
 		arg.CreatedAt,
 	)
 	return err

@@ -46,7 +46,7 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba keygen|migrate|bootstrap|rewrap|invite|grant-management|prepare-recovery|recover-cross-host|serve")
+		return errors.New("usage: astilba keygen|migrate|bootstrap|rewrap|invite|grant-management|prepare-recovery|recover-cross-host|reset-mfa|serve")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -112,6 +112,8 @@ func run() error {
 	switch os.Args[1] {
 	case "recover-cross-host":
 		return recoverCrossHostCommand(ctx, st, os.Args[2:])
+	case "reset-mfa":
+		return resetMFACommand(ctx, st, os.Args[2:])
 	case "invite":
 		f := flag.NewFlagSet("invite", flag.ContinueOnError)
 		email := f.String("email", "", "beta invitee email")

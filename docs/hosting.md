@@ -234,6 +234,9 @@ That delays or refuses sign-in on browsers without the cookie, with a 503, for a
 runs, while live sessions and known browsers keep working. Stop it upstream, with a CDN or
 firewall that can challenge or block that traffic.
 
+An account holder locked out by a lost authenticator, or by one someone else enrolled, needs the
+operator's `astilba reset-mfa`. See [account takeover or lost authenticator](incident-response.md#account-takeover-or-lost-authenticator).
+
 ### When password reset mail fails
 
 A reset request answers the same way for every email and sends its mail afterwards, in a
