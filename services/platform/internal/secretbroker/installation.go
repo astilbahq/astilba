@@ -9,10 +9,13 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Pool is a database the broker's custody commands use directly, with transactions of their own.
@@ -20,6 +23,9 @@ import (
 type Pool interface {
 	db.DBTX
 	Begin(ctx context.Context) (pgx.Tx, error)
+	// Acquire gives a connection of its own, for a session lock held across a wrap and the
+	// transaction after it.
+	Acquire(ctx context.Context) (*pgxpool.Conn, error)
 }
 
 var (
@@ -211,12 +217,17 @@ func (b *Broker) checkStored(ctx context.Context, pool Pool, run uuid.UUID) erro
 	}
 	r := Request{Purpose: Rotate, Principal: Operator(run.String()), Kinds: append(slices.Clone(workspaceKinds), installationKinds...), Reason: "keyring-check"}
 	id := uuid.New()
-	if err = b.record(ctx, id, r); err != nil {
+	if err = b.record(ctx, id, r, []int64{0}); err != nil {
 		return err
 	}
 	ring := b.backend.Keyring()
 	outcome := Used
 	for _, v := range values {
+		// A v2 value's data key is under a workspace or installation key, not the keyring. Such
+		// values exist only once keys do, which is after this installation's first canaries.
+		if header, err := cryptobox.ReadHeader(v.Sealed); err == nil && header.Version != 1 {
+			continue
+		}
 		value, err := ring.Open(v.Sealed, Item{Kind: Kind(v.Kind), ID: v.ID}.identity(v.WorkspaceID))
 		clear(value)
 		if err != nil {
@@ -238,7 +249,11 @@ type keyEvent struct {
 	run              uuid.UUID
 	kind             string
 	operator, reason string
-	details          map[string]string
+	// scope, workspace and generation name the key an event is about, if any.
+	scope      custody.Scope
+	workspace  *uuid.UUID
+	generation int64
+	details    map[string]string
 }
 
 // event records a key event. It never fails silently: a command that cannot record what it does
@@ -253,9 +268,13 @@ func (b *Broker) event(ctx context.Context, q *db.Queries, e keyEvent) error {
 	}
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	var generation pgtype.Int8
+	if e.generation > 0 {
+		generation = pgtype.Int8{Int64: e.generation, Valid: true}
+	}
 	return q.InsertInstallationKeyEvent(write, db.InsertInstallationKeyEventParams{
 		ID: uuid.New(), RunID: e.run, Kind: e.kind, Operator: optionalText(e.operator), Reason: optionalText(e.reason),
-		BackendID: optionalText(b.backend.ID()), Details: details,
+		BackendID: optionalText(b.backend.ID()), Scope: optionalText(string(e.scope)), WorkspaceID: e.workspace, Generation: generation, Details: details,
 	})
 }
 
@@ -271,6 +290,8 @@ type Status struct {
 	Stage    int32
 	// Unfinished are commands that recorded a start and no finish.
 	Unfinished []db.UnfinishedCustodyRunsRow
+	// Keys is how far creating workspace, installation and token keys has got.
+	Keys db.KeyProgressRow
 }
 
 // Status reads the installation's custody and checks every canary, changing nothing.
@@ -303,6 +324,9 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 	if s.Stage, err = q.CustodyStage(ctx); err != nil {
 		return s, err
 	}
+	if s.Keys, err = q.KeyProgress(ctx); err != nil {
+		return s, err
+	}
 	s.Unfinished, err = q.UnfinishedCustodyRuns(ctx)
 	return s, err
 }
@@ -331,8 +355,18 @@ func (s Status) Pending() []string {
 			out = append(out, "the "+string(class)+" canary does not open ("+state+"): nothing starts until the configured keys are the installation's")
 		}
 	}
+	if missing := s.Keys.Workspaces - s.Keys.WithKeys; missing > 0 || !s.Keys.Installation || !s.Keys.Token {
+		out = append(out, fmt.Sprintf("%d of %d workspaces have keys, installation key %s, token key %s: `serve` creates the rest in the background, or run `astilba custody init-keys`", s.Keys.WithKeys, s.Keys.Workspaces, present(s.Keys.Installation), present(s.Keys.Token)))
+	}
 	for _, run := range s.Unfinished {
 		out = append(out, fmt.Sprintf("%s run %s at %s has no finish, and no run since has succeeded: it stopped part way or is running now", run.Kind, run.RunID, run.At.UTC().Format(time.RFC3339)))
 	}
 	return out
+}
+
+func present(ok bool) string {
+	if ok {
+		return "present"
+	}
+	return "missing"
 }

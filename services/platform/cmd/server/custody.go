@@ -19,11 +19,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// custodyCommand runs `astilba custody status|history|rewrap`. Status and history change nothing;
-// rewrap records its start and finish in the installation's key history.
+// custodyCommand runs `astilba custody status|history|rewrap|init-keys`. Status and history change
+// nothing; rewrap records its start and finish in the installation's key history, and init-keys
+// each key it makes.
 func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st *store.Store, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: astilba custody status|history|rewrap")
+		return errors.New("usage: astilba custody status|history|rewrap|init-keys")
 	}
 	switch args[0] {
 	case "status":
@@ -73,8 +74,35 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 			return err
 		}
 		return st.Rewrap(ctx, *operator, *reason)
+	case "init-keys":
+		// `serve` does the same in the background; this runs it to the end, and is safe to run
+		// beside it.
+		if len(args) > 1 {
+			return errors.New("usage: astilba custody init-keys")
+		}
+		if err := c.RequirePinnedInstallation(); err != nil {
+			return err
+		}
+		if err := st.Broker.Install(ctx, pool, c.InstallationID, false); err != nil {
+			return err
+		}
+		for {
+			more, err := st.Broker.InitKeys(ctx, func() bool { return true })
+			if err != nil || !more {
+				if err == nil {
+					fmt.Fprintln(os.Stdout, "every workspace, the installation and the token keys have keys")
+				}
+				return err
+			}
+			// Another instance holds some holder's lock: wait for it, then look again.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
 	}
-	return errors.New("usage: astilba custody status|history|rewrap")
+	return errors.New("usage: astilba custody status|history|rewrap|init-keys")
 }
 
 func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {
@@ -96,6 +124,7 @@ func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {
 	}
 	fmt.Fprintf(w, "canaries       %s\n", strings.Join(states, ", "))
 	fmt.Fprintf(w, "custody stage  %d\n", s.Stage)
+	fmt.Fprintf(w, "keys           %d of %d workspaces, installation key %s, token key %s\n", s.Keys.WithKeys, s.Keys.Workspaces, keyState(s.Keys.Installation), keyState(s.Keys.Token))
 	pending := s.Pending()
 	if len(pending) == 0 {
 		fmt.Fprintln(w, "pending        none")
@@ -108,4 +137,11 @@ func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {
 		}
 		fmt.Fprintf(w, "%-14s - %s\n", label, p)
 	}
+}
+
+func keyState(present bool) string {
+	if present {
+		return "present"
+	}
+	return "missing"
 }

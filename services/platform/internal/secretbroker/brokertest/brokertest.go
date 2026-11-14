@@ -58,3 +58,11 @@ func (r *Records) InsertSecretAccessOutcome(_ context.Context, arg db.InsertSecr
 	return nil
 }
 func (r *Records) AbandonSecretAccess(context.Context, float64) (int64, error) { return 0, nil }
+
+// The test broker's workspaces have no keys of their own: every value is under the keyring.
+func (r *Records) WorkspaceKeyWrappings(context.Context, db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error) {
+	return nil, nil
+}
+func (r *Records) InstallationKeyWrappings(context.Context, db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error) {
+	return nil, nil
+}

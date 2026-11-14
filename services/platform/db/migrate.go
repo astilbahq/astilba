@@ -21,12 +21,12 @@ var migrations embed.FS
 
 // Version is the newest migration this binary carries. It runs on a database at this version,
 // or ahead of it when every newer migration recorded itself as additive.
-const Version int64 = 54
+const Version int64 = 55
 
 // CustodyStage is the custody stage this release completes. Its migrations assume the one before
 // it is complete, so `migrate` refuses an installation further behind: stages are taken one
 // release at a time. See docs/hosting.md#key-custody.
-const CustodyStage = 1
+const CustodyStage = 2
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
@@ -66,12 +66,25 @@ func Up(ctx context.Context, dsn string) error {
 }
 
 // checkStage refuses to migrate an installation more than one custody stage behind this release.
-// A database from before stages were recorded has completed none.
+// A database from before stages were recorded has completed none. One with no account yet is a new
+// installation, whatever has run on it, such as a command started before the first migration or a
+// first migration that stopped part way: it holds nothing earlier stages would bring through.
 func checkStage(ctx context.Context, db *sql.DB) error {
-	var recorded bool
+	var fresh, recorded bool
 	completed := 0
 	// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
-	err := db.QueryRowContext(ctx, `SELECT to_regclass('custody_stage') IS NOT NULL`).Scan(&recorded)
+	err := db.QueryRowContext(ctx, `SELECT to_regclass('accounts') IS NULL`).Scan(&fresh)
+	if err == nil && !fresh {
+		// inline-sql: as above.
+		err = db.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM accounts)`).Scan(&fresh)
+	}
+	if err == nil && fresh {
+		return nil
+	}
+	if err == nil {
+		// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
+		err = db.QueryRowContext(ctx, `SELECT to_regclass('custody_stage') IS NOT NULL`).Scan(&recorded)
+	}
 	if err == nil && recorded {
 		// inline-sql: as above, sqlc's queries assume the current schema.
 		err = db.QueryRowContext(ctx, `SELECT stage FROM custody_stage`).Scan(&completed)

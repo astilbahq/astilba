@@ -83,3 +83,40 @@ func TestCanaryBindsKeyAndInstallation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Each purpose is wrapped under its class: export and recovery under their own, rotate under the
+// one serving only wraps with, and the installation's keys under the installation class.
+func TestPurposesAndClasses(t *testing.T) {
+	for _, c := range []struct {
+		scope   Scope
+		purpose string
+		class   Class
+	}{
+		{ScopeWorkspace, "seal", ClassServe}, {ScopeWorkspace, "deliver", ClassServe}, {ScopeWorkspace, "export", ClassExport},
+		{ScopeWorkspace, "recover", ClassExport}, {ScopeWorkspace, "rotate", ClassRotate}, {ScopeInstallation, "authenticate", ClassInstallation},
+		{ScopeInstallation, "seal", ClassInstallation}, {ScopeInstallation, "rotate", ClassRotate}, {ScopeToken, "token", ClassInstallation}, {ScopeToken, "rotate", ClassRotate},
+	} {
+		if class, ok := ClassFor(c.scope, c.purpose); !ok || class != c.class {
+			t.Errorf("%s %s: %s %v", c.scope, c.purpose, class, ok)
+		}
+	}
+	for _, c := range [][2]string{{"workspace", "authenticate"}, {"installation", "deliver"}, {"token", "seal"}} {
+		if _, ok := ClassFor(Scope(c[0]), c[1]); ok {
+			t.Errorf("%s keys wrapped for %s", c[0], c[1])
+		}
+	}
+	if len(Purposes(ScopeWorkspace)) != 8 || len(Purposes(ScopeInstallation)) != 3 || len(Purposes(ScopeToken)) != 2 {
+		t.Fatal(Purposes(ScopeWorkspace), Purposes(ScopeInstallation), Purposes(ScopeToken))
+	}
+}
+
+func TestKeyCheckValues(t *testing.T) {
+	key, check, err := NewKey()
+	if err != nil || len(key) != 32 || len(check) != 32 || !CheckKey(key, check) {
+		t.Fatal(err)
+	}
+	other, _, _ := NewKey()
+	if CheckKey(other, check) {
+		t.Fatal("another key matched")
+	}
+}

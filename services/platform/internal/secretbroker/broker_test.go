@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,8 @@ type fakeQueries struct {
 	inserted []db.InsertSecretAccessParams
 	outcomes []db.InsertSecretAccessOutcomeParams
 	failNext error
+	// keys are each workspace's live generations, by workspace and purpose.
+	keys map[string][]db.WorkspaceKeyWrappingsRow
 }
 
 func (f *fakeQueries) SecretAccessMember(_ context.Context, arg db.SecretAccessMemberParams) (string, error) {
@@ -51,6 +54,12 @@ func (f *fakeQueries) InsertSecretAccessOutcome(_ context.Context, arg db.Insert
 	return nil
 }
 func (f *fakeQueries) AbandonSecretAccess(context.Context, float64) (int64, error) { return 0, nil }
+func (f *fakeQueries) WorkspaceKeyWrappings(_ context.Context, arg db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error) {
+	return f.keys[arg.WorkspaceID.String()+":"+arg.Purpose], nil
+}
+func (f *fakeQueries) InstallationKeyWrappings(context.Context, db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error) {
+	return nil, nil
+}
 
 func setup(t *testing.T) (*Broker, *fakeQueries, uuid.UUID, uuid.UUID, uuid.UUID) {
 	t.Helper()
@@ -334,5 +343,81 @@ func TestTokensRecordOnceAndStayApart(t *testing.T) {
 	}
 	if plain, err := tokens.Open(DeviceToken, sealed); err != nil || !bytes.Equal(plain, []byte("t")) {
 		t.Fatal(err)
+	}
+}
+
+// countingBackend counts unwraps, to show no key outlives its session.
+type countingBackend struct {
+	custody.Legacy
+	unwraps atomic.Int32
+}
+
+func (c *countingBackend) Unwrap(ctx context.Context, class custody.Class, blob []byte, k custody.Context) (custody.Result, error) {
+	c.unwraps.Add(1)
+	return c.Legacy.Unwrap(ctx, class, blob, k)
+}
+
+// withWorkspaceKey gives the broker an installation and ws a key at generation 1, wrapped for
+// inspect, and returns the key.
+func withWorkspaceKey(t *testing.T, b *Broker, q *fakeQueries, ws uuid.UUID) []byte {
+	t.Helper()
+	b.installation = uuid.New()
+	key, kcv, err := custody.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, _, err := b.backend.Wrap(context.Background(), custody.ClassServe, key, custody.Context{Installation: b.installation, Scope: custody.ScopeWorkspace, Workspace: ws, Generation: 1, Purpose: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.keys = map[string][]db.WorkspaceKeyWrappingsRow{ws.String() + ":inspect": {{Generation: 1, Kcv: kcv, Wrapped: wrapped}}, ws.String() + ":seal": {{Generation: 1, Kcv: kcv}}}
+	return key
+}
+
+// Every session unwraps its keys afresh, and lets go of them when it closes.
+func TestNoKeyOutlivesItsSession(t *testing.T) {
+	b, q, owner, _, _ := setup(t)
+	counting := &countingBackend{Legacy: b.backend}
+	b.backend = counting
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	key := withWorkspaceKey(t, b, q, ws)
+	sealed, err := cryptobox.SealUnder(key, cryptobox.ScopeWorkspace, 1, []byte("value"), item.identity(ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := range 2 {
+		s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value, err := s.Open(item, sealed); err != nil || string(value) != "value" {
+			t.Fatal(string(value), err)
+		}
+		s.Close(ctx, Used)
+		if _, err = s.Open(item, sealed); !errors.Is(err, ErrNeedKeys) {
+			t.Fatal("a closed session opened a value", err)
+		}
+		if n := counting.unwraps.Load(); n != int32(i+1) {
+			t.Fatalf("%d unwraps after %d sessions", n, i+1)
+		}
+	}
+	// A seal session holds only a sealable generation's key, and needs no other.
+	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close(ctx, Used)
+	if n := counting.unwraps.Load(); n != 2 {
+		t.Fatalf("a seal session with no seal wrapping unwrapped %d keys", n-2)
+	}
+	// Any other purpose with no wrapping for a live generation is refused, before any record.
+	q.keys[ws.String()+":inspect"][0].Wrapped = nil
+	before := len(q.inserted)
+	if _, err = b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}}); !errors.Is(err, ErrMissingWrapping) {
+		t.Fatal(err)
+	}
+	if len(q.inserted) != before {
+		t.Fatal("a session refused before unwrapping was recorded")
 	}
 }

@@ -285,6 +285,18 @@ type CustodyBackend struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type CustodyBackendsVersion struct {
+	Singleton bool  `json:"singleton"`
+	Version   int64 `json:"version"`
+}
+
+type CustodyInstance struct {
+	InstanceID       uuid.UUID `json:"instance_id"`
+	TokenGenerations []int64   `json:"token_generations"`
+	StartedAt        time.Time `json:"started_at"`
+	SeenAt           time.Time `json:"seen_at"`
+}
+
 type CustodyStage struct {
 	Singleton  bool      `json:"singleton"`
 	Stage      int32     `json:"stage"`
@@ -523,6 +535,16 @@ type Installation struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type InstallationKey struct {
+	Scope      string     `json:"scope"`
+	Generation int64      `json:"generation"`
+	State      string     `json:"state"`
+	Sealable   bool       `json:"sealable"`
+	Kcv        []byte     `json:"kcv"`
+	CreatedAt  time.Time  `json:"created_at"`
+	RetiredAt  *time.Time `json:"retired_at"`
+}
+
 type InstallationKeyCanary struct {
 	BackendID string    `json:"backend_id"`
 	Class     string    `json:"class"`
@@ -542,6 +564,15 @@ type InstallationKeyEvent struct {
 	WorkspaceID *uuid.UUID  `json:"workspace_id"`
 	Generation  pgtype.Int8 `json:"generation"`
 	Details     []byte      `json:"details"`
+}
+
+type InstallationKeyWrapping struct {
+	Scope      string    `json:"scope"`
+	Generation int64     `json:"generation"`
+	Purpose    string    `json:"purpose"`
+	BackendID  string    `json:"backend_id"`
+	Wrapped    []byte    `json:"wrapped"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type InstallationSecret struct {
@@ -1039,6 +1070,25 @@ type Workspace struct {
 	RequireMfa     bool      `json:"require_mfa"`
 	CreatedAt      time.Time `json:"created_at"`
 	AlertScannedAt time.Time `json:"alert_scanned_at"`
+}
+
+type WorkspaceKey struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	Generation  int64      `json:"generation"`
+	State       string     `json:"state"`
+	Sealable    bool       `json:"sealable"`
+	Kcv         []byte     `json:"kcv"`
+	CreatedAt   time.Time  `json:"created_at"`
+	RetiredAt   *time.Time `json:"retired_at"`
+}
+
+type WorkspaceKeyWrapping struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	Generation  int64     `json:"generation"`
+	Purpose     string    `json:"purpose"`
+	BackendID   string    `json:"backend_id"`
+	Wrapped     []byte    `json:"wrapped"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type WorkspaceNetwork struct {

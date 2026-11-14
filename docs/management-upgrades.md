@@ -75,6 +75,8 @@ Upgrade management before the agents. These steps assume
    - `/healthz` answers 204 through your proxy;
    - you can sign in with your second factor;
    - every server shows as connected within a minute;
+   - `custody status` lists no pending work once `serve` has created any missing
+     [workspace keys](hosting.md#workspace-keys), which it logs as it goes;
    - the log shows no errors: `docker compose logs --since 10m platform`.
 
 If any check fails, roll back now: the longer the new version runs, the more you lose.
