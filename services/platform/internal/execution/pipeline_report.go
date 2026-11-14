@@ -75,18 +75,22 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if err != nil {
 		return false, err
 	}
-	// This command carries no credentials, so an agent whose clock lags must not start it.
-	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(c.Deadline)
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return false, errors.New("invalid pipeline payload")
 	}
+	ws := a.Workspace
+	queries := db.New(tx)
+	end, _, err := pipelineEnd(ctx, queries, ws, *c, p)
+	if err != nil {
+		return false, err
+	}
+	// This command carries no credentials, so an agent whose clock lags must not start it.
+	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(end)
 	var started *bool
 	if err = tx.QueryRow(ctx, "SELECT delivery_started FROM pipeline_runs WHERE id=$1", c.Id).Scan(&started); err != nil {
 		return false, err
 	}
-	ws := a.Workspace
-	queries := db.New(tx)
 	undelivered := started != nil && !*started && sequence == 0
 	if c.CancelRequested {
 		if !undelivered {
@@ -231,6 +235,17 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	c.Pipeline = rawMessage(raw)
 	return true, tx.Commit(ctx)
 }
+// pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
+// management has heard its runner started it. The start must reach management by the deadline
+// (pipelineReport cancels one heard of later), so an agent whose clock lags can neither start a
+// pipeline late nor run one past this bound.
+func pipelineEnd(ctx context.Context, q *db.Queries, ws uuid.UUID, c api.ExecutionCommand, p pipeline.Command) (end time.Time, started bool, err error) {
+	started, err = q.PipelineReportedStart(ctx, db.PipelineReportedStartParams{Step: pipeline.StartStep, WorkspaceID: ws, ID: c.Id})
+	if err != nil || !started {
+		return c.Deadline, started, err
+	}
+	return c.Deadline.Add(p.Lifetime()), true, nil
+}
 func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) (bool, error) {
 	if err := s.commandAdmission(ctx, tx, ws, c); errors.Is(err, store.SubscriptionRequired) {
 		return true, nil
@@ -320,10 +335,27 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled); err != nil {
 		return err
 	}
-	if r.State == "succeeded" && (cancelled || received.After(c.Deadline)) {
+	// What management had heard before this report decides the bound, so a start first reported
+	// after the deadline ends here.
+	end, started, err := pipelineEnd(ctx, db.New(tx), ws, c, p)
+	if err != nil {
+		return err
+	}
+	late := received.After(end)
+	if r.State == "succeeded" && (cancelled || late) {
 		r.State = "cancelled"
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
+	}
+	if late && !cancelled && !Terminal(r.State) {
+		note := "Stopping: the runner's report that it started this pipeline arrived after the pipeline's deadline."
+		if started {
+			note = "Stopping: the pipeline ran past its lifetime."
+		}
+		if err = db.New(tx).StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+			return err
+		}
+		r.Note = boundedNote(strings.TrimSpace(note + " " + r.Note))
 	}
 	// A runner that held a submission from before management made them can still report it. Its
 	// result was never checked against the provider, so it counts for nothing.

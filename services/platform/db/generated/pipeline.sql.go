@@ -449,6 +449,24 @@ func (q *Queries) NoteSourceSubmission(ctx context.Context, arg NoteSourceSubmis
 	return err
 }
 
+const pipelineReportedStart = `-- name: PipelineReportedStart :one
+SELECT (steps @> jsonb_build_array(jsonb_build_object('name', $1::text)))::boolean AS started FROM execution_operations WHERE workspace_id = $2 AND id = $3
+`
+
+type PipelineReportedStartParams struct {
+	Step        string    `json:"step"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether management has a report that the pipeline's runner started it: its start step.
+func (q *Queries) PipelineReportedStart(ctx context.Context, arg PipelineReportedStartParams) (bool, error) {
+	row := q.db.QueryRow(ctx, pipelineReportedStart, arg.Step, arg.WorkspaceID, arg.ID)
+	var started bool
+	err := row.Scan(&started)
+	return started, err
+}
+
 const pipelineRunReason = `-- name: PipelineRunReason :one
 SELECT COALESCE((SELECT reason FROM pipeline_runs WHERE workspace_id = $1 AND id = $2), '')::text
 `

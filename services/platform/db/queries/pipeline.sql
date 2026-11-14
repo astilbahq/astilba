@@ -20,6 +20,9 @@ UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_i
 -- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations o SET state = @state, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || @note::text
 WHERE o.workspace_id = @workspace_id AND o.id = @id;
+-- name: PipelineReportedStart :one
+-- Whether management has a report that the pipeline's runner started it: its start step.
+SELECT (steps @> jsonb_build_array(jsonb_build_object('name', @step::text)))::boolean AS started FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id;
 -- name: StopPossiblyDeliveredPipeline :exec
 UPDATE execution_operations SET cancel_requested = true, note = @note::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = @workspace_id AND id = @id;
 

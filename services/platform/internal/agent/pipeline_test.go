@@ -193,7 +193,10 @@ esac
 		}
 	}
 	engine := Engine{Journal: journal, Docker: docker, DockerCLI: filepath.Join(dir, "docker")}
-	result, buildErr := engine.buildPipeline(t.Context(), c, p)
+	// executePipeline bounds a pipeline's context, as here, before building.
+	ctx, stop := context.WithDeadline(t.Context(), c.Deadline)
+	defer stop()
+	result, buildErr := engine.buildPipeline(ctx, c, p)
 	if buildErr == nil {
 		t.Fatal("fixture build unexpectedly succeeded")
 	}
@@ -216,5 +219,56 @@ func TestDockerFirewallOff(t *testing.T) {
 		if dockerFirewallOff([]byte(raw)) != want {
 			t.Errorf("%s: want %v", raw, want)
 		}
+	}
+}
+
+// A pipeline this host took up runs for its lifetime from then, however long it waited for the
+// host first, and no longer.
+func TestStartedPipelineRunsForItsLifetimeFromItsStart(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"no such container"}`))
+	}))
+	defer daemon.Close()
+	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	run := func(started *time.Time) Record {
+		t.Helper()
+		j, plan := testVisualJournal(t)
+		source := pipeline.Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: uuid.New(), Entrypoints: []string{"compose.yaml"}, Paths: []string{"compose.yaml"}}
+		p := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: "https://git.example", Repository: "team/app", RepositoryID: 12}, Commit: strings.Repeat("a", 40), Branch: "main", RevisionID: uuid.New(), UnitID: plan.UnitID, Source: &source}
+		raw, _ := stablejson.Marshal(p)
+		message := jsontext.Value(raw)
+		// It waited behind other work on the host until after its deadline.
+		c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: plan.UnitID, Kind: "pipeline", Generation: 1, PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(-time.Minute)}
+		if _, err := j.Accept(c); err != nil {
+			t.Fatal(err)
+		}
+		if started != nil {
+			if err := j.Mutate(c.Id, func(r *Record) { r.StartedAt = started }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r, _ := j.Record(c.Id)
+		e := Engine{Docker: docker, Journal: j}
+		if err := e.executePipeline(context.Background(), c, r); err != nil {
+			t.Fatal(err)
+		}
+		r, _ = j.Record(c.Id)
+		return r
+	}
+	// It gets past its deadline to the host's own checks, here the storage it needs.
+	r := run(nil)
+	if r.Report.State != "failed" || !strings.Contains(r.Report.Note, "free host storage") || r.StartedAt == nil {
+		t.Fatalf("a pipeline taken up after waiting for the host was cut short by its deadline: %s %q", r.Report.State, r.Report.Note)
+	}
+	// One first taken up a lifetime ago, before an agent restart, does not start again.
+	long := time.Now().Add(-31 * time.Minute)
+	if r = run(&long); r.Report.State != "cancelled" {
+		t.Fatalf("a pipeline ran past its lifetime from its start: %s %q", r.Report.State, r.Report.Note)
 	}
 }

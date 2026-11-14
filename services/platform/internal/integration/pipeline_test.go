@@ -274,6 +274,40 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			t.Fatal("cancelled/expired result published artifact")
 		}
 	}
+	// A build whose runner reported starting it by its deadline, after waiting behind other work
+	// on the host, may run for its lifetime past the deadline. One whose start management hears
+	// of only after the deadline is stopped, whatever the runner's clock read, and publishes nothing.
+	for _, inTime := range []bool{true, false} {
+		b.call("POST", path+"/builds", map[string]any{"baseRevisionId": promoted.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 202, &op)
+		c = poll(op.Id)
+		started := func() {
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "running", Steps: []api.ExecutionStep{{Name: pipeline.StartStep, State: "intent"}}}, 204, nil)
+		}
+		if inTime {
+			started()
+		}
+		c.Deadline = time.Now().Add(-time.Second)
+		raw, _ := stablejson.Marshal(c)
+		if _, err := f.st.Pool.Exec(context.Background(), "UPDATE execution_operations SET command=$2 WHERE id=$1", c.Id, raw); err != nil {
+			t.Fatal(err)
+		}
+		if !inTime {
+			started()
+		}
+		if again := poll(op.Id); again.CancelRequested == inTime {
+			t.Fatal("a build's cancellation did not follow when its start was reported", inTime)
+		}
+		raw, _ = stablejson.Marshal(pipeline.Result{Commit: head, Image: registry.Repository + "@" + digest, Digest: digest, Architecture: "arm64"})
+		msg := jsontext.Value(raw)
+		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 3, State: "succeeded", Steps: []api.ExecutionStep{{Name: pipeline.StartStep, State: "done"}}, Pipeline: &msg}, 204, nil)
+		var state string
+		var count int
+		_ = f.st.Pool.QueryRow(context.Background(), "SELECT state FROM execution_operations WHERE id=$1", op.Id).Scan(&state)
+		_ = f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM build_artifacts WHERE id=$1", op.Id).Scan(&count)
+		if inTime && (state != "succeeded" || count != 1) || !inTime && (state != "cancelled" || count != 0) {
+			t.Fatal("a build's result did not follow when its start was reported", inTime, state, count)
+		}
+	}
 	// Authentication and repository identity are checked before delivery retention or queue insertion.
 	delivery := []byte(`{"ref":"refs/heads/main","after":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repository":{"id":12}}`)
 	deliveryID := "one"
