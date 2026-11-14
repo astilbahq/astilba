@@ -103,14 +103,45 @@ remove the trigger.
 
 | Command | What it does |
 | --- | --- |
-| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage and any pending work. It changes nothing. |
+| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, and any pending work. It changes nothing. |
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
-| `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, and the canaries, under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+| `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+| `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
 
 `custody status` lists a command that recorded a start and no finish, unless a run of it that
 started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
 has moved through key custody changes. `astilba migrate` refuses a release more than one stage
 ahead of the installation, so a release that starts a stage says so in its notes.
+
+#### Workspace keys
+
+Each workspace has a key of its own. The installation has an installation key, for second
+factors, and token keys, for the device and password reset tokens management issues to itself.
+Each key is random and is stored only wrapped: once for each purpose it serves, such as sealing
+or delivering, under the backend's key for that purpose's class. A key check value stored beside
+it shows whether a wrapping opens to the right key before any value is opened with it.
+
+This release (custody stage 2) creates the keys, and opens values sealed under them. It still
+seals new values, and issues tokens, under the keyring. The release after it seals under the keys,
+so going back from that release to this one needs no restore.
+
+- **New workspaces** get their key in the transaction that creates them.
+- **Existing workspaces** get theirs from `serve`, in the background, which also creates the
+  installation and token keys. Its log shows progress, and so does `custody status`; `custody
+  init-keys` does the same work in the foreground. Once every key exists the custody stage becomes
+  2, which the next release's `migrate` needs.
+- **Rewrap** wraps every key again, and leaves values sealed under them as they are. If you go
+  back to the previous release after this one has created keys, don't remove a key from the
+  keyring until you've returned to this release and run `custody rewrap`: the previous release
+  doesn't rewrap workspace keys.
+- **Deleting a workspace** deletes its keys, so nothing sealed under them opens again.
+- **Token keys** stay in each instance's memory. Instances look for new ones every minute, and
+  record which they hold, so a new token key is used for tokens only once every instance holds
+  it.
+
+Database triggers let a key's state move only forward, keep the seal wrapping only for the key
+new values are sealed under, and refuse to delete a key except with its workspace. As with key
+events, that guards against mistakes, not against whoever owns the database.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
