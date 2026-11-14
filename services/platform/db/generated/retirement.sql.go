@@ -652,10 +652,10 @@ func (q *Queries) RouteClaimOwner(ctx context.Context, arg RouteClaimOwnerParams
 }
 
 const secretVersionStandings = `-- name: SecretVersionStandings :many
-SELECT v.id,v.secret_id,s.name,(v.erased_at IS NOT NULL)::boolean AS erased,(v.id = (
+SELECT v.id,v.secret_id,s.name,(v.erased_at IS NOT NULL)::boolean AS erased,COALESCE(v.id = (
   SELECT c.id FROM secret_versions c WHERE c.workspace_id = v.workspace_id AND c.secret_id = v.secret_id AND c.erased_at IS NULL
   ORDER BY c.created_at DESC,c.id DESC LIMIT 1
-))::boolean AS current
+),false)::boolean AS current
 FROM secret_versions v JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
 WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id = ANY($3::uuid[])
 `
@@ -675,7 +675,8 @@ type SecretVersionStandingsRow struct {
 }
 
 // Where each of the environment's versions in ids stands: its secret, and whether it is that
-// secret's current version or was erased. Nothing is opened.
+// secret's current version or was erased. A retired secret has no current version. Nothing is
+// opened.
 func (q *Queries) SecretVersionStandings(ctx context.Context, arg SecretVersionStandingsParams) ([]SecretVersionStandingsRow, error) {
 	rows, err := q.db.Query(ctx, secretVersionStandings, arg.WorkspaceID, arg.EnvironmentID, arg.Ids)
 	if err != nil {

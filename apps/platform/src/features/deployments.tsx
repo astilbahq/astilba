@@ -297,7 +297,7 @@ export function Deployments({
                       <p>
                         Rolling back returns these secrets to an earlier
                         version. Files you submit and public build arguments are
-                        checked against them again once the draft uses them.
+                        checked against every version the draft uses.
                       </p>
                       <ul>
                         {app.olderSecretVersions.map((secret) => (

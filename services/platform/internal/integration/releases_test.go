@@ -129,11 +129,12 @@ func TestRollbackShowsAndChecksOlderSecretVersions(t *testing.T) {
 	var env api.Environment
 	b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "HTTP"}, 201, &env)
 	path := prefix + "/projects/" + project.Id.String() + "/environments/" + env.Id.String()
-	var first api.SecretVersion
+	var first, dropped api.SecretVersion
 	b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "rollback-first-token"}, 201, &first)
+	b.call("POST", path+"/secrets", map[string]string{"name": "DROPPED", "value": "rollback-dropped-token"}, 201, &dropped)
 	app := uuid.New()
 	image := "busybox:stable"
-	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{{Name: "TOKEN", SecretVersionID: &first.Id}}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "rollback-secrets.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{{Name: "TOKEN", SecretVersionID: &first.Id}, {Name: "DROPPED", SecretVersionID: &dropped.Id}}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "rollback-secrets.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	var draft api.Revision
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, &draft)
 	enrollment, in, token := enrollment(t, f, b, ws, "deployment")
@@ -174,6 +175,14 @@ func TestRollbackShowsAndChecksOlderSecretVersions(t *testing.T) {
 	spec.Applications[0].Variables = []domain.Variable{{Name: "TOKEN", SecretVersionID: &current.Id}}
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
 	deploy("busybox@sha256:" + strings.Repeat("b", 64))
+	// The second release no longer uses DROPPED, and it is retired as an owner can once the first
+	// release's plan has left its review window: the secret then has no current version.
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE secrets SET retired_at=now() WHERE workspace_id=$1 AND id=$2", ws, dropped.SecretId); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Pool.Exec(ctx, "UPDATE secret_versions SET encrypted_value=NULL,plaintext_bytes=NULL,json_bytes=NULL,erased_at=now() WHERE workspace_id=$1 AND secret_id=$2", ws, dropped.SecretId); err != nil {
+		t.Fatal(err)
+	}
 
 	var history []api.ReleaseHistoryEntry
 	b.call("GET", path+"/releases", nil, 200, &history)
@@ -181,7 +190,7 @@ func TestRollbackShowsAndChecksOlderSecretVersions(t *testing.T) {
 		t.Fatalf("the running release lists older secret versions: %+v", history)
 	}
 	older := history[1].Applications[0].OlderSecretVersions
-	if history[1].PlanId != released.ID || len(older) != 1 || older[0].VersionId != first.Id || older[0].SecretId != first.SecretId || older[0].Name != "TOKEN" || older[0].Retired {
+	if history[1].PlanId != released.ID || len(older) != 2 || older[0].VersionId != dropped.Id || older[0].Name != "DROPPED" || !older[0].Retired || older[1].VersionId != first.Id || older[1].SecretId != first.SecretId || older[1].Name != "TOKEN" || older[1].Retired {
 		t.Fatalf("the earlier release's older secret versions: %+v", older)
 	}
 	searched := func() map[uuid.UUID]bool {
