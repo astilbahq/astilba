@@ -683,7 +683,7 @@ func (q *Queries) ListRevisions(ctx context.Context, arg ListRevisionsParams) ([
 }
 
 const listSecrets = `-- name: ListSecrets :many
-SELECT s.id,s.name,v.id AS version_id,v.created_at FROM secrets s JOIN secret_versions v
+SELECT s.id,s.name,v.id AS version_id,v.created_at,v.plaintext_bytes FROM secrets s JOIN secret_versions v
 ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2
 AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC,v.id DESC
 `
@@ -694,10 +694,11 @@ type ListSecretsParams struct {
 }
 
 type ListSecretsRow struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	VersionID uuid.UUID `json:"version_id"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             uuid.UUID   `json:"id"`
+	Name           string      `json:"name"`
+	VersionID      uuid.UUID   `json:"version_id"`
+	CreatedAt      time.Time   `json:"created_at"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
 }
 
 // Retired secrets and erased versions are kept for the specifications that name them, not listed.
@@ -715,6 +716,7 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Lis
 			&i.Name,
 			&i.VersionID,
 			&i.CreatedAt,
+			&i.PlaintextBytes,
 		); err != nil {
 			return nil, err
 		}

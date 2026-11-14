@@ -2,9 +2,12 @@ package execution
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -89,7 +92,7 @@ func TestNamedVersionsAreRequired(t *testing.T) {
 	if _, err := chooseCheckedVersions(many[:secretCheckVersions]); err != nil {
 		t.Fatal("exactly the version limit:", err)
 	}
-	large := []db.RuntimeSecretCheckCandidatesRow{candidate(uuid.New(), 1, secretCheckBytes, false), candidate(uuid.New(), 1, 1, true)}
+	large := []db.RuntimeSecretCheckCandidatesRow{candidate(uuid.New(), 1, secretCheckBytes, false), candidate(uuid.New(), 1, 12, true)}
 	if _, err := chooseCheckedVersions(large); !errors.Is(err, secretCheckBudget) {
 		t.Fatal("required versions over the byte budget:", err)
 	}
@@ -124,6 +127,59 @@ func TestSecretCheckKey(t *testing.T) {
 	} {
 		if other == base {
 			t.Fatal(name, "shares a key")
+		}
+	}
+}
+
+// A value too short to search for is never chosen, so it can neither match ordinary text nor
+// take the budget.
+func TestShortValuesAreNotSearched(t *testing.T) {
+	short := candidate(uuid.New(), 1, 1, true)
+	edge := candidate(uuid.New(), 1, 12, false)
+	chosen := chosenIDs(t, []db.RuntimeSecretCheckCandidatesRow{short, candidate(uuid.New(), 1, 11, false), edge})
+	if _, ok := chosen[short.ID]; ok || len(chosen) != 1 || !chosen[edge.ID] {
+		t.Fatalf("chosen: %v", chosen)
+	}
+}
+
+// BenchmarkSecretCheckWorstCase measures the search the bound allows on crafted input: the most
+// versions or bytes the check opens, against text built to be slow to search. Run it with
+// `go test -run '^$' -bench SecretCheckWorstCase ./internal/execution`.
+func BenchmarkSecretCheckWorstCase(b *testing.B) {
+	const textBytes = 1 << 20
+	key := "-----BEGIN PRIVATE KEY-----\n" + strings.Repeat("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\n", 3) + "-----END PRIVATE KEY-----\n"
+	texts := map[string]string{
+		// Every byte starts a near match of the values below.
+		"repeated letter": strings.Repeat("a", textBytes),
+		// Each `%` and `+` adds a decoded reading; escapes and indentation change the line form.
+		"encoded and escaped": strings.Repeat("%61+\\n  \\ta", textBytes/10),
+		// A wrapped, commented base64 run that the bare form joins into one line.
+		"wrapped base64": strings.Repeat("QUFBQUFBQUFB\n# ", textBytes/16),
+		"key blocks":     strings.Repeat(key, textBytes/len(key)),
+	}
+	short := make([]string, secretCheckVersions)
+	for i := range short {
+		short[i] = strings.Repeat("a", 11) + string(rune('b'+i%20))
+	}
+	opaque := make([]string, secretCheckVersions)
+	for i := range opaque {
+		opaque[i] = strings.Repeat("QUFB", (secretCheckBytes/secretCheckVersions)/4-1) + fmt.Sprintf("%04d", i)
+	}
+	blocks := make([]string, secretCheckBytes/secretValueLimit)
+	for i := range blocks {
+		blocks[i] = strings.Repeat(key, secretValueLimit/len(key)-1) + fmt.Sprint(i)
+	}
+	values := map[string][]string{"256 versions of 12 bytes": short, "256 base64 versions, 1 MiB": opaque, "16 values of key blocks, 1 MiB": blocks}
+	for textName, text := range texts {
+		searched := domain.NewSecretText(text)
+		for valueName, set := range values {
+			b.Run(textName+"/"+valueName, func(b *testing.B) {
+				for b.Loop() {
+					for _, value := range set {
+						searched.Exposes(value)
+					}
+				}
+			})
 		}
 	}
 }

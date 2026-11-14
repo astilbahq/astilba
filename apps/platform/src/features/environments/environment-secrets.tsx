@@ -107,6 +107,11 @@ export function Secrets({
                       ),
                     })}
                   </small>
+                  {v.tooShortToCheck && (
+                    <p className={s.notice}>
+                      {t(($) => $.secrets.tooShortToCheck)}
+                    </p>
+                  )}
                 </div>
                 {retirable && (
                   <Button
@@ -141,6 +146,13 @@ export function Secrets({
                               ),
                             })}
                           </small>
+                          {version.tooShortToCheck && (
+                            <p>
+                              <small>
+                                {t(($) => $.secrets.earlierTooShortToCheck)}
+                              </small>
+                            </p>
+                          )}
                         </div>
                         {retirable && (
                           <Button
@@ -173,22 +185,27 @@ export function Secrets({
               const name = text(d, "name");
               const existing = latest.find((v) => v.name === name);
               const value = text(d, "value");
-              if (existing)
-                await result(
-                  client.POST(`${root}/secrets/{secretId}/versions`, {
-                    params: { path: { ...path, secretId: existing.secretId } },
-                    body: { value },
-                  }),
-                );
-              else
-                await result(
-                  client.POST(`${root}/secrets`, {
-                    params: { path },
-                    body: { name, value },
-                  }),
-                );
+              const saved = existing
+                ? await result(
+                    client.POST(`${root}/secrets/{secretId}/versions`, {
+                      params: {
+                        path: { ...path, secretId: existing.secretId },
+                      },
+                      body: { value },
+                    }),
+                  )
+                : await result(
+                    client.POST(`${root}/secrets`, {
+                      params: { path },
+                      body: { name, value },
+                    }),
+                  );
               form.reset();
-              setMessage(t(($) => $.secrets.saved));
+              setMessage(
+                saved.tooShortToCheck
+                  ? t(($) => $.secrets.savedTooShort)
+                  : t(($) => $.secrets.saved),
+              );
               await queries.cancelQueries({ queryKey: secretsKey(path) });
               await queries.invalidateQueries({ queryKey: secretsKey(path) });
             })

@@ -223,6 +223,21 @@ func TestSubmissionRechecksRuntimeSecretsBeforeWriting(t *testing.T) {
 			t.Fatal("rotations blocked the submission", note)
 		}
 	})
+	// A value under 12 bytes matches ordinary text and can be guessed, so it is not searched for,
+	// and the member who saved it is warned.
+	t.Run("a one-byte value does not block a submission", func(t *testing.T) {
+		b := *b
+		b.t = t
+		path, draft := prepare(t, "Short value", inContent("a-file-full-of-the-letter-a"))
+		var short api.SecretVersion
+		b.call("POST", path+"/secrets", map[string]string{"name": "SHORT", "value": "a"}, 201, &short)
+		if short.TooShortToCheck == nil || !*short.TooShortToCheck {
+			t.Fatal("saving a one-byte value did not warn", short)
+		}
+		if _, note := await(t, submit(t, path, draft).Id, retrying); strings.Contains(note, "runtime secret") {
+			t.Fatal("a one-byte value blocked the submission", note)
+		}
+	})
 	// A version just replaced may still be valid where it was issued, so it is still searched for,
 	// until an owner retires it.
 	t.Run("retiring a replaced version clears its match", func(t *testing.T) {

@@ -7013,6 +7013,9 @@
         "createdAt":
           "type": "string"
           "format": "date-time"
+        tooShortToCheck:
+          type: boolean
+          description: Present, and true, only for a member who can write secrets, when the value is shorter than 12 bytes. The runtime-secret check does not search files to submit or public build arguments for such a value; it is still sealed and redacted. Absent while the value's length is not yet measured.
       "required":
         - "id"
         - "secretId"

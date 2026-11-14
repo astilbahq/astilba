@@ -3478,6 +3478,8 @@ export interface components {
             name: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description Present, and true, only for a member who can write secrets, when the value is shorter than 12 bytes. The runtime-secret check does not search files to submit or public build arguments for such a value; it is still sealed and redacted. Absent while the value's length is not yet measured. */
+            tooShortToCheck?: boolean;
         };
         AuditEvent: {
             /** Format: uuid */

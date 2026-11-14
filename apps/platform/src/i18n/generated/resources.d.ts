@@ -553,6 +553,7 @@ export default interface Resources {
       "cancel": "Cancel",
       "created": "Version created {{date}}",
       "description": "Values are write-only. Reference a version ID in your specification with <field/>.",
+      "earlierTooShortToCheck": "Too short to check.",
       "earlierVersions": "{{count}} earlier version" | "{{count}} earlier versions",
       "hint": "Reusing a name adds a version. You’ll be asked to confirm your identity before saving.",
       "name": "Secret name",
@@ -594,7 +595,9 @@ export default interface Resources {
       "retiring": "Retiring…",
       "save": "Save secret version",
       "saved": "Secret version saved. Its value cannot be read back.",
+      "savedTooShort": "Secret version saved. Its value cannot be read back. It is shorter than 12 bytes, so files you submit and public build arguments are not checked for it. Use 12 or more characters to have them checked.",
       "title": "Secrets",
+      "tooShortToCheck": "Too short to check: this value is shorter than 12 bytes, so files you submit and public build arguments are not checked for it. Save a value of 12 or more characters to have them checked.",
       "value": "Secret value",
       "versionRetired": "Version {{id}} of {{name}} retired. Its value is erased."
     },

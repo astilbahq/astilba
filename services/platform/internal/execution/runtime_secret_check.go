@@ -44,7 +44,8 @@ type checkedVersion struct {
 
 // chooseCheckedVersions picks what the check searches for from candidates, which are ordered by
 // secret and then newest first. Each secret's current version, and every version that something
-// that may still deploy names, is required, and they must fit the budget. Superseded versions
+// that may still deploy names, is required, and they must fit the budget. A value too short to
+// search for is never chosen. Superseded versions
 // among each secret's newest fill what is left, most recently replaced first, so rotating a
 // secret never pushes the environment past the budget. A superseded version whose length is not
 // yet measured counts at the most a value can hold, so opening it never crosses the budget.
@@ -53,6 +54,9 @@ func chooseCheckedVersions(candidates []db.RuntimeSecretCheckCandidatesRow) ([]c
 	var superseded []db.RuntimeSecretCheckCandidatesRow
 	bytes := 0
 	for _, c := range candidates {
+		if c.PlaintextBytes.Valid && domain.SecretTooShortToSearch(int(c.PlaintextBytes.Int32)) {
+			continue
+		}
 		if c.Recency != 1 && !c.Named {
 			superseded = append(superseded, c)
 			continue
@@ -159,6 +163,11 @@ func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, 
 		value, err := keys.openBetweenPasses(ctx, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id}, cipher)
 		if err != nil {
 			return err
+		}
+		// A value the measuring job has not reached may turn out too short to search for.
+		if domain.SecretTooShortToSearch(len(value)) {
+			clear(value)
+			continue
 		}
 		total += len(value)
 		exposed := total <= secretCheckBytes && searched.Exposes(string(value))

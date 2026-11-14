@@ -63,6 +63,36 @@ func TestRetireSecretVersion(t *testing.T) {
 	spec.Applications[0].Variables = []domain.Variable{{Name: "TOKEN", SecretVersionID: &unused.Id}}
 	x.owner.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 400, nil)
 
+	// A value too short for the leak check is flagged to members who can write secrets, and to them
+	// alone: to a reader it would say the value can be guessed.
+	var short api.SecretVersion
+	x.owner.call("POST", path+"/secrets", map[string]string{"name": "Pin", "value": "1234"}, 201, &short)
+	flagged := func(b *browser) map[string]bool {
+		var listed []api.SecretVersion
+		b.call("GET", path+"/secrets", nil, 200, &listed)
+		out := map[string]bool{}
+		for _, v := range listed {
+			out[v.Name] = v.TooShortToCheck != nil && *v.TooShortToCheck
+			if v.TooShortToCheck != nil && !*v.TooShortToCheck {
+				t.Fatal("tooShortToCheck is sent as false")
+			}
+		}
+		return out
+	}
+	for _, b := range []*browser{x.owner, operator} {
+		if got := flagged(b); !got["Pin"] || got["Token"] {
+			t.Fatalf("flags for a member who can write: %v", got)
+		}
+	}
+	x.owner.call("POST", "/api/v1/workspaces/"+x.ws.String()+"/invitations", map[string]string{"email": "viewer@example.test", "role": "viewer"}, 201, nil)
+	viewer := x.f.browser(t)
+	var joined api.Session
+	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromLinkMail(t, x.f, "/invitation"), "name": "Viewer", "password": x.f.password}, 200, &joined)
+	viewer.csrf = joined.CsrfToken
+	if got := flagged(viewer); got["Pin"] {
+		t.Fatal("a viewer was told a value is short")
+	}
+
 	// Another environment's secret is not found through this one.
 	_, other, _, foreign := x.secretEnvironment("Staging", "versions-staging.example.test")
 	x.owner.call("POST", other+"/secrets/"+foreign.SecretId.String()+"/versions", map[string]string{"value": "dummy-foreign-current"}, 201, nil)
