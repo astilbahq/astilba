@@ -40,7 +40,7 @@ func scheduledJobFixture(t *testing.T, mode string) (*Engine, backup.Policy, *in
 	if err := policy.Validate(); err != nil {
 		t.Fatal("fixture policy invalid", err)
 	}
-	created, jobInspects := 0, 0
+	created, jobInspects, removals := 0, 0, 0
 	// A create that fails may still have made the container, as Docker's can.
 	exists := false
 	var jobLabels map[string]string
@@ -97,7 +97,8 @@ func scheduledJobFixture(t *testing.T, mode string) (*Engine, backup.Policy, *in
 			}
 			stablejson.Encode(w, map[string]any{"Id": "job", "Config": map[string]any{"Labels": jobLabels}, "State": map[string]any{"Running": false, "Status": "exited", "ExitCode": 0}})
 		case strings.HasSuffix(path, "/containers/job") && r.Method == "DELETE":
-			if cleanupFailure == "remove" {
+			removals++
+			if cleanupFailure == "remove" || cleanupFailure == "remove-once" && removals == 1 {
 				w.WriteHeader(500)
 				fmt.Fprint(w, `{"message":"cleanup remove failed"}`)
 				return

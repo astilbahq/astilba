@@ -12,7 +12,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// errJobCleanup marks a job whose own cleanup failed after its container was created.
+// errJobCleanup marks a job that finished, exiting 0, but whose own cleanup then failed.
 var errJobCleanup = errors.New("job cleanup unconfirmed")
 
 // errElevatedJob refuses a job whose source is privileged, or shares a volume or network with
@@ -97,9 +97,10 @@ func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backu
 				}
 			}
 		}
-		if cleanupErr != nil {
-			result = errors.Join(result, errJobCleanup, cleanupErr)
+		if cleanupErr != nil && result == nil {
+			cleanupErr = errors.Join(errJobCleanup, cleanupErr)
 		}
+		result = errors.Join(result, cleanupErr)
 	}()
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return err

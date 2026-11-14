@@ -36,7 +36,7 @@ func (e *Engine) containerExec(ctx context.Context, containerID string, out io.W
 	code, ended := e.endSourceExec(containerID, created.ID, pid.pid, err != nil || ctx.Err() != nil)
 	switch {
 	case !ended:
-		return &processLeft{what: command[0] + " in container " + containerID[:min(12, len(containerID))] + " could not be confirmed ended"}
+		return &processLeft{what: command[0] + " in container " + containerID[:min(12, len(containerID))] + " could not be confirmed ended", container: containerID}
 	case err != nil || ctx.Err() != nil || code != 0:
 		return errors.New("data tool failed")
 	}

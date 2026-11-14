@@ -10,6 +10,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -101,19 +102,29 @@ var errRunUncertain = errors.New("the run's outcome needs local inspection")
 const interruptedBackupNote = "An interrupted backup command needs local inspection. Scheduled run history records its outcome; it will not be repeated automatically."
 
 // runCleanupLeft says what a run that began changing things may have left running, or "" once
-// nothing it started can be. A process it ran in a container it doesn't own was confirmed ended
-// where it ran (processLeft). Every container on this server labelled with the run, including one
-// whose create failed as the run stopped, is force-removed and confirmed gone. restic needs no
-// check: the agent waits for it to exit, and kills it when the run stops.
+// nothing it started can be. Every container on this server labelled with the run, including one
+// whose create failed as the run stopped, is force-removed and confirmed gone. A process it ran
+// through containerExec was confirmed ended where it ran, or its container is gone now
+// (processLeft). restic needs no check: the agent waits for it to exit, and kills it when the run
+// stops.
 func (e *Engine) runCleanupLeft(p backup.Policy, run uuid.UUID, err error) string {
 	var left []string
-	if process := (*processLeft)(nil); errors.As(err, &process) {
+	containers := e.removeRunContainers(p, run)
+	if process := (*processLeft)(nil); errors.As(err, &process) && !e.containerGone(process.container) {
 		left = append(left, process.what)
 	}
-	if containers := e.removeRunContainers(p, run); containers != "" {
+	if containers != "" {
 		left = append(left, containers)
 	}
 	return strings.Join(left, "; ")
+}
+
+// containerGone reports a container Docker confirms no longer exists, so nothing runs in it.
+func (e *Engine) containerGone(id string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	return errdefs.IsNotFound(err)
 }
 
 func (e *Engine) removeRunContainers(p backup.Policy, run uuid.UUID) string {
@@ -143,7 +154,7 @@ func (e *Engine) removeRunContainers(p backup.Policy, run uuid.UUID) string {
 
 // processLeft is a run's error when a process it ran in a container, such as pg_dump in its source
 // database, could not be confirmed ended (containerExec).
-type processLeft struct{ what string }
+type processLeft struct{ what, container string }
 
 func (p *processLeft) Error() string { return p.what }
 

@@ -484,7 +484,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 			case left != "":
 				r.State = "needs_attention"
 				r.Note = "The run's cleanup could not be confirmed: " + left + ". Inspect containers with its com.astilba.run label and any target volume, then resolve the run."
-			case job && *r.ExitCode == 0 && errors.Is(err, errJobCleanup):
+			case errors.Is(err, errJobCleanup):
 				// The job exited 0 and only its own cleanup failed, which removing its container
 				// has now finished.
 				r.State, r.Note, err = "succeeded", "Container job finished; exit result recorded.", nil

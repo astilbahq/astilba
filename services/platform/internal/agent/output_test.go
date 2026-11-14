@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -127,6 +128,8 @@ func outputDaemon(t *testing.T, stdout string) *client.Client {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, `{"Id":"fixture-exec"}`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/exec/fixture-exec/start"):
+			// Closing a connection with its request unread would reset it before the client reads.
+			_, _ = io.Copy(io.Discard, r.Body)
 			conn, buffered, err := http.NewResponseController(w).Hijack()
 			if err != nil {
 				t.Error(err)
