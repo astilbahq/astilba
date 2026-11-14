@@ -1,10 +1,15 @@
 package agent
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +36,7 @@ type nativePullFixture struct {
 	docs     map[string][2]string // digest: media type, content
 	blobs    map[string][]byte
 	overlong map[string]bool // blobs sent as themselves, then zeros without end
+	large    map[string]func() io.Reader
 	reads    map[string]*atomic.Int64
 	sent     atomic.Int64
 }
@@ -48,7 +54,7 @@ func newNativePullFixture(t *testing.T) *nativePullFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = docker.Close() })
-	f := &nativePullFixture{t: t, ctx: context.Background(), docker: docker, docs: map[string][2]string{}, blobs: map[string][]byte{}, overlong: map[string]bool{}, reads: map[string]*atomic.Int64{}}
+	f := &nativePullFixture{t: t, ctx: context.Background(), docker: docker, docs: map[string][2]string{}, blobs: map[string][]byte{}, overlong: map[string]bool{}, large: map[string]func() io.Reader{}, reads: map[string]*atomic.Int64{}}
 	server := httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	t.Cleanup(server.Close)
 	f.host = strings.TrimPrefix(server.URL, "https://")
@@ -87,6 +93,13 @@ func (f *nativePullFixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			w.(http.Flusher).Flush()
 			f.sent.Add(int64(len(chunk)))
+		}
+	case kind == "blobs" && f.large[d] != nil:
+		size, _ := io.Copy(io.Discard, f.large[d]())
+		w.Header().Set("Content-Length", fmt.Sprint(size))
+		if r.Method == http.MethodGet {
+			n, _ := io.Copy(w, f.large[d]())
+			f.sent.Add(n)
 		}
 	case kind == "blobs" && f.blobs[d] != nil:
 		w.Header().Set("Content-Length", fmt.Sprint(len(f.blobs[d])))
@@ -211,9 +224,26 @@ func TestNativePullRefusesBlobsUnlikeTheirDescriptors(t *testing.T) {
 // the image would make it.
 func TestNativePullWatchStopsAPullBeyondItsMeasure(t *testing.T) {
 	f := newNativePullFixture(t)
-	// A layer of its own, so Docker has none of it yet.
-	manifest, layer := f.image(runtime.GOARCH, "watched-"+fmt.Sprint(time.Now().UnixNano()))
-	f.overlong[layer] = true
+	// An image whose one layer is a valid 1.5 GiB tar of zeros, of its own so Docker has none
+	// of it yet. The agent measured it as 1 MiB, as if its registry sent more than it named;
+	// Docker checks a blob's length as it reads it, so a registry can't be made to here.
+	name := "watched-" + fmt.Sprint(time.Now().UnixNano())
+	var header bytes.Buffer
+	w := tar.NewWriter(&header)
+	_ = w.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0644, Size: 1536 << 20})
+	_ = w.Flush()
+	layer := func() io.Reader {
+		return io.MultiReader(bytes.NewReader(header.Bytes()), io.LimitReader(zeros{}, 1536<<20+1024))
+	}
+	digester := sha256.New()
+	size, _ := io.Copy(digester, layer())
+	layerDigest := "sha256:" + hex.EncodeToString(digester.Sum(nil))
+	f.large[layerDigest] = layer
+	config := fmt.Appendf(nil, `{"architecture":%q,"os":"linux","rootfs":{"type":"layers","diff_ids":[%q]}}`, runtime.GOARCH, layerDigest)
+	f.blobs[sha(config)] = config
+	content := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[{"mediaType":%q,"digest":%q,"size":%d}]}`, ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageConfig, sha(config), len(config), ocispec.MediaTypeImageLayer, layerDigest, size)
+	manifest := sha([]byte(content))
+	f.docs[manifest] = [2]string{ocispec.MediaTypeImageManifest, content}
 	image := f.host + "/fixture/app@" + manifest
 	var err error
 	used := f.leastFree(func() {
@@ -227,9 +257,19 @@ func TestNativePullWatchStopsAPullBeyondItsMeasure(t *testing.T) {
 	if used > pullSlack+768<<20 {
 		t.Fatalf("the stopped pull took %d MiB of Docker storage; the registry sent %d MiB", used>>20, f.sent.Load()>>20)
 	}
+	if f.sent.Load() >= size {
+		t.Fatal("Docker read the whole layer before the agent stopped it")
+	}
 	if _, err = f.docker.ImageInspect(f.ctx, image); !errdefs.IsNotFound(err) {
 		t.Fatal("the stopped pull left an image", err)
 	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
 
 // A multi-platform image reaches Docker as Docker's own pull of it would: under the reference

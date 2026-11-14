@@ -33,8 +33,9 @@ func imageStoreNote(status [][2]string, apiVersion string, versionKnown bool) st
 const pullSlack = 1 << 30
 
 // pullWatched pulls image into Docker's classic image store while watching Docker's storage.
-// Docker writes each blob as its registry sends it and checks the blob's size only once it
-// ends, so a registry that sends Docker more than the image it names could fill the storage.
+// Some Docker versions write each blob as its registry sends it and check the blob's size only
+// once it ends, so a registry that sends Docker more than the image it names could fill the
+// storage.
 // The agent stops the pull once any filesystem Docker writes images to has lost more than it
 // measured, and slack for other writers, or once it can no longer see one. A stopped pull's
 // partial download is Docker's to remove.

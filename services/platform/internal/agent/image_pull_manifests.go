@@ -18,6 +18,10 @@ import (
 	"oras.land/oras-go/v2/errdef"
 )
 
+// ociNonDistributableLayer is the OCI media type of a non-distributable layer, which the image
+// spec has deprecated; the agent names it here only to refuse it.
+const ociNonDistributableLayer = "application/vnd.oci.image.layer.nondistributable.v1.tar"
+
 // Media types Docker pulls and the agent reads. Others are refused rather than measured.
 var (
 	pullIndexTypes    = map[string]bool{ocispec.MediaTypeImageIndex: true, "application/vnd.docker.distribution.manifest.list.v2+json": true}
@@ -26,7 +30,7 @@ var (
 	pullLayerTypes    = map[string]bool{ocispec.MediaTypeImageLayer: true, ocispec.MediaTypeImageLayerGzip: true, ocispec.MediaTypeImageLayerZstd: true, "application/vnd.docker.image.rootfs.diff.tar.gzip": true}
 	// Layers Docker would download from the URLs their descriptors name rather than from the
 	// image's registry.
-	pullForeignTypes = map[string]bool{ocispec.MediaTypeImageLayerNonDistributable: true, ocispec.MediaTypeImageLayerNonDistributableGzip: true, ocispec.MediaTypeImageLayerNonDistributableZstd: true, "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip": true, "application/vnd.docker.image.rootfs.foreign.diff.tar": true}
+	pullForeignTypes = map[string]bool{ociNonDistributableLayer: true, ociNonDistributableLayer + "+gzip": true, ociNonDistributableLayer + "+zstd": true, "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip": true, "application/vnd.docker.image.rootfs.foreign.diff.tar": true}
 )
 
 // registryDocument is a manifest or index, verified against its digest.

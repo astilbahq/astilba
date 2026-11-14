@@ -111,7 +111,7 @@ func fakeDocker(t *testing.T, api string, load func(w http.ResponseWriter, r *ht
 		}
 	}))
 	t.Cleanup(server.Close)
-	docker, err := client.New(client.WithHost("tcp://"+strings.TrimPrefix(server.URL, "http://")), client.WithAPIVersionNegotiation())
+	docker, err := client.New(client.WithHost("tcp://" + strings.TrimPrefix(server.URL, "http://")))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json/v2"
 	"errors"
 	"hash"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/distribution/reference"
 	"github.com/moby/moby/client"
 	"github.com/opencontainers/go-digest"
@@ -180,7 +180,7 @@ func streamRegistryArchive(ctx context.Context, out io.Writer, source registryIm
 	}
 	root := plan.documents[0].desc
 	// containerd names the image it imports by this annotation, as a pull by this reference does.
-	index, err := json.Marshal(map[string]any{
+	index, err := stablejson.Marshal(map[string]any{
 		"schemaVersion": 2,
 		"mediaType":     ocispec.MediaTypeImageIndex,
 		"manifests":     []ocispec.Descriptor{{MediaType: root.MediaType, Digest: root.Digest, Size: root.Size, Annotations: map[string]string{"io.containerd.image.name": named.String()}}},

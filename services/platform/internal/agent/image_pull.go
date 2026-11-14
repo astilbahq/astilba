@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
 	"github.com/moby/moby/client"
@@ -274,7 +275,7 @@ func dockerArchitecture(arch string) string {
 
 // encodedRegistryAuth is a credential as Docker's API takes it.
 func encodedRegistryAuth(c pipeline.Credential) string {
-	raw, _ := json.Marshal(map[string]string{"username": c.Username, "password": c.Password})
+	raw, _ := stablejson.Marshal(map[string]string{"username": c.Username, "password": c.Password})
 	return base64.URLEncoding.EncodeToString(raw)
 }
 
