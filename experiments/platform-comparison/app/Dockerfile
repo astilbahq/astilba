@@ -6,7 +6,7 @@ COPY main.go ./
 ARG FAIL_BUILD=false
 RUN test "$FAIL_BUILD" != true && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /app .
 
-FROM busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+FROM busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
 COPY --from=build /app /app
 USER 65532:65532
 EXPOSE 8080

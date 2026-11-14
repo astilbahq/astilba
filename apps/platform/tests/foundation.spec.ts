@@ -451,7 +451,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   const add = page.getByRole("form", { name: "Add service" });
   await add.getByLabel("Service name", { exact: true }).fill("Website");
   const image =
-    "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+    "busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4";
   await add.getByLabel("Container image (web or worker)").fill(image);
   await add.getByRole("button", { name: "Stage new service" }).click();
   await add.getByLabel("Service name", { exact: true }).fill("Database");

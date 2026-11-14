@@ -7,8 +7,8 @@ PLAT-7 is a disposable validation module, separate from the future platform. It 
 Use Go 1.27.4, Git, Docker and a disposable local daemon with at least 6 GiB available memory (8 GiB used for the two-CPU compatibility run). The fixture starts one provider at a time, binds a random loopback port, creates synthetic credentials and private repositories, and removes only its labelled container and volumes, including their repository state. The hosted GitHub test separately deletes its identity-checked repository and confirms its absence. No host directories are mounted. Containers use the daemon's available CPUs, including [two-core private GitHub runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), and retain a 6 GiB memory limit. Do not target a server with existing workloads.
 
 ```sh
-docker --host "$PLAT7_DOCKER_HOST" pull gitlab/gitlab-ce:19.5.1-ce.0@sha256:bb79dc86267c557fd11e7feb0cd9dd506dd02e991ecdd6cae11ca7d7e5d36fc3
-docker --host "$PLAT7_DOCKER_HOST" pull gitea/gitea:28.2.0@sha256:30777c91280d973fa02be48b1ade735bd6859e8f6f7af3b4444d519437852504
+docker --host "$PLAT7_DOCKER_HOST" pull gitlab/gitlab-ce:19.5.5-ce.0@sha256:392e6bd5bf118ae520e4038261a5ae39aea05de0d2299a162b4c822a9684cf9b
+docker --host "$PLAT7_DOCKER_HOST" pull gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d
 make verify-git
 ```
 
@@ -33,8 +33,8 @@ GitLab's [branch-name cache can briefly reject a newly pushed source branch](htt
 | Provider | Exercised authentication | Connectivity and webhook requirements |
 | --- | --- | --- |
 | GitHub hosted | HTTPS Git plus REST bearer token. Fixture uses an account token with `repo` and `delete_repo`; production should use a scoped GitHub App with metadata read, contents write and pull requests write for selected repositories. | Outbound HTTPS to API and Git hosts; inbound HTTPS webhook endpoint. Verify `X-Hub-Signature-256` over original bytes and the push event/delivery headers. |
-| GitLab CE 19.5.1 | Bootstrap administrator creates a private project, then a project access token with Maintainer role, `api` and `write_repository` runs the connector workflow. | Configured instance URL for HTTPS Git and `/api/v4`; inbound push hooks use `X-Gitlab-Token`, `X-Gitlab-Event` and event UUID. Fresh project-token access is probed with bounded metadata reads before import because it can initially return 404. Root-path loopback HTTP is used only for the disposable local test. |
-| Gitea 28.2.0 | Synthetic user's access token with `write:repository` for API and HTTPS Git, plus `write:user` for the fixture's `/user/repos` creation endpoint. The connector itself does not need repository-creation permission. | Configured instance URL for Git and `/api/v1`; inbound hooks verify bare-hex HMAC-SHA256 in `X-Gitea-Signature`, event and delivery headers. Root-path loopback HTTP is used only locally. |
+| GitLab CE 19.5.5 | Bootstrap administrator creates a private project, then a project access token with Maintainer role, `api` and `write_repository` runs the connector workflow. | Configured instance URL for HTTPS Git and `/api/v4`; inbound push hooks use `X-Gitlab-Token`, `X-Gitlab-Event` and event UUID. Fresh project-token access is probed with bounded metadata reads before import because it can initially return 404. Root-path loopback HTTP is used only for the disposable local test. |
+| Gitea 28.3.0 | Synthetic user's access token with `write:repository` for API and HTTPS Git, plus `write:user` for the fixture's `/user/repos` creation endpoint. The connector itself does not need repository-creation permission. | Configured instance URL for Git and `/api/v1`; inbound hooks verify bare-hex HMAC-SHA256 in `X-Gitea-Signature`, event and delivery headers. Root-path loopback HTTP is used only locally. |
 
 Real instances require trusted TLS and network reachability from the component doing the import; private instances cannot be assumed reachable from a hosted control plane. A customer-side relay/runner and private CA distribution remain production integration work. Cross-origin redirects are disabled. Hosted GitLab, GitHub Enterprise, path-prefix installations, private CAs, SSH transport and live hosted webhook delivery are not exercised by this spike.
 
