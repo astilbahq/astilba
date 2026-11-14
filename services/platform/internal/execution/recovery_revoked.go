@@ -51,7 +51,8 @@ func revokedEvidence(host deployment.RecoveryEvidence) deployment.RecoveryEviden
 // be from before that revocation, or from a renewal it overrides. A revoked preview host's previews
 // would then keep their slots and secret copies with nothing able to release them, and a recovered
 // root's revoked participants would still be waited on. Settling a server whose rows already show
-// its revocation changes nothing that recovery's fencing doesn't also change.
+// its revocation only does again what revoking it again would: it advances the generations of its
+// domain and of the preview policies still bound to it.
 func (s *Service) settleRecoveredRevocations(ctx context.Context, tx pgx.Tx, ws uuid.UUID, revoked map[uuid.UUID]bool) error {
 	for server, settle := range revoked {
 		if !settle {

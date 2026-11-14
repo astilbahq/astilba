@@ -54,8 +54,8 @@ VALUES($1,$2,$3,$4,$5,gen_random_uuid(),$6,$7,$8,1,1,'{}')`, []any{out.policy, w
 }
 
 // openPreview opens a request for the policy with a preview environment holding a copy of a secret,
-// as allocation leaves it: purpose is set when an environment is created, so the trigger that keeps
-// it from changing is off while it is set here.
+// as allocation leaves it: its unit is placed on the policy's host, and purpose is set when an
+// environment is created, so the trigger that keeps it from changing is off while it is set here.
 func openPreview(t *testing.T, f *fixture, b *browser, ws uuid.UUID, previews seededPreviews, number int) (request, env uuid.UUID, secret api.SecretVersion) {
 	t.Helper()
 	var created api.Environment
@@ -76,6 +76,7 @@ func openPreview(t *testing.T, f *fixture, b *browser, ws uuid.UUID, previews se
 		{`SET session_replication_role=replica`, nil},
 		{`UPDATE environments SET purpose='preview' WHERE id=$1`, []any{created.Id}},
 		{`SET session_replication_role=DEFAULT`, nil},
+		{`UPDATE deployment_units SET server_id=(SELECT server_id FROM preview_policies WHERE id=$2) WHERE environment_id=$1`, []any{created.Id, previews.policy}},
 		{`INSERT INTO preview_requests(id,workspace_id,policy_id,number,generation,environment_id,state) VALUES($1,$2,$3,$4,1,$5,'ready')`, []any{request, ws, previews.policy, number, created.Id}},
 	} {
 		if _, err = conn.Exec(ctx, statement.sql, statement.args...); err != nil {

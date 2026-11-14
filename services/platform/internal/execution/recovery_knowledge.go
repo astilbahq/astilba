@@ -127,8 +127,6 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					selected, err = recoveryUpgradeKnowledge(prior, row)
 				case "backup_policies":
 					selected, err = recoveryPolicyKnowledge(prior, row)
-				case "preview_policies":
-					selected, err = recoveryNewerGeneration(prior, row)
 				case "pipeline_runs":
 					if op, exists := incoming["execution_operations"][key]; exists {
 						if oldOp, exists := known["execution_operations"][key]; exists {
@@ -400,26 +398,6 @@ func recoveryUpgradeKnowledge(prior, incoming portability.Row) (portability.Row,
 		out["status"] = incoming["status"]
 	}
 	return out, nil
-}
-
-// recoveryNewerGeneration takes the copy of a row that a later change wrote, where every change
-// that matters advances the row's generation: saving a preview policy, as when an owner moves it off
-// a revoked host, and revoking its host. The older copy would put the policy back on a host it left,
-// and releasing that host's previews would then reach previews running elsewhere. Equal generations
-// leave the database's copy, as for any row.
-func recoveryNewerGeneration(prior, incoming portability.Row) (portability.Row, error) {
-	a, err := recoveryValue[int64](prior, "generation")
-	if err != nil {
-		return nil, err
-	}
-	b, err := recoveryValue[int64](incoming, "generation")
-	if err != nil {
-		return nil, err
-	}
-	if b > a {
-		return maps.Clone(incoming), nil
-	}
-	return maps.Clone(prior), nil
 }
 
 func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, error) {

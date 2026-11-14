@@ -97,37 +97,58 @@ func TestRecoveryReleasesPreviewsOfAHostTheCheckpointRecordsRevoked(t *testing.T
 	}
 }
 
-// After its host's revocation, the owner moved a preview policy to another host, where a new preview
-// opened. Recovery from a database from before the revocation keeps the policy where its latest save
-// put it, so releasing the revoked host's previews leaves the one running on the new host alone.
-func TestRecoveryKeepsAPreviewPolicyMovedOffARevokedHost(t *testing.T) {
-	var previews seededPreviews
-	var next, request, env uuid.UUID
-	var before previewRecord
-	r := newParticipantRecovery(t, func(f *fixture, b *browser, ws, _ uuid.UUID) {
-		host := enrolPreviewHost(t, f, b, ws)
-		previews = seedPreviews(t, f, b, ws, host)
-		before = recordPreviews(t, f, ws)
-		revokeServer(b, ws, host)
-		created, _, _ := enrollment(t, f, b, ws, "deployment")
-		next = created.Server.Id
-		// Saving the policy with another host advances its generation, as revoking its host did.
-		if _, err := f.st.Pool.Exec(t.Context(), `UPDATE preview_policies SET server_id=$2,generation=generation+1 WHERE id=$1`, previews.policy, next); err != nil {
-			t.Fatal(err)
-		}
-		request, env, _ = openPreview(t, f, b, ws, previews, 9)
-	})
-	before.restore(t, r)
+// After the backup, the owner moved a preview policy off its host to another, where a new preview
+// opened. Whether the checkpoint records the old host's revocation or the restored management
+// revokes it before recovering, recovery releases only the previews the old host runs, and leaves
+// the one running on the new host alone whichever copy of the policy it keeps.
+func TestRecoveryReleasesOnlyThePreviewsARevokedHostRuns(t *testing.T) {
+	for _, revokedAfterRestore := range []bool{false, true} {
+		t.Run(map[bool]string{false: "revoked in the checkpoint", true: "revoked after the restore"}[revokedAfterRestore], func(t *testing.T) {
+			var previews seededPreviews
+			var host, request, env uuid.UUID
+			var before previewRecord
+			r := newParticipantRecovery(t, func(f *fixture, b *browser, ws, _ uuid.UUID) {
+				host = enrolPreviewHost(t, f, b, ws)
+				previews = seedPreviews(t, f, b, ws, host)
+				before = recordPreviews(t, f, ws)
+				if !revokedAfterRestore {
+					revokeServer(b, ws, host)
+				}
+				// The old host's previews have ended, so the policy can move.
+				created, _, _ := enrollment(t, f, b, ws, "deployment")
+				for _, statement := range []struct {
+					sql  string
+					args []any
+				}{
+					{`UPDATE preview_requests SET state='deleted' WHERE policy_id=$1`, []any{previews.policy}},
+					{`UPDATE preview_policies SET server_id=$2,generation=generation+1 WHERE id=$1`, []any{previews.policy, created.Server.Id}},
+				} {
+					if _, err := f.st.Pool.Exec(t.Context(), statement.sql, statement.args...); err != nil {
+						t.Fatal(statement.sql, err)
+					}
+				}
+				request, env, _ = openPreview(t, f, b, ws, previews, 9)
+			})
+			before.restore(t, r)
+			if revokedAfterRestore {
+				// Revoking advances the restored copy of the policy to the generation of the move.
+				revokeServer(r.b, r.ws, host)
+			}
 
-	r.recoverAll(t, r.exports(t, claimExport{}))
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_policies WHERE id=$1 AND server_id=$2`, previews.policy, next); count != 1 {
-		t.Fatal("recovery put the preview policy back on the revoked host it left")
-	}
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE id=$1 AND state<>'deleted' AND environment_id=$2`, request, env); count != 1 {
-		t.Fatal("recovery released a preview running on a healthy host")
-	}
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE s.environment_id=$1 AND v.encrypted_value IS NOT NULL`, env); count != 1 {
-		t.Fatal("recovery deleted the secret copy of a preview running on a healthy host")
+			r.recoverAll(t, r.exports(t, claimExport{}))
+			if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE id=$1 AND state<>'deleted' AND environment_id=$2`, request, env); count != 1 {
+				t.Fatal("recovery released a preview running on a healthy host")
+			}
+			if count := claimCounter(t, r.f, `SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE s.environment_id=$1 AND v.encrypted_value IS NOT NULL`, env); count != 1 {
+				t.Fatal("recovery deleted the secret copy of a preview running on a healthy host")
+			}
+			if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE id=ANY($1) AND state='deleted' AND released_by_revocation`, previews.requests[:]); count != 2 {
+				t.Fatalf("recovery released %d of the revoked host's 2 previews the restored database lists open", count)
+			}
+			if count := claimCounter(t, r.f, `SELECT count(*) FROM secrets WHERE workspace_id=$1 AND environment_id=ANY($2)`, r.ws, previews.envs[:]); count != 0 {
+				t.Fatalf("recovery kept %d secret copies of the revoked host's previews", count)
+			}
+		})
 	}
 }
 
