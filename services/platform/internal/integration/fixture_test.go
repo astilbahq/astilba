@@ -434,6 +434,21 @@ func (f *fixture) browser(t *testing.T) *browser {
 }
 func (b *browser) call(method, path string, body any, status int, out any) []byte {
 	b.t.Helper()
+	got, data := b.request(method, path, body)
+	if got != status {
+		b.t.Fatalf("%s %s: status %d want %d: %s", method, path, got, status, data)
+	}
+	if out != nil {
+		if e := json.Unmarshal(data, out); e != nil {
+			b.t.Fatal(e)
+		}
+	}
+	return data
+}
+
+// request sends one call and returns whatever status it gets.
+func (b *browser) request(method, path string, body any) (int, []byte) {
+	b.t.Helper()
 	var raw []byte
 	if body != nil {
 		raw, _ = stablejson.Marshal(body)
@@ -453,15 +468,7 @@ func (b *browser) call(method, path string, body any, status int, out any) []byt
 	}
 	defer response.Body.Close()
 	data, _ := io.ReadAll(response.Body)
-	if response.StatusCode != status {
-		b.t.Fatalf("%s %s: status %d want %d: %s", method, path, response.StatusCode, status, data)
-	}
-	if out != nil {
-		if e = json.Unmarshal(data, out); e != nil {
-			b.t.Fatal(e)
-		}
-	}
-	return data
+	return response.StatusCode, data
 }
 func (b *browser) login(email, password string) api.Session {
 	var v api.Session

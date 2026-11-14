@@ -93,6 +93,7 @@ export const rollbackAfterEditing: Story = {
               eligible: true,
               note: "",
               changes: [],
+              olderSecretVersions: [],
             },
           ],
         },

@@ -14,6 +14,13 @@ var EnvironmentInactive = &Error{Code: "conflict", Message: "This environment is
 // versions.
 var SecretInUse = &Error{Code: "conflict", Message: "A version of this secret is still used by the draft, the running deployment, a plan or an operation. Replace it there first.", Fields: []string{"secret.inUse"}}
 
+// SecretVersionInUse refuses to retire a version while something that may still deploy names it.
+var SecretVersionInUse = &Error{Code: "conflict", Message: "This version is still used by the draft, the running deployment, a plan or an operation. Replace it there first.", Fields: []string{"secretVersion.inUse"}}
+
+// SecretVersionCurrent refuses to retire a secret's current version: a new version replaces it, or
+// retiring the secret erases them all.
+var SecretVersionCurrent = &Error{Code: "conflict", Message: "This is the secret's current version. Save a new value to replace it, or retire the secret.", Fields: []string{"secretVersion.current"}}
+
 // Reasons a retirement, restore or purge is refused, reported to the dashboard as
 // retirement.<reason>.
 const (

@@ -1986,6 +1986,24 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions/{versionId}:
+    delete:
+      operationId: retireSecretVersion
+      description: Owner with recent identity confirmation, on an active environment. Erases one version's value, which the runtime-secret check then no longer searches for. The version still counts toward which of the secret's versions are recent. Refused with a conflict on secretVersion.current for the secret's current version, which a new version replaces, and on secretVersion.inUse while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names it. The version's row is kept for the revisions that name it.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: secretId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: versionId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions":
     "post":
       "operationId": "createSecretVersion"
@@ -7020,6 +7038,9 @@
         "createdAt":
           "type": "string"
           "format": "date-time"
+        tooShortToCheck:
+          type: boolean
+          description: Present, and true, only for a member who can write secrets, when the value is shorter than 12 bytes. The runtime-secret check does not search files to submit or public build arguments for such a value; it is still sealed and redacted. Absent while the value's length is not yet measured.
       "required":
         - "id"
         - "secretId"
@@ -7278,7 +7299,7 @@
           items:
             type: object
             additionalProperties: false
-            required: [id, name, image, eligible, note, changes]
+            required: [id, name, image, eligible, note, changes, olderSecretVersions]
             properties:
               changes:
                 type: array
@@ -7289,6 +7310,19 @@
               image: {type: string, maxLength: 512}
               eligible: {type: boolean}
               note: {type: string, maxLength: 300}
+              olderSecretVersions:
+                type: array
+                maxItems: 101
+                description: The secret versions a rollback draft for this application would name that are not their secret's current version, by name. A retired one has no value, so a plan made from the draft is refused until it is replaced. Found from version IDs alone; no value is opened. The runtime-secret check searches for these versions once the draft names them.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [secretId, versionId, name, retired]
+                  properties:
+                    secretId: {type: string, format: uuid}
+                    versionId: {type: string, format: uuid}
+                    name: {type: string, maxLength: 80}
+                    retired: {type: boolean}
     RollbackRelease:
       type: object
       additionalProperties: false
