@@ -45,7 +45,8 @@ func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[str
 	}
 	sleep := strconv.Itoa(int(time.Until(end).Seconds()) + 60)
 	// pg_dump's memory grows with the database's objects, so the helper gets the database's own
-	// memory limit, none when it has none, as when the tools ran inside the database container.
+	// memory and swap limits, none when it has none, as when the tools ran inside the database
+	// container.
 	database, err := e.Docker.ContainerInspect(ctx, source, client.ContainerInspectOptions{})
 	if err != nil {
 		return pgClient{}, err
@@ -53,7 +54,7 @@ func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[str
 	// The image declares its data directory a volume. A read-only tmpfs there keeps Docker from
 	// giving each helper a writable anonymous volume that removing the helper would leave behind.
 	data := mount.Mount{Type: mount.TypeTmpfs, Target: domain.PostgresMount(image), ReadOnly: true, TmpfsOptions: &mount.TmpfsOptions{SizeBytes: 1 << 20}}
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: image, User: "postgres", Cmd: []string{"sleep", sleep}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, Mounts: []mount.Mount{data}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: database.Container.HostConfig.Memory, PidsLimit: ptr(int64(32))}}})
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: image, User: "postgres", Cmd: []string{"sleep", sleep}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + source), ReadonlyRootfs: true, Mounts: []mount.Mount{data}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Resources: container.Resources{Memory: database.Container.HostConfig.Memory, MemorySwap: database.Container.HostConfig.MemorySwap, PidsLimit: ptr(int64(32))}}})
 	if err != nil {
 		return pgClient{}, err
 	}
