@@ -292,11 +292,14 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 		if wantedRemoval == uuid.Nil {
 			t.Fatal("source did not retain the cleanup event")
 		}
-		verify := func(destination *fixture, snapshot portability.Archive) {
+		// Recovery keeps the copy of the request that is further along, which is the newest
+		// checkpoint's, as captured after the preview's cleanup, whichever database is restored. The
+		// replayed removal of the old environment must leave that request as it is.
+		verify := func(destination *fixture) {
 			var requestEnvironment *uuid.UUID
 			var requestGeneration int64
 			var requestHead string
-			for _, row := range snapshot.Tables["preview_requests"] {
+			for _, row := range after.Tables["preview_requests"] {
 				var id uuid.UUID
 				_ = json.Unmarshal(row["id"], &id)
 				if id == request {
@@ -327,7 +330,7 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 			}
 			if requestEnvironment != nil && *requestEnvironment != previewEnv {
 				replacementSecrets := 0
-				for _, row := range snapshot.Tables["secrets"] {
+				for _, row := range after.Tables["secrets"] {
 					var owner uuid.UUID
 					_ = json.Unmarshal(row["environment_id"], &owner)
 					if owner == *requestEnvironment {
@@ -371,8 +374,8 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 		}
 		verifyRecoveryOrdering(t, f, ws, before, after, later, append(inputs, previewHost), &plans, time.Time{}, time.Time{}, 0, 0, recoveryOrderingExtra{
 			Deliveries: earlier,
-			Verify: func(destination *fixture, snapshot portability.Archive, exports []string) {
-				verify(destination, snapshot)
+			Verify: func(destination *fixture, _ portability.Archive, exports []string) {
+				verify(destination)
 				// A fresh inspection is distinct from retrying the original state hash.
 				input := execution.RecoveryImport{WorkspaceID: ws, OwnerID: destination.owner, HostExports: exports}
 				preview, err := destination.execution.RecoverCrossHost(ctx, input)
@@ -384,7 +387,7 @@ func preparePreviewRemovalRecovery(t *testing.T, f *fixture, b *browser, ws uuid
 				if err != nil || !applied.Applied {
 					t.Fatal("fresh recovery after preview cleanup", err)
 				}
-				verify(destination, snapshot)
+				verify(destination)
 			},
 		})
 		held.Store(false)
