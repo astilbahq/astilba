@@ -49,20 +49,20 @@ Starts management and the dashboard locally. The API uses port - 1.
 --reset deletes this checkout's local data (and the VM it created) before starting.
 --wipe deletes it and exits.
 Go changes rebuild and restart management and the agent unless --no-watch.
-Requires Node 24.18.1, the pinned pnpm and Go 1.27.4. See docs/local-development.md.`);
+Requires Node 24.22.3, the pinned pnpm and Go 1.27.4. See docs/local-development.md.`);
   process.exit(0);
 }
 const { packageManager } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 );
 if (
-  process.versions.node !== "24.18.1" ||
+  process.versions.node !== "24.22.3" ||
   !process.env.npm_execpath ||
   !process.env.npm_config_user_agent?.startsWith(
     `${packageManager.replace("@", "/")} `,
   )
 )
-  throw new Error(`Run pnpm dev with Node 24.18.1 and ${packageManager}`);
+  throw new Error(`Run pnpm dev with Node 24.22.3 and ${packageManager}`);
 const stack = values.vm !== undefined;
 // The full stack also uses port - 2 for routes.
 const lowest = stack ? 1027 : 1025;
