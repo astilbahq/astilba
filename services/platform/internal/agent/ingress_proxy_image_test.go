@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/pkg/stdcopy"
@@ -238,6 +239,84 @@ func TestUnpullableProxyImageKeepsTheRunningProxy(t *testing.T) {
 				t.Fatalf("recovery from an unrecorded proxy settled or changed the routes: pending %v, %d publishes", after.Pending, published)
 			}
 		})
+	}
+}
+
+// A release whose candidate couldn't be routed because the host can't pull the proxy image
+// still serves its previous routes. Its abort must fail the release as the candidate's
+// publish did, without republishing those routes, which would only fail the same way and
+// leave the release needing attention.
+func TestReleaseOnAnUnpullableProxyImageFails(t *testing.T) {
+	const refusal = "toomanyrequests: You have reached your pull rate limit"
+	j, old := testVisualJournal(t)
+	app, route := uuid.New(), uuid.New()
+	image := "registry.example/app:v1"
+	old.Specification.Applications = []domain.Application{{ID: app, Name: "App", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}
+	old.Specification.Routes = []domain.Route{{ID: route, TargetID: app, Protocol: "http", Domain: "app.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}
+	old.Instances = map[string]uuid.UUID{app.String(): uuid.New()}
+	old = old.WithHash()
+	candidate := old
+	candidate.ID, candidate.Release = uuid.New(), &deployment.Release{ApplicationID: app, PreviousPlanID: old.ID, Options: deployment.DefaultReleaseOptions()}
+	candidate.Instances = map[string]uuid.UUID{app.String(): uuid.New()}
+	candidate = candidate.WithHash()
+
+	// The host serves the old revision's routes, which a reviewed host change opened.
+	opened := old
+	opened.HostChanges = true
+	current, err := (&Engine{}).candidateRoutes(routeSnapshot{}, opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &ingressDaemon{server: old.ServerID, s: current, image: olderProxyImage, refusal: refusal}
+	e := &Engine{Journal: j, Docker: d.serve(t)}
+	if err = e.rememberProxy(t.Context(), &current); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := renderSnapshot(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = atomicRouteFile(e.routePath(), raw); err != nil {
+		t.Fatal(err)
+	}
+	if err = j.saveRouting(routeState{Current: current}); err != nil {
+		t.Fatal(err)
+	}
+	c := visualCommand(candidate, "deploy", 1)
+	if _, err = j.Accept(c); err != nil {
+		t.Fatal(err)
+	}
+	// The candidate is ready and the release is about to switch traffic to it.
+	if err = j.saveRelease(releaseState{OperationID: c.Id, Plan: candidate, Old: unitState{Plan: old}, Phase: "switching"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = e.executeRelease(t.Context(), c, deployment.Payload{Action: "deploy", Plan: candidate}, Record{}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := j.Record(c.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "This host could not pull the ingress proxy image " + deployment.ProxyImage + ": "
+	if record.Report.State != "failed" || !strings.HasPrefix(record.Report.Note, want) || !strings.Contains(record.Report.Note, refusal) || !strings.Contains(record.Report.Note, "The candidate was not routed; previous routing was kept.") {
+		t.Fatalf("the release ended %s: %q", record.Report.State, record.Report.Note)
+	}
+	if len(d.changes) > 0 {
+		t.Fatalf("the agent changed the running proxy: %q", d.changes)
+	}
+	if d.pulls != 2 {
+		t.Fatalf("the agent pulled the proxy image %d times, want once for the candidate and once to restore its previous routes", d.pulls)
+	}
+	state, err := j.routing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Pending || state.Current.Revision != current.Revision || state.Current.ProxyHash != current.ProxyHash {
+		t.Fatal("the release changed the routes the host records")
+	}
+	if s, err := j.release(old.UnitID); err != nil || s.Phase != "aborted" {
+		t.Fatalf("the release is %q: %v", s.Phase, err)
 	}
 }
 

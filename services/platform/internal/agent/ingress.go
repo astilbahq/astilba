@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -190,6 +191,41 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 		return err
 	}
 	return e.attemptRoutes(ctx, state, next, drift, p.UnitID.String(), stableProxy)
+}
+
+// routesServe says whether the host already serves p's routes as publishing them would:
+// its settled routes, which the running proxy serves as the journal records, would render
+// the same route file and proxy if p were published, but for the route revision. It changes
+// nothing, and a pending attempt or drift is never taken as serving.
+func (e *Engine) routesServe(ctx context.Context, p deployment.Plan) (bool, error) {
+	state, err := e.Journal.routing()
+	if err != nil || state.Pending {
+		return false, err
+	}
+	if drift, err := e.ingressDrift(ctx, state); err != nil || drift {
+		return false, err
+	}
+	next, err := e.candidateRoutes(state.Current, p)
+	if err != nil {
+		// Publishing p would fail the same way.
+		return false, nil
+	}
+	next.Revision = state.Current.Revision
+	want, err := renderSnapshot(next)
+	if err != nil {
+		return false, err
+	}
+	have, err := renderSnapshot(state.Current)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(want, have) || !slices.Equal(next.Ports, state.Current.Ports) || !slices.Equal(proxyArgs(next), proxyArgs(state.Current)) || proxyWanted(next) != proxyWanted(state.Current) || next.ManagedEgress != state.Current.ManagedEgress {
+		return false, nil
+	}
+	if len(state.Current.Ports) == 0 {
+		return true, nil
+	}
+	return e.verifyRoutes(ctx, state.Current) == nil, nil
 }
 
 // candidateRoutes is current with p's routes in place of its unit's, checked against the

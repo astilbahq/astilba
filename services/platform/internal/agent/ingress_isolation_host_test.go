@@ -299,6 +299,13 @@ func TestNativeUnpullableProxyImageKeepsServing(t *testing.T) {
 	if got, err := h.f.request(proxyName, next.domain); err == nil {
 		t.Fatalf("the failed publish's route answered with %q", got)
 	}
+	// A release abort tells that the steady routes still serve, so it leaves them alone.
+	if serving, err := h.e.routesServe(t.Context(), h.plan(steady, steady.set().Routes)); err != nil || !serving {
+		t.Fatalf("the steady routes are not taken as serving: %v", err)
+	}
+	if serving, err := h.e.routesServe(t.Context(), h.plan(next, next.set().Routes)); err != nil || serving {
+		t.Fatalf("routes the host doesn't serve are taken as serving: %v", err)
+	}
 
 	// Once the host can pull the image, the environment publishes.
 	h.e.ingressImage = ""
