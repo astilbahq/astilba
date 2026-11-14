@@ -33,7 +33,7 @@ func TestRecoveryCodeConfirmationIsGenerationBoundAndDoesNotReauthenticate(t *te
 		t.Fatal(err)
 	}
 	var codes api.RecoveryCodes
-	owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+	owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": f.password}}, 200, &codes)
 	owner.csrf = codes.Session.CsrfToken
 	if codes.Generation == nil || codes.Session.User.RecoveryCodesSaved {
 		t.Fatal("new codes have no generation or are already marked saved")
@@ -57,10 +57,11 @@ func TestRecoveryCodeConfirmationIsGenerationBoundAndDoesNotReauthenticate(t *te
 	if err != nil || after.AuthVersion != before.AuthVersion || !bytes.Equal(after.TotpSecret, before.TotpSecret) || after.PasswordHash != before.PasswordHash {
 		t.Fatal("saving confirmation changed credentials", err)
 	}
-	owner.call("POST", "/api/v1/auth/mfa/recovery-codes", nil, 403, nil)
 	f.auth.Now = time.Now
 	var replacement api.RecoveryCodes
-	owner.call("POST", "/api/v1/auth/mfa/recovery-codes", nil, 200, &replacement)
+	// The authenticator's current step went on enrolment, so the next one confirms identity.
+	next := codeAt(t, enrollment.Secret, time.Now().Add(30*time.Second))
+	owner.call("POST", "/api/v1/auth/mfa/recovery-codes", map[string]any{"current": map[string]string{"code": next}}, 200, &replacement)
 	owner.csrf = replacement.Session.CsrfToken
 	if replacement.Generation == nil || *replacement.Generation == *codes.Generation || replacement.Session.User.RecoveryCodesSaved {
 		t.Fatal("replacement did not reset confirmation and generation")
@@ -74,7 +75,7 @@ func TestRecoveryCodeConfirmationIsGenerationBoundAndDoesNotReauthenticate(t *te
 		t.Fatal("old generation marked replacement saved")
 	}
 	owner.call("POST", path, map[string]string{"generation": replacement.Generation.String()}, 200, &saved)
-	owner.call("POST", "/api/v1/auth/mfa/disable", nil, 200, &saved)
+	owner.call("POST", "/api/v1/auth/mfa/disable", map[string]any{"current": map[string]string{"code": replacement.Codes[0]}}, 200, &saved)
 	owner.csrf = saved.CsrfToken
 	cleared, err := f.st.Queries.AccountByID(ctx, f.owner)
 	if err != nil || cleared.RecoveryCodesGeneration != nil || !cleared.RecoveryCodesSaved {
@@ -92,7 +93,7 @@ func TestDisableMFARefusesAccountWithoutMFA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner.call("POST", "/api/v1/auth/mfa/disable", nil, 409, nil)
+	owner.call("POST", "/api/v1/auth/mfa/disable", map[string]any{"current": map[string]string{"password": f.password}}, 409, nil)
 	after, err := f.st.Queries.AccountByID(ctx, f.owner)
 	if err != nil || after.AuthVersion != before.AuthVersion {
 		t.Fatal("refused disable revoked the account's sessions", err)
@@ -112,7 +113,7 @@ func TestRecoveryConfirmationMigrationPreservesExistingCredentials(t *testing.T)
 		t.Fatal(err)
 	}
 	var codes api.RecoveryCodes
-	owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+	owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": f.password}}, 200, &codes)
 	conn, err := sql.Open("pgx", f.st.Pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)

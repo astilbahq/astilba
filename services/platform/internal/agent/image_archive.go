@@ -121,11 +121,16 @@ func (r *imageLoadRefused) pulled(image string) string {
 }
 
 func (r *imageLoadRefused) render(subject, verb, retry string) string {
-	note := subject + " was not " + verb + ": " + r.why + "."
+	note := r.cause(subject, verb)
 	if r.fix != "" {
 		note += " " + strings.ReplaceAll(r.fix, "{retry}", retry)
 	}
 	return note + " Existing workloads are unchanged."
+}
+
+// cause is the refusal's note up to why, without saying what to do or that nothing changed.
+func (r *imageLoadRefused) cause(subject, verb string) string {
+	return subject + " was not " + verb + ": " + r.why + "."
 }
 
 // refusal is the note for exceeding the limit in over, naming that limit and who can change it.

@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func changePassword(t *testing.T, ctx context.Context, f *fixture) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.auth.ChangePassword(ctx, browserPrincipal(t, f.st, account, false), "replacement password here")
+	_, err = f.auth.ChangePassword(ctx, browserPrincipal(t, f.st, account, false), auth.Credential{Password: f.password}, "replacement password here")
 	return err
 }
 
@@ -68,6 +69,8 @@ func changePassword(t *testing.T, ctx context.Context, f *fixture) error {
 // end that session while it waited must stop it committing.
 func TestBrowserWriteWaitingBehindWorkspaceLock(t *testing.T) {
 	ctx := context.Background()
+	// The authenticator of the attacker's session's account, when the case turns MFA on.
+	var secret string
 	revocations := []struct {
 		name   string
 		mfa    bool
@@ -83,7 +86,7 @@ func TestBrowserWriteWaitingBehindWorkspaceLock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = f.auth.DisableMFA(ctx, browserPrincipal(t, f.st, account, true)); err != nil {
+			if _, err = f.auth.DisableMFA(ctx, browserPrincipal(t, f.st, account, true), auth.Credential{Code: codeAt(t, secret, time.Now().Add(30*time.Second))}); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -107,7 +110,9 @@ func TestBrowserWriteWaitingBehindWorkspaceLock(t *testing.T) {
 			attacker := f.browser(t)
 			ws := attacker.login("owner@example.test", f.password).Workspaces[0].Id
 			if revocation.mfa {
-				enableMFA(t, attacker)
+				// Turning it off with an authenticator code, not a recovery code, which would
+				// end the sessions by itself.
+				secret, _ = mfaOwner(t, f, attacker)
 			}
 			audits := func() (n int) {
 				t.Helper()
@@ -203,7 +208,7 @@ func TestCredentialChangeWaitingBehindAccountLock(t *testing.T) {
 	if _, err = held.Exec(ctx, "SELECT id FROM accounts WHERE id=$1 FOR UPDATE", f.owner); err != nil {
 		t.Fatal(err)
 	}
-	change := attacker.send("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
+	change := attacker.send("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": f.password}})
 	awaitLockWait(t, f, "name: LockAccount")
 	attacker.call("POST", "/api/v1/auth/logout", nil, 204, nil)
 	if err = held.Rollback(ctx); err != nil {

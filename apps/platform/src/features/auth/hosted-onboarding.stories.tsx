@@ -37,8 +37,15 @@ const codes = {
   ),
   session: enrolled,
 };
-const regenerate = http.post("/api/v1/auth/mfa/recovery-codes", () =>
-  HttpResponse.json(codes),
+// What the workshop server was sent with a change to how the person signs in, reset before
+// each story.
+let sent: unknown[] = [];
+const regenerate = http.post(
+  "/api/v1/auth/mfa/recovery-codes",
+  async ({ request }) => {
+    sent.push(await request.json());
+    return HttpResponse.json(codes);
+  },
 );
 const enrollmentData = {
   secret: "JBSWY3DPEHPK3PXP",
@@ -59,9 +66,36 @@ const meta = {
   ],
   args: { workspaceId: hostedWorkspaceId },
   parameters: hostedScenario(unprotected, subscription(), enrollment),
+  beforeEach: () => {
+    sent = [];
+  },
 } satisfies Meta<typeof HostedOnboarding>;
 export default meta;
 type Story = StoryObj<typeof meta>;
+
+// Each change asks for the current credential in the shared dialog. Native names keep this
+// working in every workshop language.
+async function confirmCredential(canvasElement: HTMLElement) {
+  const body = within(canvasElement.ownerDocument.body);
+  const dialog = await body.findByRole("alertdialog");
+  const password = dialog.querySelector<HTMLInputElement>(
+    'input[name="password"]',
+  );
+  if (password) {
+    await waitFor(() => expect(password).toHaveFocus());
+    await userEvent.type(password, "correct horse battery staple");
+  } else {
+    await waitFor(() =>
+      expect(within(dialog).getAllByRole("textbox")[0]).toHaveFocus(),
+    );
+    await userEvent.keyboard("123456");
+  }
+  await userEvent.click(
+    dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!,
+  );
+  // The page is hidden from assistive technology until the confirmation has closed.
+  await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
+}
 export const Authenticator: Story = {};
 export const ScanAuthenticator: Story = {
   play: async ({ canvasElement }) => {
@@ -79,17 +113,21 @@ export const InvalidAuthenticatorCode: Story = {
     http.post("/api/v1/auth/mfa/confirm", () =>
       HttpResponse.json(
         {
-          code: "invalid_credentials",
+          code: "invalid_input",
           message: "Workshop response.",
           requestId: "workshop-request",
+          fields: ["code"],
         },
         { status: 400 },
       ),
     ),
   ),
+  // The new authenticator's code is wrong, not the current credential: the confirmation
+  // closes and the setup step marks its own code.
   play: async (context) => {
     await ScanAuthenticator.play!(context);
     await authenticationCode(context.canvasElement);
+    await confirmCredential(context.canvasElement);
     await waitFor(() =>
       expect(
         context.canvasElement.querySelector('[aria-invalid="true"]'),
@@ -108,9 +146,11 @@ export const SaveRecoveryCodes: Story = {
         "button",
       ),
     );
+    await confirmCredential(canvasElement);
     await waitFor(() =>
       expect(canvasElement.querySelector("li code")).toBeVisible(),
     );
+    await expect(sent).toEqual([{ current: { code: "123456" } }]);
   },
 };
 let releaseAcknowledgement: () => void;
@@ -221,70 +261,52 @@ export const ChangedRecoveryCodes: Story = {
     ).not.toBeInTheDocument();
   },
 };
-// A stale session confirms in the shared dialog, and the step it was asked from continues.
-let confirmations: unknown[] = [];
-function staleScenario(
-  session: typeof hostedMember,
-  ...handlers: ReturnType<typeof http.post>[]
-) {
-  return {
-    beforeEach: () => {
-      confirmations = [];
-    },
-    parameters: hostedScenario(
-      { ...session, recentAuth: false },
-      subscription(),
-      ...handlers,
-      http.post("/api/v1/auth/reauthenticate", async ({ request }) => {
-        confirmations.push(await request.json());
-        return HttpResponse.json({ ...session, recentAuth: true });
-      }),
-    ),
-  };
-}
-async function startStep(canvasElement: HTMLElement) {
-  const main = within(canvasElement).getByRole("main");
-  await userEvent.click(await within(main).findByRole("button"));
-  return within(canvasElement.ownerDocument.body).findByRole("alertdialog", {
-    name: "Confirm your identity",
-  });
-}
-export const AuthenticatorSetupConfirmsIdentity: Story = {
-  ...staleScenario(unprotected, enrollment),
-  play: async ({ canvasElement }) => {
-    const confirmation = await startStep(canvasElement);
-    const password = within(confirmation).getByLabelText("Password");
-    await waitFor(() => expect(password).toHaveFocus());
-    await userEvent.type(password, "correct horse battery staple");
-    await userEvent.keyboard("{Enter}");
-    // The page is hidden from assistive technology until the confirmation has closed.
-    await waitFor(() =>
-      expect(
-        within(canvasElement.ownerDocument.body).queryByRole("alertdialog"),
-      ).toBeNull(),
-    );
-    const main = within(canvasElement).getByRole("main");
-    await expect(await within(main).findByRole("group")).toBeVisible();
-    await expect(confirmations).toEqual([
-      { password: "correct horse battery staple" },
-    ]);
+// Enabling the authenticator sends its code with the current password, typed in the
+// confirmation, and the step it was asked from continues.
+let protectedNow = false;
+export const AuthenticatorSetupConfirmsCredential: Story = {
+  beforeEach: () => {
+    protectedNow = false;
   },
-};
-export const RecoveryCodesConfirmIdentity: Story = {
-  ...staleScenario(enrolled, regenerate),
-  play: async ({ canvasElement }) => {
-    const confirmation = await startStep(canvasElement);
+  parameters: (() => {
+    const parameters = hostedScenario(
+      unprotected,
+      subscription(),
+      enrollment,
+      http.post("/api/v1/auth/mfa/confirm", async ({ request }) => {
+        sent.push(await request.json());
+        protectedNow = true;
+        return HttpResponse.json(codes);
+      }),
+    );
+    // The session read again afterwards has two-factor authentication.
+    parameters.msw.handlers.session.unshift(
+      http.get("/api/v1/session", () =>
+        HttpResponse.json(protectedNow ? enrolled : unprotected),
+      ),
+    );
+    return parameters;
+  })(),
+  play: async (context) => {
+    await ScanAuthenticator.play!(context);
+    await authenticationCode(context.canvasElement);
+    await expect(
+      await within(context.canvasElement.ownerDocument.body).findByRole(
+        "alertdialog",
+      ),
+    ).toHaveAccessibleDescription(
+      "Changing how you sign in needs your current credential. Enter your current password.",
+    );
+    await confirmCredential(context.canvasElement);
     await waitFor(() =>
-      expect(within(confirmation).getAllByRole("textbox")[0]).toHaveFocus(),
+      expect(context.canvasElement.querySelector("li code")).toBeVisible(),
     );
-    await userEvent.keyboard("123456");
-    await userEvent.click(
-      within(confirmation).getByRole("button", { name: "Confirm" }),
-    );
-    await waitFor(() =>
-      expect(canvasElement.querySelector("li code")).toBeInTheDocument(),
-    );
-    await expect(confirmations).toEqual([{ code: "123456" }]);
+    await expect(sent).toEqual([
+      {
+        code: "123456",
+        current: { password: "correct horse battery staple" },
+      },
+    ]);
   },
 };
 export const Subscription: Story = {

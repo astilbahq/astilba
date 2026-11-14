@@ -1097,7 +1097,7 @@
         "content":
           "application/json":
             "schema":
-              "$ref": "#/components/schemas/Code"
+              "$ref": "#/components/schemas/MFAConfirmation"
   "/api/v1/auth/mfa/disable":
     "post":
       "operationId": "disableMFA"
@@ -1114,6 +1114,12 @@
             "application/json":
               "schema":
                 "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/CredentialConfirmation"
   "/api/v1/auth/mfa/recovery-codes":
     "post":
       "operationId": "regenerateRecoveryCodes"
@@ -1130,6 +1136,12 @@
             "application/json":
               "schema":
                 "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/CredentialConfirmation"
   /api/v1/workspaces:
     post:
       operationId: createWorkspace
@@ -6377,7 +6389,9 @@
       "required":
         - "code"
     "Reauthenticate":
-      "description": "Exactly one credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it."
+      "$ref": "#/components/schemas/Credential"
+    "Credential":
+      "description": "Exactly one current credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it."
       "type": "object"
       "additionalProperties": false
       "minProperties": 1
@@ -6402,8 +6416,33 @@
           "maxLength": 512
           "minLength": 1
           "writeOnly": true
+        "current":
+          "$ref": "#/components/schemas/Credential"
       "required":
         - "password"
+        - "current"
+    "MFAConfirmation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "code":
+          "description": "A code from the authenticator being added."
+          "type": "string"
+          "maxLength": 128
+          "minLength": 1
+        "current":
+          "$ref": "#/components/schemas/Credential"
+      "required":
+        - "code"
+        - "current"
+    "CredentialConfirmation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "current":
+          "$ref": "#/components/schemas/Credential"
+      "required":
+        - "current"
     "ResetRequest":
       "type": "object"
       "additionalProperties": false
