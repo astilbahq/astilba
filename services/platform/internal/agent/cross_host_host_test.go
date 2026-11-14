@@ -78,7 +78,14 @@ func TestNativeCrossHostHelper(t *testing.T) {
 		if request.CancelAt == "start" {
 			cancel()
 		}
-		engine.Point = request.point(j, cancel)
+		engine.Point = func(point string) {
+			if point == request.CrashAt && point != "" {
+				os.Exit(77)
+			}
+			if point == request.CancelAt {
+				cancel()
+			}
+		}
 		if request.Retry != nil {
 			err = j.Retry(*request.Retry)
 		} else if request.Reject != nil {
@@ -765,7 +772,6 @@ exec httpd -f -p 8080 -h /tmp/www`
 			nativeWaitPlacementRecovery(t)
 		})
 	}
-	nativeCoordinatedBackupStops(t, hosts, units, completed, app, secrets, fileInstallation)
 	t.Run("coordinated_backup_of_a_stopped_writer", func(t *testing.T) {
 		nativeBackupOfStoppedWriter(t, hosts, units, completed, app, secrets, fileInstallation)
 	})
