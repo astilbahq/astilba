@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { client, result, type Schema, setSession } from "../../api/client";
 import { sessionOptions } from "../../api/session";
+import { useConfirmCredential } from "../../api/step-up";
 import { useSessionRequest } from "../../api/use-session-request";
 import { Button } from "../../components/button";
 import { Anchor, LinkButton } from "../../components/link";
@@ -23,9 +24,11 @@ export function AuthenticatorSetup({
 }) {
   const { t } = useTranslation("auth");
   const queries = useQueryClient();
-  const begin = useAction({ recentAuth: true });
-  const request = useSessionRequest({ renewal: true });
-  const confirm = useAction({ recentAuth: true });
+  const begin = useAction();
+  // The dialog holds signed-out reads while the change renews the session, not while it waits.
+  const request = useSessionRequest();
+  const confirm = useAction();
+  const confirmCredential = useConfirmCredential();
   const validation = useAuthValidation();
   const [enrollment, setEnrollment] = useState<Schema["MFAEnrollment"]>();
   const startEnrollment = () => {
@@ -73,13 +76,18 @@ export function AuthenticatorSetup({
               confirm.run(() =>
                 request(
                   (signal) =>
-                    result(
-                      client.POST("/api/v1/auth/mfa/confirm", {
-                        signal,
-                        body: { code: text(data, "code") },
-                      }),
+                    confirmCredential(
+                      (current, signal) =>
+                        result(
+                          client.POST("/api/v1/auth/mfa/confirm", {
+                            signal,
+                            body: { code: text(data, "code"), current },
+                          }),
+                        ),
+                      { signal },
                     ),
                   (next) => {
+                    if (!next) return;
                     queries.setQueryData(
                       sessionOptions.queryKey,
                       setSession(next.session),

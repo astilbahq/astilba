@@ -239,7 +239,7 @@ func TestStaleRequestsLeaveRenewedCookieAlone(t *testing.T) {
 	changer, _, _ := signedIn()
 	var renewed api.Session
 	replacement := "replacement password here"
-	changer.call("POST", "/api/v1/auth/password", map[string]string{"password": replacement}, 200, &renewed)
+	changer.call("POST", "/api/v1/auth/password", map[string]any{"password": replacement, "current": map[string]string{"password": f.password}}, 200, &renewed)
 	changer.csrf = renewed.CsrfToken
 	renewedCookie := changer.client.Jar.Cookies(target)[0].Value
 

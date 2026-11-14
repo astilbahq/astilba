@@ -455,8 +455,11 @@ test("hosted signup and email verification fit expanded RTL at 320px", async ({
       await expect(page.getByRole("status")).toBeVisible();
     if (id.endsWith("--scan-authenticator"))
       await expect(page.getByRole("group")).toBeVisible();
-    if (id.endsWith("--save-recovery-codes"))
+    if (id.endsWith("--save-recovery-codes")) {
       await expect(page.locator("li code")).toHaveCount(10);
+      // The credential confirmation that asked for the codes has finished closing.
+      await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    }
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
