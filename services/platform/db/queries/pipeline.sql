@@ -112,3 +112,6 @@ SELECT review FROM (
       AND r.configuration->>'commit' = @commit::text AND r.configuration#>>'{connection,id}' = @connection_id::text AND r.configuration->>'branch' = @branch::text
       AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f) = @files::jsonb
 ) reviews WHERE review > 0 ORDER BY created_at DESC;
+
+-- name: RunnerCapabilities :one
+SELECT capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id;

@@ -46,12 +46,12 @@ const railpackUpgradeRequired = "runner.railpackUpgradeRequired"
 
 // runnerRailpackRefusal is the refusal of a runner that runs other Railpack pins than need,
 // or nil when it runs them or need is nil, as for a Dockerfile build.
-func runnerRailpackRefusal(ctx context.Context, tx pgx.Tx, id uuid.UUID, need *pipeline.RailpackInputs) (*domain.Error, error) {
+func runnerRailpackRefusal(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, need *pipeline.RailpackInputs) (*domain.Error, error) {
 	if need == nil {
 		return nil, nil
 	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", id).Scan(&raw); err != nil {
+	raw, err := db.New(tx).RunnerCapabilities(ctx, db.RunnerCapabilitiesParams{WorkspaceID: ws, ID: id})
+	if err != nil {
 		return nil, err
 	}
 	var c api.AgentCapabilities

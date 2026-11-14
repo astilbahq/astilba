@@ -476,7 +476,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		cfg := r.Config.Build
 		// The policy's runner was checked when it was saved; a management upgrade since can
 		// have moved the Railpack pins it needs.
-		if refusal, err := runnerRailpackRefusal(ctx, tx, p.Server, cfg.RailpackPins()); err != nil {
+		if refusal, err := runnerRailpackRefusal(ctx, tx, p.Workspace, p.Server, cfg.RailpackPins()); err != nil {
 			return err
 		} else if refusal != nil {
 			if allocation != nil {

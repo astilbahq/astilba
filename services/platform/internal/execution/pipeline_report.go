@@ -138,7 +138,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		if p.Railpack == nil {
 			return false, errors.New("invalid pipeline payload")
 		}
-		refusal, err := runnerRailpackRefusal(ctx, tx, c.ServerId, p.Railpack)
+		refusal, err := runnerRailpackRefusal(ctx, tx, ws, c.ServerId, p.Railpack)
 		if err != nil {
 			return false, err
 		}
