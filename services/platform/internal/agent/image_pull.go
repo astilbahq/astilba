@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sync"
 
@@ -173,8 +174,11 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 func planFromSources(ctx context.Context, sources []registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit, loading bool, checked *checkedManifests) (*registryPlan, registryImage, error) {
 	var err error
 	for _, source := range sources {
-		var answered *errcode.ErrorResponse
-		if plainHTTPFallback(source) && errors.As(err, &answered) {
+		// Only a failure to get any answer over HTTPS, such as a refused connection or a TLS
+		// error, lets the agent ask in the clear; any answer, a missing manifest included, ends
+		// the search.
+		var transport *url.Error
+		if plainHTTPFallback(source) && !errors.As(err, &transport) {
 			break
 		}
 		var plan *registryPlan

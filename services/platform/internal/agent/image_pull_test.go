@@ -658,6 +658,28 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 	if _, _, err = planFromSources(context.Background(), []registryImage{answered, image}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err == nil || registry.count(root) != 0 {
 		t.Fatal("asked again in the clear after the registry answered over HTTPS", err)
 	}
+	// Nor after it answered that it lacks the image, or one of its index's entries.
+	layer := gzipOf(t, tarOf(t, testFile{"app", 10}))
+	chosen, other := registry.image(layer), registry.imageFor("arm64", layer)
+	index := registry.index(registry.entry(chosen, "linux/amd64", ""), registry.entry(other, "linux/arm64", ""))
+	partial := newTestRegistry()
+	for d, m := range registry.manifests {
+		if d != other {
+			partial.manifests[d] = m
+		}
+	}
+	partial.blobs = registry.blobs
+	lacking := httptest.NewTLSServer(partial)
+	defer lacking.Close()
+	https, err := newRegistryImage(strings.TrimPrefix(lacking.URL, "https://"), "fixture/app", true, false, credential, http.ProxyFromEnvironment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{index, sha([]byte("absent"))} {
+		if _, _, err = planFromSources(context.Background(), []registryImage{https, image}, digest.Digest(d), amd64Server, pullTestLimit, true, nil); err == nil || registry.count(d) != 0 {
+			t.Fatal("asked again in the clear after the registry said it lacks content", err)
+		}
+	}
 	closed := httptest.NewTLSServer(http.NotFoundHandler())
 	unreachable, err := newRegistryImage(strings.TrimPrefix(closed.URL, "https://"), "fixture/app", true, false, credential, http.ProxyFromEnvironment)
 	closed.Close()
