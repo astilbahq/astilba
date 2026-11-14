@@ -45,24 +45,21 @@ func revokedEvidence(host deployment.RecoveryEvidence) deployment.RecoveryEviden
 	return deployment.RecoveryEvidence{Version: 1, ServerID: host.ServerID, MachineID: host.MachineID, Units: map[string]string{}, Schedules: map[string]int64{}, Roots: []deployment.RecoveryRoot{}, Networks: []hostnetwork.Manifest{}}
 }
 
-// settleRevokedParticipants ends a recovered root's work on its revoked participants as revoking
-// them does, once their frames are restored, so the coordinator carries on with the remaining hosts
-// under the same rules as after any revocation.
-func (s *Service) settleRevokedParticipants(ctx context.Context, tx pgx.Tx, ws uuid.UUID, roots map[uuid.UUID]recoveringRoot) error {
-	settled := map[uuid.UUID]bool{}
-	for _, root := range roots {
-		revoked, err := revokedParticipants(ctx, tx, ws, recoveredUnits(root))
-		if err != nil {
-			return err
+// settleRecoveredRevocations does in recovery's transaction what revoking a server does in its
+// own, for every server the merge carries as revoked, once recovery has merged and restored what it
+// brings back. Recovery keeps a revocation whichever side knew of it, but the rows it selected can
+// be from before that revocation, or from a renewal it overrides. A revoked preview host's previews
+// would then keep their slots and secret copies with nothing able to release them, and a recovered
+// root's revoked participants would still be waited on. Settling a server whose rows already show
+// its revocation only does again what revoking it again would: it advances the generations of its
+// domain and of the preview policies still bound to it.
+func (s *Service) settleRecoveredRevocations(ctx context.Context, tx pgx.Tx, ws uuid.UUID, revoked map[uuid.UUID]bool) error {
+	for server, settle := range revoked {
+		if !settle {
+			continue
 		}
-		for server := range revoked {
-			if settled[server] {
-				continue
-			}
-			settled[server] = true
-			if err = s.settleRevokedWork(ctx, tx, ws, server); err != nil {
-				return err
-			}
+		if err := s.settleRevokedWork(ctx, tx, ws, server); err != nil {
+			return err
 		}
 	}
 	return nil
