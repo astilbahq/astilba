@@ -651,6 +651,57 @@ func (q *Queries) RouteClaimOwner(ctx context.Context, arg RouteClaimOwnerParams
 	return environment_id, err
 }
 
+const secretVersionStandings = `-- name: SecretVersionStandings :many
+SELECT v.id,v.secret_id,s.name,(v.erased_at IS NOT NULL)::boolean AS erased,(v.id = (
+  SELECT c.id FROM secret_versions c WHERE c.workspace_id = v.workspace_id AND c.secret_id = v.secret_id AND c.erased_at IS NULL
+  ORDER BY c.created_at DESC,c.id DESC LIMIT 1
+))::boolean AS current
+FROM secret_versions v JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id = ANY($3::uuid[])
+`
+
+type SecretVersionStandingsParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Ids           []uuid.UUID `json:"ids"`
+}
+
+type SecretVersionStandingsRow struct {
+	ID       uuid.UUID `json:"id"`
+	SecretID uuid.UUID `json:"secret_id"`
+	Name     string    `json:"name"`
+	Erased   bool      `json:"erased"`
+	Current  bool      `json:"current"`
+}
+
+// Where each of the environment's versions in ids stands: its secret, and whether it is that
+// secret's current version or was erased. Nothing is opened.
+func (q *Queries) SecretVersionStandings(ctx context.Context, arg SecretVersionStandingsParams) ([]SecretVersionStandingsRow, error) {
+	rows, err := q.db.Query(ctx, secretVersionStandings, arg.WorkspaceID, arg.EnvironmentID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SecretVersionStandingsRow{}
+	for rows.Next() {
+		var i SecretVersionStandingsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SecretID,
+			&i.Name,
+			&i.Erased,
+			&i.Current,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setEnvironmentPurge = `-- name: SetEnvironmentPurge :exec
 UPDATE environments SET state = $1,purged_at = now(),purged_by = $2::uuid,
  purge_operation_id = $3,purged_without_host = $4

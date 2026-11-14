@@ -7274,7 +7274,7 @@
           items:
             type: object
             additionalProperties: false
-            required: [id, name, image, eligible, note, changes]
+            required: [id, name, image, eligible, note, changes, olderSecretVersions]
             properties:
               changes:
                 type: array
@@ -7285,6 +7285,19 @@
               image: {type: string, maxLength: 512}
               eligible: {type: boolean}
               note: {type: string, maxLength: 300}
+              olderSecretVersions:
+                type: array
+                maxItems: 101
+                description: The secret versions a rollback draft for this application would name that are not their secret's current version, by name. A retired one has no value, so a plan made from the draft is refused until it is replaced. Found from version IDs alone; no value is opened. The runtime-secret check searches for these versions once the draft names them.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [secretId, versionId, name, retired]
+                  properties:
+                    secretId: {type: string, format: uuid}
+                    versionId: {type: string, format: uuid}
+                    name: {type: string, maxLength: 80}
+                    retired: {type: boolean}
     RollbackRelease:
       type: object
       additionalProperties: false

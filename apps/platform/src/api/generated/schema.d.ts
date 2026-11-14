@@ -3607,6 +3607,15 @@ export interface components {
                 image: string;
                 eligible: boolean;
                 note: string;
+                /** @description The secret versions a rollback draft for this application would name that are not their secret's current version, by name. A retired one has no value, so a plan made from the draft is refused until it is replaced. Found from version IDs alone; no value is opened. The runtime-secret check searches for these versions once the draft names them. */
+                olderSecretVersions: {
+                    /** Format: uuid */
+                    secretId: string;
+                    /** Format: uuid */
+                    versionId: string;
+                    name: string;
+                    retired: boolean;
+                }[];
             }[];
         };
         RollbackRelease: {

@@ -292,6 +292,25 @@ export function Deployments({
                   {app.changes.length > 0 && (
                     <p>Changed settings: {app.changes.join(", ")}.</p>
                   )}
+                  {app.olderSecretVersions.length > 0 && (
+                    <div>
+                      <p>
+                        Rolling back returns these secrets to an earlier
+                        version. Files you submit and public build arguments are
+                        checked against them again once the draft uses them.
+                      </p>
+                      <ul>
+                        {app.olderSecretVersions.map((secret) => (
+                          <li key={secret.versionId}>
+                            <bdi>{secret.name}</bdi>{" "}
+                            <code className={s.code}>{secret.versionId}</code>
+                            {secret.retired &&
+                              " (retired: its value is erased, so replace it before planning)"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {write && (
                     <Button
                       type="button"
