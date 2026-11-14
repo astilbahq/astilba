@@ -22,6 +22,14 @@ SELECT r.id,r.workspace_id FROM preview_requests r JOIN due ON due.id=r.id
 WHERE r.state<>'deleted' AND r.next_check_at<=now()
 ORDER BY due.turn,due.next_check_at,due.id LIMIT 20 FOR UPDATE OF r SKIP LOCKED;
 
+-- name: PreviewHost :one
+-- The host a request's preview runs on: where allocation placed its environment's unit. That was
+-- its policy's host then, and a policy can't change host while it has an allocated preview, but
+-- offline recovery can keep a copy of the policy naming a host the policy has left since. A request
+-- without an environment has nothing on any host and answers to its policy's host.
+-- RequestPolicyPreviewCleanup picks the same host for each request.
+SELECT COALESCE((SELECT u.server_id FROM deployment_units u WHERE u.workspace_id = @workspace_id AND u.environment_id = sqlc.narg(environment_id)::uuid AND u.primary_unit),@policy_host::uuid)::uuid AS server_id;
+
 -- name: ReleaseRevokedHostPreviews :many
 -- Once a host is revoked nothing it says can be accepted, so the previews it runs could never be
 -- confirmed removed and would hold their slots for good. Only allocated previews hold a slot. A

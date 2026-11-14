@@ -156,6 +156,28 @@ func (q *Queries) PreviewForkApproval(ctx context.Context, arg PreviewForkApprov
 	return i, err
 }
 
+const previewHost = `-- name: PreviewHost :one
+SELECT COALESCE((SELECT u.server_id FROM deployment_units u WHERE u.workspace_id = $1 AND u.environment_id = $2::uuid AND u.primary_unit),$3::uuid)::uuid AS server_id
+`
+
+type PreviewHostParams struct {
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID *uuid.UUID `json:"environment_id"`
+	PolicyHost    uuid.UUID  `json:"policy_host"`
+}
+
+// The host a request's preview runs on: where allocation placed its environment's unit. That was
+// its policy's host then, and a policy can't change host while it has an allocated preview, but
+// offline recovery can keep a copy of the policy naming a host the policy has left since. A request
+// without an environment has nothing on any host and answers to its policy's host.
+// RequestPolicyPreviewCleanup picks the same host for each request.
+func (q *Queries) PreviewHost(ctx context.Context, arg PreviewHostParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, previewHost, arg.WorkspaceID, arg.EnvironmentID, arg.PolicyHost)
+	var server_id uuid.UUID
+	err := row.Scan(&server_id)
+	return server_id, err
+}
+
 const releaseRevokedHostPreviews = `-- name: ReleaseRevokedHostPreviews :many
 UPDATE preview_requests r SET state='deleted',note = $1,released_by_revocation=true,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day'
 WHERE r.workspace_id = $2 AND r.environment_id IS NOT NULL AND r.state<>'deleted'

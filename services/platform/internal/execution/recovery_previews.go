@@ -122,10 +122,10 @@ func recoveryPreviewProgress(row portability.Row) ([2]int64, error) {
 // settleRecoveredPreviewPolicies keeps, of a preview policy's two copies, the one naming the host its
 // open previews run on. Allocation places a preview on its policy's host, and a policy can't change
 // host while it has one, but the database's copy can be from before the owner moved the policy to
-// another host and previews opened there. Keeping it would send those previews' cleanup to a host
-// they don't run on, which can never confirm it, so they and the policy would be stuck. Where the
-// open previews don't decide it, the copy with the higher generation, which advances on every save,
-// wins, and on a tie the database's copy stands.
+// another host and previews opened there. Keeping it would open new previews on the host the owner
+// moved the policy away from, beside the ones on its new host. Where the open previews don't decide
+// it, the copy with the higher generation, which advances on every save, wins, and on a tie the
+// database's copy stands.
 func settleRecoveredPreviewPolicies(a portability.Archive, known, incoming recoveryRows) error {
 	placed := map[uuid.UUID][]uuid.UUID{}
 	for _, row := range a.Tables["deployment_units"] {
