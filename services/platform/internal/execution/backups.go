@@ -313,7 +313,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		}
 		raw, _ := stablejson.Marshal(b)
 		payload := jsontext.Value(raw)
-		c := api.ExecutionCommand{Id: uuid.New(), ServerId: v.ServerID, EnvironmentId: env, Generation: generation, PlanHash: b.Digest(), Kind: "backup", Action: "inspect", ResourceId: id, Deadline: time.Now().Add(30 * time.Minute), Backup: &payload}
+		c := api.ExecutionCommand{Id: uuid.New(), ServerId: v.ServerID, EnvironmentId: env, Generation: generation, PlanHash: b.Digest(), Kind: "backup", Action: "inspect", ResourceId: id, Deadline: time.Now().Add(b.Lifetime()), Backup: &payload}
 		if v.GeneralSchedule() {
 			c.Kind = "schedule"
 		}
