@@ -17,7 +17,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls, railpack bool) (bool, error) {
+// runnerEligible says whether a runner can take a build, and whether it is online. A
+// Railpack build names the pins it needs, which the runner must advertise exactly.
+func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls bool, railpack *pipeline.RailpackInputs) (bool, error) {
 	var role string
 	var raw []byte
 	var online bool
@@ -32,12 +34,48 @@ func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architectu
 	if controls && (c.BuildControls == nil || !*c.BuildControls) {
 		return false, domain.Invalid("runner.buildControlsUpgradeRequired")
 	}
-	if railpack && (c.RailpackVersion == nil || *c.RailpackVersion != pipeline.RailpackVersion) {
-		return false, domain.Invalid("runner.railpackUpgradeRequired")
+	if railpack != nil {
+		if refusal := railpackRunner(c, *railpack); refusal != nil {
+			return false, refusal
+		}
 	}
 	return online, nil
 }
-func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls, railpack bool) (uuid.UUID, error) {
+
+const railpackUpgradeRequired = "runner.railpackUpgradeRequired"
+
+// runnerRailpackRefusal is the refusal of a runner that runs other Railpack pins than need,
+// or nil when it runs them or need is nil, as for a Dockerfile build.
+func runnerRailpackRefusal(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, need *pipeline.RailpackInputs) (*domain.Error, error) {
+	if need == nil {
+		return nil, nil
+	}
+	raw, err := db.New(tx).RunnerCapabilities(ctx, db.RunnerCapabilitiesParams{WorkspaceID: ws, ID: id})
+	if err != nil {
+		return nil, err
+	}
+	var c api.AgentCapabilities
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return nil, err
+	}
+	return railpackRunner(c, *need), nil
+}
+
+// railpackRunner refuses a runner whose Railpack pins differ from those a build needs. The
+// agent refuses such a build itself, so admitting it would only fail it on the runner.
+// Comparing the version alone missed a release that moved a pinned image.
+func railpackRunner(c api.AgentCapabilities, need pipeline.RailpackInputs) *domain.Error {
+	advertised := "none"
+	if c.RailpackInputs != nil {
+		advertised = *c.RailpackInputs
+	}
+	// The digest covers the version too.
+	if advertised == need.Digest() {
+		return nil
+	}
+	return &domain.Error{Code: "invalid_input", Fields: []string{railpackUpgradeRequired}, Message: "The runner does not run the Railpack pins this build needs (" + need.Digest() + "); it advertises " + advertised + ". Run the same Astilba release on management and the runner."}
+}
+func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls bool, railpack *pipeline.RailpackInputs) (uuid.UUID, error) {
 	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls, railpack)
 	if err != nil {
 		return uuid.Nil, err
@@ -81,10 +119,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if p.Build != nil {
 		canonical := p.Build.Canonical()
 		p.Build = &canonical
-		if canonical.UsesRailpack() {
-			pins := pipeline.RailpackFor(canonical.Architecture)
-			p.Railpack = &pins
-		}
+		p.Railpack = canonical.RailpackPins()
 	}
 	if p.IsBuild() {
 		egress, err := serverBuildEgress(ctx, tx, ws, server)
@@ -251,7 +286,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return head.failure(domain.Invalid("branch"))
 		}
 		connection, commit := head.Connection, head.Value
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil)
 		if err != nil {
 			return err
 		}
@@ -311,7 +346,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 				return domain.Conflict
 			}
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil)
 		if err != nil {
 			return err
 		}
@@ -375,7 +410,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 		return api.Operation{}, head.failure(domain.Invalid("branch"))
 	}
 	connection, commit := head.Connection, head.Value
-	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack())
+	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.RailpackPins())
 	if err != nil {
 		return api.Operation{}, err
 	}

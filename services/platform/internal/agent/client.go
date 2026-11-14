@@ -35,6 +35,7 @@ type Client struct {
 	buildNetwork            atomic.Bool
 	rootlessBuilds          atomic.Bool
 	railpack                atomic.Bool
+	railpackInputs          atomic.Bool
 	safeReleases            atomic.Bool
 	serviceOutputs          atomic.Bool
 	previews                atomic.Bool

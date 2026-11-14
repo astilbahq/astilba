@@ -5473,6 +5473,10 @@
           type: string
           maxLength: 80
           description: Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1.
+        railpackInputs:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of every Railpack pin the agent runs for its architecture (planner version, frontend, builder, runtime and helper images, and mise). Management sends a Railpack build only to a runner whose digest matches the build's pins. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack-Inputs with v1.
         build:
           type: boolean
         buildNetwork:

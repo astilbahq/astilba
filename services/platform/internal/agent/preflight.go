@@ -127,6 +127,8 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	if build {
 		version := pipeline.RailpackVersion
 		h.Capabilities.RailpackVersion = &version
+		inputs := pipeline.RailpackFor(runtime.GOARCH).Digest()
+		h.Capabilities.RailpackInputs = &inputs
 	}
 	h.Capabilities.SafeReleases = &visual
 	h.Capabilities.Replicas = &visual

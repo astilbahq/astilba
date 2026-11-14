@@ -2821,6 +2821,8 @@ export interface components {
             buildCache?: boolean;
             /** @description Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1. */
             railpackVersion?: string;
+            /** @description SHA-256 of every Railpack pin the agent runs for its architecture (planner version, frontend, builder, runtime and helper images, and mise). Management sends a Railpack build only to a runner whose digest matches the build's pins. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack-Inputs with v1. */
+            railpackInputs?: string;
             build?: boolean;
             /** @description Runs builds on its owned build network behind the build egress policy. Advertised only after Astilba-Agent-Build-Network v1. */
             buildNetwork?: boolean;

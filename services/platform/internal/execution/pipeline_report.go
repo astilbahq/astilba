@@ -123,8 +123,36 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil); err != nil {
 			return false, err
+		}
+	}
+	// A build goes only to a runner that runs the Railpack pins it froze, not management's
+	// current ones, which a management upgrade or rollback may have moved since, so no other
+	// runner receives its hydrated inputs. Refusing the poll would hold every later command
+	// for the runner, its update included, until the build expired, so a build never
+	// delivered fails instead. One the runner may already hold keeps being refused until it
+	// ends: supported updates wait for it, so this is a build delivered by an earlier
+	// management to an agent that advertises no digest, or a runner replaced by hand.
+	if p.Build != nil && p.Build.UsesRailpack() {
+		if p.Railpack == nil {
+			return false, errors.New("invalid pipeline payload")
+		}
+		refusal, err := runnerRailpackRefusal(ctx, tx, ws, c.ServerId, p.Railpack)
+		if err != nil {
+			return false, err
+		}
+		if refusal != nil && !undelivered {
+			return false, refusal
+		}
+		if refusal != nil {
+			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build stopped before runner delivery. " + refusal.Message}); err != nil {
+				return false, err
+			}
+			if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+				return false, err
+			}
+			return false, tx.Commit(ctx)
 		}
 	}
 	if p.CacheScope != "" {

@@ -525,6 +525,22 @@ func (q *Queries) RewrapRegistryAccess(ctx context.Context, arg RewrapRegistryAc
 	return err
 }
 
+const runnerCapabilities = `-- name: RunnerCapabilities :one
+SELECT capabilities FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type RunnerCapabilitiesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) RunnerCapabilities(ctx context.Context, arg RunnerCapabilitiesParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, runnerCapabilities, arg.WorkspaceID, arg.ID)
+	var capabilities []byte
+	err := row.Scan(&capabilities)
+	return capabilities, err
+}
+
 const setGitSourcePendingCommit = `-- name: SetGitSourcePendingCommit :exec
 UPDATE git_sources SET pending_commit = $1
 WHERE workspace_id = $2 AND environment_id = $3
