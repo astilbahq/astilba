@@ -78,7 +78,7 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 
 			// As management issues it: the leaf outlives its run's own timeout.
 			leaf := w.backupCommand(effect, true)
-			stall := time.Now().Add(time.Second)
+			var stall time.Time
 			switch stop.by {
 			case "deadline":
 				// The agent took up the leaf only in its last seconds.
@@ -97,6 +97,8 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 					if _, err := w.journal.Accept(cancelled); err != nil {
 						t.Error(err)
 					}
+					// Long enough for the command to see its cancel, which it polls for.
+					stall = time.Now().Add(time.Second)
 				}
 				time.Sleep(time.Until(stall))
 			}
