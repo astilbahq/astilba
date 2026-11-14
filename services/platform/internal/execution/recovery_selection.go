@@ -159,7 +159,8 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 }
 
 // refuseUnknownActiveRoots refuses hosts that report running a cross-host root the newest base
-// doesn't carry as unfinished. N carries every unfinished root of its own management, so such a
+// doesn't carry as unfinished. An operation of any other kind, such as one of a root's own steps,
+// is never a host's active root, so a host that names one is refused the same way. N carries every unfinished root of its own management, so such a
 // root was started by a management N's doesn't descend from, as when a management restored from a
 // backup ran other work on other hosts, or it ended. N records an ended root as a finished row, by
 // listing its base, or by its applied or settled history, or, before its window, no longer records
@@ -170,7 +171,7 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 // with its servers, so the operator can revoke them, leave their exports out, and enrol them again
 // afterwards.
 func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts map[uuid.UUID]deployment.RecoveryEvidence) error {
-	carried, ended := map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
+	carried, ended, other := map[uuid.UUID]bool{}, map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
 	for _, row := range a.Tables["execution_operations"] {
 		id, err := recoveryValue[uuid.UUID](row, "id")
 		if err != nil {
@@ -179,6 +180,14 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 		state, err := recoveryValue[api.ExecutionState](row, "state")
 		if err != nil {
 			return err
+		}
+		command, err := recoveryValue[api.ExecutionCommand](row, "command")
+		if err != nil {
+			return err
+		}
+		if command.Kind != "crosshost" || command.ParentId != nil {
+			other[id] = true
+			continue
 		}
 		carried[id], ended[id] = !Terminal(state), Terminal(state)
 	}
@@ -220,7 +229,10 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 		servers := unknown[root]
 		slices.Sort(servers)
 		reason := "which the newest recovery checkpoint doesn't carry, so a management this one doesn't descend from started it, or it ended before the checkpoint's window"
-		if ended[root] {
+		switch {
+		case other[root]:
+			reason = "which the newest recovery checkpoint records as another kind of operation, not a cross-host deployment, so their report is wrong"
+		case ended[root]:
 			reason = "which the newest recovery checkpoint records as ended, so their report is stale"
 		}
 		reports = append(reports, fmt.Sprintf("servers %s report running cross-host deployment %s, %s", strings.Join(servers, ", "), root, reason))
