@@ -95,7 +95,7 @@ func nativeReplicaDistribution(t *testing.T, e *Engine, p deployment.Plan) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.dataOutput(ctx, badContainer.Container.ID, "rm", "/tmp/www/health"); err != nil {
+	if _, err = e.dataOutput(ctx, pgClient{container: badContainer.Container.ID}, "rm", "/tmp/www/health"); err != nil {
 		t.Fatal(err)
 	}
 	healthy := map[string]bool{}
@@ -105,7 +105,7 @@ func nativeReplicaDistribution(t *testing.T, e *Engine, p deployment.Plan) {
 		}
 	}
 	converge(healthy)
-	if _, err = e.dataOutput(ctx, badContainer.Container.ID, "sh", "-c", "printf ready > /tmp/www/health"); err != nil {
+	if _, err = e.dataOutput(ctx, pgClient{container: badContainer.Container.ID}, "sh", "-c", "printf ready > /tmp/www/health"); err != nil {
 		t.Fatal(err)
 	}
 	converge(wanted)

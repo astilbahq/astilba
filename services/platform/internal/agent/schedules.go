@@ -473,6 +473,8 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 			r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
 		case timedOut:
 			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
+		case errors.Is(err, errUnsupportedPostgresImage):
+			r.Note = "The database's PostgreSQL image is no longer one Astilba supports, so it was not dumped. Redeploy the database on a supported image, then refresh the policy."
 		default:
 			r.Note = "Run failed. Inspect storage access, supported source state and available capacity. Incomplete output is not a usable backup."
 		}
@@ -480,7 +482,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		// running, so it fails only once its cleanup is confirmed. Otherwise it is left to
 		// inspect, never to stay running: nothing settles a running run on a reserved host.
 		if effects {
-			switch left := e.runCleanupLeft(s.Installation.Policy, r.ID, err); {
+			switch left := e.removeRunContainers(s.Installation.Policy, r.ID); {
 			case left != "":
 				r.State = "needs_attention"
 				r.Note = "The run's cleanup could not be confirmed: " + left + ". Inspect containers with its com.astilba.run label and any target volume, then resolve the run."

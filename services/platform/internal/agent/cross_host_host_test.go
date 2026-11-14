@@ -782,7 +782,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		primary.command(t, primary.backupCommand(backup.Command{Action: "install", Installation: installation}, nil))
 		pgEngine := &Engine{Docker: primary.docker, DockerCLI: primary.cli}
 		pgApp := sourceGroup.Specification.Applications[1]
-		if _, err := pgEngine.pgQuery(ctx, deployment.UnitName(pg), pgApp, "CREATE TABLE cross_host_marker(value text); INSERT INTO cross_host_marker VALUES('retained database data')"); err != nil {
+		if _, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, "CREATE TABLE cross_host_marker(value text); INSERT INTO cross_host_marker VALUES('retained database data')"); err != nil {
 			t.Fatal(err)
 		}
 		effect := upgrade.Command{Action: "", Plan: upgradePlan, Installation: installation, Secrets: secrets}
@@ -838,7 +838,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 			}
 			completed[index] = receipt.Observation
 		}
-		rows, err := pgEngine.pgQuery(ctx, deployment.UnitName(pg), pgApp, "SELECT count(*) FROM cross_host_marker WHERE value='retained database data'")
+		rows, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, "SELECT count(*) FROM cross_host_marker WHERE value='retained database data'")
 		if err != nil || strings.TrimSpace(string(rows)) != "1" {
 			t.Fatal("major upgrade did not preserve application data", err)
 		}
@@ -889,10 +889,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 			}
 			data := &Engine{Docker: primary.docker, DockerCLI: primary.cli}
 			if method == backup.QuiescedFiles {
-				if _, err := data.dataOutput(ctx, deployment.UnitName(files), "sh", "-c", "echo newer-source-data > /files/value"); err != nil {
+				if _, err := data.dataOutput(ctx, pgClient{container: deployment.UnitName(files)}, "sh", "-c", "echo newer-source-data > /files/value"); err != nil {
 					t.Fatal(err)
 				}
-			} else if _, err := data.pgQuery(ctx, deployment.UnitName(pg), currentGroup.Specification.Applications[1], "UPDATE cross_host_marker SET value='newer source data'"); err != nil {
+			} else if _, err := data.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, currentGroup.Specification.Applications[1], "UPDATE cross_host_marker SET value='newer source data'"); err != nil {
 				t.Fatal(err)
 			}
 			boundary := deployment.RestoreCutover{SourcePlanID: currentGroup.ID, SourceHash: currentGroup.Hash, PolicyID: policyID, RunID: run, ManifestHash: restored.ManifestHash, OldVolumeID: oldVolume, TargetVolumeID: restoredVolume}
@@ -971,10 +971,10 @@ exec httpd -f -p 8080 -h /tmp/www`
 				completed[index] = receipt.Observation
 			}
 			if method == backup.QuiescedFiles {
-				value, err := data.dataOutput(ctx, deployment.UnitName(files), "cat", "/files/value")
+				value, err := data.dataOutput(ctx, pgClient{container: deployment.UnitName(files)}, "cat", "/files/value")
 				nativeRequireValue(t, "restored files", value, "retained-file-data", err)
 			} else {
-				value, err := data.pgQuery(ctx, deployment.UnitName(pg), target.Specification.Applications[1], "SELECT value FROM cross_host_marker")
+				value, err := data.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, target.Specification.Applications[1], "SELECT value FROM cross_host_marker")
 				nativeRequireValue(t, "the restored database marker", value, "retained database data", err)
 			}
 			if _, err := primary.docker.VolumeInspect(ctx, deployment.VolumeName(oldVolume), client.VolumeInspectOptions{}); err != nil {

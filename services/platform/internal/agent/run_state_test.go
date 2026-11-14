@@ -3,10 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json/jsontext"
-	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -19,7 +16,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
-	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -309,37 +305,5 @@ func TestRestorePhaseFailingBeforeItsIntentIsRefused(t *testing.T) {
 		if r, err := j.Record(c.Id); err != nil || r.Report.State != want {
 			t.Fatal("a restore phase with intent", intent, "was settled as", r.Report.State, err)
 		}
-	}
-}
-
-// PLAT-366. A process the agent couldn't confirm ended still holds the run while its container
-// exists, as a source database does, and not once its container is gone, as a run's own restore
-// database is after its cleanup removed it.
-func TestRunCleanupKeepsOnlyProcessesInContainersThatRemain(t *testing.T) {
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/containers/json"):
-			fmt.Fprint(w, `[]`)
-		case strings.HasSuffix(r.URL.Path, "/containers/source/json"):
-			fmt.Fprint(w, `{"Id":"source","State":{"Running":true}}`)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"message":"absent"}`)
-		}
-	}))
-	t.Cleanup(daemon.Close)
-	docker, err := client.New(client.WithHost("tcp://"+daemon.Listener.Addr().String()), client.WithAPIVersion("1.54"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { docker.Close() })
-	e := &Engine{Docker: docker}
-	p := backup.Policy{ServerID: uuid.New()}
-	if left := e.runCleanupLeft(p, uuid.New(), errors.Join(errors.New("stopped"), &processLeft{what: "pg_dump left", container: "source"})); left != "pg_dump left" {
-		t.Fatal("a process in a remaining container was taken as ended:", left)
-	}
-	if left := e.runCleanupLeft(p, uuid.New(), &processLeft{what: "psql left", container: "removed"}); left != "" {
-		t.Fatal("a process in a removed container was taken as running:", left)
 	}
 }

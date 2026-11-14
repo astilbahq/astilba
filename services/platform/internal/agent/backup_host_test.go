@@ -59,7 +59,7 @@ func nativePostgresMetadataRestore(t *testing.T, e *Engine, base deployment.Plan
 			}
 			source := start(volumes[0])
 			db := quoteIdentifier(fixture.database)
-			if _, err := e.pgQuery(ctx, source, a, `CREATE ROLE backup_reader NOLOGIN;
+			if _, err := e.pgQuery(ctx, pgClient{container: source}, a, `CREATE ROLE backup_reader NOLOGIN;
 CREATE SCHEMA reporting;
 CREATE TABLE reporting.records(value text);
 INSERT INTO reporting.records VALUES ('retained');
@@ -74,7 +74,9 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 			}
 			dir := t.TempDir()
 			m := backup.Manifest{}
-			if err := e.dumpPostgres(ctx, policy, dir, &m); err != nil {
+			dumpCtx, stop := context.WithTimeout(ctx, 5*time.Minute)
+			defer stop()
+			if err := e.dumpPostgres(dumpCtx, backup.Installation{Policy: policy, Access: backup.Access{DatabasePassword: "metadata-fixture-password"}}, uuid.New(), dir, &m); err != nil {
 				t.Fatal(err)
 			}
 			// These are the existing custom-format archives: no new manifest or
@@ -83,7 +85,7 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 				t.Fatal(err)
 			}
 			restored := start(volumes[1])
-			got, err := e.pgQuery(ctx, restored, a, `SELECT
+			got, err := e.pgQuery(ctx, pgClient{container: restored}, a, `SELECT
 current_setting('search_path'),
 (SELECT value FROM reporting.records),
 has_database_privilege('backup_reader', current_database(), 'CONNECT'),
@@ -127,10 +129,9 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.pgQuery(ctx, c.ID, a, `CREATE ROLE backup_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reporting; CREATE TABLE reporting.records(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload hstore NOT NULL); INSERT INTO reporting.records(payload) VALUES ('a=>b'); ALTER TABLE reporting.records OWNER TO backup_reader; GRANT USAGE ON SCHEMA reporting TO backup_reader; CREATE TABLE large_records AS SELECT repeat('x',70*1024*1024) AS payload`); err != nil {
+	if _, err = e.pgQuery(ctx, pgClient{container: c.ID}, a, `CREATE ROLE backup_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reporting; CREATE TABLE reporting.records(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload hstore NOT NULL); INSERT INTO reporting.records(payload) VALUES ('a=>b'); ALTER TABLE reporting.records OWNER TO backup_reader; GRANT USAGE ON SCHEMA reporting TO backup_reader; CREATE TABLE large_records AS SELECT repeat('x',70*1024*1024) AS payload`); err != nil {
 		t.Fatal(err)
 	}
-	nativeStoppedSourceExec(t, e, c.ID, a)
 	in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "External recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "native-repository-password-canary"}}
 	if r := deliver(command(backup.Command{Action: "install", Installation: in, RunID: uuid.New(), TargetID: uuid.New()})); r.State != "succeeded" {
 		t.Fatalf("install ended %s: %s", r.State, r.Note)
@@ -192,12 +193,12 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 		t.Fatal(err)
 	}
 	for n := 0; n < 60; n++ {
-		if _, err = e.dataOutput(ctx, c.ID, "pg_isready", "-U", a.Postgres.Username, "-d", a.Postgres.Database); err == nil {
+		if _, err = e.dataOutput(ctx, pgClient{container: c.ID}, "pg_isready", "-U", a.Postgres.Username, "-d", a.Postgres.Database); err == nil {
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	value, err := e.pgQuery(ctx, c.ID, a, "SELECT payload::text FROM reporting.records")
+	value, err := e.pgQuery(ctx, pgClient{container: c.ID}, a, "SELECT payload::text FROM reporting.records")
 	if err != nil || !strings.Contains(string(value), `"a"=>"b"`) {
 		t.Fatal("source records changed during restore")
 	}
@@ -304,12 +305,13 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	if err != nil {
 		t.Fatal(err)
 	}
-	// restic was killed and waited for, and the run started no container, so nothing of it is
-	// left running: it failed, and its uncatalogued snapshot is not a usable record.
+	// restic was killed and waited for, and the run's dump helper was removed, so nothing of it
+	// is left running: it failed, and its uncatalogued snapshot is not a usable record.
 	if expired := s.Runs[len(s.Runs)-1]; expired.State != "failed" || expired.Snapshot != "" {
 		t.Fatalf("expired upload became usable or held the host: %+v", expired)
 	}
 	nativeQueuedRunNow(t, e, in, command, deliver)
+	nativeStoppedDump(t, e, in, c.ID, a, command)
 	reports, err := e.Journal.ScheduleReports()
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +341,7 @@ func nativePostgresStartup(t *testing.T, e *Engine, p deployment.Plan) {
 	if err = e.waitPostgresStartup(ctx, created.ID, "fixture", "fixture"); err != nil {
 		t.Fatal(err)
 	}
-	value, err := e.dataOutput(ctx, created.ID, "psql", "-XAt", "-U", "fixture", "-d", "fixture", "-c", "SELECT value FROM initialization_finished")
+	value, err := e.dataOutput(ctx, pgClient{container: created.ID}, "psql", "-XAt", "-U", "fixture", "-d", "fixture", "-c", "SELECT value FROM initialization_finished")
 	if err != nil || strings.TrimSpace(string(value)) != "1" {
 		t.Fatal("readiness accepted the temporary initialization server")
 	}
