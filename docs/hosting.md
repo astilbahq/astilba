@@ -92,8 +92,9 @@ Every command that uses keys checks them before it starts:
 - a refused start is recorded, with its cause.
 
 `astilba custody` reports on and changes the installation's keys. Each change it makes is
-recorded in the installation's key history. The history holds the operator's name and reason; a
-workspace's [secret access records](#operational-bounds-and-retention) name only the run.
+recorded in the installation's key history. The history holds the operator's name and reason. The
+[secret access record](#operational-bounds-and-retention) of a run is one for the whole
+installation and names only the run.
 `--operator` can be a role, such as `on-call`, rather than a person. Every event is kept, but its
 operator and reason are blanked once it is older than the secret access retention period, 400
 days by default. A database trigger refuses any other change to an event, and its removal. That
@@ -764,8 +765,11 @@ workspace's second, and its jobs run in the Git queue described above, sharing i
 
 Secret access records note every time management was given the keys to a workspace's stored
 values: who it was for, why, which items by ID, and how it ended. Workspace owners see them on
-the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-access`. They are
-not part of workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
+the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-access`. Key
+maintenance across the installation, a rewrap or the keyring check before an installation's first
+canaries, is one record for the whole installation rather than one per workspace. Workspace pages
+don't show it; the installation's [key history](#key-custody) does. Records are not part of
+workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
 kept, from 30 to 3650 days with a default of 400; hosted installations keep 400. `astilba
 migrate` writes the value into the database, so a change takes effect at the next migrate, and
 serving never changes it. An hourly job removes expired records, up to 5,000 a run. The same

@@ -307,9 +307,9 @@ func TestConcurrentFirstStartsRegisterOneBackend(t *testing.T) {
 	}
 }
 
-// Before a backend's first canaries, start-up opens a stored secret with the keyring, recorded in
-// that secret's workspace, so a database from before canaries never pins a keyring that cannot
-// read it.
+// Before a backend's first canaries, start-up opens one stored value of each kind with the
+// keyring, in one installation record, so a database from before canaries never pins a keyring
+// that cannot read it.
 func TestFirstCanariesNeedAKeyringThatOpensStoredSecrets(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
@@ -421,5 +421,54 @@ func TestKeyEventOperatorsAreBlankedPastRetention(t *testing.T) {
 	}
 	if blanked, err = db.New(f.st.Pool).BlankKeyEventOperators(ctx, 1000); err != nil || blanked != 0 {
 		t.Fatalf("blanked again %d: %v", blanked, err)
+	}
+}
+
+// Instances racing to make the first canaries with different keyrings agree on one: every instance
+// that starts has the keyring whose canaries were stored, and each other one is refused.
+func TestConcurrentFirstStartsAgreeOnOneKeyring(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, "DELETE FROM custody_backends"); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := cryptobox.New("test")
+	second, _ := cryptobox.New("test")
+	rings := []*cryptobox.Keyring{first, second}
+	results := make([]error, 8)
+	var start, done sync.WaitGroup
+	start.Add(1)
+	for i := range results {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			backend, err := custody.NewFile(rings[i%2])
+			if err != nil {
+				results[i] = err
+				return
+			}
+			b := secretbroker.New(db.New(f.st.Pool), backend, nil)
+			start.Wait()
+			results[i] = b.Install(ctx, f.st.Pool, uuid.Nil, false)
+		}()
+	}
+	start.Done()
+	done.Wait()
+	started := map[int]bool{}
+	for i, err := range results {
+		switch {
+		case err == nil:
+			started[i%2] = true
+		case !errors.Is(err, secretbroker.ErrCanaryMismatch):
+			t.Errorf("instance %d: %v", i, err)
+		}
+	}
+	if len(started) != 1 {
+		t.Fatalf("instances with %d different keyrings started", len(started))
+	}
+	for i, err := range results {
+		if started[i%2] != (err == nil) {
+			t.Errorf("instance %d with the stored keyring: %v", i, err)
+		}
 	}
 }

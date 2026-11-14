@@ -69,21 +69,28 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 		return err
 	}
 	// The canaries already made are checked first, so a wrong keyring never adds one of its own.
-	canaries, err := q.InstallationKeyCanaries(ctx, b.backend.ID())
+	check := func() ([]db.InstallationKeyCanariesRow, error) {
+		canaries, err := q.InstallationKeyCanaries(ctx, b.backend.ID())
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range canaries {
+			class := custody.Class(c.Class)
+			if !operator && !custody.ServingDecrypts(class) {
+				continue
+			}
+			if err = custody.CheckCanary(ctx, b.backend, class, id, c.Wrapped); err != nil {
+				if errors.Is(err, custody.ErrInvalid) || errors.Is(err, custody.ErrDenied) {
+					return nil, refuse(ErrCanaryMismatch, map[string]string{"class": c.Class})
+				}
+				return nil, err
+			}
+		}
+		return canaries, nil
+	}
+	canaries, err := check()
 	if err != nil {
 		return err
-	}
-	for _, c := range canaries {
-		class := custody.Class(c.Class)
-		if !operator && !custody.ServingDecrypts(class) {
-			continue
-		}
-		if err = custody.CheckCanary(ctx, b.backend, class, id, c.Wrapped); err != nil {
-			if errors.Is(err, custody.ErrInvalid) || errors.Is(err, custody.ErrDenied) {
-				return refuse(ErrCanaryMismatch, map[string]string{"class": c.Class})
-			}
-			return err
-		}
 	}
 	// A backend's first canaries are what every later start is checked against, so the keyring
 	// must first open what is already stored. Otherwise a database upgraded or restored from
@@ -96,8 +103,16 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 			return err
 		}
 	}
-	if err = b.makeCanaries(ctx, pool, id, run, canaries); err != nil {
+	made, err := b.makeCanaries(ctx, pool, id, run, canaries)
+	if err != nil {
 		return err
+	}
+	// An instance starting at the same time may have stored its canary first, under its own
+	// keyring: the stored ones are what count, so they are checked again.
+	if made {
+		if _, err = check(); err != nil {
+			return err
+		}
 	}
 	b.installation, b.pool = id, pool
 	return nil
@@ -143,10 +158,10 @@ func (b *Broker) register(ctx context.Context, pool Pool, run uuid.UUID) error {
 	return tx.Commit(ctx)
 }
 
-// makeCanaries wraps a canary for every class the backend has none for among existing. The
-// wrapping uses the key service, so it happens before the transaction that stores it; an
-// instance that lost the race keeps the canary already stored.
-func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run uuid.UUID, existing []db.InstallationKeyCanariesRow) error {
+// makeCanaries wraps a canary for every class the backend has none for among existing, and says
+// whether it made any. The wrapping uses the key service, so it happens before the transaction that
+// stores it; an instance that lost the race keeps the canary already stored.
+func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run uuid.UUID, existing []db.InstallationKeyCanariesRow) (bool, error) {
 	var err error
 	made := map[custody.Class][]byte{}
 	for _, class := range custody.Classes {
@@ -154,15 +169,15 @@ func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run 
 			continue
 		}
 		if made[class], err = custody.NewCanary(ctx, b.backend, class, installation); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if len(made) == 0 {
-		return nil
+		return false, nil
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx)
 	// Instances racing here wait on each other's rows: only the first insert of a class counts,
@@ -175,15 +190,15 @@ func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run 
 		}
 		n, err := q.InsertInstallationKeyCanary(ctx, db.InsertInstallationKeyCanaryParams{BackendID: b.backend.ID(), Class: string(class), Wrapped: blob})
 		if err != nil {
-			return err
+			return false, err
 		}
 		if n == 1 {
 			if err = b.event(ctx, q, keyEvent{run: run, kind: "canary-created", details: map[string]string{"class": string(class)}}); err != nil {
-				return err
+				return false, err
 			}
 		}
 	}
-	return tx.Commit(ctx)
+	return true, tx.Commit(ctx)
 }
 
 // checkStored opens one stored value of every kind a rewrap covers. Like a rewrap, it is key
