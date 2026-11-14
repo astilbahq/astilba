@@ -35,17 +35,36 @@ func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architectu
 		return false, domain.Invalid("runner.buildControlsUpgradeRequired")
 	}
 	if railpack != nil {
-		if err := railpackRunner(c, *railpack); err != nil {
-			return false, err
+		if refusal := railpackRunner(c, *railpack); refusal != nil {
+			return false, refusal
 		}
 	}
 	return online, nil
 }
 
+const railpackUpgradeRequired = "runner.railpackUpgradeRequired"
+
+// runnerRailpackRefusal is the refusal of a runner that runs other Railpack pins than need,
+// or nil when it runs them or need is nil, as for a Dockerfile build.
+func runnerRailpackRefusal(ctx context.Context, tx pgx.Tx, id uuid.UUID, need *pipeline.RailpackInputs) (*domain.Error, error) {
+	if need == nil {
+		return nil, nil
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", id).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var c api.AgentCapabilities
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return nil, err
+	}
+	return railpackRunner(c, *need), nil
+}
+
 // railpackRunner refuses a runner whose Railpack pins differ from those a build needs. The
 // agent refuses such a build itself, so admitting it would only fail it on the runner.
 // Comparing the version alone missed a release that moved a pinned image.
-func railpackRunner(c api.AgentCapabilities, need pipeline.RailpackInputs) error {
+func railpackRunner(c api.AgentCapabilities, need pipeline.RailpackInputs) *domain.Error {
 	advertised := "none"
 	if c.RailpackInputs != nil {
 		advertised = *c.RailpackInputs
@@ -54,7 +73,7 @@ func railpackRunner(c api.AgentCapabilities, need pipeline.RailpackInputs) error
 	if advertised == need.Digest() {
 		return nil
 	}
-	return &domain.Error{Code: "invalid_input", Fields: []string{"runner.railpackUpgradeRequired"}, Message: "The runner does not run the Railpack pins this build needs (" + need.Digest() + "); it advertises " + advertised + ". Run the same Astilba release on management and the runner."}
+	return &domain.Error{Code: "invalid_input", Fields: []string{railpackUpgradeRequired}, Message: "The runner does not run the Railpack pins this build needs (" + need.Digest() + "); it advertises " + advertised + ". Run the same Astilba release on management and the runner."}
 }
 func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls bool, railpack *pipeline.RailpackInputs) (uuid.UUID, error) {
 	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls, railpack)

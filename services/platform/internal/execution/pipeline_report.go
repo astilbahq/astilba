@@ -122,17 +122,36 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if settled, err := s.settleBuildIsolation(ctx, tx, ws, c, p, undelivered); settled || err != nil {
 		return settled && c.CancelRequested, err
 	}
-	// A build goes to a runner that runs the Railpack pins it froze, not management's
-	// current ones, which a management upgrade or rollback may have moved since.
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		var need *pipeline.RailpackInputs
-		if p.Build.UsesRailpack() {
-			if need = p.Railpack; need == nil {
-				return false, errors.New("invalid pipeline payload")
-			}
-		}
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), need); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil); err != nil {
 			return false, err
+		}
+	}
+	// A build goes only to a runner that runs the Railpack pins it froze, not management's
+	// current ones, which a management upgrade or rollback may have moved since, so no other
+	// runner receives its hydrated inputs. Refusing the poll would hold every later command
+	// for the runner, its update included, until the build expired, so a build never
+	// delivered fails instead. One the runner may already hold keeps being refused: supported
+	// updates wait for it, so only a runner replaced by hand can be there.
+	if p.Build != nil && p.Build.UsesRailpack() {
+		if p.Railpack == nil {
+			return false, errors.New("invalid pipeline payload")
+		}
+		refusal, err := runnerRailpackRefusal(ctx, tx, c.ServerId, p.Railpack)
+		if err != nil {
+			return false, err
+		}
+		if refusal != nil && !undelivered {
+			return false, refusal
+		}
+		if refusal != nil {
+			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build stopped before runner delivery. " + refusal.Message}); err != nil {
+				return false, err
+			}
+			if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+				return false, err
+			}
+			return false, tx.Commit(ctx)
 		}
 	}
 	if p.CacheScope != "" {
