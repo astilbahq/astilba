@@ -103,27 +103,51 @@ func (l imageLoadLimit) less(c imageCost) imageLoadLimit {
 	return l
 }
 
-// imageLoadRefused is why the agent did not load a built image; its message is the operation's note.
-type imageLoadRefused struct{ note string }
+// imageLoadRefused is why the agent did not load or pull an image. Its Error is the note for a
+// local build's load; pulled renders the note for a pull.
+type imageLoadRefused struct {
+	// why completes "<image> was not loaded: ". fix, which may be empty, follows it; {retry}
+	// in it names what to do again.
+	why, fix string
+}
 
-func (r *imageLoadRefused) Error() string { return r.note }
+func (r *imageLoadRefused) Error() string {
+	return r.render("The built image", "loaded", "build again")
+}
+
+// pulled is the note for refusing to pull image.
+func (r *imageLoadRefused) pulled(image string) string {
+	return r.render("The image "+truncated(image, 300), "pulled", "deploy again")
+}
+
+func (r *imageLoadRefused) render(subject, verb, retry string) string {
+	note := r.cause(subject, verb)
+	if r.fix != "" {
+		note += " " + strings.ReplaceAll(r.fix, "{retry}", retry)
+	}
+	return note + " Existing workloads are unchanged."
+}
+
+// cause is the refusal's note up to why, without saying what to do or that nothing changed.
+func (r *imageLoadRefused) cause(subject, verb string) string {
+	return subject + " was not " + verb + ": " + r.why + "."
+}
 
 // refusal is the note for exceeding the limit in over, naming that limit and who can change it.
 func (l imageLoadLimit) refusal(over error) error {
-	const tail = " Existing workloads are unchanged."
 	switch {
 	case errors.Is(over, errImageOverBytes) && l.bytesByStorage:
-		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacking it would leave less than %d GiB free in this server's Docker storage, which the agent keeps in reserve. Free space on the server and build again; the server's owner sets the reserve with the agent's --image-load-reserve-gib.", l.reserveBytes>>30) + tail}
+		return &imageLoadRefused{fmt.Sprintf("unpacking it would leave less than %d GiB free in this server's Docker storage, which the agent keeps in reserve", l.reserveBytes>>30), "The agent counts every layer of the image, even those Docker already has, so a nearly full server can refuse even a small update. Free space on the server and {retry}; the server's owner sets the reserve with the agent's --image-load-reserve-gib."}
 	case errors.Is(over, errImageOverBytes):
-		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacked, it would write more than %d GiB to this server's Docker storage, the most one image load may write here. Make the image smaller, for example with a multi-stage build, or ask the server's owner to raise the agent's --image-load-gib.", l.loadBytes>>30) + tail}
+		return &imageLoadRefused{fmt.Sprintf("unpacked, it would write more than %d GiB to this server's Docker storage, the most one image may write here", l.loadBytes>>30), "Make the image smaller, for example with a multi-stage build, or ask the server's owner to raise the agent's --image-load-gib."}
 	case l.entriesByStorage:
-		return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacking it would leave fewer than %d inodes free in this server's Docker storage. Free space on the server, such as unused images, and build again.", dockerReserveInodes) + tail}
+		return &imageLoadRefused{fmt.Sprintf("unpacking it would leave fewer than %d inodes free in this server's Docker storage", dockerReserveInodes), "The agent counts every layer of the image, even those Docker already has, so a nearly full server can refuse even a small update. Free space on the server, such as unused images, and {retry}."}
 	}
-	return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: unpacked, it would create more than %d files and directories, the most one image load may create. Make the image smaller, for example with a multi-stage build that copies only what the application needs.", localImageLoadEntries) + tail}
+	return &imageLoadRefused{fmt.Sprintf("unpacked, it would create more than %d files and directories, the most one image may create", localImageLoadEntries), "Make the image smaller, for example with a multi-stage build that copies only what the application needs."}
 }
 
 func unmeasurableImage(why string) error {
-	return &imageLoadRefused{"The built image was not loaded: " + why + ", which the agent cannot measure safely. Existing workloads are unchanged."}
+	return &imageLoadRefused{why: why + ", which the agent cannot measure safely"}
 }
 
 // imageArchiveGate is the archive on its way to Docker. What the inspection reads waits in

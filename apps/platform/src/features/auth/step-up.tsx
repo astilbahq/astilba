@@ -8,9 +8,20 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ApiError, client, result, setSession } from "../../api/client";
+import {
+  ApiError,
+  client,
+  result,
+  type Schema,
+  setSession,
+} from "../../api/client";
 import { sessionOptions } from "../../api/session";
-import { type StepUp, StepUpContext } from "../../api/step-up";
+import {
+  type ConfirmCredential,
+  ConfirmCredentialContext,
+  type StepUp,
+  StepUpContext,
+} from "../../api/step-up";
 import { useSessionRequest } from "../../api/use-session-request";
 import {
   AlertDialogActions,
@@ -30,6 +41,31 @@ import { useAuthValidation } from "./use-auth-validation";
 import type { StepUpCredential } from "./validation";
 
 type Waiter = { resolve: (confirmed: boolean) => void; withdraw: () => void };
+type Submit = (
+  current: Schema["Credential"],
+  signal: AbortSignal,
+) => Promise<unknown>;
+type Change = {
+  submit: Submit;
+  // While a change is in flight it runs to its end, so a commit is never left without the
+  // session it renews. A screen that goes away meanwhile only stops the outcome reaching it.
+  inFlight: boolean;
+  withdrawn: boolean;
+  resolve: (value: unknown) => void;
+  reject: (error: unknown) => void;
+  withdraw: () => void;
+};
+
+// A wrong credential, too many attempts or no capacity to check a password: the person can
+// try again in the dialog. Anything else is the change's own failure, for its screen.
+function staysInDialog(error: unknown) {
+  return (
+    error instanceof ApiError &&
+    ["invalid_credentials", "rate_limited", "temporarily_busy"].includes(
+      error.detail.code,
+    )
+  );
+}
 
 /**
  * Offers identity confirmation to every action below it, in one dialog shared by all of
@@ -76,14 +112,89 @@ export function StepUpProvider({ children }: { children: ReactNode }) {
   );
   // Only an application teardown removes the provider; nothing is left waiting on it.
   useEffect(() => () => settle(false), [settle]);
+
+  // A change that needs the current credential has a dialog of its own, for one change at a
+  // time: a second request replaces the first, which resolves as declined.
+  const [changeOpen, setChangeOpen] = useState(false);
+  const [changePrompt, setChangePrompt] = useState(0);
+  const change = useRef<Change | null>(null);
+  const changeReturnTo = useRef<Element | null>(null);
+  const settleChange = useCallback(
+    (outcome: { value?: unknown } | { error: unknown }) => {
+      const current = change.current;
+      change.current = null;
+      setChangeOpen(false);
+      if (!current) return;
+      current.withdraw();
+      if ("error" in outcome) current.reject(outcome.error);
+      else current.resolve(outcome.value);
+    },
+    [],
+  );
+  const confirmCredential = useCallback(
+    (
+      submit: Submit,
+      {
+        origin,
+        signal,
+      }: { origin?: Element | null; signal?: AbortSignal } = {},
+    ) =>
+      new Promise<unknown>((resolve, reject) => {
+        if (signal?.aborted) return resolve(undefined);
+        if (change.current) settleChange({});
+        changeReturnTo.current = origin ?? document.activeElement;
+        const leave = () => {
+          if (entry.inFlight) entry.withdrawn = true;
+          else settleChange({});
+        };
+        const entry: Change = {
+          submit,
+          inFlight: false,
+          withdrawn: false,
+          resolve,
+          reject,
+          withdraw: () => signal?.removeEventListener("abort", leave),
+        };
+        signal?.addEventListener("abort", leave, { once: true });
+        change.current = entry;
+        setChangePrompt((current) => current + 1);
+        setChangeOpen(true);
+      }),
+    [settleChange],
+  ) as ConfirmCredential;
+  useEffect(() => () => settleChange({}), [settleChange]);
+  const submitChange = useCallback<Submit>(
+    (current, signal) => {
+      const pending = change.current;
+      if (!pending) return Promise.resolve(undefined);
+      pending.inFlight = true;
+      return pending.submit(current, signal).finally(() => {
+        pending.inFlight = false;
+        if (pending.withdrawn && change.current === pending) settleChange({});
+      });
+    },
+    [settleChange],
+  );
   return (
     <>
-      <StepUpContext value={stepUp}>{children}</StepUpContext>
+      <StepUpContext value={stepUp}>
+        <ConfirmCredentialContext value={confirmCredential}>
+          {children}
+        </ConfirmCredentialContext>
+      </StepUpContext>
       <StepUpDialog
         prompt={prompt}
         open={open}
         onSettled={settle}
         onClosed={() => restoreFocus(returnTo.current)}
+      />
+      <StepUpDialog
+        prompt={changePrompt}
+        open={changeOpen}
+        submit={submitChange}
+        onSettled={(_, value) => settleChange({ value })}
+        onFailed={(error) => settleChange({ error })}
+        onClosed={() => restoreFocus(changeReturnTo.current)}
       />
     </>
   );
@@ -145,12 +256,16 @@ function restoreFocus(target: Element | null) {
 function StepUpDialog({
   prompt,
   open,
+  submit,
   onSettled,
+  onFailed,
   onClosed,
 }: {
   prompt: number;
   open: boolean;
-  onSettled: (confirmed: boolean) => void;
+  submit?: Submit;
+  onSettled: (confirmed: boolean, value?: unknown) => void;
+  onFailed?: (error: unknown) => void;
   onClosed: () => void;
 }) {
   // A confirmation in flight keeps the dialog open; its outcome closes it.
@@ -170,7 +285,9 @@ function StepUpDialog({
         <StepUpPrompt
           key={prompt}
           open={open}
+          submit={submit}
           onSettled={onSettled}
+          onFailed={onFailed}
           onPendingChange={(value) => {
             pending.current = value;
           }}
@@ -180,13 +297,21 @@ function StepUpDialog({
   );
 }
 
+/**
+ * Asks for the current credential. Without `submit` it confirms identity; with it, it sends
+ * the credential with that change instead.
+ */
 function StepUpPrompt({
   open,
+  submit,
   onSettled,
+  onFailed,
   onPendingChange,
 }: {
   open: boolean;
-  onSettled: (confirmed: boolean) => void;
+  submit?: Submit;
+  onSettled: (confirmed: boolean, value?: unknown) => void;
+  onFailed?: (error: unknown) => void;
   onPendingChange: (pending: boolean) => void;
 }) {
   const { t } = useTranslation("auth");
@@ -236,37 +361,60 @@ function StepUpPrompt({
     <>
       <AlertDialogTitle>{t(($) => $.stepUp.title)}</AlertDialogTitle>
       <AlertDialogDescription>
-        {credential === "password"
-          ? t(($) => $.stepUp.passwordDescription)
-          : credential === "recovery"
-            ? t(($) => $.stepUp.recoveryDescription)
-            : t(($) => $.stepUp.authenticatorDescription)}
+        {submit
+          ? credential === "password"
+            ? t(($) => $.stepUp.changePasswordDescription)
+            : credential === "recovery"
+              ? t(($) => $.stepUp.changeRecoveryDescription)
+              : t(($) => $.stepUp.changeAuthenticatorDescription)
+          : credential === "password"
+            ? t(($) => $.stepUp.passwordDescription)
+            : credential === "recovery"
+              ? t(($) => $.stepUp.recoveryDescription)
+              : t(($) => $.stepUp.authenticatorDescription)}
       </AlertDialogDescription>
       <Form
         key={credential}
         action={action}
         label={t(($) => $.stepUp.title)}
-        validation={validation.stepUp(credential)}
-        onSubmit={(data) =>
+        validation={validation.stepUp(credential, !!submit)}
+        onSubmit={(data) => {
+          const current =
+            credential === "password"
+              ? { password: text(data, "password") }
+              : { code: text(data, "code").trim() };
+          let failed = false;
           action.run(() =>
             request(
-              (signal) =>
-                result(
-                  client.POST("/api/v1/auth/reauthenticate", {
-                    signal,
-                    body:
-                      credential === "password"
-                        ? { password: text(data, "password") }
-                        : { code: text(data, "code").trim() },
-                  }),
-                ),
+              async (signal) => {
+                if (!submit)
+                  return result(
+                    client.POST("/api/v1/auth/reauthenticate", {
+                      signal,
+                      body: current,
+                    }),
+                  );
+                try {
+                  return await submit(current, signal);
+                } catch (error) {
+                  if (staysInDialog(error)) throw error;
+                  failed = true;
+                  onFailed?.(error);
+                  return undefined;
+                }
+              },
               (next) => {
-                queries.setQueryData(sessionOptions.queryKey, setSession(next));
-                onSettled(true);
+                if (failed) return;
+                if (!submit)
+                  queries.setQueryData(
+                    sessionOptions.queryKey,
+                    setSession(next as Schema["Session"]),
+                  );
+                onSettled(true, next);
               },
             ),
-          )
-        }
+          );
+        }}
       >
         <div ref={fields} className={styles.credential}>
           {credential === "password" ? (

@@ -26,5 +26,14 @@ func fixtureAgentWithFloor(version, floor string, keyAuth bool) []byte {
 	if keyAuth {
 		extra = `,"KeyAuth":1`
 	}
+	return fixtureAgentDescribing(version, floor, extra)
+}
+
+// fixtureAgentReading is a keyed fixtureAgent that reports reading journal formats up to state.
+func fixtureAgentReading(version string, state int) []byte {
+	return fixtureAgentDescribing(version, fixtureFloor, fmt.Sprintf(`,"KeyAuth":1,"StateVersion":%d`, state))
+}
+
+func fixtureAgentDescribing(version, floor, extra string) []byte {
 	return []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '{\"Version\":\"%s\",\"MinimumVersion\":\"%s\",\"Commit\":\"%s\",\"Protocol\":1,\"Arch\":\"%s\"%s}'\n", version, floor, fixtureCommit, runtime.GOARCH, extra))
 }

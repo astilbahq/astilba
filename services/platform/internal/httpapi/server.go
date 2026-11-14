@@ -95,6 +95,7 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 			return nil, e
 		}
 		s.Execution.ResetMail.Accounts, s.Execution.ResetMail.Origin, s.Execution.ResetMail.Log = s.Auth, s.Origin, s.Log
+		s.Execution.SecurityNotice.Accounts, s.Execution.SecurityNotice.Origin, s.Execution.SecurityNotice.Log = s.Auth, s.Origin, s.Log
 		s.Auth.Queue = s.Execution.Queue
 	}
 	s.Execution.Policy.Development = s.Development
@@ -431,14 +432,11 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.NewPassword](r)
-	if e == nil {
-		e = s.credentialRecent(r)
-	}
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.ChangePassword(r.Context(), *principal(r.Context()), value(b.Password))
+	a, e := s.Auth.ChangePassword(r.Context(), *principal(r.Context()), credential(b.Current), value(b.Password))
 	if e == nil {
 		e = s.rotate(r.Context(), a, len(a.TotpSecret) > 0)
 	}
@@ -523,11 +521,10 @@ func (s *Server) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendSession(w, r)
 }
+
+// EnrollMFA starts enrolment. It needs no confirmation, because the authenticator does nothing
+// until ConfirmMFA, which needs the password.
 func (s *Server) EnrollMFA(w http.ResponseWriter, r *http.Request) {
-	if e := s.credentialRecent(r); e != nil {
-		s.fail(w, r, e)
-		return
-	}
 	secret, uri, e := s.Auth.BeginMFA(r.Context(), *principal(r.Context()))
 	if e != nil {
 		s.fail(w, r, e)
@@ -536,23 +533,21 @@ func (s *Server) EnrollMFA(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, 200, api.MFAEnrollment{Secret: secret, Uri: uri})
 }
 func (s *Server) ConfirmMFA(w http.ResponseWriter, r *http.Request) {
-	b, e := decode[api.Code](r)
-	if e == nil {
-		e = s.credentialRecent(r)
-	}
+	b, e := decode[api.MFAConfirmation](r)
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	a, codes, e := s.Auth.ConfirmMFA(r.Context(), *principal(r.Context()), b.Code)
+	a, codes, e := s.Auth.ConfirmMFA(r.Context(), *principal(r.Context()), credential(b.Current), b.Code)
 	s.sendCodes(w, r, a, codes, e)
 }
 func (s *Server) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
-	if e := s.credentialRecent(r); e != nil {
+	b, e := decode[api.CredentialConfirmation](r)
+	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	a, codes, e := s.Auth.RegenerateRecovery(r.Context(), *principal(r.Context()))
+	a, codes, e := s.Auth.RegenerateRecovery(r.Context(), *principal(r.Context()), credential(b.Current))
 	s.sendCodes(w, r, a, codes, e)
 }
 func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account, codes []string, e error) {
@@ -571,11 +566,12 @@ func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account,
 	s.respond(w, 200, api.RecoveryCodes{Codes: codes, Session: session, Generation: a.RecoveryCodesGeneration})
 }
 func (s *Server) DisableMFA(w http.ResponseWriter, r *http.Request) {
-	if e := s.credentialRecent(r); e != nil {
+	b, e := decode[api.CredentialConfirmation](r)
+	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.DisableMFA(r.Context(), *principal(r.Context()))
+	a, e := s.Auth.DisableMFA(r.Context(), *principal(r.Context()), credential(b.Current))
 	if e == nil {
 		e = s.rotate(r.Context(), a, false)
 	}

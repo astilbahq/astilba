@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -22,7 +23,7 @@ func DecodeRecovery(raw []byte) (Archive, error) {
 		return Archive{}, ErrArchive
 	}
 	a, err := decodeArchiveMode(raw, true)
-	if err == nil && (a.Version < 5 || a.Version > ArchiveVersion) {
+	if err == nil && a.Version < 5 {
 		return a, ErrArchive
 	}
 	return a, err
@@ -55,24 +56,37 @@ func recoveryRowHash(raw []byte) string {
 
 // recoveryMergeOrder applies a table's rows in an order its unique indexes accept one row at a
 // time. Replacing a primary demotes one unit and promotes another, and primary_environment_unit
-// allows one primary per environment, so demotions go first.
+// allows one primary per environment, so demotions go first. A retired secret frees its name for a
+// new one, and secrets_current_name allows one live secret per name, so retirements go first.
 func recoveryMergeOrder(name string, rows []Row) ([]Row, error) {
-	if name != "deployment_units" {
+	var first func(Row) (bool, error)
+	switch name {
+	case "deployment_units":
+		first = func(row Row) (bool, error) {
+			var primary bool
+			if json.Unmarshal(row["primary_unit"], &primary) != nil {
+				return false, ErrArchive
+			}
+			return !primary, nil
+		}
+	case "secrets":
+		first = func(row Row) (bool, error) { return string(row["retired_at"]) != "null", nil }
+	default:
 		return rows, nil
 	}
-	demotions, promotions := []Row{}, []Row{}
+	early, late := []Row{}, []Row{}
 	for _, row := range rows {
-		var primary bool
-		if json.Unmarshal(row["primary_unit"], &primary) != nil {
-			return nil, ErrArchive
+		ahead, err := first(row)
+		if err != nil {
+			return nil, err
 		}
-		if primary {
-			promotions = append(promotions, row)
+		if ahead {
+			early = append(early, row)
 		} else {
-			demotions = append(demotions, row)
+			late = append(late, row)
 		}
 	}
-	return append(demotions, promotions...), nil
+	return append(early, late...), nil
 }
 
 func recoveryKeys(name string) string {
@@ -104,6 +118,27 @@ func recoveryKeys(name string) string {
 	default:
 		return "id"
 	}
+}
+
+// recoveryErasure takes an incoming erasure of a stored secret version, and says whether either row
+// is erased, which settles the version: its other columns never change.
+func recoveryErasure(ctx context.Context, tx pgx.Tx, ws uuid.UUID, existing []byte, incoming Row) (bool, error) {
+	var stored Row
+	if err := json.Unmarshal(existing, &stored); err != nil {
+		return false, err
+	}
+	if string(stored["erased_at"]) != "null" {
+		return true, nil
+	}
+	if string(incoming["erased_at"]) == "null" {
+		return false, nil
+	}
+	var id uuid.UUID
+	var at time.Time
+	if json.Unmarshal(incoming["id"], &id) != nil || json.Unmarshal(incoming["erased_at"], &at) != nil {
+		return false, ErrArchive
+	}
+	return true, db.New(tx).EraseRecoveredSecretVersion(ctx, db.EraseRecoveredSecretVersionParams{ErasedAt: at, WorkspaceID: ws, ID: id})
 }
 
 func RecoveryImmutable(name string) bool {
@@ -153,6 +188,17 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				if recoveryRowHash(existing) == recoveryRowHash(original) {
 					continue
 				}
+				// Erasing its value is the only change a secret version takes, and it is never undone:
+				// a checkpoint's erasure is taken, and a stored one kept.
+				if t.Name == "secret_versions" {
+					erased, err := recoveryErasure(ctx, tx, a.Workspace, existing, row)
+					if err != nil {
+						return err
+					}
+					if erased {
+						continue
+					}
+				}
 				attributed, err := db.New(tx).RecoveryRowAttribution(ctx, db.RecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryRowHash(original)})
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					return err
@@ -175,14 +221,17 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					}
 				}
 			}
-			// A recovered retirement may name an account this database never had.
-			if t.Name == "environments" && string(row["retired_by"]) != "null" {
+			// A recovered retirement or purge may name an account this database never had.
+			for _, field := range []string{"retired_by", "purged_by"} {
+				if t.Name != "environments" || string(row[field]) == "null" {
+					continue
+				}
 				var account uuid.UUID
-				if json.Unmarshal(row["retired_by"], &account) != nil {
+				if json.Unmarshal(row[field], &account) != nil {
 					return ErrArchive
 				}
 				if _, err := db.New(tx).AccountByID(ctx, account); errors.Is(err, pgx.ErrNoRows) {
-					setValue(row, "retired_by", owner)
+					setValue(row, field, owner)
 				} else if err != nil {
 					return err
 				}

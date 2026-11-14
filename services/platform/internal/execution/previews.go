@@ -191,7 +191,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = domain.ValidatePreviewTemplate(v.Spec, cfg.App); err != nil {
 			return err
 		}
-		if _, err = runnerEligible(ctx, tx, ws, cfg.Build.RunnerID, cfg.Build.Architecture, true, cfg.Build.UsesRailpack(), false); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, cfg.Build.RunnerID, cfg.Build.Architecture, true, cfg.Build.RailpackPins(), false); err != nil {
 			return err
 		}
 		if _, err = s.visualServer(ctx, tx, ws, cfg.Build.RunnerID); err != nil {
@@ -224,7 +224,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = s.validateVisualSecrets(ctx, tx, git.keys.inspect, ws, env, v.Spec); err != nil {
 			return err
 		}
-		if _, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, cfg.Build); err != nil {
+		if _, err = s.buildInputs(ctx, tx, git, ws, env, cfg.Build); err != nil {
 			return err
 		}
 		id, gen := uuid.New(), int64(1)

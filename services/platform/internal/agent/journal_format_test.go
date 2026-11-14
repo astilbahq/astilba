@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"os"
@@ -26,7 +27,7 @@ func legacyJournal(t *testing.T, seed func(*Journal)) (string, []byte) {
 	if seed != nil {
 		seed(j)
 	}
-	raw, err := stablejson.Marshal(j.keys)
+	raw, err := stablejson.Marshal(j.keys.Load())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,8 +91,8 @@ func TestLocalStateMigrationPreservesKeysCiphertextAndRecoveryEvidence(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		j.keys.Keys["retired"] = retired.Keys["retired"]
-		j.keys.Active = "retired"
+		j.keys.Load().Keys["retired"] = retired.Keys["retired"]
+		j.keys.Load().Active = "retired"
 		if err = j.SetConfig(expected); err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +110,7 @@ func TestLocalStateMigrationPreservesKeysCiphertextAndRecoveryEvidence(t *testin
 		}); err != nil {
 			t.Fatal(err)
 		}
-		j.keys.Active = "host"
+		j.keys.Load().Active = "host"
 		// Idle distributed runtimes retain a compatibility sentinel, which the
 		// existing update admission excludes from pending workload commands.
 		sentinelID, sentinelUnit := uuid.New(), uuid.New()
@@ -129,7 +130,7 @@ func TestLocalStateMigrationPreservesKeysCiphertextAndRecoveryEvidence(t *testin
 			t.Fatal(err)
 		}
 		keys, _ := cryptobox.Parse(legacy)
-		if deployment.Hash(j.keys) != deployment.Hash(keys) {
+		if deployment.Hash(j.keys.Load()) != deployment.Hash(keys) {
 			t.Fatal("migration changed active or retained key bytes")
 		}
 		cfg, err := j.Config()
@@ -224,7 +225,7 @@ func TestLocalStateMigrationCrashHelper(t *testing.T) {
 	if dir == "" {
 		return
 	}
-	_, err := openJournal(dir, func(at string) error {
+	_, err := openJournal(context.Background(), dir, nil, func(at string) error {
 		if at == point {
 			os.Exit(87)
 		}
@@ -360,5 +361,32 @@ func TestLocalStateFirstOpenSurvivesProcessCrash(t *testing.T) {
 				t.Fatal("missing-key refusal wrote initialized state")
 			}
 		})
+	}
+}
+
+func TestPreviousAgentRejectsSealedLocalStateBeforeJournalWrites(t *testing.T) {
+	previous := os.Getenv("PLAT_AGENT_PREVIOUS_BINARY")
+	if previous == "" {
+		t.Skip("requires the actual previous agent binary")
+	}
+	dir, _ := legacyJournal(t, nil)
+	j, err := OpenSealed(context.Background(), dir, func(context.Context) (KeyStore, error) { return InsecureKeyStore(), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = j.db.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte("recovery-gc")) }); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	before, _ := os.ReadFile(filepath.Join(dir, "journal.db"))
+	key, _ := os.ReadFile(filepath.Join(dir, "keyring.json"))
+	out, err := exec.Command(previous, "inspect-upgrades", "--state", dir).CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "invalid or unsupported agent local state envelope") {
+		t.Fatalf("previous binary did not refuse the sealed keyring: %v %s", err, out)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "journal.db"))
+	gotKey, _ := os.ReadFile(filepath.Join(dir, "keyring.json"))
+	if !bytes.Equal(before, after) || !bytes.Equal(key, gotKey) {
+		t.Fatal("previous binary wrote sealed state before refusing it")
 	}
 }

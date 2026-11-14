@@ -146,7 +146,7 @@ func publishedServer(t *testing.T, f *fixture, z *dnsZone) dnsServer {
 		t.Fatal(e)
 	}
 	var installation uuid.UUID
-	if e := f.st.Pool.QueryRow(ctx, "SELECT id FROM dns_installation").Scan(&installation); e != nil {
+	if e := f.st.Pool.QueryRow(ctx, "SELECT id FROM installation").Scan(&installation); e != nil {
 		t.Fatal(e)
 	}
 	s := dnsServer{f: f, b: b, ws: ws, id: enrolled.Server.Id, path: "/api/v1/workspaces/" + ws.String() + "/servers/" + enrolled.Server.Id.String(), marker: "astilba:" + installation.String() + ":" + enrolled.Server.Id.String()}

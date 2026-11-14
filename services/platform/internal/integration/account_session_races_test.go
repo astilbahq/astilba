@@ -10,7 +10,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -73,7 +72,7 @@ func TestLogoutBetweenCredentialChangeAndRenewal(t *testing.T) {
 	lineage := sessionLineage(t, f, loaded[0])
 
 	gate.armedCommit.Store(true)
-	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
+	finish := sendHeld(t, b, gate, loaded, "POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": f.password}})
 	b.call("POST", "/api/v1/auth/logout", nil, 204, nil)
 	release()
 
@@ -256,76 +255,6 @@ func TestImportRecencyLapsesBehindAccountLock(t *testing.T) {
 	}
 	if err := <-result; !errors.Is(err, domain.RecentRequired) {
 		t.Fatal("lapsed authentication imported a workspace: ", err)
-	}
-}
-
-// A change to the account's own credentials checks the shorter recent window before it
-// hashes a password or waits for the account. A window that lapses meanwhile no longer counts.
-func TestCredentialRecencyLapsesBehindAccountLock(t *testing.T) {
-	for _, change := range []struct {
-		name string
-		mfa  bool
-		// prepare runs before the account is held and returns the change.
-		prepare func(t *testing.T, ctx context.Context, f *fixture, p store.Principal) func() error
-	}{
-		{"change password", false, func(t *testing.T, ctx context.Context, f *fixture, p store.Principal) func() error {
-			return func() error {
-				_, err := f.auth.ChangePassword(ctx, p, "replacement password here")
-				return err
-			}
-		}},
-		{"confirm MFA", false, func(t *testing.T, ctx context.Context, f *fixture, p store.Principal) func() error {
-			secret, _, err := f.auth.BeginMFA(ctx, p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return func() error {
-				_, _, err := f.auth.ConfirmMFA(ctx, p, codeAt(t, secret, time.Now()))
-				return err
-			}
-		}},
-		{"disable MFA", true, func(t *testing.T, ctx context.Context, f *fixture, p store.Principal) func() error {
-			return func() error {
-				_, err := f.auth.DisableMFA(ctx, p)
-				return err
-			}
-		}},
-		{"regenerate recovery codes", true, func(t *testing.T, ctx context.Context, f *fixture, p store.Principal) func() error {
-			return func() error {
-				_, _, err := f.auth.RegenerateRecovery(ctx, p)
-				return err
-			}
-		}},
-	} {
-		t.Run(change.name, func(t *testing.T) {
-			f := setup(t)
-			ctx := context.Background()
-			if change.mfa {
-				enableMFA(t, f.browser(t).withLogin("owner@example.test", f.password))
-			}
-			account, err := f.st.Queries.AccountByID(ctx, f.owner)
-			if err != nil {
-				t.Fatal(err)
-			}
-			principal := browserPrincipal(t, f.st, account, change.mfa)
-			principal.CredentialRecentUntil = time.Now().Add(2 * time.Second)
-			run := change.prepare(t, ctx, f, principal)
-			before := accountCredentials(t, f)
-			held := holdAccount(t, f)
-			result := make(chan error, 1)
-			go func() { result <- run() }()
-			awaitLockWait(t, f, "name: LockAccount")
-			time.Sleep(time.Until(principal.CredentialRecentUntil))
-			if err := held.Rollback(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err := <-result; !errors.Is(err, domain.RecentRequired) {
-				t.Fatal("lapsed authentication changed the account's credentials: ", err)
-			}
-			if after := accountCredentials(t, f); after != before {
-				t.Fatalf("a lapsed session's change committed:\n%s\n%s", before, after)
-			}
-		})
 	}
 }
 

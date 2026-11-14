@@ -34,20 +34,23 @@ SELECT * FROM environment_layouts WHERE workspace_id=$1 AND environment_id=$2;
 INSERT INTO environment_layouts(workspace_id,environment_id,positions) VALUES($1,$2,$3)
 ON CONFLICT(workspace_id,environment_id) DO UPDATE SET positions=EXCLUDED.positions,updated_at=now() RETURNING *;
 -- name: ListSecrets :many
-SELECT s.id,s.name,v.id AS version_id,v.created_at FROM secrets s JOIN secret_versions v
-ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2 ORDER BY s.name,v.created_at DESC;
+-- Retired secrets and erased versions are kept for the specifications that name them, not listed.
+SELECT s.id,s.name,v.id AS version_id,v.created_at,v.plaintext_bytes FROM secrets s JOIN secret_versions v
+ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2
+AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC,v.id DESC;
 -- name: GetSecret :one
-SELECT * FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3;
+SELECT * FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3 AND retired_at IS NULL;
 -- name: InsertSecret :exec
 INSERT INTO secrets(workspace_id,environment_id,id,name) VALUES($1,$2,$3,$4);
 -- name: InsertSecretVersion :one
 INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id,plaintext_bytes,json_bytes)
 VALUES(@workspace_id,@secret_id,@id,@encrypted_value,@author_id,sqlc.narg(plaintext_bytes)::integer,sqlc.narg(json_bytes)::integer) RETURNING id,created_at;
 -- name: GetSecretVersion :one
+-- An erased version has no value, so every reader finds it missing.
 SELECT v.* FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3;
+WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3 AND v.erased_at IS NULL;
 -- name: AllEncryptedVersions :many
-SELECT workspace_id,id,encrypted_value FROM secret_versions FOR UPDATE;
+SELECT workspace_id,id,encrypted_value FROM secret_versions WHERE erased_at IS NULL FOR UPDATE;
 -- name: RewrapSecretVersion :exec
 UPDATE secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id=$2;
 -- name: AllTOTPSecrets :many
@@ -98,9 +101,9 @@ SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR 
 -- name: UnmeasuredSecretVersions :many
 -- unscoped: the job that measures values goes through every workspace's, a batch at a time.
 SELECT workspace_id,id,encrypted_value FROM secret_versions
-WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND (workspace_id,id) > (@after_workspace::uuid,@after_id::uuid)
+WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND erased_at IS NULL AND (workspace_id,id) > (@after_workspace::uuid,@after_id::uuid)
 ORDER BY workspace_id,id LIMIT @batch;
 
 -- name: MeasureSecretVersion :exec
 UPDATE secret_versions SET plaintext_bytes = @plaintext_bytes::integer, json_bytes = @json_bytes::integer
-WHERE workspace_id = @workspace_id AND id = @id;
+WHERE workspace_id = @workspace_id AND id = @id AND erased_at IS NULL;

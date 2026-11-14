@@ -68,20 +68,6 @@ func (q *Queries) CountStrandedDNSPublications(ctx context.Context, arg CountStr
 	return count, err
 }
 
-const dNSInstallation = `-- name: DNSInstallation :one
-
-SELECT id FROM dns_installation
-`
-
-// Application DNS publications: where this installation may have provider records,
-// and the audit of every record it deleted. See docs/hosting.md#generated-application-names.
-func (q *Queries) DNSInstallation(ctx context.Context) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, dNSInstallation)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
 const deleteDNSPublication = `-- name: DeleteDNSPublication :exec
 DELETE FROM dns_publications WHERE server_id = $1 AND base = $2 AND zone = $3
 `
@@ -132,6 +118,7 @@ func (q *Queries) InsertDNSRecordRemoval(ctx context.Context, arg InsertDNSRecor
 }
 
 const listDNSPublications = `-- name: ListDNSPublications :many
+
 SELECT workspace_id,base,zone,revoked FROM dns_publications WHERE server_id = $1 ORDER BY base,zone
 `
 
@@ -142,6 +129,8 @@ type ListDNSPublicationsRow struct {
 	Revoked     bool      `json:"revoked"`
 }
 
+// Application DNS publications: where this installation may have provider records,
+// and the audit of every record it deleted. See docs/hosting.md#generated-application-names.
 // unscoped: a DNS job names the server; each row carries the workspace it was recorded for.
 func (q *Queries) ListDNSPublications(ctx context.Context, serverID uuid.UUID) ([]ListDNSPublicationsRow, error) {
 	rows, err := q.db.Query(ctx, listDNSPublications, serverID)

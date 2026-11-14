@@ -23,14 +23,16 @@ WHERE r.state<>'deleted' AND r.next_check_at<=now()
 ORDER BY due.turn,due.next_check_at,due.id LIMIT 20 FOR UPDATE OF r SKIP LOCKED;
 
 -- name: ReleaseRevokedHostPreviews :many
--- A policy runs every preview on its reserved host, and once that host is revoked nothing it says
--- can be accepted, so these could never be confirmed removed and would hold their slots for good.
--- Only allocated previews hold a slot. Management's runtime records stay as last known, but
--- ServerControllerInventory no longer expects them on the host.
+-- Once a host is revoked nothing it says can be accepted, so the previews it runs could never be
+-- confirmed removed and would hold their slots for good. Only allocated previews hold a slot. A
+-- preview runs where allocation placed its environment's unit, on its policy's host, and a policy
+-- can't change host while it has one. Matching the unit rather than the policy also holds when
+-- offline recovery keeps a copy of the policy that names a host the policy has since left.
+-- Management's runtime records stay as last known, but ServerControllerInventory no longer expects
+-- them on the host.
 UPDATE preview_requests r SET state='deleted',note = @note,released_by_revocation=true,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day'
-FROM preview_policies p
-WHERE p.workspace_id=r.workspace_id AND p.id=r.policy_id AND r.workspace_id = @workspace_id AND p.server_id = @server_id
-    AND r.environment_id IS NOT NULL AND r.state<>'deleted'
+WHERE r.workspace_id = @workspace_id AND r.environment_id IS NOT NULL AND r.state<>'deleted'
+    AND EXISTS(SELECT 1 FROM deployment_units u WHERE u.workspace_id=r.workspace_id AND u.environment_id=r.environment_id AND u.server_id = @server_id::uuid)
 RETURNING r.environment_id::uuid AS environment_id;
 
 -- name: WithdrawRevokedHostPreviewApprovals :exec

@@ -108,7 +108,7 @@ type layerMetadataRefused struct{ metadata int64 }
 func (e *layerMetadataRefused) Error() string { return "a layer has too much file metadata" }
 
 func (e *layerMetadataRefused) note(layer string) error {
-	return &imageLoadRefused{fmt.Sprintf("The built image was not loaded: its layer %s has at least %d MiB of file names and directory headers, which Docker holds in memory while unpacking it, and the limit is %d MiB a layer. Split large copies, such as dependency directories, across several layers, or build to a registry instead. Existing workloads are unchanged.", truncated(layer, 19), e.metadata>>20, layerMetadataBytes>>20)}
+	return &imageLoadRefused{fmt.Sprintf("its layer %s has at least %d MiB of file names and directory headers, which Docker holds in memory while unpacking it, and the limit is %d MiB a layer", truncated(layer, 19), e.metadata>>20, layerMetadataBytes>>20), "Split large copies, such as dependency directories, across several layers."}
 }
 
 // errLayerHeaders refuses an entry with more header data than any image needs, which also

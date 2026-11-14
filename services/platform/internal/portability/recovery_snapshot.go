@@ -12,35 +12,128 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CaptureRecovery preserves existing credential ciphertext. Its result must be
-// sealed with the management keyring before leaving the management process.
-// This is an internal offline-recovery source, never a browser archive response.
+// CaptureRecovery captures a recovery base with the full window. Its result preserves existing
+// credential ciphertext and must be sealed with the management keyring before leaving the
+// management process. It is an internal offline-recovery source, never a browser archive response.
 func CaptureRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
-	raw, _, err := CaptureRecoveryAt(ctx, tx, ws)
-	return raw, err
+	capture, err := CaptureRecoveryBase(ctx, tx, ws, RecoveryWindowTarget, AllChanges, nil)
+	return capture.Raw, err
 }
 
-// CaptureRecoveryAt is CaptureRecovery, and also returns the base's capture time.
-func CaptureRecoveryAt(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, time.Time, error) {
-	archive := Archive{Version: ArchiveVersion, Workspace: ws}
+// RecoveryCapture is a captured base, the window its applied history covers, and how many items
+// that window holds: changes after each environment's change from before it, and settled
+// operations.
+type RecoveryCapture struct {
+	Raw         []byte
+	CapturedAt  time.Time
+	WindowStart time.Time
+	Changes     int
+}
+
+// RecoveryCapturing carries what one capture learns into the next, when a base is captured again
+// with a shorter window: the command identities it computed, by operation.
+type RecoveryCapturing struct {
+	identities map[uuid.UUID]string
+}
+
+// AllChanges asks CaptureRecoveryBase for everything in its window that fits.
+const AllChanges = -1
+
+// CaptureRecoveryBase captures a recovery base whose applied history reaches window back, or less
+// when that doesn't fit the archive's limits, or holds more than changes changes and settled
+// operations (unless changes is AllChanges): the window then starts at the newest change that still fits, and the base carries
+// only the retired previews and history that window needs. It refuses a workspace whose
+// configuration and fixed history windows alone don't fit, or that can't fit a day of changes.
+// The base is decoded as recovery will decode it before it is returned.
+func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window time.Duration, changes int, capturing *RecoveryCapturing) (RecoveryCapture, error) {
+	if capturing == nil {
+		capturing = &RecoveryCapturing{}
+	}
+	if capturing.identities == nil {
+		capturing.identities = map[uuid.UUID]string{}
+	}
+	archive := Archive{Version: RecoveryArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
 	if err != nil {
-		return nil, time.Time{}, err
+		return RecoveryCapture{}, err
 	}
 	archive.Name, archive.RequireMFA, archive.CreatedAt = header.Name, header.RequireMfa, header.CapturedAt
-	archive, err = captureArchive(ctx, tx, archive, captureBase)
-	if err != nil {
-		return nil, time.Time{}, err
+	start := archive.CreatedAt.Add(-window)
+	var selected time.Time
+	size, count, over := 0, 0, 0
+	history := &RecoveryHistory{TargetDays: int(RecoveryWindowTarget / (24 * time.Hour))}
+	// Each pass narrows the window or learns that its settled list overflowed, so the window only
+	// moves later.
+	for range 6 {
+		if !start.Equal(selected) {
+			filters, err := baseSelection(ctx, tx, ws, start.Add(-recoveryFallbackMargin))
+			if err != nil {
+				return RecoveryCapture{}, err
+			}
+			if archive, size, count, err = captureTables(ctx, tx, archive, filters, true); err != nil {
+				return RecoveryCapture{}, err
+			}
+			if history.Superseded, err = recoverySuperseded(ctx, tx, ws); err != nil {
+				return RecoveryCapture{}, err
+			}
+			selected = start
+		}
+		environments := len(archive.Tables["environments"])
+		records := maxArchiveRecords - count - len(history.Superseded) - 2*environments - over
+		bytes := (MaxArchiveBytes-size)/recoveryEntryBytes - len(history.Superseded) - environments - over
+		limit := min(records, bytes)
+		if changes != AllChanges {
+			limit = min(limit, changes+1)
+		}
+		next, err := recoveryWindowStart(ctx, tx, ws, start, limit)
+		if err != nil {
+			return RecoveryCapture{}, err
+		}
+		if !next.Before(archive.CreatedAt) {
+			return RecoveryCapture{}, ErrArchive
+		}
+		if !next.Equal(start) {
+			start = next
+			continue
+		}
+		history.WindowStart = start
+		if history.Environments, history.Applied, err = recoveryLedger(ctx, tx, ws, start, capturing.identities); err != nil {
+			return RecoveryCapture{}, err
+		}
+		if history.Settled, err = recoverySettled(ctx, tx, ws, start, history.Applied); err != nil {
+			return RecoveryCapture{}, err
+		}
+		// The cut counts the window's changes and settled roots. A settled operation it doesn't,
+		// such as a runtime change in an environment the base no longer carries, or a root that
+		// ended while the capture ran, can still pass the record limit.
+		if excess := count + history.Records() - maxArchiveRecords; excess > 0 {
+			over += excess
+			continue
+		}
+		archive.Recovery = history
+		raw, err := stablejson.Marshal(archive)
+		if err != nil || len(raw) > MaxArchiveBytes {
+			clear(raw)
+			return RecoveryCapture{}, ErrArchive
+		}
+		if _, err = DecodeRecovery(raw); err != nil {
+			clear(raw)
+			return RecoveryCapture{}, err
+		}
+		floors := 0
+		for _, e := range history.Environments {
+			if !e.Whole {
+				floors++
+			}
+		}
+		return RecoveryCapture{Raw: raw, CapturedAt: archive.CreatedAt, WindowStart: start, Changes: len(history.Applied) - floors + len(history.Settled)}, nil
 	}
-	raw, err := stablejson.Marshal(archive)
-	if err != nil || len(raw) > MaxArchiveBytes {
-		return nil, time.Time{}, ErrArchive
-	}
-	return raw, archive.CreatedAt, nil
+	return RecoveryCapture{}, ErrArchive
 }
 
 // InspectRecovery reads trusted database state, including a union of individually
-// bounded recovery bases. External decoding and new-base admission stay bounded.
+// bounded recovery bases. External decoding and new-base admission stay bounded. Its recovery
+// section holds only the applied history an earlier recovery kept without rows, and no window.
 func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, string, error) {
 	archive := Archive{Version: ArchiveVersion, Workspace: ws}
 	header, err := db.New(tx).WorkspaceRecoveryHeader(ctx, ws)
@@ -52,43 +145,18 @@ func InspectRecovery(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (Archive, str
 	if err != nil {
 		return archive, "", err
 	}
+	// The state hash covers the tables; the applied history kept without rows is evidence only.
 	hash, err := recoveryStateHash(archive)
+	if err != nil {
+		return archive, "", err
+	}
+	applied, err := RecoveredHistory(ctx, tx, ws)
+	if err != nil {
+		return archive, "", err
+	}
+	archive.Recovery = &RecoveryHistory{Applied: applied}
 	return archive, hash, err
 }
-
-// retainedOperations is the operation history a recovery base carries. Operation rows are never
-// deleted, so a base holding all of them would eventually pass the archive's record limit and stop
-// every cross-host deployment. A base keeps:
-//   - work that hasn't ended, and the children of a parent that hasn't;
-//   - every operation that applied or removed a runtime, because recovery checks a newer base
-//     against the exact operation an older base or backup applied;
-//   - every standalone network removal, because recovery needs the last state of one that a
-//     restored backup or an older base holds unfinished;
-//   - every operation another archived row names, as the import's reference checks require;
-//   - the newest 100, and any as old as the 100th, which covers the history the app lists;
-//   - the parents of all of these.
-//
-// What's left is ended housekeeping, such as network configure and identify, agent update and
-// single-host backup commands. Its rows stay in this database, but a workspace recovered from a
-// backup older than them doesn't get them back. RecoveryBases drops an older base's unfinished
-// copy of one that a later base leaves out. An export chooses its operations itself
-// (exportSelection).
-const retainedOperations = ` AND id IN (WITH RECURSIVE kept(id) AS (
-	SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND (o.state NOT IN ('succeeded','failed','cancelled') OR o.runtime_outcome IS NOT NULL OR o.parent_id IS NULL AND o.kind='network' AND o.command->'network'->>'action'='restrict')
-	UNION SELECT o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.created_at>=COALESCE((SELECT n.created_at FROM execution_operations n WHERE n.workspace_id=$1 ORDER BY n.created_at DESC OFFSET 99 LIMIT 1),'-infinity')
-	UNION SELECT c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state NOT IN ('succeeded','failed','cancelled')
-	UNION SELECT runtime_operation_id FROM environments WHERE workspace_id=$1
-	UNION SELECT retirement_operation_id FROM environments WHERE workspace_id=$1
-	UNION SELECT id FROM cross_host_operations WHERE workspace_id=$1
-	UNION SELECT parent_id FROM cross_host_approvals WHERE workspace_id=$1
-	UNION SELECT parent_id FROM cross_host_reservations WHERE workspace_id=$1
-	UNION SELECT operation_id FROM visual_requests WHERE workspace_id=$1
-	UNION SELECT id FROM pipeline_runs WHERE workspace_id=$1
-	UNION SELECT operation_id FROM pipeline_auto_deployments WHERE workspace_id=$1
-	UNION SELECT build_id FROM preview_requests WHERE workspace_id=$1
-	UNION SELECT operation_id FROM preview_requests WHERE workspace_id=$1
-	UNION SELECT o.parent_id FROM execution_operations o JOIN kept k ON k.id=o.id WHERE o.workspace_id=$1
-) SELECT id FROM kept)`
 
 // captureMode says which rows a capture reads.
 type captureMode int
@@ -97,84 +165,67 @@ const (
 	// captureAll is management's own view of its database, which recovery compares and merges
 	// against. It is never sealed or exported, so it has no limits.
 	captureAll captureMode = iota
-	// captureBase is a recovery base. It keeps retainedOperations, and of the immutable history
-	// recovery never reads, only what the app lists: the newest 100 audit events, and each
-	// environment's newest 50 revisions plus every revision a carried row names.
-	captureBase
 	// captureExport is a workspace export, which carries what the app lists (exportSelection).
 	captureExport
 )
 
-// baseFilters trims, in a recovery base, immutable tables that recovery never reads. Dropping a
-// row a later base omits can't bring back an older copy of it, because these rows never change.
-var baseFilters = map[string]string{
-	"execution_operations":    retainedOperations,
-	"audit_events":            ` AND id IN (SELECT id FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100)`,
-	"specification_revisions": ` AND id IN (` + referencedRevisions + ` UNION SELECT id FROM (SELECT id,row_number() OVER (PARTITION BY environment_id ORDER BY created_at DESC,id DESC) n FROM specification_revisions WHERE workspace_id=$1) r WHERE n<=50)`,
-}
+// maxArchiveRecords is the most rows, and recovery section entries, an archive holds.
+const maxArchiveRecords = 10000
 
-// referencedRevisions is every revision a foreign key names, from tables a base carries whole.
-// inline-sql: a subquery of the compiled base filter for specification_revisions
-const referencedRevisions = `SELECT draft_revision_id FROM environments WHERE workspace_id=$1
-	UNION SELECT applied_revision_id FROM environments WHERE workspace_id=$1
-	UNION SELECT revision_id FROM execution_plans WHERE workspace_id=$1
-	UNION SELECT revision_id FROM visual_requests WHERE workspace_id=$1
-	UNION SELECT imported_revision_id FROM git_sources WHERE workspace_id=$1
-	UNION SELECT revision_id FROM pipeline_runs WHERE workspace_id=$1
-	UNION SELECT revision_id FROM git_submissions WHERE workspace_id=$1
-	UNION SELECT revision_id FROM source_submissions WHERE workspace_id=$1
-	UNION SELECT revision_id FROM pipeline_auto_deployments WHERE workspace_id=$1
-	UNION SELECT revision_id FROM preview_policies WHERE workspace_id=$1
-	UNION SELECT revision_id FROM backup_cutovers WHERE workspace_id=$1`
-
-// captureArchive reads every archived table. A recovery base or an export carries only what its
-// mode keeps and refuses past the archive's limits.
+// captureArchive reads every archived table. An export carries only what it selects and refuses
+// past the archive's limits.
 func captureArchive(ctx context.Context, tx pgx.Tx, archive Archive, mode captureMode) (Archive, error) {
-	archive.Tables = map[string][]Row{}
-	filters := baseFilters
+	var filters map[string]string
 	if mode == captureExport {
 		var err error
 		if filters, err = exportSelection(ctx, tx, archive.Workspace); err != nil {
 			return archive, err
 		}
 	}
-	bounded := mode != captureAll
+	archive, _, _, err := captureTables(ctx, tx, archive, filters, mode != captureAll)
+	return archive, err
+}
+
+// captureTables reads each archived table through its filter, and reports the rows' size and
+// number. A bounded capture refuses past the archive's limits.
+func captureTables(ctx context.Context, tx pgx.Tx, archive Archive, filters map[string]string, bounded bool) (Archive, int, int, error) {
+	archive.Tables = map[string][]Row{}
 	size, count := 0, 0
 	for _, table := range tables {
 		filter := ""
 		if bounded {
-			filter = filters[table.Name] + " LIMIT 10001"
+			filter = filters[table.Name] + fmt.Sprintf(" LIMIT %d", maxArchiveRecords+1)
 		}
 		// inline-sql: identifiers come from the compiled portability table list
 		rows, err := tx.Query(ctx, fmt.Sprintf("SELECT to_jsonb(t) FROM (SELECT %s FROM %s WHERE workspace_id=$1%s) t ORDER BY to_jsonb(t)::text", table.Columns, table.Name, filter), archive.Workspace)
 		if err != nil {
-			return archive, err
+			return archive, 0, 0, err
 		}
 		archive.Tables[table.Name] = []Row{}
 		for rows.Next() {
 			var raw []byte
 			if err := rows.Scan(&raw); err != nil {
 				rows.Close()
-				return archive, err
+				return archive, 0, 0, err
 			}
 			count++
 			size += len(raw)
-			if bounded && (count > 10000 || size > MaxArchiveBytes) {
+			if bounded && (count > maxArchiveRecords || size > MaxArchiveBytes) {
 				rows.Close()
-				return archive, ErrArchive
+				return archive, 0, 0, ErrArchive
 			}
 			var row Row
 			if err := json.Unmarshal(raw, &row); err != nil {
 				rows.Close()
-				return archive, err
+				return archive, 0, 0, err
 			}
 			archive.Tables[table.Name] = append(archive.Tables[table.Name], row)
 		}
 		err = rows.Err()
 		rows.Close()
 		if err != nil {
-			return archive, err
+			return archive, 0, 0, err
 		}
 	}
-	return archive, nil
+	return archive, size, count, nil
 }

@@ -7,6 +7,7 @@ import { Checkbox } from "./components/checkbox";
 import { Input } from "./components/input";
 import { Label } from "./components/label";
 import { Select } from "./components/select";
+import { CrossHostRecovery } from "./features/cross-host-recovery";
 import { SecretAccess } from "./features/secret-access/secret-access";
 import { SessionHistory } from "./features/troubleshooting/session-history";
 import { useAuditActionText } from "./features/troubleshooting/session-text";
@@ -57,6 +58,7 @@ export function Members() {
         <h1>A place for your team.</h1>
       </div>
       <WorkspaceSubscription workspaceId={id} owner={ws?.role === "owner"} />
+      {ws && ws.role !== "viewer" && <CrossHostRecovery workspaceId={id} />}
       {ws?.role === "owner" && <WorkspaceExport workspaceId={id} />}
       <ErrorNotice
         error={

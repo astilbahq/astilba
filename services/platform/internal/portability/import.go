@@ -22,7 +22,15 @@ func decodeArchive(raw []byte) (Archive, error) {
 
 func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
-	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > ArchiveVersion || archive.Workspace == uuid.Nil {
+	newest := ArchiveVersion
+	if recovery {
+		newest = RecoveryArchiveVersion
+	}
+	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > newest || archive.Workspace == uuid.Nil {
+		return archive, ErrArchive
+	}
+	// Only a recovery base carries a recovery section, from the version that added it.
+	if (archive.Recovery != nil) != (archive.Version >= RecoveryArchiveVersion) {
 		return archive, ErrArchive
 	}
 	if archive.Version == 1 {
@@ -77,6 +85,24 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 		}
 	}
+	if archive.Version < 9 {
+		// Nothing was purged, retired or erased before version 9.
+		fields := map[string]map[string]any{
+			"environments":    {"purged_at": nil, "purged_by": nil, "purge_operation_id": nil, "purged_without_host": false},
+			"secrets":         {"retired_at": nil},
+			"secret_versions": {"erased_at": nil},
+		}
+		for table, values := range fields {
+			for _, row := range archive.Tables[table] {
+				for field, value := range values {
+					if _, exists := row[field]; exists {
+						return archive, ErrArchive
+					}
+					setValue(row, field, value)
+				}
+			}
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -87,7 +113,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	if e != nil || name != archive.Name {
 		return archive, ErrArchive
 	}
-	count := 0
+	count := archive.Recovery.Records()
 	for _, table := range tables {
 		rows, ok := archive.Tables[table.Name]
 		if !ok || rows == nil {
@@ -96,7 +122,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		columns := strings.Split(table.Columns, ",")
 		for _, row := range rows {
 			count++
-			if count > 10000 || len(row) != len(columns) {
+			if count > maxArchiveRecords || len(row) != len(columns) {
 				return archive, ErrArchive
 			}
 			for _, column := range columns {
@@ -137,6 +163,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	refs := []struct{ table, column, target string }{
 		{"environments", "runtime_operation_id", "execution_operations"},
 		{"environments", "retirement_operation_id", "execution_operations"},
+		{"environments", "purge_operation_id", "execution_operations"},
 		{"backup_cutovers", "source_plan_id", "visual_requests"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
@@ -184,6 +211,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			if e != nil || !ids[id] {
 				return archive, ErrArchive
 			}
+		}
+	}
+	if archive.Recovery != nil {
+		if e = validateRecoveryHistory(archive); e != nil {
+			return archive, e
 		}
 	}
 	return archive, nil
@@ -350,9 +382,12 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				if e != nil {
 					return out, e
 				}
-				// The account that retired it is not in this installation; the importer answers for it.
-				if string(row["retired_by"]) != "null" {
-					setValue(row, "retired_by", p.Account.ID)
+				// The account that retired or purged it is not in this installation; the importer
+				// answers for it.
+				for _, field := range []string{"retired_by", "purged_by"} {
+					if string(row[field]) != "null" {
+						setValue(row, field, p.Account.ID)
+					}
 				}
 				applied[id] = row["applied_revision_id"]
 				appliedOperations[id] = row["runtime_operation_id"]
@@ -516,7 +551,8 @@ func checkReleasedRoutes(a Archive) error {
 		if json.Unmarshal(row["state"], &state) != nil || json.Unmarshal(row["retired_without_host"], &withoutHost) != nil {
 			return ErrArchive
 		}
-		if state == "retired" && !withoutHost {
+		// A purge follows a confirmed retirement, which released them.
+		if (state == "retired" || state == "purging" || state == "purged") && !withoutHost {
 			id, err := rowString(row, "id")
 			if err != nil {
 				return err

@@ -49,14 +49,17 @@ export function EnvironmentDetail(props: EnvProps) {
     open: boolean;
   }>({ change: "retire", open: false });
   // The state a lifecycle change reached, announced until the environment moves on from it. A
-  // retirement its server finishes later is announced when the poll sees it land; an environment
-  // that opens already retired is not.
+  // retirement or purge its server finishes later is announced when the poll sees it land; an
+  // environment that opens already retired or purged is not.
   const [changed, setChanged] = useState<Schema["Environment"]["state"]>();
   const [seen, setSeen] = useState(props.environment.state);
   if (seen !== props.environment.state) {
     setSeen(props.environment.state);
-    if (seen === "retiring" && props.environment.state === "retired")
-      setChanged("retired");
+    if (
+      (seen === "retiring" && props.environment.state === "retired") ||
+      (seen === "purging" && props.environment.state === "purged")
+    )
+      setChanged(props.environment.state);
   }
   const title = useRef<HTMLHeadingElement>(null);
   const status = useRef<HTMLHeadingElement>(null);
@@ -129,7 +132,15 @@ export function EnvironmentDetail(props: EnvProps) {
               ? t(($) => $.lifecycle.retired)
               : changed === "retiring"
                 ? t(($) => $.lifecycle.retirementStarted)
-                : t(($) => $.lifecycle.restored)}
+                : changed === "purged"
+                  ? // The dialog publishes the purge's result before the page renders it, so
+                    // this reads the same environment it returned.
+                    props.environment.purgedWithoutHost
+                    ? t(($) => $.lifecycle.purgedWithoutHost)
+                    : t(($) => $.lifecycle.purged)
+                  : changed === "purging"
+                    ? t(($) => $.lifecycle.purgeStarted)
+                    : t(($) => $.lifecycle.restored)}
           </p>
         )}
       </div>

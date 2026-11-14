@@ -178,6 +178,8 @@ profile if fixtures remain. The rest must be asked for by name:
 | `TestNativeBackupOfStoppedWriter`, `TestNativeRefusedReservationOfStoppedWriterCompletes`, `TestNativeBackupOfWriterFailingItsHealthCheck`, `TestNativeBackupOfWriterFailingItsReadiness`, `TestNativeReservationRefusesChangedConfiguration`, `TestNativePauseRefusesAWriterStoppedSinceReserving`, `TestNativeWriterAlreadyFailingThatCannotRestart`, `TestNativeAcceptingAWriterThatCannotStart`, `TestNativeAcceptingAWriterThatDoesNotComeBack` | Nothing more, but they wait out readiness probes for about a minute and a half in all |
 | `TestNativeComposeDeployment` | Publishes a loopback host port; the pinned Compose plugin and PostgreSQL image |
 | `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d`; nftables 1.0.9 and AppArmor with `apparmor_parser`; creates a host namespace and veth pair for its private fixtures |
+| `TestNativePullRefusesBlobsUnlikeTheirDescriptors`, `TestNativePullWatchStopsAPullBeyondItsMeasure`, `TestNativePullPutsAMultiPlatformImageInDocker` | Write `/etc/docker/certs.d`. The watch test serves a 1.5 GiB layer and makes Docker take about 1 GiB of its storage before the agent stops the pull, leaving the partial download in containerd's ingest directory |
+| `TestNativeComposePullPolicyKeepsRunningContainers` | The pinned Compose plugin |
 | `TestNativeBuilderConfinement` | AppArmor with `apparmor_parser`, user namespaces and nftables 1.0.9; runs one privileged container, which mounts the host's Docker disk a second time and writes a kernel setting back unchanged |
 | `TestNativeBuildNetwork` | nftables 1.0.9, AppArmor with `apparmor_parser`, Git `http-backend`, a private primary IPv4 address and access to `registry-1.docker.io`; creates a host namespace, veth pair and Docker network |
 | `TestNativeVisualDeployment` | Ingress publishes host ports 80, 443 and 15432; the pinned Compose plugin and `/opt/astilba-platform-tools/restic` |
@@ -397,7 +399,8 @@ later needs no list:
   `runtime`, any other `CI`;
 - every `tool` directive in a tracked `go.mod`, with the requirement that provides it;
 - every GitHub release download in a tracked file, with the version in its URL or in a
-  constant of the same file. A version it cannot read stops the report.
+  constant of the same file. A release link it cannot read, such as `releases/latest`, stops
+  the report.
 
 For each image it reads the pinned manifest and checks its bytes against the digest. It
 pulls the `linux/amd64` and `linux/arm64` images, the platforms Astilba runs, by their
@@ -411,7 +414,8 @@ calendar version such as `mise-2026.10.14` can become any later date. A pin can 
 narrower track than its line: `.github/pinned-releases.json` names such an image or tool,
 with a pattern every release on its track matches and the reason, and only those releases
 count. nginx follows its stable releases, whose minor version is even, so a mainline
-release such as 1.31.8 is not an update to 1.30.6. A pin off its own track is reported as
+release such as 1.31.8 is not an update to 1.30.6. Railpack's builder and runtime images
+and its mise follow the release Railpack itself pins, so they move only with Railpack. A pin off its own track is reported as
 a check that failed, and `make check-ci` fails if a track names nothing pinned. Go tools are
 compared through the Go module proxy, and release binaries through GitHub's releases
 without drafts or pre-releases.
@@ -434,7 +438,18 @@ image. The run's summary lists every finding. An image of one static binary, suc
 
 The report does not apply the release-age gate, so a security release is heard of at
 once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
-change by themselves. Registry requests, pulls and scans repeat like
+change by themselves. An image or a release binary waits seven days, the Docker
+cooldown in `.github/dependabot.yml`, judged by when the pinned digest was pushed or the
+release was published, or by an asset's later replacement. A bump of either is held
+until then, and its pull request names the date. `node scripts/release-age.mjs origin/main`
+fails for any release binary a branch adds, or that a file it changes downloads, that is
+younger than that cooldown. No script
+checks an image's age: Docker Hub gives a push time only for a tag, not for each digest,
+so whoever bumps an image reads it from the registry's own record of the push: the tag's
+last push on Docker Hub, or the package version's creation on GitHub's container registry
+(`gh api /orgs/<owner>/packages/container/<name>/versions`). An image configuration's
+`created` time is set by whoever builds the image and can be backdated, so it counts only
+where the registry keeps no record of its own, and the pull request says so. Registry requests, pulls and scans repeat like
 [host downloads](#host-downloads) until one has failed for that long; the rest of the
 run then tries each a few times. A registry request ends within a minute, and no image
 check starts or runs past 90 minutes; the tool checks after them are bounded by their

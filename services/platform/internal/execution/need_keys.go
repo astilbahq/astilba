@@ -34,7 +34,9 @@ func (k *passKeys) get() (*secretbroker.Session, error) {
 	if k.session != nil && k.session.Live() {
 		return k.session, nil
 	}
-	return nil, &providerCall{fetch: k.begin}
+	// Calls a pass joins may each ask for the session, so the call begins one only when none is
+	// live by then.
+	return nil, &providerCall{fetch: func(ctx context.Context) { _, _ = k.ensure(ctx) }}
 }
 
 // ensure is get for code that runs between passes, with nothing held, such as a provider call:

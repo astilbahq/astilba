@@ -432,6 +432,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if why != "" {
 			return s.previewState(ctx, tx, id, "failed", "Preview environment was not created: "+why, 5*time.Minute)
 		}
+		git.createdEnvironments[*r.View.EnvironmentId] = true
 	}
 	if r.Config == nil || r.PolicyGeneration != p.Generation {
 		return s.previewState(ctx, tx, id, "blocked", "The preview's frozen policy needs owner review.", 5*time.Minute)
@@ -473,6 +474,18 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		cfg := r.Config.Build
+		// The policy's runner was checked when it was saved; a management upgrade since can
+		// have moved the Railpack pins it needs.
+		if refusal, err := runnerRailpackRefusal(ctx, tx, p.Workspace, p.Server, cfg.RailpackPins()); err != nil {
+			return err
+		} else if refusal != nil {
+			if allocation != nil {
+				if err = allocation.Rollback(ctx); err != nil {
+					return err
+				}
+			}
+			return s.previewState(ctx, tx, id, "failed", "Preview build rejected before runner delivery: "+refusal.Message, 5*time.Minute)
+		}
 		hash := buildInputHash(connection, pr.Head, cfg)
 		op, err := s.insertPipeline(ctx, tx, git, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
 		// A policy saved under an earlier check can fail this one. Failing the job would roll

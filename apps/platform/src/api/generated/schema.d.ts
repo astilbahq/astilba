@@ -340,6 +340,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Owner with recent identity confirmation. Deletes a retired environment's retained data volumes and erases its secret values. It cannot be undone, and a purged environment cannot be restored. volumeIds must list exactly the volumes the environment keeps. Asking again re-queues a purge whose operation ended without success. Backups at the workspace's destination are kept. */
+        post: operations["purgeEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets": {
         parameters: {
             query?: never;
@@ -677,6 +694,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/cross-host-recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        /** @description Owners and operators only. */
+        get: operations["getCrossHostRecovery"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/members": {
         parameters: {
             query?: never;
@@ -913,6 +949,40 @@ export interface paths {
         put?: never;
         post: operations["createSecret"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Owner with recent identity confirmation, on an active environment. Erases the value of every version of the secret and frees its name. Refused with a conflict on secret while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names one of its versions. Version rows are kept for the revisions that name them. */
+        delete: operations["retireSecret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions/{versionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Owner with recent identity confirmation, on an active environment. Erases one version's value, which the runtime-secret check then no longer searches for. The version still counts toward which of the secret's versions are recent. Refused with a conflict on secretVersion.current for the secret's current version, which a new version replaces, and on secretVersion.inUse while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names it. The version's row is kept for the revisions that name it. */
+        delete: operations["retireSecretVersion"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2730,6 +2800,8 @@ export interface components {
             previews?: boolean;
             /** @description Removes a retired environment's routes, services and networks while keeping its volumes. Advertised only after Astilba-Agent-Retirement v1. */
             retirement?: boolean;
+            /** @description Deletes a retired environment's retained data volumes after verifying their ownership. Advertised only after Astilba-Agent-Purge v1. */
+            purge?: boolean;
             /** @enum {integer} */
             protocol: 1;
             version: string;
@@ -2751,6 +2823,8 @@ export interface components {
             buildCache?: boolean;
             /** @description Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1. */
             railpackVersion?: string;
+            /** @description SHA-256 of every Railpack pin the agent runs for its architecture (planner version, frontend, builder, runtime and helper images, and mise). Management sends a Railpack build only to a runner whose digest matches the build's pins. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack-Inputs with v1. */
+            railpackInputs?: string;
             build?: boolean;
             /** @description Runs builds on its owned build network behind the build egress policy. Advertised only after Astilba-Agent-Build-Network v1. */
             buildNetwork?: boolean;
@@ -3145,6 +3219,20 @@ export interface components {
             role: components["schemas"]["Role"];
             requireMfa: boolean;
         };
+        CrossHostRecovery: {
+            /**
+             * Format: date-time
+             * @description When the newest recovery checkpoint was taken, or null before the first.
+             */
+            checkpointAt: string | null;
+            /**
+             * Format: date-time
+             * @description Cross-host recovery can use a management backup taken after this. Null with no checkpoint, or when the newest one predates recovery windows.
+             */
+            windowStart: string | null;
+            /** @description The window is shorter than 35 days, the backup retention the docs suggest, because the workspace's applied history is busy. */
+            shortWindow: boolean;
+        };
         Session: {
             /** Format: uuid */
             readonly createdWorkspaceId?: string;
@@ -3162,13 +3250,23 @@ export interface components {
         Code: {
             code: string;
         };
-        /** @description Exactly one credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it. */
-        Reauthenticate: {
+        Reauthenticate: components["schemas"]["Credential"];
+        /** @description Exactly one current credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it. */
+        Credential: {
             password?: string;
             code?: string;
         };
         NewPassword: {
             password: string;
+            current: components["schemas"]["Credential"];
+        };
+        MFAConfirmation: {
+            /** @description A code from the authenticator being added. */
+            code: string;
+            current: components["schemas"]["Credential"];
+        };
+        CredentialConfirmation: {
+            current: components["schemas"]["Credential"];
         };
         ResetRequest: {
             /** Format: email */
@@ -3261,10 +3359,10 @@ export interface components {
             deploymentUnit: components["schemas"]["DeploymentUnit"];
             appliedRevisionId?: string | null;
             /**
-             * @description Lifecycle state. A retiring or retired environment is read-only until it is restored.
+             * @description Lifecycle state. A retiring or retired environment is read-only until it is restored. Purging and purged are one-way and never restored.
              * @enum {string}
              */
-            state: "active" | "retiring" | "retired";
+            state: "active" | "retiring" | "retired" | "purging" | "purged";
             /**
              * Format: date-time
              * @description When retirement was last requested.
@@ -3282,6 +3380,23 @@ export interface components {
             retirementOperationId?: string | null;
             /** @description Retirement finished without contacting the server because the server was revoked. Its containers may still run there. */
             retiredWithoutHost?: boolean;
+            /**
+             * Format: date-time
+             * @description When the purge was requested. Its secret values were erased then.
+             */
+            purgedAt?: string | null;
+            /**
+             * Format: uuid
+             * @description The owner who requested the purge.
+             */
+            purgedBy?: string | null;
+            /**
+             * Format: uuid
+             * @description The operation that deletes the retained volumes from the server.
+             */
+            purgeOperationId?: string | null;
+            /** @description The purge finished without contacting the server because the server was revoked. Its volumes may still be there. */
+            purgedWithoutHost?: boolean;
         };
         ApplicationSource: {
             /** @enum {string} */
@@ -3410,6 +3525,8 @@ export interface components {
             name: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description Present, and true, only for a member who can write secrets, when the value is shorter than 12 bytes. The runtime-secret check does not search files to submit or public build arguments for such a value; it is still sealed and redacted. Absent while the value's length is not yet measured. */
+            tooShortToCheck?: boolean;
         };
         AuditEvent: {
             /** Format: uuid */
@@ -3537,6 +3654,15 @@ export interface components {
                 image: string;
                 eligible: boolean;
                 note: string;
+                /** @description The secret versions a rollback draft for this application would name that are not their secret's current version, by name. A retired one has no value, so a plan made from the draft is refused until it is replaced. Found from version IDs alone; no value is opened. The runtime-secret check searches for these versions once the draft names them. */
+                olderSecretVersions: {
+                    /** Format: uuid */
+                    secretId: string;
+                    /** Format: uuid */
+                    versionId: string;
+                    name: string;
+                    retired: boolean;
+                }[];
             }[];
         };
         RollbackRelease: {
@@ -3733,6 +3859,12 @@ export interface components {
         EnvironmentLifecycleRequest: {
             /** @description The environment's exact current name. */
             confirmName: string;
+        };
+        EnvironmentPurgeRequest: {
+            /** @description The environment's exact current name. */
+            confirmName: string;
+            /** @description Exactly the data volumes the environment keeps, as the owner was shown them. */
+            volumeIds: string[];
         };
         CloneEnvironment: {
             name: string;
@@ -4548,7 +4680,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */
@@ -5670,6 +5802,43 @@ export interface operations {
             };
         };
     };
+    purgeEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentPurgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Environment"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listConfiguredBuildTargets: {
         parameters: {
             query?: never;
@@ -6191,7 +6360,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Code"];
+                "application/json": components["schemas"]["MFAConfirmation"];
             };
         };
         responses: {
@@ -6222,7 +6391,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialConfirmation"];
+            };
+        };
         responses: {
             /** @description Success */
             200: {
@@ -6251,7 +6424,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialConfirmation"];
+            };
+        };
         responses: {
             /** @description Success */
             200: {
@@ -6359,6 +6536,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getCrossHostRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest recovery checkpoint and the management backups recovery can use with it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrossHostRecovery"];
                 };
             };
             /** @description Error */
@@ -7091,6 +7299,71 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SecretVersion"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    retireSecret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                secretId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    retireSecretVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                secretId: string;
+                versionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

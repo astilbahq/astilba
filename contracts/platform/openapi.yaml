@@ -730,6 +730,30 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/purge:
+    post:
+      operationId: purgeEnvironment
+      description: Owner with recent identity confirmation. Deletes a retired environment's retained data volumes and erases its secret values. It cannot be undone, and a purged environment cannot be restored. volumeIds must list exactly the volumes the environment keeps. Asking again re-queues a purge whose operation ended without success. Backups at the workspace's destination are kept.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnvironmentPurgeRequest'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Environment'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-targets:
     get:
       operationId: listConfiguredBuildTargets
@@ -1073,7 +1097,7 @@
         "content":
           "application/json":
             "schema":
-              "$ref": "#/components/schemas/Code"
+              "$ref": "#/components/schemas/MFAConfirmation"
   "/api/v1/auth/mfa/disable":
     "post":
       "operationId": "disableMFA"
@@ -1090,6 +1114,12 @@
             "application/json":
               "schema":
                 "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/CredentialConfirmation"
   "/api/v1/auth/mfa/recovery-codes":
     "post":
       "operationId": "regenerateRecoveryCodes"
@@ -1106,6 +1136,12 @@
             "application/json":
               "schema":
                 "$ref": "#/components/schemas/Error"
+      "requestBody":
+        "required": true
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/CredentialConfirmation"
   /api/v1/workspaces:
     post:
       operationId: createWorkspace
@@ -1181,6 +1217,23 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/cross-host-recovery:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getCrossHostRecovery
+      description: Owners and operators only.
+      responses:
+        '200':
+          description: The newest recovery checkpoint and the management backups recovery can use with it
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CrossHostRecovery'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/members":
     "get":
       "operationId": "listMembers"
@@ -1928,6 +1981,41 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}:
+    delete:
+      operationId: retireSecret
+      description: Owner with recent identity confirmation, on an active environment. Erases the value of every version of the secret and frees its name. Refused with a conflict on secret while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names one of its versions. Version rows are kept for the revisions that name them.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: secretId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions/{versionId}:
+    delete:
+      operationId: retireSecretVersion
+      description: Owner with recent identity confirmation, on an active environment. Erases one version's value, which the runtime-secret check then no longer searches for. The version still counts toward which of the secret's versions are recent. Refused with a conflict on secretVersion.current for the secret's current version, which a new version replaces, and on secretVersion.inUse while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names it. The version's row is kept for the revisions that name it.
+      parameters:
+        - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: environmentId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: secretId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: versionId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions":
     "post":
       "operationId": "createSecretVersion"
@@ -5369,6 +5457,9 @@
         retirement:
           type: boolean
           description: Removes a retired environment's routes, services and networks while keeping its volumes. Advertised only after Astilba-Agent-Retirement v1.
+        purge:
+          type: boolean
+          description: Deletes a retired environment's retained data volumes after verifying their ownership. Advertised only after Astilba-Agent-Purge v1.
 
         "protocol":
           "type": "integer"
@@ -5410,6 +5501,10 @@
           type: string
           maxLength: 80
           description: Supported Railpack planner/frontend version. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack with v1.
+        railpackInputs:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of every Railpack pin the agent runs for its architecture (planner version, frontend, builder, runtime and helper images, and mise). Management sends a Railpack build only to a runner whose digest matches the build's pins. Agents send this extension only after a controller response advertises Astilba-Agent-Railpack-Inputs with v1.
         build:
           type: boolean
         buildNetwork:
@@ -6260,6 +6355,14 @@
         - "name"
         - "role"
         - "requireMfa"
+    CrossHostRecovery:
+      type: object
+      additionalProperties: false
+      required: [checkpointAt, windowStart, shortWindow]
+      properties:
+        checkpointAt: {type: string, format: date-time, nullable: true, description: "When the newest recovery checkpoint was taken, or null before the first."}
+        windowStart: {type: string, format: date-time, nullable: true, description: "Cross-host recovery can use a management backup taken after this. Null with no checkpoint, or when the newest one predates recovery windows."}
+        shortWindow: {type: boolean, description: "The window is shorter than 35 days, the backup retention the docs suggest, because the workspace's applied history is busy."}
     "Session":
       "type": "object"
       "additionalProperties": false
@@ -6314,7 +6417,9 @@
       "required":
         - "code"
     "Reauthenticate":
-      "description": "Exactly one credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it."
+      "$ref": "#/components/schemas/Credential"
+    "Credential":
+      "description": "Exactly one current credential: an authenticator or recovery code for an account with two-factor authentication, or the password for an account without it."
       "type": "object"
       "additionalProperties": false
       "minProperties": 1
@@ -6339,8 +6444,33 @@
           "maxLength": 512
           "minLength": 1
           "writeOnly": true
+        "current":
+          "$ref": "#/components/schemas/Credential"
       "required":
         - "password"
+        - "current"
+    "MFAConfirmation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "code":
+          "description": "A code from the authenticator being added."
+          "type": "string"
+          "maxLength": 128
+          "minLength": 1
+        "current":
+          "$ref": "#/components/schemas/Credential"
+      "required":
+        - "code"
+        - "current"
+    "CredentialConfirmation":
+      "type": "object"
+      "additionalProperties": false
+      "properties":
+        "current":
+          "$ref": "#/components/schemas/Credential"
+      "required":
+        - "current"
     "ResetRequest":
       "type": "object"
       "additionalProperties": false
@@ -6594,12 +6724,16 @@
           "nullable": true
         state:
           type: string
-          enum: [active, retiring, retired]
-          description: Lifecycle state. A retiring or retired environment is read-only until it is restored.
+          enum: [active, retiring, retired, purging, purged]
+          description: Lifecycle state. A retiring or retired environment is read-only until it is restored. Purging and purged are one-way and never restored.
         retiredAt: {type: string, format: date-time, nullable: true, description: When retirement was last requested.}
         retiredBy: {type: string, format: uuid, nullable: true, description: The owner who last requested retirement.}
         retirementOperationId: {type: string, format: uuid, nullable: true, description: The operation that removes the environment from its server.}
         retiredWithoutHost: {type: boolean, description: Retirement finished without contacting the server because the server was revoked. Its containers may still run there.}
+        purgedAt: {type: string, format: date-time, nullable: true, description: When the purge was requested. Its secret values were erased then.}
+        purgedBy: {type: string, format: uuid, nullable: true, description: The owner who requested the purge.}
+        purgeOperationId: {type: string, format: uuid, nullable: true, description: The operation that deletes the retained volumes from the server.}
+        purgedWithoutHost: {type: boolean, description: The purge finished without contacting the server because the server was revoked. Its volumes may still be there.}
       "required":
         - "id"
         - "projectId"
@@ -6975,6 +7109,9 @@
         "createdAt":
           "type": "string"
           "format": "date-time"
+        tooShortToCheck:
+          type: boolean
+          description: Present, and true, only for a member who can write secrets, when the value is shorter than 12 bytes. The runtime-secret check does not search files to submit or public build arguments for such a value; it is still sealed and redacted. Absent while the value's length is not yet measured.
       "required":
         - "id"
         - "secretId"
@@ -7233,7 +7370,7 @@
           items:
             type: object
             additionalProperties: false
-            required: [id, name, image, eligible, note, changes]
+            required: [id, name, image, eligible, note, changes, olderSecretVersions]
             properties:
               changes:
                 type: array
@@ -7244,6 +7381,19 @@
               image: {type: string, maxLength: 512}
               eligible: {type: boolean}
               note: {type: string, maxLength: 300}
+              olderSecretVersions:
+                type: array
+                maxItems: 101
+                description: The secret versions a rollback draft for this application would name that are not their secret's current version, by name. A retired one has no value, so a plan made from the draft is refused until it is replaced. Found from version IDs alone; no value is opened. The runtime-secret check searches for these versions once the draft names them.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [secretId, versionId, name, retired]
+                  properties:
+                    secretId: {type: string, format: uuid}
+                    versionId: {type: string, format: uuid}
+                    name: {type: string, maxLength: 80}
+                    retired: {type: boolean}
     RollbackRelease:
       type: object
       additionalProperties: false
@@ -7642,6 +7792,18 @@
       required: [confirmName]
       properties:
         confirmName: {type: string, minLength: 1, maxLength: 80, description: The environment's exact current name.}
+    EnvironmentPurgeRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmName, volumeIds]
+      properties:
+        confirmName: {type: string, minLength: 1, maxLength: 80, description: The environment's exact current name.}
+        volumeIds:
+          type: array
+          maxItems: 1000
+          uniqueItems: true
+          items: {type: string, format: uuid}
+          description: Exactly the data volumes the environment keeps, as the owner was shown them.
     "CloneEnvironment":
       "type": "object"
       "additionalProperties": false
@@ -9646,7 +9808,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}

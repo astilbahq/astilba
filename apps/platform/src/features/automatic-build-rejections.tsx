@@ -8,7 +8,7 @@ const buildRejectionMessages = {
   arguments_contain_secret:
     "Public build arguments contain a known secret value.",
   runtime_secret_budget:
-    "Runtime secrets exceed the build-input validation limit.",
+    "Runtime secrets exceed the build-input validation limit. An owner can retire secrets the environment no longer needs, or replace versions that the draft or the deployment still uses.",
   runner_unavailable:
     "Its runner was removed or revoked, lost its credential, or can no longer build it.",
   registry_unavailable: "Its registry was removed.",

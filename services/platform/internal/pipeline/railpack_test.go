@@ -121,3 +121,26 @@ func TestRailpackConfigurationKeepsReadingWhatEarlierBuildsAccepted(t *testing.T
 		})
 	}
 }
+
+// Any moved pin gives other inputs, even under the same Railpack version, so a runner on
+// another release is told apart from one on this release.
+func TestRailpackDigestNamesEveryPin(t *testing.T) {
+	pins := RailpackFor("arm64")
+	if pins.Digest() != RailpackFor("arm64").Digest() || len(pins.Digest()) != 64 {
+		t.Fatal("the digest is not stable")
+	}
+	if pins.Digest() == RailpackFor("amd64").Digest() {
+		t.Fatal("architectures share a digest")
+	}
+	moved := pins
+	moved.HelperImage = "docker.io/library/alpine:3.23@sha256:" + strings.Repeat("0", 64)
+	if moved.Version != pins.Version || moved.Digest() == pins.Digest() {
+		t.Fatal("a moved helper image kept the digest")
+	}
+	if (BuildConfig{Builder: "dockerfile", Architecture: "arm64"}).RailpackPins() != nil {
+		t.Fatal("a Dockerfile build froze Railpack pins")
+	}
+	if got := (BuildConfig{Builder: "railpack", Architecture: "arm64"}).RailpackPins(); got == nil || *got != pins {
+		t.Fatal("a Railpack build did not freeze this release's pins")
+	}
+}

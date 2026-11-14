@@ -8,6 +8,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"io"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,7 +38,8 @@ type Engine struct {
 	ResticCLI             string
 	BackupRoots           []string
 	// ImageLoadBytes and ImageLoadReserveBytes are the host owner's limits on loading a local
-	// build's image, see image_archive.go; the defaults when zero.
+	// build's image or pulling a deployment's, see image_archive.go and image_pull.go; the
+	// defaults when zero.
 	ImageLoadBytes        int64
 	ImageLoadReserveBytes int64
 	TroubleshootingIdle   time.Duration
@@ -45,6 +47,12 @@ type Engine struct {
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
 	mu          sync.Mutex
+	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
+	layerCostsOnce sync.Once
+	measuredLayers *layerCosts
+	// checkedSiblings are index entries the agent found harmless for loads.
+	checkedOnce     sync.Once
+	checkedSiblings *checkedManifests
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
@@ -70,6 +78,12 @@ func (e *Engine) point(p string) {
 		e.Point(p)
 	}
 }
+
+// reached reports whether any execution of the command recorded step. A command run again moves
+// its checkpoint back through its earlier steps, but the steps it recorded are kept.
+func (r Record) reached(step string) bool {
+	return slices.ContainsFunc(r.Report.Steps, func(s api.ExecutionStep) bool { return s.Name == step })
+}
 func Name(c api.ExecutionCommand) string { return "astilba-probe-" + c.ResourceId.String() }
 func (e *Engine) checkpoint(id uuid.UUID, name string) error {
 	err := e.Journal.Mutate(id, func(r *Record) {
@@ -92,15 +106,16 @@ func (e *Engine) checkpoint(id uuid.UUID, name string) error {
 	return err
 }
 func (e *Engine) finish(id uuid.UUID, state api.ExecutionState, note string) error {
-	return e.Journal.Mutate(id, func(r *Record) {
-		r.Report.State = state
-		r.Report.Note = note
-		if state == "succeeded" {
-			for i := range r.Report.Steps {
-				r.Report.Steps[i].State = "done"
-			}
+	return e.Journal.Mutate(id, func(r *Record) { settleReport(r, state, note) })
+}
+func settleReport(r *Record, state api.ExecutionState, note string) {
+	r.Report.State = state
+	r.Report.Note = note
+	if state == "succeeded" {
+		for i := range r.Report.Steps {
+			r.Report.Steps[i].State = "done"
 		}
-	})
+	}
 }
 
 // finishPhase records a coordinated phase's outcome, unless the agent is stopping: it reruns

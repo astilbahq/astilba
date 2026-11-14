@@ -101,10 +101,17 @@ async function holdPasswordChange(page: Page) {
   await page
     .getByLabel("New password", { exact: true })
     .fill("renewed private browser password");
-  proxy.holdRenewal();
   await page
     .getByRole("button", { name: "Update password", exact: true })
     .click();
+  proxy.holdRenewal();
+  const dialog = page.getByRole("alertdialog", {
+    name: "Confirm your identity",
+  });
+  await dialog
+    .getByLabel("Password", { exact: true })
+    .fill("correct horse battery staple");
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
   await proxy.held;
 }
 

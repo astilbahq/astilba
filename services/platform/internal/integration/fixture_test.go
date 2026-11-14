@@ -190,10 +190,12 @@ func warnPastBudget(took time.Duration) {
 }
 
 type fixture struct {
-	st        *store.Store
-	auth      *auth.Service
-	server    *httptest.Server
-	mail      chan string
+	st     *store.Store
+	auth   *auth.Service
+	server *httptest.Server
+	mail   chan string
+	// notices holds the account security notices sent, apart from other mail.
+	notices   chan string
 	password  string
 	owner     uuid.UUID
 	execution *execution.Service
@@ -223,7 +225,22 @@ func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 		t.Fatal(e)
 	}
 	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
+	// As every command does at start, with an operator's checks so tests may rewrap.
+	if e = st.Broker.Install(context.Background(), st.Pool, uuid.Nil, true); e != nil {
+		t.Fatal(e)
+	}
 	storeKeys.Store(st, keys)
+}
+
+// restoredKeys gives a store another installation's keyring, as restoring that installation's
+// database beside its keyring does: the custody the store set up under its own keyring is not
+// part of what was restored.
+func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
+	t.Helper()
+	if _, err := st.Pool.Exec(context.Background(), "DELETE FROM custody_backends"); err != nil {
+		t.Fatal(err)
+	}
+	useKeys(t, st, keys)
 }
 
 // secretIdentity is the identity a secret version's value is sealed under, for tests that open
@@ -276,7 +293,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	})
 	// The one value a migration makes up. Each installation has its own.
-	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
+	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)
 	}
 	keys, _ := cryptobox.New("test")
@@ -300,7 +317,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	}
 
-	mail, address := smtpFixture(t)
+	mail, notices, address := smtpFixture(t)
 	sender, e := mailer.New(mailer.Config{Address: address, From: "Astilba <accounts@example.test>", Mode: "plain", Development: true})
 	if e != nil {
 		t.Fatal(e)
@@ -332,17 +349,22 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	server := httptest.NewServer(handler)
 	apiServer.Origin = server.URL
 	apiServer.Execution.ResetMail.Origin = server.URL
+	apiServer.Execution.SecurityNotice.Origin = server.URL
 	t.Cleanup(server.Close)
-	return &fixture{st, service, server, mail, fixturePassword, owner, apiServer.Execution, apiServer, log}
+	return &fixture{st, service, server, mail, notices, fixturePassword, owner, apiServer.Execution, apiServer, log}
 }
-func smtpFixture(t *testing.T) (chan string, string) {
+
+// securityNoticeMarker is in every account security notice, which smtpFixture keeps apart.
+const securityNoticeMarker = "If this was you, there is nothing to do."
+
+func smtpFixture(t *testing.T) (chan string, chan string, string) {
 	t.Helper()
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	messages := make(chan string, 10)
+	messages, notices := make(chan string, 10), make(chan string, 32)
 	go func() {
 		for {
 			conn, e := listener.Accept()
@@ -371,7 +393,11 @@ func smtpFixture(t *testing.T) (chan string, string) {
 						if e != nil {
 							return
 						}
-						messages <- string(body)
+						if strings.Contains(string(body), securityNoticeMarker) {
+							notices <- string(body)
+						} else {
+							messages <- string(body)
+						}
 						reply("250 queued")
 					case strings.HasPrefix(line, "QUIT"):
 						reply("221 bye")
@@ -383,7 +409,7 @@ func smtpFixture(t *testing.T) (chan string, string) {
 			}()
 		}
 	}()
-	return messages, listener.Addr().String()
+	return messages, notices, listener.Addr().String()
 }
 
 type browser struct {
@@ -434,6 +460,21 @@ func (f *fixture) browser(t *testing.T) *browser {
 }
 func (b *browser) call(method, path string, body any, status int, out any) []byte {
 	b.t.Helper()
+	got, data := b.request(method, path, body)
+	if got != status {
+		b.t.Fatalf("%s %s: status %d want %d: %s", method, path, got, status, data)
+	}
+	if out != nil {
+		if e := json.Unmarshal(data, out); e != nil {
+			b.t.Fatal(e)
+		}
+	}
+	return data
+}
+
+// request sends one call and returns whatever status it gets.
+func (b *browser) request(method, path string, body any) (int, []byte) {
+	b.t.Helper()
 	var raw []byte
 	if body != nil {
 		raw, _ = stablejson.Marshal(body)
@@ -453,15 +494,7 @@ func (b *browser) call(method, path string, body any, status int, out any) []byt
 	}
 	defer response.Body.Close()
 	data, _ := io.ReadAll(response.Body)
-	if response.StatusCode != status {
-		b.t.Fatalf("%s %s: status %d want %d: %s", method, path, response.StatusCode, status, data)
-	}
-	if out != nil {
-		if e = json.Unmarshal(data, out); e != nil {
-			b.t.Fatal(e)
-		}
-	}
-	return data
+	return response.StatusCode, data
 }
 func (b *browser) login(email, password string) api.Session {
 	var v api.Session

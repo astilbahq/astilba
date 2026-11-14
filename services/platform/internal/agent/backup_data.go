@@ -175,7 +175,8 @@ func (e *Engine) dumpFiles(ctx context.Context, s *scheduleState, stage string, 
 	if err = e.quiesceFiles(ctx, s); err != nil {
 		return err
 	}
-	name, cleanup, err := e.dataContainer(ctx, s.Installation.Policy, s.Installation.Policy.ResourceID, uuid.New(), true)
+	// Labelled with the run, so an interrupted run's helper is found where the run is inspected.
+	name, cleanup, err := e.dataContainer(ctx, s.Installation.Policy, s.Installation.Policy.ResourceID, m.RunID, true)
 	if err != nil {
 		return err
 	}

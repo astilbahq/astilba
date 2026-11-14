@@ -12,6 +12,11 @@ const RailpackRuntime = "ghcr.io/railwayapp/railpack-runtime:mise-2026.10.14@sha
 const RailpackHelper = "docker.io/library/alpine:3.23@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63"
 const RailpackMiseVersion = "2026.10.14"
 
+// Digest names every pin a Railpack build freezes. An agent advertises its own, so
+// management sends a build only to a runner that runs the same pins, whatever its
+// Railpack version says.
+func (i RailpackInputs) Digest() string { return Hash(i) }
+
 type RailpackOptions struct {
 	BuildCommand string `json:"buildCommand,omitempty"`
 	StartCommand string `json:"startCommand,omitempty"`
@@ -71,6 +76,16 @@ func (s RailpackSummary) Valid(inputs RailpackInputs) bool {
 }
 
 func (b BuildConfig) UsesRailpack() bool { return b.Builder == "railpack" }
+
+// RailpackPins are the Railpack inputs this release freezes into the build, or nil for a
+// Dockerfile build.
+func (b BuildConfig) RailpackPins() *RailpackInputs {
+	if !b.UsesRailpack() {
+		return nil
+	}
+	pins := RailpackFor(b.Architecture)
+	return &pins
+}
 
 func (b BuildConfig) Canonical() BuildConfig {
 	if b.Builder == "dockerfile" {

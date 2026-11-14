@@ -53,11 +53,15 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Build-Network", "v1")
 		w.Header().Set("Astilba-Agent-Rootless-Builds", "v1")
 		w.Header().Set("Astilba-Agent-Railpack", "v1")
+		// v1 reads railpackInputs, the digest of the Railpack pins an agent runs.
+		w.Header().Set("Astilba-Agent-Railpack-Inputs", "v1")
 		w.Header().Set("Astilba-Agent-Safe-Releases", "v1")
 		w.Header().Set("Astilba-Agent-Service-Outputs", "v1")
 		w.Header().Set("Astilba-Agent-Previews", "v1")
 		// v1 delivers the visual retire action for environment retirement.
 		w.Header().Set("Astilba-Agent-Retirement", "v1")
+		// v1 delivers the visual purge action, which deletes a retired environment's volumes.
+		w.Header().Set("Astilba-Agent-Purge", "v1")
 		w.Header().Set("Astilba-Agent-Schedules", "v1")
 		w.Header().Set("Astilba-Agent-Replicas", "v1")
 		w.Header().Set("Astilba-Agent-Cross-Host", "v1")

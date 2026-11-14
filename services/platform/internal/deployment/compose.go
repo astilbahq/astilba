@@ -69,6 +69,11 @@ func sourceCompose(p Plan, secrets map[string]string, root string, export bool) 
 		s.Name = ServiceName(id)
 		s.ContainerName = UnitName(id)
 		s.Image = p.Images[id.String()]
+		// Only the agent puts images into Docker, within its bounds (see the agent's
+		// image_pull.go), so Compose never pulls one. An export runs elsewhere and pulls.
+		if !export {
+			s.PullPolicy = types.PullPolicyNever
+		}
 		if s.Labels == nil {
 			s.Labels = types.Labels{}
 		}

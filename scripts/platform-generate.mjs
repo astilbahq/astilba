@@ -64,8 +64,20 @@ try {
     ],
     { cwd: root, stdio: "inherit" },
   );
+  // The dashboard checks a runner's Railpack pins against this release's own.
+  await writeFile(
+    join(temporary, "railpack.ts"),
+    execFileSync("go", ["run", "./internal/pipeline/railpackpins"], {
+      cwd: module,
+      stdio: ["ignore", "pipe", "inherit"],
+    }),
+  );
   const files = [
     [join(temporary, "api.gen.go"), join(module, "internal/api/api.gen.go")],
+    [
+      join(temporary, "railpack.ts"),
+      join(root, "apps/platform/src/api/generated/railpack.ts"),
+    ],
     [
       join(temporary, "schema.d.ts"),
       join(root, "apps/platform/src/api/generated/schema.d.ts"),

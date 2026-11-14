@@ -259,5 +259,38 @@ export const effects = css({
   listStyleType: "disc",
   overflowWrap: "anywhere",
 });
+// The volumes a purge deletes, listed under the effect that names them.
+// What a purge waits for or deletes, listed under one of its effects.
+export const purgeItems = css({
+  display: "grid",
+  gap: "1",
+  marginBlockStart: "2",
+  listStyleType: "none",
+});
 export const dialogTitle = css({ outline: "none", overflowWrap: "anywhere" });
 export const confirmField = css({ display: "grid", gap: "2" });
+// One secret in the secrets list: its current version, then its earlier ones.
+export const secretEntry = css({ display: "grid", gap: "3" });
+// A secret's earlier versions, folded away until an owner needs to retire one.
+export const earlierVersions = css({
+  display: "grid",
+  gap: "2",
+  paddingInlineStart: "4",
+  "& > summary": {
+    inlineSize: "fit-content",
+    minBlockSize: "control.sm",
+    paddingBlock: "1",
+    color: "subtle",
+    fontFamily: "ui",
+    fontSize: "secondary",
+    cursor: "pointer",
+    borderRadius: "control",
+    _hover: { color: "fg" },
+    _focusVisible: {
+      outlineWidth: "2px",
+      outlineStyle: "solid",
+      outlineColor: "link.focus",
+      outlineOffset: "0.5",
+    },
+  },
+});

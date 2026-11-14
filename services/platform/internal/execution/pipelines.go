@@ -39,10 +39,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if p.Build != nil {
 		canonical := p.Build.Canonical()
 		p.Build = &canonical
-		if canonical.UsesRailpack() {
-			pins := pipeline.RailpackFor(canonical.Architecture)
-			p.Railpack = &pins
-		}
+		p.Railpack = canonical.RailpackPins()
 	}
 	if p.IsBuild() {
 		egress, err := serverBuildEgress(ctx, tx, ws, server)
@@ -241,7 +238,7 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 		if err = checkFallbackRunner(ctx, tx, ws, c.FallbackRunnerID); err != nil {
 			return err
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false, false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil, false)
 		if err != nil {
 			return err
 		}
@@ -337,7 +334,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 				return domain.Conflict
 			}
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, false, false)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil, false)
 		if err != nil {
 			return err
 		}
@@ -430,7 +427,7 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 			return api.Operation{}, err
 		}
 	}
-	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.UsesRailpack(), true)
+	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.RailpackPins(), true)
 	if err != nil {
 		return api.Operation{}, err
 	}

@@ -63,6 +63,13 @@ Upgrade management before the agents. These steps assume
    docker compose run --rm --no-deps platform migrate
    ```
 
+   Then check what [key custody](hosting.md#key-custody) still needs. Set
+   `ASTILBA_INSTALLATION_ID` to the installation ID it shows if it says the ID is not pinned:
+
+   ```sh
+   docker compose run --rm --no-deps platform custody status
+   ```
+
 4. Start it with `docker compose up -d --wait platform`.
 5. **Check** that:
    - `/healthz` answers 204 through your proxy;
@@ -110,5 +117,8 @@ Anything written after the backup is lost.
 ## After the upgrade
 
 Upgrade the agents from the Servers page once management is stable, a few hosts at a time.
+Until a runner runs the release whose Railpack pins management builds with, management refuses
+Railpack builds for it ([Railpack builds](git-builds.md#railpack-builds)), so update Railpack
+runners first.
 Remove the local dump when you no longer need to roll back, and keep the old image until the
 next upgrade.

@@ -48,7 +48,7 @@ The policy stays bound to the revoked host until you save it with another previe
 
 Renewing a revoked preview host's enrollment brings it back only as a clean host: like a new preview host, it's refused while it has any containers, and it may enroll from a rebuilt machine. Rebuild the machine or reinstall the agent with fresh state; removing the containers isn't enough, because the agent's journal still lists the released previews and a later transfer after management recovery refuses a host that does. Renewing any other server, or a preview host that wasn't revoked, still needs the same machine. Once a renewed host enrolls, a policy still bound to it resumes there, and fork requests need approval again. A fresh agent can't enroll a server that a management recovery has fenced, because it doesn't know the server's controller generation; in that case enroll a new preview host and save the policy with it.
 
-After a management recovery, a revoked preview host's transfer is likewise refused while its agent still lists any released preview.
+Management recovery releases a revoked preview host's previews as revoking it does, also when the restored database still lists them open. Revocation releases the previews a host runs, by where each was placed, not by which host its policy names. After a management recovery, a revoked preview host's transfer is likewise refused while its agent still lists any released preview.
 
 ## Verification
 

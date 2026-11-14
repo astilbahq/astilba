@@ -61,6 +61,9 @@ func (e *Engine) executeRetirement(ctx context.Context, c api.ExecutionCommand, 
 	if p.Plan.Preview != nil || p.Plan.Local != nil || p.Plan.Distributed != nil {
 		return e.finish(c.Id, "failed", "Retirement removes one local unit; previews and cross-host placements have their own cleanup.")
 	}
+	if e.cancelled(c.Id) {
+		return e.finish(c.Id, "cancelled", "Retirement cancelled before execution. Nothing was removed.")
+	}
 	attention := func(note string) error { return e.finish(c.Id, "needs_attention", note) }
 	unit, err := e.Journal.unit(p.Plan.UnitID)
 	if err != nil {

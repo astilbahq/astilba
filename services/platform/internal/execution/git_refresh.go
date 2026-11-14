@@ -310,7 +310,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			continue
 		}
 		// A target whose runner or registry is gone records why rather than stopping the branch.
-		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture, cfg.NeedsControls(), cfg.UsesRailpack(), true)
+		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture, cfg.NeedsControls(), cfg.RailpackPins(), true)
 		wait, waitErr := runnerWaits(ctx, tx, a.Workspace, cfg.RunnerID, err)
 		if waitErr != nil {
 			return waitErr
@@ -372,6 +372,13 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 				lookAgain = true
 				continue
 			}
+			// Each target's runtime-secret check can ask for a search between passes. Asking for
+			// them all in one pass keeps the passes a push needs independent of its targets.
+			var call *providerCall
+			if reason == "" && errors.As(err, &call) {
+				unanswered = unanswered.and(call)
+				continue
+			}
 			if reason == "" {
 				return err
 			}
@@ -387,6 +394,9 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			return err
 		}
 		capacity--
+	}
+	if unanswered != nil {
+		return unanswered
 	}
 	if !waiting && (!lookAgain || expired) {
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
@@ -517,7 +527,7 @@ func (w *refreshWorker) refreshSource(ctx context.Context, tx pgx.Tx, git *gitAn
 		}
 		return sourceUnreadable, db.New(tx).SetGitSourcePendingCommit(ctx, db.SetGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Commit: head})
 	}
-	runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, false, false)
+	runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, nil, false)
 	wait, waitErr := runnerWaits(ctx, tx, a.Workspace, cfg.RunnerID, err)
 	if waitErr != nil {
 		return sourceSettled, waitErr

@@ -134,7 +134,9 @@ export function createAuthValidation(messages: AuthMessages) {
       ),
       errorFields: codeErrorFields,
     },
-    stepUp: (credential: StepUpCredential): FormValidation => {
+    // `change` is a change that takes the credential itself, which signing in again does not
+    // spare, so a refusal for too many attempts only asks to wait.
+    stepUp: (credential: StepUpCredential, change = false): FormValidation => {
       const field = credential === "password" ? "password" : "code";
       const wrong =
         credential === "password"
@@ -161,10 +163,9 @@ export function createAuthValidation(messages: AuthMessages) {
         // from assistive technology.
         shouldToastError: () => false,
         message(error, name) {
-          return error instanceof ApiError &&
-            error.detail.code === "rate_limited"
-            ? messages.stepUpRateLimited
-            : base.message(error, name);
+          if (error instanceof ApiError && error.detail.code === "rate_limited")
+            return change ? messages.rateLimited : messages.stepUpRateLimited;
+          return base.message(error, name);
         },
       };
     },

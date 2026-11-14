@@ -20,46 +20,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const secretVersionPage = 64
-
-// rejectRuntimeSecrets opens the environment's runtime secrets with keys, asked for only once
-// there is one to read.
-func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, bundle composeproject.Bundle) error {
-	q := db.New(tx)
-	// A submission pushes both: the path names a tree entry, the content fills its blob.
-	texts := make([]string, 0, 2*len(bundle.Files))
-	for _, file := range bundle.Files {
-		texts = append(texts, file.Path, file.Content)
-	}
-	searched := domain.NewSecretText(texts...)
-	total := 0
-	// Pages bound the ciphertext in memory; versions per environment are unbounded.
-	var after uuid.UUID
-	for {
-		rows, err := q.PageEnvironmentSecretVersions(ctx, db.PageEnvironmentSecretVersionsParams{WorkspaceID: ws, EnvironmentID: env, AfterID: after, PageSize: secretVersionPage})
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			value, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: row.ID}, row.EncryptedValue)
-			if err != nil {
-				return err
-			}
-			total += len(value)
-			if total > 1<<20 {
-				return domain.Invalid("source.secretBudget")
-			}
-			if searched.Exposes(string(value)) {
-				return &domain.Error{Code: "invalid_input", Message: "A file's name or contents include a known runtime secret value.", Fields: []string{"source.containsRuntimeSecret"}}
-			}
-			after = row.ID
-		}
-		if len(rows) < secretVersionPage {
-			return nil
-		}
-	}
-}
-
 // hydratePipeline holds the agent's row and the operation only while it decides. Provider
 // and GitHub calls run between passes, and the pass that delivers re-makes every decision
 // below: a revoked or rotated agent, a cancelled or expired operation, a new runtime secret
@@ -163,8 +123,36 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack(), false); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil, false); err != nil {
 			return false, err
+		}
+	}
+	// A build goes only to a runner that runs the Railpack pins it froze, not management's
+	// current ones, which a management upgrade or rollback may have moved since, so no other
+	// runner receives its hydrated inputs. Refusing the poll would hold every later command
+	// for the runner, its update included, until the build expired, so a build never
+	// delivered fails instead. One the runner may already hold keeps being refused until it
+	// ends: supported updates wait for it, so this is a build delivered by an earlier
+	// management to an agent that advertises no digest, or a runner replaced by hand.
+	if p.Build != nil && p.Build.UsesRailpack() {
+		if p.Railpack == nil {
+			return false, errors.New("invalid pipeline payload")
+		}
+		refusal, err := runnerRailpackRefusal(ctx, tx, ws, c.ServerId, p.Railpack)
+		if err != nil {
+			return false, err
+		}
+		if refusal != nil && !undelivered {
+			return false, refusal
+		}
+		if refusal != nil {
+			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build stopped before runner delivery. " + refusal.Message}); err != nil {
+				return false, err
+			}
+			if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+				return false, err
+			}
+			return false, tx.Commit(ctx)
 		}
 	}
 	if p.CacheScope != "" {
@@ -262,7 +250,7 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	}
 	p.Access = &pipeline.RunnerAccess{Clone: clone.Value}
 	if p.Build != nil {
-		p.BuildSecrets, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, *p.Build)
+		p.BuildSecrets, err = s.buildInputs(ctx, tx, git, ws, env, *p.Build)
 		if err != nil {
 			return err
 		}

@@ -162,7 +162,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		for _, file := range baseline.Files {
 			files = append(files, composeproject.File{Content: file.Content})
 		}
-		if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, env, composeproject.Bundle{Files: files}); err != nil {
+		if err = s.rejectRuntimeSecrets(ctx, tx, git, ws, env, composeproject.Bundle{Files: files}); err != nil {
 			return err
 		}
 		frozen := submissionConfiguration{SubmissionID: uuid.NewSHA1(env, []byte("source/"+base.String())), Connection: head.Connection, Commit: commit, Branch: source.Branch, Bundle: *v.Spec.Compose, Paths: source.Paths, SubmittedAt: submittedAt}
@@ -318,7 +318,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		return nil, err
 	}
 	if state != "active" {
-		return nil, fail("the environment was retired. Restore it to propose its draft.")
+		return nil, fail("the environment was retired. Restore it to propose its draft; a purged environment cannot be restored.")
 	}
 	var c submissionConfiguration
 	if err = json.Unmarshal(row.Configuration, &c); err != nil {
@@ -331,13 +331,13 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		return nil, err
 	}
 	// A value can become a runtime secret while the attempt waits.
-	if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, row.EnvironmentID, c.Bundle); err != nil {
+	if err = s.rejectRuntimeSecrets(ctx, tx, git, ws, row.EnvironmentID, c.Bundle); err != nil {
 		var invalid *domain.Error
 		if !errors.As(err, &invalid) {
 			return nil, err
 		}
 		if slices.Contains(invalid.Fields, "source.secretBudget") {
-			return nil, fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository.")
+			return nil, fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository. An owner can retire secrets the environment no longer needs, or replace versions that the draft or the deployment still uses.")
 		}
 		return nil, fail("the names or contents of these files include a known runtime secret value. Nothing was written to the repository.")
 	}

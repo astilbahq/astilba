@@ -22,7 +22,7 @@ func (w *secretAccessSweepWorker) Work(ctx context.Context, _ *river.Job[secretA
 }
 
 // secretAccessExpiryArgs removes secret access records older than the installation's retention
-// period, a batch at a time.
+// period, and blanks the operator's name and reason in key events as old, a batch at a time.
 type secretAccessExpiryArgs struct{}
 
 func (secretAccessExpiryArgs) Kind() string { return "platform_secret_access_expiry_v1" }
@@ -37,10 +37,16 @@ type secretAccessExpiryWorker struct {
 const secretAccessExpiryBatch = 1000
 
 func (w *secretAccessExpiryWorker) Work(ctx context.Context, _ *river.Job[secretAccessExpiryArgs]) error {
-	for range 5 {
-		expired, err := w.service.Store.Queries.ExpireSecretAccess(ctx, secretAccessExpiryBatch)
-		if err != nil || expired < secretAccessExpiryBatch {
-			return err
+	q := w.service.Store.Queries
+	for _, step := range []func(context.Context, int32) (int32, error){q.ExpireSecretAccess, q.BlankKeyEventOperators} {
+		for range 5 {
+			n, err := step(ctx, secretAccessExpiryBatch)
+			if err != nil {
+				return err
+			}
+			if n < secretAccessExpiryBatch {
+				break
+			}
 		}
 	}
 	return nil

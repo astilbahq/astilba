@@ -90,7 +90,7 @@ func (s *Service) withdrawStalePublications(ctx context.Context, conn *pgxpool.C
 	if e != nil || len(publications) == 0 {
 		return e
 	}
-	installation, e := q.DNSInstallation(ctx)
+	installation, e := q.InstallationID(ctx)
 	if e != nil {
 		return e
 	}
