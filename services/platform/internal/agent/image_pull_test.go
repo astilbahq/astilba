@@ -24,6 +24,7 @@ import (
 	"github.com/moby/moby/api/types/system"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/registry/remote/auth"
 )
 
 // testRegistry serves manifests and blobs by digest, and counts what it serves.
@@ -726,5 +727,54 @@ func TestPullFallsBackPastAMirrorLackingAnEntry(t *testing.T) {
 	}
 	if _, _, err = planFromSources(context.Background(), []registryImage{mirror.source(t, nil)}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err == nil || !strings.Contains(err.Error(), "which its registry no longer has") {
 		t.Fatal("the last source's lack was not named", err)
+	}
+}
+
+// The agent reads a registry over plain HTTP only when the daemon treats it as insecure, and
+// sends a credential in the clear only to that registry, never to a mirror.
+func TestPullUsesPlainHTTPOnlyForAnInsecureRegistry(t *testing.T) {
+	credential := &pipeline.Credential{Username: "deployer", Password: "fixture-password"}
+	config := &registrytypes.ServiceConfig{
+		InsecureRegistryCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+		IndexConfigs:          map[string]*registrytypes.IndexInfo{"docker.io": {Name: "docker.io", Secure: true}, "plain.example:5000": {Name: "plain.example:5000", Secure: false}},
+		Mirrors:               []string{"http://mirror.example:5000", "https://mirror.example"},
+	}
+	for image, wantFallback := range map[string]bool{
+		"registry.example/app@sha256:" + strings.Repeat("a", 64):   false,
+		"plain.example:5000/app@sha256:" + strings.Repeat("a", 64): true,
+		"10.1.2.3:5000/app@sha256:" + strings.Repeat("a", 64):      true,
+		"busybox@sha256:" + strings.Repeat("a", 64):                false,
+	} {
+		named, err := reference.ParseNormalizedNamed(image)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources, err := registryImages(context.Background(), system.Info{RegistryConfig: config}, named, credential)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host := reference.Domain(named)
+		if host == "docker.io" {
+			host = "registry-1.docker.io"
+		}
+		fallbacks := 0
+		for _, source := range sources {
+			repo := source.(orasImage).repo
+			if repo.PlainHTTP && repo.Reference.Registry == host {
+				fallbacks++
+				if !plainHTTPFallback(source) {
+					t.Error(image, "reads the registry in the clear before trying HTTPS")
+				}
+			}
+			if repo.Reference.Registry != host {
+				// A mirror, which receives no credential.
+				if got, _ := repo.Client.(*auth.Client).Credential(context.Background(), repo.Reference.Registry); got != auth.EmptyCredential {
+					t.Error(image, "sends the credential to a mirror")
+				}
+			}
+		}
+		if (fallbacks == 1) != wantFallback || fallbacks > 1 {
+			t.Errorf("%s: %d plain-HTTP sources for the registry", image, fallbacks)
+		}
 	}
 }
