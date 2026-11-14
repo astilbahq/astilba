@@ -127,6 +127,26 @@ func TestPlanningMeasuresSecretsWithoutOpeningThem(t *testing.T) {
 		t.Fatalf("broken measured %v, its neighbour measured %v: %v", brokenMeasured, storedMeasured, err)
 	}
 
+	// An erased version has no value to measure, so the job neither opens it nor stores lengths for it.
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE secret_versions SET encrypted_value=NULL,erased_at=now() WHERE id=$1`, broken); err != nil {
+		t.Fatal(err)
+	}
+	measured := func() int {
+		t.Helper()
+		var n int
+		if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM secret_access WHERE workspace_id=$1 AND job='secret-lengths'`, ws).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before = measured()
+	if more, err := f.execution.MeasureSecretLengths(ctx); err != nil || more {
+		t.Fatalf("measuring with an erased version: more %v, %v", more, err)
+	}
+	if measured() != before {
+		t.Fatal("measuring opened an erased version")
+	}
+
 	// The limit still holds, from the stored lengths.
 	tooLarge, planTooLarge := environment("Too large", "small")
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE secret_versions SET plaintext_bytes=70000,json_bytes=70002 WHERE id=$1`, tooLarge); err != nil {

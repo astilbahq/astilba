@@ -152,7 +152,7 @@ func (j *Journal) legacyMigrationAllowed() error {
 				if err != nil {
 					return err
 				}
-				if len(s.Writers) > 0 || hasUncertainRun(s.Runs) {
+				if len(s.Writers) > 0 || hasUncertainRun(s) {
 					return refuse
 				}
 				return nil

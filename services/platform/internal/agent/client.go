@@ -39,6 +39,7 @@ type Client struct {
 	serviceOutputs          atomic.Bool
 	previews                atomic.Bool
 	retirement              atomic.Bool
+	purge                   atomic.Bool
 	schedules               atomic.Bool
 	replicas                atomic.Bool
 	crossHost               atomic.Bool
@@ -47,6 +48,12 @@ type Client struct {
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
 	secretReleases          atomic.Bool
+	// negotiated says this process has heard which extensions management reads. Until then the
+	// flags above are unset, and a heartbeat would replace what management holds with a set
+	// stripped of every extension. negotiatedNow is closed when it becomes true.
+	negotiated     atomic.Bool
+	negotiatedInit sync.Once
+	negotiatedNow  chan struct{}
 	// unacknowledged are journaled releases whose acknowledgement has not yet reached
 	// management. Only Run's poll loop uses it.
 	unacknowledged []api.SecretReleaseRef
@@ -124,6 +131,11 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 		}
 		body = value
 	case api.AgentHeartbeat:
+		// A heartbeat replaces the capabilities management holds, so it waits until this process
+		// knows what management reads.
+		if err := c.negotiate(ctx); err != nil {
+			return err
+		}
 		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
 		if !c.crossHost.Load() {
 			value.Preflight.CrossHostInventory = nil
@@ -167,41 +179,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 		return errors.New("management connection unavailable")
 	}
 	defer response.Body.Close()
-	// Also forget an extension after controller replacement or downgrade. Every
-	// controller sets this header on every agent response, whatever its status. A
-	// reverse proxy's own response lacks it and says nothing about management.
-	if response.Header.Get("Astilba-Agent-Features") != "" {
-		c.buildControls.Store(response.Header.Get("Astilba-Agent-Features") == "build-controls")
-		c.buildCache.Store(response.Header.Get("Astilba-Agent-Build-Cache") == "v1")
-		c.buildNetwork.Store(response.Header.Get("Astilba-Agent-Build-Network") == "v1")
-		c.rootlessBuilds.Store(response.Header.Get("Astilba-Agent-Rootless-Builds") == "v1")
-		c.railpack.Store(response.Header.Get("Astilba-Agent-Railpack") == "v1")
-		c.safeReleases.Store(response.Header.Get("Astilba-Agent-Safe-Releases") == "v1")
-		c.serviceOutputs.Store(response.Header.Get("Astilba-Agent-Service-Outputs") == "v1")
-		c.previews.Store(response.Header.Get("Astilba-Agent-Previews") == "v1")
-		c.retirement.Store(response.Header.Get("Astilba-Agent-Retirement") == "v1")
-		c.schedules.Store(response.Header.Get("Astilba-Agent-Schedules") == "v1")
-		c.replicas.Store(response.Header.Get("Astilba-Agent-Replicas") == "v1")
-		c.crossHost.Store(response.Header.Get("Astilba-Agent-Cross-Host") == "v1")
-		c.maintenanceContinuation.Store(response.Header.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
-		c.primaryIngress.Store(response.Header.Get("Astilba-Agent-Primary-Ingress") == "v1")
-		c.troubleshooting.Store(response.Header.Get("Astilba-Agent-Troubleshooting") == "v2")
-		c.machineRotation.Store(response.Header.Get("Astilba-Agent-Machine-Rotation") == "v1")
-		c.secretReleases.Store(response.Header.Get("Astilba-Agent-Secret-Releases") == "v1")
-		c.keysSupported.Store(response.Header.Get(agentidentity.KeysHeader) == "v1")
-		if c.Engine != nil {
-			read := refusalsUnread
-			if response.Header.Get("Astilba-Agent-Network-Refusals") == "v1" {
-				read = refusalsRead
-			}
-			c.Engine.networkRefusals.Store(read)
-			reviews := refusalsUnread
-			if response.Header.Get("Astilba-Agent-Host-Changes") == "v1" {
-				reviews = refusalsRead
-			}
-			c.Engine.hostChangeReviews.Store(reviews)
-		}
-	}
+	c.hearFeatures(response.Header)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return refusal(response)
 	}
@@ -216,6 +194,9 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 	if json.UnmarshalRead(io.LimitReader(response.Body, limit), out, json.RejectUnknownMembers(true)) != nil {
 		return errors.New("invalid management response")
 	}
+	// Only management answers an agent request with a body it can read. One that marks nothing
+	// comes from a controller older than negotiation, which reads no extension.
+	c.markNegotiated()
 	return nil
 }
 
@@ -242,65 +223,6 @@ func (c *Client) acceptPolledCommand(command api.ExecutionCommand) (Record, erro
 	return c.Journal.Accept(command)
 }
 
-func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabilities {
-	if !c.crossHost.Load() {
-		v.CrossHost = nil
-	}
-	if !c.maintenanceContinuation.Load() || !c.crossHost.Load() || c.Journal == nil || c.Journal.formatVersion.Load() < localStateVersion {
-		v.MaintenanceContinuation = nil
-	}
-	if !c.replicas.Load() {
-		v.Replicas = nil
-	}
-	if !c.primaryIngress.Load() || !c.crossHost.Load() {
-		v.PrimaryIngress = nil
-	}
-	if !c.troubleshooting.Load() {
-		v.Troubleshooting, v.TroubleshootingEnabled, v.TroubleshootingUnavailable = nil, nil, nil
-	}
-	if !c.schedules.Load() {
-		v.Schedules = nil
-	}
-	if !c.previews.Load() {
-		v.Previews = nil
-	}
-	if !c.retirement.Load() {
-		v.Retirement = nil
-	}
-	if !c.serviceOutputs.Load() {
-		v.ServiceOutputs = nil
-	}
-	if !c.safeReleases.Load() {
-		v.SafeReleases = nil
-	}
-	if !c.buildControls.Load() {
-		v.BuildControls = nil
-	}
-	if !c.buildCache.Load() {
-		v.BuildCache = nil
-	}
-	if !c.buildNetwork.Load() {
-		v.BuildNetwork = nil
-	}
-	if !c.rootlessBuilds.Load() {
-		v.RootlessBuilds = nil
-	}
-	if !c.railpack.Load() {
-		v.RailpackVersion = nil
-	}
-	v.KeyProtection, v.KeyStoreProblem = nil, nil
-	if c.keysSupported.Load() {
-		v.KeyProtection, v.KeyStoreProblem = c.keyProtection()
-	}
-	if !c.machineRotation.Load() {
-		v.MachineBoundRotation = nil
-	}
-	if !c.secretReleases.Load() {
-		v.AcknowledgesReleases = nil
-	}
-	return v
-}
-
 // Enroll exchanges an enrollment code for this server's identity, or with no code retries the
 // outstanding ones.
 func (c *Client) Enroll(ctx context.Context, token string) error {
@@ -317,8 +239,9 @@ func (c *Client) Enroll(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	// The enrollment went out before negotiation could finish. Report what the agent supports now
-	// rather than when the service first heartbeats.
+	// An enrollment sent to a controller that answered no challenge, or one whose answer changed
+	// what it reads, may have left support out. Report it now rather than when the service first
+	// heartbeats.
 	h := c.Observe(ctx)
 	if !reflect.DeepEqual(sent, c.advertisedCapabilities(h.Capabilities)) {
 		_ = c.heartbeat(ctx, authAgent, &api.AgentStatus{})
@@ -326,26 +249,6 @@ func (c *Client) Enroll(ctx context.Context, token string) error {
 	return nil
 }
 
-// Heartbeat reports this host once.
-func (c *Client) Heartbeat(ctx context.Context) (api.AgentStatus, error) {
-	var status api.AgentStatus
-	err := c.heartbeat(ctx, authAgent, &status)
-	return status, err
-}
-
-// heartbeat reports this host. A response that changes what this controller reads is followed at
-// once by another report, so management doesn't wait an interval to learn what the agent supports.
-func (c *Client) heartbeat(ctx context.Context, credential string, status *api.AgentStatus) error {
-	h := c.Observe(ctx)
-	sent := c.advertisedCapabilities(h.Capabilities)
-	if err := c.call(ctx, "POST", "/agent/v1/heartbeat", h, status, credential); err != nil {
-		return err
-	}
-	if reflect.DeepEqual(sent, c.advertisedCapabilities(h.Capabilities)) {
-		return nil
-	}
-	return c.call(ctx, "POST", "/agent/v1/heartbeat", h, status, credential)
-}
 func (c *Client) Run(ctx context.Context) error {
 	cfg, e := c.Journal.Config()
 	if e != nil {
@@ -441,6 +344,10 @@ func (c *Client) Run(ctx context.Context) error {
 		})
 	})
 	wg.Go(func() {
+		// The first poll may be held, so heartbeats don't wait for it to learn what management reads.
+		if !c.awaitNegotiation(ctx) {
+			return
+		}
 		c.loop(ctx, 15*time.Second, func() error {
 			cfg, e := c.Journal.Config()
 			if e != nil {

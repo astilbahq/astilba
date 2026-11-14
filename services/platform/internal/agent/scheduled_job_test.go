@@ -46,12 +46,17 @@ func scheduledJobFixture(t *testing.T, cleanupFailure string) (*Engine, backup.P
 		case strings.HasSuffix(path, "/containers/source/json"):
 			stablejson.Encode(w, source)
 		case strings.HasSuffix(path, "/containers/create"):
+			created++
+			if cleanupFailure == "create" {
+				w.WriteHeader(500)
+				fmt.Fprint(w, `{"message":"create failed"}`)
+				return
+			}
 			var b struct {
 				Labels map[string]string `json:"Labels"`
 			}
 			json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &b)
 			jobLabels = b.Labels
-			created++
 			jobInspects = 0
 			w.WriteHeader(201)
 			fmt.Fprint(w, `{"Id":"job","Warnings":[]}`)
@@ -193,5 +198,259 @@ func TestKnownJobExitDoesNotReleaseUnconfirmedCleanupFence(t *testing.T) {
 				t.Fatal("known exit discarded the cleanup fence", err)
 			}
 		})
+	}
+}
+
+// A container job that fails before it asks Docker for a container has changed nothing, so it
+// must not hold the host: a deployment that moved the plan before the policy was refreshed fails
+// the run, and the refresh and the host's other schedules still go ahead.
+func TestJobFailingBeforeItsContainerDoesNotHoldTheHost(t *testing.T) {
+	e, current, created := scheduledJobFixture(t, "")
+	stale := current
+	stale.ID, stale.Name = uuid.New(), "Stale"
+	stale.Plan.RevisionID = uuid.New()
+	stale.Plan = stale.Plan.WithHash()
+	if err := stale.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: stale, Next: at.Add(-time.Second)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: current, Next: at}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.tickSchedules(context.Background(), func() time.Time { return at }); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := e.Journal.schedule(stale.ID)
+	if err != nil || len(failed.Runs) != 1 || failed.Runs[0].State != "failed" || failed.BeforeEffects != uuid.Nil {
+		t.Fatal("a stale policy's run was not recorded as failed", err, failed.Runs)
+	}
+	ran, err := e.Journal.schedule(current.ID)
+	if err != nil || *created != 1 || len(ran.Runs) != 1 || ran.Runs[0].State != "succeeded" {
+		t.Fatal("another due schedule was held by a run that changed nothing", err, ran.Runs)
+	}
+
+	refreshed := stale
+	refreshed.Generation, refreshed.Plan = 2, current.Plan
+	b := backup.Command{Action: "install", Installation: backup.Installation{Policy: refreshed}}
+	raw, _ := stablejson.Marshal(b)
+	payload := jsontext.Value(raw)
+	kind := api.ExecutionCommandKind("backup")
+	if refreshed.GeneralSchedule() {
+		kind = "schedule"
+	}
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: refreshed.ServerID, EnvironmentId: refreshed.EnvironmentID, ResourceId: refreshed.ID, Kind: kind, Generation: 1, PlanHash: b.Digest(), Backup: &payload, Deadline: time.Now().Add(time.Minute)}
+	if err = e.Execute(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if record, err := e.Journal.Record(c.Id); err != nil || record.Report.State != "succeeded" {
+		t.Fatal("the policy refresh was not admitted", err, record.Report.State, record.Report.Note)
+	}
+}
+
+// A run is uncertain only once it may have changed something outside the journal: one the agent
+// stopped during before that fails, and one stopped after it, or whose container create failed,
+// still needs inspection.
+func TestJobUncertaintyStartsAtItsFirstEffect(t *testing.T) {
+	t.Run("restart before effects", func(t *testing.T) {
+		e, p, created := scheduledJobFixture(t, "")
+		at := time.Now().UTC()
+		run := backup.Run{ID: uuid.New(), PolicyID: p.ID, Generation: p.Generation, ScheduledAt: at, StartedAt: at, State: "running"}
+		if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}, Runs: []backup.Run{run}, BeforeEffects: run.ID}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.tickSchedules(context.Background(), func() time.Time { return at }); err != nil {
+			t.Fatal(err)
+		}
+		state, err := e.Journal.schedule(p.ID)
+		if err != nil || len(state.Runs) != 2 || state.Runs[0].State != "failed" || state.Runs[0].FinishedAt == nil || state.Runs[1].State != "succeeded" || *created != 1 {
+			t.Fatal("a run stopped before any effect held the schedule", err, state.Runs)
+		}
+	})
+	t.Run("restart after effects", func(t *testing.T) {
+		e, p, created := scheduledJobFixture(t, "")
+		at := time.Now().UTC()
+		run := backup.Run{ID: uuid.New(), PolicyID: p.ID, Generation: p.Generation, ScheduledAt: at, StartedAt: at, State: "running"}
+		if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}, Runs: []backup.Run{run}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.tickSchedules(context.Background(), func() time.Time { return at }); err != nil {
+			t.Fatal(err)
+		}
+		state, err := e.Journal.schedule(p.ID)
+		if err != nil || len(state.Runs) != 1 || state.Runs[0].State != "needs_attention" || *created != 0 {
+			t.Fatal("a run that may have had effects was not held for inspection", err, state.Runs)
+		}
+	})
+	t.Run("create failed", func(t *testing.T) {
+		e, p, created := scheduledJobFixture(t, "create")
+		at := time.Now().UTC()
+		if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.tickSchedules(context.Background(), func() time.Time { return at }); err != nil {
+			t.Fatal(err)
+		}
+		state, err := e.Journal.schedule(p.ID)
+		if err != nil || *created != 1 || len(state.Runs) != 1 || state.Runs[0].State != "needs_attention" {
+			t.Fatal("a failed create was taken to have made nothing", err, state.Runs)
+		}
+	})
+}
+
+// A backup command the agent stopped during is held for inspection only while its run may have
+// changed something with an unknown outcome. A run that never started, stopped before its first
+// effect, or had already failed settles the command, cancelled or not.
+func TestInterruptedRunCommandSettlesByItsRun(t *testing.T) {
+	cases := []struct {
+		name, action      string
+		run               string // "" for a run never recorded
+		marked, cancel    bool
+		command, recorded string
+	}{
+		{name: "never recorded", command: "failed"},
+		{name: "before effects", run: "running", marked: true, command: "failed", recorded: "failed"},
+		{name: "before effects cancelled", run: "running", marked: true, cancel: true, command: "cancelled", recorded: "failed"},
+		{name: "already failed", run: "failed", command: "failed", recorded: "failed"},
+		{name: "already failed cancelled", run: "failed", cancel: true, command: "cancelled", recorded: "failed"},
+		{name: "check cancelled", action: "check", cancel: true, command: "cancelled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, p, _ := scheduledJobFixture(t, "")
+			at := time.Now().UTC()
+			action := tc.action
+			if action == "" {
+				action = "backup"
+			}
+			b := backup.Command{Action: action, Installation: backup.Installation{Policy: p}, RunID: uuid.New()}
+			raw, _ := stablejson.Marshal(b)
+			payload := jsontext.Value(raw)
+			kind := api.ExecutionCommandKind("backup")
+			if p.GeneralSchedule() {
+				kind = "schedule"
+			}
+			c := api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.ID, Kind: kind, Generation: 1, PlanHash: b.Digest(), Backup: &payload, Deadline: time.Now().Add(time.Minute)}
+			if _, err := e.Journal.Accept(c); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.checkpoint(c.Id, "backup-effect"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.cancel {
+				c.CancelRequested = true
+				if _, err := e.Journal.Accept(c); err != nil {
+					t.Fatal(err)
+				}
+			}
+			state := scheduleState{Installation: backup.Installation{Policy: p, Next: at.Add(time.Hour)}}
+			if tc.run != "" {
+				state.Runs = []backup.Run{{ID: b.RunID, PolicyID: p.ID, Generation: p.Generation, ScheduledAt: at, StartedAt: at, State: tc.run}}
+			}
+			if tc.marked {
+				state.BeforeEffects = b.RunID
+			}
+			if err := e.Journal.saveSchedule(state); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Execute(context.Background(), c); err != nil {
+				t.Fatal(err)
+			}
+			record, err := e.Journal.Record(c.Id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := e.Journal.schedule(p.ID)
+			if err != nil || record.Report.State != api.ExecutionState(tc.command) || stored.BeforeEffects != uuid.Nil || hasUncertainRun(stored) {
+				t.Fatal("an interrupted run command was settled as", record.Report.State, err)
+			}
+			if tc.recorded != "" && (len(stored.Runs) != 1 || stored.Runs[0].State != tc.recorded) {
+				t.Fatal("the interrupted run was settled as", stored.Runs)
+			}
+		})
+	}
+}
+
+// The mark goes into the journal with the run and leaves it before the first effect. A backup's
+// placement, before its repository, is held by the host test that interrupts an upload.
+func TestRunsAreMarkedUntilTheirFirstEffect(t *testing.T) {
+	e, p, _ := scheduledJobFixture(t, "")
+	at := time.Now().UTC()
+	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}}); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]uuid.UUID{}
+	e.Point = func(point string) {
+		if s, err := e.Journal.schedule(p.ID); err == nil {
+			seen[point] = s.BeforeEffects
+		}
+	}
+	if err := e.tickSchedules(context.Background(), func() time.Time { return at }); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := e.Journal.schedule(p.ID)
+	if err != nil || len(stored.Runs) != 1 {
+		t.Fatal(err, stored.Runs)
+	}
+	recorded, recordedOK := seen["backup-run-recorded"]
+	begun, begunOK := seen["backup-effects-begun"]
+	if !recordedOK || recorded != stored.Runs[0].ID || !begunOK || begun != uuid.Nil || stored.BeforeEffects != uuid.Nil {
+		t.Fatal("the run was not marked from its record to its first effect", seen, stored.Runs)
+	}
+}
+
+// A run cancelled before its first effect changed nothing, so it fails rather than wait.
+func TestRunCancelledBeforeItsEffectsFails(t *testing.T) {
+	e, p, created := scheduledJobFixture(t, "")
+	at := time.Now().UTC()
+	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.Point = func(point string) {
+		if point == "backup-run-recorded" {
+			cancel()
+		}
+	}
+	if err := e.tickSchedules(ctx, func() time.Time { return at }); err == nil {
+		t.Fatal("a cancelled tick reported no error")
+	}
+	stored, err := e.Journal.schedule(p.ID)
+	if err != nil || *created != 0 || len(stored.Runs) != 1 || stored.Runs[0].State != "failed" || hasUncertainRun(stored) {
+		t.Fatal("a run cancelled before its first effect was left uncertain", err, stored.Runs)
+	}
+}
+
+// A policy refresh can reach a restarted agent before its first tick. It settles a run stopped
+// before its first effect rather than carry it on as uncertain.
+func TestPolicyRefreshSettlesARunStoppedBeforeItsEffects(t *testing.T) {
+	e, p, _ := scheduledJobFixture(t, "")
+	at := time.Now().UTC()
+	run := backup.Run{ID: uuid.New(), PolicyID: p.ID, Generation: p.Generation, ScheduledAt: at, StartedAt: at, State: "running"}
+	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}, Runs: []backup.Run{run}, BeforeEffects: run.ID}); err != nil {
+		t.Fatal(err)
+	}
+	refreshed := p
+	refreshed.Generation = 2
+	b := backup.Command{Action: "install", Installation: backup.Installation{Policy: refreshed}}
+	raw, _ := stablejson.Marshal(b)
+	payload := jsontext.Value(raw)
+	kind := api.ExecutionCommandKind("backup")
+	if refreshed.GeneralSchedule() {
+		kind = "schedule"
+	}
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.ID, Kind: kind, Generation: 1, PlanHash: b.Digest(), Backup: &payload, Deadline: time.Now().Add(time.Minute)}
+	if err := e.Execute(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	record, err := e.Journal.Record(c.Id)
+	if err != nil || record.Report.State != "succeeded" {
+		t.Fatal("the refresh was not admitted", err, record.Report.Note)
+	}
+	stored, err := e.Journal.schedule(p.ID)
+	if err != nil || stored.Installation.Policy.Generation != 2 || len(stored.Runs) != 1 || stored.Runs[0].State != "failed" || hasUncertainRun(stored) {
+		t.Fatal("the refresh carried on a run that changed nothing as uncertain", err, stored.Runs)
 	}
 }

@@ -79,6 +79,7 @@ const retainedOperations = ` AND id IN (WITH RECURSIVE kept(id) AS (
 	UNION SELECT c.id FROM execution_operations c JOIN execution_operations p ON p.id=c.parent_id WHERE c.workspace_id=$1 AND p.state NOT IN ('succeeded','failed','cancelled')
 	UNION SELECT runtime_operation_id FROM environments WHERE workspace_id=$1
 	UNION SELECT retirement_operation_id FROM environments WHERE workspace_id=$1
+	UNION SELECT purge_operation_id FROM environments WHERE workspace_id=$1
 	UNION SELECT id FROM cross_host_operations WHERE workspace_id=$1
 	UNION SELECT parent_id FROM cross_host_approvals WHERE workspace_id=$1
 	UNION SELECT parent_id FROM cross_host_reservations WHERE workspace_id=$1

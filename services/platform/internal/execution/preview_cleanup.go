@@ -97,18 +97,11 @@ func (s *Service) reconcilePreviewCleanup(ctx context.Context, tx pgx.Tx, p prev
 // Used for normal reports and authenticated transfer receipts. Immutable command
 // identity, rather than a caller-supplied resource list, determines the cleanup.
 func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) error {
-	var p deployment.Payload
-	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != "preview-cleanup" || p.Plan.Preview == nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId || p.Plan.Validate(false) != nil {
-		return domain.Forbidden
-	}
 	// A revocation ended this cleanup and released its preview, so a receipt the revoked host
 	// kept is answered without changing what the owner was told.
-	known, err := db.New(tx).OperationReportState(ctx, db.OperationReportStateParams{WorkspaceID: ws, ID: c.Id})
-	if err != nil {
+	p, settled, err := removalCommand(ctx, tx, ws, c, "preview-cleanup")
+	if err != nil || settled {
 		return err
-	}
-	if known.ReportSequence == settledReportSequence {
-		return nil
 	}
 	var purpose string
 	if err := tx.QueryRow(ctx, "SELECT purpose FROM environments WHERE workspace_id=$1 AND id=$2", ws, c.EnvironmentId).Scan(&purpose); err != nil {

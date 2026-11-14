@@ -63,6 +63,9 @@ var visualActions = map[string]deadlineRule{
 	"delete-volume":   startsWork,
 	"preview-cleanup": startsWork,
 	"retire":          retiresHeldUnit,
+	// A purge that arrives late fails, and its owner purges again: nothing else can run for a
+	// retired environment meanwhile.
+	"purge": startsWork,
 }
 
 var networkActions = map[string]deadlineRule{

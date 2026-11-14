@@ -56,6 +56,10 @@ func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backu
 	labels := visualLabels(p.Plan, a.ID)
 	labels[labelKind] = "scheduled-job-v1"
 	labels["com.astilba.run"] = r.ID.String()
+	// A create that fails may still have made the container.
+	if err = e.beginEffects(ctx, s, r); err != nil {
+		return err
+	}
 	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-job-" + r.ID.String(), Config: &container.Config{Image: p.Plan.Images[a.ID.String()], Cmd: p.Command, Env: source.Config.Env, Labels: labels, WorkingDir: source.Config.WorkingDir, User: source.Config.User}, HostConfig: &container.HostConfig{NetworkMode: mode, ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Mounts: source.HostConfig.Mounts, Resources: container.Resources{Memory: 256 << 20, PidsLimit: ptr(int64(64))}}, NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: endpoints}})
 	if err != nil {
 		return err
