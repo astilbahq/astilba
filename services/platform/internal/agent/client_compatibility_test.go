@@ -202,6 +202,73 @@ func TestCacheCapabilityDoesNotChangeBuildControlsNegotiation(t *testing.T) {
 	}
 }
 
+// A controller that reads Railpack's version but not its pins rejects the digest, so an agent
+// sends it only to one that advertises Astilba-Agent-Railpack-Inputs.
+func TestRailpackInputsNeedTheirOwnNegotiation(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	var reads atomic.Bool
+	var received, rejected atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A controller marks every response with what it reads, refusals included.
+		w.Header().Set("Astilba-Agent-Features", "build-controls")
+		w.Header().Set("Astilba-Agent-Railpack", "v1")
+		if reads.Load() {
+			w.Header().Set("Astilba-Agent-Railpack-Inputs", "v1")
+		}
+		var body api.AgentHeartbeat
+		if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil || body.Capabilities.RailpackVersion == nil {
+			w.WriteHeader(400)
+			return
+		}
+		if body.Capabilities.RailpackInputs != nil {
+			// The previous request schema rejects the unknown property.
+			if !reads.Load() {
+				rejected.Add(1)
+				w.WriteHeader(400)
+				return
+			}
+			received.Add(1)
+		}
+		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
+	}))
+	defer server.Close()
+	cfg, _ := j.Config()
+	cfg.Origin = server.URL
+	if err := j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	version, digest := "0.43.0", strings.Repeat("a", 64)
+	heartbeat := func() error {
+		return c.call(context.Background(), "POST", "/agent/v1/heartbeat", api.AgentHeartbeat{Capabilities: api.AgentCapabilities{RailpackVersion: &version, RailpackInputs: &digest}}, &api.AgentStatus{}, "fixture")
+	}
+	for range 2 {
+		if err := heartbeat(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if received.Load() != 0 || rejected.Load() != 0 {
+		t.Fatal("railpackInputs sent before negotiation")
+	}
+	reads.Store(true)
+	for range 2 {
+		if err := heartbeat(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if received.Load() != 1 {
+		t.Fatal("railpackInputs not sent once the controller advertised it", received.Load())
+	}
+	reads.Store(false)
+	if err := heartbeat(); err == nil {
+		t.Fatal("a downgraded controller accepted railpackInputs")
+	}
+	if err := heartbeat(); err != nil || received.Load() != 1 || rejected.Load() != 1 {
+		t.Fatal("a controller downgrade did not clear the extension", err)
+	}
+}
+
 func TestProxyResponsesKeepNegotiation(t *testing.T) {
 	proxied := map[string]struct {
 		status int

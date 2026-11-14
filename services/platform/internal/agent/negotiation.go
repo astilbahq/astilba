@@ -25,6 +25,7 @@ func (c *Client) hearFeatures(h http.Header) {
 	c.buildNetwork.Store(h.Get("Astilba-Agent-Build-Network") == "v1")
 	c.rootlessBuilds.Store(h.Get("Astilba-Agent-Rootless-Builds") == "v1")
 	c.railpack.Store(h.Get("Astilba-Agent-Railpack") == "v1")
+	c.railpackInputs.Store(h.Get("Astilba-Agent-Railpack-Inputs") == "v1")
 	c.safeReleases.Store(h.Get("Astilba-Agent-Safe-Releases") == "v1")
 	c.serviceOutputs.Store(h.Get("Astilba-Agent-Service-Outputs") == "v1")
 	c.previews.Store(h.Get("Astilba-Agent-Previews") == "v1")
@@ -162,6 +163,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.railpack.Load() {
 		v.RailpackVersion = nil
+	}
+	if !c.railpackInputs.Load() {
+		v.RailpackInputs = nil
 	}
 	v.KeyProtection, v.KeyStoreProblem = nil, nil
 	if c.keysSupported.Load() {

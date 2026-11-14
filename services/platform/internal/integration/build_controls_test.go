@@ -198,6 +198,20 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	heartbeat()
 	create(400)
 	version = pipeline.RailpackVersion
+	// A runner on another release can run other pins under the same Railpack version, as
+	// when management is upgraded first; it is refused with both digests named.
+	pins := pipeline.RailpackFor("arm64")
+	previous := pins
+	previous.HelperImage = "docker.io/library/alpine:3.23@sha256:" + strings.Repeat("0", 64)
+	digest := previous.Digest()
+	in.Capabilities.RailpackInputs = &digest
+	heartbeat()
+	var refusal api.Error
+	b.call("POST", path+"/builds", map[string]any{"baseRevisionId": draft.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 400, &refusal)
+	if refusal.Fields == nil || len(*refusal.Fields) != 1 || (*refusal.Fields)[0] != "runner.railpackUpgradeRequired" || !strings.Contains(refusal.Message, pins.Digest()) || !strings.Contains(refusal.Message, digest) {
+		t.Fatal("a runner on other Railpack pins was not refused with both digests", refusal)
+	}
+	digest = pins.Digest()
 	heartbeat()
 	op = create(202)
 	c = poll()

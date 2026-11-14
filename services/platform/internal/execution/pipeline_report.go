@@ -122,8 +122,16 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if settled, err := s.settleBuildIsolation(ctx, tx, ws, c, p, undelivered); settled || err != nil {
 		return settled && c.CancelRequested, err
 	}
+	// A build goes to a runner that runs the Railpack pins it froze, not management's
+	// current ones, which a management upgrade or rollback may have moved since.
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
+		var need *pipeline.RailpackInputs
+		if p.Build.UsesRailpack() {
+			if need = p.Railpack; need == nil {
+				return false, errors.New("invalid pipeline payload")
+			}
+		}
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), need); err != nil {
 			return false, err
 		}
 	}
