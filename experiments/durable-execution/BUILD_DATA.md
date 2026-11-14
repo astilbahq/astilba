@@ -34,7 +34,7 @@ Copy the repository into the VM without mounting the host checkout. Inside that 
 
 ```sh
 sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/build-tools.sh
-sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb
 make verify-build PLAT4_ARCH=arm64
 ```
 
@@ -44,13 +44,13 @@ All containers, networks and volumes use the existing run/project ownership chec
 
 ## Toolchain and limits
 
-The host baseline is Go 1.27.4, Docker 29.9.2, Compose 5.6.1 and PostgreSQL 18.4 on Alpine 3.23. `host/build-tools.sh` verifies official release SHA-256 digests for BuildKit/buildctl 0.34.1, zot 2.1.22, Railpack 0.43.0 and the `mise` 2026.10.14 that Railpack would otherwise download itself. The BuildKit image, Railpack 0.43.0 frontend and its `mise-2026.10.14` builder/runtime images are pinned to multi-platform manifest digests. The bcrypt fixture helper uses `golang.org/x/crypto` 0.58.0; its required `x/sync`, `x/sys` and `x/text` updates are recorded in the module lockfiles.
+The host baseline is Go 1.27.4, Docker 29.9.2, Compose 5.6.1 and PostgreSQL 18.4 on Alpine 3.23. `host/build-tools.sh` verifies official release SHA-256 digests for BuildKit/buildctl 0.35.0, zot 2.1.23, Railpack 0.43.0 and the `mise` 2026.10.14 that Railpack would otherwise download itself. The BuildKit image, Railpack 0.43.0 frontend and its `mise-2026.10.14` builder/runtime images are pinned to multi-platform manifest digests. The bcrypt fixture helper uses `golang.org/x/crypto` 0.58.0; its required `x/sync`, `x/sys` and `x/text` updates are recorded in the module lockfiles.
 
 The Dockerfile workers use 192 MiB of state each, with a separate 32 MiB failure worker. Railpack's default shell-provider images exceeded a 1 GiB state budget; the same build succeeded with a 3 GiB state cap. This is a measured fixture requirement, not a production sizing guarantee. The shell smoke test does not establish Node/Go/framework detection or language dependency reproducibility. Generated Railpack image references are frozen before execution; runtime timestamps mean this experiment does not promise byte-identical rebuilds.
 
 The database recipe covers the pinned PostgreSQL 18 layout: mount the volume at `/var/lib/postgresql`, with `PGDATA` at `/var/lib/postgresql/18/docker`. It restores selected unprivileged NOLOGIN roles and direct grants, one database and hstore. Login passwords, general role hierarchies, other extensions, tablespaces, encrypted remote storage, retention, major upgrades and binding cutover need their later recipes and tests. Custom-format dumps use compression level zero so the bounded disk failure has a predictable size. Logical consistency is provided by `pg_dump`; this is not an application-wide snapshot.
 
-BuildKit and zot use Apache-2.0, Railpack uses MIT, and Go's `x/crypto` uses BSD-3-Clause. This fixture downloads tools and images without redistributing them. Any future bundled distribution must retain the relevant source and image notices. [BuildKit licence](https://github.com/moby/buildkit/blob/v0.34.1/LICENSE), [zot licence](https://github.com/project-zot/zot/blob/v2.1.22/LICENSE), [Railpack licence](https://github.com/railwayapp/railpack/blob/v0.43.0/LICENSE).
+BuildKit and zot use Apache-2.0, Railpack uses MIT, and Go's `x/crypto` uses BSD-3-Clause. This fixture downloads tools and images without redistributing them. Any future bundled distribution must retain the relevant source and image notices. [BuildKit licence](https://github.com/moby/buildkit/blob/v0.35.0/LICENSE), [zot licence](https://github.com/project-zot/zot/blob/v2.1.23/LICENSE), [Railpack licence](https://github.com/railwayapp/railpack/blob/v0.43.0/LICENSE).
 
 ## Results
 
