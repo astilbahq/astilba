@@ -81,7 +81,7 @@ func recoveredUnits(root recoveringRoot) []deployment.DistributedUnit {
 // asked for anything, but management kept every checkpoint it sealed up to its backup. What the
 // primary sealed copies of beyond that extend the chain (extendRevokedChain). The root then resumes,
 // and the remaining hosts end it as they do whenever a primary is revoked.
-func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, before portability.Archive, revoked map[uuid.UUID]bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
+func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, before portability.Archive, revoked map[uuid.UUID]bool, held map[uuid.UUID][]heldCapsule, out *recoverySource) error {
 	supplied := map[uuid.UUID]bool{}
 	// inline-sql: recovery session temporary table
 	rows, err := tx.Query(ctx, `SELECT DISTINCT parent_id FROM recovery_input_checkpoints`)
@@ -130,12 +130,12 @@ func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *secretbroker.
 			if recoveryDecode(saved.Descriptor, &d) != nil || d.Validate() != nil || d.ParentID != command.Id || d.Sequence != sequence || len(saved.Envelope) != d.Bytes || deployment.RecoveryDigest(saved.Envelope) != d.Digest {
 				return errors.New("a checkpoint management sealed for a revoked primary's root is incomplete or divergent")
 			}
-			if err = addRecoveryCheckpoint(ctx, tx, keys, ws, out, bases, d, saved.Descriptor, saved.Envelope, command.ServerId); err != nil {
+			if err = addRecoveryCheckpoint(ctx, tx, keys, ws, out, d, saved.Descriptor, saved.Envelope, command.ServerId); err != nil {
 				return err
 			}
 			last = d
 		}
-		if err = extendRevokedChain(ctx, tx, keys, ws, out, bases, last, command.ServerId, held[command.Id]); err != nil {
+		if err = extendRevokedChain(ctx, tx, keys, ws, out, last, command.ServerId, held[command.Id]); err != nil {
 			return err
 		}
 	}
@@ -156,7 +156,7 @@ type heldCapsule struct {
 // counts for nothing. The first sequence with no qualifying copy, or with two different ones, ends
 // the chain: withholding leaves the root where management's chain puts it, and two continuations
 // both sealed for one step are taken as neither.
-func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, last deployment.RecoveryDescriptor, primary uuid.UUID, held []heldCapsule) error {
+func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, last deployment.RecoveryDescriptor, primary uuid.UUID, held []heldCapsule) error {
 	for {
 		next := map[uuid.UUID]heldCapsule{}
 		for _, c := range held {
@@ -178,7 +178,7 @@ func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 			return nil
 		}
 		for _, c := range next {
-			if err := addRecoveryCheckpoint(ctx, tx, keys, ws, out, bases, c.descriptor, c.raw, c.envelope, primary); err != nil {
+			if err := addRecoveryCheckpoint(ctx, tx, keys, ws, out, c.descriptor, c.raw, c.envelope, primary); err != nil {
 				return err
 			}
 			last = c.descriptor

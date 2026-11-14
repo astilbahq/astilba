@@ -8,6 +8,7 @@ import environment from "../locales/en/environment.json";
 import projects from "../locales/en/projects.json";
 import secretAccess from "../locales/en/secret-access.json";
 import troubleshooting from "../locales/en/troubleshooting.json";
+import workspace from "../locales/en/workspace.json";
 import { locales, readLocalePreference, resolveLocale } from "./locale";
 
 export const i18n = createInstance();
@@ -26,6 +27,7 @@ export async function initializeI18n(
       environment,
       troubleshooting,
       "secret-access": secretAccess,
+      workspace,
     },
   };
   await instance.use(initReactI18next).init({
@@ -44,6 +46,7 @@ export async function initializeI18n(
       "environment",
       "troubleshooting",
       "secret-access",
+      "workspace",
     ],
     returnEmptyString: false,
     interpolation: { escapeValue: false },

@@ -1205,6 +1205,23 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/cross-host-recovery:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getCrossHostRecovery
+      description: Owners and operators only.
+      responses:
+        '200':
+          description: The newest recovery checkpoint and the management backups recovery can use with it
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CrossHostRecovery'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/workspaces/{workspaceId}/members":
     "get":
       "operationId": "listMembers"
@@ -6276,6 +6293,14 @@
         - "name"
         - "role"
         - "requireMfa"
+    CrossHostRecovery:
+      type: object
+      additionalProperties: false
+      required: [checkpointAt, windowStart, shortWindow]
+      properties:
+        checkpointAt: {type: string, format: date-time, nullable: true, description: "When the newest recovery checkpoint was taken, or null before the first."}
+        windowStart: {type: string, format: date-time, nullable: true, description: "Cross-host recovery can use a management backup taken after this. Null with no checkpoint, or when the newest one predates recovery windows."}
+        shortWindow: {type: boolean, description: "The window is shorter than 35 days, the backup retention the docs suggest, because the workspace's applied history is busy."}
     "Session":
       "type": "object"
       "additionalProperties": false
@@ -9653,7 +9678,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}
