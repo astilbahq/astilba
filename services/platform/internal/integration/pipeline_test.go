@@ -286,16 +286,31 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		if inTime {
 			started()
 		}
-		c.Deadline = time.Now().Add(-time.Second)
-		raw, _ := stablejson.Marshal(c)
+		// The stored command, which holds no credentials, reaches its deadline.
+		var raw []byte
+		var frozen api.ExecutionCommand
+		if err := f.st.Pool.QueryRow(context.Background(), "SELECT command FROM execution_operations WHERE id=$1", c.Id).Scan(&raw); err != nil || json.Unmarshal(raw, &frozen) != nil {
+			t.Fatal("stored command unreadable", err)
+		}
+		frozen.Deadline = time.Now().Add(-time.Second)
+		raw, _ = stablejson.Marshal(frozen)
 		if _, err := f.st.Pool.Exec(context.Background(), "UPDATE execution_operations SET command=$2 WHERE id=$1", c.Id, raw); err != nil {
 			t.Fatal(err)
 		}
 		if !inTime {
 			started()
+		} else {
+			// Its runner asking for its values again after the deadline gets none.
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: c.Id, Epoch: c.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
 		}
-		if again := poll(op.Id); again.CancelRequested == inTime {
+		again := poll(op.Id)
+		if again.CancelRequested == inTime {
 			t.Fatal("a build's cancellation did not follow when its start was reported", inTime)
+		}
+		for _, value := range []string{"clone-read-canary", "build-only-canary", "push-canary"} {
+			if strings.Contains(string(*again.Pipeline), value) {
+				t.Fatal("a build's credentials left management after its deadline", inTime, value)
+			}
 		}
 		raw, _ = stablejson.Marshal(pipeline.Result{Commit: head, Image: registry.Repository + "@" + digest, Digest: digest, Architecture: "arm64"})
 		msg := jsontext.Value(raw)

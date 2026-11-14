@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -169,9 +170,10 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
 	}
-	if git == nil {
-		// The runner holds this command's credentials: what follows only decides whether new
-		// ones may leave.
+	// The runner holds this command's credentials: what follows only decides whether new ones
+	// may leave. None leave after the deadline, by when a runner must have started the pipeline
+	// with those it holds, as a backup's access does not.
+	if git == nil || time.Now().After(c.Deadline) {
 		return true, nil
 	}
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
@@ -348,11 +350,11 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
 	}
-	if late && !cancelled && !Terminal(r.State) {
-		note := "Stopping: the runner's report that it started this pipeline arrived after the pipeline's deadline."
-		if started {
-			note = "Stopping: the pipeline ran past its lifetime."
-		}
+	// Once this report's start is stored, the bound would move past the deadline, so a start
+	// first heard of late stops the pipeline here. Any other late report needs nothing: the
+	// next poll stops it.
+	if late && !started && !cancelled && !Terminal(r.State) && slices.ContainsFunc(r.Steps, func(s api.ExecutionStep) bool { return s.Name == pipeline.StartStep }) {
+		const note = "Stopping: the runner's report that it started this pipeline arrived after the pipeline's deadline."
 		if err = db.New(tx).StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
 			return err
 		}
