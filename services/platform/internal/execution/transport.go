@@ -63,6 +63,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var verified uuid.UUID
+	// Commands this agent cannot receive until it is upgraded, so as not to hold back the rest.
+	skipped := []uuid.UUID{}
 	for {
 		// Check revocation/expiry after each wait, not only at request entry.
 		if _, err = s.Authenticate(ctx, a.ID, a.Token); err != nil {
@@ -80,7 +82,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 		var raw []byte
 		var cancel bool
 		var state string
-		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state FROM execution_operations WHERE server_id=$1 AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('dispatched','running','needs_attention') AND NOT EXISTS(SELECT 1 FROM cross_host_recoveries r WHERE r.parent_id=execution_operations.parent_id AND NOT r.opened AND COALESCE(command->'crosshost'->>'phase','')<>'recovery-open') AND (parent_id IS NULL OR command->'recoveryCheckpoint' IS NULL OR command->'crosshost'->>'phase' IN ('checkpoint','checkpoint-closed') OR EXISTS(SELECT 1 FROM cross_host_checkpoints cp WHERE cp.parent_id=execution_operations.parent_id AND cp.id::text=command->'recoveryCheckpoint'->>'checkpointId' AND cp.acknowledged) OR EXISTS(SELECT 1 FROM execution_operations root JOIN servers primary_server ON primary_server.id=root.server_id WHERE root.id=execution_operations.parent_id AND primary_server.revoked)) ORDER BY COALESCE(command->'crosshost'->>'phase'='checkpoint',false) DESC, (kind='network' AND COALESCE(command->'network'->>'action','')='restrict') DESC,created_at LIMIT 1`, a.ID).Scan(&raw, &cancel, &state)
+		var epoch int64
+		err = s.Store.Pool.QueryRow(ctx, `SELECT command,cancel_requested,state,dispatch_epoch FROM execution_operations WHERE server_id=$1 AND NOT(id=ANY($2::uuid[])) AND NOT(kind='crosshost' AND parent_id IS NULL) AND state IN ('dispatched','running','needs_attention') AND NOT EXISTS(SELECT 1 FROM cross_host_recoveries r WHERE r.parent_id=execution_operations.parent_id AND NOT r.opened AND COALESCE(command->'crosshost'->>'phase','')<>'recovery-open') AND (parent_id IS NULL OR command->'recoveryCheckpoint' IS NULL OR command->'crosshost'->>'phase' IN ('checkpoint','checkpoint-closed') OR EXISTS(SELECT 1 FROM cross_host_checkpoints cp WHERE cp.parent_id=execution_operations.parent_id AND cp.id::text=command->'recoveryCheckpoint'->>'checkpointId' AND cp.acknowledged) OR EXISTS(SELECT 1 FROM execution_operations root JOIN servers primary_server ON primary_server.id=root.server_id WHERE root.id=execution_operations.parent_id AND primary_server.revoked)) ORDER BY COALESCE(command->'crosshost'->>'phase'='checkpoint',false) DESC, (kind='network' AND COALESCE(command->'network'->>'action','')='restrict') DESC,created_at LIMIT 1`, a.ID, skipped).Scan(&raw, &cancel, &state, &epoch)
 		if err == nil {
 			var c api.ExecutionCommand
 			if err = json.Unmarshal(raw, &c); err != nil {
@@ -90,13 +93,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				return nil, domain.Forbidden
 			}
 			if s.Store.Hosted {
-				tx, e := s.Store.Pool.Begin(ctx)
-				if e != nil {
-					return nil, e
-				}
-				e = s.commandAdmission(ctx, tx, a.Workspace, c)
-				_ = tx.Rollback(ctx)
-				if e != nil {
+				if e := s.hostedAdmission(ctx, a.Workspace, c); e != nil {
 					if !errors.Is(e, store.SubscriptionRequired) {
 						return nil, e
 					}
@@ -105,7 +102,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 			}
 			if !cancel {
 				verify := state == "dispatched" && verified != c.Id
-				allowed, e := s.commandAllowed(ctx, a.Workspace, c, verify)
+				allowed, e := s.commandAllowed(ctx, a, c, verify)
 				if e != nil {
 					return nil, e
 				}
@@ -121,39 +118,34 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 			}
 			c.CancelRequested = cancel
-			// Existing agents compare hydrated visual payloads byte-for-byte.
-			// Other command kinds have always accepted credential-free cancellation.
-			// Hydration finishes a pipeline no runner holds, and adds no credentials to one it might.
-			if cancel && c.Kind != "pipeline" && (c.Kind != "visual" || a.CredentialFreeVisualCancel) {
+			// A stop carries no values. Hydration finishes a pipeline no runner holds, and adds no
+			// credentials to one it might.
+			if cancel && c.Kind != "pipeline" {
 				return &c, nil
 			}
-			if c.Kind == "upgrade" {
-				if err = s.hydrateUpgrade(ctx, &c); err != nil {
+			if carriesValues(c) {
+				decision, err := s.release(ctx, a, epoch, &c)
+				if err != nil {
 					return nil, err
 				}
-			}
-			if c.Kind == "backup" || c.Kind == "schedule" {
-				if err = s.hydrateBackup(ctx, &c); err != nil {
-					return nil, err
-				}
-			}
-			if c.Kind == "pipeline" {
-				var deliver bool
-				if deliver, err = s.hydratePipeline(ctx, a, &c); err != nil {
-					return nil, err
-				}
-				if !deliver {
+				if decision == skipCommand {
+					skipped = append(skipped, c.Id)
 					continue
 				}
-			}
-			if c.Kind == "crosshost" {
-				if err = s.hydrateCrossHost(ctx, &c); err != nil {
-					return nil, err
-				}
-			}
-			if c.Kind == "visual" {
-				if err = s.hydrateVisual(ctx, &c); err != nil {
-					return nil, err
+				if decision == waitForRelease {
+					// Its values are on their way to this instance, or cannot go yet: wait as
+					// for an idle poll, and look again.
+					if out != nil && out.TroubleshootingOffers != nil {
+						return nil, nil
+					}
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-deadline.C:
+						return nil, nil
+					case <-tick.C:
+					}
+					continue
 				}
 			}
 			return &c, nil
@@ -174,9 +166,21 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 	}
 }
 
-func (s *Service) commandAllowed(ctx context.Context, ws uuid.UUID, c api.ExecutionCommand, verify bool) (bool, error) {
+// hostedAdmission is commandAdmission in a transaction of its own, which ends before the poll
+// goes on to release anything.
+func (s *Service) hostedAdmission(ctx context.Context, ws uuid.UUID, c api.ExecutionCommand) error {
+	tx, err := s.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	return s.commandAdmission(ctx, tx, ws, c)
+}
+
+func (s *Service) commandAllowed(ctx context.Context, a Identity, c api.ExecutionCommand, verify bool) (bool, error) {
+	ws := a.Workspace
 	var allowed bool
-	err := s.withGit(ctx, ws, s.legacyRunKeys(ws), func(git *gitAnswers) error {
+	err := s.withGit(ctx, ws, s.agentKeys(a), func(git *gitAnswers) error {
 		tx, err := s.Store.Pool.Begin(ctx)
 		if err != nil {
 			return err
@@ -212,7 +216,7 @@ func (s *Service) Report(ctx context.Context, a Identity, r api.AgentReport) err
 	}
 	// A provider call between passes must not count against the agent's report.
 	received := time.Now()
-	return s.withGit(ctx, a.Workspace, s.legacyRunKeys(a.Workspace), func(git *gitAnswers) error { return s.applyReport(ctx, git, received, a, r) })
+	return s.withGit(ctx, a.Workspace, s.agentKeys(a), func(git *gitAnswers) error { return s.applyReport(ctx, git, received, a, r) })
 }
 
 // applyReport takes its report by value because a pass rewrites it, and a pass that asks a

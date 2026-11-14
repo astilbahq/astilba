@@ -49,6 +49,9 @@ func (s *Store) CreateAutomation(ctx context.Context, p Principal, ws, project, 
 		if err != nil {
 			return err
 		}
+		if v.State != "active" {
+			return domain.EnvironmentInactive
+		}
 		if v.Purpose != "standard" {
 			for _, cap := range capabilities {
 				if cap != domain.EnvironmentRead {

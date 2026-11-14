@@ -19,7 +19,7 @@ func agentKey(t *testing.T, a *keyAgent) *ecdsa.PrivateKey {
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, err := a.keys.Unseal(context.Background(), cfg.Key)
+	der, err := a.keys.Unseal(context.Background(), agent.KeyCredentialName, cfg.Key)
 	if err != nil {
 		t.Fatal(err)
 	}

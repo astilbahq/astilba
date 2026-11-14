@@ -201,3 +201,57 @@ export const CancelCreation: Story = {
     await expect(canvas.queryByLabelText("Environment name", {})).toBeNull();
   },
 };
+export const RetiredEnvironments: Story = {
+  parameters: scenario(
+    session,
+    http.get(environmentsPath, () =>
+      HttpResponse.json([
+        environments[0],
+        { ...environments[1], state: "retired" },
+        { ...environments[2], state: "retiring" },
+        {
+          ...environments[1],
+          id: "00000000-0000-4000-8000-000000000023",
+          name: "Staging",
+          state: "purging",
+        },
+        {
+          ...environments[1],
+          id: "00000000-0000-4000-8000-000000000024",
+          name: "Archive",
+          state: "purged",
+        },
+        {
+          ...environments[1],
+          id: "00000000-0000-4000-8000-000000000025",
+          name: "Legacy",
+          state: "purged",
+          purgedWithoutHost: true,
+        },
+      ]),
+    ),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("Retired environments (5)"));
+    await expect(
+      await canvas.findByRole("link", { name: /^Production .*Retired/ }),
+    ).toBeVisible();
+    // Environments whose retained data is being deleted, or was, stay in the same section.
+    await expect(
+      canvas.getByRole("link", {
+        name: /^Staging .*Retained data being deleted/,
+      }),
+    ).toBeVisible();
+    await expect(
+      canvas.getByRole("link", { name: /^Archive .*Retained data deleted/ }),
+    ).toBeVisible();
+    // A revoked server kept its volumes, which the label says rather than claiming deletion.
+    const legacy = canvas.getByRole("link", { name: /^Legacy / });
+    await expect(legacy).toHaveAccessibleName(
+      /Secret values erased, volumes not deleted/,
+    );
+    await expect(legacy).not.toHaveAccessibleName(/Retained data deleted/);
+  },
+};

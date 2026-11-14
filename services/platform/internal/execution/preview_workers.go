@@ -432,6 +432,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if why != "" {
 			return s.previewState(ctx, tx, id, "failed", "Preview environment was not created: "+why, 5*time.Minute)
 		}
+		git.createdEnvironments[*r.View.EnvironmentId] = true
 	}
 	if r.Config == nil || r.PolicyGeneration != p.Generation {
 		return s.previewState(ctx, tx, id, "blocked", "The preview's frozen policy needs owner review.", 5*time.Minute)
@@ -473,6 +474,18 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		cfg := r.Config.Build
+		// The policy's runner was checked when it was saved; a management upgrade since can
+		// have moved the Railpack pins it needs.
+		if refusal, err := runnerRailpackRefusal(ctx, tx, p.Workspace, p.Server, cfg.RailpackPins()); err != nil {
+			return err
+		} else if refusal != nil {
+			if allocation != nil {
+				if err = allocation.Rollback(ctx); err != nil {
+					return err
+				}
+			}
+			return s.previewState(ctx, tx, id, "failed", "Preview build rejected before runner delivery: "+refusal.Message, 5*time.Minute)
+		}
 		hash := buildInputHash(connection, pr.Head, cfg)
 		op, err := s.insertPipeline(ctx, tx, git, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
 		// A policy saved under an earlier check can fail this one. Failing the job would roll
@@ -490,7 +503,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		raw, _ := stablejson.Marshal(cfg)
-		if _, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", p.Workspace, *r.View.EnvironmentId, *r.App, p.Connection, raw, hash, pr.Head, p.Actor, p.AuthVersion); err != nil {
+		if _, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL,waiting_until=NULL", p.Workspace, *r.View.EnvironmentId, *r.App, p.Connection, raw, hash, pr.Head, p.Actor, p.AuthVersion); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET build_id=$2,built_head=$3,plan_id=NULL,operation_id=$2 WHERE id=$1", id, op.Id, pr.Head); err != nil {
@@ -534,7 +547,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if why != "" {
 			return s.previewState(ctx, tx, id, "failed", "Preview was not deployed: "+why, 5*time.Minute)
 		}
-		status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
+		status, err := s.createVisualPlan(ctx, tx, git.keys.inspect, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
 		if err != nil {
 			return err
 		}

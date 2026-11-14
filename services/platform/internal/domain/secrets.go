@@ -8,11 +8,17 @@ import (
 	"strings"
 )
 
-// minTrimmedSecret is the shortest value searched for without its surrounding whitespace or
-// with its lines laid out differently. Below it the form is likely to be ordinary text such
-// as `postgres` or `production`, and since every stored version counts, a match on a word a
-// file needs could not be cleared. A URL-encoded form needs no floor: it decodes to the value.
+// minTrimmedSecret is the shortest runtime-secret value the leak check searches for at all, and
+// the shortest searched for without its surrounding whitespace or with its lines laid out
+// differently. Below it a value is likely to be ordinary text such as `postgres` or
+// `production`, and a match on a word a file needs would block it for no protection, since so
+// short a value can be guessed. A URL-encoded form needs no floor: it decodes to the value.
 const minTrimmedSecret = 12
+
+// SecretTooShortToSearch reports whether a stored runtime-secret value of n bytes is too short
+// for the leak check to search for. Such a value is still sealed and redacted; the dashboard
+// warns members who can write secrets that files and public arguments are not checked for it.
+func SecretTooShortToSearch(n int) bool { return n < minTrimmedSecret }
 
 var (
 	// A line break however a file writes it, with the indentation around it: real, as `\n`

@@ -123,9 +123,12 @@ test("saved drafts survive reopening, history stays read-only, and reload keeps 
     const newer = JSON.stringify(specification, null, 2);
     await editor.fill(newer);
     release();
-    await expect(page.getByRole("status")).toContainText(
-      "your newer edits were kept",
-    );
+    // The page's lifecycle status region is always there too, empty.
+    await expect(
+      page
+        .getByRole("status")
+        .filter({ hasText: "your newer edits were kept" }),
+    ).toBeVisible();
     await expect(editor).toHaveValue(newer);
   } finally {
     release();

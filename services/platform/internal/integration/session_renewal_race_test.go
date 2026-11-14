@@ -127,7 +127,7 @@ func enableMFA(t *testing.T, b *browser) api.RecoveryCodes {
 		t.Fatal(err)
 	}
 	var codes api.RecoveryCodes
-	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": b.f.password}}, 200, &codes)
 	b.csrf = codes.Session.CsrfToken
 	return codes
 }
@@ -149,23 +149,21 @@ func TestAccountChangeDoesNotRecreateLoggedOutSession(t *testing.T) {
 		name, path string
 		body       func(t *testing.T, b *browser) any
 	}{
-		{"change password", "/api/v1/auth/password", func(*testing.T, *browser) any {
-			return map[string]string{"password": "replacement password here"}
+		{"change password", "/api/v1/auth/password", func(_ *testing.T, b *browser) any {
+			return map[string]any{"password": "replacement password here", "current": map[string]string{"password": b.f.password}}
 		}},
 		{"confirm MFA", "/api/v1/auth/mfa/confirm", func(t *testing.T, b *browser) any {
 			code, err := totp.GenerateCode(enrollSecret(t, b), time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
-			return map[string]string{"code": code}
+			return map[string]any{"code": code, "current": map[string]string{"password": b.f.password}}
 		}},
 		{"regenerate recovery codes", "/api/v1/auth/mfa/recovery-codes", func(t *testing.T, b *browser) any {
-			enableMFA(t, b)
-			return nil
+			return map[string]any{"current": map[string]string{"code": enableMFA(t, b).Codes[0]}}
 		}},
 		{"disable MFA", "/api/v1/auth/mfa/disable", func(t *testing.T, b *browser) any {
-			enableMFA(t, b)
-			return nil
+			return map[string]any{"current": map[string]string{"code": enableMFA(t, b).Codes[0]}}
 		}},
 		{"begin MFA enrollment", "/api/v1/auth/mfa/enroll", func(*testing.T, *browser) any { return nil }},
 		// Proving the password needs no live session until the save, which must not recreate it.
@@ -242,7 +240,7 @@ func TestExpiredSessionStaysExpired(t *testing.T) {
 		body               any
 	}{
 		{"read", "GET", "/api/v1/session", nil},
-		{"refused change", "POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}},
+		{"refused change", "POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": "correct horse battery staple"}}},
 	} {
 		t.Run(request.name, func(t *testing.T) {
 			f := setup(t)
@@ -328,7 +326,7 @@ func TestAccountChangeSurvivesStaleRequestWithOldCookie(t *testing.T) {
 	old := b.client.Jar.Cookies(mustURL(f.server.URL))
 
 	gate.armedCommit.Store(true)
-	finish := sendHeld(t, b, gate, old, "POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"})
+	finish := sendHeld(t, b, gate, old, "POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": f.password}})
 	if stale := sessionFromCookies(t, b, old); stale.User != nil {
 		t.Fatal("the old cookie survived the password change")
 	}

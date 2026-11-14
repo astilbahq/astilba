@@ -19,7 +19,7 @@ func TestTroubleshootingEndsWhenARecoveryCodeIsUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var recovery api.RecoveryCodes
-	x.owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &recovery)
+	x.owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": x.f.password}}, 200, &recovery)
 	x.owner.csrf = recovery.Session.CsrfToken
 
 	opened, _, _ := x.connected(t, x.owner, 1)

@@ -1,17 +1,24 @@
 package agent
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/google/uuid"
+	bolt "go.etcd.io/bbolt"
 )
 
 // deadlineRule is what a command's admission deadline means for it. The deadline decides whether
-// a host may start something, never whether work it already holds can end. Every command kind,
+// a host may start something, never whether work it already holds can end. A backup command this
+// host started is bounded by its own lifetime from when it took it up (Record.workEnd), so time it
+// waited here for the host doesn't shorten it; pipeline commands still end at their deadline.
+// Management withholds a backup's access once its deadline passes, so a command that reaches a
+// host late, after the agent was silent, never starts there. Every command kind,
 // network action and coordinated phase that reaches the deadline has a rule below, so adding one
 // means choosing one. Anything not listed keeps its deadline. Recovery opening and closing are
 // decided before the deadline, in Execute. See docs/cross-host-placement.md.
@@ -33,19 +40,38 @@ const (
 	// endsHeldWorkOrNone is endsHeldWork that also acknowledges a host holding no reservation at
 	// all, without changing any reservation or runtime there. Refusing it would strand the other hosts.
 	endsHeldWorkOrNone
+	// retiresHeldUnit removes what an environment's unit left on this host, and keeps its volumes.
+	// A server that was offline when its environment was retired runs it on its return, when its
+	// journal holds the unit: its applied plan, a release, its route set, or a deployment it ran,
+	// even one that failed. A host whose journal holds none of these never ran the unit, so the
+	// retirement has nothing to end there; its owner retires again.
+	retiresHeldUnit
 )
 
 // commandKinds is every command kind the agent runs.
 var commandKinds = map[api.ExecutionCommandKind]deadlineRule{
 	"test":      startsWork,
 	"update":    startsWork, // Execute reconciles an artifact a timely update already installed.
-	"visual":    startsWork,
+	"visual":    startsWork, // by action, below
 	"pipeline":  startsWork,
 	"backup":    startsWork,
 	"schedule":  startsWork,
 	"upgrade":   ownDeadline,
 	"network":   startsWork, // by action, below
 	"crosshost": startsWork, // by phase, below
+}
+
+// visualActions is every action executeVisual runs.
+var visualActions = map[string]deadlineRule{
+	"resolve":         startsWork,
+	"observe":         startsWork,
+	"deploy":          startsWork,
+	"delete-volume":   startsWork,
+	"preview-cleanup": startsWork,
+	"retire":          retiresHeldUnit,
+	// A purge that arrives late fails, and its owner purges again: nothing else can run for a
+	// retired environment meanwhile.
+	"purge": startsWork,
 }
 
 var networkActions = map[string]deadlineRule{
@@ -87,6 +113,12 @@ func commandDeadline(c api.ExecutionCommand) deadlineRule {
 		return startsWork
 	}
 	switch c.Kind {
+	case "visual":
+		var p deployment.Payload
+		if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Digest() != c.PlanHash {
+			return startsWork
+		}
+		return visualActions[p.Action]
 	case "network":
 		var n hostnetwork.Command
 		if c.Network == nil || hostnetwork.Decode(*c.Network, &n) != nil || n.Validate() != nil {
@@ -156,6 +188,41 @@ func (e *Engine) runsLate(c api.ExecutionCommand) (bool, error) {
 			return false, err
 		}
 		return held.ParentID != uuid.Nil || rule == endsHeldWorkOrNone, nil
+	case retiresHeldUnit:
+		return e.Journal.holdsUnit(c)
 	}
 	return false, nil
+}
+
+// workEnd is when the work of a command this host took up must end: lifetime after it was first
+// taken up, and never before its issue deadline, whichever clock is ahead. A record an older agent
+// began has no start and keeps its deadline.
+func (r Record) workEnd(lifetime time.Duration) time.Time {
+	if r.StartedAt == nil || r.StartedAt.Add(lifetime).Before(r.Command.Deadline) {
+		return r.Command.Deadline
+	}
+	return r.StartedAt.Add(lifetime)
+}
+
+// startWork records when this host first takes a command up, unless an earlier execution already
+// began it, and returns the time it was first taken up. A record an older agent began has none.
+// It changes nothing management reads, so the report's sequence stays.
+func (j *Journal) startWork(id uuid.UUID) (*time.Time, error) {
+	var started *time.Time
+	err := j.db.Update(func(tx *bolt.Tx) error {
+		var r Record
+		if e := j.get(tx, "operations", id.String(), &r); e != nil {
+			return e
+		}
+		if r.StartedAt == nil && r.Checkpoint == "accepted" {
+			now := time.Now().UTC()
+			r.StartedAt = &now
+			if e := j.put(tx, "operations", id.String(), r); e != nil {
+				return e
+			}
+		}
+		started = r.StartedAt
+		return nil
+	})
+	return started, err
 }

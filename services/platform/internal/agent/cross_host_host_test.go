@@ -715,7 +715,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 			primary.command(t, command(0, "effect"))
 			leaf := primary.backupCommand(effect, &parent)
 			if interrupted {
-				if err := stablejson.Encode(primary.input, hostRequest{Command: &leaf, CrashAt: "backup-run-recorded"}); err != nil {
+				if err := stablejson.Encode(primary.input, hostRequest{Command: &leaf, CrashAt: "backup-effects-begun"}); err != nil {
 					t.Fatal(err)
 				}
 				if err := json.UnmarshalDecode(primary.output, &lost); err == nil {

@@ -114,7 +114,7 @@ func TestPreviewPolicyRechecksAfterAHungProvider(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 			defer cancel()
 			started := time.Now()
-			if _, err := h.f.execution.Poll(ctx, h.identity); !errors.Is(err, context.DeadlineExceeded) {
+			if _, err := pollReleased(h.f.execution, ctx, h.identity); !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatal("the runner's poll did not run during the call:", err)
 			}
 			if elapsed := time.Since(started); elapsed > 4*time.Second {

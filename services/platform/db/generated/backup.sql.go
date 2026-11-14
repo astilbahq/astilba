@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const allBackupDestinationAccess = `-- name: AllBackupDestinationAccess :many
@@ -246,6 +247,38 @@ func (q *Queries) ClaimDueCoordinatedBackupPolicy(ctx context.Context, arg Claim
 	var i ClaimDueCoordinatedBackupPolicyRow
 	err := row.Scan(&i.WorkspaceID, &i.ServerID, &i.ID)
 	return i, err
+}
+
+const claimRestoreTarget = `-- name: ClaimRestoreTarget :one
+INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_major)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(workspace_id,id) DO UPDATE SET postgres_major = COALESCE(managed_volumes.postgres_major,EXCLUDED.postgres_major)
+WHERE managed_volumes.environment_id = EXCLUDED.environment_id AND NOT managed_volumes.deleted
+RETURNING postgres_major
+`
+
+type ClaimRestoreTargetParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	UnitID        uuid.UUID   `json:"unit_id"`
+	ID            uuid.UUID   `json:"id"`
+	PostgresMajor pgtype.Text `json:"postgres_major"`
+}
+
+// A verified restore's target becomes the environment's data volume when a cutover is prepared,
+// before any plan mounts it, with the PostgreSQL major the restore initialised it with, as an
+// upgrade's target does when it is planned. Another environment's or a deleted volume returns no row.
+func (q *Queries) ClaimRestoreTarget(ctx context.Context, arg ClaimRestoreTargetParams) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, claimRestoreTarget,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.UnitID,
+		arg.ID,
+		arg.PostgresMajor,
+	)
+	var postgres_major pgtype.Text
+	err := row.Scan(&postgres_major)
+	return postgres_major, err
 }
 
 const countBackupDestinations = `-- name: CountBackupDestinations :one

@@ -260,16 +260,26 @@ func (s *Service) insertMaintenanceChild(ctx context.Context, tx pgx.Tx, ws uuid
 	}
 	c := maintenanceChildPayload(parent, phase, m, u)
 	c.Id, c.ParentId, c.Generation = key, &parent.Id, generation
-	c.Deadline = time.Now().Add(30 * time.Minute)
-	if c.Kind == "upgrade" {
-		c.Deadline = time.Now().Add(2 * time.Hour)
-	}
+	c.Deadline = time.Now().Add(maintenanceChildLifetime(c, m))
 	if parent.RecoveryCheckpoint == nil {
 		return domain.Invalid("recovery.checkpoint")
 	}
 	c.RecoveryCheckpoint = parent.RecoveryCheckpoint
 	_, err := s.insert(ctx, tx, ws, uuid.New(), nil, c)
 	return err
+}
+
+// maintenanceChildLifetime is how long a child may start or run. A backup lives past its run's
+// own timeout, so a long upload fails by that timeout and the parent resumes the writers, rather
+// than reaching a deadline whose outcome someone must inspect on the host.
+func maintenanceChildLifetime(c api.ExecutionCommand, m *coordinatedMaintenance) time.Duration {
+	switch {
+	case c.Kind == "upgrade":
+		return 2 * time.Hour
+	case (c.Kind == "backup" || c.Kind == "schedule") && m.Effect.Backup != nil:
+		return m.Effect.Backup.Lifetime()
+	}
+	return 30 * time.Minute
 }
 
 // leaveUnstartedEffect moves a parent on from a data effect that will not start, and returns

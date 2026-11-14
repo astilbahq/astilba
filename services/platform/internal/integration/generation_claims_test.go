@@ -128,7 +128,7 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 				}
 				for _, h := range hosts {
 					poll, done := context.WithTimeout(ctx, aheadPollWait)
-					c, err := f.execution.Poll(poll, h.identity)
+					c, err := pollReleased(f.execution, poll, h.identity)
 					expired := poll.Err()
 					done()
 					if err != nil {
@@ -392,7 +392,7 @@ func TestRevocationSurvivesSpentGeneration(t *testing.T) {
 			t.Fatal("the peer behind the limit never received the removal")
 		}
 		poll, done := context.WithTimeout(ctx, 500*time.Millisecond)
-		c, err := f.execution.Poll(poll, behind.identity)
+		c, err := pollReleased(f.execution, poll, behind.identity)
 		expired := poll.Err()
 		done()
 		if err != nil && !waitForFixturePollLease(ctx, err) && expired == nil {
@@ -436,7 +436,7 @@ func TestReceiptClaimsStayWithinMargin(t *testing.T) {
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	_, in, _ := enrollment(t, f, b, ws, "deployment")
-	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+	if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 		t.Fatal(err)
 	}
 	identity, err := f.execution.Authenticate(ctx, in.ServerId, *in.Credential)

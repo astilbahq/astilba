@@ -107,5 +107,15 @@ SELECT EXISTS(SELECT 1 FROM cross_host_operations h
 INSERT INTO backup_cutovers(workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration)
 VALUES(@workspace_id,@environment_id,@revision_id,@policy_id,@source_plan_id,@configuration);
 
+-- name: ClaimRestoreTarget :one
+-- A verified restore's target becomes the environment's data volume when a cutover is prepared,
+-- before any plan mounts it, with the PostgreSQL major the restore initialised it with, as an
+-- upgrade's target does when it is planned. Another environment's or a deleted volume returns no row.
+INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_major)
+VALUES(@workspace_id,@environment_id,@unit_id,@id,sqlc.narg(postgres_major))
+ON CONFLICT(workspace_id,id) DO UPDATE SET postgres_major = COALESCE(managed_volumes.postgres_major,EXCLUDED.postgres_major)
+WHERE managed_volumes.environment_id = EXCLUDED.environment_id AND NOT managed_volumes.deleted
+RETURNING postgres_major;
+
 -- name: OperationCommandByRequestKey :one
 SELECT command FROM execution_operations WHERE workspace_id = @workspace_id AND request_key = @request_key;

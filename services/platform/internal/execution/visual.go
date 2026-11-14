@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -18,7 +19,7 @@ import (
 )
 
 type visualEnvironment struct {
-	Purpose         string
+	Purpose, State  string
 	Unit, Revision  uuid.UUID
 	Server, Applied *uuid.UUID
 	Spec            domain.Specification
@@ -27,7 +28,7 @@ type visualEnvironment struct {
 func loadVisualEnvironment(ctx context.Context, tx pgx.Tx, ws, pid, id uuid.UUID) (visualEnvironment, error) {
 	var v visualEnvironment
 	var raw []byte
-	err := tx.QueryRow(ctx, `SELECT d.id,d.server_id,e.draft_revision_id,e.applied_revision_id,r.specification,e.purpose FROM environments e JOIN deployment_units d ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.id=e.draft_revision_id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3`, ws, pid, id).Scan(&v.Unit, &v.Server, &v.Revision, &v.Applied, &raw, &v.Purpose)
+	err := tx.QueryRow(ctx, `SELECT d.id,d.server_id,e.draft_revision_id,e.applied_revision_id,r.specification,e.purpose,e.state FROM environments e JOIN deployment_units d ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.id=e.draft_revision_id WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3`, ws, pid, id).Scan(&v.Unit, &v.Server, &v.Revision, &v.Applied, &raw, &v.Purpose, &v.State)
 	if err == nil {
 		v.Spec, _, err = domain.ParseSpec(raw)
 	}
@@ -76,17 +77,22 @@ func (s *Service) CreateVisualPlan(ctx context.Context, p store.Principal, ws, p
 	}
 	// Preparing a plan changes nothing: it records what applying it would do, including any
 	// host changes, for review. Approving those is part of applying it.
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.plan", env, func(tx pgx.Tx) error {
-		var err error
-		out, err = s.createVisualPlan(ctx, tx, ws, pid, env, in, false)
-		return err
+	// Planning measures the secrets the plan names, as an inspection for the caller.
+	keys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Inspect, Principal: p.Secrets(), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+	defer keys.close(ctx)
+	err := withProviderCalls(ctx, func() error {
+		return s.scope(ctx, p, ws, workspaceAccess{Write: true}, "deployment.plan", env, func(tx pgx.Tx) error {
+			var err error
+			out, err = s.createVisualPlan(ctx, tx, keys, ws, pid, env, in, false)
+			return err
+		})
 	})
 	return out, err
 }
 
 // createVisualPlan prepares a plan for review. hostApproved is a standing policy's approval of
 // any host change, as a preview policy gives, so the plan carries host changes without review.
-func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest, hostApproved bool) (deployment.Status, error) {
+func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, pid, env uuid.UUID, in api.VisualPlanRequest, hostApproved bool) (deployment.Status, error) {
 	var out deployment.Status
 	err := func() error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
@@ -174,7 +180,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 				review = review || !slices.Contains(standing, permission)
 			}
 		}
-		if err := s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
+		if err := s.validateVisualSecrets(ctx, tx, keys, ws, env, v.Spec); err != nil {
 			return err
 		}
 		previous := domain.Specification{}
@@ -194,13 +200,18 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 			if a.Postgres == nil {
 				continue
 			}
-			var reserved *string
-			err := tx.QueryRow(ctx, "SELECT postgres_init_hash FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, a.Mounts[0].VolumeID).Scan(&reserved)
+			var reserved, major *string
+			err := tx.QueryRow(ctx, "SELECT postgres_init_hash,postgres_major FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", ws, env, a.Mounts[0].VolumeID).Scan(&reserved, &major)
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
 			if reserved != nil && *reserved != deployment.Hash(a.Postgres) {
 				return domain.Invalid("applications.postgres.existingVolume")
+			}
+			// The volume's own record holds whatever the environment applied since, including across
+			// a retirement, which clears the applied revision the check above compares with.
+			if major != nil && *major != domain.PostgresMajor(*a.Source.Image) {
+				return domain.Invalid("applications.postgres.upgrade")
 			}
 		}
 		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, newPorts), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()
@@ -219,7 +230,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		}
 
 		if v.Spec.Placement != nil {
-			out, err = s.createCrossHostPlan(ctx, tx, ws, pid, env, in, v, previousPlan, replacement)
+			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement)
 			return err
 		}
 		if replacement != nil {
@@ -268,6 +279,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env 
 		}
 		if err := plan.Validate(false); err != nil {
 			return domain.Invalid("specification")
+		}
+		if err := routesAvailable(ctx, tx, ws, env, plan); err != nil {
+			return err
 		}
 		op, err := s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: "resolve", Plan: plan})
 		if err != nil {
@@ -413,7 +427,7 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 				return err
 			}
 			if owner != env {
-				return domain.Conflict
+				return domain.RouteClaimed(claim)
 			}
 		}
 		if _, err = tx.Exec(ctx, "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND id=$2", ws, plan.UnitID, plan.ServerID); err != nil {
@@ -429,33 +443,8 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 				return domain.Conflict
 			}
 		}
-		for _, vol := range plan.Specification.Volumes {
-			var owner uuid.UUID
-			var deleted bool
-			var initial, stored *string
-			for _, app := range plan.Specification.Applications {
-				if app.Postgres != nil && app.Mounts[0].VolumeID == vol.ID {
-					value := deployment.Hash(app.Postgres)
-					initial = &value
-				}
-			}
-			err = tx.QueryRow(ctx, `INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id,deleted,postgres_init_hash`, ws, env, plan.UnitID, vol.ID, initial).Scan(&owner, &deleted, &stored)
-			if err != nil {
-				return err
-			}
-			if owner != env || deleted {
-				return domain.Conflict
-			}
-			if initial != nil {
-				if stored != nil && *stored != *initial {
-					return domain.Invalid("applications.postgres.existingVolume")
-				}
-				if stored == nil {
-					if _, err = tx.Exec(ctx, "UPDATE managed_volumes SET postgres_init_hash=$3 WHERE workspace_id=$1 AND id=$2", ws, vol.ID, initial); err != nil {
-						return err
-					}
-				}
-			}
+		if err = claimPlanVolumes(ctx, tx, ws, env, plan); err != nil {
+			return err
 		}
 		if plan.Restore != nil {
 			out, err = s.insertRestoreMaintenance(ctx, tx, ws, key, plan)

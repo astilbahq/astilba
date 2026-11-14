@@ -6,6 +6,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -212,12 +213,17 @@ type gitAnswers struct {
 	connections map[uuid.UUID]*connectionAnswers
 	// keys open stored values for whoever the run is for.
 	keys runKeys
+	// secretChecks holds the runtime-secret check's answers, by secretCheckKey.
+	secretChecks map[[32]byte]error
+	// createdEnvironments are environments a pass created, whose secret versions only its own
+	// transaction can read. A later pass creates its own under new IDs.
+	createdEnvironments map[uuid.UUID]bool
 }
 
 // withGit runs a transaction body that can ask Git providers questions through its
 // gitAnswers. Body must open its transaction itself, and must not commit before asking.
 func (s *Service) withGit(ctx context.Context, ws uuid.UUID, keys runKeys, body func(*gitAnswers) error) error {
-	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys}
+	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys, secretChecks: map[[32]byte]error{}, createdEnvironments: map[uuid.UUID]bool{}}
 	defer keys.close(ctx)
 	return withProviderCalls(ctx, func() error { return body(git) })
 }
@@ -442,17 +448,30 @@ func (g *gitAnswers) pullRequest(ctx context.Context, tx pgx.Tx, id uuid.UUID, n
 	})
 }
 
-// mergedAt asks whether any of these reviews merged as exactly this commit.
+// mergedAt asks whether any of these reviews merged as exactly this commit. A review the provider
+// no longer has, as a GitLab owner can delete one, leaves the others to answer; its not-found
+// answer stands only when the provider has none of them.
 func (g *gitAnswers) mergedAt(ctx context.Context, tx pgx.Tx, id uuid.UUID, reviews []int, head string) (gitAnswer[bool], error) {
 	return askProvider(ctx, tx, g, id, false, fmt.Sprintf("merged/%s/%v", head, reviews), func(ctx context.Context, p *pipeline.Provider) (bool, error) {
+		var gone error
+		missing := 0
 		for _, number := range reviews {
 			merged, err := p.MergedCommit(ctx, number)
+			var status *pipeline.ProviderError
+			if errors.As(err, &status) && status.Status == http.StatusNotFound {
+				gone = err
+				missing++
+				continue
+			}
 			if err != nil {
 				return false, err
 			}
 			if merged == head {
 				return true, nil
 			}
+		}
+		if missing == len(reviews) && gone != nil {
+			return false, gone
 		}
 		return false, nil
 	})

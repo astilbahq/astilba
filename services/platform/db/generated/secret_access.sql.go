@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -34,6 +35,64 @@ func (q *Queries) AbandonSecretAccess(ctx context.Context, olderThanSeconds floa
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const acknowledgeSecretRelease = `-- name: AcknowledgeSecretRelease :execrows
+UPDATE secret_releases SET acknowledged_at = COALESCE(acknowledged_at, now())
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3
+    AND agent_instance = $4 AND digest = $5
+`
+
+type AcknowledgeSecretReleaseParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+	Digest        string    `json:"digest"`
+}
+
+func (q *Queries) AcknowledgeSecretRelease(ctx context.Context, arg AcknowledgeSecretReleaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, acknowledgeSecretRelease,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+		arg.Digest,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const addOperationNote = `-- name: AddOperationNote :exec
+UPDATE execution_operations SET note = CASE WHEN note = '' THEN $1::text ELSE note || ' ' || $1::text END
+WHERE workspace_id = $2 AND id = $3 AND strpos(note, $1::text) = 0
+`
+
+type AddOperationNoteParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// A release that cannot go says why beside whatever the operation already says, such as a
+// stopped submission's warning, and only once.
+func (q *Queries) AddOperationNote(ctx context.Context, arg AddOperationNoteParams) error {
+	_, err := q.db.Exec(ctx, addOperationNote, arg.Note, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const expireSecretAccess = `-- name: ExpireSecretAccess :one
+SELECT expire_secret_access($1::integer)::integer AS expired
+`
+
+// unscoped: retention applies to every workspace's records alike.
+func (q *Queries) ExpireSecretAccess(ctx context.Context, batch int32) (int32, error) {
+	row := q.db.QueryRow(ctx, expireSecretAccess, batch)
+	var expired int32
+	err := row.Scan(&expired)
+	return expired, err
 }
 
 const insertSecretAccess = `-- name: InsertSecretAccess :exec
@@ -97,6 +156,253 @@ func (q *Queries) InsertSecretAccessOutcome(ctx context.Context, arg InsertSecre
 	return err
 }
 
+const insertSecretRelease = `-- name: InsertSecretRelease :execrows
+INSERT INTO secret_releases(operation_id,dispatch_epoch,agent_instance,workspace_id,server_id,digest,attempts,last_attempt_at)
+VALUES($1,$2,$3,$4,$5,$6,1,now())
+ON CONFLICT DO NOTHING
+`
+
+type InsertSecretReleaseParams struct {
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	ServerID      uuid.UUID `json:"server_id"`
+	Digest        string    `json:"digest"`
+}
+
+func (q *Queries) InsertSecretRelease(ctx context.Context, arg InsertSecretReleaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertSecretRelease,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+		arg.WorkspaceID,
+		arg.ServerID,
+		arg.Digest,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listSecretAccess = `-- name: ListSecretAccess :many
+SELECT a.id,a.at,a.purpose,a.principal_kind,a.account_id,acc.email AS account_email,a.automation_id,cred.name AS automation_name,
+    a.server_id,srv.name AS server_name,a.agent_instance,a.job,a.operation_id,a.items,a.item_count,a.reason,
+    COALESCE(o.outcome,'unknown')::text AS outcome
+FROM secret_access a
+LEFT JOIN memberships m ON m.workspace_id = a.workspace_id AND m.account_id = a.account_id
+LEFT JOIN accounts acc ON acc.id = m.account_id
+LEFT JOIN automation_credentials cred ON cred.workspace_id = a.workspace_id AND cred.id = a.automation_id
+LEFT JOIN servers srv ON srv.workspace_id = a.workspace_id AND srv.id = a.server_id
+LEFT JOIN LATERAL (SELECT outcome FROM secret_access_outcomes WHERE access_id = a.id ORDER BY at LIMIT 1) o ON true
+WHERE a.workspace_id = $1
+    AND ($2::uuid IS NULL OR (a.at,a.id) < (SELECT b.at,b.id FROM secret_access b WHERE b.workspace_id = $1 AND b.id = $2::uuid))
+ORDER BY a.at DESC,a.id DESC LIMIT $3
+`
+
+type ListSecretAccessParams struct {
+	WorkspaceID *uuid.UUID `json:"workspace_id"`
+	Before      *uuid.UUID `json:"before"`
+	PageSize    int32      `json:"page_size"`
+}
+
+type ListSecretAccessRow struct {
+	ID             uuid.UUID   `json:"id"`
+	At             time.Time   `json:"at"`
+	Purpose        string      `json:"purpose"`
+	PrincipalKind  string      `json:"principal_kind"`
+	AccountID      *uuid.UUID  `json:"account_id"`
+	AccountEmail   pgtype.Text `json:"account_email"`
+	AutomationID   *uuid.UUID  `json:"automation_id"`
+	AutomationName pgtype.Text `json:"automation_name"`
+	ServerID       *uuid.UUID  `json:"server_id"`
+	ServerName     pgtype.Text `json:"server_name"`
+	AgentInstance  pgtype.Text `json:"agent_instance"`
+	Job            pgtype.Text `json:"job"`
+	OperationID    *uuid.UUID  `json:"operation_id"`
+	Items          []byte      `json:"items"`
+	ItemCount      int32       `json:"item_count"`
+	Reason         string      `json:"reason"`
+	Outcome        string      `json:"outcome"`
+}
+
+// A workspace's records, newest first, a page at a time, with who they were for and how each
+// ended: the first outcome written, or unknown while a session is open or its end went
+// unrecorded. An account is named only while it is a member: one that left keeps its ID.
+func (q *Queries) ListSecretAccess(ctx context.Context, arg ListSecretAccessParams) ([]ListSecretAccessRow, error) {
+	rows, err := q.db.Query(ctx, listSecretAccess, arg.WorkspaceID, arg.Before, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSecretAccessRow{}
+	for rows.Next() {
+		var i ListSecretAccessRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.Purpose,
+			&i.PrincipalKind,
+			&i.AccountID,
+			&i.AccountEmail,
+			&i.AutomationID,
+			&i.AutomationName,
+			&i.ServerID,
+			&i.ServerName,
+			&i.AgentInstance,
+			&i.Job,
+			&i.OperationID,
+			&i.Items,
+			&i.ItemCount,
+			&i.Reason,
+			&i.Outcome,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockSecretRelease = `-- name: LockSecretRelease :one
+SELECT digest,attempts,last_attempt_at,acknowledged_at,redelivery,now()::timestamptz AS checked_at FROM secret_releases
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3 AND agent_instance = $4 FOR UPDATE
+`
+
+type LockSecretReleaseParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+type LockSecretReleaseRow struct {
+	Digest         string     `json:"digest"`
+	Attempts       int32      `json:"attempts"`
+	LastAttemptAt  time.Time  `json:"last_attempt_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	Redelivery     bool       `json:"redelivery"`
+	CheckedAt      time.Time  `json:"checked_at"`
+}
+
+func (q *Queries) LockSecretRelease(ctx context.Context, arg LockSecretReleaseParams) (LockSecretReleaseRow, error) {
+	row := q.db.QueryRow(ctx, lockSecretRelease,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	var i LockSecretReleaseRow
+	err := row.Scan(
+		&i.Digest,
+		&i.Attempts,
+		&i.LastAttemptAt,
+		&i.AcknowledgedAt,
+		&i.Redelivery,
+		&i.CheckedAt,
+	)
+	return i, err
+}
+
+const repeatSecretRelease = `-- name: RepeatSecretRelease :exec
+UPDATE secret_releases SET digest = $1,attempts = attempts + 1,last_attempt_at = now(),acknowledged_at = NULL,redelivery = false
+WHERE workspace_id = $2 AND operation_id = $3 AND dispatch_epoch = $4 AND agent_instance = $5
+`
+
+type RepeatSecretReleaseParams struct {
+	Digest        string    `json:"digest"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+func (q *Queries) RepeatSecretRelease(ctx context.Context, arg RepeatSecretReleaseParams) error {
+	_, err := q.db.Exec(ctx, repeatSecretRelease,
+		arg.Digest,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	return err
+}
+
+const requestSecretRedelivery = `-- name: RequestSecretRedelivery :execrows
+UPDATE secret_releases SET acknowledged_at = NULL,redelivery = true,last_attempt_at = now() - interval '1 day'
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3
+    AND agent_instance = $4
+`
+
+type RequestSecretRedeliveryParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+// The instance does not hold what was released to it: the next poll releases it again, as a
+// re-delivery. A request is honoured past the attempt limit, which bounds only the releases
+// the instance never answered.
+func (q *Queries) RequestSecretRedelivery(ctx context.Context, arg RequestSecretRedeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, requestSecretRedelivery,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const secretAccessItemNames = `-- name: SecretAccessItemNames :many
+SELECT 'secret-version'::text AS kind,v.id,s.name FROM secret_versions v JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+    WHERE v.workspace_id = $1 AND v.id = ANY($2::uuid[])
+UNION ALL SELECT 'build-secret',id,name FROM build_secret_versions WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'git',id,COALESCE(configuration->>'name','') FROM git_connections WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'registry',id,COALESCE(configuration->>'name','') FROM registries WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'backup-destination',id,COALESCE(configuration->>'name','') FROM backup_destinations WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'backup-policy',id,COALESCE(configuration->>'name','') FROM backup_policies WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+`
+
+type SecretAccessItemNamesParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+type SecretAccessItemNamesRow struct {
+	Kind string    `json:"kind"`
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+// Names for the items a page of records names, where they still exist.
+func (q *Queries) SecretAccessItemNames(ctx context.Context, arg SecretAccessItemNamesParams) ([]SecretAccessItemNamesRow, error) {
+	rows, err := q.db.Query(ctx, secretAccessItemNames, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SecretAccessItemNamesRow{}
+	for rows.Next() {
+		var i SecretAccessItemNamesRow
+		if err := rows.Scan(&i.Kind, &i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const secretAccessMember = `-- name: SecretAccessMember :one
 SELECT role FROM memberships WHERE workspace_id = $1 AND account_id = $2
 `
@@ -138,4 +444,55 @@ func (q *Queries) SecretAccessWorkspaceExists(ctx context.Context, id uuid.UUID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const secretRelease = `-- name: SecretRelease :one
+SELECT digest,attempts,last_attempt_at,acknowledged_at,redelivery,now()::timestamptz AS checked_at FROM secret_releases
+WHERE workspace_id = $1 AND operation_id = $2 AND dispatch_epoch = $3 AND agent_instance = $4
+`
+
+type SecretReleaseParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	DispatchEpoch int64     `json:"dispatch_epoch"`
+	AgentInstance string    `json:"agent_instance"`
+}
+
+type SecretReleaseRow struct {
+	Digest         string     `json:"digest"`
+	Attempts       int32      `json:"attempts"`
+	LastAttemptAt  time.Time  `json:"last_attempt_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	Redelivery     bool       `json:"redelivery"`
+	CheckedAt      time.Time  `json:"checked_at"`
+}
+
+// The lease is timed by the database clock, as the claim's is, so the two agree.
+func (q *Queries) SecretRelease(ctx context.Context, arg SecretReleaseParams) (SecretReleaseRow, error) {
+	row := q.db.QueryRow(ctx, secretRelease,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.DispatchEpoch,
+		arg.AgentInstance,
+	)
+	var i SecretReleaseRow
+	err := row.Scan(
+		&i.Digest,
+		&i.Attempts,
+		&i.LastAttemptAt,
+		&i.AcknowledgedAt,
+		&i.Redelivery,
+		&i.CheckedAt,
+	)
+	return i, err
+}
+
+const setSecretAccessRetention = `-- name: SetSecretAccessRetention :exec
+UPDATE secret_access_settings SET retention_days = $1::integer
+`
+
+// unscoped: one installation-wide setting, written only by `astilba migrate`.
+func (q *Queries) SetSecretAccessRetention(ctx context.Context, days int32) error {
+	_, err := q.db.Exec(ctx, setSecretAccessRetention, days)
+	return err
 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -292,5 +293,124 @@ func TestLateCheckpointNeedsTheHeldRoot(t *testing.T) {
 				t.Fatalf("late %s checkpoint ended %s: %s", tc.name, r.State, r.Note)
 			}
 		})
+	}
+}
+
+// A late retirement ends a unit this host's journal holds for its environment, and nothing else: an
+// applied plan, or the record of a deployment it ran, even a first one that failed, which leaves no
+// applied plan. On a host whose journal holds neither it is cancelled unrun, as is any other late
+// visual action and a retirement whose body no longer matches its plan hash.
+func TestLateRetirementNeedsTheHostToHoldItsUnit(t *testing.T) {
+	late := func(t *testing.T, j *Journal, c api.ExecutionCommand) bool {
+		t.Helper()
+		runs, err := (&Engine{Journal: j}).runsLate(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runs
+	}
+	ran := func(t *testing.T, j *Journal, c api.ExecutionCommand) {
+		t.Helper()
+		if err := j.db.Update(func(tx *bolt.Tx) error {
+			return j.put(tx, "operations", c.Id.String(), Record{Command: c, Report: api.AgentReport{Id: c.Id, State: "needs_attention", Sequence: 2}, Acknowledged: true})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("nothing held", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		if late(t, j, visualCommand(plan, "retire", 2)) {
+			t.Fatal("a late retirement ran on a host that never ran the unit")
+		}
+	})
+	t.Run("failed first deployment", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		ran(t, j, visualCommand(plan, "deploy", 1))
+		if !late(t, j, visualCommand(plan, "retire", 2)) {
+			t.Fatal("a late retirement was cancelled where a failed deployment left the unit")
+		}
+	})
+	t.Run("applied plan", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		if err := j.saveUnit(unitState{Plan: plan, Expected: map[string]string{}}); err != nil {
+			t.Fatal(err)
+		}
+		retire := visualCommand(plan, "retire", 2)
+		if !late(t, j, retire) {
+			t.Fatal("a late retirement of a held unit was cancelled")
+		}
+		tampered := retire
+		tampered.PlanHash = strings.Repeat("0", 64)
+		if late(t, j, tampered) {
+			t.Fatal("a late retirement ran without matching its plan hash")
+		}
+		for action := range visualActions {
+			if action != "retire" && late(t, j, visualCommand(plan, action, 2)) {
+				t.Fatalf("a late %s ran", action)
+			}
+		}
+	})
+	t.Run("another environment's unit", func(t *testing.T) {
+		j, plan := testVisualJournal(t)
+		other := plan
+		other.EnvironmentID = uuid.New()
+		other = other.WithHash()
+		ran(t, j, visualCommand(other, "deploy", 1))
+		if err := j.saveUnit(unitState{Plan: other, Expected: map[string]string{}}); err != nil {
+			t.Fatal(err)
+		}
+		if late(t, j, visualCommand(plan, "retire", 2)) {
+			t.Fatal("a late retirement ran for another environment's unit")
+		}
+	})
+}
+
+// PLAT-369. A command's work is bounded by a lifetime from when this host first takes it up under
+// its execution lock, not from when the client accepted it as it polled, and never ends before its
+// deadline. A record an older agent began has no start: it reads back without one and keeps its
+// deadline.
+func TestWorkIsBoundedFromItsStart(t *testing.T) {
+	j, p := testVisualJournal(t)
+	command := func() api.ExecutionCommand {
+		return api.ExecutionCommand{Id: uuid.New(), ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: uuid.New(), Kind: "test", Action: "inspect", Generation: 1, PlanHash: strings.Repeat("a", 64), Deadline: time.Now().Add(time.Minute)}
+	}
+	c := command()
+	if r, err := j.Accept(c); err != nil || r.StartedAt != nil {
+		t.Fatal("accepting a polled command started its work", err)
+	}
+	before := time.Now()
+	started, err := j.startWork(c.Id)
+	if err != nil || started == nil || started.Before(before) || started.After(time.Now()) {
+		t.Fatalf("taking a command up did not record its start: %v (%v)", started, err)
+	}
+	if again, err := j.startWork(c.Id); err != nil || again == nil || !again.Equal(*started) {
+		t.Fatal("taking a command up again moved its start", again, err)
+	}
+	r, err := j.Record(c.Id)
+	if err != nil || r.StartedAt == nil || !r.StartedAt.Equal(*started) || r.Report.Sequence != 1 {
+		t.Fatal("the start did not survive the journal, or changed its report", err)
+	}
+	if end := r.workEnd(time.Hour); !end.Equal(started.Add(time.Hour)) {
+		t.Fatal("a command's work is not bounded from its start:", end)
+	}
+	if end := r.workEnd(time.Second); !end.Equal(c.Deadline) {
+		t.Fatal("a command's work ended before its deadline:", end)
+	}
+	// An older agent's record, past its first step and with no field for its start, as StartedAt
+	// is omitted when empty.
+	legacy := command()
+	old := Record{Command: legacy, Report: api.AgentReport{Id: legacy.Id, Generation: legacy.Generation, PlanHash: legacy.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "backup-effect"}
+	if err = j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "operations", legacy.Id.String(), old) }); err != nil {
+		t.Fatal(err)
+	}
+	if started, err = j.startWork(legacy.Id); err != nil || started != nil {
+		t.Fatal("running an older agent's record again gave it a fresh start", started, err)
+	}
+	stored, err := j.Record(legacy.Id)
+	if err != nil || deployment.Hash(stored) != deployment.Hash(old) {
+		t.Fatal("reading an older agent's record changed it", err)
+	}
+	if end := stored.workEnd(time.Hour); !end.Equal(legacy.Deadline) {
+		t.Fatal("an older agent's record was not bounded by its deadline:", end)
 	}
 }

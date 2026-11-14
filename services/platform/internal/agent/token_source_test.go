@@ -81,7 +81,7 @@ func keyedClient(t *testing.T) (*Client, *sessionController) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := keys.Seal(context.Background(), der)
+	sealed, err := keys.Seal(context.Background(), credentialName, der)
 	if err != nil {
 		t.Fatal(err)
 	}

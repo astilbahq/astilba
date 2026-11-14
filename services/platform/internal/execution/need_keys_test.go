@@ -56,3 +56,26 @@ func TestPassKeysBeginBetweenPasses(t *testing.T) {
 	var none *passKeys
 	none.close(ctx)
 }
+
+// Calls a pass joins, such as the key requests of several build targets, begin one session
+// between them, not one each.
+func TestJoinedKeyRequestsBeginOnce(t *testing.T) {
+	broker, records := brokertest.New(t)
+	s := &Service{Store: &store.Store{Broker: broker}}
+	ctx := context.Background()
+	keys := s.passKeys(secretbroker.Request{Workspace: uuid.New(), Purpose: secretbroker.Inspect, Principal: secretbroker.Account(uuid.New()), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+	var joined *providerCall
+	for range 3 {
+		_, err := keys.get()
+		var call *providerCall
+		if !errors.As(err, &call) {
+			t.Fatal("no call for keys:", err)
+		}
+		joined = joined.and(call)
+	}
+	joined.fetch(ctx)
+	if _, err := keys.get(); err != nil || len(records.Accesses) != 1 {
+		t.Fatalf("joined requests began %d sessions: %v", len(records.Accesses), err)
+	}
+	keys.close(ctx)
+}

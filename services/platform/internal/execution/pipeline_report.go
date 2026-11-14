@@ -20,53 +20,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const secretVersionPage = 64
-
-// rejectRuntimeSecrets opens the environment's runtime secrets with keys, asked for only once
-// there is one to read.
-func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, bundle composeproject.Bundle) error {
-	q := db.New(tx)
-	// A submission pushes both: the path names a tree entry, the content fills its blob.
-	texts := make([]string, 0, 2*len(bundle.Files))
-	for _, file := range bundle.Files {
-		texts = append(texts, file.Path, file.Content)
-	}
-	searched := domain.NewSecretText(texts...)
-	total := 0
-	// Pages bound the ciphertext in memory; versions per environment are unbounded.
-	var after uuid.UUID
-	for {
-		rows, err := q.PageEnvironmentSecretVersions(ctx, db.PageEnvironmentSecretVersionsParams{WorkspaceID: ws, EnvironmentID: env, AfterID: after, PageSize: secretVersionPage})
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			value, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: row.ID}, row.EncryptedValue)
-			if err != nil {
-				return err
-			}
-			total += len(value)
-			if total > 1<<20 {
-				return domain.Invalid("source.secretBudget")
-			}
-			if searched.Exposes(string(value)) {
-				return &domain.Error{Code: "invalid_input", Message: "A file's name or contents include a known runtime secret value.", Fields: []string{"source.containsRuntimeSecret"}}
-			}
-			after = row.ID
-		}
-		if len(rows) < secretVersionPage {
-			return nil
-		}
-	}
-}
-
 // hydratePipeline holds the agent's row and the operation only while it decides. Provider
 // and GitHub calls run between passes, and the pass that delivers re-makes every decision
 // below: a revoked or rotated agent, a cancelled or expired operation, a new runtime secret
 // or a changed connection all stop the credential after the call as they would before it.
-func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
+//
+// With nil keys it makes only the decisions that need no values, for a command whose
+// credentials the agent already holds: nothing is opened and no provider is asked.
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (bool, error) {
+	if keys == nil {
+		return s.decidePipelineDelivery(ctx, nil, a, c)
+	}
 	var deliver bool
-	err := s.withGit(ctx, a.Workspace, s.legacyRunKeys(a.Workspace), func(git *gitAnswers) error {
+	err := s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
 		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
 		return err
@@ -157,8 +123,36 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), p.Build.UsesRailpack()); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil, false); err != nil {
 			return false, err
+		}
+	}
+	// A build goes only to a runner that runs the Railpack pins it froze, not management's
+	// current ones, which a management upgrade or rollback may have moved since, so no other
+	// runner receives its hydrated inputs. Refusing the poll would hold every later command
+	// for the runner, its update included, until the build expired, so a build never
+	// delivered fails instead. One the runner may already hold keeps being refused until it
+	// ends: supported updates wait for it, so this is a build delivered by an earlier
+	// management to an agent that advertises no digest, or a runner replaced by hand.
+	if p.Build != nil && p.Build.UsesRailpack() {
+		if p.Railpack == nil {
+			return false, errors.New("invalid pipeline payload")
+		}
+		refusal, err := runnerRailpackRefusal(ctx, tx, ws, c.ServerId, p.Railpack)
+		if err != nil {
+			return false, err
+		}
+		if refusal != nil && !undelivered {
+			return false, refusal
+		}
+		if refusal != nil {
+			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build stopped before runner delivery. " + refusal.Message}); err != nil {
+				return false, err
+			}
+			if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+				return false, err
+			}
+			return false, tx.Commit(ctx)
 		}
 	}
 	if p.CacheScope != "" {
@@ -170,6 +164,11 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
+	}
+	if git == nil {
+		// The runner holds this command's credentials: what follows only decides whether new
+		// ones may leave.
+		return true, nil
 	}
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
 	if err != nil {
@@ -251,7 +250,7 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	}
 	p.Access = &pipeline.RunnerAccess{Clone: clone.Value}
 	if p.Build != nil {
-		p.BuildSecrets, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, *p.Build)
+		p.BuildSecrets, err = s.buildInputs(ctx, tx, git, ws, env, *p.Build)
 		if err != nil {
 			return err
 		}
@@ -280,6 +279,10 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	return nil
 }
 
+// writePipelineRevision is the one path by which management, rather than a draft edit, replaces an
+// environment's draft: promotions, rollbacks, imports and previews. A retiring or retired
+// environment's draft is read-only. The draft moves only while the environment's row says it is
+// active, so a caller without the workspace lock, such as a pipeline report, cannot race retirement.
 func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {
 	raw, _ := stablejson.Marshal(spec)
 	parsed, canonical, err := domain.ParseSpec(raw)
@@ -294,11 +297,18 @@ func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env,
 	if _, err = store.InsertRevision(ctx, db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: actor, Specification: canonical, ContentHash: h[:]}); err != nil {
 		return uuid.Nil, err
 	}
-	changed, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, base, id)
-	if err == nil && changed.RowsAffected() != 1 {
-		err = domain.Conflict
+	changed, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3 AND state='active'", ws, env, base, id)
+	if err != nil || changed.RowsAffected() == 1 {
+		return id, err
 	}
-	return id, err
+	state, err := db.New(tx).EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: env})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err = requireActive(state); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Nil, domain.Conflict
 }
 func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers, received time.Time, c api.ExecutionCommand, r *api.AgentReport) error {
 	var p pipeline.Command
@@ -374,7 +384,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			var current uuid.UUID
 			var actor uuid.UUID
 			var approved *int64
-			if err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved); err != nil {
+			err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved)
+			// An owner can unbind the source while it imports.
+			if errors.Is(err, pgx.ErrNoRows) {
+				r.State = "failed"
+				r.Note = "The Git source was unbound while this import ran. Nothing was saved."
+				break
+			}
+			if err != nil {
 				return err
 			}
 			if current != p.RevisionID {
@@ -416,6 +433,11 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, id, actor, approved); err != nil {
 					return err
 				}
+			}
+			// A refresh holds an environment's automatic builds while its source can't import, and
+			// ends. An import started by hand or by binding the source again then lets them build.
+			if err = s.refreshBehindBuilds(ctx, tx, ws, c.EnvironmentId, p); err != nil {
+				return err
 			}
 
 		case "build", "build-preview":

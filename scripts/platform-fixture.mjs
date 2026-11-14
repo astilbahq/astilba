@@ -190,8 +190,9 @@ try {
   const releaseKey = join(directory, "release-public.pem");
   await writeFile(releaseKey, keys.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o600 });
   const artifact = Buffer.from("Astilba browser download fixture\n");
-  const release = { version: "fixture.download", protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex") };
-  const message = `astilba-agent-v1\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n`;
+  const release = { version: "0.1.0-fixture.download", protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex"), commit: "0123456789abcdef0123456789abcdef01234567", minimumVersion: "0.0.0" };
+  // agentrelease.Message: the v2 format, one LF-terminated field per line.
+  const message = `astilba-agent-release-signature-v2\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n${release.commit}\n${release.minimumVersion}\n`;
   release.signature = sign(null, Buffer.from(message), keys.privateKey).toString("base64");
   await writeFile(join(releases, release.sha256), artifact, { mode: 0o600 });
   await writeFile(join(releases, "fixture.json"), JSON.stringify(release), { mode: 0o600 });
@@ -203,7 +204,6 @@ try {
     ASTILBA_DATABASE_URL: `postgres://postgres:${password}@${address}/postgres?sslmode=disable`,
     ASTILBA_KEYRING: join(directory, "keyring.json"),
     ASTILBA_DEVELOPMENT: "true",
-    ASTILBA_KEYRING_JSON: "",
     ASTILBA_HOSTED: "false",
   };
   execFileSync(binary, ["keygen", "--out", env.ASTILBA_KEYRING], {
@@ -261,6 +261,8 @@ try {
   };
   execFileSync(binary,["keygen","--out",hostedEnv.ASTILBA_KEYRING],{env:hostedEnv,stdio:"inherit"});
   execFileSync(binary,["migrate"],{env:hostedEnv,stdio:"inherit"});
+  // Hosting pins the installation ID that migrating made, as an operator does from `custody status`.
+  hostedEnv.ASTILBA_INSTALLATION_ID=docker(["exec",name,"psql","--username","postgres","--dbname",hostedDatabase,"-v","ON_ERROR_STOP=1","-tAc","SELECT id FROM installation"]).trim();
   for (const project of ["chromium","webkit"]) {
     for (const purpose of ["signup"]) {
       const token=`browser-${project}-${purpose}-invitation-code`;
@@ -270,7 +272,7 @@ try {
   }
   start(binary,["serve"],hostedEnv);
   await mkdir(dirname(hostedInfo),{recursive:true});
-  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
+  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
   ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
   const waitReady = async (port) => {

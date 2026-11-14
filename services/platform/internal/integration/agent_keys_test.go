@@ -374,7 +374,7 @@ func TestThiefWhoBindsFirstIsCaughtByTheRetiredBearer(t *testing.T) {
 func TestAccessTokenCannotUseTheLegacyRotation(t *testing.T) {
 	_, _, _, v, a := keyedServer(t)
 	cfg, _ := a.j.Config()
-	sealed, _ := a.keys.Unseal(context.Background(), cfg.Key)
+	sealed, _ := a.keys.Unseal(context.Background(), agent.KeyCredentialName, cfg.Key)
 	key, _ := agentidentity.ParsePrivate(sealed)
 	out := coldStart(t, a.tls, v.Server.Id, key, 100, 200)
 	candidate, _ := randtoken.New()
@@ -384,7 +384,7 @@ func TestAccessTokenCannotUseTheLegacyRotation(t *testing.T) {
 func TestSupersededSessionIsRefusedAtOnce(t *testing.T) {
 	_, _, _, v, a := keyedServer(t)
 	cfg, _ := a.j.Config()
-	sealed, _ := a.keys.Unseal(context.Background(), cfg.Key)
+	sealed, _ := a.keys.Unseal(context.Background(), agent.KeyCredentialName, cfg.Key)
 	key, _ := agentidentity.ParsePrivate(sealed)
 	first := coldStart(t, a.tls, v.Server.Id, key, 100, 200)
 	coldStart(t, a.tls, v.Server.Id, key, 101, 200)

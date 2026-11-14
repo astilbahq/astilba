@@ -109,7 +109,7 @@ func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape,
 	for range 2 {
 		_, in, _ := enrollment(t, f, b, ws, "deployment")
 		in.Capabilities.Visual, in.Capabilities.CrossHost = &yes, &yes
-		if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+		if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 			t.Fatal(err)
 		}
 		inputs = append(inputs, in)
@@ -245,7 +245,7 @@ func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape,
 	if err = writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	envelope, err := f.st.Keys.Seal(compressed.Bytes(), fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", ws, root.Id, id, 0, root.PlanHash))
+	envelope, err := keysOf(f.st).Seal(compressed.Bytes(), fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", ws, root.Id, id, 0, root.PlanHash))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +417,7 @@ func (r *claimRecovery) transfer(t *testing.T, host api.AgentEnrollment) string 
 	generation := int64(ticket.Generation)
 	input := host
 	input.Token, input.Credential, input.ControllerGeneration, input.Inventory = ticket.Token, &credential, &generation, &inventory
-	if _, err = r.f.execution.Enroll(r.ctx, input, "test"); err != nil {
+	if _, err = r.f.execution.Enroll(r.ctx, acknowledging(input), "test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = r.f.execution.Authenticate(r.ctx, host.ServerId, credential); err != nil {

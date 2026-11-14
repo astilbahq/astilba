@@ -21,6 +21,7 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   backup_problem: "Backup operation needs review",
   network_problem: "Private network updates are failing",
   identity_conflict: "Another copy of a server's agent key is in use",
+  recovery_window: "Cross-host recovery window is shorter than 35 days",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);

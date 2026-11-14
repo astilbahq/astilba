@@ -56,12 +56,16 @@ func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, 
 	}
 	// Turning automatic deployment off approves nothing, so a lapsed workspace can still do it.
 	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: enabled, Revocation: !enabled}, action, env, func(tx pgx.Tx) error {
-		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+		// A retired environment's sources and targets stay as they were; nothing may approve them.
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		if err = requireActive(v.State); err != nil {
 			return err
 		}
 		q := db.New(tx)
 		var n int64
-		var err error
 		if enabled {
 			n, err = q.ApproveGitSource(ctx, db.ApproveGitSourceParams{WorkspaceID: ws, EnvironmentID: env, AutoDeploy: true, PolicyActor: p.Account.ID, PolicyAuthVersion: p.Account.AuthVersion})
 		} else {
@@ -79,7 +83,12 @@ func (s *Service) SourcePolicy(ctx context.Context, p store.Principal, ws, pid, 
 // so a change made since it was shown is refused rather than approved unseen.
 func (s *Service) ApproveSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, hash string) error {
 	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.approve", env, func(tx pgx.Tx) error {
-		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+		// A retired environment's sources and targets stay as they were; nothing may approve them.
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		if err = requireActive(v.State); err != nil {
 			return err
 		}
 		q := db.New(tx)
@@ -104,7 +113,12 @@ func (s *Service) ApproveSource(ctx context.Context, p store.Principal, ws, pid,
 // the configuration the caller saw; deploying needs an owner.
 func (s *Service) ApproveBuildTarget(ctx context.Context, p store.Principal, ws, pid, env, app uuid.UUID, hash string) error {
 	return s.scopeIn(ctx, p, ws, workspaceAccess{Write: true, Recent: true}, "build.approve", app, func(tx pgx.Tx, w store.Workspace) error {
-		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+		// A retired environment's sources and targets stay as they were; nothing may approve them.
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		if err = requireActive(v.State); err != nil {
 			return err
 		}
 		q := db.New(tx)

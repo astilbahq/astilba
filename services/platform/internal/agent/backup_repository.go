@@ -143,6 +143,9 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if err := e.checkBackupSource(ctx, in.Policy); err != nil {
 		return err
 	}
+	if err := e.beginEffects(ctx, s, r); err != nil {
+		return err
+	}
 	if err := e.prepareRepository(ctx, in, false); err != nil {
 		return err
 	}
@@ -167,6 +170,7 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if err = os.WriteFile(filepath.Join(stage, "manifest.json"), raw, 0600); err != nil {
 		return err
 	}
+	e.point("backup-uploading")
 	out, err := e.restic(ctx, *in, stage, "backup", "--quiet", "--host", in.Policy.ID.String(), "--tag", "policy="+in.Policy.ID.String(), "--tag", "run="+r.ID.String(), ".")
 	if err != nil {
 		return err

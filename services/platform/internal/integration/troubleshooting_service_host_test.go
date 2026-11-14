@@ -42,9 +42,15 @@ func nativeRoot(t *testing.T, tag string) string {
 	return root
 }
 
+// Fixture agents are built as releases claiming this commit, with this minimum version.
+const (
+	agentFixtureCommit = "0123456789abcdef0123456789abcdef01234567"
+	agentFixtureFloor  = "0.0.0"
+)
+
 func buildNativeAgent(t *testing.T, path, version string) {
 	t.Helper()
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version="+version, "-o", path, "./cmd/agent")
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-X main.version="+version+" -X main.minimumVersion="+agentFixtureFloor+" -X main.commit="+agentFixtureCommit, "-o", path, "./cmd/agent")
 	cmd.Dir = "../.."
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("agent build: %s %v", out, err)
@@ -133,7 +139,8 @@ func (x troubleshootingFixture) startServiceAgent(t *testing.T, owner *browser, 
 	if err = x.f.st.Pool.QueryRow(ctx, "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND environment_id=$2 AND primary_unit RETURNING id", x.ws, x.env, enrollment.Server.Id).Scan(&plan.UnitID); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := agent.Open(state)
+	// Enrollment sealed the journal's keyring to this host.
+	journal, err := agent.OpenSealed(ctx, state, agent.SystemKeyStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +372,7 @@ func TestNativeTroubleshootingService(t *testing.T) {
 	}
 	root := nativeRoot(t, "astilba-p17-build")
 	binary := filepath.Join(root, "agent")
-	buildNativeAgent(t, binary, "fixture.1")
+	buildNativeAgent(t, binary, "0.1.0-fixture.1")
 	x := relayFixture(t)
 	tlsServer := httptest.NewTLSServer(x.f.server.Config.Handler)
 	t.Cleanup(tlsServer.Close)

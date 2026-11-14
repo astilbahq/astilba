@@ -1,0 +1,87 @@
+name: Agent release
+
+# Builds an agent release from a tag on main: `agent-vVERSION`. The release key never comes here;
+# its holder verifies this workflow's attestations and signs offline. See the release procedure
+# in docs/agent.md.
+on:
+  push:
+    tags: ["agent-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-release-${{ github.ref }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Sigstore signs each attestation with this workflow's identity.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # main, to check that the tagged commit is on it.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/platform/go.mod
+          # A release builds from a clean module cache, never one another run wrote.
+          cache: false
+      - name: Check the tag
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#agent-v}
+          [[ "$TAG" == agent-v* && "$version" != "$TAG" ]] || { echo "::error::$TAG is not an agent-vVERSION tag."; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$TAG is not on main."; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build the agent
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          GOFLAGS: -mod=readonly
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        working-directory: services/platform
+        # The minimum version comes from cmd/agent/minimum-version at this commit.
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          go build -trimpath -buildvcs=true -ldflags "-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA" \
+            -o "$RUNNER_TEMP/release/astilba-agent-linux-$GOARCH" ./cmd/agent
+      - name: Describe the release
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          artifact="$RUNNER_TEMP/release/astilba-agent-linux-$ARCH"
+          # The built agent describes itself on its own architecture, and checks what Go recorded.
+          "$artifact" release-manifest --artifact "$artifact" --out "$artifact.json"
+          cat "$artifact.json"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/astilba-agent-linux-${{ matrix.arch }}
+            ${{ runner.temp }}/release/astilba-agent-linux-${{ matrix.arch }}.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-release-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/release/astilba-agent-linux-${{ matrix.arch }}
+            ${{ runner.temp }}/release/astilba-agent-linux-${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 30

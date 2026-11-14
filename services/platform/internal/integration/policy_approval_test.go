@@ -284,7 +284,7 @@ func TestApproverCredentialChangePausesStandingAutomation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var renewed api.Session
-	p.approver.call("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}, 200, &renewed)
+	p.approver.call("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": p.f.password}}, 200, &renewed)
 	p.approver.csrf = renewed.CsrfToken
 	// Only owners learn why; others see that it needs approval.
 	p.want(t, p.owner, api.ApproverCredentials, api.ApproverCredentials, api.ApproverCredentials)
@@ -435,7 +435,7 @@ func TestPreviewApprovalsEndWithTheirOwner(t *testing.T) {
 					t.Fatal("removal left the owner's preview approvals in place", err)
 				}
 			} else {
-				p.approver.call("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}, 200, nil)
+				p.approver.call("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": p.f.password}}, 200, nil)
 			}
 			if fork, cleanup := held(); fork || cleanup {
 				t.Fatal("a preview approval outlived its owner's authority")
@@ -484,7 +484,7 @@ func TestPendingAutomaticDeploymentsNeedTheirApproval(t *testing.T) {
 					t.Fatal("blocking was not recorded")
 				}
 			} else {
-				p.approver.call("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}, 200, nil)
+				p.approver.call("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": p.f.password}}, 200, nil)
 			}
 			if approved() {
 				t.Fatal("an automatic deployment kept an approval that ended")

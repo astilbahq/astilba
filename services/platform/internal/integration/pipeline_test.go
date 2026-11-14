@@ -89,14 +89,14 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	b.call("POST", prefix+"/registries", map[string]any{"name": "Images", "repository": "registry.example.test/" + strings.Repeat("a", 200-len("registry.example.test/")), "push": map[string]string{"username": "push", "password": "push-canary"}, "pull": map[string]string{"username": "pull", "password": "pull-canary"}}, 201, &registry)
 	var buildSecret pipeline.BuildSecret
 	b.call("POST", prefix+"/build-secrets", map[string]string{"name": "PACKAGE_TOKEN", "value": "build-only-canary"}, 201, &buildSecret)
-	old := f.st.Keys
+	old := keysOf(f.st)
 	nextKeys, err := cryptobox.New("next")
 	if err != nil {
 		t.Fatal(err)
 	}
 	nextKeys.Keys["test"] = old.Keys["test"]
 	useKeys(t, f.st, nextKeys)
-	if err = f.st.Rewrap(context.Background(), "test"); err != nil {
+	if err = f.st.Rewrap(context.Background(), "test", ""); err != nil {
 		t.Fatal(err)
 	}
 	delete(nextKeys.Keys, "test")
@@ -340,9 +340,15 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			if state != "dispatched" {
 				t.Fatal("operation never dispatched", state)
 			}
-			// Only a command that may already have reached the runner is still delivered.
-			poll(op.Id)
+			// Only a command that may already have reached the runner is still delivered. The
+			// runner holds its credentials, so only releasing them again asks the provider, and
+			// a changed repository refuses that.
+			first := poll(op.Id)
 			repositoryIdentity.Store(13)
+			if held := poll(op.Id); held.SecretRelease == nil || held.SecretRelease.Values {
+				t.Fatal("a held release was made again", held.SecretRelease)
+			}
+			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: op.Id, Epoch: first.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
 			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 500, nil)
 			if expired {
 				var raw []byte
@@ -678,11 +684,14 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 	}
 	var project api.Project
 	b.call("POST", prefix+"/projects", map[string]string{"name": "Burst"}, 201, &project)
-	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
+	// Public arguments, checked against each environment's runtime secret: every target's check
+	// searches between passes, and a push asks for them all in one pass rather than one each.
+	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{"MODE": "public-build-mode", "REGION": "public-build-region"}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
 	raw, _ := stablejson.Marshal(cfg)
 	for i := 0; i < 51; i++ {
 		var env api.Environment
 		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": fmt.Sprintf("Target %d", i)}, 201, &env)
+		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/secrets", map[string]string{"name": "TOKEN", "value": fmt.Sprintf("burst-runtime-secret-%d", i)}, 201, nil)
 		app := uuid.New()
 		image := pipelineTestImage
 		spec := domain.Specification{Version: 1, Applications: []domain.Application{{ID: app, Name: "worker", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &image}}}, Variables: []domain.Variable{}}

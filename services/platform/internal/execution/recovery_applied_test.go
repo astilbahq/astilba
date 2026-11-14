@@ -106,12 +106,16 @@ func TestAppliedOriginsRejectForksBeforeMerging(t *testing.T) {
 	right := appliedTestDeploy(base, p, 3)
 	left.CreatedAt, right.CreatedAt = base.CreatedAt.Add(time.Second), base.CreatedAt.Add(2*time.Second)
 	for _, input := range [][]portability.Archive{{left, right}, {right, left}} {
-		var origins appliedOrigins
-		if err := origins.add(input[0], uuid.New()); err != nil {
+		newest, err := buildAppliedOrigin(input[0], uuid.New())
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := origins.add(input[1], uuid.New()); err == nil {
-			t.Fatal("later capture hid a fork which did not know the applied predecessor")
+		older, err := buildAppliedOrigin(input[1], uuid.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compareWithNewest(newest, older); err == nil {
+			t.Fatal("the newest base hid a fork which did not know the applied predecessor")
 		}
 	}
 	t.Run("equal_generation", func(t *testing.T) {
@@ -133,30 +137,48 @@ func TestAppliedOriginsRejectForksBeforeMerging(t *testing.T) {
 	})
 	t.Run("aggregate_bound", func(t *testing.T) {
 		origins := appliedOrigins{Records: maxAppliedOriginRecords}
-		if err := origins.add(base, uuid.New()); err == nil {
+		origin, err := buildAppliedOrigin(base, uuid.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := origins.add(origin); err == nil {
 			t.Fatal("unbounded per-origin evidence")
 		}
 	})
 }
 
-func TestAppliedOriginsSelectCausalityBeforeCaptureTime(t *testing.T) {
+// The newest base is the one no other lists as superseded, whatever the capture times say: a
+// recovered management's clock can run behind the failed one's. Among unlisted bases, the later
+// capture is newest, and one whose applied runtime is newer than the newest base's diverged.
+func TestRecoveryChoosesTheBaseNoOtherSupersedes(t *testing.T) {
+	now := time.Now()
+	older := loadedBase{ID: uuid.New(), Parent: uuid.New(), CapturedAt: now}
+	newer := loadedBase{ID: uuid.New(), Parent: uuid.New(), CapturedAt: now.Add(-time.Minute), Supersedes: map[uuid.UUID]uuid.UUID{older.ID: older.Parent}}
+	if got := newestRecoveryBase([]loadedBase{older, newer}); got.ID != newer.ID {
+		t.Fatal("a base its successor lists was chosen by its later capture time")
+	}
+	other := loadedBase{ID: uuid.New(), Parent: uuid.New(), CapturedAt: now.Add(time.Minute)}
+	if got := newestRecoveryBase([]loadedBase{older, newer, other}); got.ID != other.ID {
+		t.Fatal("the latest unlisted base was not chosen")
+	}
+
 	base, p := appliedTestArchive(t)
 	p.ID = uuid.New()
 	p = p.WithHash()
 	next := appliedTestDeploy(base, p, 2)
-	// Controller clock differences do not turn a causally older runtime into
-	// the source merely because its metadata snapshot has a later timestamp.
-	next.CreatedAt = base.CreatedAt.Add(-time.Minute)
-	var origins appliedOrigins
-	if err := origins.add(next, uuid.New()); err != nil {
+	latest, err := buildAppliedOrigin(base, uuid.New())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := origins.add(base, uuid.New()); err != nil {
+	ahead, err := buildAppliedOrigin(next, uuid.New())
+	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := origins.latest(p.EnvironmentID)
-	if err != nil || selected.Environments[p.EnvironmentID].Plan != p.ID {
-		t.Fatal("capture time discarded the newer applied source", err)
+	if err := compareWithNewest(latest, ahead); err == nil {
+		t.Fatal("an older base with a newer applied runtime than the newest was accepted")
+	}
+	if err := compareWithNewest(ahead, latest); err != nil {
+		t.Fatal("the newest base's own predecessor was refused", err)
 	}
 }
 
@@ -234,16 +256,26 @@ func TestAppliedMaintenanceRequiresActualTargetOutcome(t *testing.T) {
 	}
 }
 
+// Preview cleanup and environment retirement both remove a unit's runtime, and recovery has to
+// keep either confirmed removal in order instead of refusing the checkpoint that holds it.
 func TestRemovedRuntimeHasCausalOrder(t *testing.T) {
+	for _, action := range []string{"preview-cleanup", retireAction} {
+		t.Run(action, func(t *testing.T) { removedRuntimeHasCausalOrder(t, action) })
+	}
+}
+
+func removedRuntimeHasCausalOrder(t *testing.T, action string) {
 	base, p := appliedTestArchive(t)
 	old, err := buildAppliedOrigin(base, uuid.Nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.Recipe = deployment.PreviewRecipe
-	p.Preview = &domain.PreviewIdentity{RequestID: uuid.New(), Generation: 1, Limits: domain.PreviewLimits{CPUs: 1, MemoryMiB: 128, Pids: 64}}
-	p = p.WithHash()
-	body := deployment.Payload{Action: "preview-cleanup", Plan: p}
+	if action == "preview-cleanup" {
+		p.Recipe = deployment.PreviewRecipe
+		p.Preview = &domain.PreviewIdentity{RequestID: uuid.New(), Generation: 1, Limits: domain.PreviewLimits{CPUs: 1, MemoryMiB: 128, Pids: 64}}
+		p = p.WithHash()
+	}
+	body := deployment.Payload{Action: action, Plan: p}
 	c := api.ExecutionCommand{Id: uuid.New(), EnvironmentId: p.EnvironmentID, ServerId: p.ServerID, ResourceId: p.UnitID, Kind: "visual", Generation: 2, PlanHash: body.Digest(), Visual: rawMessage(mustJSON(body))}
 	base.Tables["execution_operations"] = append(base.Tables["execution_operations"], appliedTestRow(map[string]any{"id": c.Id, "workspace_id": base.Workspace, "environment_id": p.EnvironmentID, "server_id": p.ServerID, "kind": "visual", "parent_id": nil, "generation": 2, "report_sequence": 1, "state": "succeeded", "command": c, "runtime_outcome": "removed", "runtime_plan_id": nil, "cancel_requested": false}))
 	recoverySet(base.Tables["environments"][0], "applied_revision_id", nil)

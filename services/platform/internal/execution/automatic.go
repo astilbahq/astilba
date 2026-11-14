@@ -104,16 +104,25 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if err != nil {
 		return err
 	}
+	if v.State != "active" {
+		return stop("This environment was retired, so nothing is deployed to it automatically.")
+	}
 	// The first deployment and any new host permissions always require interactive review.
 	if v.Revision != revision || v.Server == nil || v.Applied == nil {
 		return stop("The draft changed, or this environment needs its first reviewed deployment.")
 	}
-	var policy bool
-	if err = tx.QueryRow(ctx, `SELECT CASE WHEN r.configuration->>'action'='import' THEN COALESCE((g.configuration->>'autoDeploy')::boolean,false) ELSE COALESCE((b.configuration->>'autoDeploy')::boolean,false) AND b.input_hash=r.configuration->>'inputHash' AND b.requested_commit=r.configuration->>'commit' END FROM pipeline_runs r LEFT JOIN git_sources g ON g.workspace_id=r.workspace_id AND g.environment_id=r.environment_id LEFT JOIN build_targets b ON b.workspace_id=r.workspace_id AND b.environment_id=r.environment_id AND b.application_id=r.application_id WHERE r.id=$1`, job.Args.ID).Scan(&policy); err != nil {
+	// An import's deployment also needs the source to hold that import still: binding the source
+	// again forgets it, even when the new binding's import then fails and leaves the draft as it was.
+	var policy, imported bool
+	if err = tx.QueryRow(ctx, `SELECT CASE WHEN r.configuration->>'action'='import' THEN COALESCE((g.configuration->>'autoDeploy')::boolean,false) ELSE COALESCE((b.configuration->>'autoDeploy')::boolean,false) AND b.input_hash=r.configuration->>'inputHash' AND b.requested_commit=r.configuration->>'commit' END,
+ r.configuration->>'action'<>'import' OR COALESCE(g.imported_commit=r.configuration->>'commit',false) FROM pipeline_runs r LEFT JOIN git_sources g ON g.workspace_id=r.workspace_id AND g.environment_id=r.environment_id LEFT JOIN build_targets b ON b.workspace_id=r.workspace_id AND b.environment_id=r.environment_id AND b.application_id=r.application_id WHERE r.id=$1`, job.Args.ID).Scan(&policy, &imported); err != nil {
 		return err
 	}
 	if !policy {
 		return stop("Automatic deployment was disabled.")
+	}
+	if !imported {
+		return stop("The Git source was bound again since this import, so it is not deployed automatically.")
 	}
 	var raw []byte
 	if err = tx.QueryRow(ctx, "SELECT configuration FROM pipeline_runs WHERE id=$1", job.Args.ID).Scan(&raw); err != nil {
@@ -173,7 +182,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		if err != nil {
 			return err
 		}
-		status, err := w.service.createVisualPlan(ctx, nested, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
+		status, err := w.service.createVisualPlan(ctx, nested, git.keys.inspect, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
 		if err != nil {
 			_ = nested.Rollback(ctx)
 			if _, ok := err.(*domain.Error); ok {

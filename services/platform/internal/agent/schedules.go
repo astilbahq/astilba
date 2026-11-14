@@ -14,7 +14,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
-	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -23,6 +22,11 @@ type scheduleState struct {
 	Runs         []backup.Run
 	Sequence     int64
 	Writers      []string
+	// BeforeEffects names the run recorded as running that has changed nothing outside the
+	// journal yet. It is cleared, durably, just before the run's first external effect, so a
+	// run that fails or stops while it is set is known to have done nothing. Agents that don't
+	// know it treat such a run as uncertain, as they always have.
+	BeforeEffects uuid.UUID `json:",omitzero"`
 }
 
 func (j *Journal) scheduleIn(tx *bolt.Tx, id string) (scheduleState, error) {
@@ -36,11 +40,13 @@ func (j *Journal) scheduleIn(tx *bolt.Tx, id string) (scheduleState, error) {
 		return advanced, newErr
 	}
 	if newErr != nil {
+		protectRestoreSources(&legacy)
 		return legacy, oldErr
 	}
 	if oldErr == nil && (legacy.Installation.Policy.Generation > advanced.Installation.Policy.Generation || legacy.Installation.Policy.Generation == advanced.Installation.Policy.Generation && legacy.Sequence > advanced.Sequence) {
-		return legacy, nil
+		advanced = legacy
 	}
+	protectRestoreSources(&advanced)
 	return advanced, nil
 }
 func (j *Journal) schedule(id uuid.UUID) (scheduleState, error) {
@@ -130,19 +136,43 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Digest() != c.PlanHash || b.Installation.Policy.ID != c.ResourceId || b.Installation.Policy.ServerID != c.ServerId || b.Installation.Policy.EnvironmentID != c.EnvironmentId || b.Installation.Policy.Validate() != nil || (c.Kind == "schedule") != b.Installation.Policy.GeneralSchedule() {
 		return e.finish(c.Id, "failed", "Backup command identity or policy is invalid.")
 	}
+	// An interrupted backup or restore is settled by what its run did, whether or not it was
+	// cancelled since: the agent can stop after a run succeeds and before its command finishes.
+	if r.Checkpoint != "accepted" && (b.Action == "backup" || b.Action == "restore") {
+		outcome, err := e.interruptedRunOutcome(b)
+		switch {
+		case err != nil:
+			return err
+		case outcome == "succeeded":
+			return e.finish(c.Id, "succeeded", backupSucceededNote)
+		case outcome == "failed" && e.cancelled(c.Id):
+			return e.finish(c.Id, "cancelled", "Cancelled. The interrupted run failed or changed nothing; run history records which.")
+		case outcome == "failed":
+			return e.finish(c.Id, "failed", "The interrupted run failed or changed nothing; run history records which. It will not be repeated automatically.")
+		}
+		return e.finish(c.Id, "needs_attention", interruptedBackupNote)
+	}
+	// Any other command runs again from the start, whether or not it was stopped part way: an
+	// install's repository steps are idempotent, and a schedule an install or disable writes is
+	// committed with the command's success.
 	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+		if r.Checkpoint != "accepted" {
+			return e.finish(c.Id, "cancelled", "Cancelled. No schedule was changed.")
+		}
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
 	}
-	if r.Checkpoint != "accepted" {
-		return e.finish(c.Id, "needs_attention", "An interrupted backup command needs local inspection. Scheduled run history records its outcome; it will not be repeated automatically.")
-	}
 	parent := ctx
-	ctx, stop := e.commandContext(ctx, c)
-	defer stop()
-	if err := e.checkpoint(c.Id, "backup-effect"); err != nil {
+	started, err := e.Journal.startWork(c.Id)
+	if err != nil {
 		return err
 	}
-	var err error
+	r.StartedAt = started
+	ctx, stop := e.commandContext(ctx, c, r.workEnd(b.Lifetime()))
+	defer stop()
+	// The checkpoint is written just before the first effect outside the journal: the repository
+	// an install may create, or the run a backup or restore records. Until then a stopped backup
+	// or restore changed nothing and runs again; after it, it is settled by what its run did.
+	effect := func() error { return e.checkpoint(c.Id, "backup-effect") }
 	switch b.Action {
 	case "install":
 		old, readErr := e.Journal.schedule(c.ResourceId)
@@ -185,6 +215,9 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			}
 		}
 		if b.Installation.Policy.Method != "container-job" {
+			if err := effect(); err != nil {
+				return err
+			}
 			err = e.prepareRepository(ctx, &b.Installation, true)
 			if err != nil {
 				break
@@ -195,18 +228,24 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			err = errors.New("schedule has no supported next occurrence")
 			break
 		}
+		// The new state carries no mark, so a run stopped before its first effect is failed first.
+		settleUnstarted(&old, time.Now().UTC())
 		next := scheduleState{Installation: b.Installation, Runs: old.Runs, Sequence: old.Sequence}
-		if len(old.Writers) > 0 || hasUncertainRun(old.Runs) {
+		if len(old.Writers) > 0 || hasUncertainRun(old) {
 			err = errors.New("resolve interrupted run before replacing schedule")
 			break
 		}
-		err = e.Journal.saveSchedule(next)
+		if err = e.commitSchedule(c.Id, next); err == nil {
+			return nil
+		}
 	case "disable":
 		var s scheduleState
 		s, err = e.Journal.schedule(c.ResourceId)
 		if err == nil {
 			s.Installation.Policy.Enabled = false
-			err = e.Journal.saveSchedule(s)
+			if err = e.commitSchedule(c.Id, s); err == nil {
+				return nil
+			}
 		}
 	case "check":
 		err = e.prepareRepository(ctx, &b.Installation, false)
@@ -228,6 +267,9 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			}
 			at = b.ScheduledAt.UTC()
 		}
+		if err := effect(); err != nil {
+			return err
+		}
 		err = e.runScheduled(ctx, &s, at, b.RunID, b.Snapshot, b.TargetID)
 	default:
 		err = errors.New("unsupported backup action")
@@ -235,21 +277,21 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	if parent.Err() != nil {
 		return parent.Err()
 	}
-	if ctx.Err() != nil {
-		return e.finish(c.Id, "cancelled", "Backup command cancelled or expired. Inspect any interrupted run before retrying.")
+	// A run left uncertain holds the host, so its command is not settled either: a coordinated
+	// leaf that needs attention can be rejected, and resolve-run settles a standalone one.
+	if errors.Is(err, errRunUncertain) {
+		return e.finish(c.Id, "needs_attention", interruptedBackupNote)
+	}
+	if err != nil && ctx.Err() != nil && (b.Action == "backup" || b.Action == "restore") {
+		return e.finish(c.Id, "cancelled", "Backup command cancelled or expired. Its run failed or changed nothing; run history records which.")
+	}
+	if err != nil && ctx.Err() != nil {
+		return e.finish(c.Id, "cancelled", "Backup command cancelled or expired before it completed. No schedule was changed.")
 	}
 	if err != nil {
 		return e.finish(c.Id, "failed", "Backup action failed. Check policy compatibility, storage access, available capacity and the run history. No existing data was replaced.")
 	}
-	return e.finish(c.Id, "succeeded", "Backup action completed. Snapshot upload and restore verification are recorded separately. Cutover requires a new deployment review.")
-}
-func hasUncertainRun(runs []backup.Run) bool {
-	for _, r := range runs {
-		if r.State == "running" || r.State == "needs_attention" {
-			return true
-		}
-	}
-	return false
+	return e.finish(c.Id, "succeeded", backupSucceededNote)
 }
 
 // TickSchedules is independent of management connectivity. It shares the host
@@ -299,7 +341,7 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 				return err
 			}
 		}
-		changed := false
+		changed := settleUnstarted(s, clock().UTC())
 		for i := range s.Runs {
 			if s.Runs[i].State == "running" {
 				s.Runs[i].State = "needs_attention"
@@ -312,7 +354,7 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 				return err
 			}
 		}
-		blocked = blocked || hasUncertainRun(s.Runs)
+		blocked = blocked || hasUncertainRun(*s)
 	}
 	if blocked {
 		return nil
@@ -333,7 +375,7 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 				continue
 			}
 		}
-		if !p.Enabled || hasUncertainRun(s.Runs) || s.Installation.Next.IsZero() || now.Before(s.Installation.Next) {
+		if !p.Enabled || hasUncertainRun(s) || s.Installation.Next.IsZero() || now.Before(s.Installation.Next) {
 			continue
 		}
 		at, future, dueErr := p.Schedule.Due(s.Installation.Next, now)
@@ -355,14 +397,16 @@ func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) erro
 		if err = e.runScheduled(ctx, &s, at, backup.RunID(p, at), "", uuid.Nil); err != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if hasUncertainRun(s.Runs) {
+		if hasUncertainRun(s) {
 			return nil
 		}
 	}
 	return nil
 }
 func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Time, id uuid.UUID, snapshot string, target uuid.UUID) error {
-	if hasUncertainRun(s.Runs) {
+	// A run the agent stopped before its first effect is failed before another can take its mark.
+	settleUnstarted(s, time.Now().UTC())
+	if hasUncertainRun(*s) {
 		return errors.New("inspect interrupted run first")
 	}
 	for _, r := range s.Runs {
@@ -379,6 +423,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 
 	r := backup.Run{ID: id, PolicyID: s.Installation.Policy.ID, Generation: s.Installation.Policy.Generation, ScheduledAt: at, StartedAt: time.Now().UTC(), State: "running", TargetID: target, Snapshot: snapshot}
 	s.Runs = append(s.Runs, r)
+	s.BeforeEffects = r.ID
 	if err := e.Journal.saveSchedule(*s); err != nil {
 		return err
 	}
@@ -386,28 +431,22 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	index := len(s.Runs) - 1
 	timeout := s.Installation.Policy.RunTimeout()
 	if snapshot != "" {
-		timeout = 30 * time.Minute
+		timeout = backup.RestoreTimeout
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var err error
 	if snapshot != "" {
-		s.Runs[index].Protected = true
-		for i := range s.Runs {
-			if s.Runs[i].Snapshot == snapshot {
-				s.Runs[i].Protected = true
-			}
-		}
-		if err = e.Journal.saveSchedule(*s); err == nil {
-			err = e.restoreSnapshot(runCtx, s, &r)
-		}
+		// The run recorded above protects its snapshot: see protectRestoreSources.
+		err = e.restoreSnapshot(runCtx, s, &r)
 	} else if s.Installation.Policy.Method == "container-job" {
 		err = e.runContainerJob(runCtx, s, &r)
 	} else {
 		err = e.backupSnapshot(runCtx, s, &r)
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if err != nil && ctx.Err() != nil && settleUnstarted(s, time.Now().UTC()) {
+		// A run stopped before its first effect changed nothing.
+		return errors.Join(ctx.Err(), e.Journal.saveSchedule(*s))
 	}
 	end := time.Now().UTC()
 	r.FinishedAt = &end
@@ -419,20 +458,37 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	if r.Verified {
 		r.Note = "Fresh restore verified. Existing services and data remain in use until a separate reviewed deployment."
 	}
+	// A run that failed before its first effect changed nothing, whatever the method.
+	effects := s.BeforeEffects != r.ID
+	s.BeforeEffects = uuid.Nil
 	if err != nil {
 		r.State = "failed"
-		if s.Installation.Policy.Method == "container-job" && (r.ExitCode == nil || errors.Is(err, errJobCleanup)) {
-			r.State = "needs_attention"
-		}
-		r.Note = "Run failed. Inspect storage access, supported source state and available capacity. Incomplete output is not a usable backup."
-		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		job := s.Installation.Policy.Method == "container-job" && r.ExitCode != nil
+		switch timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded); {
+		case ctx.Err() != nil && job:
+			r.Note = "Container job stopped because its command was cancelled or reached its time limit; its owned container was stopped and the exit result recorded."
+		case ctx.Err() != nil:
+			r.Note = "Run stopped by a cancel, its command's time limit or the agent stopping, and nothing it started is still running. Incomplete output is not a usable backup."
+		case timedOut && job:
+			r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
+		case timedOut:
 			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
-			if s.Installation.Policy.Method == "container-job" && r.ExitCode != nil {
-				r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
-			}
+		default:
+			r.Note = "Run failed. Inspect storage access, supported source state and available capacity. Incomplete output is not a usable backup."
 		}
-		if errors.Is(err, errJobCleanup) {
-			r.Note = "Job cleanup could not be confirmed. Inspect the owned run container and resolve the run locally before further host operations."
+		// However a run that began changing things ended, something it started may still be
+		// running, so it fails only once its cleanup is confirmed. Otherwise it is left to
+		// inspect, never to stay running: nothing settles a running run on a reserved host.
+		if effects {
+			switch left := e.runCleanupLeft(s.Installation.Policy, r.ID, err); {
+			case left != "":
+				r.State = "needs_attention"
+				r.Note = "The run's cleanup could not be confirmed: " + left + ". Inspect containers with its com.astilba.run label and any target volume, then resolve the run."
+			case errors.Is(err, errJobCleanup):
+				// The job exited 0 and only its own cleanup failed, which removing its container
+				// has now finished.
+				r.State, r.Note, err = "succeeded", "Container job finished; exit result recorded.", nil
+			}
 		}
 	}
 	compactManifest(&r)
@@ -441,99 +497,14 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		for i := range s.Runs {
 			if s.Runs[i].Snapshot == snapshot {
 				s.Runs[i].Verified = true
-				s.Runs[i].Protected = false
 			}
 		}
 	}
 	if saveErr := e.Journal.saveSchedule(*s); saveErr != nil {
 		return saveErr
 	}
+	if r.State == "needs_attention" {
+		return errors.Join(err, errRunUncertain)
+	}
 	return err
-}
-
-// ResolveScheduledRun is a local operator action after inspecting an uncertain
-// run. It never declares success or removes retained data.
-func (e *Engine) ResolveScheduledRun(ctx context.Context, policy, run uuid.UUID) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if err := e.Journal.RequireUnreservedHost(); err != nil {
-		return err
-	}
-	s, err := e.Journal.schedule(policy)
-	if err != nil {
-		return err
-	}
-	if s.Installation.Policy.RequiresQuiescence() {
-		active, err := e.Journal.unit(s.Installation.Policy.Plan.UnitID)
-		if err != nil {
-			return err
-		}
-		if active.Plan.Specification.HasRemotePlacement() {
-			return errors.New("distributed writer recovery requires coordinated maintenance")
-		}
-	}
-	if err = e.resumeBackupWriters(ctx, &s); err != nil {
-		return err
-	}
-	list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", labelServer+"="+s.Installation.Policy.ServerID.String(), "com.astilba.run="+run.String())})
-	if err != nil {
-		return err
-	}
-	for _, c := range list.Items {
-		if c.State == "running" {
-			return errors.New("run still has an active container; inspect and stop it before resolving")
-		}
-	}
-	for i := range s.Runs {
-		if s.Runs[i].ID == run && (s.Runs[i].State == "running" || s.Runs[i].State == "needs_attention") {
-			s.Runs[i].State = "failed"
-			s.Runs[i].Note = "Local operator resolved the interrupted run after inspection; no successful recovery was inferred."
-			return e.Journal.saveSchedule(s)
-		}
-	}
-	return errors.New("run is not awaiting local inspection")
-}
-
-func compactManifest(r *backup.Run) {
-	if r.Manifest == nil {
-		return
-	}
-	m := *r.Manifest
-	if r.ManifestHash == "" {
-		r.ManifestHash = backup.Hash(m)
-	}
-	m.Roles = []backup.Role{}
-	m.Extensions = []string{}
-	r.Manifest = &m
-}
-
-// Keep a representative for every retained snapshot, while ordinary run history
-// is bounded independently of how often a snapshot is restore-tested.
-func trimRunHistory(s *scheduleState, limit int) error {
-	for i := range s.Runs {
-		compactManifest(&s.Runs[i])
-	}
-	for len(s.Runs) > limit {
-		counts := map[string]int{}
-		for _, r := range s.Runs {
-			if r.Snapshot != "" && !r.Pruned {
-				counts[r.Snapshot]++
-			}
-		}
-		drop := -1
-		for i, r := range s.Runs {
-			if r.Protected || r.State == "running" || r.State == "needs_attention" {
-				continue
-			}
-			if r.Snapshot == "" || r.Pruned || counts[r.Snapshot] > 1 {
-				drop = i
-				break
-			}
-		}
-		if drop < 0 {
-			return errors.New("run history is full of protected snapshots")
-		}
-		s.Runs = append(s.Runs[:drop], s.Runs[drop+1:]...)
-	}
-	return nil
 }

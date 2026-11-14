@@ -26,7 +26,7 @@ func TestGeneralScheduleRollbackFenceAndLegacyReconciliation(t *testing.T) {
 	if err := j.db.View(func(tx *bolt.Tx) error { return j.get(tx, "schedules", p.ID.String(), &mirror) }); err != nil {
 		t.Fatal(err)
 	}
-	if mirror.Installation.Policy.Enabled || mirror.Installation.Policy.GeneralSchedule() || !mirror.Installation.Next.IsZero() || !hasUncertainRun(mirror.Runs) || len(mirror.Writers) != 1 {
+	if mirror.Installation.Policy.Enabled || mirror.Installation.Policy.GeneralSchedule() || !mirror.Installation.Next.IsZero() || !hasUncertainRun(mirror) || len(mirror.Writers) != 1 {
 		t.Fatal("old binary lost its effect fence or could execute the new cadence")
 	}
 	states, err := j.scheduleStates()
@@ -49,7 +49,7 @@ func TestGeneralScheduleRollbackFenceAndLegacyReconciliation(t *testing.T) {
 	}
 	defer j.Close()
 	effective, err := j.schedule(p.ID)
-	if err != nil || effective.Installation.Policy.Enabled || effective.Installation.Policy.GeneralSchedule() || hasUncertainRun(effective.Runs) {
+	if err != nil || effective.Installation.Policy.Enabled || effective.Installation.Policy.GeneralSchedule() || hasUncertainRun(effective) {
 		t.Fatal("old resolution resurrected hidden advanced work", err)
 	}
 	// A newer owner-approved legacy generation must supersede the hidden row too.
