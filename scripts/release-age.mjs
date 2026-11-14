@@ -13,7 +13,7 @@ import { findReleases, trackedFiles } from "./pin-sources.mjs";
 const root = resolve(import.meta.dirname, "..");
 
 // The days of the Docker entry's cooldown, so the image and binary gates cannot drift.
-export function minimumAgeMs(dependabotText) {
+export function cooldownMs(dependabotText) {
   const entries = dependabotText.split(/^ {2}- package-ecosystem:/m).slice(1);
   const docker = entries.find((entry) => /^\s*docker\s*$/m.test(entry.split("\n")[0]));
   const days = docker && /^\s+default-days:\s*(\d+)\s*$/m.exec(docker)?.[1];
@@ -55,10 +55,17 @@ export function verdicts(releases, { times, now, minimumMs }) {
 const downloads = "/releases/download/";
 
 function baseFiles(base) {
-  const listed = execFileSync("git", ["grep", "-l", "-z", "-F", downloads, base, "--"], {
-    cwd: root,
-    encoding: "utf8",
-  }).split("\0");
+  let listed;
+  try {
+    listed = execFileSync("git", ["grep", "-l", "-z", "-F", downloads, base, "--"], {
+      cwd: root,
+      encoding: "utf8",
+    }).split("\0");
+  } catch (error) {
+    // git grep exits 1 when nothing matches: the base downloads no release.
+    if (error.status === 1 && !error.stderr?.length) return [];
+    throw error;
+  }
   return listed
     .filter(Boolean)
     .map((entry) => entry.slice(base.length + 1))
@@ -70,7 +77,7 @@ function baseFiles(base) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const base = process.argv[2] ?? "origin/main";
-  const minimumMs = minimumAgeMs(readFileSync(join(root, ".github/dependabot.yml"), "utf8"));
+  const minimumMs = cooldownMs(readFileSync(join(root, ".github/dependabot.yml"), "utf8"));
   const current = trackedFiles(root).filter(({ text }) => text.includes(downloads));
   const releases = addedReleases(findReleases(baseFiles(base)), findReleases(current));
   if (releases.length === 0) {

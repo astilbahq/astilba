@@ -441,9 +441,10 @@ change by themselves. An image or a release binary waits seven days, the Docker
 cooldown in `.github/dependabot.yml`, judged by when the pinned digest was pushed or the
 release was published, or by an asset's later replacement. A bump of either is held
 until then, and its pull request names the date. `node scripts/release-age.mjs origin/main`
-fails for any release binary a branch adds that is younger than that cooldown. Docker Hub
-gives no push time for a single digest, so the image age is read from the registry when
-the bump is made. Registry requests, pulls and scans repeat like
+fails for any release binary a branch adds that is younger than that cooldown. No script
+checks an image's age: Docker Hub gives a push time only for a tag, not for each digest,
+so whoever bumps an image reads it from the tag's last push on Docker Hub, or from the
+image configuration's creation time on other registries. Registry requests, pulls and scans repeat like
 [host downloads](#host-downloads) until one has failed for that long; the rest of the
 run then tries each a few times. A registry request ends within a minute, and no image
 check starts or runs past 90 minutes; the tool checks after them are bounded by their

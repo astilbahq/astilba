@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { addedReleases, minimumAgeMs, releaseTime, verdicts } from "./release-age.mjs";
+import { addedReleases, cooldownMs, releaseTime, verdicts } from "./release-age.mjs";
 
 const day = 86_400_000;
 
@@ -19,13 +19,13 @@ updates:
     cooldown:
       default-days: 3
 `;
-  assert.equal(minimumAgeMs(text), 7 * day);
+  assert.equal(cooldownMs(text), 7 * day);
   assert.throws(
-    () => minimumAgeMs("updates:\n  - package-ecosystem: docker\n    directory: /\n"),
+    () => cooldownMs("updates:\n  - package-ecosystem: docker\n    directory: /\n"),
     /no cooldown for docker/,
   );
   assert.equal(
-    minimumAgeMs(readFileSync(new URL("../.github/dependabot.yml", import.meta.url), "utf8")),
+    cooldownMs(readFileSync(new URL("../.github/dependabot.yml", import.meta.url), "utf8")),
     7 * day,
   );
 });
