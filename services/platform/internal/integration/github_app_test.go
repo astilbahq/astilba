@@ -262,6 +262,8 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	input.Capabilities.RootlessBuilds = &yes
 	input.Capabilities.Compose = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
+	// The branch holds the selected file, which an import is refused without.
+	tree.record(strings.Repeat("a", 40), importHonest[:1])
 	source := pipeline.Source{ConnectionID: imported, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
 	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 400, nil)
 	source.ConnectionID = connection.ID

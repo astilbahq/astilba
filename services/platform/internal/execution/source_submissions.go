@@ -401,7 +401,7 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 				return err
 			}
 			if state == "succeeded" {
-				if err := q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID}); err != nil {
+				if err := q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID, SubmissionID: id}); err != nil {
 					return err
 				}
 			}

@@ -94,8 +94,11 @@ WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
 UPDATE source_submissions SET note = @note WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
 
 -- name: AwaitSubmittedMerge :exec
--- A source that needs renewed approval keeps needing it: a submission doesn't grant it.
-UPDATE git_sources SET status = 'awaiting_merge' WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND status <> 'approval_required';
+-- A source that needs renewed approval keeps needing it: a submission doesn't grant it. A source bound
+-- again since the submission was made no longer imports the commit it proposed edits to.
+UPDATE git_sources g SET status = 'awaiting_merge' FROM source_submissions s
+WHERE g.workspace_id = @workspace_id AND g.environment_id = @environment_id AND g.status <> 'approval_required'
+    AND s.workspace_id = g.workspace_id AND s.id = @submission_id AND g.imported_commit = s.configuration->>'commit';
 
 -- name: SubmittedReviews :many
 -- The reviews that proposed exactly these files on top of commit from this connection's branch,
@@ -112,6 +115,91 @@ SELECT review FROM (
       AND r.configuration->>'commit' = @commit::text AND r.configuration#>>'{connection,id}' = @connection_id::text AND r.configuration->>'branch' = @branch::text
       AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f) = @files::jsonb
 ) reviews WHERE review > 0 ORDER BY created_at DESC;
+
+-- name: RecordGitSourceFailure :exec
+-- The commit stops waiting to import: it failed. A conflict keeps its commit until an owner's refresh
+-- settles the draft.
+UPDATE git_sources SET failed_commit = @commit::text, failure_reason = @reason::text, failed_at = clock_timestamp(),
+    pending_commit = CASE WHEN status = 'conflict' THEN pending_commit ELSE '' END
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: ClearGitSourceFailure :exec
+-- An import admitted for a source ends its failure.
+UPDATE git_sources SET failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND failed_commit <> '';
+
+-- name: BindGitSource :exec
+-- Binding a source again replaces all it was, as a first binding sets it: its approver, and the import
+-- it compares drafts with, which the next import sets. An environment runs one operation at a time,
+-- so no import for what the source was bound to before is still running.
+INSERT INTO git_sources (workspace_id, environment_id, connection_id, configuration, policy_actor, policy_auth_version)
+VALUES (@workspace_id, @environment_id, @connection_id, @configuration, @policy_actor, @policy_auth_version::bigint)
+ON CONFLICT (workspace_id, environment_id) DO UPDATE SET connection_id = EXCLUDED.connection_id, configuration = EXCLUDED.configuration,
+    policy_actor = EXCLUDED.policy_actor, policy_auth_version = EXCLUDED.policy_auth_version,
+    imported_revision_id = NULL, imported_commit = '', pending_commit = '', status = 'pending',
+    failed_commit = '', failure_reason = '', failed_at = NULL;
+
+-- name: UnbindGitSource :execrows
+DELETE FROM git_sources WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: MarkGitSourceConflict :exec
+-- A conflict says why the commit waits, so an earlier failure no longer does.
+UPDATE git_sources SET pending_commit = @commit::text, status = 'conflict', failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: RejectBuildTarget :exec
+-- A rejection ends any wait, since it says why the commit was not built.
+UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp(),
+    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
+
+-- name: WaitBuildTarget :exec
+-- A target waits for its runner at a commit, until the refresh stops waiting. It keeps the time it
+-- started waiting while it waits for the same runner, for the same reason, at the same commit.
+UPDATE build_targets SET waiting_commit = @commit::text, waiting_reason = @reason::text, waiting_runner_id = @runner_id::uuid,
+    waiting_until = @until::timestamptz,
+    waiting_since = CASE WHEN waiting_commit = @commit::text AND waiting_reason = @reason::text AND waiting_runner_id = @runner_id::uuid
+        THEN waiting_since ELSE clock_timestamp() END
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
+
+-- name: EndBranchBuildWaits :exec
+-- A branch's refresh that ends ends every wait it recorded, at any commit, as when the source they
+-- build on failed and holds them: a wait it no longer looks at would never end. One job refreshes
+-- a branch at a time.
+UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = @workspace_id AND connection_id = @connection_id AND configuration->>'branch' = @branch::text AND waiting_commit IS NOT NULL;
+
+-- name: ListBuildWaits :many
+-- A wait whose refresh ended without saying so, as when it was discarded or recovery removed it, or
+-- whose target no longer builds automatically, is over, so it isn't shown.
+SELECT application_id, waiting_commit::text AS waiting_commit, waiting_reason::text AS waiting_reason,
+    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since, waiting_until::timestamptz AS waiting_until
+FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND waiting_until > now()
+    AND configuration->>'autoBuild' = 'true'
+ORDER BY application_id;
+
+-- name: RunnerCredential :one
+-- Whether a runner has its credential, or is enrolling again or moving to another management with
+-- a code that is still valid: it has no credential until it finishes, but it is still the
+-- workspace's, so work for it waits rather than fails. A runner whose credential was withdrawn with
+-- no enrollment under way, or whose code expired, is neither.
+SELECT COALESCE(bool_or(NOT revoked AND credential_hash IS NOT NULL), false)::boolean AS enrolled,
+    COALESCE(bool_or(NOT revoked AND credential_hash IS NULL AND enrollment_hash IS NOT NULL AND enrollment_expires > now()), false)::boolean AS enrolling
+FROM servers WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: AutomaticBuildsBehind :one
+-- Whether an environment builds this branch automatically and has not yet been asked to build commit.
+SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND connection_id = @connection_id
+    AND configuration->>'branch' = @branch::text AND configuration->>'autoBuild' = 'true' AND automatic_requested_commit <> @commit::text)::boolean AS behind;
+
+-- name: EnvironmentOperationRunning :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND environment_id = @environment_id::uuid
+    AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled'))::boolean AS running;
+
+-- name: WorkspaceRunnerKnown :one
+-- Whether a server is one of the workspace's and not revoked, as a fallback runner saved with a
+-- configuration must be.
+SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = @workspace_id AND id = @id AND NOT revoked)::boolean AS known;
 
 -- name: RunnerCapabilities :one
 SELECT capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id;

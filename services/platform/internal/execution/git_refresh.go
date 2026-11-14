@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"time"
@@ -46,8 +47,11 @@ func (s *Service) enqueueGitRefresh(ctx context.Context, tx pgx.Tx, ws, id uuid.
 	if err != nil || !tracked {
 		return err
 	}
-	return s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: ws}, refreshArgs{ws, id, p.Branch}, river.InsertOpts{MaxAttempts: 100, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled}}}, false)
+	return s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: ws}, refreshArgs{ws, id, p.Branch}, refreshOpts, false)
 }
+
+// refreshOpts coalesces refreshes of a branch while one is waiting or running.
+var refreshOpts = river.InsertOpts{MaxAttempts: 100, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled}}}
 
 type refreshWorker struct {
 	river.WorkerDefaults[refreshArgs]
@@ -62,10 +66,12 @@ func (w *refreshWorker) Work(ctx context.Context, job *river.Job[refreshArgs]) e
 }
 
 // A later push for the branch joins this job rather than starting another, so a source waiting
-// to be read looks again often, and gives up in time for a new refresh to take over.
+// to be read looks again often, and gives up in time for a new refresh to take over. Work waiting
+// for its runner to finish enrolling or to be updated waits as long, then is refused, saying why.
+// docs/git-builds.md states the limit.
 const (
 	sourceRetryDelay = time.Minute
-	sourceWaitLimit  = 24 * time.Hour
+	refreshWaitLimit = 24 * time.Hour
 )
 
 // work holds the workspace turn and the connection only between provider calls. The pass
@@ -80,7 +86,11 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	defer done()
 	if err = w.service.Store.ManagementAdmission(ctx, tx, a.Workspace); err != nil {
 		if errors.Is(err, store.SubscriptionRequired) {
-			return nil
+			// The job ends without looking, so the waits it recorded end with it.
+			if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch}); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
 		}
 		return err
 	}
@@ -101,6 +111,9 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	// this transaction, under the connection lock, so a push that recreates the branch while it
 	// ends waits for it and then starts a refresh of its own.
 	if errors.Is(resolved.Err, pipeline.ErrBranchNotFound) && job.Attempt > 1 {
+		if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch}); err != nil {
+			return err
+		}
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
 			return err
 		}
@@ -111,7 +124,7 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	}
 	connection, head := resolved.Connection, resolved.Value
 	// One statement, so a source and the import that is saving it are read as of one moment.
-	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor,g.pending_commit,
+	rows, err := tx.Query(ctx, `SELECT g.environment_id,g.configuration,g.imported_revision_id,g.imported_commit,e.project_id,e.draft_revision_id,g.policy_actor,g.pending_commit,g.failed_commit,
  EXISTS(SELECT 1 FROM pipeline_runs r JOIN execution_operations o ON o.workspace_id=r.workspace_id AND o.id=r.id WHERE r.workspace_id=g.workspace_id AND r.environment_id=g.environment_id
   AND r.configuration->>'action'='import' AND r.configuration->>'commit'<>$4 AND o.state NOT IN ('succeeded','failed','cancelled'))
  FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
@@ -121,18 +134,10 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	if err != nil {
 		return err
 	}
-	type source struct {
-		env, pid, base, actor uuid.UUID
-		imported              *uuid.UUID
-		raw                   []byte
-		commit, pending       string
-		// importing is whether an import of a commit other than the head is running.
-		importing bool
-	}
-	sources := []source{}
+	sources := []refreshedSource{}
 	for rows.Next() {
-		var v source
-		if err = rows.Scan(&v.env, &v.raw, &v.imported, &v.commit, &v.pid, &v.base, &v.actor, &v.pending, &v.importing); err != nil {
+		var v refreshedSource
+		if err = rows.Scan(&v.env, &v.raw, &v.imported, &v.commit, &v.pid, &v.base, &v.actor, &v.pending, &v.failed, &v.importing); err != nil {
 			rows.Close()
 			return err
 		}
@@ -148,13 +153,17 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	// after those it held back. Sources also share the operation's pass limit however many there are, so each edited source's
 	// question joins one call instead of taking a pass.
 	var unanswered *providerCall
-	// A source whose files cannot be read waits for this job to look again. Work elsewhere starts now,
-	// but its environment's builds wait for it, because they build on the imported draft.
-	var unreadable error
+	// A source whose files cannot be read, or whose runner or workspace can't take an import yet,
+	// waits for this job to look again, each minute for a day. Work elsewhere starts now, but its
+	// environment's builds wait for it, because they build on the imported draft. A build target
+	// whose runner is enrolling again, or must be updated before it can build, waits the same way
+	// and says so.
+	lookAgain := false
 	waitingToImport := map[uuid.UUID]bool{}
 	// Past its limit the job stops reading a source already shown as waiting, whatever else keeps
 	// it alive, and shows any source it did not reach before it ends.
-	expired := time.Since(job.CreatedAt) > sourceWaitLimit
+	deadline := job.CreatedAt.Add(refreshWaitLimit)
+	expired := time.Now().After(deadline)
 	for _, v := range sources {
 		// The branch can move back to the source's commit while another commit imports, as
 		// when a force-push removes it. That import would leave the source on a commit the
@@ -163,10 +172,21 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			waiting = true
 			continue
 		}
+		// A failure at a commit the branch no longer holds no longer applies.
 		if v.commit == head {
 			if err = db.New(tx).ClearGitSourcePendingCommit(ctx, db.ClearGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
 				return err
 			}
+			if err = db.New(tx).ClearGitSourceFailure(ctx, db.ClearGitSourceFailureParams{WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
+				return err
+			}
+			continue
+		}
+		// A source that failed at this commit would fail the same way again: a push, a refresh
+		// started by hand or binding the source again tries again. Its environment's builds wait
+		// for it, because they build on the imported draft.
+		if v.failed == head {
+			waitingToImport[v.env] = true
 			continue
 		}
 		// A retry or wait must not repeat an import this job already started, whatever became of
@@ -183,10 +203,6 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			waiting = true
 			continue
 		}
-		var cfg pipeline.Source
-		if err = json.Unmarshal(v.raw, &cfg); err != nil {
-			return err
-		}
 		busy, err := db.New(tx).EnvironmentHoldsAutomaticWork(ctx, db.EnvironmentHoldsAutomaticWorkParams{WorkspaceID: a.Workspace, EnvironmentID: v.env})
 		if err != nil {
 			return err
@@ -195,74 +211,53 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			waiting = true
 			continue
 		}
-		env, err := loadVisualEnvironment(ctx, tx, a.Workspace, v.pid, v.env)
+		// What fails for one source, such as its runner being revoked or a selected file being
+		// renamed upstream, rolls back only that source's writes and is recorded on it, so the
+		// branch's other sources and builds go on.
+		savepoint, err := tx.Begin(ctx)
 		if err != nil {
 			return err
 		}
-		baseline, err := sourceBaseline(ctx, tx, a.Workspace, v.env, v.imported)
+		outcome, err := w.refreshSource(ctx, savepoint, git, job, connection, head, expired, v)
 		if err != nil {
-			return err
-		}
-		clean := v.imported == nil || sameSourceFiles(env.Spec.Compose, baseline)
-		if clean && v.imported != nil {
-			cfg = sourceSelection(cfg, env.Spec.Compose)
-		}
-		if !clean {
-			cfg, clean, err = mergedSourceSelection(ctx, tx, git, a.Workspace, v.env, env.Spec.Compose, head, cfg)
+			if rollbackErr := savepoint.Rollback(ctx); rollbackErr != nil {
+				return rollbackErr
+			}
 			var call *providerCall
 			if errors.As(err, &call) {
 				unanswered = unanswered.and(call)
 				continue
 			}
-			if err != nil {
-				return err
-			}
-		}
-		if !clean {
-			if _, err = tx.Exec(ctx, "UPDATE git_sources SET pending_commit=$3,status='conflict' WHERE workspace_id=$1 AND environment_id=$2", a.Workspace, v.env, head); err != nil {
-				return err
-			}
-			continue
-		}
-		if expired && v.pending == head {
-			waitingToImport[v.env] = true
-			continue
-		}
-		blobs, err := git.sourceBlobs(ctx, tx, a.Connection, head, cfg.Paths)
-		var call *providerCall
-		if errors.As(err, &call) {
-			unanswered = unanswered.and(call)
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if blobs.Err != nil {
-			unreadable = blobs.Err
-			waitingToImport[v.env] = true
-			if errors.Is(blobs.Err, errSourceBlobsNotAsked) && !expired {
+			if errors.Is(err, errRefreshWaits) {
+				if err = db.New(tx).SetGitSourcePendingCommit(ctx, db.SetGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Commit: head}); err != nil {
+					return err
+				}
+				lookAgain = true
+				waitingToImport[v.env] = true
 				continue
 			}
-			if err = db.New(tx).SetGitSourcePendingCommit(ctx, db.SetGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env, Commit: head}); err != nil {
+			var failed *sourceFailure
+			if !errors.As(err, &failed) {
 				return err
 			}
+			if err = db.New(tx).RecordGitSourceFailure(ctx, db.RecordGitSourceFailureParams{Commit: head, Reason: failed.reason, WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
+				return err
+			}
+			waitingToImport[v.env] = true
 			continue
 		}
-		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, "", false, nil)
-		if err != nil {
+		if err = savepoint.Commit(ctx); err != nil {
 			return err
 		}
-		op, err := w.service.insertPipeline(ctx, tx, git, a.Workspace, v.env, uuid.New(), runner, pipeline.Command{Action: "import", Connection: connection, Commit: head, Branch: a.Branch, RevisionID: v.base, UnitID: env.Unit, Source: &cfg, SubmittedAt: time.Now().UTC()})
-		if err != nil {
-			return err
+		switch outcome {
+		case sourceAdmitted:
+			capacity--
+		case sourceUnreadable:
+			lookAgain = true
+			waitingToImport[v.env] = true
+		case sourceHeld:
+			waitingToImport[v.env] = true
 		}
-		if err = explainImportAgain(ctx, tx, a.Workspace, v.env, op.Id, v.commit, head); err != nil {
-			return err
-		}
-		if err = db.New(tx).ClearGitSourcePendingCommit(ctx, db.ClearGitSourcePendingCommitParams{WorkspaceID: a.Workspace, EnvironmentID: v.env}); err != nil {
-			return err
-		}
-		capacity--
 	}
 	if unanswered != nil {
 		return unanswered
@@ -325,13 +320,39 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 		if !found {
 			continue
 		}
-		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture, cfg.NeedsControls(), cfg.RailpackPins())
+		// A target whose runner or registry is gone records why rather than stopping the branch.
+		runner, err := selectRunner(ctx, tx, a.Workspace, cfg.RunnerID, cfg.FallbackRunnerID, cfg.Architecture, cfg.NeedsControls(), cfg.RailpackPins(), true)
+		wait, waitErr := runnerWaits(ctx, tx, a.Workspace, cfg.RunnerID, err)
+		if waitErr != nil {
+			return waitErr
+		}
+		// Only the primary is refused here: a fallback that can't take the build is passed over.
+		if wait || runnerUpgradeRequired(err) {
+			waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, cfg.RunnerID, runnerWait(wait), deadline)
+			if err != nil {
+				return err
+			}
+			lookAgain = lookAgain || waits
+			continue
+		}
+		if runnerUnavailable(err) {
+			if err = rejectTarget(ctx, tx, a.Workspace, v.env, v.app, head, "runner_unavailable"); err != nil {
+				return err
+			}
+			continue
+		}
 		if err != nil {
 			return err
 		}
 		var registry *pipeline.Registry
 		if cfg.RegistryID != nil {
 			r, _, err := loadRegistry(ctx, tx, a.Workspace, *cfg.RegistryID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				if err = rejectTarget(ctx, tx, a.Workspace, v.env, v.app, head, "registry_unavailable"); err != nil {
+					return err
+				}
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -352,23 +373,52 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			if rollbackErr := target.Rollback(ctx); rollbackErr != nil {
 				return rollbackErr
 			}
-			var rejected *buildInputRejection
-			if errors.As(err, &rejected) {
-				if _, err = tx.Exec(ctx, "UPDATE build_targets SET rejected_commit=$4,rejection_reason=$5,rejected_at=clock_timestamp() WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, head, rejected.reason); err != nil {
+			// The runner chosen must be updated before it can build without root, for example,
+			// although selectRunner found it could. A fallback chosen is passed over at the next
+			// look, so only the primary is waited for.
+			if runnerUpgradeRequired(err) && runner != cfg.RunnerID {
+				lookAgain = lookAgain || !expired
+				continue
+			}
+			if runnerUpgradeRequired(err) {
+				waits, err := waitForRunner(ctx, tx, a.Workspace, v.env, v.app, head, runner, "runner_update", deadline)
+				if err != nil {
 					return err
 				}
+				lookAgain = lookAgain || waits
+				continue
+			}
+			reason := ""
+			var rejected *buildInputRejection
+			if errors.As(err, &rejected) {
+				reason = rejected.reason
+			} else if runnerUnavailable(err) {
+				// Such as a runner that is no longer a build runner.
+				reason = "runner_unavailable"
+			}
+			// Any other refusal, such as its runner upgrading or the workspace's operation limit,
+			// passes by itself.
+			var refused *domain.Error
+			if reason == "" && errors.As(err, &refused) && refused.Code != "invalid_input" {
+				lookAgain = true
 				continue
 			}
 			// Each target's runtime-secret check can ask for a search between passes. Asking for
 			// them all in one pass keeps the passes a push needs independent of its targets.
 			var call *providerCall
-			if errors.As(err, &call) {
+			if reason == "" && errors.As(err, &call) {
 				unanswered = unanswered.and(call)
 				continue
 			}
-			return err
+			if reason == "" {
+				return err
+			}
+			if err = rejectTarget(ctx, tx, a.Workspace, v.env, v.app, head, reason); err != nil {
+				return err
+			}
+			continue
 		}
-		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
+		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL,waiting_until=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
 			return err
 		}
 		if err = target.Commit(ctx); err != nil {
@@ -379,7 +429,13 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	if unanswered != nil {
 		return unanswered
 	}
-	if !waiting && (unreadable == nil || expired) {
+	if !waiting && (!lookAgain || expired) {
+		// The branch's one job ends, so any wait it recorded, at this commit or an earlier one,
+		// ends too: a target it stopped looking at, as when the source it builds on failed or it
+		// no longer builds automatically, waits for nothing this job would see.
+		if err = db.New(tx).EndBranchBuildWaits(ctx, db.EndBranchBuildWaitsParams{WorkspaceID: a.Workspace, ConnectionID: a.Connection, Branch: a.Branch}); err != nil {
+			return err
+		}
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
 			return err
 		}
@@ -389,13 +445,46 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 	}
 	// Each look reads the unreadable source again, so its wait comes first even if other work
 	// could start sooner: a waiting job would otherwise read it every few seconds.
-	if unreadable != nil && (waiting || !expired) {
+	if lookAgain && (waiting || !expired) {
 		return river.JobSnooze(sourceRetryDelay)
 	}
 	if waiting {
 		return river.JobSnooze(5 * time.Second)
 	}
 	return nil
+}
+
+// refreshBehindBuilds starts a refresh of an imported branch whose automatic builds in that
+// environment have not been asked for the commit, as when an earlier refresh held them for an import
+// that failed. One already waiting covers it.
+func (s *Service) refreshBehindBuilds(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, p pipeline.Command) error {
+	behind, err := db.New(tx).AutomaticBuildsBehind(ctx, db.AutomaticBuildsBehindParams{WorkspaceID: ws, EnvironmentID: env, ConnectionID: p.Connection.ID, Branch: p.Branch, Commit: p.Commit})
+	if err != nil || !behind {
+		return err
+	}
+	return s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: ws}, refreshArgs{ws, p.Connection.ID, p.Branch}, refreshOpts, false)
+}
+
+// refreshLeftBranch starts a refresh of the branch a source no longer imports, when something still
+// tracks it there, such as automatic builds an earlier failure of the source held back. now is the
+// source's new binding, or nil when it was unbound.
+func (s *Service) refreshLeftBranch(ctx context.Context, tx pgx.Tx, ws uuid.UUID, raw []byte, now *pipeline.Source) error {
+	var left pipeline.Source
+	if err := json.Unmarshal(raw, &left); err != nil {
+		return err
+	}
+	if now != nil && now.ConnectionID == left.ConnectionID && now.Branch == left.Branch {
+		return nil
+	}
+	tracked, err := db.New(tx).GitBranchTracked(ctx, db.GitBranchTrackedParams{WorkspaceID: ws, ConnectionID: left.ConnectionID, Branch: left.Branch})
+	if err != nil || !tracked {
+		return err
+	}
+	return s.insertGitJob(ctx, tx, workspaceMetadata{Workspace: ws}, refreshArgs{ws, left.ConnectionID, left.Branch}, refreshOpts, false)
+}
+
+func rejectTarget(ctx context.Context, tx pgx.Tx, ws, env, app uuid.UUID, commit, reason string) error {
+	return db.New(tx).RejectBuildTarget(ctx, db.RejectBuildTargetParams{Commit: commit, Reason: reason, WorkspaceID: ws, EnvironmentID: env, ApplicationID: app})
 }
 
 // Requested commits include cancelled, failed and skipped work; only an actual

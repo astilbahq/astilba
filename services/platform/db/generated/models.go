@@ -201,6 +201,11 @@ type BuildTarget struct {
 	RejectedAt               *time.Time  `json:"rejected_at"`
 	PolicyAuthVersion        pgtype.Int8 `json:"policy_auth_version"`
 	PolicyOwner              bool        `json:"policy_owner"`
+	WaitingCommit            pgtype.Text `json:"waiting_commit"`
+	WaitingReason            pgtype.Text `json:"waiting_reason"`
+	WaitingRunnerID          *uuid.UUID  `json:"waiting_runner_id"`
+	WaitingSince             *time.Time  `json:"waiting_since"`
+	WaitingUntil             *time.Time  `json:"waiting_until"`
 }
 
 type CrossHostApproval struct {
@@ -434,6 +439,9 @@ type GitSource struct {
 	Status             string      `json:"status"`
 	PolicyActor        uuid.UUID   `json:"policy_actor"`
 	PolicyAuthVersion  pgtype.Int8 `json:"policy_auth_version"`
+	FailedCommit       string      `json:"failed_commit"`
+	FailureReason      string      `json:"failure_reason"`
+	FailedAt           *time.Time  `json:"failed_at"`
 }
 
 type GitSubmission struct {
