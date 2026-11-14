@@ -253,12 +253,30 @@ func cloneRoutes(current routeSnapshot) (routeSnapshot, error) {
 	return next, json.Unmarshal(raw, &next)
 }
 
+// proxyPolicy is when applyRoutes replaces a running proxy.
+type proxyPolicy int
+
+const (
+	// proxyAsNeeded replaces the proxy when it differs from the one the routes need.
+	proxyAsNeeded proxyPolicy = iota
+	// proxyRebuild replaces the proxy whatever it is.
+	proxyRebuild
+	// proxyRestore replaces the proxy as needed, except that it keeps the proxy the routes
+	// record when the host can't pull the image to replace it with. That proxy served those
+	// routes before, so putting them back on it restores them.
+	proxyRestore
+)
+
 // applyRoutes publishes s and waits for the proxy to report it, and says whether it
 // created the proxy. It waits for the certificates of the publishing unit only, if any:
 // another environment's certificate, which depends on where that environment's domain
 // points, must not stop this publish.
-func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool, unit string) (created bool, err error) {
+func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyPolicy, unit string) (created bool, err error) {
 	raw, err := renderSnapshot(s)
+	if err != nil {
+		return false, err
+	}
+	proxy, err := e.prepareProxy(ctx, s, policy)
 	if err != nil {
 		return false, err
 	}
@@ -267,7 +285,7 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool,
 		return false, err
 	}
 	e.point("route-published")
-	if created, err = e.ensureProxy(ctx, s, rebuild); err != nil {
+	if created, err = e.ensureProxy(ctx, s, proxy); err != nil {
 		return created, err
 	}
 	if len(s.Ports) == 0 {
@@ -292,63 +310,141 @@ func proxyArgs(s routeSnapshot) []string {
 	return args
 }
 
-// ensureProxy runs the proxy s needs, joined to its units' networks, and says whether it
-// created the container.
-func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool) (created bool, err error) {
-	cfg, err := e.Journal.Config()
-	if err != nil {
-		return false, err
+// proxyImage is the image the agent runs the proxy from.
+func (e *Engine) proxyImage() string {
+	if e.ingressImage != "" {
+		return e.ingressImage
 	}
-	v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
-	exists := err == nil
-	if err != nil && !errdefs.IsNotFound(err) {
-		return created, err
+	return deployment.ProxyImage
+}
+
+// proxyImageUnavailable is a proxy image the host couldn't pull. The agent pulls it before
+// changing the proxy or its routes, so both are as they were.
+type proxyImageUnavailable struct {
+	image string
+	err   error
+}
+
+func (u *proxyImageUnavailable) Error() string {
+	return fmt.Sprintf("this host could not pull the ingress proxy image %s: %v", u.image, u.err)
+}
+func (u *proxyImageUnavailable) Unwrap() error { return u.err }
+
+// proxyImageNote is the note for a route publish that failed: what the host couldn't pull
+// followed by after when it couldn't pull the proxy image, and otherwise otherwise.
+func proxyImageNote(err error, otherwise, after string) string {
+	if unavailable := new(*proxyImageUnavailable); errors.As(err, unavailable) {
+		return fmt.Sprintf("This host could not pull the ingress proxy image %s: %v.%s", (*unavailable).image, (*unavailable).err, after)
 	}
-	if exists && (v.Container.Config.Labels[labelServer] != cfg.ServerID.String() || v.Container.Config.Labels[labelKind] != "ingress-v1") {
-		return created, errors.New("an existing ingress container is unmanaged or changed")
+	return otherwise
+}
+
+// pullProxyImage makes sure the host has the proxy image.
+func (e *Engine) pullProxyImage(ctx context.Context) error {
+	image := e.proxyImage()
+	_, err := e.Docker.ImageInspect(ctx, image)
+	if !errdefs.IsNotFound(err) {
+		return err
 	}
-	bindings := network.PortMap{}
-	exposed := network.PortSet{}
-	for _, p := range s.Ports {
-		port, err := network.ParsePort(strconv.Itoa(p) + "/tcp")
-		if err != nil {
-			return created, err
+	if err = e.pullImage(ctx, image); err == nil {
+		// A pull can end without an error and without the image.
+		if _, err = e.Docker.ImageInspect(ctx, image); errdefs.IsNotFound(err) {
+			err = errors.New("the pull ended without the image")
 		}
-		exposed[port] = struct{}{}
-		bindings[port] = []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(p)}}
+	}
+	if err != nil && ctx.Err() == nil {
+		return &proxyImageUnavailable{image: image, err: err}
+	}
+	return err
+}
+
+// preparedProxy is the proxy on the host, and what ensureProxy is to do with it.
+type preparedProxy struct {
+	cfg             Config
+	v               client.ContainerInspectResult
+	exists, replace bool
+	args            []string
+	exposed         network.PortSet
+	bindings        network.PortMap
+	gatewayPriority int
+}
+
+// prepareProxy compares the proxy on the host with the one s needs, and pulls the image of
+// any proxy it will create, before anything changes. A host that can't pull the image keeps
+// its proxy, and the routes it serves, until a later publish can.
+func (e *Engine) prepareProxy(ctx context.Context, s routeSnapshot, policy proxyPolicy) (preparedProxy, error) {
+	var p preparedProxy
+	var err error
+	if p.cfg, err = e.Journal.Config(); err != nil {
+		return p, err
+	}
+	p.v, err = e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
+	p.exists = err == nil
+	if err != nil && !errdefs.IsNotFound(err) {
+		return p, err
+	}
+	if p.exists && (p.v.Container.Config.Labels[labelServer] != p.cfg.ServerID.String() || p.v.Container.Config.Labels[labelKind] != "ingress-v1") {
+		return p, errors.New("an existing ingress container is unmanaged or changed")
 	}
 	if !proxyWanted(s) {
-		if exists {
-			_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
-			if err != nil {
-				return created, err
-			}
-		}
-		return created, nil
+		return p, nil
 	}
-	args := proxyArgs(s)
+	p.bindings, p.exposed = network.PortMap{}, network.PortSet{}
+	for _, port := range s.Ports {
+		parsed, err := network.ParsePort(strconv.Itoa(port) + "/tcp")
+		if err != nil {
+			return p, err
+		}
+		p.exposed[parsed] = struct{}{}
+		p.bindings[parsed] = []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(port)}}
+	}
+	p.args = proxyArgs(s)
 	// A proxy keeps the egress gateway only while the routes it runs say so, so restoring
 	// routes from before managed egress also takes it away.
-	gateway := 0
 	if s.ManagedEgress {
-		gateway = 100
+		p.gatewayPriority = 100
+	}
+	if !p.exists {
+		return p, e.pullProxyImage(ctx)
 	}
 	current := 0
-	if exists && v.Container.NetworkSettings != nil && v.Container.NetworkSettings.Networks["astilba-ingress-network"] != nil {
-		current = v.Container.NetworkSettings.Networks["astilba-ingress-network"].GwPriority
+	if p.v.Container.NetworkSettings != nil && p.v.Container.NetworkSettings.Networks["astilba-ingress-network"] != nil {
+		current = p.v.Container.NetworkSettings.Networks["astilba-ingress-network"].GwPriority
 	}
-	gatewayChange := exists && current != gateway
-	if exists && (rebuild || gatewayChange || v.Container.Config.Image != deployment.ProxyImage || !reflect.DeepEqual(v.Container.Config.Cmd, args) || !reflect.DeepEqual(v.Container.HostConfig.PortBindings, bindings)) {
-		_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
-		if err != nil {
-			return created, err
+	p.replace = policy == proxyRebuild || current != p.gatewayPriority || p.v.Container.Config.Image != e.proxyImage() || !reflect.DeepEqual(p.v.Container.Config.Cmd, p.args) || !reflect.DeepEqual(p.v.Container.HostConfig.PortBindings, p.bindings)
+	if !p.replace {
+		return p, nil
+	}
+	err = e.pullProxyImage(ctx)
+	if policy == proxyRestore && s.ProxyHash != "" && proxyFingerprint(p.v) == s.ProxyHash && errors.As(err, new(*proxyImageUnavailable)) {
+		p.replace, err = false, nil
+	}
+	return p, err
+}
+
+// ensureProxy runs the proxy s needs, as prepareProxy prepared it, joined to its units'
+// networks, and says whether it created the container. It removes a proxy it replaces only
+// once nothing else stands in the way of its replacement.
+func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, p preparedProxy) (created bool, err error) {
+	// Pulling the image can take minutes, so the proxy must still be the one prepared.
+	v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
+	if err != nil && !errdefs.IsNotFound(err) {
+		return false, err
+	}
+	if (err == nil) != p.exists || p.exists && (v.Container.ID != p.v.Container.ID || proxyFingerprint(v) != proxyFingerprint(p.v)) {
+		return false, errors.New("the ingress proxy changed while this publish prepared it")
+	}
+	err = nil
+	if !proxyWanted(s) {
+		if p.exists {
+			_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
 		}
-		exists = false
+		return false, err
 	}
 	bridgeName := "astilba-ingress-network"
 	bridge, bridgeErr := e.Docker.NetworkInspect(ctx, bridgeName, client.NetworkInspectOptions{})
 	if errdefs.IsNotFound(bridgeErr) {
-		bridgeErr = e.createNetworks(ctx, []networkRequest{ingressNetwork(cfg.ServerID)})
+		bridgeErr = e.createNetworks(ctx, []networkRequest{ingressNetwork(p.cfg.ServerID)})
 		if bridgeErr == nil {
 			bridge, bridgeErr = e.Docker.NetworkInspect(ctx, bridgeName, client.NetworkInspectOptions{})
 		}
@@ -356,25 +452,10 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 	if bridgeErr != nil {
 		return created, bridgeErr
 	}
-	if bridge.Network.Labels[labelServer] != cfg.ServerID.String() || bridge.Network.Labels[labelKind] != "ingress-v1" || bridge.Network.Driver != "bridge" {
+	if bridge.Network.Labels[labelServer] != p.cfg.ServerID.String() || bridge.Network.Labels[labelKind] != "ingress-v1" || bridge.Network.Driver != "bridge" {
 		return created, errors.New("ingress network ownership mismatch")
 	}
-	if !exists {
-		for _, p := range s.Ports {
-			listener, err := net.Listen("tcp", ":"+strconv.Itoa(p))
-			if err != nil {
-				return created, fmt.Errorf("ingress port %d is already in use", p)
-			}
-			listener.Close()
-		}
-		if _, err = e.Docker.ImageInspect(ctx, deployment.ProxyImage); errdefs.IsNotFound(err) {
-			if err = e.pullImage(ctx, deployment.ProxyImage); err != nil {
-				return created, err
-			}
-		} else if err != nil {
-			return created, err
-		}
-
+	if !p.exists || p.replace {
 		data := filepath.Join(e.Journal.dir, "ingress-data")
 		if err = os.MkdirAll(data, 0700); err != nil {
 			return created, err
@@ -383,11 +464,20 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 		if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 			return created, errors.New("ingress data directory is not private")
 		}
-		networking := &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{bridgeName: {}}}
-		if s.ManagedEgress {
-			networking.EndpointsConfig[bridgeName].GwPriority = 100
+		if p.exists {
+			if _, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
+				return created, err
+			}
 		}
-		container, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{NetworkingConfig: networking, Name: proxyName, Config: &container.Config{Image: deployment.ProxyImage, Cmd: args, ExposedPorts: exposed, Labels: map[string]string{labelServer: cfg.ServerID.String(), labelKind: "ingress-v1"}}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(bridgeName), PortBindings: bindings, Mounts: []mount.Mount{{Type: mount.TypeBind, Source: filepath.Dir(e.routePath()), Target: "/etc/astilba", ReadOnly: true}, {Type: mount.TypeBind, Source: data, Target: "/data"}}, RestartPolicy: container.RestartPolicy{Name: "unless-stopped"}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}}})
+		for _, port := range s.Ports {
+			listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+			if err != nil {
+				return created, fmt.Errorf("ingress port %d is already in use", port)
+			}
+			listener.Close()
+		}
+		networking := &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{bridgeName: {GwPriority: p.gatewayPriority}}}
+		container, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{NetworkingConfig: networking, Name: proxyName, Config: &container.Config{Image: e.proxyImage(), Cmd: p.args, ExposedPorts: p.exposed, Labels: map[string]string{labelServer: p.cfg.ServerID.String(), labelKind: "ingress-v1"}}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(bridgeName), PortBindings: p.bindings, Mounts: []mount.Mount{{Type: mount.TypeBind, Source: filepath.Dir(e.routePath()), Target: "/etc/astilba", ReadOnly: true}, {Type: mount.TypeBind, Source: data, Target: "/data"}}, RestartPolicy: container.RestartPolicy{Name: "unless-stopped"}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}}})
 		if err != nil {
 			return created, err
 		}
@@ -402,7 +492,7 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 		if err != nil {
 			return created, err
 		}
-		if key != set.UnitID.String() || n.Network.Labels[labelServer] != cfg.ServerID.String() || n.Network.Labels["com.astilba.unit"] != key || n.Network.Labels[labelEnvironment] != set.EnvironmentID.String() {
+		if key != set.UnitID.String() || n.Network.Labels[labelServer] != p.cfg.ServerID.String() || n.Network.Labels["com.astilba.unit"] != key || n.Network.Labels[labelEnvironment] != set.EnvironmentID.String() {
 			return created, errors.New("ingress network ownership mismatch")
 		}
 		connected := false
@@ -430,7 +520,7 @@ func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool)
 		if err != nil {
 			return created, err
 		}
-		if n.Network.Labels[labelServer] != cfg.ServerID.String() || n.Network.Labels[labelKind] != "visual-v1" {
+		if n.Network.Labels[labelServer] != p.cfg.ServerID.String() || n.Network.Labels[labelKind] != "visual-v1" {
 			return created, errors.New("unexpected ingress network")
 		}
 		if _, err = e.Docker.NetworkDisconnect(ctx, n.Network.ID, client.NetworkDisconnectOptions{Container: v.Container.ID, Force: false}); err != nil {

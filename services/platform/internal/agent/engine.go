@@ -70,6 +70,9 @@ type Engine struct {
 	// builderCAs stands in for the builder image's certificate authorities in tests, which use
 	// a registry with their own. It names a bundle on the host. Empty is the image's.
 	builderCAs string
+	// ingressImage stands in for the pinned proxy image in tests, which need one the host
+	// can't pull. Empty is deployment.ProxyImage.
+	ingressImage string
 }
 
 func (e *Engine) point(p string) {

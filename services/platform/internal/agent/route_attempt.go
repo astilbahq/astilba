@@ -39,7 +39,11 @@ func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next route
 	if err := e.Journal.saveRouting(state); err != nil {
 		return err
 	}
-	if created, err := e.applyRoutes(ctx, next, drift, unit); err != nil {
+	policy := proxyAsNeeded
+	if drift {
+		policy = proxyRebuild
+	}
+	if created, err := e.applyRoutes(ctx, next, policy, unit); err != nil {
 		reloadErr := err
 		// The proxy is the one the journal records unless drift was accepted, and one this
 		// attempt created is new.
@@ -53,6 +57,9 @@ func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next route
 		}
 		if e2 := e.Journal.saveRouting(state); e2 != nil {
 			return e2
+		}
+		if errors.As(reloadErr, new(*proxyImageUnavailable)) {
+			return fmt.Errorf("the ingress proxy was not updated and previous routes were restored; deploy again once this host can pull its image: %w", reloadErr)
 		}
 		return fmt.Errorf("ingress reload was rejected; previous routes were restored: %w", reloadErr)
 	}
@@ -73,9 +80,11 @@ func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next route
 // recreates it, and a release or preview, whose recovery never recreates the proxy, fails
 // and leaves the attempt pending. A visual publish also recreates a proxy that did not load the file. A
 // route the proxy loaded but left disabled is not the proxy's fault, and recreating it
-// would interrupt every environment again without changing that.
+// would interrupt every environment again without changing that. When the host can't pull
+// the proxy image, the proxy the journal recorded stays and serves the previous routes
+// again; any other proxy stays too, and the recovery needs attention.
 func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouched, stableProxy bool) error {
-	created, err := e.applyRoutes(ctx, previous, false, "")
+	created, err := e.applyRoutes(ctx, previous, proxyRestore, "")
 	if errors.Is(err, errRouteDisabled) || err != nil && stableProxy {
 		return err
 	}
@@ -95,6 +104,6 @@ func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouc
 			return errors.New("release proxy recovery requires an unchanged owned proxy")
 		}
 	}
-	_, err = e.applyRoutes(ctx, previous, true, "")
+	_, err = e.applyRoutes(ctx, previous, proxyRebuild, "")
 	return err
 }
