@@ -196,29 +196,44 @@ func TestRecoveryReleasesPreviewsOfARevokedHostRenewedAfterTheBackup(t *testing.
 	}
 }
 
-// After the backup, both previews were cleaned up and another opened. The checkpoint records them
-// deleted, with no revocation to settle them, so recovery ends them over the restored database's
-// open copies and deletes the secret copies that database still holds. The newer preview stays.
+// After the backup, an owner who joined since cleaned up both previews, and another opened. The
+// checkpoint records them deleted, with no revocation to settle them, so recovery ends them over the
+// restored database's open copies and deletes the secret copies that database still holds. The
+// restored database never had that owner's account, so recovery drops the cleanup requests that name
+// it, as fencing the workspace does. The newer preview stays.
 func TestRecoveryEndsPreviewsTheCheckpointRecordsDeleted(t *testing.T) {
 	var previews seededPreviews
 	var request, env uuid.UUID
 	var before previewRecord
+	joined := uuid.New()
 	r := newParticipantRecovery(t, func(f *fixture, b *browser, ws, _ uuid.UUID) {
 		previews = seedPreviews(t, f, b, ws, claimUUID(t, f, `SELECT id FROM servers WHERE workspace_id=$1 ORDER BY id LIMIT 1`, ws))
 		before = recordPreviews(t, f, ws)
-		// As cleanup leaves each preview.
-		for _, statement := range []string{
-			`DELETE FROM secret_versions v USING secrets s WHERE s.id=v.secret_id AND s.environment_id=ANY($1)`,
-			`DELETE FROM secrets WHERE environment_id=ANY($1)`,
-			`UPDATE preview_requests SET state='deleted' WHERE environment_id=ANY($1)`,
+		// As an owner's cleanup leaves each preview.
+		for _, statement := range []struct {
+			sql  string
+			args []any
+		}{
+			{`INSERT INTO accounts(id,email,name,password_hash) VALUES($1,'joined-owner@example.test','Joined','unused')`, []any{joined}},
+			{`DELETE FROM secret_versions v USING secrets s WHERE s.id=v.secret_id AND s.environment_id=ANY($1)`, []any{previews.envs[:]}},
+			{`DELETE FROM secrets WHERE environment_id=ANY($1)`, []any{previews.envs[:]}},
+			{`UPDATE preview_requests SET state='deleted',cleanup_requested=true,cleanup_actor=$2,cleanup_auth_version=1,cleanup_controller=1 WHERE environment_id=ANY($1)`, []any{previews.envs[:], joined}},
 		} {
-			if _, err := f.st.Pool.Exec(t.Context(), statement, previews.envs[:]); err != nil {
-				t.Fatal(statement, err)
+			if _, err := f.st.Pool.Exec(t.Context(), statement.sql, statement.args...); err != nil {
+				t.Fatal(statement.sql, err)
 			}
 		}
 		request, env, _ = openPreview(t, f, b, ws, previews, 9)
 	})
 	before.restore(t, r)
+	for _, statement := range []string{
+		`UPDATE preview_requests SET cleanup_requested=false,cleanup_actor=NULL,cleanup_auth_version=NULL,cleanup_controller=NULL WHERE cleanup_actor=$1`,
+		`DELETE FROM accounts WHERE id=$1`,
+	} {
+		if _, err := r.f.st.Pool.Exec(r.ctx, statement, joined); err != nil {
+			t.Fatal(statement, err)
+		}
+	}
 	if count := claimCounter(t, r.f, `SELECT count(*) FROM secrets WHERE workspace_id=$1 AND environment_id=ANY($2)`, r.ws, previews.envs[:]); count != 2 {
 		t.Fatal("the restored database doesn't hold the previews' secret copies", count)
 	}
