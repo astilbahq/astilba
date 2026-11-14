@@ -202,6 +202,14 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = portability.MergeRecovery(ctx, tx, source.Archive, in.OwnerID); err != nil {
 		return out, err
 	}
+	// Merging never deletes, so where it ends a preview the restored database lists open, that
+	// preview's secret copies are removed here.
+	if err = q.DeleteEndedPreviewSecretVersions(ctx, in.WorkspaceID); err != nil {
+		return out, err
+	}
+	if err = q.DeleteEndedPreviewSecrets(ctx, in.WorkspaceID); err != nil {
+		return out, err
+	}
 	if err = portability.StoreRecoveredHistory(ctx, tx, in.WorkspaceID, source.History); err != nil {
 		return out, err
 	}

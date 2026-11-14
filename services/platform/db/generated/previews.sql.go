@@ -26,6 +26,32 @@ func (q *Queries) DelayPreviewDiscovery(ctx context.Context, arg DelayPreviewDis
 	return err
 }
 
+const deleteEndedPreviewSecretVersions = `-- name: DeleteEndedPreviewSecretVersions :exec
+DELETE FROM secret_versions v USING secrets s, environments e
+WHERE s.workspace_id = $1 AND v.workspace_id=s.workspace_id AND v.secret_id=s.id
+    AND e.workspace_id=s.workspace_id AND e.id=s.environment_id AND e.purpose='preview'
+    AND NOT EXISTS(SELECT 1 FROM preview_requests r WHERE r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.state<>'deleted')
+`
+
+// A preview environment's copies of its template's secret values are kept only while an open request
+// names it: its cleanup or release deletes them as it ends the request. Recovery can end a request
+// whose restored copy was open, and merging never deletes, so it removes the copies this way.
+func (q *Queries) DeleteEndedPreviewSecretVersions(ctx context.Context, workspaceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteEndedPreviewSecretVersions, workspaceID)
+	return err
+}
+
+const deleteEndedPreviewSecrets = `-- name: DeleteEndedPreviewSecrets :exec
+DELETE FROM secrets s USING environments e
+WHERE s.workspace_id = $1 AND e.workspace_id=s.workspace_id AND e.id=s.environment_id AND e.purpose='preview'
+    AND NOT EXISTS(SELECT 1 FROM preview_requests r WHERE r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.state<>'deleted')
+`
+
+func (q *Queries) DeleteEndedPreviewSecrets(ctx context.Context, workspaceID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteEndedPreviewSecrets, workspaceID)
+	return err
+}
+
 const duePreviewPolicies = `-- name: DuePreviewPolicies :many
 WITH due AS (
     SELECT id,next_discovery_at,row_number() OVER (PARTITION BY workspace_id ORDER BY next_discovery_at,id) AS turn

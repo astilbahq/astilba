@@ -208,6 +208,14 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				}
 				continue
 			}
+			// Recovery withdraws every cleanup request it brings back, as fencing the workspace does,
+			// and one may name an account this database never had.
+			if t.Name == "preview_requests" {
+				setValue(row, "cleanup_requested", false)
+				setValue(row, "cleanup_actor", nil)
+				setValue(row, "cleanup_auth_version", nil)
+				setValue(row, "cleanup_controller", nil)
+			}
 			for _, actor := range []string{"author_id", "actor_id", "policy_actor"} {
 				if _, ok := row[actor]; ok {
 					if found {
