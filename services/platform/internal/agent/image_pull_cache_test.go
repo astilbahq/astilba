@@ -44,7 +44,7 @@ func TestCheckedManifestsDistrustAnUnreadableFile(t *testing.T) {
 		"a digest twice":           {checkedManifestsHeader + a.String() + "\n" + a.String() + "\n", 0600},
 		"an empty line":            {checkedManifestsHeader + a.String() + "\n\n", 0600},
 		"readable by others":       {checkedManifestsHeader + a.String() + "\n", 0644},
-		"too long":                 {checkedManifestsHeader + a.String() + "\n" + strings.Repeat("x", layerCostEntries*72), 0600},
+		"too long":                 {checkedManifestsHeader + a.String() + "\n" + manyDigests(layerCostEntries), 0600},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), checkedManifestsFile)
@@ -83,4 +83,12 @@ func TestCheckedManifestsAreBounded(t *testing.T) {
 	if restarted.has(digest.FromString("0")) || !restarted.has(digest.FromString(fmt.Sprint(layerCostEntries+4))) || len(restarted.order) != layerCostEntries {
 		t.Fatal("the cache is not bounded to its newest entries", len(restarted.order))
 	}
+}
+
+func manyDigests(n int) string {
+	var out strings.Builder
+	for i := range n {
+		out.WriteString(digest.FromString(fmt.Sprint("many", i)).String() + "\n")
+	}
+	return out.String()
 }

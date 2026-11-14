@@ -168,7 +168,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 }
 
 // planFromSources plans the image from the first of sources that can be read: a mirror the
-// agent cannot read gives way to the next, and an insecure registry it cannot reach over HTTPS
+// agent cannot read, or that lacks some of the image, gives way to the next, and an insecure registry it cannot reach over HTTPS
 // to plain HTTP. A registry that answered over HTTPS is not asked again in the clear.
 func planFromSources(ctx context.Context, sources []registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit, loading bool, checked *checkedManifests) (*registryPlan, registryImage, error) {
 	var err error
@@ -180,7 +180,8 @@ func planFromSources(ctx context.Context, sources []registryImage, root digest.D
 		var plan *registryPlan
 		plan, err = planRegistryImage(ctx, source, root, platform, limit, loading, checked)
 		var unread *imageArchiveUnread
-		if !errors.As(err, &unread) {
+		var lacking *missingContent
+		if !errors.As(err, &unread) && !errors.As(err, &lacking) {
 			return plan, source, err
 		}
 	}

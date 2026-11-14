@@ -15,6 +15,18 @@ const classicImageStoreNote = "Docker uses its classic image store, where the ag
 // cannot load one platform of an image, which the agent needs for any image with an index.
 const oldContainerdDockerNote = "Docker on this server is older than version 28 and uses its containerd image store, so the agent refuses to deploy images with an index there, including most images. Upgrade Docker to 28 or later."
 
+// imageStoreNote is preflight's note on how Docker keeps images, given its info's driver status
+// and, when known, its API version: none when the agent can bound what loads write exactly.
+func imageStoreNote(status [][2]string, apiVersion string, versionKnown bool) string {
+	switch {
+	case !containerdImageStore(status):
+		return classicImageStoreNote
+	case versionKnown && !apiVersionAtLeast(apiVersion, 1, 48):
+		return oldContainerdDockerNote
+	}
+	return ""
+}
+
 // pullSlack is how much more than the agent measured a pull may take of Docker's storage, for
 // other writers on the server, before the agent stops it: at most half the reserve, so a pull
 // the agent stops still leaves half the reserve free.

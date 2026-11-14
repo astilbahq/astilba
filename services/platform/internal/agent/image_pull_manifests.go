@@ -84,7 +84,7 @@ func checkSiblings(ctx context.Context, source registryImage, children []ocispec
 		}
 		document, kind, err := fetchDocument(ctx, source, child)
 		if missing(err) {
-			return unmeasurableImage("its index names the manifest " + truncated(child.Digest.String(), 19) + ", which its registry no longer has, so the agent cannot check what Docker would do with it")
+			return &missingContent{unmeasurableImage("its index names the manifest " + truncated(child.Digest.String(), 19) + ", which its registry no longer has, so the agent cannot check what Docker would do with it")}
 		}
 		if err != nil {
 			return err
@@ -116,6 +116,13 @@ func checkSiblings(ctx context.Context, source registryImage, children []ocispec
 	return nil
 }
 
+// missingContent is a source lacking an entry of an image it has, which a mirror may: the next
+// source may have it. refusal is the note if none does.
+type missingContent struct{ refusal error }
+
+func (m *missingContent) Error() string { return m.refusal.Error() }
+func (m *missingContent) Unwrap() error { return m.refusal }
+
 // missing reports whether err is the registry saying it has no such content.
 func missing(err error) bool {
 	var unread *imageArchiveUnread
@@ -140,7 +147,7 @@ func planAttestations(ctx context.Context, source registryImage, children []ocis
 		}
 		document, kind, err := fetchDocument(ctx, source, child)
 		if missing(err) {
-			return unmeasurableImage("its image's attestation " + truncated(child.Digest.String(), 19) + " is no longer in its registry, and Docker's load needs it")
+			return &missingContent{unmeasurableImage("its image's attestation " + truncated(child.Digest.String(), 19) + " is no longer in its registry, and Docker's load needs it")}
 		}
 		if err != nil {
 			return err

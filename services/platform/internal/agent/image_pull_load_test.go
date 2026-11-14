@@ -147,9 +147,14 @@ func TestPullLoadOfAnIndex(t *testing.T) {
 		"when the registry fails mid-blob": {"1.54", failingDigest{source, digest.Digest(sha(statement))}, "could not read it from its registry"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			before := registry.count(sha(layer))
 			err := (&Engine{Docker: fakeDocker(t, tc.api, drain)}).loadRegistryImage(context.Background(), named.(reference.Canonical), tc.source, plan, pullTestLimit)
 			if note := refusalNote(t, err); !strings.Contains(note, tc.note) {
 				t.Fatal(note)
+			}
+			// Docker that cannot load one platform gets no stream at all.
+			if tc.api == "1.47" && registry.count(sha(layer)) != before {
+				t.Fatal("streamed an image to a Docker that cannot load it")
 			}
 		})
 	}

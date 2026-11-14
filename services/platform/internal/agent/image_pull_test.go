@@ -684,3 +684,25 @@ func TestPullNamesAnImageItsRegistryLacks(t *testing.T) {
 		t.Fatal(note)
 	}
 }
+
+// A mirror that lacks one of an image's index entries gives way to the next source.
+func TestPullFallsBackPastAMirrorLackingAnEntry(t *testing.T) {
+	registry := newTestRegistry()
+	layer := gzipOf(t, tarOf(t, testFile{"app", 10}))
+	chosen, other := registry.image(layer), registry.imageFor("arm64", layer)
+	root := registry.index(registry.entry(chosen, "linux/amd64", ""), registry.entry(other, "linux/arm64", ""))
+	mirror := newTestRegistry()
+	for d, m := range registry.manifests {
+		if d != other {
+			mirror.manifests[d] = m
+		}
+	}
+	mirror.blobs = registry.blobs
+	plan, _, err := planFromSources(context.Background(), []registryImage{mirror.source(t, nil), registry.source(t, nil)}, digest.Digest(root), amd64Server, pullTestLimit, true, nil)
+	if err != nil || plan == nil || mirror.count(other) != 1 || registry.count(other) != 1 {
+		t.Fatal("did not fall back past the mirror", err)
+	}
+	if _, _, err = planFromSources(context.Background(), []registryImage{mirror.source(t, nil)}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err == nil || !strings.Contains(err.Error(), "which its registry no longer has") {
+		t.Fatal("the last source's lack was not named", err)
+	}
+}

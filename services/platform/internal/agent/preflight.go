@@ -60,11 +60,8 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 			runtimeReady = troubleshootingRuntime(v.Components)
 		}
 		if info, e := docker.Info(ctx, client.InfoOptions{}); e == nil {
-			switch {
-			case !containerdImageStore(info.Info.DriverStatus):
-				h.Preflight.Notes = append(h.Preflight.Notes, classicImageStoreNote)
-			case versionErr == nil && !apiVersionAtLeast(v.APIVersion, 1, 48):
-				h.Preflight.Notes = append(h.Preflight.Notes, oldContainerdDockerNote)
+			if note := imageStoreNote(info.Info.DriverStatus, v.APIVersion, versionErr == nil); note != "" {
+				h.Preflight.Notes = append(h.Preflight.Notes, note)
 			}
 		}
 		list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: 1001})
