@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -46,34 +45,19 @@ func revokedEvidence(host deployment.RecoveryEvidence) deployment.RecoveryEviden
 	return deployment.RecoveryEvidence{Version: 1, ServerID: host.ServerID, MachineID: host.MachineID, Units: map[string]string{}, Schedules: map[string]int64{}, Roots: []deployment.RecoveryRoot{}, Networks: []hostnetwork.Manifest{}}
 }
 
-// settleRecoveredRevocations does what revoking a server does in the revocation's transaction, once
-// recovery has merged and restored what it brings back, for two kinds of server:
-//   - one whose revocation recovery takes from the newest checkpoint, which the restored database
-//     doesn't record. Its preview requests and other rows are the database's, from before that
-//     revocation, so without this its previews would keep their slots and secret copies and its
-//     fork approvals would count again, with nothing able to release them on a revoked host.
-//   - a revoked participant of a recovered root, once its frames are restored, so the coordinator
-//     carries on with the remaining hosts under the same rules as after any revocation.
-func (s *Service) settleRecoveredRevocations(ctx context.Context, tx pgx.Tx, ws uuid.UUID, before portability.Archive, merged map[uuid.UUID]bool, roots map[uuid.UUID]recoveringRoot) error {
-	known, err := recoveryRevokedServers(before)
-	if err != nil {
-		return err
-	}
-	settle := map[uuid.UUID]bool{}
-	for server, revoked := range merged {
-		if revoked && !known[server] {
-			settle[server] = true
+// settleRecoveredRevocations does in recovery's transaction what revoking a server does in its
+// own, for every server the merge carries as revoked, once recovery has merged and restored what it
+// brings back. Recovery keeps a revocation whichever side knew of it, but the rows it selected can
+// be from before that revocation, or from a renewal it overrides. A revoked preview host's previews
+// would then keep their slots and secret copies with nothing able to release them, and a recovered
+// root's revoked participants would still be waited on. Settling a server whose rows already show
+// its revocation changes nothing that recovery's fencing doesn't also change.
+func (s *Service) settleRecoveredRevocations(ctx context.Context, tx pgx.Tx, ws uuid.UUID, revoked map[uuid.UUID]bool) error {
+	for server, settle := range revoked {
+		if !settle {
+			continue
 		}
-	}
-	for _, root := range roots {
-		revoked, err := revokedParticipants(ctx, tx, ws, recoveredUnits(root))
-		if err != nil {
-			return err
-		}
-		maps.Copy(settle, revoked)
-	}
-	for server := range settle {
-		if err = s.settleRevokedWork(ctx, tx, ws, server); err != nil {
+		if err := s.settleRevokedWork(ctx, tx, ws, server); err != nil {
 			return err
 		}
 	}
