@@ -214,3 +214,8 @@ func (r *Keyring) Rewrap(blob []byte, identity string) ([]byte, error) {
 	}
 	return blob, nil
 }
+
+func randomKey(key []byte) error {
+	_, err := rand.Read(key)
+	return err
+}

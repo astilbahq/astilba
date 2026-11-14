@@ -276,11 +276,12 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if e := s.admitImportTransaction(ctx, p, invitation); e != nil {
 		return out, e
 	}
-	keys, e := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: archive.Workspace, Purpose: secretbroker.Seal, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds, NewWorkspace: true})
+	created, e := s.Store.Broker.Create(ctx, secretbroker.Request{Workspace: archive.Workspace, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds})
 	if e != nil {
 		return out, e
 	}
-	defer func() { keys.Close(ctx, secretbroker.Done(failure)) }()
+	defer func() { created.Close(ctx, secretbroker.Done(failure)) }()
+	keys := created.Session()
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return out, e
@@ -308,11 +309,8 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if !p.Recent() {
 		return out, domain.RecentRequired
 	}
-	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: archive.Workspace, Name: archive.Name}); e != nil {
+	if e = store.CreateWorkspace(ctx, q, created, archive.Name, p.Account.ID); e != nil {
 		return out, store.Normalize(e)
-	}
-	if e = q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: archive.Workspace, AccountID: p.Account.ID, Role: "owner"}); e != nil {
-		return out, e
 	}
 	if e = q.SetMFAPolicy(ctx, db.SetMFAPolicyParams{ID: archive.Workspace, RequireMfa: archive.RequireMFA}); e != nil {
 		return out, e

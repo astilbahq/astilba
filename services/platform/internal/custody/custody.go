@@ -5,9 +5,12 @@ package custody
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/google/uuid"
@@ -36,7 +39,58 @@ type Scope string
 const (
 	ScopeWorkspace    Scope = "workspace"
 	ScopeInstallation Scope = "installation"
+	ScopeToken        Scope = "token"
 )
+
+// purposes are what each scope's keys are wrapped for, and the class each wrapping is made
+// under. Export and recovery have a class of their own, so an operator can switch them off for
+// the whole installation; under rotate, serving only wraps, so only an operator moves keys.
+var purposes = map[Scope]map[string]Class{
+	ScopeWorkspace:    {"seal": ClassServe, "deliver": ClassServe, "operate": ClassServe, "inspect": ClassServe, "copy": ClassServe, "export": ClassExport, "recover": ClassExport, "rotate": ClassRotate},
+	ScopeInstallation: {"seal": ClassInstallation, "authenticate": ClassInstallation, "rotate": ClassRotate},
+	ScopeToken:        {"token": ClassInstallation, "rotate": ClassRotate},
+}
+
+// Purposes lists what a scope's keys are wrapped for, in a fixed order.
+func Purposes(scope Scope) []string {
+	out := make([]string, 0, len(purposes[scope]))
+	for purpose := range purposes[scope] {
+		out = append(out, purpose)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// ClassFor is the class a scope's key is wrapped under for a purpose, and false for a purpose the
+// scope's keys are never wrapped for.
+func ClassFor(scope Scope, purpose string) (Class, bool) {
+	class, ok := purposes[scope][purpose]
+	return class, ok
+}
+
+// keyCheckLabel is what a key check value is computed over: a fixed label, so the value shows
+// which key a wrapping holds without saying anything about the key.
+const keyCheckLabel = "astilba custody key check v1"
+
+// NewKey returns a new random 256-bit key and its key check value.
+func NewKey() (key, check []byte, err error) {
+	key = make([]byte, 32)
+	if _, err = rand.Read(key); err != nil {
+		return nil, nil, err
+	}
+	return key, KeyCheck(key), nil
+}
+
+// KeyCheck is HMAC-SHA256 of a fixed label under key. Comparing it after an unwrap shows the
+// wrapping held the key its generation was created with, before any value is opened with it.
+func KeyCheck(key []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(keyCheckLabel))
+	return mac.Sum(nil)
+}
+
+// CheckKey reports whether key matches a stored key check value.
+func CheckKey(key, check []byte) bool { return hmac.Equal(KeyCheck(key), check) }
 
 // Context is bound into every wrapping, so a blob opens only for the installation, workspace,
 // generation and purpose it was made for.
@@ -139,7 +193,11 @@ func CheckCanary(ctx context.Context, b Backend, class Class, installation uuid.
 
 // RewrapCanary wraps a canary's key again under the class's current key.
 func RewrapCanary(ctx context.Context, b Backend, class Class, installation uuid.UUID, blob []byte) ([]byte, error) {
-	c := canaryContext(installation)
+	return Rewrap(ctx, b, class, blob, canaryContext(installation))
+}
+
+// Rewrap wraps a wrapped key again under the class's current key, for the same context.
+func Rewrap(ctx context.Context, b Backend, class Class, blob []byte, c Context) ([]byte, error) {
 	opened, err := b.Unwrap(ctx, class, blob, c)
 	if err != nil {
 		return nil, err

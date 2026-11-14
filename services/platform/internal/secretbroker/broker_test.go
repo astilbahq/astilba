@@ -23,6 +23,8 @@ type fakeQueries struct {
 	inserted []db.InsertSecretAccessParams
 	outcomes []db.InsertSecretAccessOutcomeParams
 	failNext error
+	// keys are each workspace's live generations, by workspace and purpose.
+	keys map[string][]db.WorkspaceKeyWrappingsRow
 }
 
 func (f *fakeQueries) SecretAccessMember(_ context.Context, arg db.SecretAccessMemberParams) (string, error) {
@@ -51,6 +53,12 @@ func (f *fakeQueries) InsertSecretAccessOutcome(_ context.Context, arg db.Insert
 	return nil
 }
 func (f *fakeQueries) AbandonSecretAccess(context.Context, float64) (int64, error) { return 0, nil }
+func (f *fakeQueries) WorkspaceKeyWrappings(_ context.Context, arg db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error) {
+	return f.keys[arg.WorkspaceID.String()+":"+arg.Purpose], nil
+}
+func (f *fakeQueries) InstallationKeyWrappings(context.Context, db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error) {
+	return nil, nil
+}
 
 func setup(t *testing.T) (*Broker, *fakeQueries, uuid.UUID, uuid.UUID, uuid.UUID) {
 	t.Helper()

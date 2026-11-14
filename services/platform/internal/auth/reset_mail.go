@@ -95,6 +95,11 @@ func (w *ResetMailWorker) Work(ctx context.Context, job *river.Job[ResetMailArgs
 		return river.JobCancel(errors.New("password reset mail abandoned"))
 	}
 	email, err := s.Tokens.Open(secretbroker.ResetMail, job.Args.Email)
+	if errors.Is(err, secretbroker.ErrTokenKeyNotLoaded) {
+		// Sealed by an instance holding a newer token key than this one has loaded yet.
+		w.Log.Warn("password reset request waits for its token key", "job", job.ID)
+		return err
+	}
 	if err != nil {
 		w.Log.Error("password reset request could not be opened", "job", job.ID)
 		return river.JobCancel(errors.New("password reset request could not be opened"))

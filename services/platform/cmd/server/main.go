@@ -255,6 +255,7 @@ func run() error {
 		if e != nil {
 			return e
 		}
+		go tokens.Run(ctx)
 		service := &auth.Service{Store: st, Passwords: passwords, Mail: mail, Now: time.Now, Tokens: tokens}
 		api, cleanup := httpapi.New(st, service, c.Origin, c.Development, slog.Default())
 		api.TrustedProxies = c.TrustedProxies

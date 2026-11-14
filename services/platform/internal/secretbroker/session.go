@@ -49,6 +49,8 @@ type Session struct {
 
 	mu   sync.Mutex
 	ring *cryptobox.Keyring
+	// keys are the scope's live generations the session unwrapped, which v2 values are under.
+	keys map[keyRef][]byte
 }
 
 // Live reports whether the session can still be used.
@@ -64,8 +66,8 @@ func (s *Session) ID() uuid.UUID { return s.id }
 // Workspace is the workspace the session serves.
 func (s *Session) Workspace() uuid.UUID { return s.request.Workspace }
 
-// keys returns the keyring for one item, or why the session cannot use it.
-func (s *Session) keys(item Item, kinds []Kind) (*cryptobox.Keyring, string, error) {
+// allowed returns the keyring for one item, or why the session cannot use it.
+func (s *Session) allowed(item Item, kinds []Kind) (*cryptobox.Keyring, string, error) {
 	identity := item.identity(s.request.Workspace)
 	declared := slices.Contains(s.request.Kinds, item.Kind) || slices.ContainsFunc(s.request.Items, func(i Item) bool {
 		return i.Kind == item.Kind && i.ID == item.ID && i.checkpoint == item.checkpoint
@@ -81,19 +83,35 @@ func (s *Session) keys(item Item, kinds []Kind) (*cryptobox.Keyring, string, err
 	return s.ring, identity, nil
 }
 
-// Open returns an item's value. ErrNeedKeys means the session has ended and the caller begins
-// another; ErrNotAllowed means the item was never part of the request.
+// Open returns an item's value, whether it is sealed under the installation keyring (v1) or a
+// generation of its scope's key (v2). ErrNeedKeys means the session has ended, or does not hold
+// the generation, and the caller begins another; ErrNotAllowed means the item was never part of
+// the request.
 func (s *Session) Open(item Item, ciphertext []byte) ([]byte, error) {
-	ring, identity, err := s.keys(item, s.rule.open)
+	ring, identity, err := s.allowed(item, s.rule.open)
 	if err != nil {
 		return nil, err
 	}
-	return ring.Open(ciphertext, identity)
+	header, err := cryptobox.ReadHeader(ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	if header.Version == 1 {
+		return ring.Open(ciphertext, identity)
+	}
+	// Close clears the keys in place, so a v2 open holds the lock while it uses one.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keys == nil {
+		return nil, ErrNeedKeys
+	}
+	return openV2(s.keys, item, header, ciphertext, identity)
 }
 
-// Seal stores a new value for an item.
+// Seal stores a new value for an item, under the installation keyring until values are sealed as
+// v2.
 func (s *Session) Seal(item Item, plaintext []byte) ([]byte, error) {
-	ring, identity, err := s.keys(item, s.rule.seal)
+	ring, identity, err := s.allowed(item, s.rule.seal)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +123,10 @@ func (s *Session) Close(ctx context.Context, outcome Outcome) {
 	s.mu.Lock()
 	open := s.ring != nil
 	s.ring = nil
+	for _, key := range s.keys {
+		clear(key)
+	}
+	s.keys = nil
 	s.mu.Unlock()
 	if !open {
 		return

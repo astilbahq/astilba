@@ -21,12 +21,12 @@ var migrations embed.FS
 
 // Version is the newest migration this binary carries. It runs on a database at this version,
 // or ahead of it when every newer migration recorded itself as additive.
-const Version int64 = 54
+const Version int64 = 55
 
 // CustodyStage is the custody stage this release completes. Its migrations assume the one before
 // it is complete, so `migrate` refuses an installation further behind: stages are taken one
 // release at a time. See docs/hosting.md#key-custody.
-const CustodyStage = 1
+const CustodyStage = 2
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
