@@ -54,7 +54,7 @@ BuildKit and zot use Apache-2.0, Railpack uses MIT, and Go's `x/crypto` uses BSD
 
 ## Results
 
-On 22 October 2026, the reviewed native arm64 fixture passed on Ubuntu 24.04.5 with kernel 6.8.0-142-generic: Dockerfile/registry/Railpack checks (32.51 seconds), PostgreSQL restore checks (4.23 seconds), and the existing host-routing/export fixture. The full local durability/HTTPS regression suite passed in 230 seconds. Image inventory after the fixed cleanup contained no artifacts from the new run. Native CI repeats the fixture on amd64 and arm64 before merge.
+On 22 October 2026, the reviewed native arm64 fixture passed with BuildKit 0.34.1 and zot 2.1.22 on Ubuntu 24.04.5 with kernel 6.8.0-142-generic: Dockerfile/registry/Railpack checks (32.51 seconds), PostgreSQL restore checks (4.23 seconds), and the existing host-routing/export fixture. The full local durability/HTTPS regression suite passed in 230 seconds. Image inventory after the fixed cleanup contained no artifacts from the new run. Native CI repeats the fixture on amd64 and arm64 before merge.
 
 ## References
 
