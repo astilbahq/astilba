@@ -28,19 +28,23 @@ import (
 //
 // With nil keys it makes only the decisions that need no values, for a command whose
 // credentials the agent already holds: nothing is opened and no provider is asked.
-func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (bool, error) {
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (deliver, carried bool, err error) {
 	if keys == nil {
-		return s.decidePipelineDelivery(ctx, nil, a, c)
+		deliver, err = s.decidePipelineDelivery(ctx, nil, a, c, &carried)
+		return deliver, carried, err
 	}
-	var deliver bool
-	err := s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
+	err = s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
-		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
+		carried = false
+		deliver, err = s.decidePipelineDelivery(ctx, git, a, c, &carried)
 		return err
 	})
-	return deliver, err
+	return deliver, carried, err
 }
-func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a Identity, c *api.ExecutionCommand) (bool, error) {
+
+// decidePipelineDelivery decides whether to deliver c, and sets carried once it has filled in
+// the values c carries.
+func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a Identity, c *api.ExecutionCommand, carried *bool) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -235,7 +239,11 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	// Commit before the hydrated command can leave management. A failed response
 	// is still a possible delivery and cannot later justify a terminal rejection.
 	c.Pipeline = rawMessage(raw)
-	return true, tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	*carried = true
+	return true, nil
 }
 
 // pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
@@ -259,7 +267,8 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	return !allowed, err
 }
 
-// populatePipeline fills in the values of a pipeline that may start until deadline.
+// populatePipeline fills in the values of a pipeline that may start until deadline. A zero
+// deadline only checks they can be had, for a copy that never leaves management.
 func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, deadline time.Time, p *pipeline.Command) error {
 	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID, deadline)
 	if err != nil {

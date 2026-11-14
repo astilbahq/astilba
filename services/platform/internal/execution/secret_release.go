@@ -131,6 +131,11 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 		if err != nil || !deliver {
 			return waitForRelease, err
 		}
+		// A pipeline past its deadline goes without values: only an instance that already
+		// holds it may go on with it, and one that doesn't asks again rather than accept it.
+		if !c.CancelRequested {
+			c.SecretRelease = &api.SecretRelease{Epoch: key.DispatchEpoch, Values: false}
+		}
 		return sendCommand, nil
 	}
 	digest := keys.digest(c.Id, key.DispatchEpoch)
@@ -158,8 +163,7 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 // values: a pipeline may decide not to deliver yet, or to stop without credentials.
 func (s *Service) hydrate(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (deliver, carried bool, err error) {
 	if c.Kind == "pipeline" {
-		deliver, err = s.hydratePipeline(ctx, a, keys, c)
-		return deliver, deliver && !c.CancelRequested, err
+		return s.hydratePipeline(ctx, a, keys, c)
 	}
 	// Each kind opens its values in one pass, so the session begins between passes.
 	err = withProviderCalls(ctx, func() error {

@@ -304,6 +304,9 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: c.Id, Epoch: c.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
 		}
 		again := poll(op.Id)
+		if inTime && (again.SecretRelease == nil || again.SecretRelease.Values) {
+			t.Fatal("a build delivered without its values after its deadline claimed to carry them", again.SecretRelease)
+		}
 		if again.CancelRequested == inTime {
 			t.Fatal("a build's cancellation did not follow when its start was reported", inTime)
 		}

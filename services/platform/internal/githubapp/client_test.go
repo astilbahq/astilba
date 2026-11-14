@@ -235,9 +235,17 @@ func TestReadTokenOutlastsItsUse(t *testing.T) {
 	if e != nil || minted.Load() != 1 {
 		t.Fatal("first token", e)
 	}
-	// A runner's token for a pipeline that may start for 30 minutes yet needs longer.
-	lifetime.Store(int64(time.Hour))
+	// Minted just now, it is the best GitHub would give, even for a caller that needs longer.
 	until := time.Now().Add(55 * time.Minute)
+	if again, _, e := c.MintReadUntil(context.Background(), 2, 12, until); e != nil || again != short || minted.Load() != 1 {
+		t.Fatal("a token minted moments ago was minted again", e)
+	}
+	c.mu.Lock()
+	c.tokens[tokenKey{2, 12, false, false}].minted = time.Now().Add(-2 * tokenFresh)
+	c.mu.Unlock()
+	// Once it is older, a runner's token for a pipeline that may start for 30 minutes yet,
+	// which needs longer, replaces it.
+	lifetime.Store(int64(time.Hour))
 	token, expires, e := c.MintReadUntil(context.Background(), 2, 12, until)
 	if e != nil || minted.Load() != 2 || token == short || expires.Before(until) {
 		t.Fatalf("a cached token expiring too soon was reused: mints=%d expires=%v %v", minted.Load(), expires, e)

@@ -397,11 +397,18 @@ type cachedToken struct {
 	err     error
 	token   string
 	expires time.Time
-	ready   chan struct{}
+	// minted is when this client received the token.
+	minted time.Time
+	ready  chan struct{}
 }
 
 // tokenReuse is the least time a token must have left to be used again.
 const tokenReuse = 35 * time.Minute
+
+// tokenFresh is how long a token stays the best GitHub would give: one minted again sooner
+// would last at most this much longer. It bounds how often a key is minted, however its
+// callers' times compare with GitHub's clock.
+const tokenFresh = time.Minute
 
 func (c *Client) Mint(ctx context.Context, installation, repository int64, write bool) (string, error) {
 	token, _, err := c.mintCached(ctx, tokenKey{installation, repository, write, false}, time.Now().Add(tokenReuse))
@@ -424,7 +431,8 @@ func (c *Client) MintReadUntil(ctx context.Context, installation, repository int
 }
 
 // mintCached returns a token for key that is valid until at least until, from the cache when
-// it holds one, and otherwise freshly minted.
+// it holds one, and otherwise freshly minted. A token minted within tokenFresh is used whatever
+// until asks: no fresh one could do much better.
 func (c *Client) mintCached(ctx context.Context, key tokenKey, until time.Time) (string, time.Time, error) {
 	c.mu.Lock()
 	if v := c.tokens[key]; v != nil {
@@ -438,7 +446,7 @@ func (c *Client) mintCached(ctx context.Context, key tokenKey, until time.Time) 
 				return v.token, v.expires, v.err
 			}
 		}
-		if !v.expires.Before(until) {
+		if !v.expires.Before(until) || time.Since(v.minted) < tokenFresh {
 			token, expires := v.token, v.expires
 			c.mu.Unlock()
 			return token, expires, nil
@@ -474,6 +482,7 @@ func (c *Client) mintCached(ctx context.Context, key tokenKey, until time.Time) 
 	} else {
 		pending.token = token
 		pending.expires = expires
+		pending.minted = time.Now()
 		pending.ready = nil
 	}
 	close(ready)

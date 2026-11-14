@@ -154,7 +154,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		return out, domain.Invalid("pipeline")
 	}
 	hydrated := p
-	if err := s.populatePipeline(ctx, tx, git, ws, env, time.Now().Add(p.Lifetime()), &hydrated); err != nil {
+	if err := s.populatePipeline(ctx, tx, git, ws, env, time.Time{}, &hydrated); err != nil {
 		return out, err
 	}
 	var count int

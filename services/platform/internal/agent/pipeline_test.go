@@ -305,8 +305,8 @@ func TestExpiredCloneTokenSaysSo(t *testing.T) {
 	if fetched, err := clone(&past, "0"); err != errCloneExpired || fetched {
 		t.Fatal("an expired token was sent", err, fetched)
 	}
-	soon := time.Now().Add(300 * time.Millisecond)
-	if fetched, err := clone(&soon, "1"); err != errCloneExpired || !fetched {
+	soon := time.Now().Add(2 * time.Second)
+	if fetched, err := clone(&soon, "3"); err != errCloneExpired || !fetched {
 		t.Fatal("a fetch that failed once its token expired did not say so", err, fetched)
 	}
 	for _, expires := range []*time.Time{&later, nil} {
