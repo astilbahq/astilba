@@ -413,7 +413,8 @@ calendar version such as `mise-2026.10.14` can become any later date. A pin can 
 narrower track than its line: `.github/pinned-releases.json` names such an image or tool,
 with a pattern every release on its track matches and the reason, and only those releases
 count. nginx follows its stable releases, whose minor version is even, so a mainline
-release such as 1.31.8 is not an update to 1.30.6. A pin off its own track is reported as
+release such as 1.31.8 is not an update to 1.30.6. Railpack's builder and runtime images
+and its mise follow the release Railpack itself pins, so they move only with Railpack. A pin off its own track is reported as
 a check that failed, and `make check-ci` fails if a track names nothing pinned. Go tools are
 compared through the Go module proxy, and release binaries through GitHub's releases
 without drafts or pre-releases.
@@ -436,7 +437,13 @@ image. The run's summary lists every finding. An image of one static binary, suc
 
 The report does not apply the release-age gate, so a security release is heard of at
 once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
-change by themselves. Registry requests, pulls and scans repeat like
+change by themselves. An image or a release binary waits seven days, the Docker
+cooldown in `.github/dependabot.yml`, judged by when the pinned digest was pushed or the
+release was published, or by an asset's later replacement. A bump of either is held
+until then, and its pull request names the date. `node scripts/release-age.mjs origin/main`
+fails for any release binary a branch adds that is younger than that cooldown. Docker Hub
+gives no push time for a single digest, so the image age is read from the registry when
+the bump is made. Registry requests, pulls and scans repeat like
 [host downloads](#host-downloads) until one has failed for that long; the rest of the
 run then tries each a few times. A registry request ends within a minute, and no image
 check starts or runs past 90 minutes; the tool checks after them are bounded by their
