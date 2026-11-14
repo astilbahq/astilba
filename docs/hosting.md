@@ -390,7 +390,7 @@ with it. Nothing else is affected.
 
 These configurations carry a session through each proxy. `make verify-agent-host-core`
 reads them from this page and runs them with pinned nginx 1.30.6, Caddy 2.11.8 and
-Traefik 3.7.16 images.
+Traefik 3.7.19 images.
 
 nginx needs the upgrade headers, and its `proxy_read_timeout` is the idle limit:
 

@@ -37,7 +37,7 @@ func TestAgentHTTPS(t *testing.T) {
 		if resp.TLS == nil || resp.StatusCode != 204 {
 			t.Fatal("verified HTTPS did not reach controller")
 		}
-		t.Logf("Traefik v3.7.16, TLS=%x, HTTP=%s", resp.TLS.Version, resp.Proto)
+		t.Logf("Traefik v3.7.19, TLS=%x, HTTP=%s", resp.TLS.Version, resp.Proto)
 	})
 
 	t.Run("enrollment_binding_single_use_expiry", func(t *testing.T) {
