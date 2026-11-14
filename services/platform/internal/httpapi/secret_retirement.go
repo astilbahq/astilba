@@ -40,8 +40,8 @@ func (s *Server) RetireSecret(w http.ResponseWriter, r *http.Request, ws, pid, e
 }
 
 // RetireSecretVersion erases one superseded version's value, under the same rules as RetireSecret.
-// It clears a bad value, and one that holds the runtime-secret check's budget, without giving up
-// the secret. The current version is refused: a new version replaces it.
+// It clears a bad value, or a replaced one the runtime-secret check still searches for, without
+// giving up the secret. The current version is refused: a new version replaces it.
 func (s *Server) RetireSecretVersion(w http.ResponseWriter, r *http.Request, ws, pid, env, secret, id uuid.UUID) {
 	s.envScope(w, r, ws, pid, env, store.WorkspaceAccess{Write: true, Owner: true, Recent: true}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
 		ctx := r.Context()

@@ -60,7 +60,7 @@ func (e *buildInputRejection) note() string {
 	case "arguments_contain_secret":
 		return "Public build arguments contain a known secret value."
 	case "runtime_secret_budget":
-		return "Runtime secrets exceed the build-input validation limit. An owner can retire secrets, or superseded versions, that the environment no longer needs."
+		return "Runtime secrets exceed the build-input validation limit. An owner can retire secrets the environment no longer needs, or replace versions that the draft or the deployment still uses."
 	default:
 		return "Build inputs were rejected."
 	}

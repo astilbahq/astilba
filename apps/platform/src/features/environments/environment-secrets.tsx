@@ -132,6 +132,7 @@ export function Secrets({
                   <summary>
                     {t(($) => $.secrets.earlierVersions, {
                       count: earlier.length,
+                      name: v.name,
                     })}
                   </summary>
                   <ul className={s.list}>
@@ -270,11 +271,9 @@ function useRetireErrorText() {
           ? t(($) => $.secrets.refusal.inUse)
           : fields.includes("secretVersion.inUse")
             ? t(($) => $.secrets.refusal.versionInUse)
-            : fields.includes("secretVersion.current")
-              ? t(($) => $.secrets.refusal.current)
-              : fields.includes("environment.state")
-                ? t(($) => $.secrets.refusal.inactive)
-                : t(($) => $.secrets.refusal.unknown);
+            : fields.includes("environment.state")
+              ? t(($) => $.secrets.refusal.inactive)
+              : t(($) => $.secrets.refusal.unknown);
       case "forbidden":
         return t(($) => $.secrets.refusal.forbidden);
       case "mfa_required":
@@ -347,13 +346,9 @@ function RetireSecretDialog({
         dismiss();
       } catch (error) {
         if (error instanceof ApiError) {
-          // A secret or version retired elsewhere, or a version that became current, shows as it
-          // now is; an environment retired elsewhere is read-only, which the page behind the
-          // dialog then shows.
-          if (
-            error.detail.code === "not_found" ||
-            error.detail.fields?.includes("secretVersion.current")
-          )
+          // A secret or version retired elsewhere leaves the list; an environment retired
+          // elsewhere is read-only, which the page behind the dialog then shows.
+          if (error.detail.code === "not_found")
             void queries.invalidateQueries({ queryKey: secretsKey(path) });
           if (error.detail.fields?.includes("environment.state"))
             void queries.invalidateQueries({

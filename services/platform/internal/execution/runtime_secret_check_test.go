@@ -3,6 +3,7 @@ package execution
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 )
 
 func candidate(secret uuid.UUID, recency int32, size int32, named bool) db.RuntimeSecretCheckCandidatesRow {
-	row := db.RuntimeSecretCheckCandidatesRow{ID: uuid.New(), SecretID: secret, Recency: recency, Named: named}
+	row := db.RuntimeSecretCheckCandidatesRow{ID: uuid.New(), SecretID: secret, Recency: recency, Current: recency == 1, Named: named}
 	if size >= 0 {
 		row.PlaintextBytes = pgtype.Int4{Int32: size, Valid: true}
 	}
@@ -213,5 +214,41 @@ func TestSecretCheckAnswersAreReusedOnlyForTheSameSearch(t *testing.T) {
 	}
 	if _, ok := git.secretCheckAnswer(searched); ok {
 		t.Fatal("a broker refusal was kept as the text's answer")
+	}
+}
+
+// Texts collected from a map arrive in any order, and must find the same kept answer.
+func TestSecretCheckKeyIgnoresTextOrder(t *testing.T) {
+	env, a := uuid.New(), uuid.New()
+	chosen := []checkedVersion{{id: a, required: true}}
+	if secretCheckKey(env, []string{"one", "two"}, chosen) != secretCheckKey(env, []string{"two", "one"}, chosen) {
+		t.Fatal("the same texts in another order changed the key")
+	}
+}
+
+// A required value the measuring job had not reached can leave less room than the choice assumed:
+// a superseded value that no longer fits is skipped, as when choosing, and only a required value
+// fails the check. A value too short to search for is skipped once opened.
+func TestSearchKeepsSupersededValuesWithinTheBudget(t *testing.T) {
+	large := strings.Repeat("v", secretValueLimit)
+	values := map[uuid.UUID]string{}
+	version := func(value string, required bool) checkedVersion {
+		c := checkedVersion{id: uuid.New(), required: required}
+		values[c.id] = value
+		return c
+	}
+	open := func(c checkedVersion) ([]byte, error) { return []byte(values[c.id]), nil }
+	var chosen []checkedVersion
+	for range secretCheckBytes/secretValueLimit - 1 {
+		chosen = append(chosen, version(large, true))
+	}
+	chosen = append(chosen, version("a", true), version(large+"more", false), version("exposed-secret-value", false))
+	searched := domain.NewSecretText("config: exposed-secret-value", "a")
+	if err := searchSecretValues(searched, chosen, open); !errors.Is(err, secretExposed) {
+		t.Fatal("a superseded value that no longer fits stopped the search, or a short value matched:", err)
+	}
+	over := append(slices.Clone(chosen[:len(chosen)-3]), version(large+"more", true))
+	if err := searchSecretValues(searched, over, open); !errors.Is(err, secretCheckBudget) {
+		t.Fatal("required values over the budget did not fail closed:", err)
 	}
 }

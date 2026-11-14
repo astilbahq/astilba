@@ -147,7 +147,9 @@ export const RetireSecretInUse: Story = {
 async function openRetireVersionDialog(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
   await openSecrets(canvasElement);
-  await userEvent.click(await canvas.findByText("2 earlier versions"));
+  await userEvent.click(
+    await canvas.findByText("2 earlier versions of API_TOKEN"),
+  );
   await userEvent.click(
     canvas.getByRole("button", {
       name: `Retire version ${replaced.id} of API_TOKEN`,
@@ -207,11 +209,15 @@ export const RetireSecretVersion: Story = {
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
     await expect(canvas.queryByText(replaced.id)).toBeNull();
     await expect(canvas.getByText(token.id)).toBeVisible();
-    await expect(canvas.getByText("1 earlier version")).toBeVisible();
+    await expect(
+      canvas.getByText("1 earlier version of API_TOKEN"),
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(canvas.getByRole("heading", { name: "Secrets" })).toHaveFocus(),
+    );
   },
 };
-// A version something still uses, or one that became current, is refused with the catalogue's
-// explanation, and stays listed.
+// A version something still uses is refused with the catalogue's explanation, and stays listed.
 export const RetireSecretVersionRefused: Story = {
   parameters: scenario(
     session,
@@ -257,7 +263,18 @@ export const SecretTooShortToCheck: Story = {
   parameters: scenario(
     session,
     http.get(`${environmentRoot}/secrets`, () =>
-      HttpResponse.json([token, replaced, original, database, pin]),
+      HttpResponse.json([
+        token,
+        replaced,
+        original,
+        database,
+        pin,
+        {
+          ...pin,
+          id: "00000000-0000-4000-8000-000000000119",
+          createdAt: "2026-10-03T12:00:00Z",
+        },
+      ]),
     ),
     http.post(`${environmentRoot}/secrets/:secretId/versions`, () =>
       HttpResponse.json(
@@ -275,7 +292,10 @@ export const SecretTooShortToCheck: Story = {
         /^Too short to check: this value is shorter than 12 bytes/,
       ),
     ).toBeVisible();
-    await expect(canvas.getAllByText(/^Too short to check/)).toHaveLength(1);
+    await expect(canvas.getAllByText(/^Too short to check: /)).toHaveLength(1);
+    // An earlier short version says so beside its date.
+    await userEvent.click(canvas.getByText("1 earlier version of PIN"));
+    await expect(canvas.getByText("Too short to check.")).toBeVisible();
     const regions = canvas.getAllByRole("status");
     await userEvent.type(canvas.getByLabelText("Secret name"), "PIN");
     await userEvent.type(canvas.getByLabelText("Secret value"), "4321");
@@ -330,7 +350,7 @@ export const SecretsOperator: Story = {
       canvas.queryByRole("button", { name: /^Retire secret/ }),
     ).toBeNull();
     // Earlier versions are listed, without a way to retire them.
-    await userEvent.click(canvas.getByText("2 earlier versions"));
+    await userEvent.click(canvas.getByText("2 earlier versions of API_TOKEN"));
     await expect(canvas.getByText(replaced.id)).toBeVisible();
     await expect(
       canvas.queryByRole("button", { name: /^Retire version/ }),

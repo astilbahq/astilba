@@ -30,7 +30,7 @@ const (
 )
 
 // secretCheckBudget fails the check closed: values it cannot search for might be in the text.
-var secretCheckBudget = &domain.Error{Code: "invalid_input", Message: "The environment's runtime secrets exceed what can be checked against these files. An owner can retire secrets, or superseded versions, that it no longer needs.", Fields: []string{"source.secretBudget"}}
+var secretCheckBudget = &domain.Error{Code: "invalid_input", Message: "The environment's runtime secrets exceed what can be checked against these files. An owner can retire secrets it no longer needs, or replace versions that the draft or the deployment still uses.", Fields: []string{"source.secretBudget"}}
 
 // secretExposed refuses text that holds a runtime secret's value. It names no secret or file.
 var secretExposed = &domain.Error{Code: "invalid_input", Message: "A file's name or contents include a known runtime secret value.", Fields: []string{"source.containsRuntimeSecret"}}
@@ -57,7 +57,7 @@ func chooseCheckedVersions(candidates []db.RuntimeSecretCheckCandidatesRow) ([]c
 		if c.PlaintextBytes.Valid && domain.SecretTooShortToSearch(int(c.PlaintextBytes.Int32)) {
 			continue
 		}
-		if c.Recency != 1 && !c.Named {
+		if !c.Current && !c.Named {
 			superseded = append(superseded, c)
 			continue
 		}
@@ -102,9 +102,9 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 	if !slices.ContainsFunc(texts, func(text string) bool { return text != "" }) {
 		return nil
 	}
-	// A plan not yet applied names what the draft named when it was made: the current version, a
-	// recent one, or one the draft or deployment still names, unless several rotations followed
-	// within its review window. Reading pending plans would read every plan ever made.
+	// A plan not yet applied is applied only while the draft is still the revision it was made from
+	// (applyVisualPlan), so the draft names its versions. Reading pending plans would read every
+	// plan the environment has made.
 	used, err := q.EnvironmentSecretVersionsInUse(ctx, db.EnvironmentSecretVersionsInUseParams{WorkspaceID: ws, EnvironmentID: env, PendingPlans: false})
 	if err != nil {
 		return err
@@ -173,14 +173,20 @@ func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, 
 	for _, row := range rows {
 		ciphers[row.ID] = row.EncryptedValue
 	}
-	searched := domain.NewSecretText(texts...)
-	total := 0
-	for _, c := range chosen {
+	return searchSecretValues(domain.NewSecretText(texts...), chosen, func(c checkedVersion) ([]byte, error) {
 		cipher, ok := ciphers[c.id]
 		if !ok {
-			return errCheckedVersionsChanged
+			return nil, errCheckedVersionsChanged
 		}
-		value, err := keys.openBetweenPasses(ctx, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id}, cipher)
+		return keys.openBetweenPasses(ctx, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id}, cipher)
+	})
+}
+
+// searchSecretValues searches for each chosen version's value, opened by open, in order.
+func searchSecretValues(searched domain.SecretText, chosen []checkedVersion, open func(checkedVersion) ([]byte, error)) error {
+	total := 0
+	for _, c := range chosen {
+		value, err := open(c)
 		if err != nil {
 			return err
 		}
@@ -189,13 +195,19 @@ func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, 
 			clear(value)
 			continue
 		}
-		total += len(value)
-		exposed := total <= secretCheckBytes && searched.Exposes(string(value))
-		clear(value)
-		// Only a required value can be unmeasured, so only one can cross the budget here.
-		if total > secretCheckBytes {
-			return secretCheckBudget
+		// The required values come first. One the measuring job has not reached can leave less room
+		// than the choice assumed, and then a superseded value that no longer fits is skipped, as
+		// it would have been when choosing.
+		if total+len(value) > secretCheckBytes {
+			clear(value)
+			if c.required {
+				return secretCheckBudget
+			}
+			continue
 		}
+		total += len(value)
+		exposed := searched.Exposes(string(value))
+		clear(value)
 		if exposed {
 			return secretExposed
 		}
@@ -203,14 +215,16 @@ func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, 
 	return nil
 }
 
-// secretCheckKey identifies one search: the environment, the texts and the versions chosen.
+// secretCheckKey identifies one search: the environment, the texts and the versions chosen. The
+// texts' order does not change the search, and callers may collect them from a map, so it does
+// not change the key either.
 func secretCheckKey(env uuid.UUID, texts []string, chosen []checkedVersion) [32]byte {
 	h := sha256.New()
 	h.Write(env[:])
 	var n [8]byte
 	binary.BigEndian.PutUint64(n[:], uint64(len(texts)))
 	h.Write(n[:])
-	for _, text := range texts {
+	for _, text := range slices.Sorted(slices.Values(texts)) {
 		binary.BigEndian.PutUint64(n[:], uint64(len(text)))
 		h.Write(n[:])
 		h.Write([]byte(text))

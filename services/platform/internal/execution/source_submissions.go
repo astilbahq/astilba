@@ -337,7 +337,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 			return nil, err
 		}
 		if slices.Contains(invalid.Fields, "source.secretBudget") {
-			return nil, fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository. An owner can retire secrets, or superseded versions, that the environment no longer needs.")
+			return nil, fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository. An owner can retire secrets the environment no longer needs, or replace versions that the draft or the deployment still uses.")
 		}
 		return nil, fail("the names or contents of these files include a known runtime secret value. Nothing was written to the repository.")
 	}

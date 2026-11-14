@@ -554,11 +554,10 @@ export default interface Resources {
       "created": "Version created {{date}}",
       "description": "Values are write-only. Reference a version ID in your specification with <field/>.",
       "earlierTooShortToCheck": "Too short to check.",
-      "earlierVersions": "{{count}} earlier version" | "{{count}} earlier versions",
+      "earlierVersions": "{{count}} earlier version of {{name}}" | "{{count}} earlier versions of {{name}}",
       "hint": "Reusing a name adds a version. You’ll be asked to confirm your identity before saving.",
       "name": "Secret name",
       "refusal": {
-        "current": "This is now the secret’s current version. Save a new value to replace it, or retire the secret.",
         "forbidden": "Only workspace owners can retire secrets.",
         "inUse": "This secret is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses one of its versions. Replace it there, then try again.",
         "inactive": "This environment is no longer active, so its secrets cannot be changed. The page now shows its current state.",

@@ -508,12 +508,15 @@ func (q *Queries) RecordGitBranchPush(ctx context.Context, arg RecordGitBranchPu
 }
 
 const runtimeSecretCheckCandidates = `-- name: RuntimeSecretCheckCandidates :many
-SELECT v.id,v.secret_id,v.plaintext_bytes,v.recency::integer AS recency,(v.id = ANY($1::uuid[]))::boolean AS named FROM (
- SELECT v.id,v.secret_id,v.plaintext_bytes,v.created_at,
-  row_number() OVER (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC) AS recency
+SELECT v.id,v.secret_id,v.plaintext_bytes,v.recency::integer AS recency,(v.live = 1)::boolean AS current,
+ (v.id = ANY($1::uuid[]))::boolean AS named FROM (
+ SELECT v.id,v.secret_id,v.plaintext_bytes,v.erased_at,
+  row_number() OVER newest AS recency,
+  count(*) FILTER (WHERE v.erased_at IS NULL) OVER newest AS live
  FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
- WHERE v.workspace_id = $2 AND s.environment_id = $3 AND v.erased_at IS NULL
-) v WHERE v.recency <= $4::integer OR v.id = ANY($1::uuid[])
+ WHERE v.workspace_id = $2 AND s.environment_id = $3 AND s.retired_at IS NULL
+ WINDOW newest AS (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC ROWS UNBOUNDED PRECEDING)
+) v WHERE v.erased_at IS NULL AND (v.live = 1 OR v.recency <= $4::integer OR v.id = ANY($1::uuid[]))
 ORDER BY v.secret_id,v.recency
 `
 
@@ -529,11 +532,14 @@ type RuntimeSecretCheckCandidatesRow struct {
 	SecretID       uuid.UUID   `json:"secret_id"`
 	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
 	Recency        int32       `json:"recency"`
+	Current        bool        `json:"current"`
 	Named          bool        `json:"named"`
 }
 
-// The versions the runtime-secret check may search for, newest first within each secret: its
-// newest `recent` versions with values, and any version in `named`. Nothing is opened here.
+// The versions the runtime-secret check may search for, newest first within each secret: each
+// secret's current version (its newest with a value), any of its `recent` newest versions that
+// still has a value, and any version in `named`. Recency counts erased versions too, so retiring
+// one does not make an older version recent. Nothing is opened here.
 func (q *Queries) RuntimeSecretCheckCandidates(ctx context.Context, arg RuntimeSecretCheckCandidatesParams) ([]RuntimeSecretCheckCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, runtimeSecretCheckCandidates,
 		arg.Named,
@@ -553,6 +559,7 @@ func (q *Queries) RuntimeSecretCheckCandidates(ctx context.Context, arg RuntimeS
 			&i.SecretID,
 			&i.PlaintextBytes,
 			&i.Recency,
+			&i.Current,
 			&i.Named,
 		); err != nil {
 			return nil, err

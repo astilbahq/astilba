@@ -266,6 +266,15 @@ func TestRetireSecretKeepsAPreviewPolicysSecret(t *testing.T) {
 	if err := json.Unmarshal(h.b.call("DELETE", h.path+"/secrets/"+secret.SecretId.String(), nil, 409, nil), &failure); err != nil || failure.Fields == nil || !slices.Contains(*failure.Fields, "secret.inUse") {
 		t.Fatalf("a secret the preview policy's revision names was retired: %+v %v", failure, err)
 	}
+	// So is that version, and the template's owner can retire an earlier version nothing names.
+	h.b.call("POST", h.path+"/secrets/"+secret.SecretId.String()+"/versions", map[string]string{"value": "dummy-preview-canary-two"}, 201, nil)
+	if err := json.Unmarshal(h.b.call("DELETE", h.path+"/secrets/"+secret.SecretId.String()+"/versions/"+secret.Id.String(), nil, 409, nil), &failure); err != nil || failure.Fields == nil || !slices.Contains(*failure.Fields, "secretVersion.inUse") {
+		t.Fatalf("a version the preview policy's revision names was retired: %+v %v", failure, err)
+	}
+	var replaced api.SecretVersion
+	h.b.call("POST", h.path+"/secrets", map[string]string{"name": "Spare", "value": "dummy-template-spare-one"}, 201, &replaced)
+	h.b.call("POST", h.path+"/secrets/"+replaced.SecretId.String()+"/versions", map[string]string{"value": "dummy-template-spare-two"}, 201, nil)
+	h.b.call("DELETE", h.path+"/secrets/"+replaced.SecretId.String()+"/versions/"+replaced.Id.String(), nil, 204, nil)
 }
 
 // A workspace export carries a purge and its erased secret versions without values, so an imported

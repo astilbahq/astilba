@@ -99,14 +99,19 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND reje
 ORDER BY application_id;
 
 -- name: RuntimeSecretCheckCandidates :many
--- The versions the runtime-secret check may search for, newest first within each secret: its
--- newest `recent` versions with values, and any version in `named`. Nothing is opened here.
-SELECT v.id,v.secret_id,v.plaintext_bytes,v.recency::integer AS recency,(v.id = ANY(sqlc.arg(named)::uuid[]))::boolean AS named FROM (
- SELECT v.id,v.secret_id,v.plaintext_bytes,v.created_at,
-  row_number() OVER (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC) AS recency
+-- The versions the runtime-secret check may search for, newest first within each secret: each
+-- secret's current version (its newest with a value), any of its `recent` newest versions that
+-- still has a value, and any version in `named`. Recency counts erased versions too, so retiring
+-- one does not make an older version recent. Nothing is opened here.
+SELECT v.id,v.secret_id,v.plaintext_bytes,v.recency::integer AS recency,(v.live = 1)::boolean AS current,
+ (v.id = ANY(sqlc.arg(named)::uuid[]))::boolean AS named FROM (
+ SELECT v.id,v.secret_id,v.plaintext_bytes,v.erased_at,
+  row_number() OVER newest AS recency,
+  count(*) FILTER (WHERE v.erased_at IS NULL) OVER newest AS live
  FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
- WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id AND v.erased_at IS NULL
-) v WHERE v.recency <= sqlc.arg(recent)::integer OR v.id = ANY(sqlc.arg(named)::uuid[])
+ WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id AND s.retired_at IS NULL
+ WINDOW newest AS (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC ROWS UNBOUNDED PRECEDING)
+) v WHERE v.erased_at IS NULL AND (v.live = 1 OR v.recency <= sqlc.arg(recent)::integer OR v.id = ANY(sqlc.arg(named)::uuid[]))
 ORDER BY v.secret_id,v.recency;
 
 -- name: SecretVersionValues :many

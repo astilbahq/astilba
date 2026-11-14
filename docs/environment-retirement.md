@@ -87,7 +87,7 @@ The versions' records stay, because older revisions name them. A draft or plan t
 
 ## Retire a secret version
 
-An owner can also retire one earlier version of a secret, listed under the secret in the **Secrets** list, with the same identity confirmation. The API is `DELETE …/environments/{environmentId}/secrets/{secretId}/versions/{versionId}`, recorded in the audit log as `secret.version.retire`. Retiring erases that version's value and removes it from the list; the secret keeps its current version and its other versions. It cannot be undone. Use it to clear a bad value, or a replaced value that the [runtime-secret check](git-builds.md) still searches for.
+An owner can also retire one earlier version of a secret, listed under the secret in the **Secrets** list, with the same identity confirmation. The API is `DELETE …/environments/{environmentId}/secrets/{secretId}/versions/{versionId}`, recorded in the audit log as `secret.version.retire`. Retiring erases that version's value and removes it from the list; the secret keeps its current version and its other versions. It cannot be undone. Use it to clear a bad value, or a replaced value that the [runtime-secret check](git-builds.md) still searches for. A retired version still counts toward which versions are recent, so retiring one never brings an older one back into the check.
 
 The secret's current version is refused (`secretVersion.current`): save a new value to replace it, or retire the whole secret. A version is also refused while anything listed above for a secret names it (`secretVersion.inUse`). Its record stays, and a draft or plan that names it is refused.
 

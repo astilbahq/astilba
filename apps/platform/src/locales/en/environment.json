@@ -262,8 +262,8 @@
     "cancel": "Cancel",
     "retired": "Secret {{name}} retired. The values of all its versions are erased.",
     "versionRetired": "Version {{id}} of {{name}} retired. Its value is erased.",
-    "earlierVersions_one": "{{count}} earlier version",
-    "earlierVersions_other": "{{count}} earlier versions",
+    "earlierVersions_one": "{{count}} earlier version of {{name}}",
+    "earlierVersions_other": "{{count}} earlier versions of {{name}}",
     "retireVersion": "Retire version",
     "retireVersionNamed": "Retire version {{id}} of {{name}}",
     "retireDialogTitle": "Retire <name/>?",
@@ -285,7 +285,6 @@
     "refusal": {
       "inUse": "This secret is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses one of its versions. Replace it there, then try again.",
       "versionInUse": "This version is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses it. Replace it there, then try again.",
-      "current": "This is now the secret’s current version. Save a new value to replace it, or retire the secret.",
       "inactive": "This environment is no longer active, so its secrets cannot be changed. The page now shows its current state.",
       "unknown": "This secret cannot be retired right now. Check the environment’s current state, then try again.",
       "forbidden": "Only workspace owners can retire secrets.",
