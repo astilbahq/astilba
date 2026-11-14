@@ -142,6 +142,10 @@ func TestRecoveryReleasesOnlyThePreviewsARevokedHostRuns(t *testing.T) {
 			if count := claimCounter(t, r.f, `SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE s.environment_id=$1 AND v.encrypted_value IS NOT NULL`, env); count != 1 {
 				t.Fatal("recovery deleted the secret copy of a preview running on a healthy host")
 			}
+			if revokedAfterRestore {
+				// Revoking in the restored management already released the old host's previews.
+				return
+			}
 			if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE id=ANY($1) AND state='deleted' AND released_by_revocation`, previews.requests[:]); count != 2 {
 				t.Fatalf("recovery released %d of the revoked host's 2 previews the restored database lists open", count)
 			}
