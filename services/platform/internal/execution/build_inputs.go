@@ -60,7 +60,7 @@ func (e *buildInputRejection) note() string {
 	case "arguments_contain_secret":
 		return "Public build arguments contain a known secret value."
 	case "runtime_secret_budget":
-		return "Runtime secrets exceed the build-input validation limit."
+		return "Runtime secrets exceed the build-input validation limit. An owner can retire secrets, or superseded versions, that the environment no longer needs."
 	default:
 		return "Build inputs were rejected."
 	}
@@ -68,7 +68,8 @@ func (e *buildInputRejection) note() string {
 
 // buildInputs keeps secret values out of public arguments before persistence and
 // checks again at delivery, when the environment's runtime secrets may differ.
-func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, env uuid.UUID, build pipeline.BuildConfig) (map[string]string, error) {
+func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, build pipeline.BuildConfig) (map[string]string, error) {
+	keys := git.keys.inspect
 	secrets := make(map[string]string, len(build.Secrets))
 	arguments := domain.NewSecretText(slices.Collect(maps.Values(build.Arguments))...)
 	total := 0
@@ -98,7 +99,7 @@ func (s *Service) buildInputs(ctx context.Context, tx pgx.Tx, keys valueKeys, ws
 		for _, value := range build.Arguments {
 			files = append(files, composeproject.File{Content: value})
 		}
-		if err := s.rejectRuntimeSecrets(ctx, tx, keys, ws, env, composeproject.Bundle{Files: files}); err != nil {
+		if err := s.rejectRuntimeSecrets(ctx, tx, git, ws, env, composeproject.Bundle{Files: files}); err != nil {
 			var invalid *domain.Error
 			if errors.As(err, &invalid) && invalid.Code == "invalid_input" && len(invalid.Fields) == 1 {
 				switch invalid.Fields[0] {

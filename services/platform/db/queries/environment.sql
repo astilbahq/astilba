@@ -37,7 +37,7 @@ ON CONFLICT(workspace_id,environment_id) DO UPDATE SET positions=EXCLUDED.positi
 -- Retired secrets and erased versions are kept for the specifications that name them, not listed.
 SELECT s.id,s.name,v.id AS version_id,v.created_at FROM secrets s JOIN secret_versions v
 ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2
-AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC;
+AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC,v.id DESC;
 -- name: GetSecret :one
 SELECT * FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3 AND retired_at IS NULL;
 -- name: InsertSecret :exec

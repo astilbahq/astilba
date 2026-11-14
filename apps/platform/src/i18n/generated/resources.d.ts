@@ -553,9 +553,11 @@ export default interface Resources {
       "cancel": "Cancel",
       "created": "Version created {{date}}",
       "description": "Values are write-only. Reference a version ID in your specification with <field/>.",
+      "earlierVersions": "{{count}} earlier version" | "{{count}} earlier versions",
       "hint": "Reusing a name adds a version. You’ll be asked to confirm your identity before saving.",
       "name": "Secret name",
       "refusal": {
+        "current": "This is now the secret’s current version. Save a new value to replace it, or retire the secret.",
         "forbidden": "Only workspace owners can retire secrets.",
         "inUse": "This secret is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses one of its versions. Replace it there, then try again.",
         "inactive": "This environment is no longer active, so its secrets cannot be changed. The page now shows its current state.",
@@ -564,7 +566,9 @@ export default interface Resources {
         "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
         "unavailable": "This secret is no longer available. It may have been retired already.",
         "unknown": "This secret cannot be retired right now. Check the environment’s current state, then try again.",
-        "verifyEmail": "Verify your email address in Account security, then try again."
+        "verifyEmail": "Verify your email address in Account security, then try again.",
+        "versionInUse": "This version is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses it. Replace it there, then try again.",
+        "versionUnavailable": "This version is no longer available. It may have been retired already."
       },
       "retire": "Retire secret",
       "retireDialogDescription": "Retiring a secret cannot be undone. When you retire it:",
@@ -576,12 +580,23 @@ export default interface Resources {
         "values": "The value of every version is erased."
       },
       "retireNamed": "Retire secret {{name}}",
+      "retireVersion": "Retire version",
+      "retireVersionDialogDescription": "Retiring version {{id}} cannot be undone. When you retire it:",
+      "retireVersionDialogInUse": "A version cannot be retired while the draft, the running deployment, a deployment plan, an operation or a database upgrade uses it.",
+      "retireVersionDialogTitle": "Retire this version of <name/>?",
+      "retireVersionEffects": {
+        "current": "The secret keeps its current version and its other versions.",
+        "revisions": "Earlier revisions that use this version can no longer be deployed.",
+        "value": "Its value is erased, and files you submit and public build arguments are no longer checked against it."
+      },
+      "retireVersionNamed": "Retire version {{id}} of {{name}}",
       "retired": "Secret {{name}} retired. The values of all its versions are erased.",
       "retiring": "Retiring…",
       "save": "Save secret version",
       "saved": "Secret version saved. Its value cannot be read back.",
       "title": "Secrets",
-      "value": "Secret value"
+      "value": "Secret value",
+      "versionRetired": "Version {{id}} of {{name}} retired. Its value is erased."
     },
     "sections": "Environment sections",
     "server": "Server",

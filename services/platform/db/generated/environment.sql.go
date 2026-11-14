@@ -685,7 +685,7 @@ func (q *Queries) ListRevisions(ctx context.Context, arg ListRevisionsParams) ([
 const listSecrets = `-- name: ListSecrets :many
 SELECT s.id,s.name,v.id AS version_id,v.created_at FROM secrets s JOIN secret_versions v
 ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2
-AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC
+AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC,v.id DESC
 `
 
 type ListSecretsParams struct {

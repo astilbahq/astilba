@@ -41,8 +41,19 @@ const database: Schema["SecretVersion"] = {
   name: "DATABASE_URL",
   createdAt: "2026-11-02T12:00:00Z",
 };
+// API_TOKEN's earlier versions, newest first, as the list returns them after its current one.
+const replaced: Schema["SecretVersion"] = {
+  ...token,
+  id: "00000000-0000-4000-8000-000000000114",
+  createdAt: "2026-10-20T12:00:00Z",
+};
+const original: Schema["SecretVersion"] = {
+  ...token,
+  id: "00000000-0000-4000-8000-000000000115",
+  createdAt: "2026-10-01T12:00:00Z",
+};
 const secrets = http.get(`${environmentRoot}/secrets`, () =>
-  HttpResponse.json([token, database]),
+  HttpResponse.json([token, replaced, original, database]),
 );
 const inUse = http.delete(`${environmentRoot}/secrets/:secretId`, () =>
   HttpResponse.json(
@@ -133,6 +144,106 @@ export const RetireSecretInUse: Story = {
     ).toBeEnabled();
   },
 };
+async function openRetireVersionDialog(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await openSecrets(canvasElement);
+  await userEvent.click(await canvas.findByText("2 earlier versions"));
+  await userEvent.click(
+    canvas.getByRole("button", {
+      name: `Retire version ${replaced.id} of API_TOKEN`,
+    }),
+  );
+  return within(canvasElement.ownerDocument.body).findByRole("alertdialog", {
+    name: "Retire this version of API_TOKEN?",
+  });
+}
+
+// Retiring an earlier version erases only its value: the secret, its current version and its
+// other versions stay, and the change is announced.
+let retiredVersions: string[] = [];
+export const RetireSecretVersion: Story = {
+  beforeEach: () => {
+    retiredVersions = [];
+  },
+  parameters: scenario(
+    session,
+    http.get(`${environmentRoot}/secrets`, () =>
+      HttpResponse.json(
+        [token, replaced, original, database].filter(
+          (version) => !retiredVersions.includes(version.id),
+        ),
+      ),
+    ),
+    http.delete(
+      `${environmentRoot}/secrets/:secretId/versions/:versionId`,
+      ({ params }) => {
+        retiredVersions.push(String(params.versionId));
+        return new HttpResponse(null, { status: 204 });
+      },
+    ),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openSecrets(canvasElement);
+    await expect(
+      canvas.queryByRole("button", {
+        name: /^Retire version .* of DATABASE_URL$/,
+      }),
+    ).toBeNull();
+    const regions = canvas.getAllByRole("status");
+    const dialog = await openRetireVersionDialog(canvasElement);
+    await expect(dialog).toHaveAccessibleDescription(
+      /cannot be undone\..*Its value is erased.*keeps its current version/,
+    );
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Retire version" }),
+    );
+    const message = await canvas.findByText(
+      `Version ${replaced.id} of API_TOKEN retired. Its value is erased.`,
+    );
+    await expect(regions).toContain(message.closest('[role="status"]'));
+    await expect(retiredVersions).toEqual([replaced.id]);
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await expect(canvas.queryByText(replaced.id)).toBeNull();
+    await expect(canvas.getByText(token.id)).toBeVisible();
+    await expect(canvas.getByText("1 earlier version")).toBeVisible();
+  },
+};
+// A version something still uses, or one that became current, is refused with the catalogue's
+// explanation, and stays listed.
+export const RetireSecretVersionRefused: Story = {
+  parameters: scenario(
+    session,
+    secrets,
+    http.delete(
+      `${environmentRoot}/secrets/:secretId/versions/:versionId`,
+      () =>
+        HttpResponse.json(
+          {
+            code: "conflict",
+            message: "Server text the dashboard does not show.",
+            requestId: "workshop",
+            fields: ["secretVersion.inUse"],
+          } satisfies Schema["Error"],
+          { status: 409 },
+        ),
+    ),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = within(await openRetireVersionDialog(canvasElement));
+    await userEvent.click(
+      dialog.getByRole("button", { name: "Retire version" }),
+    );
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      "This version is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses it. Replace it there, then try again.",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Retire version" }),
+    ).toBeEnabled();
+  },
+};
 // A session that is not recent confirms identity in place before the request.
 export const RetireSecretIdentity: Story = {
   parameters: scenario(
@@ -173,6 +284,12 @@ export const SecretsOperator: Story = {
     ).toBeVisible();
     await expect(
       canvas.queryByRole("button", { name: /^Retire secret/ }),
+    ).toBeNull();
+    // Earlier versions are listed, without a way to retire them.
+    await userEvent.click(canvas.getByText("2 earlier versions"));
+    await expect(canvas.getByText(replaced.id)).toBeVisible();
+    await expect(
+      canvas.queryByRole("button", { name: /^Retire version/ }),
     ).toBeNull();
   },
 };

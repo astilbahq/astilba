@@ -8,7 +8,7 @@ const buildRejectionMessages = {
   arguments_contain_secret:
     "Public build arguments contain a known secret value.",
   runtime_secret_budget:
-    "Runtime secrets exceed the build-input validation limit.",
+    "Runtime secrets exceed the build-input validation limit. An owner can retire secrets, or superseded versions, that the environment no longer needs.",
 } satisfies Record<Schema["BuildRejectionReason"], string>;
 export function AutomaticBuildRejections({
   rejections,

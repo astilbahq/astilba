@@ -98,11 +98,21 @@ SELECT application_id,rejected_commit::text AS rejected_commit,rejection_reason:
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND rejected_at IS NOT NULL
 ORDER BY application_id;
 
--- name: PageEnvironmentSecretVersions :many
-SELECT v.id,v.encrypted_value FROM secret_versions v
-JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id AND v.id > @after_id AND v.erased_at IS NULL
-ORDER BY v.id LIMIT @page_size;
+-- name: RuntimeSecretCheckCandidates :many
+-- The versions the runtime-secret check may search for, newest first within each secret: its
+-- newest `recent` versions with values, and any version in `named`. Nothing is opened here.
+SELECT v.id,v.secret_id,v.plaintext_bytes,v.recency::integer AS recency,(v.id = ANY(sqlc.arg(named)::uuid[]))::boolean AS named FROM (
+ SELECT v.id,v.secret_id,v.plaintext_bytes,v.created_at,
+  row_number() OVER (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC) AS recency
+ FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+ WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id AND v.erased_at IS NULL
+) v WHERE v.recency <= sqlc.arg(recent)::integer OR v.id = ANY(sqlc.arg(named)::uuid[])
+ORDER BY v.secret_id,v.recency;
+
+-- name: SecretVersionValues :many
+-- The values of versions the check chose. An erased version has none, and is no longer searched.
+SELECT v.id,v.encrypted_value FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+WHERE v.workspace_id = @workspace_id AND s.environment_id = @environment_id AND v.id = ANY(sqlc.arg(ids)::uuid[]) AND v.erased_at IS NULL;
 
 -- name: DeleteEnvironmentSecretVersions :exec
 DELETE FROM secret_versions v USING secrets s

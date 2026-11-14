@@ -258,6 +258,11 @@
     "retiring": "Retiring…",
     "cancel": "Cancel",
     "retired": "Secret {{name}} retired. The values of all its versions are erased.",
+    "versionRetired": "Version {{id}} of {{name}} retired. Its value is erased.",
+    "earlierVersions_one": "{{count}} earlier version",
+    "earlierVersions_other": "{{count}} earlier versions",
+    "retireVersion": "Retire version",
+    "retireVersionNamed": "Retire version {{id}} of {{name}}",
     "retireDialogTitle": "Retire <name/>?",
     "retireDialogDescription": "Retiring a secret cannot be undone. When you retire it:",
     "retireEffects": {
@@ -266,8 +271,18 @@
       "revisions": "Earlier revisions that use it can no longer be deployed."
     },
     "retireDialogInUse": "A secret cannot be retired while the draft, the running deployment, a deployment plan, an operation or a database upgrade uses one of its versions.",
+    "retireVersionDialogTitle": "Retire this version of <name/>?",
+    "retireVersionDialogDescription": "Retiring version {{id}} cannot be undone. When you retire it:",
+    "retireVersionEffects": {
+      "value": "Its value is erased, and files you submit and public build arguments are no longer checked against it.",
+      "current": "The secret keeps its current version and its other versions.",
+      "revisions": "Earlier revisions that use this version can no longer be deployed."
+    },
+    "retireVersionDialogInUse": "A version cannot be retired while the draft, the running deployment, a deployment plan, an operation or a database upgrade uses it.",
     "refusal": {
       "inUse": "This secret is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses one of its versions. Replace it there, then try again.",
+      "versionInUse": "This version is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses it. Replace it there, then try again.",
+      "current": "This is now the secret’s current version. Save a new value to replace it, or retire the secret.",
       "inactive": "This environment is no longer active, so its secrets cannot be changed. The page now shows its current state.",
       "unknown": "This secret cannot be retired right now. Check the environment’s current state, then try again.",
       "forbidden": "Only workspace owners can retire secrets.",
@@ -275,7 +290,8 @@
       "verifyEmail": "Verify your email address in Account security, then try again.",
       "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
       "recentAuth": "Confirm your identity, then try again.",
-      "unavailable": "This secret is no longer available. It may have been retired already."
+      "unavailable": "This secret is no longer available. It may have been retired already.",
+      "versionUnavailable": "This version is no longer available. It may have been retired already."
     }
   }
 }

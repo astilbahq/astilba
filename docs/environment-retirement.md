@@ -85,6 +85,12 @@ It is refused while anything that may still deploy names one of the secret's ver
 
 The versions' records stay, because older revisions name them. A draft or plan that names a retired version is refused, as for a version that does not exist.
 
+## Retire a secret version
+
+An owner can also retire one earlier version of a secret, listed under the secret in the **Secrets** list, with the same identity confirmation. The API is `DELETE …/environments/{environmentId}/secrets/{secretId}/versions/{versionId}`, recorded in the audit log as `secret.version.retire`. Retiring erases that version's value and removes it from the list; the secret keeps its current version and its other versions. It cannot be undone. Use it to clear a bad value, or a replaced value that the [runtime-secret check](git-builds.md) still searches for.
+
+The secret's current version is refused (`secretVersion.current`): save a new value to replace it, or retire the whole secret. A version is also refused while anything listed above for a secret names it (`secretVersion.inUse`). Its record stays, and a draft or plan that names it is refused.
+
 ## Exports and recovery
 
 Workspace exports (archive version 9) carry each environment's retirement and purge, and the operations that removed it and its volumes from its server. An imported environment keeps its state: a retired one stays retired and read-only, the importing owner is recorded as having retired it, and it holds none of the hostnames or ports its retirement released, so nothing claims them until a restored environment's reviewed deployment does. An archive in which such an environment still claims one is refused. One imported while retiring stays retiring; its operation is cancelled as all imported work is, so retire it again once its server's agent has been transferred. The same holds for one imported while purging: purge it again. A purged environment stays purged, and the importing owner is recorded as having purged it. Retired secrets and erased secret versions are exported without values and import as they were. Environments in an archive from version 7 or earlier are imported as active, and nothing in an archive from version 8 or earlier is purged, retired or erased.
