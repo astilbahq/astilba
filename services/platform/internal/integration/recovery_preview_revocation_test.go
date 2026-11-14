@@ -1,8 +1,10 @@
 package integration
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/google/uuid"
 )
 
@@ -69,7 +71,8 @@ func revokeServer(b *browser, ws, server uuid.UUID) {
 
 // A restored database from before a preview host's revocation still lists its previews open, with
 // their secret copies. Recovery from a checkpoint that records the revocation releases them as the
-// revocation did: nothing on a revoked host could release them later.
+// revocation did: nothing on a revoked host could release them later. One of them came back after
+// the release, waiting for a new preview, and its note still says it's a new one.
 func TestRecoveryReleasesPreviewsOfAHostTheCheckpointRecordsRevoked(t *testing.T) {
 	var previews seededPreviews
 	var host uuid.UUID
@@ -79,20 +82,41 @@ func TestRecoveryReleasesPreviewsOfAHostTheCheckpointRecordsRevoked(t *testing.T
 		previews = seedPreviews(t, f, b, ws, host)
 		before = recordPreviews(t, f, ws)
 		revokeServer(b, ws, host)
+		if count := claimCounter(t, f, `SELECT count(*) FROM preview_requests WHERE policy_id=$1 AND state='deleted' AND released_by_revocation`, previews.policy); count != 2 {
+			t.Fatal("revoking the preview host didn't release its previews before the checkpoint", count)
+		}
+		// Reopening a released request gives its environment up, and it keeps its release.
+		if _, err := f.st.Pool.Exec(t.Context(), `UPDATE preview_requests SET state='queued',note='Waiting for an available preview resource slot.',environment_id=NULL WHERE id=$1`, previews.requests[1]); err != nil {
+			t.Fatal(err)
+		}
 	})
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE policy_id=$1 AND state='deleted' AND released_by_revocation`, previews.policy); count != 2 {
-		t.Fatal("revoking the preview host didn't release its previews before the checkpoint", count)
-	}
 	before.restore(t, r)
 
 	r.recoverAll(t, r.exports(t, claimExport{}))
 	if count := claimCounter(t, r.f, `SELECT count(*) FROM servers WHERE id=$1 AND revoked`, host); count != 1 {
 		t.Fatal("recovery didn't keep the checkpoint's revocation")
 	}
-	// The checkpoint's copies record the release, which recovery keeps over the open ones. Whether a
-	// request was released by revocation isn't archived.
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE policy_id=$1 AND state='deleted'`, previews.policy); count != 2 {
-		t.Fatalf("recovery released %d of the revoked host's 2 previews, so the rest keep their slots", count)
+	// The checkpoint's copies record the release, which recovery keeps over the open ones.
+	if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE id=$1 AND state='deleted' AND released_by_revocation`, previews.requests[0]); count != 1 {
+		t.Fatal("recovery didn't keep the checkpoint's release of the revoked host's preview")
+	}
+	if count := claimCounter(t, r.f, `SELECT count(*) FROM preview_requests WHERE id=$1 AND state<>'deleted' AND environment_id IS NULL AND released_by_revocation`, previews.requests[1]); count != 1 {
+		t.Fatal("recovery didn't keep the checkpoint's reopened copy of the released request")
+	}
+	var template uuid.UUID
+	if err := r.f.st.Pool.QueryRow(r.ctx, `SELECT environment_id FROM preview_policies WHERE id=$1`, previews.policy).Scan(&template); err != nil {
+		t.Fatal(err)
+	}
+	var listed []api.PullRequestPreview
+	r.b.call("GET", previews.environments+"/"+template.String()+"/previews", nil, 200, &listed)
+	note := ""
+	for _, preview := range listed {
+		if preview.Id == previews.requests[1] {
+			note = preview.Note
+		}
+	}
+	if !strings.Contains(note, "new preview") {
+		t.Fatalf("the recovered request doesn't say it's a new preview: %q", note)
 	}
 	if count := claimCounter(t, r.f, `SELECT count(*) FROM secrets WHERE workspace_id=$1 AND environment_id=ANY($2)`, r.ws, previews.envs[:]); count != 0 {
 		t.Fatalf("recovery kept %d secret copies of the released previews", count)
@@ -250,5 +274,43 @@ func TestRecoveryEndsPreviewsTheCheckpointRecordsDeleted(t *testing.T) {
 	}
 	if count := claimCounter(t, r.f, `SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE s.environment_id=$1 AND v.encrypted_value IS NOT NULL`, env); count != 1 {
 		t.Fatal("recovery deleted the secret copy of the preview opened after the backup")
+	}
+}
+
+// A workspace export carries which preview requests revoking their host released, so an imported
+// request that came back after the release still says it's a new preview.
+func TestWorkspaceImportKeepsPreviewsRevocationReleased(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	previews := seedPreviews(t, f, b, ws, enrolPreviewHost(t, f, b, ws))
+	if _, err := f.st.Pool.Exec(t.Context(), `UPDATE preview_requests SET state=CASE WHEN id=$1 THEN 'queued' ELSE 'deleted' END,environment_id=CASE WHEN id=$1 THEN NULL ELSE environment_id END,released_by_revocation=true WHERE policy_id=$2`, previews.requests[1], previews.policy); err != nil {
+		t.Fatal(err)
+	}
+	const passphrase = "unique archive passphrase for fixture"
+	var encrypted api.WorkspaceArchive
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &encrypted)
+
+	destination := setup(t)
+	owner := destination.browser(t)
+	owner.login("owner@example.test", destination.password)
+	owner.call("POST", "/api/v1/workspaces/import", map[string]any{"archive": encrypted.Archive, "passphrase": passphrase}, 201, nil)
+	if count := claimCounter(t, destination, `SELECT count(*) FROM preview_requests WHERE policy_id=$1 AND released_by_revocation`, previews.policy); count != 2 {
+		t.Fatalf("the import kept %d of the 2 releases by revocation", count)
+	}
+	var template uuid.UUID
+	if err := destination.st.Pool.QueryRow(t.Context(), `SELECT environment_id FROM preview_policies WHERE id=$1`, previews.policy).Scan(&template); err != nil {
+		t.Fatal(err)
+	}
+	var listed []api.PullRequestPreview
+	owner.call("GET", previews.environments+"/"+template.String()+"/previews", nil, 200, &listed)
+	note := ""
+	for _, preview := range listed {
+		if preview.Id == previews.requests[1] {
+			note = preview.Note
+		}
+	}
+	if !strings.Contains(note, "new preview") {
+		t.Fatalf("the imported request doesn't say it's a new preview: %q", note)
 	}
 }

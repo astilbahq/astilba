@@ -14,11 +14,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RecoveryArchiveVersion is the format recovery bases write: ArchiveVersion 9's tables and a
-// recovery section, which an export never carries, so an export format stays below it
+// RecoveryArchiveVersion is the format recovery bases write: ArchiveVersion's tables and a recovery
+// section, which an export never carries. Exports and recovery bases share one sequence of versions,
+// so when exports take a new version recovery bases take the one after it, and recoveryBaseTables
+// says which export version's tables each recovery base version carries
 // (TestExportVersionsStayBelowTheRecoveryBaseVersion). A release before it refuses such a base, so
 // cross-host recovery has to run on the release that sealed the newest base or a newer one.
-const RecoveryArchiveVersion = 10
+const RecoveryArchiveVersion = 12
+
+// recoveryBaseTables maps each recovery base version to the export version whose tables it carries.
+var recoveryBaseTables = map[int]int{10: 9, RecoveryArchiveVersion: ArchiveVersion}
 
 const (
 	// RecoveryWindowTarget is how far back a base's applied history reaches when it fits.
