@@ -53,3 +53,17 @@ SELECT CASE WHEN held THEN approved_head ELSE '' END::text AS head,
     CASE WHEN held THEN approved_generation ELSE 0 END::bigint AS generation
 FROM preview_requests, LATERAL (SELECT policy_approver_holds(workspace_id,approved_by,approved_auth_version,true) AS held) approval
 WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: DeleteEndedPreviewSecretVersions :exec
+-- A preview environment's copies of its template's secret values are kept only while an open request
+-- names it: its cleanup or release deletes them as it ends the request. Recovery can end a request
+-- whose restored copy was open, and merging never deletes, so it removes the copies this way.
+DELETE FROM secret_versions v USING secrets s, environments e
+WHERE s.workspace_id = @workspace_id AND v.workspace_id=s.workspace_id AND v.secret_id=s.id
+    AND e.workspace_id=s.workspace_id AND e.id=s.environment_id AND e.purpose='preview'
+    AND NOT EXISTS(SELECT 1 FROM preview_requests r WHERE r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.state<>'deleted');
+
+-- name: DeleteEndedPreviewSecrets :exec
+DELETE FROM secrets s USING environments e
+WHERE s.workspace_id = @workspace_id AND e.workspace_id=s.workspace_id AND e.id=s.environment_id AND e.purpose='preview'
+    AND NOT EXISTS(SELECT 1 FROM preview_requests r WHERE r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.state<>'deleted');
