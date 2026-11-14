@@ -114,10 +114,6 @@ SELECT v.id,v.secret_id,v.plaintext_bytes,v.recency::integer AS recency,(v.live 
 ) v WHERE v.erased_at IS NULL AND (v.live = 1 OR v.recency <= sqlc.arg(recent)::integer OR v.id = ANY(sqlc.arg(named)::uuid[]))
 ORDER BY v.secret_id,v.recency;
 
--- name: CountSecretVersions :one
--- How many of ids exist, as the connection running it sees them.
-SELECT count(*) FROM secret_versions WHERE workspace_id = @workspace_id AND id = ANY(sqlc.arg(ids)::uuid[]);
-
 -- name: SecretVersionValues :many
 -- The values of versions the check chose. An erased version has none, and is no longer searched.
 SELECT v.id,v.encrypted_value FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id

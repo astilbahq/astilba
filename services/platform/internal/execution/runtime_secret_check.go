@@ -90,8 +90,8 @@ func chooseCheckedVersions(candidates []db.RuntimeSecretCheckCandidatesRow) ([]c
 // secrets. Choosing the versions reads only stored lengths, under the caller's locks. Opening and
 // searching them runs between passes, with nothing held, and its answer is kept for the versions
 // it searched: versions never change, so a later pass that chooses the same ones under its own
-// locks takes the answer without opening anything again. Versions the caller's transaction
-// created are searched in the pass instead.
+// locks takes the answer without opening anything again. An environment the pass created is
+// searched in the pass instead.
 func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, bundle composeproject.Bundle) error {
 	q := db.New(tx)
 	// A submission pushes both: the path names a tree entry, the content fills its blob.
@@ -122,22 +122,14 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 	if err != nil || len(chosen) == 0 {
 		return err
 	}
-	key := secretCheckKey(env, texts, chosen)
-	if answer, ok := git.secretCheckAnswer(key); ok {
-		return answer
-	}
-	ids := make([]uuid.UUID, len(chosen))
-	for i, c := range chosen {
-		ids[i] = c.id
-	}
-	// Versions this transaction created, such as a new preview environment's copies, can't be
-	// read between passes, and the next pass creates them again under new IDs, so they are
-	// searched here. Only a new environment has them, holding no more than a deployment's secrets.
-	committed, err := db.New(s.Store.Pool).CountSecretVersions(ctx, db.CountSecretVersionsParams{WorkspaceID: ws, Ids: ids})
-	if err != nil {
-		return err
-	}
-	if committed < int64(len(ids)) {
+	// An environment this pass created, such as a new preview's, holds copies its transaction
+	// wrote: they can't be read between passes, and the next pass writes them again under new
+	// IDs, so they are searched here. They are no more than a deployment's secrets.
+	if git.createdEnvironments[env] {
+		ids := make([]uuid.UUID, len(chosen))
+		for i, c := range chosen {
+			ids[i] = c.id
+		}
 		rows, err := q.SecretVersionValues(ctx, db.SecretVersionValuesParams{WorkspaceID: ws, EnvironmentID: env, Ids: ids})
 		if err != nil {
 			return err
@@ -145,6 +137,10 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 		return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
 			return git.keys.inspect.open(item, cipher)
 		}))
+	}
+	key := secretCheckKey(env, texts, chosen)
+	if answer, ok := git.secretCheckAnswer(key); ok {
+		return answer
 	}
 	return &providerCall{fetch: func(ctx context.Context) {
 		if _, ok := git.secretChecks[key]; !ok {

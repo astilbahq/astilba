@@ -214,12 +214,15 @@ type gitAnswers struct {
 	keys runKeys
 	// secretChecks holds the runtime-secret check's answers, by secretCheckKey.
 	secretChecks map[[32]byte]error
+	// createdEnvironments are environments a pass created, whose secret versions only its own
+	// transaction can read. A later pass creates its own under new IDs.
+	createdEnvironments map[uuid.UUID]bool
 }
 
 // withGit runs a transaction body that can ask Git providers questions through its
 // gitAnswers. Body must open its transaction itself, and must not commit before asking.
 func (s *Service) withGit(ctx context.Context, ws uuid.UUID, keys runKeys, body func(*gitAnswers) error) error {
-	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys, secretChecks: map[[32]byte]error{}}
+	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys, secretChecks: map[[32]byte]error{}, createdEnvironments: map[uuid.UUID]bool{}}
 	defer keys.close(ctx)
 	return withProviderCalls(ctx, func() error { return body(git) })
 }
