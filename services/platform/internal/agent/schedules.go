@@ -162,13 +162,17 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
 	}
 	parent := ctx
+	started, err := e.Journal.startWork(c.Id)
+	if err != nil {
+		return err
+	}
+	r.StartedAt = started
 	ctx, stop := e.commandContext(ctx, c, r.workEnd(b.Lifetime()))
 	defer stop()
 	// The checkpoint is written just before the first effect outside the journal: the repository
 	// an install may create, or the run a backup or restore records. Until then a stopped backup
 	// or restore changed nothing and runs again; after it, it is settled by what its run did.
 	effect := func() error { return e.checkpoint(c.Id, "backup-effect") }
-	var err error
 	switch b.Action {
 	case "install":
 		old, readErr := e.Journal.schedule(c.ResourceId)
@@ -462,9 +466,9 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		job := s.Installation.Policy.Method == "container-job" && r.ExitCode != nil
 		switch timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded); {
 		case ctx.Err() != nil && job:
-			r.Note = "Container job stopped because its command was cancelled or reached its deadline; its owned container was stopped and the exit result recorded."
+			r.Note = "Container job stopped because its command was cancelled or reached its time limit; its owned container was stopped and the exit result recorded."
 		case ctx.Err() != nil:
-			r.Note = "Run stopped by a cancel, its command's deadline or the agent stopping, and nothing it started is still running. Incomplete output is not a usable backup."
+			r.Note = "Run stopped by a cancel, its command's time limit or the agent stopping, and nothing it started is still running. Incomplete output is not a usable backup."
 		case timedOut && job:
 			r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
 		case timedOut:
@@ -476,9 +480,14 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		// running, so it fails only once its cleanup is confirmed. Otherwise it is left to
 		// inspect, never to stay running: nothing settles a running run on a reserved host.
 		if effects {
-			if left := e.runCleanupLeft(s.Installation.Policy, r.ID, err); left != "" {
+			switch left := e.runCleanupLeft(s.Installation.Policy, r.ID, err); {
+			case left != "":
 				r.State = "needs_attention"
 				r.Note = "The run's cleanup could not be confirmed: " + left + ". Inspect containers with its com.astilba.run label and any target volume, then resolve the run."
+			case job && *r.ExitCode == 0 && errors.Is(err, errJobCleanup):
+				// The job exited 0 and only its own cleanup failed, which removing its container
+				// has now finished.
+				r.State, r.Note, err = "succeeded", "Container job finished; exit result recorded.", nil
 			}
 		}
 	}

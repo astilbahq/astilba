@@ -119,10 +119,9 @@ func (e *Engine) runCleanupLeft(p backup.Policy, run uuid.UUID, err error) strin
 func (e *Engine) removeRunContainers(p backup.Policy, run uuid.UUID) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	filter := make(client.Filters).Add("label", labelServer+"="+p.ServerID.String(), "com.astilba.run="+run.String())
 	// A container already being removed may take a moment to go.
 	for attempt := 0; ; attempt++ {
-		list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filter})
+		list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: runContainers(p.ServerID, run)})
 		if err != nil {
 			return "Docker could not list the run's containers"
 		}
@@ -142,8 +141,8 @@ func (e *Engine) removeRunContainers(p backup.Policy, run uuid.UUID) string {
 	}
 }
 
-// processLeft is a run's error when a process it started in a container it doesn't own, such as
-// pg_dump in its source database, could not be confirmed ended.
+// processLeft is a run's error when a process it ran in a container, such as pg_dump in its source
+// database, could not be confirmed ended (containerExec).
 type processLeft struct{ what string }
 
 func (p *processLeft) Error() string { return p.what }
@@ -192,7 +191,7 @@ func (e *Engine) ResolveScheduledRun(ctx context.Context, policy, run uuid.UUID)
 	if err = e.resumeBackupWriters(ctx, &s); err != nil {
 		return err
 	}
-	list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", labelServer+"="+s.Installation.Policy.ServerID.String(), "com.astilba.run="+run.String())})
+	list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: runContainers(s.Installation.Policy.ServerID, run)})
 	if err != nil {
 		return err
 	}
@@ -250,6 +249,11 @@ func (j *Journal) failRunCommands(tx *bolt.Tx, policy, run uuid.UUID, note strin
 		}
 	}
 	return nil
+}
+
+// runContainers selects the containers a run made on this server, which carry its run label.
+func runContainers(server, run uuid.UUID) client.Filters {
+	return make(client.Filters).Add("label", labelServer+"="+server.String(), "com.astilba.run="+run.String())
 }
 
 // containerName is a listed container's name, or its short ID when it has none.

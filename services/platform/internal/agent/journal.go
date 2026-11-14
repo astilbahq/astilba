@@ -64,8 +64,11 @@ type Record struct {
 	Report       api.AgentReport
 	Checkpoint   string
 	Acknowledged bool
-	AcceptedAt   *time.Time                 `json:",omitempty"`
-	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
+	AcceptedAt   *time.Time `json:",omitempty"`
+	// StartedAt is when this host first took the command up under its execution lock, after any
+	// wait for the host. The client accepts a command when it polls, before that wait.
+	StartedAt *time.Time                 `json:",omitempty"`
+	Railpack  *pipeline.PreparedRailpack `json:",omitempty"`
 }
 type Journal struct {
 	db             *bolt.DB
@@ -539,10 +542,11 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 		if e := j.put(tx, "generations", key, max(generation, c.Generation)); e != nil {
 			return e
 		}
-		// Only an update admitted in time continues across a restart, and a backup command's work
-		// is bounded from its admission (Record.workEnd).
-		accepted := time.Now().UTC()
-		out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "accepted", AcceptedAt: &accepted}
+		out = Record{Command: c, Report: api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "running", Steps: []api.ExecutionStep{}}, Checkpoint: "accepted"}
+		if c.Kind == "update" {
+			accepted := time.Now().UTC()
+			out.AcceptedAt = &accepted
+		}
 		return j.put(tx, "operations", c.Id.String(), out)
 	})
 	return out, err

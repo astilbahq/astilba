@@ -204,10 +204,19 @@ func TestManualAdvancedRunRejectsSupersedingLegacyMirror(t *testing.T) {
 		t.Fatal("manual execution created effects before current installation", err)
 	}
 }
+
+// PLAT-366. A known exit does not settle a job whose container may remain. One its own cleanup
+// lost track of is found by its run label and removed, so the run settles by its exit, succeeding
+// here, and the next occurrence runs. One Docker won't remove holds the host until it is
+// resolved, so the next doesn't.
 func TestKnownJobExitDoesNotReleaseUnconfirmedCleanupFence(t *testing.T) {
-	for _, failure := range []string{"inspect", "remove"} {
-		t.Run(failure, func(t *testing.T) {
-			e, p, created := scheduledJobFixture(t, failure)
+	for _, tc := range []struct {
+		failure string
+		state   string
+		runs    int
+	}{{"inspect", "succeeded", 2}, {"remove", "needs_attention", 1}} {
+		t.Run(tc.failure, func(t *testing.T) {
+			e, p, created := scheduledJobFixture(t, tc.failure)
 			at := time.Now().UTC()
 			if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}}); err != nil {
 				t.Fatal(err)
@@ -219,8 +228,8 @@ func TestKnownJobExitDoesNotReleaseUnconfirmedCleanupFence(t *testing.T) {
 				}
 			}
 			state, err := e.Journal.schedule(p.ID)
-			if err != nil || *created != 1 || len(state.Runs) != 1 || state.Runs[0].State != "needs_attention" || state.Runs[0].ExitCode == nil {
-				t.Fatal("known exit discarded the cleanup fence", err)
+			if err != nil || *created != tc.runs || len(state.Runs) != tc.runs || state.Runs[0].State != tc.state || state.Runs[0].ExitCode == nil {
+				t.Fatal("a known exit settled the job by the wrong cleanup", state.Runs, err)
 			}
 		})
 	}

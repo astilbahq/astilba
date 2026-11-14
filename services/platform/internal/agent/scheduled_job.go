@@ -12,6 +12,9 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// errJobCleanup marks a job whose own cleanup failed after its container was created.
+var errJobCleanup = errors.New("job cleanup unconfirmed")
+
 // errElevatedJob refuses a job whose source is privileged, or shares a volume or network with
 // a service that is: its command could drive that service and so reach the host.
 var errElevatedJob = errors.New("scheduled jobs cannot run in a privileged service or one that shares a volume or network with it")
@@ -95,7 +98,7 @@ func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backu
 			}
 		}
 		if cleanupErr != nil {
-			result = errors.Join(result, cleanupErr)
+			result = errors.Join(result, errJobCleanup, cleanupErr)
 		}
 	}()
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {

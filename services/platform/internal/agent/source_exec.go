@@ -12,11 +12,11 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// sourceExec runs command in a container the run doesn't own, such as pg_dump in its source
+// containerExec runs command in a container, such as pg_dump or psql in a backup's source
 // database, and writes its output to out. It goes through Docker's exec API rather than the
-// docker CLI, because killing the CLI leaves the process running. However it returns, the
-// process has ended, or its error is a *processLeft.
-func (e *Engine) sourceExec(ctx context.Context, containerID string, out io.Writer, command ...string) error {
+// docker CLI, because killing the CLI leaves the process running in a container the run may not
+// own. However it returns, the process has ended, or its error is a *processLeft.
+func (e *Engine) containerExec(ctx context.Context, containerID string, out io.Writer, command ...string) error {
 	// The shell prints its PID in the container, then becomes command, so the agent can signal it.
 	created, err := e.Docker.ExecCreate(ctx, containerID, client.ExecCreateOptions{AttachStdout: true, Cmd: append([]string{"sh", "-c", `echo "$$" && exec "$@"`, "sh"}, command...)})
 	if err != nil {
@@ -36,7 +36,7 @@ func (e *Engine) sourceExec(ctx context.Context, containerID string, out io.Writ
 	code, ended := e.endSourceExec(containerID, created.ID, pid.pid, err != nil || ctx.Err() != nil)
 	switch {
 	case !ended:
-		return &processLeft{what: command[0] + " in its source container could not be confirmed ended"}
+		return &processLeft{what: command[0] + " in container " + containerID[:min(12, len(containerID))] + " could not be confirmed ended"}
 	case err != nil || ctx.Err() != nil || code != 0:
 		return errors.New("data tool failed")
 	}

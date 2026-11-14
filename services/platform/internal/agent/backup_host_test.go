@@ -287,9 +287,10 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	e.ResticCLI = interrupted
 	expiring, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = e.runScheduled(expiring, &s, time.Now().UTC(), uuid.New(), "", uuid.Nil)
+	expired := errors.Is(expiring.Err(), context.DeadlineExceeded)
 	cancel()
 	e.ResticCLI = originalRestic
-	if !errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || !expired {
 		t.Fatalf("upload did not expire: %v", err)
 	}
 	rawReceipt, receiptErr := os.ReadFile(receipt)

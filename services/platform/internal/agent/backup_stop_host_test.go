@@ -34,7 +34,7 @@ import (
 //     its run need attention, the host stays held with its writer stopped, and once the owner
 //     removes the container and rejects the leaf, resumption releases it;
 //   - taken up only in its last seconds, the leaf runs past its deadline, because its work is
-//     bounded from when the agent admitted it, and succeeds;
+//     bounded from when the agent took it up, and succeeds;
 //   - a run that reaches its own timeout fails, and resuming the source releases the host with
 //     no one inspecting it.
 //
