@@ -196,7 +196,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, &p); err != nil {
+	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Deadline, &p); err != nil {
 		// A clone credential that can push, or that the Git server won't vouch for, is never sent,
 		// and refusing it at every poll would hold the runner queue, so the run ends here. A runner
 		// that may hold an earlier delivery is told to stop.
@@ -258,15 +258,17 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	allowed, err := s.previewCommandAllowed(ctx, tx, nil, ws, c)
 	return !allowed, err
 }
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {
-	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID)
+
+// populatePipeline fills in the values of a pipeline that may start until deadline.
+func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, deadline time.Time, p *pipeline.Command) error {
+	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID, deadline)
 	if err != nil {
 		return err
 	}
 	if clone.Err != nil {
 		return clone.Err
 	}
-	p.Access = &pipeline.RunnerAccess{Clone: clone.Value}
+	p.Access = &clone.Value
 	if p.Build != nil {
 		p.BuildSecrets, err = s.buildInputs(ctx, tx, git, ws, env, *p.Build)
 		if err != nil {

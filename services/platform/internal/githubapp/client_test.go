@@ -201,3 +201,53 @@ func TestConcurrentFailuresShareAttempt(t *testing.T) {
 		})
 	}
 }
+
+// A runner's read token must last until the runner may use it, so a cached token that would
+// expire sooner is replaced, and the caller learns when the token it gets expires.
+func TestReadTokenOutlastsItsUse(t *testing.T) {
+	key, e := rsa.GenerateKey(rand.Reader, 2048)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var minted atomic.Int64
+	var lifetime atomic.Int64
+	lifetime.Store(int64(40 * time.Minute))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/2/access_tokens" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		var in struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		_ = json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &in)
+		w.Header().Set("Content-Type", "application/json")
+		stablejson.Encode(w, map[string]any{"token": "ghs_" + strings.Repeat("t", 36) + string(rune('a'+minted.Add(1))), "expires_at": time.Now().Add(time.Duration(lifetime.Load())), "repositories": []map[string]any{{"id": 12}}, "permissions": in.Permissions})
+	}))
+	defer server.Close()
+	c, e := New(Config{ID: 1, ClientID: "fixture-client", Slug: "fixture", ClientSecret: strings.Repeat("c", 32), WebhookSecret: strings.Repeat("w", 32), PrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), APIOrigin: server.URL, WebOrigin: server.URL}, "http://127.0.0.1", true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Ordinary use caches a token with 40 minutes left.
+	short, e := c.Mint(context.Background(), 2, 12, false)
+	if e != nil || minted.Load() != 1 {
+		t.Fatal("first token", e)
+	}
+	// A runner's token for a pipeline that may start for 30 minutes yet needs longer.
+	lifetime.Store(int64(time.Hour))
+	until := time.Now().Add(55 * time.Minute)
+	token, expires, e := c.MintReadUntil(context.Background(), 2, 12, until)
+	if e != nil || minted.Load() != 2 || token == short || expires.Before(until) {
+		t.Fatalf("a cached token expiring too soon was reused: mints=%d expires=%v %v", minted.Load(), expires, e)
+	}
+	// That token now serves both.
+	again, _, e := c.MintReadUntil(context.Background(), 2, 12, until)
+	if e != nil || again != token || minted.Load() != 2 {
+		t.Fatal("a long enough token was not reused", e)
+	}
+	if ordinary, e := c.Mint(context.Background(), 2, 12, false); e != nil || ordinary != token || minted.Load() != 2 {
+		t.Fatal("ordinary use did not reuse the longer token", e)
+	}
+}

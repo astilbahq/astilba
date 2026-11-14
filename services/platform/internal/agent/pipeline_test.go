@@ -272,3 +272,46 @@ func TestStartedPipelineRunsForItsLifetimeFromItsStart(t *testing.T) {
 		t.Fatalf("a pipeline ran past its lifetime from its start: %s %q", r.Report.State, r.Report.Note)
 	}
 }
+
+// A minted clone token that has expired is never sent, and a fetch that fails once it has
+// expired says so rather than failing as Git does.
+func TestExpiredCloneTokenSaysSo(t *testing.T) {
+	journal, plan := testVisualJournal(t)
+	docker, err := client.New(client.WithHost("tcp://127.0.0.1:1"), client.WithAPIVersion("1.56"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncase \"$*\" in\n *\" fetch \"*) echo fetch >> \"$d/calls\"; sleep \"$(cat \"$d/delay\")\"; exit 1;;\n *) cat >/dev/null;;\nesac\n"
+	if err = os.WriteFile(cli, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := Engine{Journal: journal, Docker: docker, DockerCLI: cli}
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID}
+	clone := func(expires *time.Time, delay string) (bool, error) {
+		t.Helper()
+		_ = os.Remove(filepath.Join(dir, "calls"))
+		if err := os.WriteFile(filepath.Join(dir, "delay"), []byte(delay), 0600); err != nil {
+			t.Fatal(err)
+		}
+		p := pipeline.Command{Connection: pipeline.Connection{Provider: "github", BaseURL: "https://api.github.com", Repository: "team/app"}, Commit: strings.Repeat("a", 40), Access: &pipeline.RunnerAccess{Clone: pipeline.Credential{Username: "x-access-token", Password: "token"}, CloneExpires: expires}}
+		err := e.clonePipeline(t.Context(), c, p)
+		_, statErr := os.Stat(filepath.Join(dir, "calls"))
+		return statErr == nil, err
+	}
+	past, later := time.Now().Add(-time.Second), time.Now().Add(time.Hour)
+	if fetched, err := clone(&past, "0"); err != errCloneExpired || fetched {
+		t.Fatal("an expired token was sent", err, fetched)
+	}
+	soon := time.Now().Add(300 * time.Millisecond)
+	if fetched, err := clone(&soon, "1"); err != errCloneExpired || !fetched {
+		t.Fatal("a fetch that failed once its token expired did not say so", err, fetched)
+	}
+	for _, expires := range []*time.Time{&later, nil} {
+		if fetched, err := clone(expires, "0"); err == nil || err == errCloneExpired || !fetched {
+			t.Fatal("a fetch failing with a valid token blamed its expiry", err, fetched)
+		}
+	}
+}

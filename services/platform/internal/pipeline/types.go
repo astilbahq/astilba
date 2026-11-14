@@ -50,6 +50,10 @@ type Access struct {
 // builds untrusted code, so management makes every write to a repository itself.
 type RunnerAccess struct {
 	Clone Credential `json:"clone"`
+	// CloneExpires is when a minted clone credential, such as a GitHub App's, stops working; a
+	// stored one has none. A runner only ever refuses to use the credential after it: the time
+	// grants nothing.
+	CloneExpires *time.Time `json:"cloneExpires,omitempty"`
 }
 type Registry struct {
 	ID         uuid.UUID `json:"id"`
