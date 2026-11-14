@@ -139,7 +139,8 @@ func (x troubleshootingFixture) startServiceAgent(t *testing.T, owner *browser, 
 	if err = x.f.st.Pool.QueryRow(ctx, "UPDATE deployment_units SET server_id=$3 WHERE workspace_id=$1 AND environment_id=$2 AND primary_unit RETURNING id", x.ws, x.env, enrollment.Server.Id).Scan(&plan.UnitID); err != nil {
 		t.Fatal(err)
 	}
-	journal, err := agent.Open(state)
+	// Enrollment sealed the journal's keyring to this host.
+	journal, err := agent.OpenSealed(ctx, state, agent.SystemKeyStore)
 	if err != nil {
 		t.Fatal(err)
 	}

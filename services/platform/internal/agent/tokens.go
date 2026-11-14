@@ -64,7 +64,7 @@ func (c *Client) unseal(ctx context.Context, sealed []byte) (*ecdsa.PrivateKey, 
 	if keys == nil {
 		return nil, errors.New("this agent holds a key but its key store is unavailable")
 	}
-	der, err := keys.Unseal(ctx, sealed)
+	der, err := keys.Unseal(ctx, credentialName, sealed)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ func (c *Client) newSealedKey(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return keys.Seal(ctx, der)
+	return keys.Seal(ctx, credentialName, der)
 }
 
 // bindable reports whether a legacy agent should replace its bearer with a key now.

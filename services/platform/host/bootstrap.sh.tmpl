@@ -408,7 +408,8 @@ verify_hash "$scratch/agent" "$release" || die 'The agent digest does not match 
 chmod 0700 "$scratch/agent"
 identity=$("$scratch/agent" describe)
 expected_identity=$(printf '{"Arch":"%s","Commit":"%s","KeyAuth":1,"MinimumVersion":"%s","Protocol":1,"Version":"%s"}' "$arch" "${fields[6]}" "${fields[7]}" "${fields[1]}")
-[[ "$identity" == "$expected_identity" ]] || die 'Compiled agent identity does not match the signed release.'
+# The journal format a release reads isn't signed, and a fresh host has no journal yet, so any is fine.
+[[ "$(sed -E 's/,"StateVersion":[0-9]{1,9}//' <<<"$identity")" == "$expected_identity" ]] || die 'Compiled agent identity does not match the signed release.'
 # The verified CLI validates the contact address before host installation.
 timeout 15 "$scratch/agent" preflight --state "$scratch/preflight" --acme-email "$contact" >/dev/null
 if ! "$docker_ready"; then
