@@ -12,7 +12,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Pool is a database the broker's custody commands use directly, with transactions of their own.
@@ -32,6 +31,9 @@ var (
 	// ErrCanaryMismatch is a canary the configured backend cannot open: a different keyring or
 	// provider key, or a database copied under another installation ID.
 	ErrCanaryMismatch = errors.New("the configured key backend cannot open the installation's canary")
+	// ErrKeyringMismatch is a keyring that cannot open the values already stored, met before any
+	// canary exists to say so: a database restored or upgraded from before canaries.
+	ErrKeyringMismatch = errors.New("the configured keyring cannot open the installation's stored secrets")
 )
 
 // Install checks the database and the configured backend belong to one installation before any
@@ -66,6 +68,9 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 		return err
 	}
 	if err = b.makeCanaries(ctx, pool, id, run); err != nil {
+		if errors.Is(err, ErrKeyringMismatch) {
+			return refuse(err, map[string]string{})
+		}
 		return err
 	}
 	canaries, err := q.InstallationKeyCanaries(ctx, b.backend.ID())
@@ -93,6 +98,7 @@ var causes = map[error]string{
 	ErrInstallationMismatch: "installation-id",
 	ErrBackendNotRegistered: "backend",
 	ErrCanaryMismatch:       "canary",
+	ErrKeyringMismatch:      "keyring",
 }
 
 // register makes the configured backend the installation's first, or checks it is already one the
@@ -130,10 +136,19 @@ func (b *Broker) register(ctx context.Context, pool Pool, run uuid.UUID) error {
 // makeCanaries wraps a canary for every class the backend has none for. The wrapping uses the
 // key service, so it happens before the transaction that stores it; an instance that lost the
 // race keeps the canary already stored.
+//
+// A backend's first canaries are what every later start is checked against, so before making them
+// the keyring must open what is already stored. Otherwise a database upgraded or restored from
+// before canaries, started once with the wrong keyring, would refuse the right one ever after.
 func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run uuid.UUID) error {
 	existing, err := db.New(pool).InstallationKeyCanaries(ctx, b.backend.ID())
 	if err != nil {
 		return err
+	}
+	if len(existing) == 0 {
+		if err = b.checkStored(ctx, pool); err != nil {
+			return err
+		}
 	}
 	made := map[custody.Class][]byte{}
 	for _, class := range custody.Classes {
@@ -152,10 +167,9 @@ func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run 
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Instances racing here wait on each other's rows: only the first insert of a class counts,
+	// and records its event in the same transaction.
 	q := db.New(tx)
-	if err = q.LockCustody(ctx); err != nil {
-		return err
-	}
 	for _, class := range custody.Classes {
 		blob, ok := made[class]
 		if !ok {
@@ -172,6 +186,33 @@ func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run 
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// checkStored opens the newest stored secret, if there is one, in a recorded session of its own.
+func (b *Broker) checkStored(ctx context.Context, pool Pool) error {
+	v, err := db.New(pool).NewestSecretVersion(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	item := Item{Kind: SecretVersion, ID: v.ID}
+	s, err := b.Begin(ctx, Request{Workspace: v.WorkspaceID, Purpose: Inspect, Principal: System("custody-check"), Items: []Item{item}, Reason: "keyring-check"})
+	if err != nil {
+		return err
+	}
+	value, err := s.Open(item, v.EncryptedValue)
+	clear(value)
+	if err != nil {
+		s.Close(ctx, Failed)
+		if SessionFailure(err) {
+			return err
+		}
+		return ErrKeyringMismatch
+	}
+	s.Close(ctx, Used)
+	return nil
 }
 
 // keyEvent is one row of the installation's key history.
@@ -192,12 +233,11 @@ func (b *Broker) event(ctx context.Context, q *db.Queries, e keyEvent) error {
 	if err != nil {
 		return err
 	}
-	optional := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	return q.InsertInstallationKeyEvent(write, db.InsertInstallationKeyEventParams{
-		ID: uuid.New(), RunID: e.run, Kind: e.kind, Operator: optional(e.operator), Reason: optional(e.reason),
-		BackendID: optional(b.backend.ID()), Details: details,
+		ID: uuid.New(), RunID: e.run, Kind: e.kind, Operator: optionalText(e.operator), Reason: optionalText(e.reason),
+		BackendID: optionalText(b.backend.ID()), Details: details,
 	})
 }
 
@@ -274,7 +314,7 @@ func (s Status) Pending() []string {
 		}
 	}
 	for _, run := range s.Unfinished {
-		out = append(out, fmt.Sprintf("%s run %s at %s has no finish: it stopped part way or is running now", run.Kind, run.RunID, run.At.UTC().Format(time.RFC3339)))
+		out = append(out, fmt.Sprintf("%s run %s at %s has no finish, and no later run has finished: it stopped part way or is running now", run.Kind, run.RunID, run.At.UTC().Format(time.RFC3339)))
 	}
 	return out
 }

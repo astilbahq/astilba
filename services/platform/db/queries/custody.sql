@@ -35,11 +35,20 @@ ORDER BY at DESC,id DESC LIMIT @page_size;
 
 -- name: UnfinishedCustodyRuns :many
 -- A command records `<name>-started` first and `<name>-finished` last, so a start with no finish is
--- one that stopped part way, or is running now.
+-- one that stopped part way, or is running now. A later run of the same command that finished
+-- supersedes it: events are never removed, so nothing else could clear it.
 SELECT s.run_id,s.kind,s.at,s.operator FROM installation_key_events s
 WHERE s.kind LIKE '%-started'
     AND NOT EXISTS(SELECT 1 FROM installation_key_events f WHERE f.run_id = s.run_id AND f.kind LIKE '%-finished')
+    AND NOT EXISTS(SELECT 1 FROM installation_key_events l WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.at > s.at)
 ORDER BY s.at;
+
+-- name: NewestSecretVersion :one
+-- unscoped: start-up checks the keyring against one stored secret, from any workspace.
+SELECT workspace_id,id,encrypted_value FROM secret_versions ORDER BY created_at DESC,id LIMIT 1;
 
 -- name: CustodyStage :one
 SELECT stage FROM custody_stage;
+
+-- name: BlankKeyEventOperators :one
+SELECT blank_installation_key_operators(@batch::integer)::integer AS blanked;

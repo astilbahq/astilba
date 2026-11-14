@@ -53,7 +53,8 @@ previously encrypted data.
 
 1. Provision an empty PostgreSQL database and the keyring. Do not expose the database publicly.
 2. With the same image and configuration as the server, run `astilba migrate`.
-   Migrations are explicit; normal startup refuses an incompatible schema.
+   Migrations are explicit; normal startup refuses an incompatible schema. Then run
+   `astilba custody status` and set `ASTILBA_INSTALLATION_ID` to the installation ID it shows.
 3. Run `astilba bootstrap --email owner@example.com --name Owner --workspace Personal`.
    Provide the password on stdin or with `--password-file` pointing to an owner-only file.
 4. Configure an HTTPS reverse proxy for the public origin, forwarding to the
@@ -82,27 +83,33 @@ same installation keeps its ID.
 
 Every command that uses keys checks them before it starts:
 
-- the first start registers its key backend, and wraps a canary under each key class;
+- the first start registers its key backend, and wraps a canary under each key class. If the
+  database already holds secrets, as after upgrading or restoring a backup from before canaries,
+  it first opens the newest one, recorded in its workspace's secret access records, and refuses a
+  keyring that cannot;
 - later starts open the canaries, so a keyring other than the installation's is refused, as is a
   database whose installation ID was changed;
 - a refused start is recorded, with its cause.
 
 `astilba custody` reports on and changes the installation's keys. Each change it makes is
 recorded in the installation's key history. The history holds the operator's name and reason; a
-workspace's [secret access records](#operational-bounds-and-retention) name only the run. A
-database trigger refuses to change or remove a key event. That is defence in depth against
-mistakes, not proof against whoever owns the database, who can remove the trigger.
+workspace's [secret access records](#operational-bounds-and-retention) name only the run.
+`--operator` can be a role, such as `on-call`, rather than a person. Every event is kept, but its
+operator and reason are blanked once it is older than the secret access retention period, 400
+days by default. A database trigger refuses any other change to an event, and its removal. That
+is defence in depth against mistakes, not proof against whoever owns the database, who can
+remove the trigger.
 
 | Command | What it does |
 | --- | --- |
 | `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage and any pending work. It changes nothing. |
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
-| `astilba custody rewrap --operator <name> [--reason <text>]` | Wraps every stored value's key, and the canaries, under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+| `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, and the canaries, under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
 
-`custody status` lists a command that recorded a start and no finish: it stopped part way, or is
-running. The custody stage counts how far the installation has moved through key custody
-changes. `astilba migrate` refuses a release more than one stage ahead, so take those releases one
-at a time, as their upgrade notes say.
+`custody status` lists a command that recorded a start and no finish, unless a later run of it
+finished: it stopped part way, or is running. The custody stage counts how far the installation
+has moved through key custody changes. `astilba migrate` refuses a release more than one stage
+ahead of the installation, so a release that starts a stage says so in its notes.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
@@ -505,6 +512,7 @@ tls:
 
 Set `ASTILBA_HOSTED=true`, plus all of:
 
+- `ASTILBA_INSTALLATION_ID`: the installation ID from `astilba custody status`. See [key custody](#key-custody).
 - `ASTILBA_HOSTED_COHORT_LIMIT`: total admitted and reserved workspace invitations.
 - `ASTILBA_HOSTED_SERVER_LIMIT`: allowance applied to new hosted workspaces.
 - `ASTILBA_HOSTED_SUPPORT`: published support hours and scope.
@@ -760,7 +768,8 @@ the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-acce
 not part of workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
 kept, from 30 to 3650 days with a default of 400; hosted installations keep 400. `astilba
 migrate` writes the value into the database, so a change takes effect at the next migrate, and
-serving never changes it. An hourly job removes expired records, up to 5,000 a run.
+serving never changes it. An hourly job removes expired records, up to 5,000 a run. The same
+job blanks the operator and reason of [installation key events](#key-custody) past that period.
 
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each

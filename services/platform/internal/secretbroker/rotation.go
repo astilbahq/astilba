@@ -93,15 +93,17 @@ func (r *Rotation) RewrapCanaries(ctx context.Context) error {
 	return nil
 }
 
-// Close ends the session and records the run's finish. A run that succeeded also records how many
-// wrappings it replaced; a failed one rolled its values back, so its counts would mislead.
+// ValuesRewrapped records how many values the run rewrapped, in the transaction that stores them,
+// so the record exists exactly when they do.
+func (r *Rotation) ValuesRewrapped(ctx context.Context, q *db.Queries) error {
+	return r.session.broker.event(ctx, q, keyEvent{run: r.run, kind: "values-rewrapped", details: map[string]string{"values": strconv.FormatInt(r.values.Load(), 10)}})
+}
+
+// Close ends the session and records the run's finish, with how many canaries it rewrapped. Each
+// canary is stored as it is rewrapped, so the count holds whatever the outcome.
 func (r *Rotation) Close(ctx context.Context, outcome Outcome) {
 	r.session.Close(ctx, outcome)
-	var details map[string]string
-	if outcome == Used {
-		details = map[string]string{"values": strconv.FormatInt(r.values.Load(), 10), "canaries": strconv.Itoa(r.canaries)}
-	}
-	r.session.broker.finish(ctx, r.run, "rewrap-finished", outcome, details)
+	r.session.broker.finish(ctx, r.run, "rewrap-finished", outcome, map[string]string{"canaries": strconv.Itoa(r.canaries)})
 }
 
 // finish records a run's last event. A finish that cannot be recorded leaves the run unfinished

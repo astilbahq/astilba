@@ -79,8 +79,14 @@ func checkStage(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return errors.New("cannot read the custody stage")
 	}
-	if CustodyStage > completed+1 {
-		return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: upgrade through the releases between them first", CustodyStage, completed)
+	return stageRefusal(CustodyStage, completed)
+}
+
+// stageRefusal refuses a release that completes stage required on an installation that has
+// completed stage completed, unless it is the next stage or an earlier one.
+func stageRefusal(required, completed int) error {
+	if required > completed+1 {
+		return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: upgrade through the releases between them first", required, completed)
 	}
 	return nil
 }

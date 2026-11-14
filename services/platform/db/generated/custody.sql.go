@@ -13,6 +13,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const blankKeyEventOperators = `-- name: BlankKeyEventOperators :one
+SELECT blank_installation_key_operators($1::integer)::integer AS blanked
+`
+
+func (q *Queries) BlankKeyEventOperators(ctx context.Context, batch int32) (int32, error) {
+	row := q.db.QueryRow(ctx, blankKeyEventOperators, batch)
+	var blanked int32
+	err := row.Scan(&blanked)
+	return blanked, err
+}
+
 const custodyBackends = `-- name: CustodyBackends :many
 SELECT backend_id,role FROM custody_backends ORDER BY created_at,backend_id
 `
@@ -195,6 +206,24 @@ func (q *Queries) LockCustody(ctx context.Context) error {
 	return err
 }
 
+const newestSecretVersion = `-- name: NewestSecretVersion :one
+SELECT workspace_id,id,encrypted_value FROM secret_versions ORDER BY created_at DESC,id LIMIT 1
+`
+
+type NewestSecretVersionRow struct {
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+	EncryptedValue []byte    `json:"encrypted_value"`
+}
+
+// unscoped: start-up checks the keyring against one stored secret, from any workspace.
+func (q *Queries) NewestSecretVersion(ctx context.Context) (NewestSecretVersionRow, error) {
+	row := q.db.QueryRow(ctx, newestSecretVersion)
+	var i NewestSecretVersionRow
+	err := row.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedValue)
+	return i, err
+}
+
 const registerCustodyBackend = `-- name: RegisterCustodyBackend :exec
 INSERT INTO custody_backends(backend_id,role) VALUES($1,'read+write')
 `
@@ -234,6 +263,7 @@ const unfinishedCustodyRuns = `-- name: UnfinishedCustodyRuns :many
 SELECT s.run_id,s.kind,s.at,s.operator FROM installation_key_events s
 WHERE s.kind LIKE '%-started'
     AND NOT EXISTS(SELECT 1 FROM installation_key_events f WHERE f.run_id = s.run_id AND f.kind LIKE '%-finished')
+    AND NOT EXISTS(SELECT 1 FROM installation_key_events l WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.at > s.at)
 ORDER BY s.at
 `
 
@@ -245,7 +275,8 @@ type UnfinishedCustodyRunsRow struct {
 }
 
 // A command records `<name>-started` first and `<name>-finished` last, so a start with no finish is
-// one that stopped part way, or is running now.
+// one that stopped part way, or is running now. A later run of the same command that finished
+// supersedes it: events are never removed, so nothing else could clear it.
 func (q *Queries) UnfinishedCustodyRuns(ctx context.Context) ([]UnfinishedCustodyRunsRow, error) {
 	rows, err := q.db.Query(ctx, unfinishedCustodyRuns)
 	if err != nil {

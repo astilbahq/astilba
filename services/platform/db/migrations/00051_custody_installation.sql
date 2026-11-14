@@ -5,7 +5,7 @@
 -- was made for DNS first, so it moves here and stays the same.
 CREATE TABLE installation (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
-    id uuid NOT NULL UNIQUE,
+    id uuid NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO installation (id) SELECT id FROM dns_installation;
@@ -13,8 +13,9 @@ DROP TABLE dns_installation;
 
 -- Every change to the installation's keys and custody, in the order it happened: a backend
 -- registered, a canary made, a rewrap started and finished, a start refused. The operator's name
--- and reason stay here, never in a tenant's records. Rows hold IDs and counts only, never key
--- material, and are never changed or removed.
+-- and reason stay here, never in a tenant's records, until the secret access retention period
+-- passes, when they are blanked. Rows hold IDs and counts only, never key material, and are
+-- otherwise never changed or removed.
 CREATE TABLE installation_key_events (
     id uuid PRIMARY KEY,
     at timestamptz NOT NULL DEFAULT now(),
@@ -34,20 +35,46 @@ CREATE TABLE installation_key_events (
 CREATE INDEX installation_key_events_at ON installation_key_events (at);
 CREATE INDEX installation_key_events_run ON installation_key_events (run_id);
 
--- The database's clock dates each event, and no event is changed or removed afterwards.
+-- The database's clock dates each event. Afterwards the only change allowed is blanking the
+-- operator and reason of an event past the retention period, leaving every other column as it
+-- was; the whole row is compared, so a column added later is kept too. This guards against
+-- mistakes, not against whoever owns the database. The search path names pg_temp last, so a
+-- caller's temporary table never stands in for the retention setting.
 -- +goose StatementBegin
-CREATE FUNCTION installation_key_events_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION installation_key_events_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
         NEW.at := now();
         RETURN NEW;
     END IF;
-    RAISE EXCEPTION 'installation key events are never changed or removed';
+    IF TG_OP = 'UPDATE' AND NEW.operator IS NULL AND NEW.reason IS NULL
+        AND to_jsonb(NEW) - 'operator' - 'reason' = to_jsonb(OLD) - 'operator' - 'reason'
+        AND OLD.at < now() - make_interval(days => (SELECT retention_days FROM secret_access_settings)) THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'installation key events are never changed or removed, except to blank an operator past retention';
 END
 $$;
 -- +goose StatementEnd
 CREATE TRIGGER installation_key_events_insert BEFORE INSERT ON installation_key_events FOR EACH ROW EXECUTE FUNCTION installation_key_events_guard();
 CREATE TRIGGER installation_key_events_change BEFORE UPDATE OR DELETE ON installation_key_events FOR EACH ROW EXECUTE FUNCTION installation_key_events_guard();
+
+-- Blanks the operator and reason of at most batch of the oldest events past the retention period.
+-- It runs with its owner's rights, as expire_secret_access does, so the serving role needs no
+-- right to change events itself.
+-- +goose StatementBegin
+CREATE FUNCTION blank_installation_key_operators(batch integer) RETURNS integer LANGUAGE sql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+    WITH blanked AS (
+        UPDATE installation_key_events SET operator = NULL, reason = NULL WHERE id IN (
+            SELECT id FROM installation_key_events
+            WHERE (operator IS NOT NULL OR reason IS NOT NULL)
+                AND at < now() - make_interval(days => (SELECT retention_days FROM secret_access_settings))
+            ORDER BY at LIMIT least(greatest(batch, 1), 10000)
+        ) RETURNING 1
+    )
+    SELECT count(*)::integer FROM blanked
+$$;
+-- +goose StatementEnd
 
 -- The key services the installation's keys are wrapped under. Configuration names the backend an
 -- instance reads from; this table says which configured backends new keys are wrapped for, so
@@ -82,6 +109,7 @@ INSERT INTO custody_stage (singleton, stage) VALUES (true, 1);
 DROP TABLE custody_stage;
 DROP TABLE installation_key_canaries;
 DROP TABLE custody_backends;
+DROP FUNCTION blank_installation_key_operators(integer);
 DROP TABLE installation_key_events;
 DROP FUNCTION installation_key_events_guard();
 CREATE TABLE dns_installation (

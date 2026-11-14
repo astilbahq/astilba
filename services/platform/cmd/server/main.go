@@ -107,18 +107,22 @@ func run() error {
 	if os.Args[1] == "custody" {
 		return custodyCommand(ctx, c, pool, st, os.Args[2:])
 	}
-	// Every other command may use keys, so it first checks they and the database belong to one
-	// installation. Serving checks its database first, to say why it cannot reach it.
+	// A command that uses keys first checks they and the database belong to one installation.
+	// Serving checks its database first, to say why it cannot reach it.
 	install := func() error {
 		if err := c.RequirePinnedInstallation(); err != nil {
 			return err
 		}
 		return st.Broker.Install(ctx, pool, c.InstallationID, false)
 	}
-	if os.Args[1] != "serve" {
+	switch os.Args[1] {
+	case "serve":
+	case "recover-cross-host", "invite", "prepare-recovery", "grant-management", "bootstrap":
 		if e = install(); e != nil {
 			return e
 		}
+	default:
+		return errors.New("unknown command")
 	}
 	switch os.Args[1] {
 	case "recover-cross-host":

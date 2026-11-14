@@ -262,7 +262,7 @@ try {
   execFileSync(binary,["keygen","--out",hostedEnv.ASTILBA_KEYRING],{env:hostedEnv,stdio:"inherit"});
   execFileSync(binary,["migrate"],{env:hostedEnv,stdio:"inherit"});
   // Hosting pins the installation ID that migrating made, as an operator does from `custody status`.
-  hostedEnv.ASTILBA_INSTALLATION_ID=docker(["exec",name,"psql","--username","postgres","--dbname",hostedDatabase,"-v","ON_ERROR_STOP=1","-tAc","SELECT id FROM dns_installation"]).trim();
+  hostedEnv.ASTILBA_INSTALLATION_ID=docker(["exec",name,"psql","--username","postgres","--dbname",hostedDatabase,"-v","ON_ERROR_STOP=1","-tAc","SELECT id FROM installation"]).trim();
   for (const project of ["chromium","webkit"]) {
     for (const purpose of ["signup"]) {
       const token=`browser-${project}-${purpose}-invitation-code`;

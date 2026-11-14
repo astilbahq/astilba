@@ -141,8 +141,12 @@ func TestRewrapRecordsStartAndFinish(t *testing.T) {
 	if started[0].Operator.String != "operator@example.test" || started[0].Reason.String != "yearly rotation" {
 		t.Fatalf("start: %+v", started[0])
 	}
-	if d := details(t, finished[0]); d["outcome"] != "used" || d["canaries"] != "4" || d["values"] != "1" {
+	if d := details(t, finished[0]); d["outcome"] != "used" || d["canaries"] != "4" {
 		t.Fatalf("finish: %s", finished[0].Details)
+	}
+	// The values' count is recorded with them, so it exists exactly when they were stored.
+	if values := keyEvents(t, f, "values-rewrapped"); len(values) != 1 || values[0].RunID != started[0].RunID || details(t, values[0])["values"] != "1" {
+		t.Fatalf("values: %+v", values)
 	}
 	var ref string
 	if err := f.st.Pool.QueryRow(ctx, `SELECT operator_ref FROM secret_access WHERE principal_kind='operator'`).Scan(&ref); err != nil || ref != started[0].RunID.String() {
@@ -188,6 +192,13 @@ func TestCustodyStatusReportsPendingWork(t *testing.T) {
 	}
 	if len(keyEvents(t, f, "canary-created")) != before {
 		t.Fatal("status made a canary")
+	}
+	// A later run that finishes supersedes one that never did.
+	if err = f.st.Rewrap(ctx, "operator@example.test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation); err != nil || len(s.Unfinished) != 0 {
+		t.Fatalf("unfinished after a finished run: %+v %v", s.Unfinished, err)
 	}
 	if s, err = f.st.Broker.Status(ctx, f.st.Pool, uuid.New()); err != nil || s.Matches || !strings.Contains(s.Pending()[0], "names another installation") {
 		t.Fatalf("mismatched pin: %v", err)
@@ -268,5 +279,95 @@ func TestConcurrentFirstStartsRegisterOneBackend(t *testing.T) {
 	}
 	if n := len(keyEvents(t, f, "canary-created")) - canaries; n != len(custody.Classes) {
 		t.Fatalf("%d canaries made", n)
+	}
+}
+
+// Before a backend's first canaries, start-up opens a stored secret with the keyring, recorded in
+// that secret's workspace, so a database from before canaries never pins a keyring that cannot
+// read it.
+func TestFirstCanariesNeedAKeyringThatOpensStoredSecrets(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	owner, ws, path := secretEnvironment(t, f)
+	owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "stored-before-canaries"}, 201, nil)
+	if _, err := f.st.Pool.Exec(ctx, "DELETE FROM custody_backends"); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := cryptobox.New("test")
+	if err := restart(f, other, uuid.Nil); !errors.Is(err, secretbroker.ErrKeyringMismatch) {
+		t.Fatalf("wrong keyring: %v", err)
+	}
+	refusals := keyEvents(t, f, "start-refused")
+	if len(refusals) == 0 || details(t, refusals[len(refusals)-1])["cause"] != "keyring" {
+		t.Fatal("refusal not recorded")
+	}
+	var canaries int
+	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM installation_key_canaries").Scan(&canaries); err != nil || canaries != 0 {
+		t.Fatalf("a refused keyring made %d canaries: %v", canaries, err)
+	}
+	if err := restart(f, keysOf(f.st), uuid.Nil); err != nil {
+		t.Fatalf("right keyring: %v", err)
+	}
+	var checks int
+	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM secret_access WHERE workspace_id=$1 AND purpose='inspect' AND job='custody-check'", ws).Scan(&checks); err != nil || checks != 2 {
+		t.Fatalf("%d recorded checks: %v", checks, err)
+	}
+}
+
+// Past the retention period an event keeps everything but its operator's name and reason, which
+// the sweep blanks. Nothing else may change an event, blank a recent one, or remove one.
+func TestKeyEventOperatorsAreBlankedPastRetention(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	exec := func(statement string, args ...any) error {
+		_, err := f.st.Pool.Exec(ctx, statement, args...)
+		return err
+	}
+	// Only the database dates events, so the test sets that aside to make old ones.
+	event := func(days int) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		for _, err := range []error{
+			exec("ALTER TABLE installation_key_events DISABLE TRIGGER installation_key_events_insert"),
+			exec(`INSERT INTO installation_key_events(id,at,run_id,kind,operator,reason) VALUES($1,now()-make_interval(days => $2),gen_random_uuid(),'rewrap-started','operator@example.test','yearly rotation')`, id, days),
+			exec("ALTER TABLE installation_key_events ENABLE TRIGGER installation_key_events_insert"),
+		} {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return id
+	}
+	old, recent := event(401), event(399)
+	for name, try := range map[string]error{
+		"blanking a recent event":    exec("UPDATE installation_key_events SET operator=NULL,reason=NULL WHERE id=$1", recent),
+		"blanking and changing more": exec("UPDATE installation_key_events SET operator=NULL,reason=NULL,kind='edited' WHERE id=$1", old),
+		"blanking only the operator": exec("UPDATE installation_key_events SET operator=NULL WHERE id=$1", old),
+		"renaming the operator":      exec("UPDATE installation_key_events SET operator='someone else' WHERE id=$1", old),
+		"removing an old event":      exec("DELETE FROM installation_key_events WHERE id=$1", old),
+	} {
+		if try == nil || !strings.Contains(try.Error(), "never changed or removed") {
+			t.Errorf("%s: %v", name, try)
+		}
+	}
+	blanked, err := db.New(f.st.Pool).BlankKeyEventOperators(ctx, 1000)
+	if err != nil || blanked != 1 {
+		t.Fatalf("blanked %d: %v", blanked, err)
+	}
+	read := func(id uuid.UUID) (operator, reason *string, kind string) {
+		t.Helper()
+		if err := f.st.Pool.QueryRow(ctx, "SELECT operator,reason,kind FROM installation_key_events WHERE id=$1", id).Scan(&operator, &reason, &kind); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if operator, reason, kind := read(old); operator != nil || reason != nil || kind != "rewrap-started" {
+		t.Fatalf("old event: %v %v %s", operator, reason, kind)
+	}
+	if operator, reason, _ := read(recent); operator == nil || reason == nil {
+		t.Fatal("a recent event was blanked")
+	}
+	if blanked, err = db.New(f.st.Pool).BlankKeyEventOperators(ctx, 1000); err != nil || blanked != 0 {
+		t.Fatalf("blanked again %d: %v", blanked, err)
 	}
 }

@@ -230,6 +230,17 @@ func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 	storeKeys.Store(st, keys)
 }
 
+// restoredKeys gives a store another installation's keyring, as restoring that installation's
+// database beside its keyring does: the custody the store set up under its own keyring is not
+// part of what was restored.
+func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
+	t.Helper()
+	if _, err := st.Pool.Exec(context.Background(), "DELETE FROM custody_backends"); err != nil {
+		t.Fatal(err)
+	}
+	useKeys(t, st, keys)
+}
+
 // secretIdentity is the identity a secret version's value is sealed under, for tests that open
 // it with the keyring directly.
 func secretIdentity(workspace, id uuid.UUID) string {

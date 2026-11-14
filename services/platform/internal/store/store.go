@@ -499,7 +499,7 @@ func (s *Store) rewrapValues(ctx context.Context, rotation *secretbroker.Rotatio
 				return err
 			}
 		}
-		return nil
+		return rotation.ValuesRewrapped(ctx, q)
 	})
 }
 

@@ -63,6 +63,13 @@ Upgrade management before the agents. These steps assume
    docker compose run --rm --no-deps platform migrate
    ```
 
+   Then check what [key custody](hosting.md#key-custody) still needs. Set
+   `ASTILBA_INSTALLATION_ID` to the installation ID it shows if it says the ID is not pinned:
+
+   ```sh
+   docker compose run --rm --no-deps platform custody status
+   ```
+
 4. Start it with `docker compose up -d --wait platform`.
 5. **Check** that:
    - `/healthz` answers 204 through your proxy;
