@@ -159,3 +159,33 @@ func waitPreviewRequest(t *testing.T, h *hungPreview, id uuid.UUID, done func(pr
 		time.Sleep(30 * time.Millisecond)
 	}
 }
+
+// A host's preview slots are the previews running on it, wherever their policies point. Ten previews
+// run on the policy's host under another policy that names a different host, as recovery can leave
+// them, so a new preview there waits for a slot rather than taking an eleventh.
+func TestPreviewSlotsCountThePreviewsRunningOnAHost(t *testing.T) {
+	h := newHungPreview(t)
+	other, _, _ := enrollPreviewHost(t, h.hungBuild, "Other preview host")
+	running := seedPreviews(t, h.f, h.b, h.ws, other)
+	for number := 9; number < 17; number++ {
+		openPreview(t, h.f, h.b, h.ws, running, number)
+	}
+	execSQL(t, h.hungBuild, `UPDATE deployment_units SET server_id=$1 WHERE environment_id IN (SELECT environment_id FROM preview_requests WHERE policy_id=$2)`, h.server, running.policy)
+	// Nothing checks them again during the test.
+	execSQL(t, h.hungBuild, `UPDATE preview_requests SET next_check_at=now()+interval '1 day' WHERE policy_id=$1`, running.policy)
+
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+	waiting := waitPreviewAt(t, h, h.path, "approval_required")
+	h.b.call("POST", h.path+"/previews/"+waiting.Id.String()+"/actions", map[string]any{"action": "approve", "head": waiting.Head, "headRepository": waiting.HeadRepository}, 200, nil)
+	if queued := waitPreviewAt(t, h, h.path, "queued"); queued.EnvironmentId != nil || !strings.Contains(queued.Note, "slot") {
+		t.Fatal("a preview took an eleventh slot on its host:", queued.State, queued.Note)
+	}
+
+	// Once one of them ends, the new preview takes its slot.
+	execSQL(t, h.hungBuild, `UPDATE preview_requests SET state='deleted' WHERE id=$1`, running.requests[0])
+	h.pullRequestHook(t)
+	build := nextPreviewCommand(t, h)
+	if build.Pipeline == nil || build.ServerId != h.server {
+		t.Fatalf("the preview didn't start on its policy's host once a slot was free: %+v", build)
+	}
+}
