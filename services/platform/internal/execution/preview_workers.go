@@ -432,6 +432,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if why != "" {
 			return s.previewState(ctx, tx, id, "failed", "Preview environment was not created: "+why, 5*time.Minute)
 		}
+		git.createdEnvironments[*r.View.EnvironmentId] = true
 	}
 	if r.Config == nil || r.PolicyGeneration != p.Generation {
 		return s.previewState(ctx, tx, id, "blocked", "The preview's frozen policy needs owner review.", 5*time.Minute)

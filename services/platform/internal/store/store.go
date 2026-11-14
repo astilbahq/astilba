@@ -116,12 +116,18 @@ func IfMissing(err, missing error) error {
 }
 
 func (s *Store) Transaction(ctx context.Context, fn func(*db.Queries) error) error {
+	return s.TransactionTx(ctx, func(_ pgx.Tx, q *db.Queries) error { return fn(q) })
+}
+
+// TransactionTx is Transaction for work that also needs the transaction itself, such as a job
+// queued to commit or roll back with it.
+func (s *Store) TransactionTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err = fn(db.New(tx)); err != nil {
+	if err = fn(tx, db.New(tx)); err != nil {
 		return Normalize(err)
 	}
 	return Normalize(tx.Commit(ctx))

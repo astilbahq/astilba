@@ -295,6 +295,8 @@ func Title(kind api.AlertKind) string {
 		return "Private network updates are failing"
 	case api.IdentityConflict:
 		return "Another copy of a server's agent key is in use"
+	case api.RecoveryWindow:
+		return "Cross-host recovery window is shorter than 35 days"
 	default:
 		return "Operational alert"
 	}

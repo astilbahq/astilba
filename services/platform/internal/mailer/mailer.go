@@ -58,6 +58,11 @@ func New(c Config) (*Mailer, error) {
 	}
 	return &Mailer{config: c}, nil
 }
+
+// Configured reports whether this installation sends email at all. Send fails with
+// ErrUnavailable both when it does not and when a relay fails, which may pass.
+func (m *Mailer) Configured() bool { return m.config.Address != "" || m.console != nil }
+
 func (m *Mailer) Send(ctx context.Context, to, subject, body string) error {
 	c := m.config
 	if c.Address == "" && m.console == nil {

@@ -44,6 +44,17 @@ func imageChainsCost(members map[string]*imageMember, limit imageLoadLimit) (ima
 			return imageCost{}, err
 		}
 	}
+	return chainsCost(chains, func(name string) (imageCost, bool) {
+		if m := members[name]; m != nil {
+			return m.cost, true
+		}
+		return imageCost{}, false
+	}, limit)
+}
+
+// chainsCost counts each distinct chain of layers once: the cost of its top layer, which
+// layer gives, and that layer's own bookkeeping.
+func chainsCost(chains [][]string, layer func(string) (imageCost, bool), limit imageLoadLimit) (imageCost, error) {
 	type node struct {
 		parent int32
 		name   string
@@ -52,20 +63,20 @@ func imageChainsCost(members map[string]*imageMember, limit imageLoadLimit) (ima
 	var cost imageCost
 	for _, chain := range chains {
 		if len(chain) > imageChainDepth {
-			return imageCost{}, unmeasurableImage("an image in its archive has more layers than Docker can stack")
+			return imageCost{}, unmeasurableImage("it has an image with more layers than Docker can stack")
 		}
 		parent := int32(0)
 		for _, name := range chain {
-			m := members[name]
-			if m == nil {
-				return imageCost{}, unmeasurableImage("its manifests name a layer its archive does not have")
-			}
 			key := node{parent, name}
 			id, ok := nodes[key]
 			if !ok {
+				layerCost, known := layer(name)
+				if !known {
+					return imageCost{}, unmeasurableImage("its manifests name a layer its archive does not have")
+				}
 				id = int32(len(nodes) + 1)
 				nodes[key] = id
-				cost.add(m.cost)
+				cost.add(layerCost)
 				cost.add(imageCost{Bytes: storageLayerBytes, Entries: storageLayerEntries})
 				if err := limit.check(cost); err != nil {
 					return cost, err

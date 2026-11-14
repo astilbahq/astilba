@@ -31,8 +31,8 @@ const root =
 const secretsKey = (path: EnvironmentPath) => ["secrets", path];
 
 // Secret values are write-only. Members with write access add versions; owners of an active
-// environment can retire a secret that nothing still uses, except in a managed preview, which
-// the server refuses: its template's policy controls it.
+// environment can retire a secret, or one of its earlier versions, that nothing still uses,
+// except in a managed preview, which the server refuses: its template's policy controls it.
 export function Secrets({
   workspaceId,
   projectId,
@@ -47,7 +47,7 @@ export function Secrets({
   const action = useAction();
   const [message, setMessage] = useState("");
   const [retiring, setRetiring] = useState<{
-    secret: Schema["SecretVersion"];
+    target: Retirement;
     open: boolean;
   }>();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -56,9 +56,22 @@ export function Secrets({
     queryKey: secretsKey(path),
     queryFn: () => result(client.GET(`${root}/secrets`, { params: { path } })),
   });
-  const latest = secrets.data?.filter(
-    (v, i, all) => all.findIndex((x) => x.secretId === v.secretId) === i,
-  );
+  // Versions arrive newest first within each secret, so a secret's first is its current one.
+  const grouped = new Map<string, Schema["SecretVersion"][]>();
+  for (const v of secrets.data ?? []) {
+    const versions = grouped.get(v.secretId);
+    if (versions) versions.push(v);
+    else grouped.set(v.secretId, [v]);
+  }
+  const latest = [...grouped.values()].map(([current]) => current);
+  const retire = (
+    event: { currentTarget: HTMLButtonElement },
+    target: Retirement,
+  ) => {
+    trigger.current = event.currentTarget;
+    setMessage("");
+    setRetiring({ target, open: true });
+  };
   return (
     <section className={s.panel}>
       <h2 ref={heading} tabIndex={-1} className={e.recoveryTarget}>
@@ -77,36 +90,93 @@ export function Secrets({
         {message && <p className={s.notice}>{message}</p>}
       </div>
       <div className={s.list}>
-        {latest?.map((v) => (
-          <div key={v.id} className={s.spread}>
-            <div>
-              <strong>
-                <bdi>{v.name}</bdi>
-              </strong>
-              <p className={s.code}>{v.id}</p>
-              <small>
-                {t(($) => $.secrets.created, {
-                  date: new Date(v.createdAt).toLocaleString(
-                    i18n.resolvedLanguage,
-                  ),
-                })}
-              </small>
+        {latest.map((v) => {
+          const earlier = grouped.get(v.secretId)?.slice(1) ?? [];
+          return (
+            <div key={v.id} className={e.secretEntry}>
+              <div className={s.spread}>
+                <div>
+                  <strong>
+                    <bdi>{v.name}</bdi>
+                  </strong>
+                  <p className={s.code}>{v.id}</p>
+                  <small>
+                    {t(($) => $.secrets.created, {
+                      date: new Date(v.createdAt).toLocaleString(
+                        i18n.resolvedLanguage,
+                      ),
+                    })}
+                  </small>
+                  {v.tooShortToCheck && (
+                    <p className={s.notice}>
+                      {t(($) => $.secrets.tooShortToCheck)}
+                    </p>
+                  )}
+                </div>
+                {retirable && (
+                  <Button
+                    size="sm"
+                    aria-label={t(($) => $.secrets.retireNamed, {
+                      name: v.name,
+                    })}
+                    onClick={(event) =>
+                      retire(event, { kind: "secret", version: v })
+                    }
+                  >
+                    {t(($) => $.secrets.retire)}
+                  </Button>
+                )}
+              </div>
+              {earlier.length > 0 && (
+                <details className={e.earlierVersions}>
+                  <summary>
+                    {t(($) => $.secrets.earlierVersions, {
+                      count: earlier.length,
+                      name: v.name,
+                    })}
+                  </summary>
+                  <ul className={s.list}>
+                    {earlier.map((version) => (
+                      <li key={version.id} className={s.spread}>
+                        <div>
+                          <p className={s.code}>{version.id}</p>
+                          <small>
+                            {t(($) => $.secrets.created, {
+                              date: new Date(version.createdAt).toLocaleString(
+                                i18n.resolvedLanguage,
+                              ),
+                            })}
+                          </small>
+                          {version.tooShortToCheck && (
+                            <p>
+                              <small>
+                                {t(($) => $.secrets.earlierTooShortToCheck)}
+                              </small>
+                            </p>
+                          )}
+                        </div>
+                        {retirable && (
+                          <Button
+                            size="sm"
+                            aria-label={t(($) => $.secrets.retireVersionNamed, {
+                              name: v.name,
+                              id: version.id,
+                            })}
+                            onClick={(event) =>
+                              retire(event, { kind: "version", version })
+                            }
+                          >
+                            {t(($) => $.secrets.retireVersion)}
+                          </Button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </div>
-            {retirable && (
-              <Button
-                size="sm"
-                aria-label={t(($) => $.secrets.retireNamed, { name: v.name })}
-                onClick={(event) => {
-                  trigger.current = event.currentTarget;
-                  setMessage("");
-                  setRetiring({ secret: v, open: true });
-                }}
-              >
-                {t(($) => $.secrets.retire)}
-              </Button>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
       {write && (
         <Form
@@ -114,24 +184,29 @@ export function Secrets({
           onSubmit={(d, form) =>
             action.run(async () => {
               const name = text(d, "name");
-              const existing = latest?.find((v) => v.name === name);
+              const existing = latest.find((v) => v.name === name);
               const value = text(d, "value");
-              if (existing)
-                await result(
-                  client.POST(`${root}/secrets/{secretId}/versions`, {
-                    params: { path: { ...path, secretId: existing.secretId } },
-                    body: { value },
-                  }),
-                );
-              else
-                await result(
-                  client.POST(`${root}/secrets`, {
-                    params: { path },
-                    body: { name, value },
-                  }),
-                );
+              const saved = existing
+                ? await result(
+                    client.POST(`${root}/secrets/{secretId}/versions`, {
+                      params: {
+                        path: { ...path, secretId: existing.secretId },
+                      },
+                      body: { value },
+                    }),
+                  )
+                : await result(
+                    client.POST(`${root}/secrets`, {
+                      params: { path },
+                      body: { name, value },
+                    }),
+                  );
               form.reset();
-              setMessage(t(($) => $.secrets.saved));
+              setMessage(
+                saved.tooShortToCheck
+                  ? t(($) => $.secrets.savedTooShort)
+                  : t(($) => $.secrets.saved),
+              );
               await queries.cancelQueries({ queryKey: secretsKey(path) });
               await queries.invalidateQueries({ queryKey: secretsKey(path) });
             })
@@ -153,13 +228,20 @@ export function Secrets({
       {retiring && (
         <RetireSecretDialog
           open={retiring.open}
-          secret={retiring.secret}
+          target={retiring.target}
           path={path}
           onClose={() =>
             setRetiring((current) => current && { ...current, open: false })
           }
-          onRetired={(name) =>
-            setMessage(t(($) => $.secrets.retired, { name }))
+          onRetired={({ kind, version }) =>
+            setMessage(
+              kind === "secret"
+                ? t(($) => $.secrets.retired, { name: version.name })
+                : t(($) => $.secrets.versionRetired, {
+                    name: version.name,
+                    id: version.id,
+                  }),
+            )
           }
           finalFocus={() =>
             trigger.current?.isConnected ? trigger.current : heading.current
@@ -170,19 +252,28 @@ export function Secrets({
   );
 }
 
+// What an owner retires: a whole secret, named by its current version, or one earlier version.
+type Retirement = {
+  kind: "secret" | "version";
+  version: Schema["SecretVersion"];
+};
+
 // Codes and refusal reasons select the copy, never the server's English.
 function useRetireErrorText() {
   const { t } = useTranslation("environment");
   const common = useTranslation("common").t;
-  return (error: unknown) => {
+  return (error: unknown, kind: Retirement["kind"]) => {
     if (!(error instanceof ApiError)) return common(($) => $.unexpectedError);
+    const fields = error.detail.fields ?? [];
     switch (error.detail.code) {
       case "conflict":
-        return error.detail.fields?.includes("secret.inUse")
+        return fields.includes("secret.inUse")
           ? t(($) => $.secrets.refusal.inUse)
-          : error.detail.fields?.includes("environment.state")
-            ? t(($) => $.secrets.refusal.inactive)
-            : t(($) => $.secrets.refusal.unknown);
+          : fields.includes("secretVersion.inUse")
+            ? t(($) => $.secrets.refusal.versionInUse)
+            : fields.includes("environment.state")
+              ? t(($) => $.secrets.refusal.inactive)
+              : t(($) => $.secrets.refusal.unknown);
       case "forbidden":
         return t(($) => $.secrets.refusal.forbidden);
       case "mfa_required":
@@ -194,30 +285,34 @@ function useRetireErrorText() {
       case "recent_auth_required":
         return t(($) => $.secrets.refusal.recentAuth);
       case "not_found":
-        return t(($) => $.secrets.refusal.unavailable);
+        return kind === "secret"
+          ? t(($) => $.secrets.refusal.unavailable)
+          : t(($) => $.secrets.refusal.versionUnavailable);
       default:
         return common(($) => $.requestFailed);
     }
   };
 }
 
-// Retiring a secret erases every version's value and cannot be undone, so it needs a recent
-// identity confirmation, which the shared step-up dialog asks for over this one.
+// Retiring a secret erases every version's value, and retiring a version erases its own; neither
+// can be undone, so both need a recent identity confirmation, which the shared step-up dialog
+// asks for over this one.
 function RetireSecretDialog({
   open,
-  secret,
+  target,
   path,
   onClose,
   onRetired,
   finalFocus,
 }: {
   open: boolean;
-  secret: Schema["SecretVersion"];
+  target: Retirement;
   path: EnvironmentPath;
   onClose: () => void;
-  onRetired: (name: string) => void;
+  onRetired: (target: Retirement) => void;
   finalFocus: () => HTMLElement | null;
 }) {
+  const { kind, version } = target;
   const { t } = useTranslation("environment");
   const message = useRetireErrorText();
   const queries = useQueryClient();
@@ -231,18 +326,28 @@ function RetireSecretDialog({
     action.run(async () => {
       try {
         await result(
-          client.DELETE(`${root}/secrets/{secretId}`, {
-            params: { path: { ...path, secretId: secret.secretId } },
-          }),
+          kind === "secret"
+            ? client.DELETE(`${root}/secrets/{secretId}`, {
+                params: { path: { ...path, secretId: version.secretId } },
+              })
+            : client.DELETE(`${root}/secrets/{secretId}/versions/{versionId}`, {
+                params: {
+                  path: {
+                    ...path,
+                    secretId: version.secretId,
+                    versionId: version.id,
+                  },
+                },
+              }),
         );
-        // The list drops the secret before the dialog closes, so focus moves on from its row.
+        // The list drops what was retired before the dialog closes, so focus moves on from its row.
         await queries.invalidateQueries({ queryKey: secretsKey(path) });
-        onRetired(secret.name);
+        onRetired(target);
         dismiss();
       } catch (error) {
         if (error instanceof ApiError) {
-          // A secret retired elsewhere leaves the list; an environment retired elsewhere is
-          // read-only, which the page behind the dialog then shows.
+          // A secret or version retired elsewhere leaves the list; an environment retired
+          // elsewhere is read-only, which the page behind the dialog then shows.
           if (error.detail.code === "not_found")
             void queries.invalidateQueries({ queryKey: secretsKey(path) });
           if (error.detail.fields?.includes("environment.state"))
@@ -263,28 +368,54 @@ function RetireSecretDialog({
     >
       <AlertDialogContent finalFocus={finalFocus}>
         <AlertDialogTitle className={e.dialogTitle}>
-          <Trans
-            t={t}
-            i18nKey={($) => $.secrets.retireDialogTitle}
-            components={{ name: <bdi>{secret.name}</bdi> }}
-          />
+          {kind === "secret" ? (
+            <Trans
+              t={t}
+              i18nKey={($) => $.secrets.retireDialogTitle}
+              components={{ name: <bdi>{version.name}</bdi> }}
+            />
+          ) : (
+            <Trans
+              t={t}
+              i18nKey={($) => $.secrets.retireVersionDialogTitle}
+              components={{ name: <bdi>{version.name}</bdi> }}
+            />
+          )}
         </AlertDialogTitle>
         {/* The list is part of the description, so it is read with the dialog. */}
         <AlertDialogDescription
           render={<div />}
           className={e.dialogDescription}
         >
-          <p>{t(($) => $.secrets.retireDialogDescription)}</p>
-          <ul className={e.effects}>
-            <li>{t(($) => $.secrets.retireEffects.values)}</li>
-            <li>{t(($) => $.secrets.retireEffects.name)}</li>
-            <li>{t(($) => $.secrets.retireEffects.revisions)}</li>
-          </ul>
-          <p>{t(($) => $.secrets.retireDialogInUse)}</p>
+          {kind === "secret" ? (
+            <>
+              <p>{t(($) => $.secrets.retireDialogDescription)}</p>
+              <ul className={e.effects}>
+                <li>{t(($) => $.secrets.retireEffects.values)}</li>
+                <li>{t(($) => $.secrets.retireEffects.name)}</li>
+                <li>{t(($) => $.secrets.retireEffects.revisions)}</li>
+              </ul>
+              <p>{t(($) => $.secrets.retireDialogInUse)}</p>
+            </>
+          ) : (
+            <>
+              <p>
+                {t(($) => $.secrets.retireVersionDialogDescription, {
+                  id: version.id,
+                })}
+              </p>
+              <ul className={e.effects}>
+                <li>{t(($) => $.secrets.retireVersionEffects.value)}</li>
+                <li>{t(($) => $.secrets.retireVersionEffects.current)}</li>
+                <li>{t(($) => $.secrets.retireVersionEffects.revisions)}</li>
+              </ul>
+              <p>{t(($) => $.secrets.retireVersionDialogInUse)}</p>
+            </>
+          )}
         </AlertDialogDescription>
         {action.error && (
           <p id={errorId} className={s.error} role="alert">
-            {message(action.error)}
+            {message(action.error, kind)}
           </p>
         )}
         <AlertDialogActions>
@@ -303,7 +434,9 @@ function RetireSecretDialog({
           >
             {action.isPending
               ? t(($) => $.secrets.retiring)
-              : t(($) => $.secrets.retire)}
+              : kind === "secret"
+                ? t(($) => $.secrets.retire)
+                : t(($) => $.secrets.retireVersion)}
           </Button>
         </AlertDialogActions>
       </AlertDialogContent>

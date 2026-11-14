@@ -81,7 +81,7 @@ func recoveredUnits(root recoveringRoot) []deployment.DistributedUnit {
 // asked for anything, but management kept every checkpoint it sealed up to its backup. What the
 // primary sealed copies of beyond that extend the chain (extendRevokedChain). The root then resumes,
 // and the remaining hosts end it as they do whenever a primary is revoked.
-func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, before portability.Archive, revoked map[uuid.UUID]bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
+func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, before portability.Archive, revoked map[uuid.UUID]bool, held map[uuid.UUID][]heldCapsule, out *recoverySource) error {
 	supplied := map[uuid.UUID]bool{}
 	// inline-sql: recovery session temporary table
 	rows, err := tx.Query(ctx, `SELECT DISTINCT parent_id FROM recovery_input_checkpoints`)
@@ -130,12 +130,12 @@ func loadRevokedPrimaryRoots(ctx context.Context, tx pgx.Tx, keys *secretbroker.
 			if recoveryDecode(saved.Descriptor, &d) != nil || d.Validate() != nil || d.ParentID != command.Id || d.Sequence != sequence || len(saved.Envelope) != d.Bytes || deployment.RecoveryDigest(saved.Envelope) != d.Digest {
 				return errors.New("a checkpoint management sealed for a revoked primary's root is incomplete or divergent")
 			}
-			if err = addRecoveryCheckpoint(ctx, tx, keys, ws, out, bases, d, saved.Descriptor, saved.Envelope, command.ServerId); err != nil {
+			if err = addRecoveryCheckpoint(ctx, tx, keys, ws, out, d, saved.Descriptor, saved.Envelope, command.ServerId); err != nil {
 				return err
 			}
 			last = d
 		}
-		if err = extendRevokedChain(ctx, tx, keys, ws, out, bases, last, command.ServerId, held[command.Id]); err != nil {
+		if err = extendRevokedChain(ctx, tx, keys, ws, out, last, command.ServerId, held[command.Id]); err != nil {
 			return err
 		}
 	}
@@ -156,7 +156,7 @@ type heldCapsule struct {
 // counts for nothing. The first sequence with no qualifying copy, or with two different ones, ends
 // the chain: withholding leaves the root where management's chain puts it, and two continuations
 // both sealed for one step are taken as neither.
-func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, last deployment.RecoveryDescriptor, primary uuid.UUID, held []heldCapsule) error {
+func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, last deployment.RecoveryDescriptor, primary uuid.UUID, held []heldCapsule) error {
 	for {
 		next := map[uuid.UUID]heldCapsule{}
 		for _, c := range held {
@@ -178,7 +178,7 @@ func extendRevokedChain(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 			return nil
 		}
 		for _, c := range next {
-			if err := addRecoveryCheckpoint(ctx, tx, keys, ws, out, bases, c.descriptor, c.raw, c.envelope, primary); err != nil {
+			if err := addRecoveryCheckpoint(ctx, tx, keys, ws, out, c.descriptor, c.raw, c.envelope, primary); err != nil {
 				return err
 			}
 			last = c.descriptor
@@ -211,6 +211,63 @@ func requireRecoverableRoots(source recoverySource, revoked map[uuid.UUID]bool) 
 			if slices.ContainsFunc(root.Descriptor.Participants, func(server uuid.UUID) bool { return revoked[server] }) {
 				return fmt.Errorf("interrupted deployment %s ran on a revoked server, and nothing in this backup or these exports holds its frozen plan, so the other servers it ran on can't be told how to end it. Revoke those servers too and leave out their exports, then deploy the environment to healthy servers", parent)
 			}
+		}
+	}
+	return nil
+}
+
+// recoveryRevokedServers names every server revoked in any of the archives. Recovery keeps a
+// revocation whichever side knew of it.
+func recoveryRevokedServers(archives ...portability.Archive) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	for _, archive := range archives {
+		for _, row := range archive.Tables["servers"] {
+			id, err := recoveryValue[uuid.UUID](row, "id")
+			if err != nil {
+				return nil, err
+			}
+			value, err := recoveryValue[bool](row, "revoked")
+			if err != nil {
+				return nil, err
+			}
+			out[id] = out[id] || value
+		}
+	}
+	return out, nil
+}
+
+// settleRevokedServers makes the merged history agree with the revocations it carries. A revoked
+// server stays out of the network, whichever row was selected for it. A removal waiting on one ends
+// here, because nothing can deliver it and nothing it reports counts, and a host that stalled on
+// purpose must not be able to hold recovery back.
+func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool) error {
+	for _, row := range a.Tables["network_members"] {
+		server, err := recoveryValue[uuid.UUID](row, "server_id")
+		if err != nil {
+			return err
+		}
+		if revoked[server] {
+			recoverySet(row, "enabled", false)
+		}
+	}
+	for _, row := range a.Tables["execution_operations"] {
+		server, err := recoveryValue[uuid.UUID](row, "server_id")
+		if err != nil {
+			return err
+		}
+		if !revoked[server] {
+			continue
+		}
+		state, err := recoveryValue[api.ExecutionState](row, "state")
+		if err != nil {
+			return err
+		}
+		command, err := recoveryValue[api.ExecutionCommand](row, "command")
+		if err != nil {
+			return err
+		}
+		if !Terminal(state) && standaloneRestrictionFrame(command) {
+			recoverySet(row, "state", api.ExecutionState("cancelled"))
 		}
 	}
 	return nil

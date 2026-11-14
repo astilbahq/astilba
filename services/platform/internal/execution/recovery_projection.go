@@ -78,21 +78,11 @@ func recoveryProjections(ctx context.Context, tx pgx.Tx, before, incoming portab
 		if !seen[env] {
 			candidate = before
 		}
+		// An environment without a resumed root takes its runtime from the newest base, the only one
+		// recovery merges.
 		if seen[env] && ownParents[env] == uuid.Nil {
-			selectedOrigin, err = origins.latest(env)
-			if err != nil {
-				return nil, err
-			}
-			var raw []byte
-			// inline-sql: recovery session temporary table
-			if err = tx.QueryRow(ctx, `SELECT decoded FROM recovery_input_checkpoints WHERE parent_id=$1 AND sequence=0`, selectedOrigin.Parent).Scan(&raw); err != nil {
-				return nil, err
-			}
-			base, err := portability.DecodeRecovery(raw)
-			if err != nil {
-				return nil, err
-			}
-			candidate = recoveryProjectionArchive(base, env)
+			selectedOrigin = origins.Newest
+			candidate = recoveryProjectionArchive(incoming, env)
 			for _, r := range candidate.Tables["environments"] {
 				row = r
 			}

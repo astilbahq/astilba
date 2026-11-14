@@ -21,7 +21,7 @@ var migrations embed.FS
 
 // Version is the newest migration this binary carries. It runs on a database at this version,
 // or ahead of it when every newer migration recorded itself as additive.
-const Version int64 = 53
+const Version int64 = 54
 
 // CustodyStage is the custody stage this release completes. Its migrations assume the one before
 // it is complete, so `migrate` refuses an installation further behind: stages are taken one

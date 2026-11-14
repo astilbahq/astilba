@@ -49,6 +49,8 @@ func TestRecipesUseValidatedVisualAndComposeSubset(t *testing.T) {
 				s := service.(map[string]any)
 				delete(s, "container_name")
 				delete(s, "labels")
+				// The runtime never lets Compose pull; an input file can't say so itself.
+				delete(s, "pull_policy")
 				s["networks"] = []string{"unit"}
 			}
 			// The runtime names its own services, and the same names are refused as input.

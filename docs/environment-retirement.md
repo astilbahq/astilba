@@ -69,7 +69,7 @@ An environment that kept no volumes is purged at once. A purge is refused while 
 
 A preview template's previews each hold their own copies of its secret values, from when they are given an environment until their cleanup deletes them. Purging a template is therefore refused, as `retirement.previews`, while any of its previews that was given an environment is not deleted yet. A request that never got one holds nothing and does not hold the purge back. The refusal names each one by its request number, with its state and what it is waiting for, such as a host's verified agent transfer, and the purge dialog lists them and stays disabled until none is left. Wait for each cleanup, or choose **Remove preview and data** on it under **Previews**. The check holds the workspace's write lock, which every change to a preview takes, and a template that is not active starts or revives no previews, so none can appear after the check. Once a template is purged, neither it nor any of its previews holds one of its secret values in management's secret records.
 
-Recovery bases that management stored for cross-host deployments before a purge are sealed snapshots of the whole workspace, and a purge does not rewrite them, so they still hold the secret values they captured. PLAT-353 makes those copies unreadable by destroying a purged environment's own data key. Offline cross-host recovery from such a base can also bring back a deleted preview's secret copies, which PLAT-354 stops.
+Recovery bases that management stored for cross-host deployments before a purge are sealed snapshots of the whole workspace, and a purge does not rewrite them, so they still hold the secret values they captured. PLAT-353 makes those copies unreadable by destroying a purged environment's own data key. Offline cross-host recovery from such a base leaves out the secret copies of each preview that no open request names, because its cleanup, or revoking its preview host, deleted them, and the restored database's record of that request stands over the base's.
 
 While its server deletes the volumes, the environment shows as **Purging**, and nothing can be restored. A server that is offline when its purge is due does not run it later: the operation fails once its 30-minute admission deadline passes, and you purge again when the server is back. A purge that failed or was cancelled can be asked for again in the same way. A volume that is already gone counts as deleted.
 
@@ -84,6 +84,12 @@ An owner can retire one secret of an active environment from its **Secrets** lis
 It is refused while anything that may still deploy names one of the secret's versions: the draft, the applied revision or what the server runs, the revision a preview policy creates previews from, a deployment plan that can still be applied, an operation that has not finished, or a supported upgrade that has not ended. Replace the secret there first, and wait for a plan's 30-minute review window to pass or its operation to finish.
 
 The versions' records stay, because older revisions name them. A draft or plan that names a retired version is refused, as for a version that does not exist.
+
+## Retire a secret version
+
+An owner can also retire one earlier version of a secret, listed under the secret in the **Secrets** list, with the same identity confirmation. The API is `DELETE …/environments/{environmentId}/secrets/{secretId}/versions/{versionId}`, recorded in the audit log as `secret.version.retire`. Retiring erases that version's value and removes it from the list; the secret keeps its current version and its other versions. It cannot be undone. Use it to clear a bad value, or a replaced value that the [runtime-secret check](git-builds.md) still searches for. A retired version still counts toward which versions are recent, so retiring one never brings an older one back into the check.
+
+The secret's current version is refused (`secretVersion.current`): save a new value to replace it, or retire the whole secret. A version is also refused while anything listed above for a secret names it (`secretVersion.inUse`). Its record stays, and a draft or plan that names it is refused.
 
 ## Exports and recovery
 
