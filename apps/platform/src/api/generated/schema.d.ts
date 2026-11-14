@@ -971,6 +971,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions/{versionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Owner with recent identity confirmation, on an active environment. Erases one version's value, which the runtime-secret check then no longer searches for. The version still counts toward which of the secret's versions are recent. Refused with a conflict on secretVersion.current for the secret's current version, which a new version replaces, and on secretVersion.inUse while the draft, the applied revision, the runtime, a plan that can still be applied, a live operation or a supported upgrade names it. The version's row is kept for the revisions that name it. */
+        delete: operations["retireSecretVersion"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets/{secretId}/versions": {
         parameters: {
             query?: never;
@@ -3504,6 +3521,8 @@ export interface components {
             name: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description Present, and true, only for a member who can write secrets, when the value is shorter than 12 bytes. The runtime-secret check does not search files to submit or public build arguments for such a value; it is still sealed and redacted. Absent while the value's length is not yet measured. */
+            tooShortToCheck?: boolean;
         };
         AuditEvent: {
             /** Format: uuid */
@@ -3631,6 +3650,15 @@ export interface components {
                 image: string;
                 eligible: boolean;
                 note: string;
+                /** @description The secret versions a rollback draft for this application would name that are not their secret's current version, by name. A retired one has no value, so a plan made from the draft is refused until it is replaced. Found from version IDs alone; no value is opened. The runtime-secret check searches for these versions once the draft names them. */
+                olderSecretVersions: {
+                    /** Format: uuid */
+                    secretId: string;
+                    /** Format: uuid */
+                    versionId: string;
+                    name: string;
+                    retired: boolean;
+                }[];
             }[];
         };
         RollbackRelease: {
@@ -7275,6 +7303,39 @@ export interface operations {
                 projectId: string;
                 environmentId: string;
                 secretId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    retireSecretVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                secretId: string;
+                versionId: string;
             };
             cookie?: never;
         };

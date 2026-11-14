@@ -359,6 +359,13 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 				}
 				continue
 			}
+			// Each target's runtime-secret check can ask for a search between passes. Asking for
+			// them all in one pass keeps the passes a push needs independent of its targets.
+			var call *providerCall
+			if errors.As(err, &call) {
+				unanswered = unanswered.and(call)
+				continue
+			}
 			return err
 		}
 		if _, err = target.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,automatic_requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", a.Workspace, v.env, v.app, hash, head); err != nil {
@@ -368,6 +375,9 @@ func (w *refreshWorker) work(ctx context.Context, git *gitAnswers, job *river.Jo
 			return err
 		}
 		capacity--
+	}
+	if unanswered != nil {
+		return unanswered
 	}
 	if !waiting && (unreadable == nil || expired) {
 		if _, err = river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {

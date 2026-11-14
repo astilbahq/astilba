@@ -1,5 +1,5 @@
 {
-  "apps/platform/src/features/deployments.tsx": 712,
+  "apps/platform/src/features/deployments.tsx": 662,
   "apps/platform/tests/auth.spec.ts": 922,
   "services/platform/internal/agent/cross_host_host_test.go": 1142,
   "services/platform/internal/agent/visual.go": 742,

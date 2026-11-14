@@ -67,7 +67,7 @@ func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3fi
 		}
 	}
 	switch op {
-	case "updatedraft", "updatelayout", "createsecret", "createsecretversion", "createbuild", "getserviceoutput", "resolveserviceoutput", "exportenvironment", "exportenvironmentarchive", "savepreviewpolicy", "actonpreview", "createautomationcredential", "revokeautomationcredential", "retireenvironment", "restoreenvironment", "purgeenvironment", "retiresecret":
+	case "updatedraft", "updatelayout", "createsecret", "createsecretversion", "createbuild", "getserviceoutput", "resolveserviceoutput", "exportenvironment", "exportenvironmentarchive", "savepreviewpolicy", "actonpreview", "createautomationcredential", "revokeautomationcredential", "retireenvironment", "restoreenvironment", "purgeenvironment", "retiresecret", "retiresecretversion":
 		return nil
 	default:
 		return domain.Forbidden

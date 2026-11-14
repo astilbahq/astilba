@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countBuildSecrets = `-- name: CountBuildSecrets :one
@@ -461,50 +462,6 @@ func (q *Queries) LockGitConnectionDeliveries(ctx context.Context, arg LockGitCo
 	return err
 }
 
-const pageEnvironmentSecretVersions = `-- name: PageEnvironmentSecretVersions :many
-SELECT v.id,v.encrypted_value FROM secret_versions v
-JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id > $3 AND v.erased_at IS NULL
-ORDER BY v.id LIMIT $4
-`
-
-type PageEnvironmentSecretVersionsParams struct {
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	AfterID       uuid.UUID `json:"after_id"`
-	PageSize      int32     `json:"page_size"`
-}
-
-type PageEnvironmentSecretVersionsRow struct {
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-}
-
-func (q *Queries) PageEnvironmentSecretVersions(ctx context.Context, arg PageEnvironmentSecretVersionsParams) ([]PageEnvironmentSecretVersionsRow, error) {
-	rows, err := q.db.Query(ctx, pageEnvironmentSecretVersions,
-		arg.WorkspaceID,
-		arg.EnvironmentID,
-		arg.AfterID,
-		arg.PageSize,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []PageEnvironmentSecretVersionsRow{}
-	for rows.Next() {
-		var i PageEnvironmentSecretVersionsRow
-		if err := rows.Scan(&i.ID, &i.EncryptedValue); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const pruneGitBranchPushes = `-- name: PruneGitBranchPushes :exec
 DELETE FROM git_branch_pushes WHERE (workspace_id,connection_id,branch) IN (
     SELECT workspace_id,connection_id,branch FROM git_branch_pushes
@@ -548,6 +505,108 @@ type RecordGitBranchPushParams struct {
 func (q *Queries) RecordGitBranchPush(ctx context.Context, arg RecordGitBranchPushParams) error {
 	_, err := q.db.Exec(ctx, recordGitBranchPush, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
 	return err
+}
+
+const runtimeSecretCheckCandidates = `-- name: RuntimeSecretCheckCandidates :many
+SELECT v.id,v.secret_id,v.plaintext_bytes,v.recency::integer AS recency,(v.live = 1)::boolean AS current,
+ (v.id = ANY($1::uuid[]))::boolean AS named FROM (
+ SELECT v.id,v.secret_id,v.plaintext_bytes,v.erased_at,
+  row_number() OVER newest AS recency,
+  count(*) FILTER (WHERE v.erased_at IS NULL) OVER newest AS live
+ FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+ WHERE v.workspace_id = $2 AND s.environment_id = $3 AND s.retired_at IS NULL
+ WINDOW newest AS (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC ROWS UNBOUNDED PRECEDING)
+) v WHERE v.erased_at IS NULL AND (v.live = 1 OR v.recency <= $4::integer OR v.id = ANY($1::uuid[]))
+ORDER BY v.secret_id,v.recency
+`
+
+type RuntimeSecretCheckCandidatesParams struct {
+	Named         []uuid.UUID `json:"named"`
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Recent        int32       `json:"recent"`
+}
+
+type RuntimeSecretCheckCandidatesRow struct {
+	ID             uuid.UUID   `json:"id"`
+	SecretID       uuid.UUID   `json:"secret_id"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
+	Recency        int32       `json:"recency"`
+	Current        bool        `json:"current"`
+	Named          bool        `json:"named"`
+}
+
+// The versions the runtime-secret check may search for, newest first within each secret: each
+// secret's current version (its newest with a value), any of its `recent` newest versions that
+// still has a value, and any version in `named`. Recency counts erased versions too, so retiring
+// one does not make an older version recent. Nothing is opened here.
+func (q *Queries) RuntimeSecretCheckCandidates(ctx context.Context, arg RuntimeSecretCheckCandidatesParams) ([]RuntimeSecretCheckCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, runtimeSecretCheckCandidates,
+		arg.Named,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.Recent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RuntimeSecretCheckCandidatesRow{}
+	for rows.Next() {
+		var i RuntimeSecretCheckCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SecretID,
+			&i.PlaintextBytes,
+			&i.Recency,
+			&i.Current,
+			&i.Named,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const secretVersionValues = `-- name: SecretVersionValues :many
+SELECT v.id,v.encrypted_value FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id = ANY($3::uuid[]) AND v.erased_at IS NULL
+`
+
+type SecretVersionValuesParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Ids           []uuid.UUID `json:"ids"`
+}
+
+type SecretVersionValuesRow struct {
+	ID             uuid.UUID `json:"id"`
+	EncryptedValue []byte    `json:"encrypted_value"`
+}
+
+// The values of versions the check chose. An erased version has none, and is no longer searched.
+func (q *Queries) SecretVersionValues(ctx context.Context, arg SecretVersionValuesParams) ([]SecretVersionValuesRow, error) {
+	rows, err := q.db.Query(ctx, secretVersionValues, arg.WorkspaceID, arg.EnvironmentID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SecretVersionValuesRow{}
+	for rows.Next() {
+		var i SecretVersionValuesRow
+		if err := rows.Scan(&i.ID, &i.EncryptedValue); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const shareGitConnectionDeliveries = `-- name: ShareGitConnectionDeliveries :exec

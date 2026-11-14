@@ -684,11 +684,14 @@ func TestGitWebhookBurstMakesBoundedProgress(t *testing.T) {
 	}
 	var project api.Project
 	b.call("POST", prefix+"/projects", map[string]string{"name": "Burst"}, 201, &project)
-	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
+	// Public arguments, checked against each environment's runtime secret: every target's check
+	// searches between passes, and a push asks for them all in one pass rather than one each.
+	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{"MODE": "public-build-mode", "REGION": "public-build-region"}, Secrets: map[string]uuid.UUID{}, AutoBuild: true}
 	raw, _ := stablejson.Marshal(cfg)
 	for i := 0; i < 51; i++ {
 		var env api.Environment
 		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": fmt.Sprintf("Target %d", i)}, 201, &env)
+		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments/"+env.Id.String()+"/secrets", map[string]string{"name": "TOKEN", "value": fmt.Sprintf("burst-runtime-secret-%d", i)}, 201, nil)
 		app := uuid.New()
 		image := pipelineTestImage
 		spec := domain.Specification{Version: 1, Applications: []domain.Application{{ID: app, Name: "worker", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &image}}}, Variables: []domain.Variable{}}

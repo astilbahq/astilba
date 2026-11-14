@@ -208,6 +208,107 @@ func TestSubmissionRechecksRuntimeSecretsBeforeWriting(t *testing.T) {
 			}
 		}
 	})
+	// Superseded versions count only while they fit, so rotating can't block an environment.
+	t.Run("rotating a large secret never reaches the limit", func(t *testing.T) {
+		b := *b
+		b.t = t
+		path, draft := prepare(t, "Rotated", inContent("not-a-secret"))
+		var large api.SecretVersion
+		b.call("POST", path+"/secrets", map[string]string{"name": "LARGE", "value": strings.Repeat("v", 64<<10)}, 201, &large)
+		for i := range 20 {
+			b.call("POST", path+"/secrets/"+large.SecretId.String()+"/versions", map[string]string{"value": strings.Repeat(strconv.Itoa(i%10), 64<<10)}, 201, nil)
+		}
+		queued := submit(t, path, draft)
+		if _, note := await(t, queued.Id, retrying); strings.Contains(note, "runtime secret") {
+			t.Fatal("rotations blocked the submission", note)
+		}
+	})
+	// A value under 12 bytes matches ordinary text and can be guessed, so it is not searched for,
+	// and the member who saved it is warned.
+	t.Run("a one-byte value does not block a submission", func(t *testing.T) {
+		b := *b
+		b.t = t
+		path, draft := prepare(t, "Short value", inContent("a-file-full-of-the-letter-a"))
+		var short api.SecretVersion
+		b.call("POST", path+"/secrets", map[string]string{"name": "SHORT", "value": "a"}, 201, &short)
+		if short.TooShortToCheck == nil || !*short.TooShortToCheck {
+			t.Fatal("saving a one-byte value did not warn", short)
+		}
+		if _, note := await(t, submit(t, path, draft).Id, retrying); strings.Contains(note, "runtime secret") {
+			t.Fatal("a one-byte value blocked the submission", note)
+		}
+	})
+	// A version just replaced may still be valid where it was issued, so it is still searched for,
+	// until an owner retires it.
+	t.Run("retiring a replaced version clears its match", func(t *testing.T) {
+		b := *b
+		b.t = t
+		canary := "replaced-secret-canary"
+		path, draft := prepare(t, "Replaced", inContent(canary))
+		var replaced api.SecretVersion
+		b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": canary}, 201, &replaced)
+		b.call("POST", path+"/secrets/"+replaced.SecretId.String()+"/versions", map[string]string{"value": "fresh-secret-value"}, 201, nil)
+		refusal := string(b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 400, nil))
+		if !strings.Contains(refusal, "source.containsRuntimeSecret") {
+			t.Fatal("a replaced version was not searched for", refusal)
+		}
+		b.call("DELETE", path+"/secrets/"+replaced.SecretId.String()+"/versions/"+replaced.Id.String(), nil, 204, nil)
+		if _, note := await(t, submit(t, path, draft).Id, retrying); strings.Contains(note, "runtime secret") {
+			t.Fatal("the retired version still blocked the submission", note)
+		}
+	})
+	// A value replaced three times is no longer searched for, and retiring a version between never
+	// makes it recent again: retired versions still count toward recency.
+	t.Run("retiring a version does not bring an older one back", func(t *testing.T) {
+		b := *b
+		b.t = t
+		canary := "aged-out-secret-canary"
+		path, draft := prepare(t, "Aged out", inContent(canary))
+		var first, second api.SecretVersion
+		b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": canary}, 201, &first)
+		for i, value := range []string{"aged-out-second-value", "aged-out-third-value", "aged-out-fourth-value"} {
+			var v api.SecretVersion
+			b.call("POST", path+"/secrets/"+first.SecretId.String()+"/versions", map[string]string{"value": value}, 201, &v)
+			if i == 0 {
+				second = v
+			}
+		}
+		b.call("DELETE", path+"/secrets/"+second.SecretId.String()+"/versions/"+second.Id.String(), nil, 204, nil)
+		if _, note := await(t, submit(t, path, draft).Id, retrying); strings.Contains(note, "runtime secret") {
+			t.Fatal("retiring a version brought an aged-out value back into the check", note)
+		}
+	})
+	// The check searches for a bounded number of versions, and fails closed past it until an owner
+	// retires secrets the environment no longer needs.
+	t.Run("more current versions than the check searches for are refused", func(t *testing.T) {
+		b := *b
+		b.t = t
+		path, draft := prepare(t, "Many secrets", inContent("not-a-secret"))
+		var last api.SecretVersion
+		for i := 0; i < 257; {
+			// Sealing draws on the broker's per-workspace budget, which this outruns.
+			status, raw := b.request("POST", path+"/secrets", map[string]string{"name": "SECRET_" + strconv.Itoa(i), "value": "many-secrets-value-" + strconv.Itoa(i)})
+			switch status {
+			case 201:
+				if err := json.Unmarshal(raw, &last); err != nil {
+					t.Fatal(err)
+				}
+				i++
+			case 429:
+				time.Sleep(100 * time.Millisecond)
+			default:
+				t.Fatal("creating a secret:", status, string(raw))
+			}
+		}
+		refusal := string(b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 400, nil))
+		if !strings.Contains(refusal, "source.secretBudget") {
+			t.Fatal("the version bound did not fail closed", refusal)
+		}
+		b.call("DELETE", path+"/secrets/"+last.SecretId.String(), nil, 204, nil)
+		if _, note := await(t, submit(t, path, draft).Id, retrying); strings.Contains(note, "runtime secret") {
+			t.Fatal("the bound still refused after a secret was retired", note)
+		}
+	})
 	t.Run("a draft can rename a secret file name out of its baseline", func(t *testing.T) {
 		canary := "baseline-file-name-canary"
 		rename := func(bundle *composeproject.Bundle) { bundle.Files[1].Path = "config/app.env" }
