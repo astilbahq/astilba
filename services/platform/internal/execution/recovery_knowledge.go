@@ -399,6 +399,7 @@ func recoveryUpgradeKnowledge(prior, incoming portability.Row) (portability.Row,
 	}
 	return out, nil
 }
+
 func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, error) {
 	a, err := recoveryValue[backup.Policy](prior, "configuration")
 	if err != nil {
