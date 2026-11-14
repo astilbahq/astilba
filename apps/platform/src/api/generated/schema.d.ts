@@ -1688,9 +1688,11 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getGitSource"];
+        /** @description Bind the environment to a Git source, or bind it again: a new connection, branch, runner, selected files or entrypoints. Either imports the branch's current commit, replacing the Compose files in the saved draft, and makes the automatic imports and deployments yours. Binding again also forgets the earlier import, so deployments wait for this one, and is refused while an import of the environment runs. Binding again needs the source's `sourceHash`, and is refused if the source changed since. Needs an owner with recent authentication. A selected file the branch doesn't hold is refused by name. */
         put: operations["bindGitSource"];
         post?: never;
-        delete?: never;
+        /** @description Stop importing the environment from Git. The saved draft keeps its Compose files, and an import still running saves nothing. Needs an owner with recent authentication. */
+        delete: operations["unbindGitSource"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1736,6 +1738,23 @@ export interface paths {
             cookie?: never;
         };
         get: operations["listBuildRejections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/build-waits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Automatic builds of a commit that wait for their runner, for each current application. A build waits while its runner finishes enrolling again or until an owner updates it, for a day at most, and is then rejected as `runner_unavailable`. */
+        get: operations["listBuildWaits"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4075,6 +4094,14 @@ export interface components {
             sourceHash: string;
             /** @description The newest attempt to submit a saved draft of this environment, if any. */
             submission: components["schemas"]["SourceSubmission"] | null;
+            /** @description Why automatic imports could not import the branch's latest commit, if they could not. They don't try that commit again; the next push, a refresh or binding the source again does. */
+            failure: components["schemas"]["GitSourceFailure"] | null;
+        };
+        GitSourceFailure: {
+            commit: string;
+            reason: string;
+            /** Format: date-time */
+            failedAt: string;
         };
         /**
          * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
@@ -4093,6 +4120,8 @@ export interface components {
             configuration: components["schemas"]["GitSourceConfiguration"];
             /** Format: uuid */
             baseRevisionId: string;
+            /** @description The hash returned with the source, needed to bind it again, so a change made since it was shown is refused rather than overwritten. */
+            sourceHash?: string;
         };
         RefreshGitSource: {
             /** Format: uuid */
@@ -4212,8 +4241,11 @@ export interface components {
             cache?: string;
             railpack?: components["schemas"]["RailpackBuildSummary"];
         };
-        /** @enum {string} */
-        BuildRejectionReason: "missing_build_secret" | "build_secret_budget" | "arguments_contain_secret" | "runtime_secret_budget";
+        /**
+         * @description Why an automatic build of a commit was not started. `runner_unavailable`: the target's runner was removed or revoked, lost its credential with no enrollment under way, or can no longer build it, or the build waited a day for it to finish enrolling or to be updated. `registry_unavailable`: the target's registry was removed.
+         * @enum {string}
+         */
+        BuildRejectionReason: "missing_build_secret" | "build_secret_budget" | "arguments_contain_secret" | "runtime_secret_budget" | "runner_unavailable" | "registry_unavailable";
         BuildRejection: {
             /** Format: uuid */
             applicationId: string;
@@ -4221,6 +4253,26 @@ export interface components {
             reason: components["schemas"]["BuildRejectionReason"];
             /** Format: date-time */
             rejectedAt: string;
+        };
+        /**
+         * @description What an automatic build waits for. `runner_update`: an owner to update the runner, which doesn't yet run what the build needs of this release, such as its Railpack pins. `runner_enrollment`: the runner to finish enrolling again.
+         * @enum {string}
+         */
+        BuildWaitReason: "runner_update" | "runner_enrollment";
+        BuildWait: {
+            /** Format: uuid */
+            applicationId: string;
+            commit: string;
+            reason: components["schemas"]["BuildWaitReason"];
+            /** Format: uuid */
+            runnerId: string;
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: date-time
+             * @description When the build stops waiting and is rejected as `runner_unavailable`, a day after the refresh began.
+             */
+            until: string;
         };
         PipelineRun: {
             /** Format: uuid */
@@ -8964,14 +9016,47 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Success */
-            201: {
+            /** @description Bound; the import is queued. */
+            202: {
                 headers: {
+                    /** @description The source's hash as now bound, as returned with the source, so a client can tell its own binding from a change made elsewhere since. */
+                    "Astilba-Source-Hash"?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["Operation"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    unbindGitSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unbound */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {
@@ -9078,6 +9163,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BuildRejection"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listBuildWaits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Automatic builds waiting for their runner. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildWait"][];
                 };
             };
             /** @description Error */

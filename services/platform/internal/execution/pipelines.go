@@ -17,90 +17,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// runnerEligible says whether a runner can take a build, and whether it is online. A
-// Railpack build names the pins it needs, which the runner must advertise exactly.
-func runnerEligible(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, architecture string, controls bool, railpack *pipeline.RailpackInputs) (bool, error) {
-	var role string
-	var raw []byte
-	var online bool
-	err := tx.QueryRow(ctx, "SELECT role,capabilities,COALESCE(last_seen>now()-interval '45 seconds',false) FROM servers WHERE workspace_id=$1 AND id=$2 AND NOT revoked AND credential_hash IS NOT NULL", ws, id).Scan(&role, &raw, &online)
-	if err != nil {
-		return false, err
-	}
-	var c api.AgentCapabilities
-	if json.Unmarshal(raw, &c) != nil || role == "deployment" || c.Build == nil || !*c.Build || !c.Docker || (architecture != "" && architecture != string(c.Arch)) {
-		return false, domain.Invalid("runner")
-	}
-	if controls && (c.BuildControls == nil || !*c.BuildControls) {
-		return false, domain.Invalid("runner.buildControlsUpgradeRequired")
-	}
-	if railpack != nil {
-		if refusal := railpackRunner(c, *railpack); refusal != nil {
-			return false, refusal
-		}
-	}
-	return online, nil
-}
-
-const railpackUpgradeRequired = "runner.railpackUpgradeRequired"
-
-// runnerRailpackRefusal is the refusal of a runner that runs other Railpack pins than need,
-// or nil when it runs them or need is nil, as for a Dockerfile build.
-func runnerRailpackRefusal(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, need *pipeline.RailpackInputs) (*domain.Error, error) {
-	if need == nil {
-		return nil, nil
-	}
-	raw, err := db.New(tx).RunnerCapabilities(ctx, db.RunnerCapabilitiesParams{WorkspaceID: ws, ID: id})
-	if err != nil {
-		return nil, err
-	}
-	var c api.AgentCapabilities
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return nil, err
-	}
-	return railpackRunner(c, *need), nil
-}
-
-// railpackRunner refuses a runner whose Railpack pins differ from those a build needs. The
-// agent refuses such a build itself, so admitting it would only fail it on the runner.
-// Comparing the version alone missed a release that moved a pinned image.
-func railpackRunner(c api.AgentCapabilities, need pipeline.RailpackInputs) *domain.Error {
-	advertised := "none"
-	if c.RailpackInputs != nil {
-		advertised = *c.RailpackInputs
-	}
-	// The digest covers the version too.
-	if advertised == need.Digest() {
-		return nil
-	}
-	return &domain.Error{Code: "invalid_input", Fields: []string{railpackUpgradeRequired}, Message: "The runner does not run the Railpack pins this build needs (" + need.Digest() + "); it advertises " + advertised + ". Run the same Astilba release on management and the runner."}
-}
-func selectRunner(ctx context.Context, tx pgx.Tx, ws, primary uuid.UUID, fallback *uuid.UUID, architecture string, controls bool, railpack *pipeline.RailpackInputs) (uuid.UUID, error) {
-	online, err := runnerEligible(ctx, tx, ws, primary, architecture, controls, railpack)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	var busy bool
-	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", primary).Scan(&busy); err != nil {
-		return uuid.Nil, err
-	}
-	if fallback != nil && (!online || busy) {
-		ready, err := runnerEligible(ctx, tx, ws, *fallback, architecture, controls, railpack)
-		if err != nil {
-			return uuid.Nil, err
-		}
-		if ready {
-			if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE server_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))", *fallback).Scan(&busy); err != nil {
-				return uuid.Nil, err
-			}
-			if !busy {
-				return *fallback, nil
-			}
-		}
-	}
-	return primary, nil
-}
-
 // sourceFilesUnavailable refuses to start an import that could not be checked afterwards.
 var sourceFilesUnavailable = &domain.Error{Code: "temporarily_busy", Message: "The Git provider did not answer for the selected files. Check that the connection can read repository contents, then try again."}
 
@@ -113,6 +29,10 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		}
 		if blobs.Err != nil {
 			return out, blobs.failure(sourceFilesUnavailable)
+		}
+		// A runner would fail the import without saying which file it missed.
+		if missing := absentSourceFiles(p.Source.Paths, blobs.Value); len(missing) > 0 {
+			return out, missingSourceFiles(p.Commit, missing)
 		}
 		p.SourceBlobs = blobs.Value
 	}
@@ -179,6 +99,12 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if err != nil {
 		return out, err
 	}
+	// An import admitted for a source ends its failure.
+	if p.Action == "import" {
+		if err = db.New(tx).ClearGitSourceFailure(ctx, db.ClearGitSourceFailureParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
+			return out, err
+		}
+	}
 	_, err = tx.Exec(ctx, "INSERT INTO pipeline_runs(id,workspace_id,environment_id,application_id,revision_id,configuration,delivery_started) VALUES($1,$2,$3,$4,$5,$6,false)", id, ws, env, p.AppID, p.RevisionID, raw)
 	return out, err
 }
@@ -233,14 +159,15 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		var cfg []byte
 		var actor uuid.UUID
 		var revision *uuid.UUID
-		var commit, pending, status string
+		var commit, pending, status, failedCommit, failureReason string
+		var failedAt *time.Time
 		var role *string
 		var current, approved *int64
 		// The approver's role and version explain, in the terms of policyApproval, why imports don't
 		// run; policy_approver_holds is what stops them.
-		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version
+		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version,g.failed_commit,g.failure_reason,g.failed_at
  FROM git_sources g LEFT JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor LEFT JOIN accounts a ON a.id=g.policy_actor
- WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current); err != nil {
+ WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current, &failedCommit, &failureReason, &failedAt); err != nil {
 			return err
 		}
 		baseline, err := sourceBaseline(ctx, tx, ws, env, revision)
@@ -256,19 +183,41 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 			configuration = sourceSelection(configuration, v.Spec.Compose)
 		}
 		approval := policyApproval(role, current, approved, true, status == "approval_required", w.Role)
-		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "approval": approval, "sourceHash": sourceHash(cfg, actor), "submission": submission}
+		var failure *api.GitSourceFailure
+		if failedCommit != "" && failedAt != nil {
+			failure = &api.GitSourceFailure{Commit: failedCommit, Reason: failureReason, FailedAt: *failedAt}
+		}
+		out = map[string]any{"clean": clean, "configuration": configuration, "importedRevisionId": revision, "importedCommit": commit, "pendingCommit": pending, "status": status, "approval": approval, "sourceHash": sourceHash(cfg, actor), "submission": submission, "failure": failure}
 		return nil
 	})
 	return out, err
 }
-func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source) (api.Operation, error) {
+
+// BindSource binds an environment to a Git source, or binds it again with another connection,
+// branch, runner or selection, as an owner must when a selected file is renamed or removed
+// upstream. Either way it imports the branch's head and makes the source's automatic imports and
+// deployments the caller's. Binding again forgets the earlier import, so the draft is compared
+// with, and deployments wait for, this one. An environment runs one operation at a time, so
+// binding again is refused while one is running.
+// Binding again needs the hash returned with the source, so a change made since it was shown, such
+// as another owner's binding, is refused rather than overwritten.
+// It returns the source's hash as now bound, so a client can tell its own binding from a change
+// made elsewhere since.
+func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, c pipeline.Source, hash string) (api.Operation, string, error) {
 	var out api.Operation
+	var boundHash string
 	if err := c.Validate(); err != nil {
-		return api.Operation{}, domain.Invalid("source")
+		return api.Operation{}, "", domain.Invalid("source")
 	}
-	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.bind", env, func(tx pgx.Tx, git *gitAnswers) error {
+	// The audit record says whether the source was bound again, which also made it the caller's.
+	// Only the pass that commits keeps it.
+	err := s.gitScope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "", env, func(tx pgx.Tx, git *gitAnswers) error {
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
+			return err
+		}
+		// A retired environment's sources stay as they were.
+		if err = requireActive(v.State); err != nil {
 			return err
 		}
 		if v.Revision != base || v.Spec.Compose == nil {
@@ -286,20 +235,55 @@ func (s *Service) BindSource(ctx context.Context, p store.Principal, ws, pid, en
 			return head.failure(domain.Invalid("branch"))
 		}
 		connection, commit := head.Connection, head.Value
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil)
+		if err = checkFallbackRunner(ctx, tx, ws, c.FallbackRunnerID); err != nil {
+			return err
+		}
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil, false)
 		if err != nil {
+			return err
+		}
+		action := "git.source.rebind"
+		bound, err := db.New(tx).LockGitSourcePolicy(ctx, db.LockGitSourcePolicyParams{WorkspaceID: ws, EnvironmentID: env})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows) && hash != "":
+			// A hash names a source that was shown; one that is gone since was removed.
+			return sourceChangedSinceShown
+		case errors.Is(err, pgx.ErrNoRows):
+			action = "git.source.bind"
+		case err != nil:
+			return err
+		case sourceHash(bound.Configuration, bound.PolicyActor) != hash:
+			return sourceChangedSinceShown
+		}
+		running, err := db.New(tx).EnvironmentOperationRunning(ctx, db.EnvironmentOperationRunningParams{WorkspaceID: ws, EnvironmentID: env})
+		if err != nil {
+			return err
+		}
+		if running {
+			return sourceImporting
+		}
+		if err = store.Audit(ctx, db.New(tx), p, ws, action, env); err != nil {
 			return err
 		}
 		raw, _ := stablejson.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO git_sources(workspace_id,environment_id,connection_id,configuration,policy_actor,policy_auth_version) VALUES($1,$2,$3,$4,$5,$6)", ws, env, c.ConnectionID, raw, p.Account.ID, p.Account.AuthVersion)
-		if err != nil {
+		if err = db.New(tx).BindGitSource(ctx, db.BindGitSourceParams{WorkspaceID: ws, EnvironmentID: env, ConnectionID: c.ConnectionID, Configuration: raw, PolicyActor: p.Account.ID, PolicyAuthVersion: p.Account.AuthVersion}); err != nil {
 			return err
 		}
+		if action == "git.source.rebind" {
+			if err = s.refreshLeftBranch(ctx, tx, ws, bound.Configuration, &c); err != nil {
+				return err
+			}
+		}
 		command := pipeline.Command{Action: "import", Connection: connection, Commit: commit, Branch: c.Branch, RevisionID: base, UnitID: v.Unit, Source: &c, SubmittedAt: time.Now().UTC()}
-		out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command)
+		if out, err = s.insertPipeline(ctx, tx, git, ws, env, uuid.New(), server, command); err != nil {
+			return err
+		}
+		// The hash is of the configuration as stored, which is how GitSource reads it.
+		stored, err := db.New(tx).LockGitSourcePolicy(ctx, db.LockGitSourcePolicyParams{WorkspaceID: ws, EnvironmentID: env})
+		boundHash = sourceHash(stored.Configuration, stored.PolicyActor)
 		return err
 	})
-	return operationFor(p, out), err
+	return operationFor(p, out), boundHash, err
 }
 func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid, env, base uuid.UUID, discard bool) (api.Operation, error) {
 	var out api.Operation
@@ -339,6 +323,10 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		if !clean && !discard {
 			var merged bool
 			c, merged, err = mergedSourceSelection(ctx, tx, git, ws, env, v.Spec.Compose, commit, c)
+			var unanswered *reviewUnanswered
+			if errors.As(err, &unanswered) && unanswered.gone() {
+				return &domain.Error{Code: "conflict", Message: reviewGoneReason}
+			}
 			if err != nil {
 				return err
 			}
@@ -346,7 +334,7 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 				return domain.Conflict
 			}
 		}
-		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil)
+		server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, "", false, nil, false)
 		if err != nil {
 			return err
 		}
@@ -354,6 +342,29 @@ func (s *Service) RefreshSource(ctx context.Context, p store.Principal, ws, pid,
 		return err
 	})
 	return operationFor(p, out), err
+}
+
+// UnbindSource stops importing an environment from Git. The draft keeps the Compose files it has,
+// and an import still running saves nothing when it reports.
+func (s *Service) UnbindSource(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) error {
+	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "git.source.unbind", env, func(tx pgx.Tx) error {
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		// A retired environment's sources stay as they were.
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
+		bound, err := db.New(tx).LockGitSourcePolicy(ctx, db.LockGitSourcePolicyParams{WorkspaceID: ws, EnvironmentID: env})
+		if err != nil {
+			return err
+		}
+		if _, err = db.New(tx).UnbindGitSource(ctx, db.UnbindGitSourceParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
+			return err
+		}
+		return s.refreshLeftBranch(ctx, tx, ws, bound.Configuration, nil)
+	})
 }
 func (s *Service) CreateBuild(ctx context.Context, p store.Principal, ws, pid, env, base, app, key uuid.UUID, c pipeline.BuildConfig) (api.Operation, error) {
 	var out api.Operation
@@ -410,7 +421,13 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 		return api.Operation{}, head.failure(domain.Invalid("branch"))
 	}
 	connection, commit := head.Connection, head.Value
-	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.RailpackPins())
+	// Saving a target saves its fallback; a stored target's run uses it as it stands.
+	if persist {
+		if err = checkFallbackRunner(ctx, tx, ws, c.FallbackRunnerID); err != nil {
+			return api.Operation{}, err
+		}
+	}
+	server, err := selectRunner(ctx, tx, ws, c.RunnerID, c.FallbackRunnerID, c.Architecture, c.NeedsControls(), c.RailpackPins(), true)
 	if err != nil {
 		return api.Operation{}, err
 	}
@@ -429,9 +446,9 @@ func (s *Service) admitBuild(ctx context.Context, tx pgx.Tx, git *gitAnswers, p 
 	}
 	if persist {
 		raw, _ := stablejson.Marshal(c)
-		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID, p.Account.AuthVersion)
+		_, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,automatic_requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET connection_id=EXCLUDED.connection_id,configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,automatic_requested_commit=EXCLUDED.automatic_requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL,waiting_until=NULL", ws, env, app, c.ConnectionID, raw, hash, commit, p.Account.ID, p.Account.AuthVersion)
 	} else {
-		_, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env, app, hash, commit)
+		_, err = tx.Exec(ctx, "UPDATE build_targets SET input_hash=$4,requested_commit=$5,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL,waiting_until=NULL WHERE workspace_id=$1 AND environment_id=$2 AND application_id=$3", ws, env, app, hash, commit)
 	}
 	if err != nil {
 		return api.Operation{}, err

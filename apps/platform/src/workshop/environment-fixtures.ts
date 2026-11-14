@@ -116,6 +116,7 @@ export function environmentHandlers() {
       "volumes",
       "builds",
       "build-rejections",
+      "build-waits",
       "upgrades",
       "backup-policies",
       "previews",
