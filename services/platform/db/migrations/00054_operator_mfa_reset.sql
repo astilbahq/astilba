@@ -8,10 +8,11 @@ ALTER TABLE account_security_events DROP CONSTRAINT account_security_events_kind
 ALTER TABLE account_security_events ADD CONSTRAINT account_security_events_kind_check
     CHECK (kind IN ('password_changed','password_reset','mfa_enabled','mfa_disabled','mfa_reset','recovery_codes_regenerated','recovery_code_used'));
 ALTER TABLE account_security_events ADD CONSTRAINT account_security_events_reason_check
-    CHECK ((kind = 'mfa_reset') = (reason IS NOT NULL) AND (reason IS NULL OR char_length(reason) BETWEEN 1 AND 500));
+    CHECK ((kind = 'mfa_reset') = (reason IS NOT NULL) AND octet_length(reason) BETWEEN 1 AND 500);
 
 -- +goose Down
--- An older release knows no operator reset, so each is kept as two-factor authentication turned off.
+-- An older release knows no operator reset, so each is kept as two-factor authentication turned
+-- off, and its reason is lost with the column.
 ALTER TABLE account_security_events DROP CONSTRAINT account_security_events_reason_check;
 UPDATE account_security_events SET kind = 'mfa_disabled' WHERE kind = 'mfa_reset';
 ALTER TABLE account_security_events DROP CONSTRAINT account_security_events_kind_check;

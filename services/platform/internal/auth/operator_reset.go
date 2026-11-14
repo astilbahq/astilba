@@ -19,7 +19,12 @@ import (
 // MFAReset is an operator's reset of an account's two-factor authentication.
 const MFAReset = "mfa_reset"
 
+// maxResetReason is in bytes, so the reason's line in the notice stays within what SMTP allows.
 const maxResetReason = 500
+
+// ErrMailUnconfigured refuses a reset that the holder could not complete: they get back in only
+// through an emailed password reset.
+var ErrMailUnconfigured = errors.New("email is not configured, so the account holder could not reset their password afterwards; configure SMTP first")
 
 // ResetMFA is the operator's way back into an account whose authenticator is lost, with no
 // recovery codes left, or was enrolled by someone else. Nothing a session can do removes an
@@ -30,9 +35,13 @@ const maxResetReason = 500
 // signs in again only after resetting the password by email. Replacing the password matters as
 // much as the authenticator: whoever enrolled a foreign authenticator knew the password, and the
 // operator cannot tell a holder who lost their phone from someone who phished the password and
-// asked. Sign-in with the old password then fails as any wrong password does. The reason is
-// kept with the account security event, which emails it to the holder.
+// asked. Sign-in with the old password then fails as any wrong password does, and a reset link
+// sent before ends, as at any other password change. The reason is kept with the account
+// security event, which emails it to the holder.
 func (s *Service) ResetMFA(ctx context.Context, email, reason string) (uuid.UUID, error) {
+	if s.Mail == nil || !s.Mail.Configured() {
+		return uuid.Nil, ErrMailUnconfigured
+	}
 	address, err := domain.Email(email)
 	if err != nil {
 		return uuid.Nil, err
@@ -75,6 +84,9 @@ func (s *Service) ResetMFA(ctx context.Context, email, reason string) (uuid.UUID
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: account, PasswordHash: hash}); err != nil {
 			return err
 		}
+		if err := q.DeletePasswordReset(ctx, account); err != nil {
+			return err
+		}
 		event, err = s.recordSecurityEvent(ctx, tx, account, MFAReset, pgtype.Text{String: reason, Valid: true})
 		return err
 	})
@@ -90,14 +102,14 @@ func (s *Service) ResetMFA(ctx context.Context, email, reason string) (uuid.UUID
 // printable text.
 func resetReason(reason string) (string, error) {
 	reason = strings.TrimSpace(reason)
-	n := utf8.RuneCountInString(reason)
-	if n < 1 || n > maxResetReason || !utf8.ValidString(reason) {
+	if reason == "" || len(reason) > maxResetReason || !utf8.ValidString(reason) {
 		return "", domain.Invalid("reason")
 	}
 	for _, r := range reason {
-		// Control and formatting characters, such as line breaks and direction overrides, could
-		// make the notice say something the operator did not write.
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+		// Only letters, marks, numbers, punctuation, symbols and spaces: line and paragraph
+		// separators, controls and formatting characters such as direction overrides could make
+		// the notice say something the operator did not write.
+		if !unicode.IsGraphic(r) {
 			return "", domain.Invalid("reason")
 		}
 	}

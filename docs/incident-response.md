@@ -26,20 +26,25 @@ in through an emailed password reset. Before running it, confirm that the person
 controls that mailbox, and that the mailbox itself was not part of the takeover. If it was, help
 them recover the mailbox first.
 
+The installation needs working email for the same reason. Without SMTP configured, the command
+refuses, because the holder could not reset their password afterwards. Configure SMTP first, as
+described in [hosting](hosting.md).
+
 ### Reset two-factor authentication
 
 ```sh
 astilba reset-mfa --email ADDRESS --reason "REASON"
 ```
 
-The reason is one line of at most 500 characters. The holder reads it in their notice, so write
-it for them, for example `You asked on 14 November after losing your phone`. It is kept with the
+The reason is one line of at most 500 bytes, which is 500 characters of plain English. The
+holder reads it in their notice, so write it for them, for example `You asked on 14 November after losing your phone`. It is kept with the
 account's security events, as the record of why the operator acted.
 
 In one transaction the command:
 
 - turns two-factor authentication off and deletes the recovery codes;
-- replaces the password with a random one that nobody knows;
+- replaces the password with a random one that nobody knows, and ends any password reset link
+  sent before;
 - ends every session, terminal and automation token of the account, and withdraws its approval of
   automatic deploys and previews, as any password change does;
 - records an `mfa_reset` account security event with the reason, and queues the holder's
@@ -50,9 +55,8 @@ someone who phished the password and asked, and because whoever enrolled a forei
 authenticator knows the password. Signing in with the old password fails as any wrong password
 does.
 
-The serving process sends the notice. It retries a failed delivery for up to 24 hours, and sends
-nothing if email is not configured. The command logs the account and event IDs, but not the
-reason or the address.
+The serving process sends the notice, so keep it running. It retries a failed delivery for up to
+24 hours. The command logs the account and event IDs, but not the reason or the address.
 
 The command refuses an address with no account, and an account without two-factor
 authentication; that holder can reset their own password.

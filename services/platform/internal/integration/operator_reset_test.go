@@ -9,6 +9,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 )
 
 const resetReason = "Lost their phone; identity confirmed on a call"
@@ -92,8 +93,9 @@ func TestOperatorResetRecoversALostAuthenticator(t *testing.T) {
 }
 
 // Someone who knew the password and enrolled their own authenticator loses the account at the
-// operator's reset: their session ends, and the password they knew no longer signs in. Without
-// the password going too, they could sign in with it alone the moment the authenticator went.
+// operator's reset: their session ends, the password they knew no longer signs in, and a reset
+// link they took while they held the mailbox no longer works. Without these, they could sign in
+// with no second factor the moment the authenticator went.
 func TestOperatorResetRemovesAForeignAuthenticator(t *testing.T) {
 	f := setup(t)
 	intruder := f.browser(t)
@@ -102,12 +104,19 @@ func TestOperatorResetRemovesAForeignAuthenticator(t *testing.T) {
 	if pending := f.browser(t).login("owner@example.test", f.password); !pending.MfaPending {
 		t.Fatal("expected the holder to need the intruder's authenticator")
 	}
+	if err := f.auth.RequestReset(context.Background(), "owner@example.test", auth.Source{Key: "intruder", Network: "intruder"}); err != nil {
+		t.Fatal(err)
+	}
+	link := tokenFromLinkMail(t, f, "/reset")
 
 	operatorReset(t, f)
 	if intruder.session().User != nil {
 		t.Fatal("the intruder's session outlived the reset")
 	}
 	oldPasswordRefused(t, f, f.password)
+	if _, err := f.auth.CompleteReset(context.Background(), link, "the intruder's new password", "intruder"); !errors.Is(err, domain.Credentials) {
+		t.Fatal("a reset link from before the reset still works: ", err)
+	}
 	// The intruder's authenticator is gone too, so a code from it confirms nothing.
 	var stillEnrolled bool
 	if err := f.st.Pool.QueryRow(context.Background(), "SELECT totp_secret IS NOT NULL OR totp_pending IS NOT NULL FROM accounts WHERE id=$1", f.owner).Scan(&stillEnrolled); err != nil || stillEnrolled {
@@ -116,20 +125,36 @@ func TestOperatorResetRemovesAForeignAuthenticator(t *testing.T) {
 	resetPassword(t, f)
 }
 
-// The reset refuses an address with no account, an account without two-factor authentication,
-// and a reason that is missing or could change what the notice says, and changes nothing then.
+// The reset refuses an installation without email, where the holder could not reset their
+// password afterwards; an address with no account; an account without two-factor
+// authentication; and a reason that is missing, too long for one line of mail, or could change
+// what the notice says. It changes nothing then.
 func TestOperatorResetRefusals(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	before := signInCredentials(t, f)
+	unconfigured, err := mailer.New(mailer.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutMail := *f.auth
+	withoutMail.Mail = unconfigured
+	if _, err := withoutMail.ResetMFA(ctx, "owner@example.test", resetReason); !errors.Is(err, auth.ErrMailUnconfigured) {
+		t.Fatal("an installation without email: ", err)
+	}
 	if _, err := f.auth.ResetMFA(ctx, "nobody@example.test", resetReason); !errors.Is(err, domain.NotFound) {
 		t.Fatal("an unknown address: ", err)
 	}
-	if _, err := f.auth.ResetMFA(ctx, "owner@example.test", resetReason); !errors.Is(err, domain.Conflict) {
-		t.Fatal("an account without two-factor authentication: ", err)
+	// The longest reason passes its checks, so the account is what is refused.
+	for _, reason := range []string{resetReason, strings.Repeat("x", 500), strings.Repeat("é", 250)} {
+		if _, err := f.auth.ResetMFA(ctx, "owner@example.test", reason); !errors.Is(err, domain.Conflict) {
+			t.Fatal("an account without two-factor authentication: ", err)
+		}
 	}
 	overrides := string(rune(0x202e)) + "reversed"
-	for _, reason := range []string{"", "   ", "two\nlines", "a tab\there", overrides, strings.Repeat("x", 501)} {
+	separated := "one" + string(rune(0x2028)) + "two"
+	paragraphs := "one" + string(rune(0x2029)) + "two"
+	for _, reason := range []string{"", "   ", "two\nlines", "a tab\there", overrides, separated, paragraphs, strings.Repeat("x", 501), strings.Repeat("é", 251)} {
 		var invalid *domain.Error
 		if _, err := f.auth.ResetMFA(ctx, "owner@example.test", reason); !errors.As(err, &invalid) || invalid.Fields[0] != "reason" {
 			t.Fatalf("reason %q: %v", reason, err)

@@ -113,7 +113,7 @@ func run() error {
 	case "recover-cross-host":
 		return recoverCrossHostCommand(ctx, st, os.Args[2:])
 	case "reset-mfa":
-		return resetMFACommand(ctx, st, os.Args[2:])
+		return resetMFACommand(ctx, st, c.SMTP, os.Args[2:])
 	case "invite":
 		f := flag.NewFlagSet("invite", flag.ContinueOnError)
 		email := f.String("email", "", "beta invitee email")
