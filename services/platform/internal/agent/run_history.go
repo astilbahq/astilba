@@ -45,14 +45,16 @@ func trimRunHistory(s *scheduleState, limit int) error {
 		compactManifest(&s.Runs[i])
 	}
 	for len(s.Runs) > limit {
-		// A snapshot's representative is the backup that uploaded it, where history still has
-		// it: restores of it read that run's manifest, and retention prunes only by it.
+		// A snapshot's representative is its latest catalogued run, as before: the backup that
+		// uploaded it or a restore that verified it, either of which a restore and retention
+		// read, and the latest of which a cutover is likeliest to name. A failed run never
+		// stands in for one that is catalogued.
 		representative := map[string]int{}
 		for i, r := range s.Runs {
 			if r.Snapshot == "" || r.Pruned {
 				continue
 			}
-			if kept, ok := representative[r.Snapshot]; !ok || uploaded(r) && !uploaded(s.Runs[kept]) {
+			if kept, ok := representative[r.Snapshot]; !ok || catalogued(r) || !catalogued(s.Runs[kept]) {
 				representative[r.Snapshot] = i
 			}
 		}
@@ -74,5 +76,6 @@ func trimRunHistory(s *scheduleState, limit int) error {
 	return nil
 }
 
-// uploaded reports a backup run that uploaded its snapshot, as opposed to a restore of one.
-func uploaded(r backup.Run) bool { return r.TargetID == uuid.Nil && r.State == "succeeded" }
+// catalogued reports a run that records its snapshot's manifest: a backup that uploaded it or a
+// restore that verified it.
+func catalogued(r backup.Run) bool { return r.State == "succeeded" && r.Manifest != nil }

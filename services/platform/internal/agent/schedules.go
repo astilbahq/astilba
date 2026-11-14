@@ -137,13 +137,17 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		return e.finish(c.Id, "failed", "Backup command identity or policy is invalid.")
 	}
 	// An interrupted backup or restore is settled by what its run did, whether or not it was
-	// cancelled since.
+	// cancelled since: the agent can stop after a run succeeds and before its command finishes.
 	if r.Checkpoint != "accepted" && (b.Action == "backup" || b.Action == "restore") {
-		if failed, err := e.interruptedRunFailed(b); err != nil {
+		outcome, err := e.interruptedRunOutcome(b)
+		switch {
+		case err != nil:
 			return err
-		} else if failed && e.cancelled(c.Id) {
+		case outcome == "succeeded":
+			return e.finish(c.Id, "succeeded", backupSucceededNote)
+		case outcome == "failed" && e.cancelled(c.Id):
 			return e.finish(c.Id, "cancelled", "Cancelled. The interrupted run failed or changed nothing; run history records which.")
-		} else if failed {
+		case outcome == "failed":
 			return e.finish(c.Id, "failed", "The interrupted run failed or changed nothing; run history records which. It will not be repeated automatically.")
 		}
 		return e.finish(c.Id, "needs_attention", interruptedBackupNote)
@@ -272,8 +276,11 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	if errors.Is(err, errRunUncertain) {
 		return e.finish(c.Id, "needs_attention", interruptedBackupNote)
 	}
-	if err != nil && ctx.Err() != nil {
+	if err != nil && ctx.Err() != nil && (b.Action == "backup" || b.Action == "restore") {
 		return e.finish(c.Id, "cancelled", "Backup command cancelled or expired. Its run failed or changed nothing; run history records which.")
+	}
+	if err != nil && ctx.Err() != nil {
+		return e.finish(c.Id, "cancelled", "Backup command cancelled or expired before it completed. No schedule was changed.")
 	}
 	if err != nil {
 		return e.finish(c.Id, "failed", "Backup action failed. Check policy compatibility, storage access, available capacity and the run history. No existing data was replaced.")
@@ -424,8 +431,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	defer cancel()
 	var err error
 	if snapshot != "" {
-		// The run recorded above already protects its snapshot: see protectRestoreSources.
-		protectRestoreSources(s)
+		// The run recorded above protects its snapshot: see protectRestoreSources.
 		err = e.restoreSnapshot(runCtx, s, &r)
 	} else if s.Installation.Policy.Method == "container-job" {
 		err = e.runContainerJob(runCtx, s, &r)
@@ -444,7 +450,6 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 			r.Note = "The run was stopped by a cancel, its command's deadline or the agent stopping after it began changing things. Inspect containers with its com.astilba.run label and any target volume, then resolve the run."
 			compactManifest(&r)
 			s.Runs[index] = r
-			s.BeforeEffects = uuid.Nil
 			return errors.Join(ctx.Err(), errRunUncertain, e.Journal.saveSchedule(*s))
 		}
 	}
@@ -488,7 +493,6 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 			}
 		}
 	}
-	protectRestoreSources(s)
 	if saveErr := e.Journal.saveSchedule(*s); saveErr != nil {
 		return saveErr
 	}

@@ -326,6 +326,9 @@ func TestInterruptedRunCommandSettlesByItsRun(t *testing.T) {
 		{name: "before effects cancelled", run: "running", marked: true, cancel: true, command: "cancelled", recorded: "failed"},
 		{name: "already failed", run: "failed", command: "failed", recorded: "failed"},
 		{name: "already failed cancelled", run: "failed", cancel: true, command: "cancelled", recorded: "failed"},
+		// The agent can stop after the run succeeds and before its command finishes.
+		{name: "already succeeded", run: "succeeded", command: "succeeded", recorded: "succeeded"},
+		{name: "already succeeded cancelled", run: "succeeded", cancel: true, command: "succeeded", recorded: "succeeded"},
 		{name: "check cancelled", action: "check", cancel: true, command: "cancelled"},
 	}
 	for _, tc := range cases {

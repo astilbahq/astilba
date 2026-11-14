@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -25,34 +26,35 @@ func hasUncertainRun(s scheduleState) bool {
 	return false
 }
 
-// interruptedRunFailed reports whether an interrupted backup or restore command's run is known to
-// have failed: never recorded, recorded as failed, or stopped before its first effect, which it
-// now records as failed.
-func (e *Engine) interruptedRunFailed(b backup.Command) (bool, error) {
+// interruptedRunOutcome settles an interrupted backup or restore command by what its run did:
+// failed when it was never recorded, recorded as failed, or stopped before its first effect
+// (which it now records as failed); succeeded when its run succeeded before the command could
+// finish; and needs_attention otherwise.
+func (e *Engine) interruptedRunOutcome(b backup.Command) (api.ExecutionState, error) {
 	if b.RunID == uuid.Nil {
-		return false, nil
+		return "needs_attention", nil
 	}
 	s, err := e.Journal.schedule(b.Installation.Policy.ID)
 	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
+		return "failed", nil
 	}
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	for _, run := range s.Runs {
 		if run.ID != b.RunID {
 			continue
 		}
-		if run.State == "failed" {
-			return true, nil
+		if run.State == "failed" || run.State == "succeeded" {
+			return api.ExecutionState(run.State), nil
 		}
 		if run.State != "running" || s.BeforeEffects != b.RunID {
-			return false, nil
+			return "needs_attention", nil
 		}
 		settleUnstarted(&s, time.Now().UTC())
-		return true, e.Journal.saveSchedule(s)
+		return "failed", e.Journal.saveSchedule(s)
 	}
-	return true, nil
+	return "failed", nil
 }
 
 // settleUnstarted fails the run the agent stopped before its first effect. Only a caller that
@@ -68,7 +70,6 @@ func settleUnstarted(s *scheduleState, now time.Time) bool {
 		}
 	}
 	s.BeforeEffects = uuid.Nil
-	protectRestoreSources(s)
 	return true
 }
 

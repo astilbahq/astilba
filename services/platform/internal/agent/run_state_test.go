@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json/jsontext"
+	"fmt"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -116,7 +117,7 @@ func TestRestoreProtectionLastsOnlyWhileTheRestoreIsUnsettled(t *testing.T) {
 	policy := backup.Policy{ID: uuid.New(), Name: "Data", WorkspaceID: uuid.New(), ServerID: p.ServerID, EnvironmentID: p.EnvironmentID, ResourceID: uuid.New(), Generation: 1, Method: "container-job", Command: []string{"true"}, Schedule: backup.Schedule{Kind: "interval", IntervalMinutes: 1, Timezone: "UTC"}, TimeoutSeconds: 1, Retain: 1, Enabled: true, Plan: p}
 	snapshot, other := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	at := time.Now().UTC()
-	source := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: at, StartedAt: at, State: "succeeded", Snapshot: snapshot}
+	source := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: at, StartedAt: at, State: "succeeded", Snapshot: snapshot, Manifest: &backup.Manifest{CreatedAt: at}}
 	unrelated := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: at, StartedAt: at, State: "succeeded", Snapshot: other}
 	restore := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: at, StartedAt: at, State: "running", Snapshot: snapshot, TargetID: uuid.New()}
 	protected := func(s scheduleState) []bool {
@@ -164,6 +165,23 @@ func TestRestoreProtectionLastsOnlyWhileTheRestoreIsUnsettled(t *testing.T) {
 	}
 	if err = trimRunHistory(&stored, 127); err != nil || len(stored.Runs) != 127 || stored.Runs[0].ID != source.ID {
 		t.Fatal("history full of failed restores took no further run", err)
+	}
+}
+
+// Trimming history keeps a snapshot's latest catalogued run, so the verified restore a cutover
+// names outlives the backup it restored.
+func TestHistoryKeepsTheVerifiedRestoreOfASnapshot(t *testing.T) {
+	at := time.Now().UTC()
+	manifest := &backup.Manifest{CreatedAt: at}
+	snapshot := strings.Repeat("d", 64)
+	uploadedRun := backup.Run{ID: uuid.New(), ScheduledAt: at, State: "succeeded", Snapshot: snapshot, Manifest: manifest}
+	verified := backup.Run{ID: uuid.New(), ScheduledAt: at, State: "succeeded", Snapshot: snapshot, Manifest: manifest, TargetID: uuid.New(), Verified: true}
+	s := scheduleState{Runs: []backup.Run{uploadedRun, verified}}
+	for i := range 126 {
+		s.Runs = append(s.Runs, backup.Run{ID: uuid.New(), ScheduledAt: at, State: "succeeded", Snapshot: fmt.Sprintf("%064x", i), Manifest: manifest})
+	}
+	if err := trimRunHistory(&s, 127); err != nil || len(s.Runs) != 127 || s.Runs[0].ID != verified.ID {
+		t.Fatal("history dropped the verified restore rather than the backup it restored", err)
 	}
 }
 

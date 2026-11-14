@@ -70,7 +70,7 @@ An interrupted run does not become a success. A run stopped after it began chang
 astilba-agent resolve-run --policy POLICY_UUID --run RUN_UUID
 ```
 
-This resumes recorded file writers where their identity still matches, refuses active run containers, and records failure rather than claiming a valid backup. It also records the run's command as failed, so the host's schedules continue. The operator can then retry a new run. A restore's snapshot stays protected until its run is resolved. A run under a coordinated reservation is resolved with `astilba-agent reject-cross-host-effect` instead; see [Cross-host placement](cross-host-placement.md). Existing application data is never deleted by these operations.
+This resumes recorded file writers where their identity still matches, refuses active run containers, and records failure rather than claiming a valid backup. It also records the run's own command as failed. Any other operation the host refused while the run was unresolved still needs `astilba-agent retry`. The operator can then retry a new run. A restore's snapshot stays protected until its run is resolved. A run under a coordinated reservation is resolved with `astilba-agent reject-cross-host-effect` instead; see [Cross-host placement](cross-host-placement.md). Existing application data is never deleted by these operations.
 
 ## Restore and cutover
 
