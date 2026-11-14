@@ -239,7 +239,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		return err
 	}
 	if err = e.pullVisualImages(ctx, p); err != nil {
-		return e.visualFinish(ctx, c, p, "needs_attention", err.Error())
+		return e.finishVisualPull(ctx, c, p, !r.reached("storage"), err)
 	}
 	for _, app := range p.Plan.Specification.Applications {
 		if app.ReplicaCount() > 1 {

@@ -44,37 +44,7 @@ func TestStoppingAgentRecordsNoCrossHostOutcome(t *testing.T) {
 		{name: "abort", phase: "abort", reserved: func(*crossHostState) {}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			j, p := testVisualJournal(t)
-			image, app, network := execution.TestImage, uuid.New(), uuid.New()
-			p.Recipe = deployment.CrossHostRecipe
-			p.Images = map[string]string{app.String(): image}
-			p.Specification.Applications = []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}
-			p.Specification.Routes = []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "interrupt.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}
-			p.Specification.Placement = &domain.Placement{NetworkID: network, IngressServerID: p.ServerID, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 100, MemoryMiB: 64, Targets: []domain.PlacementTarget{{ServerID: p.ServerID, Count: 1}}}}}
-			instance := uuid.New()
-			p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: true, Instances: map[string][]uuid.UUID{app.String(): {instance}}, Requests: map[string]deployment.ResourceRequest{app.String(): {CPUMillis: 100, MemoryMiB: 64}}, Backends: map[string][]deployment.PrivateEndpoint{app.String(): {{ServerID: p.ServerID, UnitID: p.UnitID, ResourceID: app, InstanceID: instance, Address: deployment.ServiceName(instance), Port: 8080, ContainerPort: 8080}}}, Network: hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: uuid.New(), ServerID: p.ServerID, Generation: 1, Prefix: "10.251.0.0/24", Address: "10.251.0.1", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820}}
-			p = p.WithHash()
-			if err := p.Validate(true); err != nil {
-				t.Fatal("invalid fixture plan: ", err)
-			}
-			previous := p
-			previous.Local = &deployment.LocalPlacement{Instances: map[string][]uuid.UUID{app.String(): {uuid.New()}}}
-			if err := j.saveUnit(unitState{Plan: p, Expected: map[string]string{}}); err != nil {
-				t.Fatal(err)
-			}
-			parent, first := uuid.New(), uuid.New()
-			hash := strings.Repeat("b", 64)
-			envelope := []byte("opaque-frozen-deployment-root")
-			d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: hash, GroupID: p.Local.GroupID, GroupHash: hash, BaseID: first, CheckpointID: first, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
-			descriptor, _ := stablejson.Marshal(d)
-			metadata := jsontext.Value(descriptor)
-			body := deployment.CrossHostCommand{ParentID: parent, GroupHash: hash, Phase: test.phase, Unit: deployment.DistributedUnit{Plan: p, Previous: previous}}
-			raw, _ := stablejson.Marshal(body)
-			message := jsontext.Value(raw)
-			c := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: 2, PlanHash: body.Digest(), Deadline: time.Now().Add(time.Hour), Crosshost: &message, RecoveryCheckpoint: &metadata}
-			if err := j.retainCheckpoint(c, d, envelope); err != nil {
-				t.Fatal(err)
-			}
+			j, body, c := crossHostFixture(t, test.phase)
 			if test.reserved != nil {
 				s, err := j.reserveCrossHost(c, body)
 				if err != nil {
@@ -104,6 +74,44 @@ func TestStoppingAgentRecordsNoCrossHostOutcome(t *testing.T) {
 			}
 		})
 	}
+}
+
+// crossHostFixture is a one-host deployment's coordinated command for phase, as management sends
+// it, with the recovery checkpoint the host retains for it.
+func crossHostFixture(t *testing.T, phase string) (*Journal, deployment.CrossHostCommand, api.ExecutionCommand) {
+	t.Helper()
+	j, p := testVisualJournal(t)
+	image, app, network := execution.TestImage, uuid.New(), uuid.New()
+	p.Recipe = deployment.CrossHostRecipe
+	p.Images = map[string]string{app.String(): image}
+	p.Specification.Applications = []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}
+	p.Specification.Routes = []domain.Route{{ID: uuid.New(), TargetID: app, Protocol: "http", Domain: "interrupt.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}
+	p.Specification.Placement = &domain.Placement{NetworkID: network, IngressServerID: p.ServerID, Applications: []domain.ApplicationPlacement{{ApplicationID: app, CPUMillis: 100, MemoryMiB: 64, Targets: []domain.PlacementTarget{{ServerID: p.ServerID, Count: 1}}}}}
+	instance := uuid.New()
+	p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: true, Instances: map[string][]uuid.UUID{app.String(): {instance}}, Requests: map[string]deployment.ResourceRequest{app.String(): {CPUMillis: 100, MemoryMiB: 64}}, Backends: map[string][]deployment.PrivateEndpoint{app.String(): {{ServerID: p.ServerID, UnitID: p.UnitID, ResourceID: app, InstanceID: instance, Address: deployment.ServiceName(instance), Port: 8080, ContainerPort: 8080}}}, Network: hostnetwork.Manifest{Version: 1, NetworkID: network, MembershipID: uuid.New(), ServerID: p.ServerID, Generation: 1, Prefix: "10.251.0.0/24", Address: "10.251.0.1", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820}}
+	p = p.WithHash()
+	if err := p.Validate(true); err != nil {
+		t.Fatal("invalid fixture plan: ", err)
+	}
+	previous := p
+	previous.Local = &deployment.LocalPlacement{Instances: map[string][]uuid.UUID{app.String(): {uuid.New()}}}
+	if err := j.saveUnit(unitState{Plan: p, Expected: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	parent, first := uuid.New(), uuid.New()
+	hash := strings.Repeat("b", 64)
+	envelope := []byte("opaque-frozen-deployment-root")
+	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: hash, GroupID: p.Local.GroupID, GroupHash: hash, BaseID: first, CheckpointID: first, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
+	descriptor, _ := stablejson.Marshal(d)
+	metadata := jsontext.Value(descriptor)
+	body := deployment.CrossHostCommand{ParentID: parent, GroupHash: hash, Phase: phase, Unit: deployment.DistributedUnit{Plan: p, Previous: previous}}
+	raw, _ := stablejson.Marshal(body)
+	message := jsontext.Value(raw)
+	c := api.ExecutionCommand{Id: uuid.New(), ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "crosshost", Action: "inspect", Generation: 2, PlanHash: body.Digest(), Deadline: time.Now().Add(time.Hour), Crosshost: &message, RecoveryCheckpoint: &metadata}
+	if err := j.retainCheckpoint(c, d, envelope); err != nil {
+		t.Fatal(err)
+	}
+	return j, body, c
 }
 
 // The private links a deployment installs between its reserve and prepare phases.

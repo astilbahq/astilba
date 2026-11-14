@@ -206,7 +206,7 @@ func TestNativePullRefusesBlobsUnlikeTheirDescriptors(t *testing.T) {
 			var err error
 			used := f.leastFree(func() { err = (&Engine{Docker: f.docker}).pullMeasuredImage(f.ctx, image, nil) })
 			var refused *imagePullRefused
-			if !errors.As(err, &refused) || !strings.Contains(refused.note, tc.note) {
+			if !errors.As(err, &refused) || !strings.Contains(refused.Error(), tc.note) {
 				t.Fatal("not refused for its reason", err)
 			}
 			if used > 64<<20 {
