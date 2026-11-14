@@ -122,7 +122,7 @@ sha256sum /etc/astilba/keyring.json
 
 Keep every keyring that a retained backup was taken with. A database restored with the wrong
 keyring doesn't start: the installation's canaries don't open or, for a backup taken before
-canaries existed, its newest secret doesn't, and the refusal is recorded. A restore keeps the
+canaries existed, its stored values don't, and the refusal is recorded. A restore keeps the
 installation ID, so `ASTILBA_INSTALLATION_ID` stays the same.
 
 ## Restore

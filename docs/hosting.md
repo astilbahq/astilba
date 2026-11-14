@@ -84,9 +84,9 @@ same installation keeps its ID.
 Every command that uses keys checks them before it starts:
 
 - the first start registers its key backend, and wraps a canary under each key class. If the
-  database already holds secrets, as after upgrading or restoring a backup from before canaries,
-  it first opens the newest one, recorded in its workspace's secret access records, and refuses a
-  keyring that cannot;
+  database already holds values sealed under the keyring, as after upgrading or restoring a backup
+  from before canaries, it first opens one of each kind, recorded once for the installation as a
+  rewrap is, and refuses a keyring that cannot;
 - later starts open the canaries, so a keyring other than the installation's is refused, as is a
   database whose installation ID was changed;
 - a refused start is recorded, with its cause.
@@ -106,8 +106,8 @@ remove the trigger.
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
 | `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, and the canaries, under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
 
-`custody status` lists a command that recorded a start and no finish, unless a later run of it
-finished: it stopped part way, or is running. The custody stage counts how far the installation
+`custody status` lists a command that recorded a start and no finish, unless a run of it that
+started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
 has moved through key custody changes. `astilba migrate` refuses a release more than one stage
 ahead of the installation, so a release that starts a stage says so in its notes.
 

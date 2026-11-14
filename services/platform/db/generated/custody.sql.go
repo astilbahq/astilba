@@ -206,24 +206,6 @@ func (q *Queries) LockCustody(ctx context.Context) error {
 	return err
 }
 
-const newestSecretVersion = `-- name: NewestSecretVersion :one
-SELECT workspace_id,id,encrypted_value FROM secret_versions ORDER BY created_at DESC,id LIMIT 1
-`
-
-type NewestSecretVersionRow struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-}
-
-// unscoped: start-up checks the keyring against one stored secret, from any workspace.
-func (q *Queries) NewestSecretVersion(ctx context.Context) (NewestSecretVersionRow, error) {
-	row := q.db.QueryRow(ctx, newestSecretVersion)
-	var i NewestSecretVersionRow
-	err := row.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedValue)
-	return i, err
-}
-
 const registerCustodyBackend = `-- name: RegisterCustodyBackend :exec
 INSERT INTO custody_backends(backend_id,role) VALUES($1,'read+write')
 `
@@ -259,11 +241,61 @@ func (q *Queries) RewrapInstallationKeyCanary(ctx context.Context, arg RewrapIns
 	return result.RowsAffected(), nil
 }
 
+const sampleSealedValues = `-- name: SampleSealedValues :many
+(SELECT 'secret-version'::text AS kind,workspace_id,id,encrypted_value AS sealed FROM secret_versions LIMIT 1)
+UNION ALL (SELECT 'git',workspace_id,id,encrypted_access FROM git_connections WHERE encrypted_access IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'github-authorization',workspace_id,id,encrypted_access FROM github_app_authorizations WHERE encrypted_access IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'registry',workspace_id,id,encrypted_access FROM registries WHERE encrypted_access IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'build-secret',workspace_id,id,encrypted_value FROM build_secret_versions LIMIT 1)
+UNION ALL (SELECT 'backup-destination',workspace_id,id,encrypted_access FROM backup_destinations WHERE encrypted_access IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'backup-policy',workspace_id,id,encrypted_access FROM backup_policies WHERE encrypted_access IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'alert-webhook',workspace_id,workspace_id,encrypted_webhook FROM alert_settings WHERE encrypted_webhook IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'totp','00000000-0000-0000-0000-000000000000'::uuid,id,totp_secret FROM accounts WHERE totp_secret IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'totp-pending','00000000-0000-0000-0000-000000000000'::uuid,id,totp_pending FROM accounts WHERE totp_pending IS NOT NULL LIMIT 1)
+`
+
+type SampleSealedValuesRow struct {
+	Kind        string    `json:"kind"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	Sealed      []byte    `json:"sealed"`
+}
+
+// unscoped: before a backend's first canaries, start-up checks the keyring against one stored value
+// of every kind a rewrap covers, from any workspace. The installation's own values have the nil
+// workspace, as their identities do.
+func (q *Queries) SampleSealedValues(ctx context.Context) ([]SampleSealedValuesRow, error) {
+	rows, err := q.db.Query(ctx, sampleSealedValues)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SampleSealedValuesRow{}
+	for rows.Next() {
+		var i SampleSealedValuesRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.WorkspaceID,
+			&i.ID,
+			&i.Sealed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const unfinishedCustodyRuns = `-- name: UnfinishedCustodyRuns :many
 SELECT s.run_id,s.kind,s.at,s.operator FROM installation_key_events s
 WHERE s.kind LIKE '%-started'
     AND NOT EXISTS(SELECT 1 FROM installation_key_events f WHERE f.run_id = s.run_id AND f.kind LIKE '%-finished')
-    AND NOT EXISTS(SELECT 1 FROM installation_key_events l WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.at > s.at)
+    AND NOT EXISTS(
+        SELECT 1 FROM installation_key_events l JOIN installation_key_events ls ON ls.run_id = l.run_id AND ls.kind = s.kind
+        WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.details->>'outcome' = 'used' AND ls.at > s.at)
 ORDER BY s.at
 `
 
@@ -275,8 +307,8 @@ type UnfinishedCustodyRunsRow struct {
 }
 
 // A command records `<name>-started` first and `<name>-finished` last, so a start with no finish is
-// one that stopped part way, or is running now. A later run of the same command that finished
-// supersedes it: events are never removed, so nothing else could clear it.
+// one that stopped part way, or is running now. A run of the same command that started after it
+// and succeeded supersedes it: events are never removed, so nothing else could clear it.
 func (q *Queries) UnfinishedCustodyRuns(ctx context.Context) ([]UnfinishedCustodyRunsRow, error) {
 	rows, err := q.db.Query(ctx, unfinishedCustodyRuns)
 	if err != nil {

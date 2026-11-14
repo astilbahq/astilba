@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -67,12 +68,7 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 		}
 		return err
 	}
-	if err = b.makeCanaries(ctx, pool, id, run); err != nil {
-		if errors.Is(err, ErrKeyringMismatch) {
-			return refuse(err, map[string]string{})
-		}
-		return err
-	}
+	// The canaries already made are checked first, so a wrong keyring never adds one of its own.
 	canaries, err := q.InstallationKeyCanaries(ctx, b.backend.ID())
 	if err != nil {
 		return err
@@ -88,6 +84,20 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 			}
 			return err
 		}
+	}
+	// A backend's first canaries are what every later start is checked against, so the keyring
+	// must first open what is already stored. Otherwise a database upgraded or restored from
+	// before canaries, started once with the wrong keyring, would refuse the right one ever after.
+	if len(canaries) == 0 {
+		if err = b.checkStored(ctx, pool, run); err != nil {
+			if errors.Is(err, ErrKeyringMismatch) {
+				return refuse(err, map[string]string{})
+			}
+			return err
+		}
+	}
+	if err = b.makeCanaries(ctx, pool, id, run, canaries); err != nil {
+		return err
 	}
 	b.installation, b.pool = id, pool
 	return nil
@@ -133,23 +143,11 @@ func (b *Broker) register(ctx context.Context, pool Pool, run uuid.UUID) error {
 	return tx.Commit(ctx)
 }
 
-// makeCanaries wraps a canary for every class the backend has none for. The wrapping uses the
-// key service, so it happens before the transaction that stores it; an instance that lost the
-// race keeps the canary already stored.
-//
-// A backend's first canaries are what every later start is checked against, so before making them
-// the keyring must open what is already stored. Otherwise a database upgraded or restored from
-// before canaries, started once with the wrong keyring, would refuse the right one ever after.
-func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run uuid.UUID) error {
-	existing, err := db.New(pool).InstallationKeyCanaries(ctx, b.backend.ID())
-	if err != nil {
-		return err
-	}
-	if len(existing) == 0 {
-		if err = b.checkStored(ctx, pool); err != nil {
-			return err
-		}
-	}
+// makeCanaries wraps a canary for every class the backend has none for among existing. The
+// wrapping uses the key service, so it happens before the transaction that stores it; an
+// instance that lost the race keeps the canary already stored.
+func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run uuid.UUID, existing []db.InstallationKeyCanariesRow) error {
+	var err error
 	made := map[custody.Class][]byte{}
 	for _, class := range custody.Classes {
 		if slices.ContainsFunc(existing, func(r db.InstallationKeyCanariesRow) bool { return r.Class == string(class) }) {
@@ -188,31 +186,36 @@ func (b *Broker) makeCanaries(ctx context.Context, pool Pool, installation, run 
 	return tx.Commit(ctx)
 }
 
-// checkStored opens the newest stored secret, if there is one, in a recorded session of its own.
-func (b *Broker) checkStored(ctx context.Context, pool Pool) error {
-	v, err := db.New(pool).NewestSecretVersion(ctx)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
+// checkStored opens one stored value of every kind a rewrap covers. Like a rewrap, it is key
+// maintenance across every workspace: one record, naming the start's run, whose key history says
+// how the check went.
+func (b *Broker) checkStored(ctx context.Context, pool Pool, run uuid.UUID) error {
+	values, err := db.New(pool).SampleSealedValues(ctx)
+	if err != nil || len(values) == 0 {
 		return err
 	}
-	item := Item{Kind: SecretVersion, ID: v.ID}
-	s, err := b.Begin(ctx, Request{Workspace: v.WorkspaceID, Purpose: Inspect, Principal: System("custody-check"), Items: []Item{item}, Reason: "keyring-check"})
-	if err != nil {
+	r := Request{Purpose: Rotate, Principal: Operator(run.String()), Kinds: append(slices.Clone(workspaceKinds), installationKinds...), Reason: "keyring-check"}
+	id := uuid.New()
+	if err = b.record(ctx, id, r); err != nil {
 		return err
 	}
-	value, err := s.Open(item, v.EncryptedValue)
-	clear(value)
-	if err != nil {
-		s.Close(ctx, Failed)
-		if SessionFailure(err) {
-			return err
+	ring := b.backend.Keyring()
+	outcome := Used
+	for _, v := range values {
+		value, err := ring.Open(v.Sealed, Item{Kind: Kind(v.Kind), ID: v.ID}.identity(v.WorkspaceID))
+		clear(value)
+		if err != nil {
+			outcome = Failed
+			break
 		}
+	}
+	if err = b.outcome(ctx, id, outcome); err != nil {
+		return err
+	}
+	if outcome == Failed {
 		return ErrKeyringMismatch
 	}
-	s.Close(ctx, Used)
-	return nil
+	return b.event(ctx, db.New(pool), keyEvent{run: run, kind: "keyring-checked", details: map[string]string{"values": strconv.Itoa(len(values))}})
 }
 
 // keyEvent is one row of the installation's key history.
@@ -314,7 +317,7 @@ func (s Status) Pending() []string {
 		}
 	}
 	for _, run := range s.Unfinished {
-		out = append(out, fmt.Sprintf("%s run %s at %s has no finish, and no later run has finished: it stopped part way or is running now", run.Kind, run.RunID, run.At.UTC().Format(time.RFC3339)))
+		out = append(out, fmt.Sprintf("%s run %s at %s has no finish, and no run since has succeeded: it stopped part way or is running now", run.Kind, run.RunID, run.At.UTC().Format(time.RFC3339)))
 	}
 	return out
 }

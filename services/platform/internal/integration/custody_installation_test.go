@@ -193,7 +193,32 @@ func TestCustodyStatusReportsPendingWork(t *testing.T) {
 	if len(keyEvents(t, f, "canary-created")) != before {
 		t.Fatal("status made a canary")
 	}
-	// A later run that finishes supersedes one that never did.
+	// Neither a later run that failed, nor a run that started earlier and succeeded later,
+	// supersedes one that never finished.
+	insert := func(run uuid.UUID, kind, outcome string) {
+		t.Helper()
+		d := "{}"
+		if outcome != "" {
+			d = `{"outcome":"` + outcome + `"}`
+		}
+		if err := db.New(f.st.Pool).InsertInstallationKeyEvent(ctx, db.InsertInstallationKeyEventParams{ID: uuid.New(), RunID: run, Kind: kind, Details: []byte(d)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	earlier, failed := uuid.New(), uuid.New()
+	insert(earlier, "rewrap-started", "")
+	run2 := uuid.New()
+	insert(run2, "rewrap-started", "")
+	insert(failed, "rewrap-started", "")
+	insert(failed, "rewrap-finished", "failed")
+	insert(earlier, "rewrap-finished", "used")
+	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(s.Unfinished, func(r db.UnfinishedCustodyRunsRow) bool { return r.RunID == run2 }) {
+		t.Fatalf("a failed or earlier run hid an unfinished one: %+v", s.Unfinished)
+	}
+	// A run that starts later and succeeds supersedes it.
 	if err = f.st.Rewrap(ctx, "operator@example.test", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -308,9 +333,36 @@ func TestFirstCanariesNeedAKeyringThatOpensStoredSecrets(t *testing.T) {
 	if err := restart(f, keysOf(f.st), uuid.Nil); err != nil {
 		t.Fatalf("right keyring: %v", err)
 	}
-	var checks int
-	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM secret_access WHERE workspace_id=$1 AND purpose='inspect' AND job='custody-check'", ws).Scan(&checks); err != nil || checks != 2 {
-		t.Fatalf("%d recorded checks: %v", checks, err)
+	// Each check is one installation record, as a rewrap is, never one per workspace.
+	var checks, inWorkspace int
+	if err := f.st.Pool.QueryRow(ctx, "SELECT count(*) FILTER (WHERE workspace_id IS NULL AND purpose='rotate'),count(*) FILTER (WHERE workspace_id=$1) FROM secret_access WHERE reason='keyring-check'", ws).Scan(&checks, &inWorkspace); err != nil || checks != 2 || inWorkspace != 0 {
+		t.Fatalf("%d recorded checks, %d in the workspace: %v", checks, inWorkspace, err)
+	}
+	if checked := keyEvents(t, f, "keyring-checked"); len(checked) != 1 || details(t, checked[0])["values"] != "1" {
+		t.Fatalf("checked: %+v", checked)
+	}
+	// A database whose only values are second factors is checked too.
+	var account uuid.UUID
+	if err := f.st.Pool.QueryRow(ctx, "SELECT id FROM accounts LIMIT 1").Scan(&account); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := keysOf(f.st).Seal([]byte("JBSWY3DPEHPK3PXP"), "totp:v1:"+account.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{"DELETE FROM secret_versions", "DELETE FROM custody_backends"} {
+		if _, err = f.st.Pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = f.st.Pool.Exec(ctx, "UPDATE accounts SET totp_secret=$2 WHERE id=$1", account, sealed); err != nil {
+		t.Fatal(err)
+	}
+	if err = restart(f, other, uuid.Nil); !errors.Is(err, secretbroker.ErrKeyringMismatch) {
+		t.Fatalf("wrong keyring with only a second factor: %v", err)
+	}
+	if err = restart(f, keysOf(f.st), uuid.Nil); err != nil {
+		t.Fatalf("right keyring with only a second factor: %v", err)
 	}
 }
 

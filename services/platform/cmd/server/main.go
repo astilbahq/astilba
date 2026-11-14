@@ -116,18 +116,15 @@ func run() error {
 		return st.Broker.Install(ctx, pool, c.InstallationID, false)
 	}
 	switch os.Args[1] {
-	case "serve":
-	case "recover-cross-host", "invite", "prepare-recovery", "grant-management", "bootstrap":
+	case "recover-cross-host":
 		if e = install(); e != nil {
 			return e
 		}
-	default:
-		return errors.New("unknown command")
-	}
-	switch os.Args[1] {
-	case "recover-cross-host":
 		return recoverCrossHostCommand(ctx, st, os.Args[2:])
 	case "invite":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("invite", flag.ContinueOnError)
 		email := f.String("email", "", "beta invitee email")
 		if e = f.Parse(os.Args[2:]); e != nil {
@@ -142,6 +139,9 @@ func run() error {
 		}
 		return (&auth.Service{Store: st, Mail: mail, Now: time.Now}).InviteHosted(ctx, *email, c.Origin)
 	case "prepare-recovery":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("prepare-recovery", flag.ContinueOnError)
 		server := f.String("server", "", "restored server UUID")
 		generation := f.Int64("controller-generation", 0, "generation greater than the host's current controller")
@@ -154,6 +154,9 @@ func run() error {
 		}
 		return st.PrepareRecovery(ctx, id, *generation)
 	case "grant-management":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("grant-management", flag.ContinueOnError)
 		ws := f.String("workspace", "", "workspace UUID")
 		until := f.String("until", "", "RFC3339 expiration")
@@ -171,6 +174,9 @@ func run() error {
 		}
 		return st.GrantManagement(ctx, id, end, *limit)
 	case "bootstrap":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 		email := f.String("email", "", "owner email")
 		name := f.String("name", "", "owner name")
