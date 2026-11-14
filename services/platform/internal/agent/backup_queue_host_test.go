@@ -65,6 +65,14 @@ func (c cancelOnWrite) Write(b []byte) (int, error) {
 func nativeQueuedRunNow(t *testing.T, e *Engine, in backup.Installation, command func(backup.Command) api.ExecutionCommand, deliver func(api.ExecutionCommand) api.AgentReport) {
 	t.Helper()
 	ctx := context.Background()
+	// Another policy's scheduled run is the long run. This policy's own due occurrence already ran.
+	long := in
+	long.Policy.ID, long.Policy.Name = uuid.New(), "Long scheduled run"
+	if r := deliver(command(backup.Command{Action: "install", Installation: long})); r.State != "succeeded" {
+		t.Fatalf("installing the long policy ended %s: %s", r.State, r.Note)
+	}
+	// Commands are issued in order, so the run-now is issued after the install: a host that took a
+	// later command for the same environment never runs an earlier one.
 	queued, missed := uuid.New(), uuid.New()
 	runNow := command(backup.Command{Action: "backup", Installation: in, RunID: queued})
 	runNow.Deadline = time.Now().Add(30 * time.Second)
@@ -84,12 +92,6 @@ func nativeQueuedRunNow(t *testing.T, e *Engine, in backup.Installation, command
 		time.Sleep(time.Until(runNow.Deadline.Add(2 * time.Second)))
 	}
 	defer func() { e.Point = nil }()
-	// Another policy's scheduled run is the long run. This policy's own due occurrence already ran.
-	long := in
-	long.Policy.ID, long.Policy.Name = uuid.New(), "Long scheduled run"
-	if r := deliver(command(backup.Command{Action: "install", Installation: long})); r.State != "succeeded" {
-		t.Fatalf("installing the long policy ended %s: %s", r.State, r.Note)
-	}
 	s, err := e.Journal.schedule(long.Policy.ID)
 	if err != nil {
 		t.Fatal(err)
