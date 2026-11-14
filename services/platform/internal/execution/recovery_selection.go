@@ -106,11 +106,6 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 		return err
 	}
 	needed := map[uuid.UUID]bool{}
-	for _, host := range out.Hosts {
-		if host.ActiveParent != uuid.Nil {
-			needed[host.ActiveParent] = true
-		}
-	}
 	for _, row := range a.Tables["execution_operations"] {
 		c, err := recoveryValue[api.ExecutionCommand](row, "command")
 		if err != nil {
