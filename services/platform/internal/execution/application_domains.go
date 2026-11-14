@@ -266,7 +266,7 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 	withdrawn := s.withdrawStalePublications(ctx, conn, a.Server)
 	var ws, installation uuid.UUID
 	var base, ipv4, ipv6 string
-	e = conn.QueryRow(ctx, `SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN dns_installation i WHERE d.server_id=$1 AND d.generation=$2 AND d.approved_controller=$3 AND s.controller_generation=$3 AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base=$4`, a.Server, a.Generation, a.Controller, s.Store.ApplicationDomain).Scan(&ws, &base, &ipv4, &ipv6, &installation)
+	e = conn.QueryRow(ctx, `SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i WHERE d.server_id=$1 AND d.generation=$2 AND d.approved_controller=$3 AND s.controller_generation=$3 AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base=$4`, a.Server, a.Generation, a.Controller, s.Store.ApplicationDomain).Scan(&ws, &base, &ipv4, &ipv6, &installation)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return withdrawn
 	}

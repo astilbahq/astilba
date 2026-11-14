@@ -457,7 +457,7 @@ chmod +x /tmp/www/cgi-bin/health
 		if err := dst.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, dst.st, keysOf(source.st))
+		restoredKeys(t, dst.st, keysOf(source.st))
 		if _, err := dst.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Restored backup')`, ws); err != nil {
 			t.Fatal(err)
 		}

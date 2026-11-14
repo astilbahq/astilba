@@ -3,7 +3,10 @@ package config
 import (
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestTrustedProxyConfiguration(t *testing.T) {
@@ -210,5 +213,53 @@ func TestHostedSecretAccessRetention(t *testing.T) {
 				t.Fatalf("retention %d, error %v", c.SecretAccessRetentionDays, err)
 			}
 		})
+	}
+}
+
+// The keyring is a file, the key backend is the keyring file, and hosting pins the installation.
+func TestCustodyConfiguration(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_HOSTED", "false")
+	t.Setenv("ASTILBA_KEY_BACKEND", "")
+	t.Setenv("ASTILBA_INSTALLATION_ID", "")
+	t.Setenv("ASTILBA_KEYRING_JSON", `{"active":"primary","keys":{}}`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ASTILBA_KEYRING_JSON is no longer read") {
+		t.Fatalf("environment keyring: %v", err)
+	}
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	c, err := Load()
+	if err != nil || c.KeyBackend != "file" || c.InstallationID != uuid.Nil || c.RequirePinnedInstallation() != nil {
+		t.Fatalf("defaults: %+v %v", c, err)
+	}
+	for _, bad := range []struct{ name, value string }{
+		{"ASTILBA_KEY_BACKEND", "transit"},
+		{"ASTILBA_INSTALLATION_ID", "not-a-uuid"},
+		{"ASTILBA_INSTALLATION_ID", uuid.Nil.String()},
+	} {
+		t.Run(bad.name+"="+bad.value, func(t *testing.T) {
+			t.Setenv(bad.name, bad.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+	id := uuid.New()
+	t.Setenv("ASTILBA_INSTALLATION_ID", id.String())
+	if c, err = Load(); err != nil || c.InstallationID != id {
+		t.Fatalf("pinned: %v %v", c.InstallationID, err)
+	}
+	t.Setenv("ASTILBA_KEYRING", "")
+	if _, err = Load(); err == nil {
+		t.Fatal("no keyring accepted")
+	}
+}
+
+func TestHostingRequiresAPinnedInstallation(t *testing.T) {
+	if (Config{Hosted: true}).RequirePinnedInstallation() == nil {
+		t.Fatal("hosted without an installation ID")
+	}
+	if (Config{Hosted: true, InstallationID: uuid.New()}).RequirePinnedInstallation() != nil {
+		t.Fatal("pinned hosted refused")
 	}
 }

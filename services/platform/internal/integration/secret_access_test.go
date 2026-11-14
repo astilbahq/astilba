@@ -126,7 +126,7 @@ func TestRewrapIsOneRecord(t *testing.T) {
 	ctx := context.Background()
 	owner, ws, path := secretEnvironment(t, f)
 	owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "rotated-canary"}, 201, nil)
-	if err := f.st.Rewrap(ctx, "test-operator"); err != nil {
+	if err := f.st.Rewrap(ctx, "test-operator", ""); err != nil {
 		t.Fatal(err)
 	}
 	var purpose, operator string
@@ -134,7 +134,8 @@ func TestRewrapIsOneRecord(t *testing.T) {
 	if err := f.st.Pool.QueryRow(ctx, `SELECT a.purpose,a.operator_ref,o.outcome FROM secret_access a JOIN secret_access_outcomes o ON o.access_id=a.id WHERE a.workspace_id IS NULL AND a.principal_kind='operator'`).Scan(&purpose, &operator, &outcome); err != nil {
 		t.Fatal(err)
 	}
-	if purpose != "rotate" || operator != "test-operator" || outcome != "used" {
+	// The tenant-facing record names the run; only the installation's key history names the operator.
+	if started := keyEvents(t, f, "rewrap-started"); purpose != "rotate" || len(started) != 1 || operator != started[0].RunID.String() || outcome != "used" {
 		t.Fatal(purpose, operator, outcome)
 	}
 	if n := len(accessRecords(t, f, &ws)); n != 1 {

@@ -39,11 +39,47 @@ func TestFileWrapsUnderItsContext(t *testing.T) {
 		"generation": func() error { o := c; o.Generation = 2; _, err := f.Unwrap(ctx, ClassServe, blob, o); return err },
 		"purpose":    func() error { o := c; o.Purpose = "export"; _, err := f.Unwrap(ctx, ClassServe, blob, o); return err },
 	} {
-		if err := try(); !errors.Is(err, ErrDenied) {
+		if err := try(); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if err := f.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A canary opens only for the key and installation that made it, and a rewrap keeps its key.
+func TestCanaryBindsKeyAndInstallation(t *testing.T) {
+	ctx := context.Background()
+	ring, _ := cryptobox.New("one")
+	f, err := NewFile(ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := uuid.New()
+	blob, err := NewCanary(ctx, f, ClassServe, installation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = CheckCanary(ctx, f, ClassServe, installation, blob); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := cryptobox.New("one")
+	g, _ := NewFile(other)
+	for name, err := range map[string]error{
+		"installation": CheckCanary(ctx, f, ClassServe, uuid.New(), blob),
+		"class":        CheckCanary(ctx, f, ClassExport, installation, blob),
+		"keyring":      CheckCanary(ctx, g, ClassServe, installation, blob),
+	} {
+		if !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	rewrapped, err := RewrapCanary(ctx, f, ClassServe, installation, blob)
+	if err != nil || bytes.Equal(rewrapped, blob) {
+		t.Fatalf("rewrap: %v", err)
+	}
+	if err = CheckCanary(ctx, f, ClassServe, installation, rewrapped); err != nil {
 		t.Fatal(err)
 	}
 }

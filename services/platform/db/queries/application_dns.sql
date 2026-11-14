@@ -1,9 +1,6 @@
 -- Application DNS publications: where this installation may have provider records,
 -- and the audit of every record it deleted. See docs/hosting.md#generated-application-names.
 
--- name: DNSInstallation :one
-SELECT id FROM dns_installation;
-
 -- name: ListDNSPublications :many
 -- unscoped: a DNS job names the server; each row carries the workspace it was recorded for.
 SELECT workspace_id,base,zone,revoked FROM dns_publications WHERE server_id = @server_id ORDER BY base,zone;

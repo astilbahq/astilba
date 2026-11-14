@@ -388,3 +388,17 @@ func TestAdditiveClaims(t *testing.T) {
 		}
 	}
 }
+
+// A release may complete the next custody stage, or repeat one, but never skip one.
+func TestCustodyStagesAreTakenInOrder(t *testing.T) {
+	for _, c := range []struct{ required, completed int }{{1, 0}, {1, 1}, {2, 1}, {2, 5}} {
+		if err := stageRefusal(c.required, c.completed); err != nil {
+			t.Errorf("%d after %d refused: %v", c.required, c.completed, err)
+		}
+	}
+	for _, c := range []struct{ required, completed int }{{2, 0}, {3, 1}} {
+		if stageRefusal(c.required, c.completed) == nil {
+			t.Errorf("%d after %d allowed", c.required, c.completed)
+		}
+	}
+}

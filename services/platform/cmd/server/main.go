@@ -46,7 +46,7 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba keygen|migrate|bootstrap|rewrap|invite|grant-management|prepare-recovery|recover-cross-host|serve")
+		return errors.New("usage: astilba keygen|migrate|bootstrap|custody|invite|grant-management|prepare-recovery|recover-cross-host|serve")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -79,12 +79,7 @@ func run() error {
 	if e = dbmigrate.Check(ctx, c.DatabaseURL); e != nil {
 		return e
 	}
-	var keys *cryptobox.Keyring
-	if c.KeyringJSON != "" {
-		keys, e = cryptobox.Parse([]byte(c.KeyringJSON))
-	} else {
-		keys, e = cryptobox.Load(c.Keyring)
-	}
+	keys, e := cryptobox.Load(c.Keyring)
 	if e != nil {
 		return e
 	}
@@ -109,10 +104,27 @@ func run() error {
 	st.Hosting = c.Hosting
 	st.LogRetention = c.LogRetention
 	st.ApplicationDomain = c.ApplicationDNS.Base
+	if os.Args[1] == "custody" {
+		return custodyCommand(ctx, c, pool, st, os.Args[2:])
+	}
+	// A command that uses keys first checks they and the database belong to one installation.
+	// Serving checks its database first, to say why it cannot reach it.
+	install := func() error {
+		if err := c.RequirePinnedInstallation(); err != nil {
+			return err
+		}
+		return st.Broker.Install(ctx, pool, c.InstallationID, false)
+	}
 	switch os.Args[1] {
 	case "recover-cross-host":
+		if e = install(); e != nil {
+			return e
+		}
 		return recoverCrossHostCommand(ctx, st, os.Args[2:])
 	case "invite":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("invite", flag.ContinueOnError)
 		email := f.String("email", "", "beta invitee email")
 		if e = f.Parse(os.Args[2:]); e != nil {
@@ -127,6 +139,9 @@ func run() error {
 		}
 		return (&auth.Service{Store: st, Mail: mail, Now: time.Now}).InviteHosted(ctx, *email, c.Origin)
 	case "prepare-recovery":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("prepare-recovery", flag.ContinueOnError)
 		server := f.String("server", "", "restored server UUID")
 		generation := f.Int64("controller-generation", 0, "generation greater than the host's current controller")
@@ -139,6 +154,9 @@ func run() error {
 		}
 		return st.PrepareRecovery(ctx, id, *generation)
 	case "grant-management":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("grant-management", flag.ContinueOnError)
 		ws := f.String("workspace", "", "workspace UUID")
 		until := f.String("until", "", "RFC3339 expiration")
@@ -155,10 +173,10 @@ func run() error {
 			return domain.Invalid("until")
 		}
 		return st.GrantManagement(ctx, id, end, *limit)
-	case "rewrap":
-		// Until operators have records of their own, the command names itself.
-		return st.Rewrap(ctx, "astilba-rewrap")
 	case "bootstrap":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 		email := f.String("email", "", "owner email")
 		name := f.String("name", "", "owner name")
@@ -213,6 +231,9 @@ func run() error {
 			return errors.New("serving database is unavailable or excluded by offline recovery")
 		}
 		if e = st.CheckConnectionLimit(ctx); e != nil {
+			return e
+		}
+		if e = install(); e != nil {
 			return e
 		}
 		go st.LogPoolUse(ctx)

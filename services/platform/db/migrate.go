@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
+	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivermigrate"
@@ -20,7 +21,12 @@ var migrations embed.FS
 
 // Version is the newest migration this binary carries. It runs on a database at this version,
 // or ahead of it when every newer migration recorded itself as additive.
-const Version int64 = 53
+const Version int64 = 54
+
+// CustodyStage is the custody stage this release completes. Its migrations assume the one before
+// it is complete, so `migrate` refuses an installation further behind: stages are taken one
+// release at a time. See docs/hosting.md#key-custody.
+const CustodyStage = 1
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
@@ -50,11 +56,41 @@ func Up(ctx context.Context, dsn string) error {
 		return err
 	}
 	defer db.Close()
+	if err = checkStage(ctx, db); err != nil {
+		return err
+	}
 	if _, err := p.Up(ctx); err != nil {
 		return errors.New("database migration failed")
 	}
 	return riverSchema(ctx, dsn, true)
 }
+
+// checkStage refuses to migrate an installation more than one custody stage behind this release.
+// A database from before stages were recorded has completed none.
+func checkStage(ctx context.Context, db *sql.DB) error {
+	var recorded bool
+	completed := 0
+	// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
+	err := db.QueryRowContext(ctx, `SELECT to_regclass('custody_stage') IS NOT NULL`).Scan(&recorded)
+	if err == nil && recorded {
+		// inline-sql: as above, sqlc's queries assume the current schema.
+		err = db.QueryRowContext(ctx, `SELECT stage FROM custody_stage`).Scan(&completed)
+	}
+	if err != nil {
+		return errors.New("cannot read the custody stage")
+	}
+	return stageRefusal(CustodyStage, completed)
+}
+
+// stageRefusal refuses a release that completes stage required on an installation that has
+// completed stage completed, unless it is the next stage or an earlier one.
+func stageRefusal(required, completed int) error {
+	if required > completed+1 {
+		return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: upgrade through the releases between them first", required, completed)
+	}
+	return nil
+}
+
 func Check(ctx context.Context, dsn string) error {
 	p, db, err := provider(dsn)
 	if err != nil {
