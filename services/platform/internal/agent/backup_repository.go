@@ -159,7 +159,7 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	defer os.RemoveAll(stage)
 	m := backup.Manifest{Recipe: backup.Recipe, PolicyID: in.Policy.ID, RunID: r.ID, EnvironmentID: in.Policy.EnvironmentID, ResourceID: in.Policy.ResourceID, Method: in.Policy.Method, CreatedAt: r.StartedAt, Roles: []backup.Role{}, Extensions: []string{}}
 	if in.Policy.Method == "postgres-logical" {
-		err = e.dumpPostgres(ctx, in.Policy, stage, &m)
+		err = e.dumpPostgres(ctx, *in, r.ID, stage, &m)
 	} else {
 		err = e.dumpFiles(ctx, s, stage, &m)
 	}

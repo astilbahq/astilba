@@ -233,17 +233,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if s.Command.Installation.Access.DatabasePassword == "" {
 		return errors.New("database credential missing")
 	}
-	m := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}}
-	if err = e.postgresManifest(ctx, source.ID, a, domain.Postgres17Image, &m); err != nil {
-		return err
-	}
-	if err = e.upgradeDatabaseChecks(ctx, source.ID, a); err != nil {
-		return err
-	}
-	if err = e.knownUpgradeWriters(ctx, source.ID, a, p.Source); err != nil {
-		return err
-	}
-	size, err := e.pgQuery(ctx, source.ID, a, "SELECT pg_database_size(current_database())")
+	size, err := e.upgradePreflight(ctx, *s, source.ID, a)
 	if err != nil {
 		return err
 	}
@@ -306,7 +296,8 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	e.point("upgrade-isolate-effect")
-	if err = e.upgradeDatabaseChecks(ctx, created.ID, a); err != nil {
+	isolated := pgClient{container: created.ID}
+	if err = e.upgradeDatabaseChecks(ctx, isolated, a); err != nil {
 		return err
 	}
 	if err = e.upgradeStep(c, s, "backup"); err != nil {
@@ -317,8 +308,8 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	defer os.RemoveAll(stage)
-	m = backup.Manifest{Recipe: backup.Recipe, PolicyID: policy.ID, RunID: p.ID, EnvironmentID: p.Source.EnvironmentID, ResourceID: p.ResourceID, Method: "postgres-logical", CreatedAt: time.Now().UTC(), Roles: []backup.Role{}, Extensions: []string{}}
-	if err = e.postgresManifest(ctx, created.ID, a, domain.Postgres17Image, &m); err != nil {
+	m := backup.Manifest{Recipe: backup.Recipe, PolicyID: policy.ID, RunID: p.ID, EnvironmentID: p.Source.EnvironmentID, ResourceID: p.ResourceID, Method: "postgres-logical", CreatedAt: time.Now().UTC(), Roles: []backup.Role{}, Extensions: []string{}}
+	if err = e.postgresManifest(ctx, isolated, a, domain.Postgres17Image, &m); err != nil {
 		return err
 	}
 	if err = e.upgradeDump(ctx, *s, created.ID, a, stage, &m); err != nil {
@@ -411,6 +402,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 func (e *Engine) removeUpgradeHelpers(ctx context.Context, s upgradeState) error {
 	p := s.Command.Plan
 	for _, entry := range []struct{ name, kind, image string }{
+		{"astilba-upgrade-preflight-" + p.ID.String(), "upgrade-preflight-v1", domain.PostgresImage},
 		{"astilba-upgrade-tools-" + p.ID.String(), "upgrade-tools-v1", domain.PostgresImage},
 		{"astilba-restore-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
 		{"astilba-upgrade-source-" + p.ID.String(), "upgrade-source-v1", domain.Postgres17Image},

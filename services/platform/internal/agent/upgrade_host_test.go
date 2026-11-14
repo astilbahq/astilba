@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/moby/moby/api/types/container"
@@ -117,6 +118,17 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 				t.Fatal(err)
 			}
 			if crash == "" {
+				state := upgradeState{Command: upgrade.Command{Plan: plan, Installation: in}}
+				state.Command.Installation.Access.DatabasePassword = secrets[a.Postgres.PasswordSecretVersionID.String()]
+				nativeStoppedPreflight(t, e, state, source.ID, a)
+				// The checks run as the preflight runs them: from a helper in the source's namespace.
+				checks, stopChecks := context.WithTimeout(ctx, 10*time.Minute)
+				defer stopChecks()
+				helper, err := e.postgresHelper(checks, "astilba-upgrade-preflight-"+plan.ID.String(), upgradeHelperLabels(state, a, "upgrade-preflight-v1"), source.ID, domain.PostgresImage, state.Command.Installation.Access.DatabasePassword)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer e.removeHelper(helper)
 				t.Run("managed_database_client", func(t *testing.T) {
 					// Share the managed application's network identity while holding a real TCP session.
 					writer, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
@@ -139,7 +151,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 					}
 					connected := false
 					for i := 0; i < 50; i++ {
-						raw, err := e.pgQuery(ctx, source.ID, a, "SELECT count(*) FROM pg_stat_activity WHERE client_addr IS NOT NULL AND backend_type='client backend'")
+						raw, err := e.pgQuery(ctx, pgClient{container: source.ID}, a, "SELECT count(*) FROM pg_stat_activity WHERE client_addr IS NOT NULL AND backend_type='client backend'")
 						if err == nil && strings.TrimSpace(string(raw)) == "1" {
 							connected = true
 							break
@@ -149,7 +161,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 					if !connected {
 						t.Fatal("managed application did not establish a database connection")
 					}
-					if err = e.knownUpgradeWriters(ctx, source.ID, a, p); err != nil {
+					if err = e.knownUpgradeWriters(ctx, helper, a, p); err != nil {
 						t.Fatalf("managed database client rejected: %v", err)
 					}
 				})
@@ -166,18 +178,18 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 					{"CREATE EXTENSION pg_trgm", "DROP EXTENSION pg_trgm", true},
 					{"UPDATE pg_extension SET extversion='unsupported' WHERE extname='plpgsql'", "UPDATE pg_extension SET extversion='1.0' WHERE extname='plpgsql'", true},
 				} {
-					if _, err = e.pgQuery(ctx, source.ID, a, condition.setup); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, condition.setup); err != nil {
 						t.Fatal(err)
 					}
 					if condition.metadata {
-						err = e.postgresManifest(ctx, source.ID, a, domain.Postgres17Image, &backup.Manifest{})
+						err = e.postgresManifest(ctx, helper, a, domain.Postgres17Image, &backup.Manifest{})
 					} else {
-						err = e.upgradeDatabaseChecks(ctx, source.ID, a)
+						err = e.upgradeDatabaseChecks(ctx, helper, a)
 					}
 					if err == nil {
 						t.Fatalf("unsupported source accepted: %s", condition.setup)
 					}
-					if _, err = e.pgQuery(ctx, source.ID, a, condition.cleanup); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, condition.cleanup); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -193,36 +205,39 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 					{"SELECT lo_from_bytea(16500000, 'retained data'::bytea)", "SELECT lo_unlink(16500000)"},
 					{"CREATE SCHEMA pgcustom; CREATE TABLE pgcustom.records(id integer)", "DROP SCHEMA pgcustom CASCADE"},
 				} {
-					if _, err = e.pgQuery(ctx, source.ID, admin, object.create); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, object.create); err != nil {
 						t.Fatal(err)
 					}
-					if err = e.upgradeDatabaseChecks(ctx, source.ID, a); err == nil {
+					if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
 						t.Fatal("maintenance object was accepted")
 					}
-					if _, err = e.pgQuery(ctx, source.ID, admin, object.drop); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, object.drop); err != nil {
 						t.Fatal(err)
 					}
 				}
 				writerContext, stopWriter := context.WithCancel(ctx)
 				writerDone := make(chan struct{})
-				go func() { defer close(writerDone); _, _ = e.pgQuery(writerContext, source.ID, a, "SELECT pg_sleep(60)") }()
+				go func() {
+					defer close(writerDone)
+					_, _ = e.pgQuery(writerContext, pgClient{container: source.ID}, a, "SELECT pg_sleep(60)")
+				}()
 				for i := 0; i < 50; i++ {
-					raw, _ := e.pgQuery(ctx, source.ID, a, "SELECT count(*) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND backend_type='client backend'")
+					raw, _ := e.pgQuery(ctx, pgClient{container: source.ID}, a, "SELECT count(*) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND backend_type='client backend'")
 					if strings.TrimSpace(string(raw)) == "1" {
 						break
 					}
 					time.Sleep(100 * time.Millisecond)
 				}
-				if err = e.knownUpgradeWriters(ctx, source.ID, a, p); err == nil {
+				if err = e.knownUpgradeWriters(ctx, helper, a, p); err == nil {
 					t.Fatal("unknown local database client accepted")
 				}
-				if _, err = e.pgQuery(ctx, source.ID, a, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND backend_type='client backend'"); err != nil {
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND backend_type='client backend'"); err != nil {
 					t.Fatal(err)
 				}
 				stopWriter()
 				<-writerDone
 			}
-			if _, err = e.pgQuery(ctx, source.ID, a, `CREATE ROLE upgrade_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reports; CREATE TABLE reports.events(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value hstore NOT NULL UNIQUE); INSERT INTO reports.events(value) VALUES ('a=>b'); ALTER TABLE reports.events OWNER TO upgrade_reader; GRANT USAGE ON SCHEMA reports TO upgrade_reader`); err != nil {
+			if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, `CREATE ROLE upgrade_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reports; CREATE TABLE reports.events(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value hstore NOT NULL UNIQUE); INSERT INTO reports.events(value) VALUES ('a=>b'); ALTER TABLE reports.events OWNER TO upgrade_reader; GRANT USAGE ON SCHEMA reports TO upgrade_reader`); err != nil {
 				t.Fatal(err)
 			}
 			send := func(action string, interrupt bool) Record {
@@ -326,11 +341,11 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 			if err != nil {
 				t.Fatal(err)
 			}
-			value, err := e.pgQuery(ctx, current.ID, a, "SELECT value::text FROM reports.events")
+			value, err := e.pgQuery(ctx, pgClient{container: current.ID}, a, "SELECT value::text FROM reports.events")
 			if err != nil || !strings.Contains(string(value), `"a"=>"b"`) {
 				t.Fatal("records did not survive", err)
 			}
-			if _, err = e.pgQuery(ctx, current.ID, a, "INSERT INTO reports.events(value) VALUES ('c=>d')"); err != nil {
+			if _, err = e.pgQuery(ctx, pgClient{container: current.ID}, a, "INSERT INTO reports.events(value) VALUES ('c=>d')"); err != nil {
 				t.Fatal("application write failed", err)
 			}
 			if _, err = e.volumePath(ctx, policy, plan.OldVolume()); err != nil {
@@ -338,4 +353,67 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T) (d
 			}
 		})
 	}
+}
+
+// PLAT-390. The upgrade preflight inventories the live source's maintenance database with pg_dump
+// from a helper in the source's network namespace. Stopped while that dump waits on a lock, it
+// leaves nothing running: its helper is removed and the dump's backend ends, though the lock is
+// still held.
+func nativeStoppedPreflight(t *testing.T, e *Engine, s upgradeState, source string, a domain.Application) {
+	t.Helper()
+	ctx := context.Background()
+	admin := a
+	pg := *a.Postgres
+	pg.Database = "postgres"
+	admin.Postgres = &pg
+	db := pgClient{container: source}
+	if _, err := e.pgQuery(ctx, db, admin, "CREATE TABLE public.held(id integer)"); err != nil {
+		t.Fatal(err)
+	}
+	holding, release := context.WithCancel(ctx)
+	held := make(chan struct{})
+	go func() {
+		defer close(held)
+		_, _ = e.pgQuery(holding, db, admin, "LOCK TABLE public.held IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120)")
+	}()
+	defer func() {
+		_, _ = e.pgQuery(ctx, db, a, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LOCK TABLE public.held%'")
+		release()
+		<-held
+		if _, err := e.pgQuery(ctx, db, admin, "DROP TABLE public.held"); err != nil {
+			t.Error(err)
+		}
+	}()
+	until := func(what, sql, want string) {
+		t.Helper()
+		for n := 0; ; n++ {
+			out, err := e.pgQuery(ctx, db, a, sql)
+			if err == nil && strings.TrimSpace(string(out)) == want {
+				return
+			}
+			if n == 100 {
+				t.Fatalf("%s: %q (%v)", what, out, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	locked := "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid=l.database WHERE d.datname='postgres' AND l.locktype='relation' AND l.mode='AccessExclusiveLock' AND l.granted"
+	until("the lock was never held", locked, "1")
+	stopped, stop := context.WithTimeout(ctx, 5*time.Minute)
+	defer stop()
+	checked := make(chan error, 1)
+	go func() {
+		_, err := e.upgradePreflight(stopped, s, source, a)
+		checked <- err
+	}()
+	until("the preflight's dump never waited on the lock", "SELECT count(*) FROM pg_stat_activity WHERE application_name='pg_dump' AND wait_event_type='Lock' AND client_addr='127.0.0.1'", "1")
+	stop()
+	if err := <-checked; err == nil {
+		t.Fatal("a stopped preflight passed")
+	}
+	if _, err := e.Docker.ContainerInspect(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+		t.Fatal("the stopped preflight's helper remains:", err)
+	}
+	until("the stopped preflight's dump remains", "SELECT count(*) FROM pg_stat_activity WHERE application_name='pg_dump'", "0")
+	until("the lock was released early", locked, "1")
 }

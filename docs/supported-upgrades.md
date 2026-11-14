@@ -16,7 +16,7 @@ The dashboard supports one logical migration: an Astilba-managed PostgreSQL 17.1
 | Backup | Existing PostgreSQL logical-backup policy with an accessible filesystem or S3 destination and its repository password |
 | Tools | Docker Compose 5.6.1, restic 0.19.1 and the pinned PostgreSQL client images |
 
-The agent rejects unsupported server versions, storage layouts, roles, extensions and unknown clients before downtime. Disconnect external clients before starting. During migration, the old database runs only in an isolated network namespace; managed applications stay stopped. Astilba cannot coordinate writers in other environments or outside its ownership boundary. The host operator remains responsible for privileged access to Docker and PostgreSQL.
+The agent rejects unsupported server versions, storage layouts, roles, extensions and unknown clients before downtime. It runs these checks, and the PostgreSQL 18 dump, from a helper container sharing the database's network namespace, never inside the database container, so stopping an upgrade removes the helper and ends its connections. Disconnect external clients before starting. During migration, the old database runs only in an isolated network namespace; managed applications stay stopped. Astilba cannot coordinate writers in other environments or outside its ownership boundary. The host operator remains responsible for privileged access to Docker and PostgreSQL.
 
 The backup policy can use daily, cron or interval scheduling and a custom timeout. General schedules and custom timeouts require the negotiated `schedules` agent capability at command delivery. Upgrade actions remain `upgrade` commands; preparing one does not install or run the policy's recurring schedule.
 
