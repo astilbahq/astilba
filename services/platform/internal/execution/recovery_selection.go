@@ -159,8 +159,7 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 }
 
 // refuseUnknownActiveRoots refuses hosts that report running a cross-host root the newest base
-// doesn't carry as unfinished. An operation of any other kind, such as one of a root's own steps,
-// is never a host's active root, so a host that names one is refused the same way. N carries every unfinished root of its own management, so such a
+// doesn't carry as unfinished. N carries every unfinished root of its own management, so such a
 // root was started by a management N's doesn't descend from, as when a management restored from a
 // backup ran other work on other hosts, or it ended. N records an ended root as a finished row, by
 // listing its base, or by its applied or settled history, or, before its window, no longer records
@@ -169,7 +168,8 @@ func chooseRecoveryBases(out *recoverySource, decode func(uuid.UUID) (portabilit
 // finished work. A base captured when the root started always shows it unfinished, and only the
 // hosts' unsigned reports say it still is, so recovery takes neither over. Every such root is named
 // with its servers, so the operator can revoke them, leave their exports out, and enrol them again
-// afterwards.
+// afterwards. Any other operation, such as one of a root's own steps, is never a host's active
+// root, so a host that names one is wrong and is refused the same way.
 func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts map[uuid.UUID]deployment.RecoveryEvidence) error {
 	carried, ended, other := map[uuid.UUID]bool{}, map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
 	for _, row := range a.Tables["execution_operations"] {
@@ -228,14 +228,14 @@ func refuseUnknownActiveRoots(a portability.Archive, newest loadedBase, hosts ma
 	for _, root := range slices.SortedFunc(maps.Keys(unknown), bytesCompareUUID) {
 		servers := unknown[root]
 		slices.Sort(servers)
-		reason := "which the newest recovery checkpoint doesn't carry, so a management this one doesn't descend from started it, or it ended before the checkpoint's window"
+		report := "servers %s report running cross-host deployment %s, which the newest recovery checkpoint doesn't carry, so a management this one doesn't descend from started it, or it ended before the checkpoint's window"
 		switch {
 		case other[root]:
-			reason = "which the newest recovery checkpoint records as another kind of operation, not a cross-host deployment, so their report is wrong"
+			report = "servers %s report operation %s as the cross-host deployment they run, but the newest recovery checkpoint records it as another kind of operation, so their report is wrong"
 		case ended[root]:
-			reason = "which the newest recovery checkpoint records as ended, so their report is stale"
+			report = "servers %s report running cross-host deployment %s, which the newest recovery checkpoint records as ended, so their report is stale"
 		}
-		reports = append(reports, fmt.Sprintf("servers %s report running cross-host deployment %s, %s", strings.Join(servers, ", "), root, reason))
+		reports = append(reports, fmt.Sprintf(report, strings.Join(servers, ", "), root))
 	}
 	return fmt.Errorf("%s; recovery can't take that work over: revoke those servers in this management and leave their exports out, then after recovery enrol them again and redeploy what they ran", strings.Join(reports, "; "))
 }
