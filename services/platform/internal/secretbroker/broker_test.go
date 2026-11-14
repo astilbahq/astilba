@@ -268,6 +268,29 @@ func TestBudgets(t *testing.T) {
 	}
 }
 
+// One agent that never acknowledges spends its server's budget, not its workspace's.
+func TestDeliveryBudgetIsPerServer(t *testing.T) {
+	b, q, _, _, server := setup(t)
+	ctx := context.Background()
+	ws, other := uuid.New(), uuid.New()
+	q.servers[other] = true
+	secret := Item{Kind: SecretVersion, ID: uuid.New()}
+	for range serverBurst {
+		if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Deliver, Principal: Agent(server, "1"), Items: []Item{secret}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Deliver, Principal: Agent(server, "1"), Items: []Item{secret}}); !errors.Is(err, domain.RateLimited) {
+		t.Fatalf("server over budget: %v", err)
+	}
+	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Deliver, Principal: Agent(other, "1"), Items: []Item{secret}}); err != nil {
+		t.Fatalf("one server held up another: %v", err)
+	}
+	if serverRate*5 > workspaceRate || serverBurst*5 > workspaceBurst {
+		t.Fatal("a server's delivery budget must stay within a fifth of its workspace's")
+	}
+}
+
 func TestNewWorkspaceMustBeNew(t *testing.T) {
 	b, q, _, _, _ := setup(t)
 	taken := uuid.New()

@@ -25,6 +25,8 @@ type Archive struct {
 	RequireMFA bool             `json:"requireMfa"`
 	CreatedAt  time.Time        `json:"createdAt"`
 	Tables     map[string][]Row `json:"tables"`
+	// Recovery is a recovery base's applied history, from RecoveryArchiveVersion on.
+	Recovery *RecoveryHistory `json:"recovery,omitzero"`
 }
 type Service struct{ Store *store.Store }
 
@@ -37,7 +39,8 @@ func rowString(row Row, key string) (string, error) {
 }
 func setValue(row Row, key string, value any) { row[key], _ = stablejson.Marshal(value) }
 
-// credential names a row's sealed column and the value it holds, or "" for a table with none.
+// credential names a row's sealed column and the value it holds, or "" for a table with none or a
+// secret version whose value was erased, which holds nothing to open or seal.
 func credential(table string, row Row) (string, secretbroker.Item, error) {
 	var field string
 	var kind secretbroker.Kind
@@ -56,6 +59,15 @@ func credential(table string, row Row) (string, secretbroker.Item, error) {
 		field, kind = "encrypted_access", secretbroker.BackupPolicy
 	default:
 		return "", secretbroker.Item{}, nil
+	}
+	if table == "secret_versions" {
+		erased := string(row["erased_at"]) != "null"
+		if erased != (string(row[field]) == "null") {
+			return "", secretbroker.Item{}, ErrArchive
+		}
+		if erased {
+			return "", secretbroker.Item{}, nil
+		}
 	}
 	value, e := rowString(row, "id")
 	if e != nil {

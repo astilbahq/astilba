@@ -20,13 +20,19 @@ import (
 func (s *Service) visualReport(ctx context.Context, tx pgx.Tx, c api.ExecutionCommand, r *api.AgentReport) error {
 	if c.Visual != nil {
 		var p deployment.Payload
-		if json.Unmarshal(*c.Visual, &p) == nil && p.Action == "preview-cleanup" {
+		if json.Unmarshal(*c.Visual, &p) == nil && (p.Action == "preview-cleanup" || p.Action == retireAction || p.Action == purgeAction) {
 			if r.State != "succeeded" {
 				return nil
 			}
 			var ws uuid.UUID
 			if err := tx.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
 				return err
+			}
+			switch p.Action {
+			case retireAction:
+				return s.finalizeRetirement(ctx, tx, ws, c)
+			case purgeAction:
+				return s.finalizePurge(ctx, tx, ws, c)
 			}
 			return s.finalizePreviewCleanup(ctx, tx, ws, c)
 		}

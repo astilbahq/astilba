@@ -35,6 +35,8 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.CredentialFreeVisualCancel = &credentialFreeCancel
 	machineBoundRotation := true
 	h.Capabilities.MachineBoundRotation = &machineBoundRotation
+	acknowledgesReleases := true
+	h.Capabilities.AcknowledgesReleases = &acknowledgesReleases
 	raw, _ := os.ReadFile("/etc/os-release")
 	var id, release string
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -51,11 +53,16 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	}
 	runtimeReady := false
 	if docker != nil {
-		v, e := docker.ServerVersion(ctx, client.ServerVersionOptions{})
-		if e == nil {
+		v, versionErr := docker.ServerVersion(ctx, client.ServerVersionOptions{})
+		if versionErr == nil {
 			h.Capabilities.Docker = true
 			h.Preflight.DockerVersion = v.Version
 			runtimeReady = troubleshootingRuntime(v.Components)
+		}
+		if info, e := docker.Info(ctx, client.InfoOptions{}); e == nil {
+			if note := imageStoreNote(info.Info.DriverStatus, v.APIVersion, versionErr == nil); note != "" {
+				h.Preflight.Notes = append(h.Preflight.Notes, note)
+			}
 		}
 		list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: 1001})
 		if e == nil {
@@ -100,7 +107,12 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	if h.Preflight.Ready && !buildNetwork {
 		h.Preflight.Notes = append(h.Preflight.Notes, buildPolicyUnsupported)
 	}
-	build := h.Preflight.Ready && buildNetwork && dockerFreeBytes(ctx, docker) >= 4<<30
+	// A build runs only in the unprivileged builder, so a host that can't confine it offers none.
+	rootless := !builderUnsupported()
+	if h.Preflight.Ready && !rootless {
+		h.Preflight.Notes = append(h.Preflight.Notes, builderUnsupportedNote)
+	}
+	build := h.Preflight.Ready && buildNetwork && rootless && dockerFreeBytes(ctx, docker) >= 4<<30
 	if raw, err := os.ReadFile("/etc/docker/daemon.json"); build && err == nil && dockerFirewallOff(raw) {
 		h.Preflight.Notes = append(h.Preflight.Notes, dockerFirewallOffNote)
 	}
@@ -109,6 +121,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	}
 	h.Capabilities.Build = &build
 	h.Capabilities.BuildNetwork = &buildNetwork
+	h.Capabilities.RootlessBuilds = &build
 	h.Capabilities.BuildControls = &build
 	h.Capabilities.BuildCache = &build
 	if build {
@@ -118,6 +131,8 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.SafeReleases = &visual
 	h.Capabilities.Replicas = &visual
 	h.Capabilities.Previews = &visual
+	h.Capabilities.Retirement = &visual
+	h.Capabilities.Purge = &visual
 	h.Capabilities.ServiceOutputs = &visual
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual

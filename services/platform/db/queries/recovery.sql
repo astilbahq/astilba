@@ -77,7 +77,9 @@ UPDATE backup_policies SET configuration=jsonb_set(configuration,'{enabled}','fa
 WHERE workspace_id = @workspace_id;
 
 -- name: RestoreRecoveryRoot :exec
-UPDATE execution_operations SET command = @command,state='running',job_id=NULL
+-- The stored command keeps its bytes, which its recovery identity is computed from; only the
+-- checkpoint it resumes from is attached.
+UPDATE execution_operations SET command=jsonb_set(command,'{recoveryCheckpoint}',@descriptor::jsonb,true),state='running',job_id=NULL
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: UpsertCrossHostRecovery :execrows
@@ -107,6 +109,25 @@ WHERE workspace_id = @workspace_id AND parent_id = @parent_id AND sequence = @se
 -- name: InsertRecoveryBaseCheckpoint :exec
 INSERT INTO cross_host_checkpoints(id,workspace_id,parent_id,sequence,descriptor,envelope)
 VALUES(@id,@workspace_id,@parent_id,0,@descriptor,@envelope);
+
+-- name: RegisterRecoveryBase :exec
+-- The base's root is still being coordinated, so its primary hasn't closed it.
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at,@window_start);
+
+-- name: RegisterRecoveredBase :exec
+-- A base a recovery loaded that this database didn't know. A host holds it, so later bases list it.
+-- It counts as unclosed until its primary acknowledges a close: whether the host saw its root
+-- close isn't known, and a host keeps an unclosed base indefinitely.
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
+VALUES(@workspace_id,@id,@parent_id,@environment_id,@primary_server_id,@captured_at,sqlc.narg(window_start))
+ON CONFLICT DO NOTHING;
+
+-- name: CloseRecoveryBase :exec
+-- The primary acknowledged a closing phase, after which its agent keeps the base only while it is
+-- among the two latest closed in its environment.
+UPDATE recovery_bases SET closed_at=clock_timestamp()
+WHERE workspace_id = @workspace_id AND parent_id = @parent_id AND primary_server_id = @primary_server_id AND closed_at IS NULL;
 
 -- name: InsertRecoveryCheckpoint :exec
 INSERT INTO cross_host_checkpoints(id,workspace_id,parent_id,sequence,descriptor,envelope,phase)
@@ -171,11 +192,14 @@ SELECT command,report_sequence FROM execution_operations WHERE workspace_id = @w
 INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,parent_id)
 VALUES(@id,@workspace_id,@server_id,@environment_id,@generation,@request_key, @command, @kind,@state,@parent_id);
 
--- name: SetRecoveryFrameCommand :exec
-UPDATE execution_operations SET command = @command,job_id=NULL WHERE workspace_id = @workspace_id AND id = @id;
+-- name: SetRecoveryFrameCheckpoint :exec
+-- A frame that already exists matches its frozen header, so only the checkpoint it belongs to is
+-- replaced; the stored command keeps its bytes, which its recovery identity is computed from.
+UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,job_id=NULL,dispatch_epoch=dispatch_epoch+1
+WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ResetRecoveryFrame :exec
-UPDATE execution_operations SET command = @command,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL
+UPDATE execution_operations SET command=CASE WHEN sqlc.narg(descriptor)::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',sqlc.narg(descriptor)::jsonb,true) END,state = @state,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: OperationReportState :one
@@ -322,3 +346,40 @@ WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: SetRecoveredOperationVisualPlan :exec
 UPDATE execution_operations SET visual_plan_id = @visual_plan_id WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: SupersededRecoveryBases :many
+-- The bases a host may still hold: an agent keeps a base until its primary closes the root, and
+-- then the two latest closed in its environment. Listing four gives room for an agent and this
+-- management to order closes differently, which a close sent after a recovery can do.
+SELECT b.id,b.parent_id,b.captured_at FROM (
+ SELECT r.id,r.parent_id,r.captured_at,r.closed_at,row_number() OVER (PARTITION BY r.environment_id,r.primary_server_id,r.closed_at IS NULL ORDER BY r.closed_at DESC,r.captured_at DESC,r.id) AS n
+ FROM recovery_bases r WHERE r.workspace_id = @workspace_id
+) b WHERE b.closed_at IS NULL OR b.n <= 4
+ORDER BY b.id;
+
+-- name: NewestRecoveryBase :one
+-- The newest base, whose window decides which management backups cross-host recovery can use.
+SELECT captured_at,window_start FROM recovery_bases WHERE workspace_id = @workspace_id
+ORDER BY captured_at DESC,id DESC LIMIT 1;
+
+-- name: FillRecoveredRuntimeTime :exec
+-- A merged row takes the time its change was recorded from the base's applied history, unless it
+-- has one.
+UPDATE execution_operations SET runtime_recorded_at = COALESCE(runtime_recorded_at, @recorded_at::timestamptz)
+WHERE workspace_id = @workspace_id AND id = @id AND runtime_outcome IS NOT NULL;
+
+-- name: KeepRecoveredRuntimeHistory :exec
+-- An applied-history entry whose operation row recovery didn't merge, or merged without its
+-- outcome, so later bases carry it.
+INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
+SELECT @workspace_id,@operation_id,@environment_id,@generation,@recorded_at,@entry
+WHERE NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.id = @operation_id AND o.runtime_outcome IS NOT NULL)
+ON CONFLICT DO NOTHING;
+
+-- name: RecoveredRuntimeHistory :many
+SELECT entry FROM recovered_runtime_history h WHERE h.workspace_id = @workspace_id
+AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = h.workspace_id AND o.id = h.operation_id AND o.runtime_outcome IS NOT NULL)
+ORDER BY h.environment_id,h.generation;
+
+-- name: OperationCommands :many
+SELECT id,command FROM execution_operations WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]);

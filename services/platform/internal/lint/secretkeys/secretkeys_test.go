@@ -9,5 +9,5 @@ import (
 
 func TestAnalyzer(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), secretkeys.Analyzer,
-		"example.com/platform/internal/execution", "example.com/platform/internal/secretbroker", "example.com/platform/internal/httpapi", "example.com/platform/cmd/tool/internal/agent")
+		"example.com/platform/internal/execution", "example.com/platform/internal/store", "example.com/platform/internal/secretbroker", "example.com/platform/cmd/tool/internal/agent")
 }

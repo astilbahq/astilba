@@ -36,7 +36,7 @@ Each unit retains its two most recent stopped application pools. Their container
 
 If a peer disappears before publication, preserve old routing and candidate uncertainty; do not mark successful or schedule an unfenced replacement. If ingress acknowledgement is lost, reconcile its actual registry before retrying or retiring old pools. A management or agent restart resumes the same parent and children. Stopping an agent records no outcome for a coordinated or private-link phase: it reruns when the agent restarts, exactly as after a crash. Reservation, storage, private links, candidate startup and probes repeat against the same frozen identities, publication first recovers its pending route attempt, retirement resumes its recorded drain deadline and exact containers, candidate cleanup removes only what is still owned, and a release command keeps its run-once state. A data effect under a parent keeps its own interruption rules. Cancellation stops at safe checkpoints and never interprets a missing response as failure. Partition after publication uses Traefik backend readiness to exclude unreachable endpoints, with a convergence window; it does not relocate state or promise uninterrupted requests. The single ingress host and DNS remain failure boundaries. A rollback is a new complete reviewed group deployment; it does not roll back external data.
 
-A deployment phase's admission deadline decides only whether its host may start something new, as maintenance's does below. Reservation, private links, candidate preparation, the release command, probes and publication each start something, so none starts after its deadline. One that misses it has changed nothing, which is a known outcome: the parent removes the candidates on every host and fails, releasing every host so the owner can apply again. That includes publication, which would otherwise switch ingress to candidates probed long before. The primary ends a publication failed or cancelled only before it starts changing ingress; once it has started, any outcome but success needs attention, so no host removes candidates the routes use. Retirement, completion and candidate cleanup finish what the hosts already began, and nothing can issue them again, so an agent runs them however late they arrive, but only while its own journal holds that deployment's reservation, and then through the same frozen-reservation checks. Cleanup also acknowledges a host that holds no reservation at all, changing no reservation or runtime there, since refusing it would hold every other host. Lateness never lets a command start or widen anything. The agent decides this from one closed list of command kinds, network actions and coordinated phases, and doesn't run a phase that isn't on it. Every integration test checks, when it ends, that each coordinated phase management issued is on that list, so a phase management issues in any tested flow fails until the agent lists it. An agent without this rule cancels late retirement, completion and cleanup instead, and the parent holds the reservation for reconciliation, as it did before.
+A deployment phase's admission deadline decides only whether its host may start something new, as maintenance's does below. Reservation, private links, candidate preparation, the release command, probes and publication each start something, so none starts after its deadline. One that misses it has changed nothing, which is a known outcome: the parent removes the candidates on every host and fails, releasing every host so the owner can apply again. That includes publication, which would otherwise switch ingress to candidates probed long before. The primary ends a publication failed or cancelled only before it starts changing ingress; once it has started, any outcome but success needs attention, so no host removes candidates the routes use. Retirement, completion and candidate cleanup finish what the hosts already began, and nothing can issue them again, so an agent runs them however late they arrive, but only while its own journal holds that deployment's reservation, and then through the same frozen-reservation checks. Cleanup also acknowledges a host that holds no reservation at all, changing no reservation or runtime there, since refusing it would hold every other host. Lateness never lets a command start or widen anything. The agent decides this from one closed list of command kinds, deployment and network actions and coordinated phases, and doesn't run a phase that isn't on it. A retirement is on it: it runs late only on a host whose journal holds the environment there (see [Retiring an environment](environment-retirement.md)). Every integration test checks, when it ends, that each coordinated phase management issued is on that list, so a phase management issues in any tested flow fails until the agent lists it. An agent without this rule cancels late retirement, completion and cleanup instead, and the parent holds the reservation for reconciliation, as it did before.
 
 ## Moving off a revoked server
 
@@ -135,6 +135,59 @@ ones. A release can't read checkpoints sealed by a newer one, so run recovery wi
 that sealed the newest checkpoint or a newer one, even when the management backup is older.
 Checkpoint sizes and retained histories are bounded; an incomplete or incompatible
 evidence set refuses recovery.
+
+### The recovery window
+
+A base doesn't carry every operation the workspace ever ran. It carries the workspace's
+configuration, unfinished work, the newest 100 operations and audit events, and a compact
+record of applied history: every runtime change committed in the 90 days before the base was
+captured, plus the change each environment had when that window opened. So a base's size
+follows the workspace's configuration, not its age.
+
+- **Which backup recovery can use.** Use a management backup taken after the newest
+  checkpoint's window opened. An older one is refused, with the dates, when it holds a runtime
+  older than the window or shows live an environment retired before it: the newest checkpoint
+  can't show that such a backup is its ancestor rather than a diverged copy. One whose runtimes
+  haven't changed since still recovers. Use a more recent backup. There is no override.
+- **A shorter window.** When a busy workspace's history doesn't fit a base, the window starts
+  later, so it holds only the newest runtime changes and ended cross-host roots that fit. Frequent
+  coordinated backups count as well as deployments: backing up less often lengthens the window. Management logs a warning, and raises the
+  `recovery_window` alert, while the window is shorter than 35 days, the backup retention
+  [management backups](management-backups.md) suggests. The Workspace page shows the newest
+  checkpoint's time and its window.
+- **Margins.** A change recorded just before the window opens may commit just after, so the
+  window is read with a day's margin, and a week's for an operation from before recorded times.
+- **What comes back.** Recovery restores configuration, unfinished work, the newest 100
+  operations and audit events, the final state of runtime changes and cross-host roots, and
+  anything they name. Other releases, revisions and build runs from between the backup and the
+  failure are lost. An operation the backup holds unfinished gets the final state the newest
+  checkpoint records for it; one it records nothing for is fenced as cancelled, as before.
+- **Retired environments.** A base carries every standard environment, retired or not, and
+  each preview environment whose runtime is applied or changed inside its window. A backup that
+  shows a runtime applied for a preview environment retired before the window opened is refused
+  with the dates.
+
+Recovery merges only the newest checkpoint, N: the one no other supplied checkpoint lists as
+superseded, captured last. N carries every unfinished root with everything it names, so an older
+checkpoint adds nothing to merge, and an older copy of a row N dropped would overwrite the
+backup's newer one. A base lists every base a host may still hold that its management captured
+or recovered before it, which vouches that they are its ancestors. Recovery sets those aside and
+names them in its preview. Any other older checkpoint, such as one from a management that
+diverged, is compared with N first: one whose applied history N doesn't continue, or doesn't
+reach back to, is refused, naming that checkpoint. An interrupted root's own checkpoint still
+supplies its frozen plan, its continuation and its environment's runtime. Work another
+management started is refused, as diverged. When servers report running a cross-host deployment
+that N doesn't carry, a management N's doesn't descend from started it, as when a management
+restored from a backup ran other work on other servers, or it has ended and their report is
+stale. A server N shows revoked is not asked. Either way only the servers' unsigned reports say
+it still runs, so recovery refuses, naming the deployment and its servers. To proceed, revoke
+those servers in the restored management and leave their exports out. Recovery then continues
+without them, and afterwards you enrol them again and redeploy what they ran.
+
+Checkpoints with a recovery window are a format a release before this one can't read, so once
+hosts hold them, run cross-host recovery with a current release. Checkpoints sealed before it
+still recover, alone or mixed with newer ones; they carry every applied change, so their history
+counts as whole.
 
 Stop the old and destination management processes and all participating agents.
 Preserve their journals, host keys and current workload containers. Restore the
@@ -253,9 +306,17 @@ Recovery orders runtime changes by the operation that actually committed them,
 not revision creation time or the execution counter used by reads and prepares.
 Each operation records an applied immutable plan or confirmed removal; the current
 runtime retains that operation even when cleanup removes its projection. Recovery
-checks each original authenticated base before combining histories. Equivalent
+checks each original authenticated base against the newest before using it. A base's applied
+history records each change in explicit fields, so a later release reads it the same way, and
+recovery keeps the entries whose rows it didn't restore, so a later base still carries them. It
+identifies an
+operation by a fixed, versioned list of its command's fields as stored, leaving out those that
+change after it is created (cancellation, controller transfer and its attached checkpoint), so a
+checkpoint sealed by one release is compared the same way by a later one. A primary that fails a checkpoint
+phase is still sent the root's closure, because it may have kept the capsule, and a
+host keeps an unclosed capsule until its root is closed. Equivalent
 cleanup acknowledgements remain valid across report and controller transfer.
-Archive version 6 preserves these outcomes. Versions 1–5 remain importable with
+Archive version 6 and later preserve these outcomes. Versions 1–5 remain importable with
 unknown provenance: their nonempty runtime cannot establish recovery ancestry or
 be adopted without a fresh successful application and checkpoint. Unchanged
 unrelated legacy state may be preserved, including legacy state with no runtime.

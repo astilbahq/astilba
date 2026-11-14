@@ -36,11 +36,12 @@ func seedFirstSecretPage(t *testing.T, f *fixture, ws, env uuid.UUID) {
 	}
 	for i := range 64 {
 		id := uuid.UUID{15: byte(i + 1)}
-		cipher, err := f.st.Keys.Seal([]byte("first-page-decoy"), store.SecretIdentity(ws, id))
+		cipher, err := keysOf(f.st).Seal([]byte("first-page-decoy"), secretIdentity(ws, id))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: id, EncryptedValue: cipher, AuthorID: f.owner}); err != nil {
+		plain, encoded := store.SecretLengths([]byte("first-page-decoy"))
+		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: id, EncryptedValue: cipher, AuthorID: f.owner, PlaintextBytes: plain, JsonBytes: encoded}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -81,6 +82,7 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	yes := true
 	in.Capabilities.Build = &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	cfg := pipeline.BuildConfig{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Context: ".", Dockerfile: "Dockerfile", Architecture: "arm64", Arguments: map[string]string{}, Secrets: map[string]uuid.UUID{}, AutoBuild: true, WatchPaths: []string{"apps/web", "lockfile"}, Budget: &pipeline.BuildBudget{CPUs: 1, MemoryMiB: 1024, SourceMiB: 128, StateMiB: 512, Minutes: 2}}
 	create := func(status int) api.Operation {

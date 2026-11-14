@@ -534,7 +534,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if why != "" {
 			return s.previewState(ctx, tx, id, "failed", "Preview was not deployed: "+why, 5*time.Minute)
 		}
-		status, err := s.createVisualPlan(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
+		status, err := s.createVisualPlan(ctx, tx, git.keys.inspect, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
 		if err != nil {
 			return err
 		}

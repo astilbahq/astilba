@@ -64,9 +64,15 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, keys valu
 // and GitHub calls run between passes, and the pass that delivers re-makes every decision
 // below: a revoked or rotated agent, a cancelled or expired operation, a new runtime secret
 // or a changed connection all stop the credential after the call as they would before it.
-func (s *Service) hydratePipeline(ctx context.Context, a Identity, c *api.ExecutionCommand) (bool, error) {
+//
+// With nil keys it makes only the decisions that need no values, for a command whose
+// credentials the agent already holds: nothing is opened and no provider is asked.
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (bool, error) {
+	if keys == nil {
+		return s.decidePipelineDelivery(ctx, nil, a, c)
+	}
 	var deliver bool
-	err := s.withGit(ctx, a.Workspace, s.legacyRunKeys(a.Workspace), func(git *gitAnswers) error {
+	err := s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
 		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
 		return err
@@ -153,7 +159,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		c.CancelRequested = true
 		return true, tx.Commit(ctx)
 	}
-	if settled, err := s.settleBuildNetwork(ctx, tx, ws, c, p, undelivered); settled || err != nil {
+	if settled, err := s.settleBuildIsolation(ctx, tx, ws, c, p, undelivered); settled || err != nil {
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
@@ -170,6 +176,11 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
+	}
+	if git == nil {
+		// The runner holds this command's credentials: what follows only decides whether new
+		// ones may leave.
+		return true, nil
 	}
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
 	if err != nil {
@@ -280,6 +291,10 @@ func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	return nil
 }
 
+// writePipelineRevision is the one path by which management, rather than a draft edit, replaces an
+// environment's draft: promotions, rollbacks, imports and previews. A retiring or retired
+// environment's draft is read-only. The draft moves only while the environment's row says it is
+// active, so a caller without the workspace lock, such as a pipeline report, cannot race retirement.
 func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env, base, actor uuid.UUID, spec domain.Specification) (uuid.UUID, error) {
 	raw, _ := stablejson.Marshal(spec)
 	parsed, canonical, err := domain.ParseSpec(raw)
@@ -294,11 +309,18 @@ func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env,
 	if _, err = store.InsertRevision(ctx, db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: actor, Specification: canonical, ContentHash: h[:]}); err != nil {
 		return uuid.Nil, err
 	}
-	changed, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3", ws, env, base, id)
-	if err == nil && changed.RowsAffected() != 1 {
-		err = domain.Conflict
+	changed, err := tx.Exec(ctx, "UPDATE environments SET draft_revision_id=$4 WHERE workspace_id=$1 AND id=$2 AND draft_revision_id=$3 AND state='active'", ws, env, base, id)
+	if err != nil || changed.RowsAffected() == 1 {
+		return id, err
 	}
-	return id, err
+	state, err := db.New(tx).EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: env})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if err = requireActive(state); err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Nil, domain.Conflict
 }
 func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers, received time.Time, c api.ExecutionCommand, r *api.AgentReport) error {
 	var p pipeline.Command

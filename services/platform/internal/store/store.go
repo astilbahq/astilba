@@ -8,7 +8,6 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
@@ -22,10 +21,7 @@ type Store struct {
 	Pool    *pgxpool.Pool
 	Queries *db.Queries
 	// Broker is the one path to stored values.
-	Broker *secretbroker.Broker
-	// Keys is read only by the agent delivery paths that have not moved to the broker yet. The
-	// secretkeys analyzer allows no other use.
-	Keys              *cryptobox.Keyring
+	Broker            *secretbroker.Broker
 	Hosted            bool
 	Hosting           hosting.Config
 	LogRetention      time.Duration
@@ -100,6 +96,12 @@ func Normalize(err error) error {
 	// resolves. Only such a transaction can raise it here.
 	if errors.As(err, &pgerr) && (pgerr.Code == "23505" || pgerr.Code == "40001") {
 		return domain.Conflict
+	}
+	// 22021 is text holding NUL or invalid UTF-8, and 22P05 a jsonb value spelling NUL as an
+	// escape. Input is kept clear of both where it is decoded, so this answers a path that
+	// missed that with a refusal rather than a failure, keeping the cause for the log.
+	if errors.As(err, &pgerr) && (pgerr.Code == "22021" || pgerr.Code == "22P05") {
+		return fmt.Errorf("%w: %w", domain.UnstorableText, err)
 	}
 	return err
 }
@@ -340,12 +342,6 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 		return Audit(ctx, q, Principal{Account: a}, w, "workspace.bootstrap", w)
 	})
 	return id, err
-}
-
-// SecretIdentity is a secret version's identity, for the delivery paths that have not moved to
-// the broker yet, which builds its own.
-func SecretIdentity(workspace, id uuid.UUID) string {
-	return "secret:v1:" + workspace.String() + ":" + id.String()
 }
 
 // rewrapFailed names the row, because rotation stops until an operator deals with it and

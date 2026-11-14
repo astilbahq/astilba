@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -22,12 +23,27 @@ import (
 )
 
 type recoverySource struct {
-	Archive        portability.Archive
+	// Archive is the newest base, the only one recovery merges, and later what recovery writes.
+	Archive portability.Archive
+	// History is the newest base's recovery section, or nil for a base sealed before there was one.
+	History        *portability.RecoveryHistory
 	Hosts          map[uuid.UUID]deployment.RecoveryEvidence
 	Roots          map[uuid.UUID]deployment.RecoveryDescriptor
 	KnownSequences map[uuid.UUID]int64
 	Projections    map[uuid.UUID]recoveryProjection
 	Origins        appliedOrigins
+	// Bases are every base loaded, and SetAside those recovery doesn't use.
+	Bases    []loadedBase
+	SetAside []RecoverySetAside
+}
+
+// loadedBase is a base recovery authenticated, as the recovery_bases registry records it.
+type loadedBase struct {
+	ID, Parent, Environment, Primary uuid.UUID
+	CapturedAt                       time.Time
+	WindowStart                      *time.Time
+	// Supersedes maps each base it lists as superseded to that base's root.
+	Supersedes map[uuid.UUID]uuid.UUID
 }
 
 func recoveryPrivateFile(path string, limit int64) ([]byte, error) {
@@ -48,7 +64,6 @@ func recoveryDecode(raw []byte, out any) error {
 // Records are bounded individually and streamed through temporary SQL tables.
 // Repeated owner recovery actions do not consume the workspace archive ceiling.
 func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, before portability.Archive, dirs []string) (recoverySource, error) {
-	var bases portability.RecoveryBases
 	out := recoverySource{Hosts: map[uuid.UUID]deployment.RecoveryEvidence{}, Roots: map[uuid.UUID]deployment.RecoveryDescriptor{}, KnownSequences: map[uuid.UUID]int64{}}
 	if len(dirs) == 0 || len(dirs) > 100 {
 		return out, errors.New("provide every required host export")
@@ -98,7 +113,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 			// can't truncate them; what the host holds beyond it is set aside to extend it. For any
 			// other root the host holds the only copy. Management sealed both, so the host can only
 			// replay them.
-			if err = loadExportCapsules(ctx, tx, keys, ws, dir, host, false, held, &out, &bases); err != nil {
+			if err = loadExportCapsules(ctx, tx, keys, ws, dir, host, false, held, &out); err != nil {
 				return out, err
 			}
 			continue
@@ -115,11 +130,11 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 		if err = loadRecoveryProofs(ctx, tx, dir, host); err != nil {
 			return out, err
 		}
-		if err = loadExportCapsules(ctx, tx, keys, ws, dir, host, true, nil, &out, &bases); err != nil {
+		if err = loadExportCapsules(ctx, tx, keys, ws, dir, host, true, nil, &out); err != nil {
 			return out, err
 		}
 	}
-	if err = loadRevokedPrimaryRoots(ctx, tx, keys, ws, before, revoked, held, &out, &bases); err != nil {
+	if err = loadRevokedPrimaryRoots(ctx, tx, keys, ws, before, revoked, held, &out); err != nil {
 		return out, err
 	}
 	// inline-sql: recovery session temporary table
@@ -156,9 +171,8 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 	if err = requireRecoverableRoots(out, revoked); err != nil {
 		return out, err
 	}
-	out.Archive = bases.Archive()
-	if out.Archive.Workspace != ws {
-		return out, errors.New("no compatible base recovery capsule was supplied")
+	if err = selectRecoveryBases(ctx, tx, ws, &out); err != nil {
+		return out, err
 	}
 	for _, host := range out.Hosts {
 		// A revoked host's export decides nothing, so it can't demand a chain either.
@@ -186,7 +200,7 @@ func loadRecoverySource(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 // aside there instead, for management's own chain to decide on. A capsule must come from its root's
 // primary: as the host claims, when claims is set, and in any case as the sealed base's frozen root
 // says.
-func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, dir string, host deployment.RecoveryEvidence, claims bool, held map[uuid.UUID][]heldCapsule, out *recoverySource, bases *portability.RecoveryBases) error {
+func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, dir string, host deployment.RecoveryEvidence, claims bool, held map[uuid.UUID][]heldCapsule, out *recoverySource) error {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.capsule"))
 	if err != nil {
 		return err
@@ -228,7 +242,7 @@ func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 		if err != nil || len(envelope) != d.Bytes || deployment.RecoveryDigest(envelope) != d.Digest {
 			return errors.New("recovery capsule differs from its descriptor")
 		}
-		if err = addRecoveryCheckpoint(ctx, tx, keys, ws, out, bases, d, raw, envelope, host.ServerID); err != nil {
+		if err = addRecoveryCheckpoint(ctx, tx, keys, ws, out, d, raw, envelope, host.ServerID); err != nil {
 			return err
 		}
 	}
@@ -236,8 +250,9 @@ func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 }
 
 // addRecoveryCheckpoint opens one sealed checkpoint of a root whose primary is primary, checks it
-// against its descriptor and frozen root, and stages it for the chain.
-func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, bases *portability.RecoveryBases, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
+// against its descriptor and frozen root, and stages it for the chain. selectRecoveryBases decides
+// how a base is used once every one is staged.
+func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
 	decoded, err := keys.Open(secretbroker.Checkpoint(d), envelope)
 	if secretbroker.SessionFailure(err) {
 		return err
@@ -290,12 +305,15 @@ func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Se
 				return errors.New("recovery participant is absent from its descriptor")
 			}
 		}
-		if err = out.Origins.add(a, d.ParentID); err != nil {
-			return err
+		base := loadedBase{ID: d.CheckpointID, Parent: d.ParentID, Environment: parent.EnvironmentId, Primary: primary, CapturedAt: a.CreatedAt}
+		if a.Recovery != nil {
+			base.WindowStart = &a.Recovery.WindowStart
+			base.Supersedes = map[uuid.UUID]uuid.UUID{}
+			for _, b := range a.Recovery.Superseded {
+				base.Supersedes[b.Base] = b.Parent
+			}
 		}
-		if err = bases.Add(a); err != nil {
-			return err
-		}
+		out.Bases = append(out.Bases, base)
 	} else {
 		var segment recoveryContinuation
 		if recoveryDecode(decoded, &segment) != nil || len(segment.Phase) > 128 || segment.Phase == "" || len(segment.Children) == 0 || len(segment.Children) > 4 || len(segment.Approvals) > 1 {

@@ -1,15 +1,22 @@
 import { useIsFetching, useQuery } from "@tanstack/react-query";
 import { type ComponentProps, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { Schema } from "../../api/client";
 import { draftOptions } from "../../api/environment";
 import { Button } from "../../components/button";
 import { TabsList, TabsPanel, TabsRoot, TabsTab } from "../../components/tabs";
 import { ErrorToast } from "../../components/toast";
 import { IntegrationSettings } from "../integrations";
+import {
+  LifecycleDialog,
+  type LifecycleChange,
+  RetireSection,
+} from "./environment-lifecycle";
 import { EnvironmentSettings } from "./environment-settings";
 import { EnvironmentWorkspace } from "./environment-workspace";
 import * as s from "./environment.styles";
 import type { EnvProps, EnvironmentSection } from "./environment.types";
+import { RetirementStatus } from "./retirement-status";
 
 // Marks the first load of what a section shows, which browser journeys wait for because it moves
 // the page. It is not aria-busy: a slow request would then hold back status messages from
@@ -37,6 +44,31 @@ export function EnvironmentDetail(props: EnvProps) {
     environmentId: props.environment.id,
   };
   const draft = useQuery(draftOptions(path));
+  const [lifecycle, setLifecycle] = useState<{
+    change: LifecycleChange;
+    open: boolean;
+  }>({ change: "retire", open: false });
+  // The state a lifecycle change reached, announced until the environment moves on from it. A
+  // retirement or purge its server finishes later is announced when the poll sees it land; an
+  // environment that opens already retired or purged is not.
+  const [changed, setChanged] = useState<Schema["Environment"]["state"]>();
+  const [seen, setSeen] = useState(props.environment.state);
+  if (seen !== props.environment.state) {
+    setSeen(props.environment.state);
+    if (
+      (seen === "retiring" && props.environment.state === "retired") ||
+      (seen === "purging" && props.environment.state === "purged")
+    )
+      setChanged(props.environment.state);
+  }
+  const title = useRef<HTMLHeadingElement>(null);
+  const status = useRef<HTMLHeadingElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const openLifecycle = (change: LifecycleChange, from: HTMLButtonElement) => {
+    trigger.current = from;
+    setChanged(undefined);
+    setLifecycle({ change, open: true });
+  };
   const selectSection = (value: EnvironmentSection, focus = false) => {
     setVisited((current) => new Set([...current, value]));
     setSection(value);
@@ -44,6 +76,13 @@ export function EnvironmentDetail(props: EnvProps) {
   };
   const template = props.environment.purpose === "preview_template";
   const managed = props.environment.purpose === "preview";
+  // A retiring or retired environment opens read-only until an owner restores it.
+  const active = props.environment.state === "active";
+  const write = props.write && !managed && active;
+  const owner = props.owner && active;
+  // Removing a preview stays an owner's action on a retired template, whose own retirement may
+  // have left a preview's cleanup blocked.
+  const previewCleanup = props.owner && template;
   return (
     <TabsRoot
       value={section}
@@ -52,7 +91,7 @@ export function EnvironmentDetail(props: EnvProps) {
     >
       <header className={s.header}>
         <div className={s.intro}>
-          <h1 className={s.title}>
+          <h1 ref={title} tabIndex={-1} className={s.title}>
             <bdi>{props.environment.name}</bdi>
           </h1>
           <p className={s.metadata}>
@@ -76,13 +115,44 @@ export function EnvironmentDetail(props: EnvProps) {
         >
           {template
             ? t(($) => $.viewPreviews)
-            : props.write && !managed
+            : write
               ? t(($) => $.reviewDeploy)
               : t(($) => $.viewDeployments)}
         </Button>
       </header>
       {template && <p className={s.note}>{t(($) => $.templateDescription)}</p>}
       {managed && <p className={s.note}>{t(($) => $.previewDescription)}</p>}
+      {/* Always mounted and empty until a lifecycle change has something to say, so a message
+          is announced even when the change starts from an active page, or ends in one. A region
+          that appears already holding its message is often not read. */}
+      <div role="status">
+        {changed === props.environment.state && (
+          <p className={s.note}>
+            {changed === "retired"
+              ? t(($) => $.lifecycle.retired)
+              : changed === "retiring"
+                ? t(($) => $.lifecycle.retirementStarted)
+                : changed === "purged"
+                  ? // The dialog publishes the purge's result before the page renders it, so
+                    // this reads the same environment it returned.
+                    props.environment.purgedWithoutHost
+                    ? t(($) => $.lifecycle.purgedWithoutHost)
+                    : t(($) => $.lifecycle.purged)
+                  : changed === "purging"
+                    ? t(($) => $.lifecycle.purgeStarted)
+                    : t(($) => $.lifecycle.restored)}
+          </p>
+        )}
+      </div>
+      {!active && (
+        <RetirementStatus
+          environment={props.environment}
+          path={path}
+          owner={props.owner}
+          headingRef={status}
+          onChange={openLifecycle}
+        />
+      )}
       {!props.write && <p className={s.muted}>{t(($) => $.readOnly)}</p>}
       <TabsList aria-label={t(($) => $.sections)}>
         <TabsTab
@@ -131,7 +201,9 @@ export function EnvironmentDetail(props: EnvProps) {
         {draft.data ? (
           <EnvironmentWorkspace
             {...props}
-            write={props.write && !managed}
+            write={write}
+            owner={owner}
+            previewCleanup={previewCleanup}
             initial={draft.data}
             section={section}
             visited={visited}
@@ -162,13 +234,31 @@ export function EnvironmentDetail(props: EnvProps) {
         )}
         <TabsPanel value="settings" keepMounted={visited.has("settings")}>
           <div className={s.settings}>
-            <EnvironmentSettings {...props} write={props.write && !managed} />
-            {draft.data && props.owner && template && (
+            <EnvironmentSettings {...props} write={write} owner={owner} />
+            {draft.data && owner && template && (
               <IntegrationSettings workspaceId={props.workspaceId} />
+            )}
+            {owner && !managed && (
+              <RetireSection
+                onRetire={(from) => openLifecycle("retire", from)}
+              />
             )}
           </div>
         </TabsPanel>
       </EnvironmentContent>
+      <LifecycleDialog
+        change={lifecycle.change}
+        open={lifecycle.open}
+        environment={props.environment}
+        path={path}
+        onClose={() => setLifecycle((current) => ({ ...current, open: false }))}
+        onChanged={(next) => setChanged(next.state)}
+        finalFocus={() =>
+          trigger.current?.isConnected
+            ? trigger.current
+            : (status.current ?? title.current)
+        }
+      />
     </TabsRoot>
   );
 }

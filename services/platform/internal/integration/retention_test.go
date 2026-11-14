@@ -20,7 +20,7 @@ func TestHostedQueuedExpiryAndBackpressure(t *testing.T) {
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
 	env := envForExecution(t, f, b, ws)
 	server, input, _ := enrollment(t, f, b, ws, "deployment")
-	if _, e := f.execution.Enroll(ctx, input, "test"); e != nil {
+	if _, e := f.execution.Enroll(ctx, acknowledging(input), "test"); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := f.st.Pool.Exec(ctx, "UPDATE accounts SET email_verified_at=now() WHERE id=$1", f.owner); e != nil {

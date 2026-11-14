@@ -92,6 +92,10 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		if err != nil {
 			return err
 		}
+		// A retired environment's configuration is read-only, so nothing proposes it either.
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
 		if old, err := q.SourceSubmissionByRequestKey(ctx, db.SourceSubmissionByRequestKeyParams{WorkspaceID: ws, RequestKey: key}); err == nil {
 			if old.EnvironmentID != env || old.RevisionID != base {
 				return domain.Conflict
@@ -307,6 +311,14 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	if time.Since(row.CreatedAt) > submissionLifetime-submissionTimeout {
 		return nil, fail("no attempt finished within an hour. Submit the draft again.")
+	}
+	// The environment may have been retired while the attempt waited.
+	state, err := q.EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: row.EnvironmentID})
+	if err != nil {
+		return nil, err
+	}
+	if state != "active" {
+		return nil, fail("the environment was retired. Restore it to propose its draft; a purged environment cannot be restored.")
 	}
 	var c submissionConfiguration
 	if err = json.Unmarshal(row.Configuration, &c); err != nil {

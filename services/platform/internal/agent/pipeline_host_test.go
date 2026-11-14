@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -127,10 +129,11 @@ func TestNativePipeline(t *testing.T) {
 	source := pipeline.Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: serverID, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
 	base := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: provider.URL, Repository: "team/app", RepositoryID: 12, Private: true}, Commit: commit, Branch: "main", RevisionID: uuid.New(), UnitID: uuid.New(), Source: &source, SubmittedAt: time.Now().UTC().Truncate(time.Second), Access: &pipeline.RunnerAccess{Clone: pipeline.Credential{Username: "fixture", Password: "reader-token"}}}
 	var active api.ExecutionCommand
-	var registryCA []byte
 	cancelNext := false
 	replayNext := false
 	preparedCount := 0
+	// The build container's memory-backed places belong to the builder's user.
+	owned := fmt.Sprintf(",uid=%d,gid=%d", builderUID, builderUID)
 	engine.Point = func(point string) {
 		if point == "railpack-prepared" {
 			preparedCount++
@@ -144,15 +147,15 @@ func TestNativePipeline(t *testing.T) {
 			_ = json.Unmarshal(*active.Pipeline, &p)
 			if p.Build.UsesRailpack() {
 				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
-				if err != nil || v.Container.HostConfig.Memory != 6144<<20 || v.Container.HostConfig.NanoCPUs != 2_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=1024m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=4096m" {
+				if err != nil || v.Container.HostConfig.Memory != 6144<<20 || v.Container.HostConfig.NanoCPUs != 2_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=1024m,mode=0700"+owned || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,nodev,size=4096m,mode=0700"+owned {
 					t.Fatal("Railpack ignored runner resource limits", err)
 				}
 			} else if p.Build.Budget != nil {
 				v, err := docker.ContainerInspect(ctx, pipelineName(active), client.ContainerInspectOptions{})
-				if err != nil || v.Container.HostConfig.Memory != 1536<<20 || v.Container.HostConfig.NanoCPUs != 1_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=128m,mode=0700" || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,size=640m" {
+				if err != nil || v.Container.HostConfig.Memory != 1536<<20 || v.Container.HostConfig.NanoCPUs != 1_000_000_000 || v.Container.HostConfig.Tmpfs["/workspace"] != "rw,exec,nosuid,nodev,size=128m,mode=0700"+owned || v.Container.HostConfig.Tmpfs["/var/lib/buildkit"] != "rw,exec,nosuid,nodev,size=640m,mode=0700"+owned {
 					t.Fatal("custom build limits not applied", err)
 				}
-				if p.CacheScope != "" && v.Container.HostConfig.Tmpfs[cacheContainerDir] != "rw,nosuid,nodev,noexec,size=256m,mode=0700" {
+				if p.CacheScope != "" && v.Container.HostConfig.Tmpfs[cacheContainerDir] != "rw,nosuid,nodev,noexec,size=256m,mode=0700"+owned {
 					t.Fatal("cache exchange has no hard ceiling")
 				}
 			}
@@ -168,12 +171,6 @@ func TestNativePipeline(t *testing.T) {
 			message := jsontext.Value(raw)
 			active.Pipeline = &message
 			if _, err := journal.Accept(active); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if point == "source" && len(registryCA) > 0 {
-			appendNativeCA(t, engine, pipelineName(active), registryCA)
-			if _, err := docker.ContainerRestart(ctx, pipelineName(active), client.ContainerRestartOptions{}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -345,7 +342,18 @@ func TestNativePipeline(t *testing.T) {
 	}
 	defer docker.ImageRemove(ctx, publicResult.Image, client.ImageRemoveOptions{Force: true})
 	registry := startNativeRegistry(t, lan)
-	registryCA = registry.ca
+	// The builder's root is read-only, so it trusts the registry's certificate authority
+	// through a bundle mounted over its own.
+	bundle := exec.Command(realDocker, "run", "--rm", "--entrypoint", "cat", pipeline.BuilderImage, "/etc/ssl/certs/ca-certificates.crt")
+	bundle.Env = append(os.Environ(), "DOCKER_HOST="+docker.DaemonHost(), "DOCKER_CONFIG="+config)
+	authorities, err := bundle.Output()
+	if err != nil {
+		t.Fatal("cannot read the builder's certificate authorities", err)
+	}
+	engine.builderCAs = filepath.Join(state, "registry-ca.crt")
+	if err = os.WriteFile(engine.builderCAs, append(authorities, registry.ca...), 0644); err != nil {
+		t.Fatal(err)
+	}
 	remote := build
 	remote.Registry = &pipeline.Registry{ID: uuid.New(), Name: "Fixture", Repository: registry.repository}
 	remote.RegistryAccess = &pipeline.RegistryAccess{Push: pipeline.Credential{Username: "builder", Password: registry.push}}
@@ -374,7 +382,7 @@ func TestNativePipeline(t *testing.T) {
 	if rejected.Report.State != "failed" {
 		t.Fatal("read-only registry credential could publish")
 	}
-	registryCA = nil
+	engine.builderCAs = ""
 	assertPipelineImageSecretFree(t, ctx, docker, result.Image, []string{"build-secret-canary", "reader-token", "writer-token"})
 	// Compare frozen commits rather than webhook path summaries or the moving branch.
 	if err = os.WriteFile(filepath.Join(work, "README.md"), []byte("docs only\n"), 0600); err != nil {
@@ -448,6 +456,89 @@ func TestNativePipeline(t *testing.T) {
 	if exhausted.Report.State != "failed" {
 		t.Fatal("unbounded build storage", exhausted.Report.State)
 	}
+	// A build whose image unpacks to more than a load may write is refused before Docker writes
+	// it. A sparse file costs the builder nothing and its layer is a few MiB of gzip, but Docker
+	// would write it in full.
+	sparseCommit := func(sparse string) string {
+		t.Helper()
+		if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN truncate -s "+sparse+" /sparse\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		git("-C", work, "add", ".")
+		git("-C", work, "commit", "-m", "sparse "+sparse)
+		git("-C", work, "push", repo, "main")
+		return git("-C", work, "rev-parse", "HEAD")
+	}
+	// refusedWithin checks that refuse is refused with note, taking almost none of Docker's storage.
+	refusedWithin := func(what, note string, refuse func() string) {
+		t.Helper()
+		var got string
+		if used := storageTaken(t, ctx, docker, func() { got = refuse() }); used > 256<<20 {
+			t.Fatalf("refusing the %s took %d MiB of Docker storage", what, used>>20)
+		}
+		if !strings.Contains(got, note) {
+			t.Fatalf("%s: %q", what, got)
+		}
+		if current, err := docker.ImageInspect(ctx, result.Image); err != nil || current.ID != result.Digest {
+			t.Fatal("refused image changed previous artifact", err)
+		}
+	}
+	loadRefused := func(sparse, note string) {
+		t.Helper()
+		build.Commit = sparseCommit(sparse)
+		refusedWithin("image of a "+sparse+" sparse file", note, func() string {
+			refused := run(build)
+			if refused.Report.State != "failed" {
+				t.Fatalf("image of a %s sparse file: %s %q", sparse, refused.Report.State, refused.Report.Note)
+			}
+			return refused.Report.Note
+		})
+	}
+	// Beyond the default per-load limit. A host with under 13 GiB free refuses it for its storage.
+	loadRefused("9G", "The built image was not loaded: unpack")
+	// Within the fixed limit, but it would leave less than the reserve free.
+	func() {
+		info, err := docker.Info(ctx, client.InfoOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fill := filepath.Join(info.Info.DockerRootDir, "astilba-test-fill-"+uuid.NewString())
+		defer os.Remove(fill)
+		free, _, ok := freeSpace(info.Info.DockerRootDir)
+		if size := free - DefaultImageLoadReserveBytes - 1<<30; ok && size > 0 {
+			if out, err := exec.Command("fallocate", "-l", strconv.FormatInt(size, 10), fill).CombinedOutput(); err != nil {
+				t.Fatal(err, string(out))
+			}
+		}
+		loadRefused("2G", "Free space on the server")
+	}()
+	// The same image built to a registry pushes, as its layer is a few MiB of gzip, but a host
+	// deploying it refuses to pull it before Docker writes it.
+	func() {
+		engine.builderCAs = filepath.Join(state, "registry-ca.crt")
+		defer func() { engine.builderCAs = "" }()
+		sparse := remote
+		sparse.Commit = sparseCommit("9G")
+		// The build would otherwise replace the layer cache the failed builds below must keep.
+		sparse.CacheScope = ""
+		pushed := run(sparse)
+		if pushed.Report.State != "succeeded" {
+			t.Fatal("registry build of a sparse file", pushed.Report.Note)
+		}
+		var image pipeline.Result
+		_ = json.Unmarshal(*pushed.Report.Pipeline, &image)
+		deploy := deployment.Payload{Plan: deployment.Plan{Images: map[string]string{"app": image.Image}}, RegistryAccess: map[string]pipeline.Credential{"app": {Username: "deployer", Password: registry.pull}}}
+		refusedWithin("registry image of a 9G sparse file", "The image "+image.Image+" was not pulled: unpack", func() string {
+			err := engine.pullVisualImages(ctx, deploy)
+			if !errors.As(err, new(*imagePullRefused)) {
+				t.Fatal("registry image of a sparse file was not refused", err)
+			}
+			return err.Error()
+		})
+		if _, err := docker.ImageInspect(ctx, image.Image); !errdefs.IsNotFound(err) {
+			t.Fatal("refused registry image is in Docker", err)
+		}
+	}()
 	if err = os.WriteFile(filepath.Join(work, "Dockerfile"), []byte("FROM "+execution.TestImage+"\nRUN sleep 30\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

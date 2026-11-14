@@ -197,6 +197,24 @@ func (q *Queries) ClearWorkspaceOperationJobs(ctx context.Context, workspaceID u
 	return err
 }
 
+const closeRecoveryBase = `-- name: CloseRecoveryBase :exec
+UPDATE recovery_bases SET closed_at=clock_timestamp()
+WHERE workspace_id = $1 AND parent_id = $2 AND primary_server_id = $3 AND closed_at IS NULL
+`
+
+type CloseRecoveryBaseParams struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ParentID        uuid.UUID `json:"parent_id"`
+	PrimaryServerID uuid.UUID `json:"primary_server_id"`
+}
+
+// The primary acknowledged a closing phase, after which its agent keeps the base only while it is
+// among the two latest closed in its environment.
+func (q *Queries) CloseRecoveryBase(ctx context.Context, arg CloseRecoveryBaseParams) error {
+	_, err := q.db.Exec(ctx, closeRecoveryBase, arg.WorkspaceID, arg.ParentID, arg.PrimaryServerID)
+	return err
+}
+
 const countProvenRecoveryServers = `-- name: CountProvenRecoveryServers :one
 SELECT count(*) FROM cross_host_recovery_servers r
 JOIN servers s ON s.workspace_id=r.workspace_id AND s.id=r.server_id
@@ -369,6 +387,24 @@ func (q *Queries) FenceWorkspaceSubmissions(ctx context.Context, workspaceID uui
 	return err
 }
 
+const fillRecoveredRuntimeTime = `-- name: FillRecoveredRuntimeTime :exec
+UPDATE execution_operations SET runtime_recorded_at = COALESCE(runtime_recorded_at, $1::timestamptz)
+WHERE workspace_id = $2 AND id = $3 AND runtime_outcome IS NOT NULL
+`
+
+type FillRecoveredRuntimeTimeParams struct {
+	RecordedAt  time.Time `json:"recorded_at"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// A merged row takes the time its change was recorded from the base's applied history, unless it
+// has one.
+func (q *Queries) FillRecoveredRuntimeTime(ctx context.Context, arg FillRecoveredRuntimeTimeParams) error {
+	_, err := q.db.Exec(ctx, fillRecoveredRuntimeTime, arg.RecordedAt, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const holdRecoveredOperation = `-- name: HoldRecoveredOperation :exec
 UPDATE execution_operations SET state='needs_attention',note = $1 WHERE workspace_id = $2 AND id = $3
 `
@@ -470,6 +506,36 @@ func (q *Queries) InsertRecoveryFrame(ctx context.Context, arg InsertRecoveryFra
 	return err
 }
 
+const keepRecoveredRuntimeHistory = `-- name: KeepRecoveredRuntimeHistory :exec
+INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
+SELECT $1,$2,$3,$4,$5,$6
+WHERE NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.id = $2 AND o.runtime_outcome IS NOT NULL)
+ON CONFLICT DO NOTHING
+`
+
+type KeepRecoveredRuntimeHistoryParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Generation    int64     `json:"generation"`
+	RecordedAt    time.Time `json:"recorded_at"`
+	Entry         []byte    `json:"entry"`
+}
+
+// An applied-history entry whose operation row recovery didn't merge, or merged without its
+// outcome, so later bases carry it.
+func (q *Queries) KeepRecoveredRuntimeHistory(ctx context.Context, arg KeepRecoveredRuntimeHistoryParams) error {
+	_, err := q.db.Exec(ctx, keepRecoveredRuntimeHistory,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.EnvironmentID,
+		arg.Generation,
+		arg.RecordedAt,
+		arg.Entry,
+	)
+	return err
+}
+
 const lockCrossHostRecoveryOpened = `-- name: LockCrossHostRecoveryOpened :one
 SELECT opened FROM cross_host_recoveries WHERE workspace_id = $1 AND parent_id = $2 FOR UPDATE
 `
@@ -518,6 +584,24 @@ func (q *Queries) MergeOperationCancelRequest(ctx context.Context, arg MergeOper
 	return err
 }
 
+const newestRecoveryBase = `-- name: NewestRecoveryBase :one
+SELECT captured_at,window_start FROM recovery_bases WHERE workspace_id = $1
+ORDER BY captured_at DESC,id DESC LIMIT 1
+`
+
+type NewestRecoveryBaseRow struct {
+	CapturedAt  time.Time  `json:"captured_at"`
+	WindowStart *time.Time `json:"window_start"`
+}
+
+// The newest base, whose window decides which management backups cross-host recovery can use.
+func (q *Queries) NewestRecoveryBase(ctx context.Context, workspaceID uuid.UUID) (NewestRecoveryBaseRow, error) {
+	row := q.db.QueryRow(ctx, newestRecoveryBase, workspaceID)
+	var i NewestRecoveryBaseRow
+	err := row.Scan(&i.CapturedAt, &i.WindowStart)
+	return i, err
+}
+
 const openCrossHostRecovery = `-- name: OpenCrossHostRecovery :exec
 UPDATE cross_host_recoveries SET opened=true WHERE workspace_id = $1 AND parent_id = $2
 `
@@ -546,6 +630,40 @@ func (q *Queries) OperationCancelRequested(ctx context.Context, arg OperationCan
 	var cancel_requested bool
 	err := row.Scan(&cancel_requested)
 	return cancel_requested, err
+}
+
+const operationCommands = `-- name: OperationCommands :many
+SELECT id,command FROM execution_operations WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+`
+
+type OperationCommandsParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+type OperationCommandsRow struct {
+	ID      uuid.UUID `json:"id"`
+	Command []byte    `json:"command"`
+}
+
+func (q *Queries) OperationCommands(ctx context.Context, arg OperationCommandsParams) ([]OperationCommandsRow, error) {
+	rows, err := q.db.Query(ctx, operationCommands, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OperationCommandsRow{}
+	for rows.Next() {
+		var i OperationCommandsRow
+		if err := rows.Scan(&i.ID, &i.Command); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const operationExists = `-- name: OperationExists :one
@@ -607,6 +725,32 @@ WHERE s.workspace_id = $1
 func (q *Queries) RaiseServerUpdateGenerations(ctx context.Context, workspaceID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, raiseServerUpdateGenerations, workspaceID)
 	return err
+}
+
+const recoveredRuntimeHistory = `-- name: RecoveredRuntimeHistory :many
+SELECT entry FROM recovered_runtime_history h WHERE h.workspace_id = $1
+AND NOT EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id = h.workspace_id AND o.id = h.operation_id AND o.runtime_outcome IS NOT NULL)
+ORDER BY h.environment_id,h.generation
+`
+
+func (q *Queries) RecoveredRuntimeHistory(ctx context.Context, workspaceID uuid.UUID) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, recoveredRuntimeHistory, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var entry []byte
+		if err := rows.Scan(&entry); err != nil {
+			return nil, err
+		}
+		items = append(items, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const recoveryApprovalMatches = `-- name: RecoveryApprovalMatches :one
@@ -840,6 +984,67 @@ func (q *Queries) RecoveryServerWorkspace(ctx context.Context, serverID uuid.UUI
 	return workspace_id, err
 }
 
+const registerRecoveredBase = `-- name: RegisterRecoveredBase :exec
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
+VALUES($1,$2,$3,$4,$5,$6,$7)
+ON CONFLICT DO NOTHING
+`
+
+type RegisterRecoveredBaseParams struct {
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	ID              uuid.UUID  `json:"id"`
+	ParentID        uuid.UUID  `json:"parent_id"`
+	EnvironmentID   uuid.UUID  `json:"environment_id"`
+	PrimaryServerID uuid.UUID  `json:"primary_server_id"`
+	CapturedAt      time.Time  `json:"captured_at"`
+	WindowStart     *time.Time `json:"window_start"`
+}
+
+// A base a recovery loaded that this database didn't know. A host holds it, so later bases list it.
+// It counts as unclosed until its primary acknowledges a close: whether the host saw its root
+// close isn't known, and a host keeps an unclosed base indefinitely.
+func (q *Queries) RegisterRecoveredBase(ctx context.Context, arg RegisterRecoveredBaseParams) error {
+	_, err := q.db.Exec(ctx, registerRecoveredBase,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.ParentID,
+		arg.EnvironmentID,
+		arg.PrimaryServerID,
+		arg.CapturedAt,
+		arg.WindowStart,
+	)
+	return err
+}
+
+const registerRecoveryBase = `-- name: RegisterRecoveryBase :exec
+INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
+VALUES($1,$2,$3,$4,$5,$6,$7)
+`
+
+type RegisterRecoveryBaseParams struct {
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	ID              uuid.UUID  `json:"id"`
+	ParentID        uuid.UUID  `json:"parent_id"`
+	EnvironmentID   uuid.UUID  `json:"environment_id"`
+	PrimaryServerID uuid.UUID  `json:"primary_server_id"`
+	CapturedAt      time.Time  `json:"captured_at"`
+	WindowStart     *time.Time `json:"window_start"`
+}
+
+// The base's root is still being coordinated, so its primary hasn't closed it.
+func (q *Queries) RegisterRecoveryBase(ctx context.Context, arg RegisterRecoveryBaseParams) error {
+	_, err := q.db.Exec(ctx, registerRecoveryBase,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.ParentID,
+		arg.EnvironmentID,
+		arg.PrimaryServerID,
+		arg.CapturedAt,
+		arg.WindowStart,
+	)
+	return err
+}
+
 const removedRuntimeCommand = `-- name: RemovedRuntimeCommand :one
 SELECT o.command FROM environments e
 JOIN execution_operations o ON o.workspace_id=e.workspace_id AND o.environment_id=e.id AND o.id=e.runtime_operation_id
@@ -912,12 +1117,12 @@ func (q *Queries) ResetRecoveredNetworkMembers(ctx context.Context, arg ResetRec
 }
 
 const resetRecoveryFrame = `-- name: ResetRecoveryFrame :exec
-UPDATE execution_operations SET command = $1,state = $2,report_sequence=0,steps='[]',note='',job_id=NULL
+UPDATE execution_operations SET command=CASE WHEN $1::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',$1::jsonb,true) END,state = $2,report_sequence=0,steps='[]',note='',job_id=NULL,dispatch_epoch=dispatch_epoch+1
 WHERE workspace_id = $3 AND id = $4
 `
 
 type ResetRecoveryFrameParams struct {
-	Command     []byte    `json:"command"`
+	Descriptor  []byte    `json:"descriptor"`
 	State       string    `json:"state"`
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ID          uuid.UUID `json:"id"`
@@ -925,7 +1130,7 @@ type ResetRecoveryFrameParams struct {
 
 func (q *Queries) ResetRecoveryFrame(ctx context.Context, arg ResetRecoveryFrameParams) error {
 	_, err := q.db.Exec(ctx, resetRecoveryFrame,
-		arg.Command,
+		arg.Descriptor,
 		arg.State,
 		arg.WorkspaceID,
 		arg.ID,
@@ -1015,18 +1220,20 @@ func (q *Queries) RestoreRecoveryCheckpoint(ctx context.Context, arg RestoreReco
 }
 
 const restoreRecoveryRoot = `-- name: RestoreRecoveryRoot :exec
-UPDATE execution_operations SET command = $1,state='running',job_id=NULL
+UPDATE execution_operations SET command=jsonb_set(command,'{recoveryCheckpoint}',$1::jsonb,true),state='running',job_id=NULL
 WHERE workspace_id = $2 AND id = $3
 `
 
 type RestoreRecoveryRootParams struct {
-	Command     []byte    `json:"command"`
+	Descriptor  []byte    `json:"descriptor"`
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ID          uuid.UUID `json:"id"`
 }
 
+// The stored command keeps its bytes, which its recovery identity is computed from; only the
+// checkpoint it resumes from is attached.
 func (q *Queries) RestoreRecoveryRoot(ctx context.Context, arg RestoreRecoveryRootParams) error {
-	_, err := q.db.Exec(ctx, restoreRecoveryRoot, arg.Command, arg.WorkspaceID, arg.ID)
+	_, err := q.db.Exec(ctx, restoreRecoveryRoot, arg.Descriptor, arg.WorkspaceID, arg.ID)
 	return err
 }
 
@@ -1219,18 +1426,21 @@ func (q *Queries) SetRecoveryCheckpointAcknowledged(ctx context.Context, arg Set
 	return err
 }
 
-const setRecoveryFrameCommand = `-- name: SetRecoveryFrameCommand :exec
-UPDATE execution_operations SET command = $1,job_id=NULL WHERE workspace_id = $2 AND id = $3
+const setRecoveryFrameCheckpoint = `-- name: SetRecoveryFrameCheckpoint :exec
+UPDATE execution_operations SET command=CASE WHEN $1::jsonb IS NULL THEN command-'recoveryCheckpoint' ELSE jsonb_set(command,'{recoveryCheckpoint}',$1::jsonb,true) END,job_id=NULL,dispatch_epoch=dispatch_epoch+1
+WHERE workspace_id = $2 AND id = $3
 `
 
-type SetRecoveryFrameCommandParams struct {
-	Command     []byte    `json:"command"`
+type SetRecoveryFrameCheckpointParams struct {
+	Descriptor  []byte    `json:"descriptor"`
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ID          uuid.UUID `json:"id"`
 }
 
-func (q *Queries) SetRecoveryFrameCommand(ctx context.Context, arg SetRecoveryFrameCommandParams) error {
-	_, err := q.db.Exec(ctx, setRecoveryFrameCommand, arg.Command, arg.WorkspaceID, arg.ID)
+// A frame that already exists matches its frozen header, so only the checkpoint it belongs to is
+// replaced; the stored command keeps its bytes, which its recovery identity is computed from.
+func (q *Queries) SetRecoveryFrameCheckpoint(ctx context.Context, arg SetRecoveryFrameCheckpointParams) error {
+	_, err := q.db.Exec(ctx, setRecoveryFrameCheckpoint, arg.Descriptor, arg.WorkspaceID, arg.ID)
 	return err
 }
 
@@ -1279,6 +1489,43 @@ WHERE o.workspace_id = $1 AND s.workspace_id=o.workspace_id AND s.id=o.server_id
 func (q *Queries) StampOperationControllerGenerations(ctx context.Context, workspaceID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, stampOperationControllerGenerations, workspaceID)
 	return err
+}
+
+const supersededRecoveryBases = `-- name: SupersededRecoveryBases :many
+SELECT b.id,b.parent_id,b.captured_at FROM (
+ SELECT r.id,r.parent_id,r.captured_at,r.closed_at,row_number() OVER (PARTITION BY r.environment_id,r.primary_server_id,r.closed_at IS NULL ORDER BY r.closed_at DESC,r.captured_at DESC,r.id) AS n
+ FROM recovery_bases r WHERE r.workspace_id = $1
+) b WHERE b.closed_at IS NULL OR b.n <= 4
+ORDER BY b.id
+`
+
+type SupersededRecoveryBasesRow struct {
+	ID         uuid.UUID `json:"id"`
+	ParentID   uuid.UUID `json:"parent_id"`
+	CapturedAt time.Time `json:"captured_at"`
+}
+
+// The bases a host may still hold: an agent keeps a base until its primary closes the root, and
+// then the two latest closed in its environment. Listing four gives room for an agent and this
+// management to order closes differently, which a close sent after a recovery can do.
+func (q *Queries) SupersededRecoveryBases(ctx context.Context, workspaceID uuid.UUID) ([]SupersededRecoveryBasesRow, error) {
+	rows, err := q.db.Query(ctx, supersededRecoveryBases, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SupersededRecoveryBasesRow{}
+	for rows.Next() {
+		var i SupersededRecoveryBasesRow
+		if err := rows.Scan(&i.ID, &i.ParentID, &i.CapturedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const supportedUpgradeStatus = `-- name: SupportedUpgradeStatus :one

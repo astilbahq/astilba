@@ -205,7 +205,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	for _, schedule := range schedules {
-		if len(schedule.Writers) > 0 || hasUncertainRun(schedule.Runs) {
+		if len(schedule.Writers) > 0 || hasUncertainRun(schedule) {
 			return errors.New("resolve interrupted local schedules before upgrading")
 		}
 	}
@@ -392,7 +392,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if freeBytes(e.Journal.dir) < m.Bytes+256<<20 || dockerFreeBytes(ctx, e.Docker) < m.Bytes*4+256<<20 {
 		return errors.New("insufficient restore capacity")
 	}
-	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(p.TargetVolumeID), Driver: "local", Labels: visualLabels(p.Source, p.TargetVolumeID)}); err != nil {
+	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(p.TargetVolumeID), Driver: "local", Labels: upgradeVolumeLabels(p)}); err != nil {
 		return err
 	}
 	if _, err = e.volumePath(ctx, policy, p.TargetVolumeID); err != nil {
@@ -593,8 +593,4 @@ func (w *upgradeSQLHeader) Write(b []byte) (int, error) {
 		return 0, fmt.Errorf("unexpected archive preamble")
 	}
 	return n, nil
-}
-
-func upgradeOwned(labels map[string]string, p deployment.Plan) bool {
-	return labels[labelServer] == p.ServerID.String() && labels[labelEnvironment] == p.EnvironmentID.String() && labels["com.astilba.unit"] == p.UnitID.String()
 }

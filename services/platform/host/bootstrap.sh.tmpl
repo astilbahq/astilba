@@ -7,9 +7,12 @@ umask 077
 apply=false
 install_runtime=false
 install_backups=false
+host_sources_only=false
 management=
 release=
 fingerprint=
+minimum=
+minimum_given=false
 contact=
 role=deployment
 usage() {
@@ -17,27 +20,80 @@ usage() {
 Usage: sudo bash bootstrap.sh [--check]
        sudo bash bootstrap.sh --apply --management HTTPS_ORIGIN --release SHA256 \
          --key-fingerprint SHA256 --role deployment|build|combined \
-         [--certificate-contact EMAIL] [--install-runtime] [--install-backups]
+         [--minimum-version VERSION] [--certificate-contact EMAIL] \
+         [--install-runtime] [--install-backups] [--use-host-package-sources]
 
 Check mode only inspects this machine. Apply installs the verified agent and
 prepares its service, without enrolling or starting it. --install-runtime permits
 installing Docker 29.9.2 and Compose 5.6.1 when no Docker installation exists.
 It can start Docker and create its networks and firewall rules. Existing Docker is never replaced.
 Public ingress, certificates and ports still require a reviewed deployment plan.
+--minimum-version refuses a release that would let the agent go back below VERSION.
+Take it from the same trusted channel as the key fingerprint.
+--use-host-package-sources takes Ubuntu packages only from this host's own package
+sources, as they are, for a mirror that lags on purpose: it skips the check that
+their indexes are current and the fallback archives. apt checks signatures as this
+host's own apt configuration requires.
 HELP
 }
 die() { printf '%s\n' "$*" >&2; exit 1; }
+# A semantic version without build metadata, as agentrelease checks.
+semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+# Compares two numeric identifiers, printing -1, 0 or 1. They have no leading zeros, so a longer
+# one is larger, whatever its size.
+number_compare() {
+  local LC_ALL=C
+  if ((${#1} != ${#2})); then ((${#1} < ${#2})) && echo -1 || echo 1
+  elif [[ "$1" == "$2" ]]; then echo 0
+  elif [[ "$1" < "$2" ]]; then echo -1
+  else echo 1; fi
+}
+# Compares two semantic versions without build metadata, as agentrelease.CompareVersions does, and
+# prints -1, 0 or 1. Both must already match $semver.
+version_compare() {
+  local LC_ALL=C a=$1 b=$2 i x y
+  local -a left right
+  IFS=. read -r -a left <<< "${a%%-*}"
+  IFS=. read -r -a right <<< "${b%%-*}"
+  for i in 0 1 2; do
+    x=$(number_compare "${left[i]}" "${right[i]}")
+    [[ "$x" == 0 ]] || { echo "$x"; return; }
+  done
+  # A pre-release comes before its release.
+  [[ "$a" == *-* ]] && x=${a#*-} || x=
+  [[ "$b" == *-* ]] && y=${b#*-} || y=
+  if [[ -z "$x" || -z "$y" ]]; then
+    if [[ -z "$x" && -z "$y" ]]; then echo 0; elif [[ -z "$x" ]]; then echo 1; else echo -1; fi
+    return
+  fi
+  IFS=. read -r -a left <<< "$x"
+  IFS=. read -r -a right <<< "$y"
+  for ((i = 0; i < ${#left[@]} && i < ${#right[@]}; i++)); do
+    if [[ "${left[i]}" =~ ^[0-9]+$ && "${right[i]}" =~ ^[0-9]+$ ]]; then
+      x=$(number_compare "${left[i]}" "${right[i]}")
+    elif [[ "${left[i]}" =~ ^[0-9]+$ ]]; then x=-1
+    elif [[ "${right[i]}" =~ ^[0-9]+$ ]]; then x=1
+    elif [[ "${left[i]}" == "${right[i]}" ]]; then x=0
+    elif [[ "${left[i]}" < "${right[i]}" ]]; then x=-1
+    else x=1; fi
+    [[ "$x" == 0 ]] || { echo "$x"; return; }
+  done
+  number_compare "${#left[@]}" "${#right[@]}"
+}
 while (($#)); do
   case "$1" in
     --check) apply=false; shift ;;
     --apply) apply=true; shift ;;
     --install-runtime) install_runtime=true; shift ;;
     --install-backups) install_backups=true; shift ;;
-    --management|--release|--key-fingerprint|--certificate-contact|--role)
+    # Only the operator's own command line sets this; nothing management serves does.
+    --use-host-package-sources) host_sources_only=true; shift ;;
+    --management|--release|--key-fingerprint|--minimum-version|--certificate-contact|--role)
       (($# >= 2)) || die "Missing value for $1"
       case "$1" in
         --management) management=$2 ;; --release) release=$2 ;;
-        --key-fingerprint) fingerprint=$2 ;; --certificate-contact) contact=$2 ;;
+        --key-fingerprint) fingerprint=$2 ;; --minimum-version) minimum=$2; minimum_given=true ;;
+        --certificate-contact) contact=$2 ;;
         --role) role=$2 ;;
       esac
       shift 2 ;;
@@ -54,11 +110,13 @@ case "$(uname -m)" in
   x86_64)
     arch=amd64
     runtime_shas=(f811ab57d1f4bb0cce19df7d526da8c711d8ebea0447cc83da1999188e664122 74747b5c99000279b9b2c7eb82543b4121d8436a58aa3be7e78ac6681d74794f 95ddf7a2d8b8c0eb82d8597d4d604e294dcf741081f2e228524d5ab9bfd7c8ae 9725be1df7fd5ccc6b21ac24112885896c8d134345e3f4aa20b3c2064ef4620e)
-    restic_sha=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c ;;
+    restic_sha=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+    fallback_archives=(https://mirrors.edge.kernel.org/ubuntu https://mirrors.mit.edu/ubuntu http://archive.ubuntu.com/ubuntu) ;;
   aarch64)
     arch=arm64
     runtime_shas=(7837470e586f0b5d228a5eefdd9674b6bd0f127c47841ae808b086ae7fe3f41a de18f48f32758568af16d73aa758678af472c2e780dc2aaa9fd9279b8260f7a9 c34d0bd4a58891b1fd9bab57702d7ce84c0f0c77db5fbabcf192288fe52d2535 d138ccdb343121de4904f53af5c57baee5866f9aedc142c1f8c0d6448ce57a7b)
-    restic_sha=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465 ;;
+    restic_sha=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
+    fallback_archives=(https://mirrors.mit.edu/ubuntu-ports https://ftp.tu-chemnitz.de/pub/linux/ubuntu-ports http://ports.ubuntu.com/ubuntu-ports) ;;
   *) die 'Only amd64 and arm64 hosts are supported.' ;;
 esac
 inspect_agent_targets() {
@@ -104,6 +162,7 @@ fi
 origin_pattern='^https://([A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$'
 [[ "$management" =~ $origin_pattern ]] || die 'Management must be an exact HTTPS origin without user information, path or query.'
 [[ "$release" =~ ^[a-f0-9]{64}$ && "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || die 'Release and independently trusted key fingerprint must be lowercase SHA-256 values.'
+! "$minimum_given" || [[ ${#minimum} -le 80 && "$minimum" =~ $semver ]] || die 'The minimum version must be a semantic version of at most 80 characters, such as 0.3.0.'
 if [[ "$role" != build || -n "$contact" ]]; then
   [[ "$contact" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die 'Provide a certificate-contact email using its plain address.'
 fi
@@ -118,8 +177,9 @@ exec 9>/run/astilba-bootstrap.lock
 flock --nonblock 9 || die 'Another host preparation is already running.'
 inspect_agent_targets
 scratch=$(mktemp -d /tmp/astilba-bootstrap.XXXXXXXX)
+apt_root=
 step='verify downloads'
-trap 'rm -rf "$scratch"' EXIT
+trap 'rm -rf "$scratch" ${apt_root:+"$apt_root"}' EXIT
 trap 'printf "Preparation stopped during %s. Preserve any installed files and inspect the host before retrying; no host data is rolled back.\n" "$step" >&2' ERR
 # Waits out a release host's outage of a few minutes, saying what it is waiting for. A refusal
 # such as a 404 will not change, so it stops at once. Every download precedes any host change.
@@ -144,24 +204,210 @@ fetch() {
   die "Could not download $1; the errors above give the cause. Nothing has been installed, so run this script again once it is resolved."
 }
 verify_hash() { printf '%s  %s\n' "$2" "$1" | sha256sum --check --status; }
-fetch "$management/agent-public-key.pem" "$scratch/public.pem" 4096
-openssl pkey -pubin -in "$scratch/public.pem" -outform DER -out "$scratch/public.der"
+# Ubuntu packages come from this host's own sources. If those can't supply them, or their Ubuntu
+# indexes aren't current, they come from the first archive in fallback_archives that does:
+# independent mirrors first, because an outage of Canonical's names, such as the one on 11
+# November 2026, usually takes the host's own sources with it, then Canonical's.
+# scripts/ci-ubuntu-archive.sh uses the same archives for CI. Package lists and downloads live in a
+# private directory, so the host's sources and lists stay as they are, and a scheduled apt run
+# can't change what is installed between download and install. apt verifies every index and
+# package against Ubuntu's archive key, as it does for the host's own sources, whatever this
+# host's apt configuration relaxes.
+ubuntu_keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+host_lists=/var/lib/apt/lists
+# Ubuntu 24.04's release pocket was published at 15:10:33 UTC on 25 April 2024; an index dated
+# earlier is a replay of a pre-release one.
+ubuntu_release_published=1714057833
+# Updates and security indexes older than this many days are stale, as in scripts/ci-ubuntu-archive.sh.
+ubuntu_index_max_age_days=7
+# An apt-get step that downloads may take this many seconds: an apt source can hang without limit
+# or output, as a mirror list does when its first mirror drops packets.
+apt_limit=300
+# A fresh VM's unattended-upgrades often holds dpkg's lock for its first few minutes. Installing
+# waits this many seconds for it.
+apt_lock_wait=300
+apt_options=()
+# apt waits for dpkg's lock without a word, so the bootstrap says so before it installs.
+apt_lock_notice() {
+  printf 'If another package operation, such as a new VM'"'"'s unattended-upgrades, is running, this waits up to %s minutes for it to finish.\n' "$((apt_lock_wait / 60))"
+}
+apt_get() {
+  local status=0
+  timeout --foreground --kill-after=30 "$apt_limit" env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" "$@" || status=$?
+  ((status != 124)) || printf 'apt-get did not finish within %s minutes.\n' "$((apt_limit / 60))" >&2
+  return "$status"
+}
+# Starts private package lists and an empty cache: for the host's own sources, from a copy of the
+# host's lists, so apt still refuses an index older than one it already has; given an archive, for
+# that archive alone. As in apt's own layout, only the partial directories belong to apt's
+# unprivileged download user.
+apt_use() {
+  rm -rf "$apt_root/sources" "$apt_root/lists" "$apt_root/cache"
+  install -d -m 0755 "$apt_root/lists" "$apt_root/cache" "$apt_root/cache/archives"
+  install -d -m 0700 -o _apt -g root "$apt_root/lists/partial" "$apt_root/cache/archives/partial"
+  apt_options=(-o "Dir::State::Lists=$apt_root/lists" -o "Dir::Cache=$apt_root/cache")
+  if ((!$#)); then
+    # Batched through sh, so that a failed copy fails find and stops the script.
+    find "$host_lists" -maxdepth 1 -type f ! -name lock -exec sh -c 'exec cp -p "$@" "$0"' "$apt_root/lists/" {} +
+    return 0
+  fi
+  install -d -m 0755 "$apt_root/sources"
+  cat > "$apt_root/sources/ubuntu.sources" <<SOURCES
+Types: deb
+URIs: $1
+Suites: $VERSION_CODENAME $VERSION_CODENAME-updates $VERSION_CODENAME-security
+Components: main
+Signed-By: $ubuntu_keyring
+Allow-Insecure: no
+Allow-Weak: no
+Allow-Downgrade-To-Insecure: no
+Check-Date: yes
+Check-Valid-Until: yes
+SOURCES
+  apt_options+=(-o Dir::Etc::SourceList=/dev/null -o "Dir::Etc::SourceParts=$apt_root/sources")
+}
+# Fails when any index fails, although apt still keeps the ones that refreshed. By default
+# apt-get update succeeds even when every index fails.
+apt_refresh() { apt_get -o APT::Update::Error-Mode=any update; }
+# Downloads into the private cache without dpkg's lock, since it changes nothing dpkg owns, so a busy
+# dpkg can't hold it up or be taken for a failed source.
+apt_fetch() { apt_get -o Debug::NoLocking=1 install --download-only --yes --no-remove --no-install-recommends "$@"; }
+# Fails unless the Ubuntu indexes apt now has are current: the release pocket, updates and security
+# suites are each there; every index is the suite asked for, with this release's codename, as a
+# mirror could otherwise serve another suite Ubuntu genuinely signed, such as a later release or
+# -proposed, under this one's name, which apt only warns about; the newest updates and security
+# indexes were published in the last week, so a stale or replaying source can't hold back fixes;
+# and no release pocket predates this release. Given "archive", every index must be Ubuntu's,
+# since a fallback archive serves nothing else. Otherwise every index from a repository that serves
+# any Ubuntu index counts, whatever it claims to be, and other repositories don't. Fails with 2
+# when the indexes are only stale.
+apt_current() {
+  local repository release suite codename list key origin file published now targets
+  local -A ubuntu=() dates=() newest=()
+  now=$(date +%s)
+  targets=$(apt_get indextargets --format '$(REPO_URI) $(RELEASE) $(SUITE) $(CODENAME) $(FILENAME) $(METAKEY) $(ORIGIN)' 'Identifier: Packages') || return 1
+  while read -r repository release suite codename list key origin; do
+    [[ "$origin" != Ubuntu ]] || ubuntu[$repository]=1
+  done <<< "$targets"
+  while read -r repository release suite codename list key origin; do
+    [[ -n "$repository" ]] || continue
+    [[ "${1:-}" == archive || -n "${ubuntu[$repository]:-}" ]] || continue
+    if [[ "$suite" != "$release" || "$codename" != "$VERSION_CODENAME" || "$origin" != Ubuntu ]]; then
+      printf '%s served %s as suite %s, codename %s, from %s.\n' "$repository" "$release" "$suite" "$codename" "$origin" >&2
+      return 1
+    fi
+    if [[ "$release" != "$VERSION_CODENAME" && "$release" != "$VERSION_CODENAME"-* ]] || [[ "${1:-}" == archive && "$release" != "$VERSION_CODENAME" && "$release" != "$VERSION_CODENAME-updates" && "$release" != "$VERSION_CODENAME-security" ]]; then
+      printf '%s served %s, which was not asked for.\n' "$repository" "$release" >&2
+      return 1
+    fi
+    # The release file apt verified sits beside the index, in place of the index's path within the
+    # release and any compression suffix.
+    file=${list%"${key//\//_}"*}InRelease
+    [[ -f "$file" ]] || file=${file%InRelease}Release
+    if [[ -z "${dates[$file]:-}" ]]; then
+      published=$(sed -n 's/^Date: //p' "$file" 2>/dev/null | head -n 1)
+      # An empty date reads as today, so it counts as none.
+      [[ -n "$published" ]] && published=$(date --date "$published" +%s 2>/dev/null) || published=0
+      dates[$file]=$published
+    fi
+    published=${dates[$file]}
+    if [[ "$release" == "$VERSION_CODENAME" ]] && ((published < ubuntu_release_published)); then
+      printf 'The %s index from %s predates Ubuntu %s.\n' "$release" "$repository" "$VERSION_ID" >&2
+      return 1
+    fi
+    ((published <= ${newest[$release]:--1})) || newest[$release]=$published
+  done <<< "$targets"
+  for release in "$VERSION_CODENAME" "$VERSION_CODENAME-updates" "$VERSION_CODENAME-security"; do
+    [[ -n "${newest[$release]:-}" ]] || { printf 'There is no %s index.\n' "$release" >&2; return 1; }
+    [[ "$release" != "$VERSION_CODENAME" ]] || continue
+    if ((now - newest[$release] > ubuntu_index_max_age_days * 86400)); then
+      printf 'The newest %s index was published %s, more than %s days before this host'"'"'s clock, %s.\n' "$release" \
+        "$(date --utc --date "@${newest[$release]}" '+%F %R UTC')" "$ubuntu_index_max_age_days" "$(date --utc '+%F %R UTC')" >&2
+      return 2
+    fi
+  done
+}
+# Succeeds unless everything the packages need is already installed or on this host.
+apt_needed() {
+  local uri uris
+  # Lists that don't yet have a package make this fail, which only means a refresh is needed.
+  uris=$(apt_get install --print-uris --yes -qq --no-remove --no-install-recommends "$@" 2>/dev/null) || return 0
+  while read -r uri _; do
+    [[ -z "$uri" || "$uri" == "'file:"* ]] || return 0
+  done <<< "$uris"
+  return 1
+}
+apt_download() {
+  local archive reason current=0 refreshed=true
+  apt_root=$(mktemp -d /tmp/astilba-bootstrap-apt.XXXXXXXX)
+  chmod 0755 "$apt_root"
+  apt_use
+  apt_needed "$@" || return 0
+  printf '%s\n' 'Refreshing this host'"'"'s package sources.'
+  apt_refresh || refreshed=false
+  if "$host_sources_only"; then
+    printf '%s\n' 'Warning: Ubuntu packages come only from this host'"'"'s own package sources, as they are; --use-host-package-sources skips the check that their indexes are current, and the fallback archives.'
+    apt_fetch "$@" || die 'apt could not resolve or download the Ubuntu packages from this host'"'"'s own sources; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+    "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; apt used its last copy of those, where it had one.'
+    return 0
+  fi
+  apt_current || current=$?
+  if ((current == 0)); then
+    if apt_fetch "$@"; then
+      "$refreshed" || printf '%s\n' 'Some of this host'"'"'s package indexes failed to refresh; apt used its last copy of those, where it had one.'
+      return 0
+    fi
+    "$refreshed" && die 'apt could not resolve or download the Ubuntu packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+    reason='This host'"'"'s package sources failed.'
+  elif "$refreshed" && ((current == 2)); then
+    reason='This host'"'"'s Ubuntu package indexes are not current. If its sources lag on purpose, run this script again with --use-host-package-sources.'
+  elif "$refreshed"; then
+    reason='This host'"'"'s Ubuntu package indexes failed the checks above.'
+  else
+    reason='This host'"'"'s package sources failed.'
+  fi
+  printf '%s Trying other Ubuntu archives, checked against Ubuntu'"'"'s archive key.\n' "$reason"
+  for archive in "${fallback_archives[@]}"; do
+    printf 'Trying the Ubuntu archive at %s.\n' "$archive"
+    apt_use "$archive"
+    if apt_refresh && apt_current archive && apt_fetch "$@"; then
+      printf 'Ubuntu packages for this run come from %s. This host'"'"'s package sources are unchanged.\n' "$archive"
+      return 0
+    fi
+  done
+  die 'Neither this host'"'"'s package sources nor any fallback Ubuntu archive supplied current, correctly signed packages; the errors above give the cause. No packages were changed, so run this script again once it is resolved.'
+}
+fetch "$management/agent-public-key.pem" "$scratch/served-public.pem" 4096
+openssl pkey -pubin -in "$scratch/served-public.pem" -outform DER -out "$scratch/public.der"
 [[ $(wc -c < "$scratch/public.der") == 44 && $(od -An -tx1 -N12 "$scratch/public.der" | tr -d ' \n') == 302a300506032b6570032100 ]] || die 'The signing key must be Ed25519.'
 verify_hash "$scratch/public.der" "$fingerprint" || die 'The downloaded signing key does not match the independently trusted fingerprint.'
+# From here on only the key whose fingerprint matched is used, re-encoded from its DER. The served
+# file could hold other PEM blocks that another tool, such as the agent, would read instead.
+openssl pkey -pubin -inform DER -in "$scratch/public.der" -out "$scratch/public.pem"
 fetch "$management/agent-artifacts/$release/message" "$scratch/message" 1024
 fetch "$management/agent-artifacts/$release/signature" "$scratch/signature" 64
 mapfile -t fields < "$scratch/message"
-[[ ${#fields[@]} == 6 && ${fields[0]} == astilba-agent-v1 && ${fields[1]} =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ && ${fields[2]} == 1 && ${fields[3]} == "$arch" && ${fields[4]} =~ ^[1-9][0-9]{0,8}$ && ${fields[5]} == "$release" ]] || die 'The release message is incompatible with this host.'
+# Fields: format, version, protocol, architecture, size, SHA-256, source commit, minimum version.
+[[ ${#fields[@]} == 8 && ${fields[0]} == astilba-agent-release-signature-v2 && ${#fields[1]} -le 80 && ${fields[1]} =~ $semver && ${fields[2]} == 1 && ${fields[3]} == "$arch" && ${fields[4]} =~ ^[1-9][0-9]{0,8}$ && ${fields[5]} == "$release" && ${fields[6]} =~ ^[a-f0-9]{40}$ && ${#fields[7]} -le 80 && ${fields[7]} =~ $semver ]] || die 'The release message is incompatible with this host.'
 [[ ${fields[4]} -le 104857600 && $(wc -c < "$scratch/signature") == 64 ]] || die 'Invalid signed release bounds.'
 printf '%s\n' "${fields[@]}" > "$scratch/canonical-message"
 cmp --silent "$scratch/message" "$scratch/canonical-message" || die 'The signed message is not canonical.'
 openssl pkeyutl -verify -pubin -inkey "$scratch/public.pem" -rawin -in "$scratch/message" -sigfile "$scratch/signature"
+# A release's minimum version is never later than its version, as agentrelease checks.
+order=$(version_compare "${fields[7]}" "${fields[1]}")
+[[ "$order" == -1 || "$order" == 0 ]] || die 'The signed release has a minimum version later than its version.'
+# An agent never updates below the minimum version it was signed with, so a release with a lower
+# one would let this host go back to a release the operator wants never to run again.
+if "$minimum_given"; then
+  order=$(version_compare "${fields[7]}" "$minimum")
+  [[ "$order" == 0 || "$order" == 1 ]] || die "Release ${fields[1]} lets an agent go back to ${fields[7]}, below $minimum, the minimum version you gave. Nothing has been installed."
+fi
 fetch "$management/agent-artifacts/$release" "$scratch/agent" "${fields[4]}"
 [[ $(wc -c < "$scratch/agent") == "${fields[4]}" ]] || die 'The agent size does not match its signed release.'
 verify_hash "$scratch/agent" "$release" || die 'The agent digest does not match its signed release.'
 chmod 0700 "$scratch/agent"
 identity=$("$scratch/agent" describe)
-expected_identity=$(printf '{"Arch":"%s","KeyAuth":1,"Protocol":1,"Version":"%s"}' "$arch" "${fields[1]}")
+expected_identity=$(printf '{"Arch":"%s","Commit":"%s","KeyAuth":1,"MinimumVersion":"%s","Protocol":1,"Version":"%s"}' "$arch" "${fields[6]}" "${fields[7]}" "${fields[1]}")
 [[ "$identity" == "$expected_identity" ]] || die 'Compiled agent identity does not match the signed release.'
 # The verified CLI validates the contact address before host installation.
 timeout 15 "$scratch/agent" preflight --state "$scratch/preflight" --acme-email "$contact" >/dev/null
@@ -182,24 +428,34 @@ if "$install_backups"; then
   verify_hash "$scratch/restic.bz2" "$restic_sha" || die "The download from $url does not match its pinned checksum."
   bzip2 --decompress "$scratch/restic.bz2"
 fi
+# The agent fences every build off this host and private networks with nftables, which
+# Ubuntu installs by default; a minimal image may lack it.
+nftables=nftables=1.0.9-1ubuntu0.1
+apt_packages=()
+"$docker_ready" || apt_packages+=("${packages[@]}")
+command -v nft >/dev/null || apt_packages+=("$nftables")
+if ((${#apt_packages[@]})); then
+  step='download Ubuntu packages'
+  apt_download "${apt_packages[@]}"
+fi
 if ! "$docker_ready"; then
   inspect_agent_targets
   command -v docker >/dev/null && die 'A Docker installation appeared during preparation; inspect it before retrying.'
   step='install the approved container runtime'
   printf '%s\n' 'Installing verified Docker packages and their Ubuntu dependencies; Docker may start and create networks and firewall rules.'
-  # An apt source can hang without limit or output, as a mirror list does when its first mirror drops packets.
-  timeout --foreground --kill-after=30 300 env DEBIAN_FRONTEND=noninteractive apt-get update || die 'apt-get update failed or did not finish within 5 minutes; no packages were changed. Check this host'"'"'s package sources, then run this script again.'
-  DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-remove --no-install-recommends "${packages[@]}"
+  apt_lock_notice
+  # Installs exactly what apt_download fetched, from the same package lists, so it needs no new
+  # downloads; Docker depends on nftables, so the pinned version comes with it when needed. There
+  # is no time limit: stopping dpkg part way would leave packages half configured.
+  DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" -o "DPkg::Lock::Timeout=$apt_lock_wait" install --yes --no-remove --no-install-recommends "${apt_packages[@]}"
   [[ $(docker --host unix:///var/run/docker.sock version --format '{{.Server.Version}}') == 29.9.2 ]]
   [[ $(docker compose version --short) == 5.6.1 || $(docker compose version --short) == v5.6.1 ]]
 fi
-# The agent fences every build off this host and private networks with nftables, which
-# Ubuntu installs by default; a minimal image may lack it.
 if ! command -v nft >/dev/null; then
   step='install nftables for build isolation'
   printf '%s\n' 'Installing Ubuntu'"'"'s nftables 1.0.9, which the agent uses to keep builds away from this host and private networks.'
-  timeout --foreground --kill-after=30 300 env DEBIAN_FRONTEND=noninteractive apt-get update || die 'apt-get update failed or did not finish within 5 minutes; no packages were changed. Check this host'"'"'s package sources, then run this script again.'
-  DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-remove --no-install-recommends nftables=1.0.9-1ubuntu0.1
+  apt_lock_notice
+  DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" -o "DPkg::Lock::Timeout=$apt_lock_wait" install --yes --no-remove --no-install-recommends "$nftables"
 fi
 inspect_agent_targets
 step='prepare the verified agent service'

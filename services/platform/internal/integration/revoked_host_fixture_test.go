@@ -34,7 +34,8 @@ type revokedGroup struct {
 	// attention names phases a host reports as needing attention, until they're cancelled. It's set
 	// before the phase starts and read by the host alone afterwards.
 	attention map[string]bool
-	// failing names visual actions a host reports as failed. Set while the host isn't polling for one.
+	// failing names visual actions and cross-host phases ("crosshost-" and the phase) a host reports
+	// as failed. Set while the host isn't polling for one.
 	failing map[string]bool
 	// late names phases a host takes only after their admission deadline, guarded by mu.
 	late map[string]bool
@@ -93,7 +94,7 @@ func (g *revokedGroup) reports(t *testing.T, h *aheadHost, change func(*api.Agen
 	change(&h.input.Capabilities, &h.input.Preflight)
 	heartbeat := api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}
 	g.mu.Unlock()
-	if _, err := g.f.execution.Heartbeat(g.ctx, h.identity, heartbeat); err != nil {
+	if _, err := g.f.execution.Heartbeat(g.ctx, h.identity, acknowledgingHeartbeat(heartbeat)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -135,7 +136,7 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 			g.mu.Lock()
 			heartbeat := api.AgentHeartbeat{Capabilities: h.input.Capabilities, Preflight: h.input.Preflight}
 			g.mu.Unlock()
-			if _, err := g.f.execution.Heartbeat(ctx, h.identity, heartbeat); err != nil {
+			if _, err := g.f.execution.Heartbeat(ctx, h.identity, acknowledgingHeartbeat(heartbeat)); err != nil {
 				if !errors.Is(err, domain.Unauthenticated) && ctx.Err() == nil {
 					t.Error(err)
 				}
@@ -144,7 +145,7 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 			beat = time.Now()
 		}
 		poll, done := context.WithTimeout(ctx, 200*time.Millisecond)
-		c, err := g.f.execution.Poll(poll, h.identity)
+		c, err := pollReleased(g.f.execution, poll, h.identity)
 		expired := poll.Err()
 		done()
 		if revokedHost(ctx, g.f, h.identity, err) {
@@ -361,8 +362,13 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 			return report, false
 		}
 		g.mu.Lock()
+		failing := g.failing["crosshost-"+command.Phase+"/"+h.id.String()]
 		late := g.late[command.Phase+"/"+h.id.String()]
 		g.mu.Unlock()
+		if failing {
+			report.State = "failed"
+			return report, true
+		}
 		if late {
 			report.State, report.Note = "cancelled", "The admission deadline passed before execution."
 			return report, true

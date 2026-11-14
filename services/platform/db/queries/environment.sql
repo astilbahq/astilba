@@ -34,19 +34,23 @@ SELECT * FROM environment_layouts WHERE workspace_id=$1 AND environment_id=$2;
 INSERT INTO environment_layouts(workspace_id,environment_id,positions) VALUES($1,$2,$3)
 ON CONFLICT(workspace_id,environment_id) DO UPDATE SET positions=EXCLUDED.positions,updated_at=now() RETURNING *;
 -- name: ListSecrets :many
+-- Retired secrets and erased versions are kept for the specifications that name them, not listed.
 SELECT s.id,s.name,v.id AS version_id,v.created_at FROM secrets s JOIN secret_versions v
-ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2 ORDER BY s.name,v.created_at DESC;
+ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2
+AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC;
 -- name: GetSecret :one
-SELECT * FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3;
+SELECT * FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3 AND retired_at IS NULL;
 -- name: InsertSecret :exec
 INSERT INTO secrets(workspace_id,environment_id,id,name) VALUES($1,$2,$3,$4);
 -- name: InsertSecretVersion :one
-INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id) VALUES($1,$2,$3,$4,$5) RETURNING id,created_at;
+INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id,plaintext_bytes,json_bytes)
+VALUES(@workspace_id,@secret_id,@id,@encrypted_value,@author_id,sqlc.narg(plaintext_bytes)::integer,sqlc.narg(json_bytes)::integer) RETURNING id,created_at;
 -- name: GetSecretVersion :one
+-- An erased version has no value, so every reader finds it missing.
 SELECT v.* FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3;
+WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3 AND v.erased_at IS NULL;
 -- name: AllEncryptedVersions :many
-SELECT workspace_id,id,encrypted_value FROM secret_versions FOR UPDATE;
+SELECT workspace_id,id,encrypted_value FROM secret_versions WHERE erased_at IS NULL FOR UPDATE;
 -- name: RewrapSecretVersion :exec
 UPDATE secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id=$2;
 -- name: AllTOTPSecrets :many
@@ -60,6 +64,28 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND plan
 -- name: AdvanceEnvironmentExecutionGeneration :one
 UPDATE environments SET execution_generation=execution_generation+1
 WHERE workspace_id = @workspace_id AND id = @id RETURNING execution_generation;
+
+-- name: BackfillPostgresMajors :exec
+-- Records, for each in-use volume with none, the PostgreSQL major its environment's applied revision
+-- runs on it, as migration 00047 did for volumes that existed then. An archive from before version 8
+-- records none. Run BackfillUpgradeTargetMajors after it.
+UPDATE managed_volumes v SET postgres_major = substring(a->'source'->>'image' FROM '^postgres:([0-9]{1,3})[.@-]')
+FROM environments e
+JOIN specification_revisions r ON r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.id = e.applied_revision_id
+CROSS JOIN LATERAL jsonb_array_elements(r.specification->'applications') a
+WHERE v.workspace_id = @workspace_id AND e.workspace_id = @workspace_id AND v.environment_id = e.id
+ AND v.postgres_major IS NULL AND v.postgres_init_hash IS NOT NULL AND NOT v.deleted
+ AND jsonb_typeof(a->'postgres') = 'object' AND a->'mounts'->0->>'volumeId' = v.id::text;
+
+-- name: BackfillUpgradeTargetMajors :exec
+-- Records PostgreSQL 18 on each supported upgrade's target volume with none, as migration 00047 did.
+-- Planning an upgrade records its target's major from archive version 8; every upgrade planned
+-- before then targeted PostgreSQL 18. It runs after BackfillPostgresMajors, so an applied revision
+-- decides a volume that both name.
+UPDATE managed_volumes v SET postgres_major = '18'
+FROM supported_upgrades u
+WHERE v.workspace_id = @workspace_id AND u.workspace_id = @workspace_id AND v.environment_id = u.environment_id
+ AND v.id::text = u.plan->>'targetVolumeId' AND v.postgres_major IS NULL AND NOT v.deleted;
 -- name: VisualPlanHostReview :one
 -- Whether applying the plan needs an owner's approval of its host changes.
 SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3;
@@ -71,3 +97,13 @@ SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2;
 -- Takes the environment's row lock that writing a revision or admitting a pipeline takes first, so
 -- a transaction that then locks a build target keeps their order and can't deadlock with them.
 SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR NO KEY UPDATE;
+
+-- name: UnmeasuredSecretVersions :many
+-- unscoped: the job that measures values goes through every workspace's, a batch at a time.
+SELECT workspace_id,id,encrypted_value FROM secret_versions
+WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND erased_at IS NULL AND (workspace_id,id) > (@after_workspace::uuid,@after_id::uuid)
+ORDER BY workspace_id,id LIMIT @batch;
+
+-- name: MeasureSecretVersion :exec
+UPDATE secret_versions SET plaintext_bytes = @plaintext_bytes::integer, json_bytes = @json_bytes::integer
+WHERE workspace_id = @workspace_id AND id = @id AND erased_at IS NULL;

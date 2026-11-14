@@ -151,10 +151,12 @@ func (q *Queries) GitBranchPushes(ctx context.Context, arg GitBranchPushesParams
 }
 
 const gitBranchTracked = `-- name: GitBranchTracked :one
-SELECT (EXISTS(SELECT 1 FROM git_sources g WHERE g.workspace_id = $1 AND g.connection_id = $2
-        AND g.configuration->>'branch' = $3::text)
-    OR EXISTS(SELECT 1 FROM build_targets t WHERE t.workspace_id = $1 AND t.connection_id = $2
-        AND t.configuration->>'branch' = $3::text AND t.configuration->>'autoBuild' = 'true'))::boolean
+SELECT (EXISTS(SELECT 1 FROM git_sources g JOIN environments e ON e.workspace_id = g.workspace_id AND e.id = g.environment_id
+        WHERE g.workspace_id = $1 AND g.connection_id = $2
+        AND g.configuration->>'branch' = $3::text AND e.state = 'active')
+    OR EXISTS(SELECT 1 FROM build_targets t JOIN environments e ON e.workspace_id = t.workspace_id AND e.id = t.environment_id
+        WHERE t.workspace_id = $1 AND t.connection_id = $2
+        AND t.configuration->>'branch' = $3::text AND t.configuration->>'autoBuild' = 'true' AND e.state = 'active'))::boolean
 `
 
 type GitBranchTrackedParams struct {
@@ -164,6 +166,7 @@ type GitBranchTrackedParams struct {
 }
 
 // Whether a push for this branch has work to start: a source importing it, or a target building it automatically.
+// A retired environment's source and targets stay configured but start nothing.
 func (q *Queries) GitBranchTracked(ctx context.Context, arg GitBranchTrackedParams) (bool, error) {
 	row := q.db.QueryRow(ctx, gitBranchTracked, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
 	var column_1 bool
@@ -461,7 +464,7 @@ func (q *Queries) LockGitConnectionDeliveries(ctx context.Context, arg LockGitCo
 const pageEnvironmentSecretVersions = `-- name: PageEnvironmentSecretVersions :many
 SELECT v.id,v.encrypted_value FROM secret_versions v
 JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id > $3
+WHERE v.workspace_id = $1 AND s.environment_id = $2 AND v.id > $3 AND v.erased_at IS NULL
 ORDER BY v.id LIMIT $4
 `
 

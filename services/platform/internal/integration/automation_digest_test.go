@@ -83,6 +83,7 @@ func newAutomaticCompose(t *testing.T, compose string, images func(id func(strin
 	yes := true
 	in.Capabilities.Build, in.Capabilities.Visual, in.Capabilities.Compose = &yes, &yes, &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	a := &automaticCompose{t: t, b: b, agent: authorityAgent{t, f, agentToken, in}, source: source, path: path, server: enrolled.Server.Id, ns: env.DeploymentUnit.Id}
 	first := a.nextCommit()
@@ -226,6 +227,7 @@ func TestAutomationBuildStopsForMovedTagOnAnotherService(t *testing.T) {
 	yes := true
 	in.Capabilities.Build, in.Capabilities.BuildControls, in.Capabilities.Visual, in.Capabilities.Compose = &yes, &yes, &yes, &yes
 	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	agent := authorityAgent{t, f, agentToken, in}
 	files := []composeproject.File{{Path: "compose.yaml", Content: "services:\n  web:\n    image: " + pipelineTestImage + "\n  cache:\n    image: redis:latest\n"}}

@@ -32,6 +32,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/webassets"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -70,7 +71,10 @@ func run() error {
 		return e
 	}
 	if os.Args[1] == "migrate" {
-		return dbmigrate.Up(ctx, c.DatabaseURL)
+		if e = dbmigrate.Up(ctx, c.DatabaseURL); e != nil {
+			return e
+		}
+		return setSecretAccessRetention(ctx, c)
 	}
 	if e = dbmigrate.Check(ctx, c.DatabaseURL); e != nil {
 		return e
@@ -102,7 +106,6 @@ func run() error {
 		return e
 	}
 	st := store.New(pool, secretbroker.New(db.New(pool), backend, slog.Default()), c.Hosted)
-	st.Keys = keys
 	st.Hosting = c.Hosting
 	st.LogRetention = c.LogRetention
 	st.ApplicationDomain = c.ApplicationDNS.Base
@@ -337,4 +340,15 @@ func run() error {
 	default:
 		return errors.New("unknown command")
 	}
+}
+
+// setSecretAccessRetention is part of migrating: the setting belongs to the role that owns the
+// schema, so serving never writes it.
+func setSecretAccessRetention(ctx context.Context, c config.Config) error {
+	conn, e := pgx.Connect(ctx, c.DatabaseURL)
+	if e != nil {
+		return e
+	}
+	defer conn.Close(ctx)
+	return db.New(conn).SetSecretAccessRetention(ctx, c.SecretAccessRetentionDays)
 }

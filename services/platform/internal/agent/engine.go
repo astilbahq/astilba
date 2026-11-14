@@ -36,11 +36,22 @@ type Engine struct {
 	ACMEEmail             string
 	ResticCLI             string
 	BackupRoots           []string
+	// ImageLoadBytes and ImageLoadReserveBytes are the host owner's limits on loading a local
+	// build's image or pulling a deployment's, see image_archive.go and image_pull.go; the
+	// defaults when zero.
+	ImageLoadBytes        int64
+	ImageLoadReserveBytes int64
 	TroubleshootingIdle   time.Duration
 	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
 	mu          sync.Mutex
+	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
+	layerCostsOnce sync.Once
+	measuredLayers *layerCosts
+	// checkedSiblings are index entries the agent found harmless for loads.
+	checkedOnce     sync.Once
+	checkedSiblings *checkedManifests
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
@@ -56,6 +67,9 @@ type Engine struct {
 	// managed stands in for the host's managed networking in tests, which only a prepared
 	// Linux host has. Nil is the host itself.
 	managed managedHost
+	// builderCAs stands in for the builder image's certificate authorities in tests, which use
+	// a registry with their own. It names a bundle on the host. Empty is the image's.
+	builderCAs string
 }
 
 func (e *Engine) point(p string) {
@@ -222,7 +236,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return err
 	}
 	for _, s := range schedules {
-		if (len(s.Writers) > 0 || hasUncertainRun(s.Runs)) && !networkRestriction(c) {
+		if (len(s.Writers) > 0 || hasUncertainRun(s)) && !networkRestriction(c) {
 			return e.finish(c.Id, "needs_attention", "An interrupted local schedule requires inspection and resolve-run before another host operation.")
 		}
 	}

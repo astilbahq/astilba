@@ -21,7 +21,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 )
@@ -94,7 +93,7 @@ func TestTenantRevisionsAndSecrets(t *testing.T) {
 	if strings.Contains(string(cipher), "sensitive-canary") {
 		t.Fatal("secret stored plaintext")
 	}
-	plain, e := f.st.Keys.Open(cipher, store.SecretIdentity(ws, secret.Id))
+	plain, e := keysOf(f.st).Open(cipher, secretIdentity(ws, secret.Id))
 	if e != nil || string(plain) != "sensitive-canary" {
 		t.Fatal("cannot decrypt", e)
 	}

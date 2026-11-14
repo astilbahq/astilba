@@ -166,6 +166,10 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	if _, err = e.volumePath(ctx, policy, target); err != nil {
 		t.Fatal(err)
 	}
+	// The restore initialised the target with the archive's major, which the volume records.
+	if v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || restored.Manifest == nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(restored.Manifest.Image) || v.Volume.Labels[labelPostgresMajor] == "" {
+		t.Fatalf("the restore target does not record its PostgreSQL major: %v", err)
+	}
 	if _, err = e.Docker.ContainerStart(ctx, c.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +465,8 @@ func TestSkippedHistoryAndAdmissionClock(t *testing.T) {
 	now := s.Installation.Next
 	_ = e.tickSchedules(context.Background(), func() time.Time { return now })
 	s, _ = j.schedule(p.ID)
-	if s.Runs[len(s.Runs)-1].State != "needs_attention" {
+	// Admitted, then failed before any effect: this engine has no Docker.
+	if last := s.Runs[len(s.Runs)-1]; last.ID != backup.RunID(p, now) || last.State != "failed" {
 		t.Fatal("a timely job could not be admitted after bounded skipped history")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -195,7 +196,8 @@ func TestCacheCapabilityDoesNotChangeBuildControlsNegotiation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if received.Load() != 1 {
+	// The challenge that negotiates first lets both heartbeats carry what the controller reads.
+	if received.Load() != 2 {
 		t.Fatal("build-controls negotiation regressed")
 	}
 }
@@ -418,19 +420,200 @@ func TestPrimaryIngressWaitsForItsOwnNegotiation(t *testing.T) {
 }
 
 // Management refuses builds to a runner whose stored capabilities lack build isolation, and
-// a heartbeat replaces them, so the first one after a start must not leave it out for long.
-func TestFirstHeartbeatResendsWhatTheControllerAccepts(t *testing.T) {
+// a heartbeat replaces them, so even the first one after a start must carry it.
+func TestFirstHeartbeatCarriesWhatTheControllerAccepts(t *testing.T) {
 	j, _ := testVisualJournal(t)
 	var heartbeats []bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Astilba-Agent-Features", "build-controls")
+		w.Header().Set("Astilba-Agent-Build-Network", "v1")
+		w.Header().Set("Astilba-Agent-Rootless-Builds", "v1")
+		if r.URL.Path != "/agent/v1/heartbeat" {
+			w.WriteHeader(404)
+			return
+		}
 		var body api.AgentHeartbeat
 		if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil {
 			w.WriteHeader(400)
 			return
 		}
-		heartbeats = append(heartbeats, body.Capabilities.BuildNetwork != nil && *body.Capabilities.BuildNetwork)
-		w.Header().Set("Astilba-Agent-Features", "build-controls")
-		w.Header().Set("Astilba-Agent-Build-Network", "v1")
+		heartbeats = append(heartbeats, body.Capabilities.BuildNetwork != nil && *body.Capabilities.BuildNetwork && body.Capabilities.RootlessBuilds != nil && *body.Capabilities.RootlessBuilds)
+		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
+	}))
+	defer server.Close()
+	cfg, _ := j.Config()
+	cfg.Origin = server.URL
+	if err := j.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(j, &Engine{Journal: j})
+	c.HTTP = server.Client()
+	yes := true
+	c.Observe = func(context.Context) api.AgentHeartbeat {
+		return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &yes, BuildNetwork: &yes, RootlessBuilds: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
+	}
+	for range 2 {
+		if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(heartbeats) != 2 || !heartbeats[0] || !heartbeats[1] {
+		t.Fatal("heartbeats advertised build isolation as", heartbeats)
+	}
+}
+
+// An agent's first poll after a start may be held for the whole poll duration, and a heartbeat
+// replaces the capabilities management holds. The first heartbeat must not wait for that poll,
+// nor go out stripped of extensions the controller reads, which would refuse previews and
+// releases until the next one. A controller that marks nothing still hears from the agent.
+func TestFirstHeartbeatAfterAStartIsNegotiated(t *testing.T) {
+	for _, marks := range []bool{true, false} {
+		t.Run(map[bool]string{true: "marking", false: "unmarked"}[marks], func(t *testing.T) {
+			j, _ := testVisualJournal(t)
+			heartbeats := make(chan api.AgentCapabilities, 16)
+			released := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if marks {
+					w.Header().Set("Astilba-Agent-Features", "build-controls")
+					w.Header().Set("Astilba-Agent-Previews", "v1")
+					w.Header().Set("Astilba-Agent-Schedules", "v1")
+				}
+				switch r.URL.Path {
+				case "/agent/v1/poll":
+					if marks {
+						// Held for as long as the agent runs.
+						select {
+						case <-r.Context().Done():
+						case <-released:
+						}
+						return
+					}
+					time.Sleep(200 * time.Millisecond)
+					_, _ = w.Write([]byte(`{"command":null}`))
+				case "/agent/v1/heartbeat":
+					var body api.AgentHeartbeat
+					if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil {
+						w.WriteHeader(400)
+						return
+					}
+					select {
+					case heartbeats <- body.Capabilities:
+					default:
+					}
+					_, _ = w.Write([]byte(`{"role":"deployment","rotationRequested":false}`))
+				case "/agent/v1/challenge":
+					if !marks {
+						// Controllers older than negotiation predate agent keys too.
+						w.WriteHeader(404)
+						return
+					}
+					_, _ = w.Write([]byte(`{"nonce":"n","expiresAt":"2030-01-01T00:00:00Z"}`))
+				default:
+					w.WriteHeader(204)
+				}
+			}))
+			defer server.Close()
+			defer close(released)
+			cfg, err := j.Config()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Origin, cfg.Enrolled, cfg.Credential = server.URL, true, "agent-credential"
+			if err = j.SetConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			c := NewClient(j, &Engine{Journal: j})
+			c.HTTP = server.Client()
+			yes := true
+			c.Observe = func(context.Context) api.AgentHeartbeat {
+				return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Previews: &yes, Schedules: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			stopped := make(chan error, 1)
+			go func() { stopped <- c.Run(ctx) }()
+			defer func() {
+				cancel()
+				<-stopped
+			}()
+			// Well inside the heartbeat interval, so an unmarked controller isn't kept waiting for it.
+			select {
+			case first := <-heartbeats:
+				advertised := first.Previews != nil && first.Schedules != nil
+				if advertised != marks {
+					t.Fatalf("the first heartbeat advertised extensions %v to a controller that offers them %v", advertised, marks)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("no heartbeat while the first poll was held")
+			}
+		})
+	}
+}
+
+// An enrollment replaces the capabilities management holds, so a challenge that fails on its way
+// to management holds it back. A controller older than negotiation, which has no challenge and
+// marks nothing, still enrolls the agent.
+func TestEnrollmentWaitsForNegotiation(t *testing.T) {
+	for _, challenge := range []int{503, 404} {
+		t.Run(http.StatusText(challenge), func(t *testing.T) {
+			j, _ := testVisualJournal(t)
+			var enrollments atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/agent/v1/challenge":
+					w.WriteHeader(challenge)
+				case "/agent/v1/enroll":
+					enrollments.Add(1)
+					_, _ = w.Write([]byte(`{"role":"deployment","rotationRequested":false}`))
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			defer server.Close()
+			cfg, err := j.Config()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Origin, cfg.MachineID = server.URL, uuid.New()
+			if err = j.SetConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			c := NewClient(j, &Engine{Journal: j})
+			c.HTTP = server.Client()
+			c.Observe = func(context.Context) api.AgentHeartbeat { return api.AgentHeartbeat{} }
+			err = c.Enroll(context.Background(), strings.Repeat("a", 43))
+			if challenge == 404 && (err != nil || enrollments.Load() != 1) {
+				t.Fatal("a controller older than negotiation could not enroll the agent", err)
+			}
+			if challenge == 503 && (!errors.Is(err, errNotNegotiated) || enrollments.Load() != 0) {
+				t.Fatal("an enrollment went out before negotiation", err)
+			}
+		})
+	}
+}
+
+// A controller replaced between heartbeats may read more than the one the agent last heard, and
+// the heartbeat that learns it is followed at once by one that reports it.
+func TestHeartbeatResendsWhenTheControllerChanges(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	var upgraded atomic.Bool
+	var heartbeats []bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upgraded.Load() {
+			w.Header().Set("Astilba-Agent-Features", "build-controls")
+			w.Header().Set("Astilba-Agent-Build-Network", "v1")
+		} else {
+			w.Header().Set("Astilba-Agent-Features", "none")
+		}
+		if r.URL.Path != "/agent/v1/heartbeat" {
+			w.WriteHeader(404)
+			return
+		}
+		var body api.AgentHeartbeat
+		if json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &body) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		heartbeats = append(heartbeats, body.Capabilities.BuildNetwork != nil)
 		_, _ = w.Write([]byte(`{"role":"combined","rotationRequested":false}`))
 	}))
 	defer server.Close()
@@ -445,12 +628,14 @@ func TestFirstHeartbeatResendsWhatTheControllerAccepts(t *testing.T) {
 	c.Observe = func(context.Context) api.AgentHeartbeat {
 		return api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Build: &yes, BuildNetwork: &yes}, Preflight: api.HostPreflight{Notes: []string{}}}
 	}
-	for range 2 {
-		if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
-			t.Fatal(err)
-		}
+	if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
+		t.Fatal(err)
 	}
-	if len(heartbeats) != 3 || heartbeats[0] || !heartbeats[1] || !heartbeats[2] {
+	upgraded.Store(true)
+	if err := c.heartbeat(context.Background(), "fixture", &api.AgentStatus{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(heartbeats) != 3 || heartbeats[0] || heartbeats[1] || !heartbeats[2] {
 		t.Fatal("heartbeats advertised build isolation as", heartbeats)
 	}
 }

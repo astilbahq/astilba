@@ -54,8 +54,8 @@ func fenceRecoveryWorkspace(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error 
 func (s *Service) restoreRecoveryRoots(ctx context.Context, tx pgx.Tx, ws uuid.UUID, roots map[uuid.UUID]recoveringRoot, sourceHash, inputHash string, owner uuid.UUID) error {
 	q := db.New(tx)
 	for parent, root := range roots {
-		raw, _ := stablejson.Marshal(root.Command)
-		if err := q.RestoreRecoveryRoot(ctx, db.RestoreRecoveryRootParams{Command: raw, WorkspaceID: ws, ID: parent}); err != nil {
+		descriptor, _ := stablejson.Marshal(root.Descriptor)
+		if err := q.RestoreRecoveryRoot(ctx, db.RestoreRecoveryRootParams{Descriptor: descriptor, WorkspaceID: ws, ID: parent}); err != nil {
 			return err
 		}
 		recorded, err := q.UpsertCrossHostRecovery(ctx, db.UpsertCrossHostRecoveryParams{SourceHash: sourceHash, InputHash: inputHash, OwnerID: owner, WorkspaceID: ws, ParentID: parent})
@@ -205,18 +205,24 @@ func storeRecoveryFrameState(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-	raw, _ := stablejson.Marshal(c)
 	if errors.Is(err, pgx.ErrNoRows) {
+		raw, _ := stablejson.Marshal(c)
 		var env *uuid.UUID
 		if c.EnvironmentId != uuid.Nil {
 			env = &c.EnvironmentId
 		}
 		return q.InsertRecoveryFrame(ctx, db.InsertRecoveryFrameParams{ID: c.Id, WorkspaceID: ws, ServerID: c.ServerId, EnvironmentID: env, Generation: c.Generation, RequestKey: uuid.New(), Command: raw, Kind: string(c.Kind), State: string(initial), ParentID: c.ParentId})
 	}
-	if frame.ReportSequence > 0 {
-		return q.SetRecoveryFrameCommand(ctx, db.SetRecoveryFrameCommandParams{Command: raw, WorkspaceID: ws, ID: c.Id})
+	// The frame matches its frozen header, so it keeps its stored bytes and gets only the
+	// checkpoint it now belongs to.
+	var descriptor []byte
+	if c.RecoveryCheckpoint != nil {
+		descriptor, _ = stablejson.Marshal(c.RecoveryCheckpoint)
 	}
-	return q.ResetRecoveryFrame(ctx, db.ResetRecoveryFrameParams{Command: raw, State: string(initial), WorkspaceID: ws, ID: c.Id})
+	if frame.ReportSequence > 0 {
+		return q.SetRecoveryFrameCheckpoint(ctx, db.SetRecoveryFrameCheckpointParams{Descriptor: descriptor, WorkspaceID: ws, ID: c.Id})
+	}
+	return q.ResetRecoveryFrame(ctx, db.ResetRecoveryFrameParams{Descriptor: descriptor, State: string(initial), WorkspaceID: ws, ID: c.Id})
 }
 
 func metadataRecoveryPhase(root recoveringRoot, c api.ExecutionCommand) string {

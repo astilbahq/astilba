@@ -20,3 +20,28 @@ type secretAccessSweepWorker struct {
 func (w *secretAccessSweepWorker) Work(ctx context.Context, _ *river.Job[secretAccessSweepArgs]) error {
 	return w.service.Store.Broker.Sweep(ctx)
 }
+
+// secretAccessExpiryArgs removes secret access records older than the installation's retention
+// period, a batch at a time.
+type secretAccessExpiryArgs struct{}
+
+func (secretAccessExpiryArgs) Kind() string { return "platform_secret_access_expiry_v1" }
+
+type secretAccessExpiryWorker struct {
+	river.WorkerDefaults[secretAccessExpiryArgs]
+	service *Service
+}
+
+// secretAccessExpiryBatch bounds one statement's work; a run takes batches until one comes back
+// short, so a backlog clears over a few runs rather than in one long transaction.
+const secretAccessExpiryBatch = 1000
+
+func (w *secretAccessExpiryWorker) Work(ctx context.Context, _ *river.Job[secretAccessExpiryArgs]) error {
+	for range 5 {
+		expired, err := w.service.Store.Queries.ExpireSecretAccess(ctx, secretAccessExpiryBatch)
+		if err != nil || expired < secretAccessExpiryBatch {
+			return err
+		}
+	}
+	return nil
+}

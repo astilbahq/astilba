@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,13 +32,13 @@ import (
 
 func signedUpdate(t *testing.T, arch string) (api.AgentRelease, ed25519.PublicKey, []byte) {
 	t.Helper()
-	body := []byte("#!/bin/sh\nprintf '%s\\n' '{\"Version\":\"fixture.2\",\"Protocol\":1,\"Arch\":\"" + runtime.GOARCH + "\"}'\n")
+	body := fixtureAgent("0.1.0-fixture.2", false)
 	pub, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(body)
-	release := api.AgentRelease{Version: "fixture.2", Protocol: 1, Arch: api.AgentReleaseArch(arch), Size: int64(len(body)), Sha256: hex.EncodeToString(digest[:])}
+	release := api.AgentRelease{Version: "0.1.0-fixture.2", MinimumVersion: fixtureFloor, Commit: fixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(arch), Size: int64(len(body)), Sha256: hex.EncodeToString(digest[:])}
 	release.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, agentrelease.Message(release)))
 	return release, pub, body
 }
@@ -66,7 +65,7 @@ func TestLegacySignedUpdateRestartPreservesEvidenceAndReconcilesInstalledArtifac
 				if err := j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "operations", c.Id.String(), original) }); err != nil {
 					t.Fatal(err)
 				}
-				if err := Install(context.Background(), release, pub, bytes.NewReader(body), executable, false); err != nil {
+				if err := Install(context.Background(), release, pub, bytes.NewReader(body), executable, permitted); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -232,7 +231,7 @@ func TestInstalledUpdateCrashHelper(t *testing.T) {
 			return err
 		}
 		defer artifact.Close()
-		if err = Install(ctx, release, cfg.PublicKey, artifact, path, false); err != nil {
+		if err = Install(ctx, release, cfg.PublicKey, artifact, path, permitted); err != nil {
 			return err
 		}
 		os.Exit(88) // Replacement is durable; no success has been recorded.
@@ -303,14 +302,14 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := func(version string) (api.AgentRelease, []byte) {
-		body := []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '{\"Version\":\"%s\",\"Protocol\":1,\"Arch\":\"%s\"}'\n", version, runtime.GOARCH))
+		body := fixtureAgent(version, false)
 		digest := sha256.Sum256(body)
-		r := api.AgentRelease{Version: version, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(body)), Sha256: hex.EncodeToString(digest[:])}
+		r := api.AgentRelease{Version: version, MinimumVersion: fixtureFloor, Commit: fixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(body)), Sha256: hex.EncodeToString(digest[:])}
 		r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, agentrelease.Message(r)))
 		return r, body
 	}
-	first, firstBody := release("fixture.2")
-	next, nextBody := release("fixture.3")
+	first, firstBody := release("0.1.0-fixture.2")
+	next, nextBody := release("0.1.0-fixture.3")
 	path := filepath.Join(t.TempDir(), "agent")
 	if err = os.WriteFile(path, []byte("previous executable"), 0755); err != nil {
 		t.Fatal(err)
@@ -319,6 +318,11 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 	var reports atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/agent/v1/challenge" {
+			// A controller that predates agent keys has no challenge to negotiate with.
+			w.WriteHeader(404)
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer "+p.ServerID.String()+".fixture" {
 			t.Error("missing assigned-agent authentication")
 			w.WriteHeader(401)
@@ -342,7 +346,7 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := Engine{Journal: j, Update: func(ctx context.Context, r api.AgentRelease) error {
-		return Install(ctx, r, pub, bytes.NewReader(firstBody), path, false)
+		return Install(ctx, r, pub, bytes.NewReader(firstBody), path, permitted)
 	}, VerifyInstalledUpdate: func(r api.AgentRelease) error { return VerifyInstalledUpdate(r, pub, path) }}
 	if err = e.Execute(context.Background(), command); err != nil {
 		t.Fatal(err)
@@ -356,7 +360,7 @@ func TestSucceededUpdateAcknowledgesAfterLaterSignedLocalInstall(t *testing.T) {
 	if err = j.RequireUnreservedHost(); err != nil {
 		t.Fatal(err)
 	}
-	if err = Install(context.Background(), next, pub, bytes.NewReader(nextBody), path, false); err != nil {
+	if err = Install(context.Background(), next, pub, bytes.NewReader(nextBody), path, permitted); err != nil {
 		t.Fatal(err)
 	}
 	if VerifyInstalledUpdate(first, pub, path) == nil || VerifyInstalledUpdate(next, pub, path) != nil {

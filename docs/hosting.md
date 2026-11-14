@@ -669,19 +669,16 @@ each time. An imported workspace shows the same lists as its source, except that
 environments retired before the export aren't listed, and older entries can't be opened by ID.
 Audit history beyond the newest 100 stays in the source installation's database.
 
-A cross-host recovery checkpoint carries the operation history recovery needs:
-- unfinished work;
-- every operation that applied or removed a runtime;
-- every standalone private network removal;
-- every operation another archived record names;
-- the newest 100 operations.
-
-It keeps the newest 100 audit events, and the revisions the app lists or a record names.
-Checkpoints are compressed with zstd, which holds about two and a half times the history gzip
-did. Deployment history is still carried, so a busy workspace can still reach the checkpoint
-limits, and its cross-host deployments then fail before any host changes. A workspace
-recovered from a management backup doesn't get back the housekeeping, revisions or audit
-events recorded after the backup that the checkpoint left out.
+A cross-host recovery checkpoint carries the workspace's configuration, unfinished work, the
+newest 100 operations and audit events, the revisions the app lists or a record names, and a
+compact record of the runtime changes committed in the 90 days before it was captured. Its size
+follows the configuration, not the workspace's age. A busy workspace whose history doesn't fit
+gets a shorter window, and management warns while it is under 35 days. Checkpoints are compressed
+with zstd. Cross-host recovery can use a management backup taken after the newest checkpoint's
+window opened, which the Workspace page shows; [Recovering management from an older
+backup](cross-host-placement.md#the-recovery-window) says what comes back. A workspace recovered
+from a backup doesn't get back the housekeeping, releases, revisions, build runs or audit events
+recorded after the backup that the checkpoint left out.
 
 Work that Git webhooks start runs in a background queue of its own, with four workers
 per replica: source refreshes, draft submissions, pull-request previews and GitHub App
@@ -717,6 +714,14 @@ stops alert evaluation for the workspace too, so only the log shows it.
 Each class of retention cleanup commits separately, so one that fails does not stop the
 others, and logs `retention cleanup failed` with the class. The preview sweep takes every workspace's oldest due work before any
 workspace's second, and its jobs run in the Git queue described above, sharing it by workspace.
+
+Secret access records note every time management was given the keys to a workspace's stored
+values: who it was for, why, which items by ID, and how it ended. Workspace owners see them on
+the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-access`. They are
+not part of workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
+kept, from 30 to 3650 days with a default of 400; hosted installations keep 400. `astilba
+migrate` writes the value into the database, so a change takes effect at the next migrate, and
+serving never changes it. An hourly job removes expired records, up to 5,000 a run.
 
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each
@@ -842,4 +847,4 @@ schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
 
-Workspace exports use archive version 7, which adds draft submissions to version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–6 remain importable; versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries. Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
+Workspace exports use archive version 9, which adds environment purges, retired secrets and erased secret values to version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–8 remain importable; their environments import as active or retired as recorded, nothing in them is purged or erased, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).

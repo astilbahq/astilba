@@ -105,6 +105,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					err = recoveryMonotonic(selected, prior, row, []string{"revoked"}, []string{"controller_generation", "update_generation"})
 				case "environments":
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"execution_generation"})
+					if err == nil {
+						err = recoveryRetirementKnowledge(selected, prior, row, known["execution_operations"])
+					}
 				case "workspace_networks":
 					if Hash(jsontext.Value(prior["id"])) != Hash(jsontext.Value(row["id"])) || Hash(jsontext.Value(prior["prefix"])) != Hash(jsontext.Value(row["prefix"])) {
 						return errors.New("network identity conflicts with known management metadata")
@@ -112,8 +115,14 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"generation"})
 				case "network_members":
 					selected, err = recoveryMemberKnowledge(prior, row, source, revoked)
+				case "secrets":
+					recoverySecretKnowledge(selected, prior, row)
 				case "managed_volumes":
 					err = recoveryMonotonic(selected, prior, row, []string{"deleted"}, nil)
+					// Recorded once, by the first deployment of a PostgreSQL major on the volume.
+					if err == nil && string(prior["postgres_major"]) == "null" {
+						selected["postgres_major"] = row["postgres_major"]
+					}
 				case "supported_upgrades":
 					selected, err = recoveryUpgradeKnowledge(prior, row)
 				case "backup_policies":
@@ -155,7 +164,10 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 			if _, exists := incoming[table][key]; exists {
 				continue
 			}
-			selected := maps.Clone(row)
+			selected, err := endRecoveryGapRow(table, row, source.History, known, incoming)
+			if err != nil {
+				return err
+			}
 			if keep, err := applyRecoveryProjection(table, selected, projections); err != nil {
 				return err
 			} else if keep {
@@ -203,11 +215,15 @@ func recoveryMonotonic(out, a, b portability.Row, flags, counters []string) erro
 	return nil
 }
 func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Row, error) {
-	var a, b api.ExecutionCommand
-	if json.Unmarshal(prior["command"], &a) != nil || json.Unmarshal(incoming["command"], &b) != nil {
+	a, err := portability.CommandIdentity(prior["command"], portability.CommandIdentityVersion)
+	if err != nil {
 		return nil, portability.ErrArchive
 	}
-	if recoveryCommandIdentity(a) != recoveryCommandIdentity(b) {
+	b, err := portability.CommandIdentity(incoming["command"], portability.CommandIdentityVersion)
+	if err != nil {
+		return nil, portability.ErrArchive
+	}
+	if a != b {
 		return nil, errors.New("execution identity conflicts with known management metadata")
 	}
 	qa, err := recoveryValue[int64](prior, "report_sequence")

@@ -164,3 +164,51 @@ func TestEmailLinkOriginValidation(t *testing.T) {
 		}
 	}
 }
+
+// Access records are kept 400 days unless a self-hosted installation says otherwise.
+func TestSecretAccessRetention(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	t.Setenv("ASTILBA_HOSTED", "false")
+	for _, tc := range []struct {
+		value string
+		want  int32
+		bad   bool
+	}{
+		{value: "", want: 400},
+		{value: "30", want: 30},
+		{value: "3650", want: 3650},
+		{value: "29", bad: true},
+		{value: "3651", bad: true},
+		{value: "a year", bad: true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("ASTILBA_SECRET_ACCESS_RETENTION_DAYS", tc.value)
+			c, err := Load()
+			if (err != nil) != tc.bad || (!tc.bad && c.SecretAccessRetentionDays != tc.want) {
+				t.Fatalf("retention %d, error %v", c.SecretAccessRetentionDays, err)
+			}
+		})
+	}
+}
+
+// Hosted keeps access records for 400 days whatever the environment says.
+func TestHostedSecretAccessRetention(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	t.Setenv("ASTILBA_HOSTED", "true")
+	t.Setenv("ASTILBA_HOSTED_COHORT_LIMIT", "10")
+	t.Setenv("ASTILBA_HOSTED_SUPPORT", "support@example.test")
+	t.Setenv("ASTILBA_HOSTED_SERVER_LIMIT", "10")
+	for value, bad := range map[string]bool{"": false, "400": false, "399": true, "3650": true} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("ASTILBA_SECRET_ACCESS_RETENTION_DAYS", value)
+			c, err := Load()
+			if (err != nil) != bad || (!bad && c.SecretAccessRetentionDays != 400) {
+				t.Fatalf("retention %d, error %v", c.SecretAccessRetentionDays, err)
+			}
+		})
+	}
+}

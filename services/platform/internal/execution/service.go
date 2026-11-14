@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
@@ -81,6 +82,8 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &previewSweepWorker{service: s})
 	river.AddWorker(workers, &troubleshootingSweepWorker{service: s})
 	river.AddWorker(workers, &secretAccessSweepWorker{service: s})
+	river.AddWorker(workers, &secretAccessExpiryWorker{service: s})
+	river.AddWorker(workers, &secretLengthsWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
 	river.AddWorker(workers, &submissionWorker{service: s})
@@ -91,7 +94,7 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, s.ResetMail)
 	s.SecurityNotice = &auth.SecurityNoticeWorker{}
 	river.AddWorker(workers, s.SecurityNotice)
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}, auth.SecurityMailQueue: {MaxWorkers: 2}}, JobTimeout: 10 * time.Second})
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretAccessExpiryArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(6*time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretLengthsArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}, auth.SecurityMailQueue: {MaxWorkers: 2}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }
@@ -321,9 +324,20 @@ type Identity struct {
 	Kind  string
 	// Credential is the server's identity this request authenticated as: the bearer's hash, or the
 	// hash of the key the token was issued for.
-	Credential                 []byte
-	Lineage                    uuid.UUID
-	CredentialFreeVisualCancel bool
+	Credential []byte
+	Lineage    uuid.UUID
+	// AcknowledgesReleases is an agent that acknowledges the secret releases it holds, and so may
+	// receive them.
+	AcknowledgesReleases bool
+}
+
+// instance names what holds a release: the agent's key, whose journal outlives its token
+// sessions, or its bearer credential.
+func (a Identity) instance() string {
+	if a.Kind == identityToken {
+		return "key:" + hex.EncodeToString(a.Credential)
+	}
+	return "credential:" + hex.EncodeToString(a.Credential)
 }
 
 // lineage scopes credential checks to a token's session; a bearer has none.
@@ -346,7 +360,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return v, keyNotCurrent
 		}
-		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.CredentialFreeVisualCancel = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.CredentialFreeVisualCancel
+		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.AcknowledgesReleases = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.AcknowledgesReleases
 		return v, err
 	}
 	if len(token) != 43 {
@@ -354,7 +368,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 	}
 	row, err := s.Store.Queries.AuthenticateAgent(ctx, db.AuthenticateAgentParams{ServerID: id, CredentialHash: hash(token)})
 	v.Kind, v.Credential = identityBearer, hash(token)
-	v.Workspace, v.Role, v.Previous, v.CredentialFreeVisualCancel = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.CredentialFreeVisualCancel
+	v.Workspace, v.Role, v.Previous, v.AcknowledgesReleases = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.AcknowledgesReleases
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}

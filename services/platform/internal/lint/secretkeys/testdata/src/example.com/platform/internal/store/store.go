@@ -2,5 +2,6 @@ package store
 
 import "example.com/platform/internal/cryptobox"
 
-// A pending file: the keyring field is declared here.
-type Store struct{ Keys *cryptobox.Keyring }
+type Store struct {
+	Keys *cryptobox.Keyring // want `Keys, a keyring, gives keys` `cryptobox.Keyring gives keys`
+}

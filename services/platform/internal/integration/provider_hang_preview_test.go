@@ -43,7 +43,7 @@ func enrollPreviewHost(t *testing.T, h *hungBuild, name string) (uuid.UUID, stri
 	h.b.call("POST", h.prefix+"/servers", map[string]any{"name": name, "role": "combined", "previewOnly": true}, 201, &enrollment)
 	credential, _ := randtoken.New()
 	yes := true
-	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildNetwork: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
+	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildNetwork: &yes, RootlessBuilds: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
 	return enrollment.Server.Id, enrollment.Server.Id.String() + "." + credential, input
 }
@@ -114,7 +114,7 @@ func TestPreviewPolicyRechecksAfterAHungProvider(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 			defer cancel()
 			started := time.Now()
-			if _, err := h.f.execution.Poll(ctx, h.identity); !errors.Is(err, context.DeadlineExceeded) {
+			if _, err := pollReleased(h.f.execution, ctx, h.identity); !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatal("the runner's poll did not run during the call:", err)
 			}
 			if elapsed := time.Since(started); elapsed > 4*time.Second {

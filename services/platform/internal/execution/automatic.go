@@ -104,6 +104,9 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if err != nil {
 		return err
 	}
+	if v.State != "active" {
+		return stop("This environment was retired, so nothing is deployed to it automatically.")
+	}
 	// The first deployment and any new host permissions always require interactive review.
 	if v.Revision != revision || v.Server == nil || v.Applied == nil {
 		return stop("The draft changed, or this environment needs its first reviewed deployment.")
@@ -173,7 +176,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		if err != nil {
 			return err
 		}
-		status, err := w.service.createVisualPlan(ctx, nested, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
+		status, err := w.service.createVisualPlan(ctx, nested, git.keys.inspect, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
 		if err != nil {
 			_ = nested.Rollback(ctx)
 			if _, ok := err.(*domain.Error); ok {

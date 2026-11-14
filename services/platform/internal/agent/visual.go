@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -17,7 +16,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
@@ -130,7 +128,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId {
 		return e.finish(c.Id, "failed", "Visual command identity does not match its reviewed plan.")
 	}
-	if err := p.Plan.Validate(p.Action != "resolve" && p.Action != "preview-cleanup"); err != nil {
+	if err := p.Plan.Validate(p.Action != "resolve" && p.Action != "preview-cleanup" && p.Action != "retire" && p.Action != "purge"); err != nil {
 		return e.finish(c.Id, "failed", "The deployment plan is invalid.")
 	}
 	if e.Docker == nil {
@@ -141,6 +139,12 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 			return e.finish(c.Id, "cancelled", "Preview cleanup cancelled before execution.")
 		}
 		return e.executePreviewCleanup(ctx, c, p, r)
+	}
+	if p.Action == "retire" {
+		return e.executeRetirement(ctx, c, p, r)
+	}
+	if p.Action == "purge" {
+		return e.executePurge(ctx, c, p)
 	}
 	if p.Action == "deploy" && p.Plan.Release != nil {
 		return e.executeRelease(ctx, c, p, r)
@@ -169,22 +173,19 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 		if err != nil {
 			return err
 		}
-		for _, u := range upgrades {
-			if (*p.VolumeID == u.Command.Plan.OldVolume() || *p.VolumeID == u.Command.Plan.TargetVolumeID) && time.Now().Before(u.Status.KeepUntil) {
-				return e.finish(c.Id, "failed", "Upgrade retention protects this volume.")
-			}
-		}
-		v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(*p.VolumeID), client.VolumeInspectOptions{})
-		if errdefs.IsNotFound(err) {
+		name, state := e.deletableVolume(ctx, *p.VolumeID, p.Plan, upgrades)
+		switch state {
+		case volumeRetained:
+			return e.finish(c.Id, "failed", "Upgrade retention protects this volume.")
+		case volumeAbsent:
 			return e.visualFinish(ctx, c, p, "succeeded", "The volume is absent.")
-		}
-		if err != nil || !visualOwned(v.Volume.Labels, p.Plan) || v.Volume.Labels[labelResource] != p.VolumeID.String() {
+		case volumeUnverified:
 			return e.visualFinish(ctx, c, p, "needs_attention", "Volume ownership could not be verified. Nothing was deleted.")
 		}
 		if err = e.checkpoint(c.Id, "delete-volume"); err != nil {
 			return err
 		}
-		_, err = e.Docker.VolumeRemove(ctx, v.Volume.Name, client.VolumeRemoveOptions{Force: false})
+		_, err = e.Docker.VolumeRemove(ctx, name, client.VolumeRemoveOptions{Force: false})
 		if err != nil && !errdefs.IsNotFound(err) {
 			return e.visualFinish(ctx, c, p, "needs_attention", "The volume could not be removed. Confirm no container uses it before retrying.")
 		}
@@ -431,61 +432,6 @@ func (e *Engine) resolveVisualImages(ctx context.Context, p deployment.Payload, 
 	return observed, nil
 }
 
-func visualLabels(p deployment.Plan, resource uuid.UUID) map[string]string {
-	return map[string]string{labelServer: p.ServerID.String(), labelEnvironment: p.EnvironmentID.String(), "com.astilba.unit": p.UnitID.String(), labelResource: resource.String(), labelKind: "visual-v1"}
-}
-func visualOwned(labels map[string]string, p deployment.Plan) bool {
-	return labels[labelServer] == p.ServerID.String() && labels[labelEnvironment] == p.EnvironmentID.String() && labels["com.astilba.unit"] == p.UnitID.String() && labels[labelKind] == "visual-v1"
-}
-func (e *Engine) ownedContainers(ctx context.Context, p deployment.Plan) ([]container.Summary, error) {
-	v, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", labelServer+"="+p.ServerID.String(), "com.astilba.unit="+p.UnitID.String(), labelKind+"=visual-v1")})
-	return v.Items, err
-}
-func (e *Engine) activeContainers(ctx context.Context, p deployment.Plan) ([]container.Summary, error) {
-	list, err := e.ownedContainers(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-	out := []container.Summary{}
-	names := map[string]string{}
-	for _, app := range p.Specification.Applications {
-		for _, instance := range p.InstanceIDs(app.ID) {
-			names["/"+deployment.UnitName(instance)] = app.ID.String()
-		}
-	}
-	for _, item := range list {
-		for _, name := range item.Names {
-			if resource, ok := names[name]; ok && resource == item.Labels[labelResource] {
-				out = append(out, item)
-				break
-			}
-		}
-	}
-	return out, nil
-}
-func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
-	if err := e.ensureUnitNetworks(ctx, p); err != nil {
-		return err
-	}
-	if p.Local != nil && !p.Local.Primary {
-		return nil
-	}
-	for _, vol := range p.Specification.Volumes {
-		v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
-		if errdefs.IsNotFound(err) {
-			_, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(vol.ID), Driver: "local", Labels: visualLabels(p, vol.ID)})
-			if err != nil {
-				return errors.New("Cannot create a data volume.")
-			}
-			v, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
-		}
-		if err != nil || !visualOwned(v.Volume.Labels, p) || v.Volume.Labels[labelResource] != vol.ID.String() || v.Volume.Driver != "local" || len(v.Volume.Options) > 0 {
-			return errors.New("Data volume ownership or driver does not match.")
-		}
-	}
-	return nil
-}
-
 func serviceOrder(spec domain.Specification) []domain.Application {
 	apps := map[uuid.UUID]domain.Application{}
 	for _, a := range spec.Applications {
@@ -686,33 +632,6 @@ func healthLabels(c api.ExecutionCommand, p deployment.Plan) map[string]string {
 	return labels
 }
 
-func (e *Engine) pullImage(ctx context.Context, image string) error {
-	return e.pullImageAuth(ctx, image, "")
-}
-func (e *Engine) pullImageAuth(ctx context.Context, image, auth string) error {
-	stream, err := e.Docker.ImagePull(ctx, image, client.ImagePullOptions{RegistryAuth: auth})
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-	decoder := jsontext.NewDecoder(stream)
-	for {
-		var message struct {
-			Error string `json:"error"`
-		}
-		err := json.UnmarshalDecode(decoder, &message)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if message.Error != "" {
-			return errors.New("registry rejected the image pull")
-		}
-	}
-}
-
 func resolutionObservation(observed deployment.Observation) deployment.Observation {
 	for _, resource := range observed.Resources {
 		observed.ResourceDrift = observed.ResourceDrift || resource.Drift
@@ -790,48 +709,7 @@ func visualRegistryAuth(p deployment.Payload, key string) string {
 	if !ok {
 		return ""
 	}
-	raw, _ := json.Marshal(map[string]string{"username": c.Username, "password": c.Password})
-	return base64.URLEncoding.EncodeToString(raw)
-}
-
-func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) error {
-	images := make([]string, 0, len(p.Plan.Images)+1)
-	for _, image := range p.Plan.Images {
-		images = append(images, image)
-	}
-	images = append(images, execution.TestImage)
-	for _, image := range images {
-		key := ""
-		for k, v := range p.Plan.Images {
-			if v == image {
-				key = k
-				break
-			}
-		}
-		if a, ok := p.Plan.Artifacts[key]; ok && a.ServerID != nil {
-			v, err := e.Docker.ImageInspect(ctx, image)
-			if err != nil || v.ID != a.Digest || v.Architecture != a.Architecture {
-				return errors.New("local artifact identity is unavailable")
-			}
-			continue
-		}
-		if _, err := e.Docker.ImageInspect(ctx, image); err == nil {
-			continue
-		} else if !errdefs.IsNotFound(err) {
-			return errors.New("cannot inspect reviewed image")
-		}
-		if err := e.pullImageAuth(ctx, image, visualRegistryAuth(p, key)); err != nil {
-			return errors.New("image pull failed or was interrupted")
-		}
-	}
-
-	for key, artifact := range p.Plan.Artifacts {
-		v, err := e.Docker.ImageInspect(ctx, p.Plan.Images[key])
-		if err != nil || v.Architecture != artifact.Architecture {
-			return errors.New("artifact architecture differs from the reviewed target")
-		}
-	}
-	return nil
+	return encodedRegistryAuth(c)
 }
 
 // Running can be normalized to the recorded serving value when validating an
