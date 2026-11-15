@@ -535,13 +535,17 @@ func submittedOutcome(configuration []byte, result pipeline.SubmissionResult) (s
 }
 
 // reviewURLMatches accepts a review link only on the connection's own site, so a link the
-// dashboard shows can't lead anywhere else.
+// dashboard shows can't lead anywhere else. NewProvider refuses a base without a host before any
+// attempt, and one here still matches nothing, rather than every link without a host.
 func reviewURLMatches(c pipeline.Connection, review string) bool {
 	u, err := url.Parse(review)
-	expected, _ := url.Parse(c.BaseURL)
+	expected, baseErr := url.Parse(c.BaseURL)
+	if err != nil || baseErr != nil || expected.Host == "" {
+		return false
+	}
 	host := expected.Host
 	if c.Provider == "github" {
 		host = "github.com"
 	}
-	return err == nil && u.Host == host && u.User == nil && u.Scheme == expected.Scheme
+	return u.Host == host && u.User == nil && u.Scheme == expected.Scheme
 }
