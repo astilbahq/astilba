@@ -93,7 +93,7 @@ func TestARateLimitedDeliveryWaitsAndSaysWhy(t *testing.T) {
 	config := h.config
 	config.ConnectionID = github.connect(t)
 	op := h.createBuild(t, config)
-	github.limitMints.Store(true)
+	github.limitMints.Store(1)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	command, _ := pollReleased(h.f.execution, ctx, h.identity)
 	cancel()
@@ -107,7 +107,7 @@ func TestARateLimitedDeliveryWaitsAndSaysWhy(t *testing.T) {
 	if state != "dispatched" || !strings.Contains(note, "GitHub limited how fast") {
 		t.Fatalf("a rate-limited delivery did not wait and say why: %s %q", state, note)
 	}
-	github.limitMints.Store(false)
+	github.limitMints.Store(0)
 	ctx, cancel = context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	command, err := pollReleased(h.f.execution, ctx, h.identity)
@@ -124,7 +124,7 @@ func TestARateLimitedDeliveryThatExpiresSaysWhy(t *testing.T) {
 	config := h.config
 	config.ConnectionID = github.connect(t)
 	op := h.createBuild(t, config)
-	github.limitMints.Store(true)
+	github.limitMints.Store(1)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	_, _ = pollReleased(h.f.execution, ctx, h.identity)
 	cancel()
@@ -162,5 +162,55 @@ func TestARedeliveryGetsThePipelinesOwnToken(t *testing.T) {
 	}
 	if github.minted.Load() != minted {
 		t.Fatal("redeliveries minted more tokens", github.minted.Load()-minted)
+	}
+}
+
+// A submission that meets GitHub's rate limit waits for the time GitHub gives, saying so, and
+// spends none of its tries meanwhile, rather than spend them all before the limit lifts.
+func TestARateLimitedSubmissionWaitsForGitHub(t *testing.T) {
+	h := newHeldGitHub(t)
+	f, b := h.f, h.b
+	connection := h.connect(t)
+	var project api.Project
+	b.call("POST", h.prefix+"/projects", map[string]string{"name": "App"}, 201, &project)
+	var env api.Environment
+	b.call("POST", h.prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Files", "configurationOwner": "compose"}, 201, &env)
+	path := h.prefix + "/projects/" + project.Id.String() + "/environments/" + env.Id.String()
+	yes := true
+	enrolled, in, token := enrollment(t, f, b, h.ws, "build")
+	in.Capabilities.Build = &yes
+	in.Capabilities.BuildNetwork = &yes
+	in.Capabilities.RootlessBuilds = &yes
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	runner := authorityAgent{t, f, token, in}
+	head := strings.Repeat("a", 40)
+	h.tree.record(head, importHonest)
+	var op api.Operation
+	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": pipeline.Source{ConnectionID: connection, Branch: "main", RunnerID: enrolled.Server.Id, Paths: importPaths, Entrypoints: []string{"compose.yaml"}}}, 202, &op)
+	runner.reportImport(runner.next(), head, importHonest)
+	draft, spec := draftSpec(t, b, path)
+	spec.Compose.Files[0].Content += "# edited\n"
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
+	h.limitMints.Store(600)
+	var submission api.SourceSubmission
+	b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 202, &submission)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var state, note, job string
+		var attempt int
+		if err := f.st.Pool.QueryRow(t.Context(), "SELECT s.state,s.note,j.state,j.attempt FROM source_submissions s, river_job j WHERE s.id=$1 AND j.kind='platform_source_submission_v1' ORDER BY j.id DESC LIMIT 1", submission.Id).Scan(&state, &note, &job, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		// The note is written before River records the snooze.
+		if strings.Contains(note, "Waiting until GitHub allows requests again") && job != "running" {
+			if state != "queued" || job != "scheduled" || attempt != 0 {
+				t.Fatalf("a rate-limited submission did not wait for GitHub: %s %s attempt %d", state, job, attempt)
+			}
+			return
+		}
+		if state != "queued" || time.Now().After(deadline) {
+			t.Fatalf("a rate-limited submission did not wait for GitHub: %s %q", state, note)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

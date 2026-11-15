@@ -105,3 +105,18 @@ func TestSubmissionRetriesAPassingGitHubFailure(t *testing.T) {
 		t.Fatal("an unusable credential was retried")
 	}
 }
+
+// A submission that meets GitHub's rate limit waits for GitHub's time, within its own lifetime,
+// rather than spending its tries before the limit lifts.
+func TestASubmissionWaitsForGitHubsLimit(t *testing.T) {
+	limited := appFailure(&githubapp.RateLimited{Until: time.Now().Add(20 * time.Minute)})
+	if wait, ok := submissionWait(limited, time.Now()); !ok || wait < 19*time.Minute || wait > 20*time.Minute {
+		t.Fatal("a submission did not wait for GitHub's time", wait, ok)
+	}
+	if wait, ok := submissionWait(limited, time.Now().Add(-50*time.Minute)); !ok || wait > 10*time.Minute {
+		t.Fatal("a submission waited past its lifetime", wait)
+	}
+	if _, ok := submissionWait(appFailure(fmt.Errorf("%w: %w", githubapp.ErrTokenRejected, &githubapp.APIError{Status: 401})), time.Now()); ok {
+		t.Fatal("a rejected token waited for a rate limit")
+	}
+}

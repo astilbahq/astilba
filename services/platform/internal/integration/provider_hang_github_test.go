@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,8 +43,9 @@ type heldGitHub struct {
 	// minted counts installation tokens; each has its own value, which revoke ends.
 	minted        atomic.Int64
 	revokedTokens sync.Map
-	// limitMints answers token requests as GitHub does under its rate limits.
-	limitMints atomic.Bool
+	// limitMints, when set, answers token requests as GitHub does under its rate limits, for
+	// that many seconds.
+	limitMints atomic.Int64
 	// repositoryToken is the token management last checked the repository with.
 	repositoryToken atomic.Value
 	challenge       atomic.Value
@@ -125,8 +127,8 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 		case "/repos/team/app/branches/main":
 			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
 		case "/app/installations/2/access_tokens":
-			if h.limitMints.Load() {
-				w.Header().Set("Retry-After", "1")
+			if seconds := h.limitMints.Load(); seconds > 0 {
+				w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 				w.WriteHeader(429)
 				return
 			}

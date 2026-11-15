@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -213,8 +214,10 @@ func (w *submissionWorker) Work(ctx context.Context, job *river.Job[submissionAr
 	}
 	err := s.attemptSubmission(ctx, job)
 	// River discards the job after its last attempt, so that attempt settles its submission
-	// whatever stopped it, rather than leaving it waiting with nothing to run it.
-	if err != nil && job.Attempt >= submissionAttempts {
+	// whatever stopped it, rather than leaving it waiting with nothing to run it. A snooze, as
+	// for GitHub's rate limits, spends no attempt, so it settles nothing.
+	var snoozed *river.JobSnoozeError
+	if err != nil && !errors.As(err, &snoozed) && job.Attempt >= submissionAttempts {
 		settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 		defer cancel()
 		return errors.Join(err, s.settleSubmission(settle, job.Args.Workspace, job.Args.ID))
@@ -359,6 +362,17 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	if access.Err != nil {
 		note, terminal := submissionFailure(access.Err)
+		// GitHub limiting the App says when it will allow requests again, so the attempt waits
+		// for that, without spending one of its tries, rather than spend them all sooner.
+		if wait, limited := submissionWait(access.Err, row.CreatedAt); limited {
+			if err = q.NoteSourceSubmission(ctx, db.NoteSourceSubmissionParams{WorkspaceID: ws, ID: id, Note: boundedNote("Waiting until GitHub allows requests again: " + note)}); err != nil {
+				return nil, err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return nil, river.JobSnooze(wait)
+		}
 		if terminal || job.Attempt >= submissionAttempts {
 			return nil, fail(note)
 		}
@@ -379,6 +393,20 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	work := &submissionWork{provider: provider, submission: pipeline.Submission{ID: c.SubmissionID, Base: c.Commit, Branch: c.Branch, Files: c.Bundle.Files, Previous: c.Paths, At: c.SubmittedAt}}
 	return work, tx.Commit(ctx)
+}
+
+// submissionWait is how long a submission created at created waits when err is GitHub limiting
+// the App: until GitHub allows requests again, but no later than the submission may still be
+// attempted.
+func submissionWait(err error, created time.Time) (time.Duration, bool) {
+	until, limited := githubapp.Limited(err)
+	if !limited {
+		return 0, false
+	}
+	if last := created.Add(submissionLifetime - submissionTimeout); last.Before(until) {
+		until = last
+	}
+	return max(time.Until(until), time.Second), true
 }
 
 func retryNote(attempt int, note string) string {

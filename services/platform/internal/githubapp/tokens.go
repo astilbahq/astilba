@@ -35,8 +35,9 @@ func (c *Client) MintPreview(ctx context.Context, installation, repository int64
 	return c.mintCached(ctx, tokenKey{installation, repository, false, true})
 }
 
-// runnerTokenLimit bounds the runner tokens one workspace holds in the cache. It is more than the
-// pipelines a workspace may have unfinished, so a workspace's tokens give way only to its own.
+// runnerTokenLimit bounds the runner tokens one workspace holds in the cache, more than the
+// pipelines it may have unfinished. Tokens stay until they expire, so a busy workspace's oldest
+// give way to its newest, and only to its own.
 const runnerTokenLimit = 64
 
 // runnerKey is one pipeline's runner token.
@@ -49,10 +50,11 @@ type runnerToken struct {
 	expires time.Time
 }
 
-// MintRunnerClone returns the token for one pipeline's runner: read-only contents of the one
-// repository, valid until at least until, and when it expires. It is the pipeline's own, never
-// management's or another pipeline's, so a runner that revokes it affects only itself. The
-// pipeline's retries and redeliveries get the same token while it lasts, so a runner cannot
+// MintRunnerClone returns the token for one pipeline's runner, read-only contents of the one
+// repository, and when it expires. A token it holds for the pipeline is reused if it lasts until
+// until; otherwise a fresh one is minted, lasting as long as GitHub makes it. It is the
+// pipeline's own, never management's or another pipeline's, so a runner that revokes it affects
+// only itself, and the pipeline's retries and redeliveries get the same one, so a runner cannot
 // make management mint more by asking again. Tokens are held apart by workspace, so one
 // workspace's pipelines never displace another's.
 func (c *Client) MintRunnerClone(ctx context.Context, workspace, pipeline uuid.UUID, installation, repository int64, until time.Time) (string, time.Time, error) {

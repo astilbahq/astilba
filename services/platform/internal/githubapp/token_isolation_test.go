@@ -264,7 +264,7 @@ func TestALimitedRepositoryCheckIsNotAskedAgainEarly(t *testing.T) {
 	if g.repositoryCalls.Load() != 1 || g.appCalls.Load() != 3 {
 		t.Fatalf("a limited check asked GitHub again: repository=%d app=%d", g.repositoryCalls.Load(), g.appCalls.Load())
 	}
-	// Another installation's or generation's check is its own.
+	// Another grant generation's check is its own.
 	if e := c.Validate(ctx, 2, 12, 2, "team/app", true); !isLimited(e) || g.repositoryCalls.Load() != 2 {
 		t.Fatal("a different check reused another's limit", e)
 	}
@@ -327,5 +327,31 @@ func TestAWorkspaceCannotDisplaceAnothersRunnerTokens(t *testing.T) {
 	}
 	if _, _, e = c.MintRunnerClone(ctx, flood, pipelines[len(pipelines)-1], 2, 12, until); e != nil || g.minted.Load() != minted {
 		t.Fatal("a workspace's newest token was displaced", e)
+	}
+}
+
+// Expired runner tokens are dropped, and a workspace with none left is forgotten.
+func TestExpiredRunnerTokensArePruned(t *testing.T) {
+	ctx := context.Background()
+	g := &revokingGitHub{}
+	c := g.client(t)
+	gone, kept := uuid.New(), uuid.New()
+	if _, _, e := c.MintRunnerClone(ctx, gone, uuid.New(), 2, 12, time.Now()); e != nil {
+		t.Fatal(e)
+	}
+	c.mu.Lock()
+	for k, v := range c.runners[gone] {
+		v.expires = time.Now().Add(-time.Second)
+		c.runners[gone][k] = v
+	}
+	c.runnersPruned = time.Time{}
+	c.mu.Unlock()
+	if _, _, e := c.MintRunnerClone(ctx, kept, uuid.New(), 2, 12, time.Now()); e != nil {
+		t.Fatal(e)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, held := c.runners[gone]; held || len(c.runners[kept]) != 1 {
+		t.Fatal("expired runner tokens were kept", len(c.runners))
 	}
 }
