@@ -178,7 +178,7 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 		if err != nil {
 			return err
 		}
-		blob, err := keys.Seal(secretbroker.Item{Kind: secretbroker.TOTPPending, ID: account.ID}, []byte(key.Secret()))
+		blob, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.TOTPPending, ID: account.ID}, []byte(key.Secret()))
 		if err != nil {
 			return err
 		}
@@ -228,7 +228,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 		if !ok {
 			return domain.Invalid("code")
 		}
-		active, err := keys.Seal(secretbroker.Item{Kind: secretbroker.TOTP, ID: id}, secret)
+		active, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.TOTP, ID: id}, secret)
 		if err != nil {
 			return err
 		}

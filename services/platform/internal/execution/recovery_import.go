@@ -199,7 +199,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = stageRecoveryProjections(ctx, tx, in.WorkspaceID, source.Projections); err != nil {
 		return out, err
 	}
-	if err = portability.MergeRecovery(ctx, tx, source.Archive, in.OwnerID); err != nil {
+	if err = portability.MergeRecovery(ctx, tx, keys, source.Archive, in.OwnerID); err != nil {
 		return out, err
 	}
 	// Merging never deletes, so where it ends a preview the restored database lists open, that

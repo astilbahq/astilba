@@ -38,13 +38,13 @@ type recoveryContinuation struct {
 }
 
 // sealCheckpoint seals a recovery checkpoint's envelope with the coordinator's keys, which a
-// pass asks for only when it reaches a checkpoint.
-func sealCheckpoint(keys *passKeys, d deployment.RecoveryDescriptor, raw []byte) ([]byte, error) {
+// pass asks for only when it reaches a checkpoint, in q, the transaction that stores it.
+func sealCheckpoint(ctx context.Context, q secretbroker.Fence, keys *passKeys, d deployment.RecoveryDescriptor, raw []byte) ([]byte, error) {
 	session, err := keys.get()
 	if err != nil {
 		return nil, err
 	}
-	sealed, err := session.Seal(secretbroker.Checkpoint(d), raw)
+	sealed, err := session.Seal(ctx, q, secretbroker.Checkpoint(d), raw)
 	if err == nil {
 		keys.use()
 	}
@@ -130,7 +130,7 @@ func sealRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passKeys, ws uuid.UU
 		if err != nil {
 			return capture, nil, nil, errors.Join(errRecoverySize, err)
 		}
-		envelope, err := sealCheckpoint(keys, d, compressed)
+		envelope, err := sealCheckpoint(ctx, db.New(tx), keys, d, compressed)
 		size := len(envelope)
 		if errors.Is(err, secretbroker.ErrTooLarge) {
 			// The sealer refuses before writing anything: estimate its envelope from the input.
@@ -246,7 +246,7 @@ func (s *Service) stageRecoveryPhase(ctx context.Context, tx pgx.Tx, keys *passK
 	d := previous
 	d.Sequence++
 	d.CheckpointID, d.PreviousHash = uuid.New(), previous.Digest
-	envelope, err := sealCheckpoint(keys, d, raw)
+	envelope, err := sealCheckpoint(ctx, q, keys, d, raw)
 	clear(raw)
 	if errors.Is(err, secretbroker.ErrTooLarge) {
 		return errRecoverySize
