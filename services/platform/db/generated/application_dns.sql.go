@@ -9,7 +9,32 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const adoptLateDNSPublications = `-- name: AdoptLateDNSPublications :one
+WITH due AS (
+    DELETE FROM dns_late_publications l WHERE l.server_id = $1 AND l.due_at<=clock_timestamp()
+    RETURNING l.base,l.zone,l.generation
+), adopted AS (
+    INSERT INTO dns_publications(server_id,workspace_id,base,zone,revoked)
+    SELECT s.id,s.workspace_id,due.base,due.zone,s.revoked OR COALESCE(d.approved_controller IS NULL AND d.generation <> due.generation,true)
+    FROM due JOIN servers s ON s.id = $1 LEFT JOIN server_domains d ON d.server_id=s.id
+    ON CONFLICT(server_id,base,zone) DO NOTHING
+)
+SELECT count(*)::bigint FROM due
+`
+
+// unscoped: a DNS job names the server, holding its lease. Each due late name becomes a
+// publication, kept for withdrawal when the server is revoked or the approval the late job
+// published under has since ended, as revocation does; a recovery fence ends approval without
+// a new generation, and keeps records as before. A publication already there keeps its state.
+func (q *Queries) AdoptLateDNSPublications(ctx context.Context, serverID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, adoptLateDNSPublications, serverID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
 
 const checkDNSPublication = `-- name: CheckDNSPublication :exec
 UPDATE dns_publications SET checked_at=clock_timestamp()
@@ -52,7 +77,11 @@ func (q *Queries) ConfirmDNSRecordRemovals(ctx context.Context, arg ConfirmDNSRe
 }
 
 const countStrandedDNSPublications = `-- name: CountStrandedDNSPublications :one
-SELECT count(*) FROM dns_publications WHERE NOT $1::boolean OR zone NOT IN ('',$2::text)
+SELECT count(*)::bigint AS count FROM (
+    SELECT server_id,base,zone FROM dns_publications
+    UNION
+    SELECT server_id,base,zone FROM dns_late_publications
+) n WHERE NOT $1::boolean OR n.zone NOT IN ('',$2::text)
 `
 
 type CountStrandedDNSPublicationsParams struct {
@@ -61,11 +90,72 @@ type CountStrandedDNSPublicationsParams struct {
 }
 
 // unscoped: an installation-wide startup check.
+// A late name not yet recorded as a publication counts too, once.
 func (q *Queries) CountStrandedDNSPublications(ctx context.Context, arg CountStrandedDNSPublicationsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countStrandedDNSPublications, arg.Automatic, arg.Zone)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const currentDNSJob = `-- name: CurrentDNSJob :one
+SELECT COALESCE(max(generation),0)::bigint AS generation,COALESCE(max(approved_controller),0)::bigint AS controller
+FROM server_domains WHERE server_id = $1
+`
+
+type CurrentDNSJobRow struct {
+	Generation int64 `json:"generation"`
+	Controller int64 `json:"controller"`
+}
+
+// unscoped: a DNS job names the server. The arguments of a job for the server's names as they
+// are now, as revocation and the sweep queue it.
+func (q *Queries) CurrentDNSJob(ctx context.Context, serverID uuid.UUID) (CurrentDNSJobRow, error) {
+	row := q.db.QueryRow(ctx, currentDNSJob, serverID)
+	var i CurrentDNSJobRow
+	err := row.Scan(&i.Generation, &i.Controller)
+	return i, err
+}
+
+const dNSPublicationTarget = `-- name: DNSPublicationTarget :one
+SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id AS installation_id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i
+WHERE d.server_id = $1 AND d.generation = $2 AND d.approved_controller = $3 AND s.controller_generation = $3
+    AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base = $4
+`
+
+type DNSPublicationTargetParams struct {
+	ServerID   uuid.UUID   `json:"server_id"`
+	Generation int64       `json:"generation"`
+	Controller pgtype.Int8 `json:"controller"`
+	Base       string      `json:"base"`
+}
+
+type DNSPublicationTargetRow struct {
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	Base           string    `json:"base"`
+	Ipv4           string    `json:"ipv4"`
+	Ipv6           string    `json:"ipv6"`
+	InstallationID uuid.UUID `json:"installation_id"`
+}
+
+// unscoped: a DNS job names the server. The addresses a job may publish: the generation it was
+// queued for, still approved under the server's current controller, in the configured base.
+func (q *Queries) DNSPublicationTarget(ctx context.Context, arg DNSPublicationTargetParams) (DNSPublicationTargetRow, error) {
+	row := q.db.QueryRow(ctx, dNSPublicationTarget,
+		arg.ServerID,
+		arg.Generation,
+		arg.Controller,
+		arg.Base,
+	)
+	var i DNSPublicationTargetRow
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.Base,
+		&i.Ipv4,
+		&i.Ipv6,
+		&i.InstallationID,
+	)
+	return i, err
 }
 
 const deleteDNSPublication = `-- name: DeleteDNSPublication :exec
@@ -81,6 +171,25 @@ type DeleteDNSPublicationParams struct {
 func (q *Queries) DeleteDNSPublication(ctx context.Context, arg DeleteDNSPublicationParams) error {
 	_, err := q.db.Exec(ctx, deleteDNSPublication, arg.ServerID, arg.Base, arg.Zone)
 	return err
+}
+
+const holdDNSLease = `-- name: HoldDNSLease :execrows
+SELECT 1 FROM server_dns_leases WHERE server_id = $1 AND holder = $2 FOR UPDATE
+`
+
+type HoldDNSLeaseParams struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Holder   uuid.UUID `json:"holder"`
+}
+
+// unscoped: a DNS job names the server. Locks the lease for the rest of its holder's
+// transaction, so a job taking it over waits until that commits.
+func (q *Queries) HoldDNSLease(ctx context.Context, arg HoldDNSLeaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, holdDNSLease, arg.ServerID, arg.Holder)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertDNSRecordRemoval = `-- name: InsertDNSRecordRemoval :exec
@@ -187,6 +296,33 @@ func (q *Queries) NoteWithdrawnServerDomain(ctx context.Context, arg NoteWithdra
 	return err
 }
 
+const observeServerDomain = `-- name: ObserveServerDomain :exec
+UPDATE server_domains SET state = $1,note = $2,observed_at=clock_timestamp(),records = $3
+WHERE server_id = $4 AND generation = $5 AND approved_controller = $6
+`
+
+type ObserveServerDomainParams struct {
+	State      string      `json:"state"`
+	Note       string      `json:"note"`
+	Records    []byte      `json:"records"`
+	ServerID   uuid.UUID   `json:"server_id"`
+	Generation int64       `json:"generation"`
+	Controller pgtype.Int8 `json:"controller"`
+}
+
+// unscoped: a DNS job names the server. Ignored once the profile has moved on.
+func (q *Queries) ObserveServerDomain(ctx context.Context, arg ObserveServerDomainParams) error {
+	_, err := q.db.Exec(ctx, observeServerDomain,
+		arg.State,
+		arg.Note,
+		arg.Records,
+		arg.ServerID,
+		arg.Generation,
+		arg.Controller,
+	)
+	return err
+}
+
 const recordDNSPublication = `-- name: RecordDNSPublication :exec
 WITH legacy AS (
     DELETE FROM dns_publications WHERE server_id = $1 AND base = $3 AND zone = '' AND $4::text <> ''
@@ -215,6 +351,50 @@ func (q *Queries) RecordDNSPublication(ctx context.Context, arg RecordDNSPublica
 	return err
 }
 
+const recordLateDNSPublication = `-- name: RecordLateDNSPublication :exec
+INSERT INTO dns_late_publications(server_id,base,zone,generation,due_at)
+SELECT s.id,$1,$2,$3,clock_timestamp()+make_interval(secs => $4::float8) FROM servers s WHERE s.id = $5
+ON CONFLICT(server_id,base,zone) DO UPDATE SET generation=LEAST(dns_late_publications.generation,EXCLUDED.generation),
+    due_at=GREATEST(dns_late_publications.due_at,EXCLUDED.due_at)
+`
+
+type RecordLateDNSPublicationParams struct {
+	Base       string    `json:"base"`
+	Zone       string    `json:"zone"`
+	Generation int64     `json:"generation"`
+	Delay      float64   `json:"delay"`
+	ServerID   uuid.UUID `json:"server_id"`
+}
+
+// unscoped: a DNS job names the server. Written before anything is queued, so a job's arguments
+// are never the only record of a name it may have published. due_at keeps any job from
+// recording it before a request that got no answer has had the margin to land.
+func (q *Queries) RecordLateDNSPublication(ctx context.Context, arg RecordLateDNSPublicationParams) error {
+	_, err := q.db.Exec(ctx, recordLateDNSPublication,
+		arg.Base,
+		arg.Zone,
+		arg.Generation,
+		arg.Delay,
+		arg.ServerID,
+	)
+	return err
+}
+
+const releaseDNSLease = `-- name: ReleaseDNSLease :exec
+DELETE FROM server_dns_leases WHERE server_id = $1 AND holder = $2
+`
+
+type ReleaseDNSLeaseParams struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Holder   uuid.UUID `json:"holder"`
+}
+
+// unscoped: a DNS job names the server.
+func (q *Queries) ReleaseDNSLease(ctx context.Context, arg ReleaseDNSLeaseParams) error {
+	_, err := q.db.Exec(ctx, releaseDNSLease, arg.ServerID, arg.Holder)
+	return err
+}
+
 const revokeDNSPublications = `-- name: RevokeDNSPublications :execrows
 UPDATE dns_publications SET revoked=true,checked_at=NULL WHERE server_id = $1
 `
@@ -229,14 +409,18 @@ func (q *Queries) RevokeDNSPublications(ctx context.Context, serverID uuid.UUID)
 }
 
 const staleDNSPublicationServers = `-- name: StaleDNSPublicationServers :many
-SELECT p.server_id,COALESCE(max(d.generation),0)::bigint AS generation,COALESCE(max(d.approved_controller),0)::bigint AS controller
-FROM dns_publications p
-LEFT JOIN server_domains d ON d.server_id=p.server_id
-WHERE p.zone IN ('',$1::text) AND (p.checked_at IS NULL OR p.checked_at<now()-interval '1 minute')
-    AND (p.revoked OR p.base <> $2::text
-        OR ($3::boolean AND NOT EXISTS (SELECT 1 FROM hosted_subscriptions h WHERE h.workspace_id=p.workspace_id AND h.management_until>now())))
-GROUP BY p.server_id
-ORDER BY min(COALESCE(p.checked_at,'-infinity'::timestamptz)),p.server_id
+SELECT x.server_id,COALESCE(max(d.generation),0)::bigint AS generation,COALESCE(max(d.approved_controller),0)::bigint AS controller
+FROM (
+    SELECT p.server_id,COALESCE(p.checked_at,'-infinity'::timestamptz) AS since FROM dns_publications p
+    WHERE p.zone IN ('',$1::text) AND (p.checked_at IS NULL OR p.checked_at<now()-interval '1 minute')
+        AND (p.revoked OR p.base <> $2::text
+            OR ($3::boolean AND NOT EXISTS (SELECT 1 FROM hosted_subscriptions h WHERE h.workspace_id=p.workspace_id AND h.management_until>now())))
+    UNION ALL
+    SELECT l.server_id,l.due_at FROM dns_late_publications l WHERE l.due_at<=now()
+) x
+LEFT JOIN server_domains d ON d.server_id=x.server_id
+GROUP BY x.server_id
+ORDER BY min(x.since),x.server_id
 LIMIT 100
 `
 
@@ -252,7 +436,8 @@ type StaleDNSPublicationServersRow struct {
 	Controller int64     `json:"controller"`
 }
 
-// unscoped: the sweep serves every workspace. Rows in another zone are stranded and left out.
+// unscoped: the sweep serves every workspace. Rows in another zone are stranded and left out. A
+// due late name is picked up in any zone: the job records it, and a stranded one is then counted.
 func (q *Queries) StaleDNSPublicationServers(ctx context.Context, arg StaleDNSPublicationServersParams) ([]StaleDNSPublicationServersRow, error) {
 	rows, err := q.db.Query(ctx, staleDNSPublicationServers, arg.Zone, arg.Base, arg.Hosted)
 	if err != nil {
@@ -271,6 +456,27 @@ func (q *Queries) StaleDNSPublicationServers(ctx context.Context, arg StaleDNSPu
 		return nil, err
 	}
 	return items, nil
+}
+
+const takeDNSLease = `-- name: TakeDNSLease :execrows
+INSERT INTO server_dns_leases(server_id,holder,expires_at) VALUES($1,$2,clock_timestamp()+make_interval(secs => $3::float8))
+ON CONFLICT(server_id) DO UPDATE SET holder=EXCLUDED.holder,expires_at=EXCLUDED.expires_at
+WHERE server_dns_leases.expires_at<=clock_timestamp()
+`
+
+type TakeDNSLeaseParams struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Holder   uuid.UUID `json:"holder"`
+	Seconds  float64   `json:"seconds"`
+}
+
+// unscoped: a DNS job names the server. The lease is taken when it is free or has run out.
+func (q *Queries) TakeDNSLease(ctx context.Context, arg TakeDNSLeaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, takeDNSLease, arg.ServerID, arg.Holder, arg.Seconds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const withdrawRevokedServerDomain = `-- name: WithdrawRevokedServerDomain :one

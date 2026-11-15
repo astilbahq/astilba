@@ -29,6 +29,15 @@ type record struct {
 var ErrProvider = errors.New("DNS provider request failed; inspect the operator configuration and retry")
 var ErrOwnership = errors.New("DNS contains a record not owned by this installation; inspect it without overwriting it")
 
+// ErrUnanswered is ErrProvider for a request that got no answer, such as one cut off by a timeout
+// or the caller's deadline. The provider may still act on it later.
+var ErrUnanswered error = unanswered{}
+
+type unanswered struct{}
+
+func (unanswered) Error() string        { return ErrProvider.Error() }
+func (unanswered) Is(target error) bool { return target == ErrProvider }
+
 func (c *Cloudflare) request(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -50,7 +59,7 @@ func (c *Cloudflare) request(ctx context.Context, method, path string, in, out a
 	}
 	response, e := client.Do(req)
 	if e != nil {
-		return ErrProvider
+		return ErrUnanswered
 	}
 	defer response.Body.Close()
 	raw, e := io.ReadAll(io.LimitReader(response.Body, 65537))
