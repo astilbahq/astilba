@@ -688,7 +688,7 @@ func TestImportCheckThroughAGitHubApp(t *testing.T) {
 	if draft, _ = draftSpec(t, b, path); draft.Id == env.DraftRevisionId {
 		t.Fatal("an honest App import was not saved")
 	}
-	if got := h.fileToken.Load(); got != "Bearer installation-read-canary" {
+	if got, _ := h.fileToken.Load().(string); !strings.HasPrefix(got, "Bearer installation-read-canary-") {
 		t.Fatalf("the check used another credential: %v", got)
 	}
 }

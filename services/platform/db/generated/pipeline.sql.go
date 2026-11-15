@@ -660,6 +660,24 @@ func (q *Queries) NoteSourceSubmission(ctx context.Context, arg NoteSourceSubmis
 	return err
 }
 
+const operationNoteHas = `-- name: OperationNoteHas :one
+SELECT strpos(note, $1::text) > 0 AS has FROM execution_operations WHERE workspace_id = $2 AND id = $3
+`
+
+type OperationNoteHasParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether an operation's note already says something, such as why its delivery waited.
+func (q *Queries) OperationNoteHas(ctx context.Context, arg OperationNoteHasParams) (bool, error) {
+	row := q.db.QueryRow(ctx, operationNoteHas, arg.Note, arg.WorkspaceID, arg.ID)
+	var has bool
+	err := row.Scan(&has)
+	return has, err
+}
+
 const pipelineReportedStart = `-- name: PipelineReportedStart :one
 SELECT (steps @> jsonb_build_array(jsonb_build_object('name', $1::text)))::boolean AS started FROM execution_operations WHERE workspace_id = $2 AND id = $3
 `

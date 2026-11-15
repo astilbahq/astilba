@@ -35,8 +35,12 @@ var (
 	storeKeyMethods = map[string]bool{"Admit": true, "BeginKeys": true}
 )
 
-// offlineClientMethods are the Client methods that only compute or check a value locally.
-var offlineClientMethods = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true}
+// offlineClientMethods are the Client methods that only compute or check a value locally, and
+// offlineProviderMethods the Provider methods that only set one.
+var (
+	offlineClientMethods   = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true, "Forget": true}
+	offlineProviderMethods = map[string]bool{"OnRejected": true}
+)
 
 type function struct {
 	signature *ast.FuncType
@@ -212,7 +216,7 @@ func networkMethod(callee types.Object) bool {
 	}
 	switch typeName(pointer.Elem()) {
 	case providerType:
-		return true
+		return !offlineProviderMethods[fn.Name()]
 	case clientType:
 		return !offlineClientMethods[fn.Name()]
 	case brokerType:
