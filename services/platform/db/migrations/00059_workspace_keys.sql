@@ -213,10 +213,10 @@ CREATE TRIGGER workspace_key_wrappings_truncate BEFORE TRUNCATE ON workspace_key
 CREATE TRIGGER installation_keys_truncate BEFORE TRUNCATE ON installation_keys FOR EACH STATEMENT EXECUTE FUNCTION custody_keys_truncate_guard();
 CREATE TRIGGER installation_key_wrappings_truncate BEFORE TRUNCATE ON installation_key_wrappings FOR EACH STATEMENT EXECUTE FUNCTION custody_keys_truncate_guard();
 
-INSERT INTO schema_additive_migrations (version) VALUES (55);
+INSERT INTO schema_additive_migrations (version) VALUES (59);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 55;
+DELETE FROM schema_additive_migrations WHERE version = 59;
 DROP TABLE custody_backends_version;
 DROP TABLE custody_instances;
 DROP TABLE installation_key_wrappings;

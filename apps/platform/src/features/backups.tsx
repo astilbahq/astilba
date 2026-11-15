@@ -10,6 +10,10 @@ import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 import {
+  BackupRecommendations,
+  type RecommendedBackup,
+} from "./backup-recommendations";
+import {
   ScheduleFields,
   scheduleInput,
   scheduleTimeout,
@@ -50,6 +54,8 @@ export function Backups({
     queryFn: () =>
       result(client.GET(`${root}/backup-policies`, { params: { path } })),
   });
+  const [preset, setPreset] = useState<RecommendedBackup>();
+  const createPolicy = useRef<HTMLDetailsElement>(null);
   return (
     <section className={s.stack} aria-label="Backups and scheduled jobs">
       <h2>Backups and scheduled jobs</h2>
@@ -133,7 +139,17 @@ export function Backups({
               <BusyButton busy={action.isPending}>Add destination</BusyButton>
             </Form>
           </details>
-          <details className={s.panel}>
+          <BackupRecommendations
+            path={path}
+            revision={revision}
+            policies={policies.data}
+            form={createPolicy}
+            choose={(r) => {
+              setPreset(r);
+              setMethod(r.method);
+            }}
+          />
+          <details className={s.panel} ref={createPolicy}>
             <summary>Create backup policy or container job</summary>
             <p>
               Requires an applied deployment. Keep the repository password and
@@ -171,13 +187,19 @@ export function Backups({
                     }),
                   );
                   form.reset();
+                  setPreset(undefined);
                   await queries.invalidateQueries({
                     queryKey: ["backup-policies", path],
                   });
                 })
               }
             >
-              <Field name="name" label="Policy name" />
+              <Field
+                key={`name-${preset?.serviceId}`}
+                name="name"
+                label="Policy name"
+                defaultValue={preset && `${preset.app.name} daily backup`}
+              />
               <Label>
                 Consistency method
                 <Select
@@ -193,7 +215,12 @@ export function Backups({
               </Label>
               <Label>
                 Source resource
-                <Select name="resource" required>
+                <Select
+                  key={preset?.serviceId}
+                  name="resource"
+                  required
+                  defaultValue={preset?.serviceId ?? ""}
+                >
                   <option value="">Choose a resource</option>
                   {method === "quiesced-files"
                     ? revision.specification.volumes?.map((v) => (
@@ -245,16 +272,26 @@ export function Backups({
                   label='Command as JSON arguments, such as ["node", "job.js"]'
                 />
               )}
-              <ScheduleFields />
+              <ScheduleFields
+                key={preset?.serviceId}
+                initial={
+                  preset && {
+                    hour: preset.hour,
+                    minute: preset.minute,
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  }
+                }
+              />
               {method !== "container-job" ? (
                 <Label>
                   Successful uploads to retain
                   <Input
+                    key={preset?.serviceId}
                     name="retain"
                     type="number"
                     min="1"
                     max="100"
-                    defaultValue="7"
+                    defaultValue={preset?.retain ?? 7}
                     required
                   />
                 </Label>

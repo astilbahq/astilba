@@ -64,8 +64,11 @@ type Record struct {
 	Report       api.AgentReport
 	Checkpoint   string
 	Acknowledged bool
-	AcceptedAt   *time.Time                 `json:",omitempty"`
-	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
+	AcceptedAt   *time.Time `json:",omitempty"`
+	// StartedAt is when this host first took the command up under its execution lock, after any
+	// wait for the host. The client accepts a command when it polls, before that wait.
+	StartedAt *time.Time                 `json:",omitempty"`
+	Railpack  *pipeline.PreparedRailpack `json:",omitempty"`
 }
 type Journal struct {
 	db *journalDB

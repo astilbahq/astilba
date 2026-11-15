@@ -24,7 +24,7 @@ func seedPreviews(t *testing.T, f *fixture, b *browser, ws, host uuid.UUID) seed
 	t.Helper()
 	base := "/api/v1/workspaces/" + ws.String() + "/projects"
 	var project api.Project
-	b.call("POST", base, map[string]string{"name": "Previews"}, 201, &project)
+	b.call("POST", base, map[string]string{"name": "Seeded previews"}, 201, &project)
 	out := seededPreviews{policy: uuid.New(), environments: base + "/" + project.Id.String() + "/environments"}
 	var template api.Environment
 	b.call("POST", out.environments, map[string]string{"name": "Template"}, 201, &template)

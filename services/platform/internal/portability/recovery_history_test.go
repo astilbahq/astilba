@@ -2,6 +2,7 @@ package portability
 
 import (
 	"encoding/json/v2"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -12,11 +13,20 @@ import (
 )
 
 // Exports and recovery bases share one sequence of archive versions, and decodeArchiveMode reads
-// any archive from RecoveryArchiveVersion on as a recovery base, which needs a recovery section. An
-// export format at or past it would be refused on import.
+// each version recoveryBaseTables lists as a recovery base, which needs a recovery section, with an
+// earlier export version's tables. An export at a base's version would be refused on import, and
+// recovery bases must carry the tables exports write.
 func TestExportVersionsStayBelowTheRecoveryBaseVersion(t *testing.T) {
-	if ArchiveVersion >= RecoveryArchiveVersion {
-		t.Fatalf("export archive version %d reaches recovery base version %d; give recovery bases a later number and decide how a base names the tables it carries", ArchiveVersion, RecoveryArchiveVersion)
+	if _, base := recoveryBaseTables[ArchiveVersion]; base || ArchiveVersion >= RecoveryArchiveVersion {
+		t.Fatalf("export archive version %d is a recovery base's or past the newest, %d; give recovery bases the next number and list it in recoveryBaseTables", ArchiveVersion, RecoveryArchiveVersion)
+	}
+	if recoveryBaseTables[RecoveryArchiveVersion] != ArchiveVersion {
+		t.Fatalf("recovery base version %d carries version %d's tables rather than exports', %d", RecoveryArchiveVersion, recoveryBaseTables[RecoveryArchiveVersion], ArchiveVersion)
+	}
+	for base, export := range recoveryBaseTables {
+		if _, other := recoveryBaseTables[export]; other || export >= base {
+			t.Fatalf("recovery base version %d carries the tables of %d, which isn't an earlier export version", base, export)
+		}
 	}
 }
 
@@ -67,6 +77,30 @@ func TestRecoverySectionIsCheckedAgainstItsBase(t *testing.T) {
 	}
 	if decode(base, false) == nil {
 		t.Fatal("an import accepted a recovery base")
+	}
+	// A base from before version 12 carries version 9's tables, without the preview requests
+	// revocation released.
+	request := func(released bool) []Row {
+		row := previewRequestRow(t, base)
+		if !released {
+			delete(row, "released_by_revocation")
+		}
+		return []Row{row}
+	}
+	for _, c := range []struct {
+		version  int
+		released bool
+		valid    bool
+	}{{RecoveryArchiveVersion, true, true}, {RecoveryArchiveVersion, false, false}, {10, false, true}, {10, true, false}} {
+		older := base
+		older.Version, older.Recovery, older.Tables = c.version, valid(), maps.Clone(base.Tables)
+		older.Tables["preview_requests"] = request(c.released)
+		if err := decode(older, true); (err == nil) != c.valid {
+			t.Errorf("a version %d base with the field %v: %v", c.version, c.released, err)
+		}
+		if decode(older, false) == nil {
+			t.Errorf("an import accepted a version %d base", c.version)
+		}
 	}
 	for name, change := range map[string]func(a *Archive){
 		"no section":               func(a *Archive) { a.Recovery = nil },

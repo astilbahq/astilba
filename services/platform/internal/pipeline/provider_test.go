@@ -153,3 +153,19 @@ func TestProviderExactHeadReviewAndRedirectBoundary(t *testing.T) {
 type fixtureTransport func(*http.Request) (*http.Response, error)
 
 func (f fixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A cache of minted credentials learns that the server stopped accepting one only from a 401,
+// not from a refusal of what the credential asked for.
+func TestProviderReportsARejectedCredential(t *testing.T) {
+	for status, rejected := range map[int]bool{401: true, 403: false, 404: false, 500: false} {
+		p := answering(t, "github", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) })
+		var calls int
+		p.OnRejected(func() { calls++ })
+		if _, err := p.Resolve(context.Background(), "main"); err == nil {
+			t.Fatal(status, "succeeded")
+		}
+		if (calls == 1) != rejected || calls > 1 {
+			t.Fatalf("HTTP %d reported a rejection %d times", status, calls)
+		}
+	}
+}

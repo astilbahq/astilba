@@ -29,10 +29,11 @@ type Account struct {
 }
 
 type AccountSecurityEvent struct {
-	ID        uuid.UUID `json:"id"`
-	AccountID uuid.UUID `json:"account_id"`
-	Kind      string    `json:"kind"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID   `json:"id"`
+	AccountID uuid.UUID   `json:"account_id"`
+	Kind      string      `json:"kind"`
+	CreatedAt time.Time   `json:"created_at"`
+	Reason    pgtype.Text `json:"reason"`
 }
 
 type AgentCounterValue struct {
@@ -201,6 +202,23 @@ type BuildTarget struct {
 	RejectedAt               *time.Time  `json:"rejected_at"`
 	PolicyAuthVersion        pgtype.Int8 `json:"policy_auth_version"`
 	PolicyOwner              bool        `json:"policy_owner"`
+	WaitingCommit            pgtype.Text `json:"waiting_commit"`
+	WaitingReason            pgtype.Text `json:"waiting_reason"`
+	WaitingRunnerID          *uuid.UUID  `json:"waiting_runner_id"`
+	WaitingSince             *time.Time  `json:"waiting_since"`
+	WaitingUntil             *time.Time  `json:"waiting_until"`
+}
+
+type CatalogStaging struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	RecipeID      string    `json:"recipe_id"`
+	RecipeVersion string    `json:"recipe_version"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	Services      []byte    `json:"services"`
+	AuthorID      uuid.UUID `json:"author_id"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type CrossHostApproval struct {
@@ -446,6 +464,9 @@ type GitSource struct {
 	Status             string      `json:"status"`
 	PolicyActor        uuid.UUID   `json:"policy_actor"`
 	PolicyAuthVersion  pgtype.Int8 `json:"policy_auth_version"`
+	FailedCommit       string      `json:"failed_commit"`
+	FailureReason      string      `json:"failure_reason"`
+	FailedAt           *time.Time  `json:"failed_at"`
 }
 
 type GitSubmission struct {

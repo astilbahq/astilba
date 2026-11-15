@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
-	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -27,19 +27,22 @@ import (
 //
 // With nil keys it makes only the decisions that need no values, for a command whose
 // credentials the agent already holds: nothing is opened and no provider is asked.
-func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (bool, error) {
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (deliver, carried bool, err error) {
 	if keys == nil {
-		return s.decidePipelineDelivery(ctx, nil, a, c)
+		deliver, err = s.decidePipelineDelivery(ctx, nil, a, c, &carried)
+		return deliver, carried, err
 	}
-	var deliver bool
-	err := s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
+	err = s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
-		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
+		deliver, err = s.decidePipelineDelivery(ctx, git, a, c, &carried)
 		return err
 	})
-	return deliver, err
+	return deliver, carried, err
 }
-func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a Identity, c *api.ExecutionCommand) (bool, error) {
+
+// decidePipelineDelivery decides whether to deliver c, and sets carried once it has filled in
+// the values c carries.
+func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a Identity, c *api.ExecutionCommand, carried *bool) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -75,26 +78,39 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if err != nil {
 		return false, err
 	}
-	// This command carries no credentials, so an agent whose clock lags must not start it.
-	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(c.Deadline)
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return false, errors.New("invalid pipeline payload")
 	}
+	ws := a.Workspace
+	queries := db.New(tx)
+	end, _, err := pipelineEnd(ctx, queries, ws, *c, p)
+	if err != nil {
+		return false, err
+	}
+	// This command carries no credentials, so an agent whose clock lags must not start it.
+	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(end)
 	var started *bool
 	if err = tx.QueryRow(ctx, "SELECT delivery_started FROM pipeline_runs WHERE id=$1", c.Id).Scan(&started); err != nil {
 		return false, err
 	}
-	ws := a.Workspace
-	queries := db.New(tx)
 	undelivered := started != nil && !*started && sequence == 0
 	if c.CancelRequested {
 		if !undelivered {
 			return true, tx.Commit(ctx)
 		}
 		// No runner holds this command, and its public arguments have not passed the
-		// delivery check, so it finishes here rather than reaching one to be cancelled.
-		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: "Cancelled or expired before runner delivery."}); err != nil {
+		// delivery check, so it finishes here rather than reaching one to be cancelled. One that
+		// waited on GitHub's rate limits still says so.
+		note := "Cancelled or expired before runner delivery."
+		waited, err := queries.OperationNoteHas(ctx, db.OperationNoteHasParams{WorkspaceID: ws, ID: c.Id, Note: gitHubBusyNote})
+		if err != nil {
+			return false, err
+		}
+		if waited {
+			note += " " + gitHubBusyNote
+		}
+		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: note}); err != nil {
 			return false, err
 		}
 		if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
@@ -123,7 +139,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
-		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil, false); err != nil {
 			return false, err
 		}
 	}
@@ -165,9 +181,10 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
 	}
-	if git == nil {
-		// The runner holds this command's credentials: what follows only decides whether new
-		// ones may leave.
+	// The runner holds this command's credentials: what follows only decides whether new ones
+	// may leave. None leave after the deadline, by when a runner must have started the pipeline
+	// with those it holds, as a backup's access does not.
+	if git == nil || time.Now().After(c.Deadline) {
 		return true, nil
 	}
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
@@ -190,7 +207,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, &p); err != nil {
+	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Id, c.Deadline, &p); err != nil {
 		// A clone credential that can push, or that the Git server won't vouch for, is never sent,
 		// and refusing it at every poll would hold the runner queue, so the run ends here. A runner
 		// that may hold an earlier delivery is told to stop.
@@ -209,6 +226,14 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			}
 			c.CancelRequested = true
 			return true, tx.Commit(ctx)
+		}
+		// GitHub limiting the App passes, so the pipeline says why it waits and is asked for at
+		// the runner's next poll, until its deadline.
+		if errors.Is(err, errGitHubBusy) {
+			if err = queries.AddOperationNote(ctx, db.AddOperationNoteParams{WorkspaceID: ws, ID: c.Id, Note: gitHubBusyNote}); err != nil {
+				return false, err
+			}
+			return false, tx.Commit(ctx)
 		}
 		var rejected *buildInputRejection
 		if errors.As(err, &rejected) && undelivered && p.Action == "build" && p.Preview == nil {
@@ -229,7 +254,27 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	// Commit before the hydrated command can leave management. A failed response
 	// is still a possible delivery and cannot later justify a terminal rejection.
 	c.Pipeline = rawMessage(raw)
-	return true, tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	*carried = true
+	return true, nil
+}
+
+// gitHubBusyNote says why a pipeline's delivery waited. It is added once, and kept if the pipeline
+// then expires undelivered.
+const gitHubBusyNote = "GitHub limited how fast Astilba's GitHub App could make requests, so delivery to the runner waited and retried."
+
+// pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
+// management has heard its runner started it. The start must reach management by the deadline
+// (pipelineReport cancels one heard of later), so an agent whose clock lags can neither start a
+// pipeline late nor run one past this bound.
+func pipelineEnd(ctx context.Context, q *db.Queries, ws uuid.UUID, c api.ExecutionCommand, p pipeline.Command) (end time.Time, started bool, err error) {
+	started, err = q.PipelineReportedStart(ctx, db.PipelineReportedStartParams{Step: pipeline.StartStep, WorkspaceID: ws, ID: c.Id})
+	if err != nil || !started {
+		return c.Deadline, started, err
+	}
+	return c.Deadline.Add(p.Lifetime()), true, nil
 }
 func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) (bool, error) {
 	if err := s.commandAdmission(ctx, tx, ws, c); errors.Is(err, store.SubscriptionRequired) {
@@ -239,44 +284,6 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	}
 	allowed, err := s.previewCommandAllowed(ctx, tx, nil, ws, c)
 	return !allowed, err
-}
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {
-	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID)
-	if err != nil {
-		return err
-	}
-	if clone.Err != nil {
-		return clone.Err
-	}
-	p.Access = &pipeline.RunnerAccess{Clone: clone.Value}
-	if p.Build != nil {
-		p.BuildSecrets, err = s.buildInputs(ctx, tx, git, ws, env, *p.Build)
-		if err != nil {
-			return err
-		}
-		if p.Registry != nil {
-			_, cipher, err := loadRegistry(ctx, tx, ws, p.Registry.ID)
-			if err != nil {
-				return err
-			}
-			var access pipeline.RegistryAccess
-			plain, err := git.keys.inspect.open(secretbroker.Item{Kind: secretbroker.Registry, ID: p.Registry.ID}, cipher)
-			if err != nil {
-				return err
-			}
-			err = json.Unmarshal(plain, &access)
-			clear(plain)
-			if err != nil {
-				return err
-			}
-			p.RegistryAccess = &pipeline.RegistryAccess{Push: access.Push}
-		}
-	}
-	raw, err := stablejson.Marshal(p)
-	if err != nil || len(raw) > 250000 {
-		return domain.Invalid("pipeline.payloadBudget")
-	}
-	return nil
 }
 
 // writePipelineRevision is the one path by which management, rather than a draft edit, replaces an
@@ -320,10 +327,27 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled); err != nil {
 		return err
 	}
-	if r.State == "succeeded" && (cancelled || received.After(c.Deadline)) {
+	// What management had heard before this report decides the bound, so a start first reported
+	// after the deadline ends here.
+	end, started, err := pipelineEnd(ctx, db.New(tx), ws, c, p)
+	if err != nil {
+		return err
+	}
+	late := received.After(end)
+	if r.State == "succeeded" && (cancelled || late) {
 		r.State = "cancelled"
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
+	}
+	// Once this report's start is stored, the bound would move past the deadline, so a start
+	// first heard of late stops the pipeline here. Any other late report needs nothing: the
+	// next poll stops it.
+	if late && !started && !cancelled && !Terminal(r.State) && slices.ContainsFunc(r.Steps, func(s api.ExecutionStep) bool { return s.Name == pipeline.StartStep }) {
+		const note = "Stopping: the runner's report that it started this pipeline arrived after the pipeline's deadline."
+		if err = db.New(tx).StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+			return err
+		}
+		r.Note = boundedNote(strings.TrimSpace(note + " " + r.Note))
 	}
 	// A runner that held a submission from before management made them can still report it. Its
 	// result was never checked against the provider, so it counts for nothing.
@@ -384,7 +408,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 			var current uuid.UUID
 			var actor uuid.UUID
 			var approved *int64
-			if err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved); err != nil {
+			err := tx.QueryRow(ctx, "SELECT e.draft_revision_id,r.specification,g.policy_actor,g.policy_auth_version FROM environments e JOIN specification_revisions r ON r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id JOIN git_sources g ON g.workspace_id=e.workspace_id AND g.environment_id=e.id WHERE e.workspace_id=$1 AND e.id=$2 FOR UPDATE OF e,g", ws, c.EnvironmentId).Scan(&current, &raw, &actor, &approved)
+			// An owner can unbind the source while it imports.
+			if errors.Is(err, pgx.ErrNoRows) {
+				r.State = "failed"
+				r.Note = "The Git source was unbound while this import ran. Nothing was saved."
+				break
+			}
+			if err != nil {
 				return err
 			}
 			if current != p.RevisionID {
@@ -426,6 +457,11 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				if err = s.enqueueAutomatic(ctx, tx, c.Id, ws, c.EnvironmentId, id, actor, approved); err != nil {
 					return err
 				}
+			}
+			// A refresh holds an environment's automatic builds while its source can't import, and
+			// ends. An import started by hand or by binding the source again then lets them build.
+			if err = s.refreshBehindBuilds(ctx, tx, ws, c.EnvironmentId, p); err != nil {
+				return err
 			}
 
 		case "build", "build-preview":

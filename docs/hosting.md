@@ -309,6 +309,9 @@ That delays or refuses sign-in on browsers without the cookie, with a 503, for a
 runs, while live sessions and known browsers keep working. Stop it upstream, with a CDN or
 firewall that can challenge or block that traffic.
 
+An account holder locked out by a lost authenticator, or by one someone else enrolled, needs the
+operator's `astilba reset-mfa`. See [account takeover or lost authenticator](incident-response.md#account-takeover-or-lost-authenticator).
+
 ### When password reset mail fails
 
 A reset request answers the same way for every email and sends its mail afterwards, in a
@@ -927,4 +930,4 @@ schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
 
-Workspace exports use archive version 9, which adds environment purges, retired secrets and erased secret values to version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–8 remain importable; their environments import as active or retired as recorded, nothing in them is purged or erased, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
+Workspace exports use archive version 11, which adds which preview requests revoking their preview host released to version 9's environment purges, retired secrets and erased secret values, version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Cross-host recovery checkpoints use version 12, with version 11's tables; version 10 is a checkpoint with version 9's, and no export uses either. Versions 1–9 remain importable. Nothing in them is recorded as released by revocation, and nothing in versions 1–8 is purged or erased. Their environments import as active or retired as recorded, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
