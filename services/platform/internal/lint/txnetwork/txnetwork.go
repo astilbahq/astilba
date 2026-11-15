@@ -31,7 +31,7 @@ const (
 // brokerMethods are the Broker methods that record and give out keys, and storeKeyMethods the
 // Store methods that admit a caller in a transaction of their own and then do the same.
 var (
-	brokerMethods   = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true}
+	brokerMethods   = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true, "Create": true, "InitKeys": true}
 	storeKeyMethods = map[string]bool{"Admit": true, "BeginKeys": true}
 )
 
