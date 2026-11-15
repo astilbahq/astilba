@@ -62,22 +62,27 @@ test("a Docker Hub pull needs the daemon to list the mirror", async (t) => {
   ]);
 });
 
-for (const [name, mirrors] of [
+const fix =
+  'Add the ./.github/actions/docker-hub-mirror step before this one; see "Docker Hub mirror" in docs/continuous-integration.md.';
+for (const [name, listed] of [
   ["no mirror", "null"],
   ["an empty list", "[]"],
   ["another mirror", '["https://mirror.example/"]'],
+  ["a lookalike mirror", '["https://mirror.gcr.io/evil", "https://x/?https://mirror.gcr.io/"]'],
+  ["the mirror as a string, not a list", '"https://mirror.gcr.io/"'],
+  ["output that is not JSON", "https://mirror.gcr.io/"],
 ])
   test(`a Docker Hub pull is refused with ${name}`, async (t) => {
-    const docker = fakeDocker(t, mirrors);
+    const docker = fakeDocker(t, listed);
     await assert.rejects(
       requireDockerHubMirror(
         [`ghcr.io/a/b${digest}`, `postgres:18.4${digest}`],
         [docker.path],
       ),
       (error) =>
-        error.message.includes(`postgres:18.4${digest}`) &&
-        !error.message.includes("ghcr.io") &&
-        error.message.includes(".github/actions/docker-hub-mirror"),
+        error.message.startsWith(
+          `Docker reads postgres:18.4${digest} from Docker Hub, but its daemon lists `,
+        ) && error.message.endsWith(fix),
     );
   });
 

@@ -26,8 +26,15 @@ export async function requireDockerHubMirror(images, docker = ["docker"]) {
     [...args, "info", "--format", "{{json .RegistryConfig.Mirrors}}"],
     { captureStdout: true, timeoutMs: 60_000 },
   );
-  const mirrors = JSON.parse(listed.trim() || "null") ?? [];
-  if (!mirrors.includes(dockerHubMirror))
+  let mirrors;
+  try {
+    mirrors = JSON.parse(listed);
+  } catch {
+    mirrors = listed.trim();
+  }
+  // Docker lists its mirrors as an array of URLs, or null for none. Only an element that is
+  // exactly the mirror counts.
+  if (!Array.isArray(mirrors) || !mirrors.some((mirror) => mirror === dockerHubMirror))
     throw new Error(
       `Docker reads ${images.filter(fromDockerHub).join(", ")} from Docker Hub, but its daemon lists ${JSON.stringify(mirrors)} as Docker Hub mirrors, not ${dockerHubMirror}. Add the ./.github/actions/docker-hub-mirror step before this one; see "Docker Hub mirror" in docs/continuous-integration.md.`,
     );
