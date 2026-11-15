@@ -25,7 +25,9 @@ func TestReviewURLMatchesOnlyTheConnectionsSite(t *testing.T) {
 		{"GitHub's API site", github, "https://api.github.com/team/app/pull/1", false},
 		{"a link without a site, for a connection without a base", pipeline.Connection{Provider: "gitea"}, "/team/app/pulls/1", false},
 		{"an empty link, for a connection without a base", pipeline.Connection{Provider: "gitlab"}, "", false},
-		{"a connection whose base doesn't parse", pipeline.Connection{Provider: "gitea", BaseURL: "https://[::1"}, "https://[::1/team/app/pulls/1", false},
+		{"a connection whose base doesn't parse", pipeline.Connection{Provider: "gitea", BaseURL: "https://[::1"}, "https://git.example.test/team/app/pulls/1", false},
+		{"a connection whose base has no site", pipeline.Connection{Provider: "gitea", BaseURL: "git.example.test"}, "/team/app/pulls/1", false},
+		{"a GitLab connection's own site", pipeline.Connection{Provider: "gitlab", BaseURL: "https://gitlab.example.test:8443"}, "https://gitlab.example.test:8443/team/app/-/merge_requests/1", true},
 	} {
 		if got := reviewURLMatches(test.connection, test.review); got != test.want {
 			t.Errorf("%s: got %v, want %v", test.name, got, test.want)
