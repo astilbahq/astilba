@@ -64,6 +64,35 @@ func TestBundleRejectsEscapesAndUnsupportedSemantics(t *testing.T) {
 	}
 }
 
+// The agent recognises its own containers, such as the Servers page probe, by their name and
+// com.astilba.* labels, so a Compose source can set neither.
+func TestLoadRefusesTheAgentsOwnershipMarks(t *testing.T) {
+	const probe = "astilba-probe-11111111-1111-5111-8111-111111111111"
+	for name, test := range map[string]struct {
+		source, label string
+		files         []File
+	}{
+		"ownership label":       {source: "services:\n  web:\n    image: busybox:1.38.0\n    labels:\n      com.astilba.kind: probe-v1\n", label: "runtime ownership labels are reserved"},
+		"ownership label list":  {source: "services:\n  web:\n    image: busybox:1.38.0\n    labels: [com.astilba.server=x]\n", label: "runtime ownership labels are reserved"},
+		"Compose project label": {source: "services:\n  web:\n    image: busybox:1.38.0\n    labels:\n      com.docker.compose.project: other\n", label: "runtime ownership labels are reserved"},
+		"ownership label file": {
+			source: "services:\n  web:\n    image: busybox:1.38.0\n    label_file: owner.labels\n",
+			files:  []File{{Path: "owner.labels", Content: "com.astilba.resource=x\n"}},
+			label:  "runtime ownership labels are reserved",
+		},
+		"container name": {source: "services:\n  web:\n    image: busybox:1.38.0\n    container_name: " + probe + "\n", label: "unsupported Compose property: container_name"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := fixture(test.source)
+			b.Files = append(b.Files, test.files...)
+			_, err := Load(context.Background(), b, nil)
+			if err == nil || !strings.Contains(ParseDiagnostic(err).Message, test.label) {
+				t.Fatalf("accepted or refused for another reason: %v", err)
+			}
+		})
+	}
+}
+
 // A proxy shares one resolver across units, so a unit that could declare these names
 // could answer for another unit's backend. The dotted form is what the proxy dials.
 func TestLoadRejectsNamesTheRuntimeOwns(t *testing.T) {

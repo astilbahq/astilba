@@ -219,6 +219,7 @@ type CatalogStaging struct {
 	Services      []byte    `json:"services"`
 	AuthorID      uuid.UUID `json:"author_id"`
 	CreatedAt     time.Time `json:"created_at"`
+	StagedRoutes  []byte    `json:"staged_routes"`
 }
 
 type CrossHostApproval struct {
@@ -984,18 +985,20 @@ type Session struct {
 }
 
 type SourceSubmission struct {
-	ID            uuid.UUID  `json:"id"`
-	WorkspaceID   uuid.UUID  `json:"workspace_id"`
-	EnvironmentID uuid.UUID  `json:"environment_id"`
-	RevisionID    uuid.UUID  `json:"revision_id"`
-	RequestKey    uuid.UUID  `json:"request_key"`
-	ActorID       uuid.UUID  `json:"actor_id"`
-	Configuration []byte     `json:"configuration"`
-	State         string     `json:"state"`
-	Note          string     `json:"note"`
-	Result        []byte     `json:"result"`
-	CreatedAt     time.Time  `json:"created_at"`
-	FinishedAt    *time.Time `json:"finished_at"`
+	ID               uuid.UUID   `json:"id"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	EnvironmentID    uuid.UUID   `json:"environment_id"`
+	RevisionID       uuid.UUID   `json:"revision_id"`
+	RequestKey       uuid.UUID   `json:"request_key"`
+	ActorID          uuid.UUID   `json:"actor_id"`
+	Configuration    []byte      `json:"configuration"`
+	State            string      `json:"state"`
+	Note             string      `json:"note"`
+	Result           []byte      `json:"result"`
+	CreatedAt        time.Time   `json:"created_at"`
+	FinishedAt       *time.Time  `json:"finished_at"`
+	ActorAuthVersion pgtype.Int8 `json:"actor_auth_version"`
+	WithdrawnAt      *time.Time  `json:"withdrawn_at"`
 }
 
 type SpecificationRevision struct {

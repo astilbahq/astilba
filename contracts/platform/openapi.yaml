@@ -5627,6 +5627,19 @@
           type: string
           maxLength: 200
           description: Why the agent's key store is unavailable, as the agent logs it. Advertised only after Astilba-Agent-Keys v1.
+        containerRanges:
+          type: boolean
+          description: Reports in preflight.containerRanges every range containers on the host can send traffic from, when it can read them all. Advertised only after Astilba-Agent-Container-Ranges v1.
+    ContainerRange:
+      type: object
+      additionalProperties: false
+      required: [prefix, source]
+      properties:
+        prefix: {type: string, maxLength: 43, description: 'A masked IPv4 or IPv6 prefix, such as 10.252.0.0/14.'}
+        source:
+          type: string
+          enum: [networkPool, defaultBridge, dockerNetwork, addressPool, managedNetwork]
+          description: 'Where the range comes from: the agent''s network pool, Docker''s default bridge, another Docker network, one of the daemon''s default address pools, or a managed network the host holds.'
     "HostPreflight":
       "type": "object"
       "additionalProperties": false
@@ -5642,6 +5655,11 @@
       "properties":
         crossHostInventory: {$ref: '#/components/schemas/CrossHostInventory'}
         certificateContactConfigured: {type: boolean}
+        containerRanges:
+          type: array
+          maxItems: 64
+          description: Every range containers on the host can send traffic from, with ranges inside another left out. Sent only with capabilities.containerRanges, and only when the agent read them all.
+          items: {$ref: '#/components/schemas/ContainerRange'}
         "ready":
           "type": "boolean"
         "osRelease":

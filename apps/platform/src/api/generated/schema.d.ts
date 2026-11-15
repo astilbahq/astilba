@@ -2899,10 +2899,23 @@ export interface components {
             keyProtection?: "tpm" | "host_key" | "unsealed" | "setup_required" | "seal_failed";
             /** @description Why the agent's key store is unavailable, as the agent logs it. Advertised only after Astilba-Agent-Keys v1. */
             keyStoreProblem?: string;
+            /** @description Reports in preflight.containerRanges every range containers on the host can send traffic from, when it can read them all. Advertised only after Astilba-Agent-Container-Ranges v1. */
+            containerRanges?: boolean;
+        };
+        ContainerRange: {
+            /** @description A masked IPv4 or IPv6 prefix, such as 10.252.0.0/14. */
+            prefix: string;
+            /**
+             * @description Where the range comes from: the agent's network pool, Docker's default bridge, another Docker network, one of the daemon's default address pools, or a managed network the host holds.
+             * @enum {string}
+             */
+            source: "networkPool" | "defaultBridge" | "dockerNetwork" | "addressPool" | "managedNetwork";
         };
         HostPreflight: {
             crossHostInventory?: components["schemas"]["CrossHostInventory"];
             certificateContactConfigured?: boolean;
+            /** @description Every range containers on the host can send traffic from, with ranges inside another left out. Sent only with capabilities.containerRanges, and only when the agent read them all. */
+            containerRanges?: components["schemas"]["ContainerRange"][];
             ready: boolean;
             osRelease: string;
             dockerVersion: string;

@@ -59,7 +59,7 @@ func validateRestoreRun(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, sourc
 	return domain.Conflict
 }
 
-func (s *Service) createRestoreReview(ctx context.Context, tx pgx.Tx, ws uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, source deployment.Plan, network managedNetwork, r deployment.RestoreCutover) (deployment.Status, error) {
+func (s *Service) createRestoreReview(ctx context.Context, tx pgx.Tx, ws uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, source deployment.Plan, network managedNetwork, r deployment.RestoreCutover, reviewEffects []string) (deployment.Status, error) {
 	if in.ReleaseOptions != nil {
 		return deployment.Status{}, domain.Invalid("restore.releaseOptions")
 	}
@@ -95,6 +95,7 @@ func (s *Service) createRestoreReview(ctx context.Context, tx pgx.Tx, ws uuid.UU
 			return deployment.Status{}, domain.Conflict
 		}
 	}
+	target.Effects = append(target.Effects, reviewEffects...)
 	target = target.WithHash()
 	if err = target.Validate(true); err != nil {
 		return deployment.Status{}, domain.Invalid("restore.plan")
