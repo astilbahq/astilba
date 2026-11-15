@@ -736,7 +736,7 @@ Astilba never makes are never removed. Records Astilba never makes are anything 
 AAAA, names that aren't the commented server's, and comments that match this installation's only
 when case is ignored. Management logs a warning counting them.
 
-The comparison reads at most 60,000 of this installation's records. A zone holding more isn't
+The comparison reads at most 30,000 of this installation's records. A zone holding more isn't
 compared at all, and management logs an error every five minutes.
 
 #### When many records would go at once

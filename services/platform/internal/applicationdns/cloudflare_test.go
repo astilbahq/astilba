@@ -251,3 +251,15 @@ func TestTooManyRequestsHoldsEveryLaterRequest(t *testing.T) {
 		t.Fatal("a held request was sent or reported as unanswered", e)
 	}
 }
+
+func TestListMarkedRefusesAZoneTooLargeToReadAfterOnePage(t *testing.T) {
+	prefix := "astilba:installation:"
+	records := make([]record, 0, markedPages*markedPage+1)
+	for i := range markedPages*markedPage + 1 {
+		records = append(records, record{ID: strings.Repeat("0", 24) + strconv.FormatInt(int64(0x10000000+i), 16), Type: "A", Name: name, Content: "198.51.100.1", Comment: prefix + "server"})
+	}
+	z, c := fixture(t, records...)
+	if _, e := c.ListMarked(context.Background(), prefix); !errors.Is(e, ErrZoneTooLarge) || len(z.requests) != 1 {
+		t.Fatal("read a zone too large to compare", e, len(z.requests))
+	}
+}

@@ -310,10 +310,11 @@ func (c *Cloudflare) remove(ctx context.Context, name, marker string, chosen fun
 type Marked struct{ ID, Type, Name, Content, Comment string }
 
 // The zone listing reads pages of markedPage records, at most markedPages of them, each answer at
-// most markedBytes. At the client's pace that many pages take about three minutes, inside a sweep.
+// most markedBytes. At the client's pace that many pages take under two minutes, which leaves a
+// sweep time for DNS jobs' requests and its own withdrawals.
 const (
 	markedPage  = 100
-	markedPages = 600
+	markedPages = 300
 	markedBytes = 1 << 20
 )
 
@@ -322,7 +323,8 @@ var ErrZoneTooLarge = errors.New("the DNS zone holds more of this installation's
 
 // ListMarked returns every record in the zone whose comment starts with prefix, reading the
 // provider's pages in turn. A zone with more than markedPages pages is refused with
-// ErrZoneTooLarge, so a caller never judges part of it as if it were all. Pages can shift while
+// ErrZoneTooLarge as soon as the provider says so, so a caller never judges part of it as if it
+// were all, and no more is read of it. Pages can shift while
 // records change, so a record can be missed or seen twice; it is returned once, and one missed is
 // found by the next listing. The provider matches the prefix ignoring case, so a comment that
 // matches it only so is returned for the caller to leave alone. One that doesn't match it at all
@@ -341,6 +343,9 @@ func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, e
 		if json.Unmarshal(envelope.Result, &records) != nil || envelope.Info.Page != page || len(records) > markedPage {
 			return nil, ErrProvider
 		}
+		if envelope.Info.TotalPages > markedPages {
+			return nil, ErrZoneTooLarge
+		}
 		for _, r := range records {
 			if !cloudflareID.MatchString(r.ID) || !hasFoldedPrefix(r.Comment, prefix) {
 				return nil, ErrProvider
@@ -352,9 +357,6 @@ func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, e
 		}
 		if len(records) == 0 || page >= envelope.Info.TotalPages {
 			return out, nil
-		}
-		if page == markedPages {
-			return nil, ErrZoneTooLarge
 		}
 	}
 }

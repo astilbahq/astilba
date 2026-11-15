@@ -354,7 +354,13 @@ func run() error {
 			sweep := func() {
 				run, cancel := context.WithTimeout(ctx, execution.ZoneSweepInterval-time.Minute)
 				defer cancel()
-				if err := api.Execution.SweepZone(run); err != nil && ctx.Err() == nil {
+				err := api.Execution.SweepZone(run)
+				switch {
+				case err == nil || ctx.Err() != nil:
+				case errors.Is(err, applicationdns.ErrZoneTooLarge):
+					// Lasting: records nothing backs stay in the zone until the operator acts.
+					slog.Error("application DNS zone sweep refused a zone too large to compare; records Astilba no longer backs are not withdrawn. See docs/hosting.md#records-the-database-has-lost", "error", err)
+				default:
 					slog.Warn("application DNS zone sweep failed", "error", err)
 				}
 			}
