@@ -284,6 +284,18 @@ func TestNativeManagedLinks(t *testing.T) {
 	if err = broken.Apply(ctx, held.Manifest, held.Bridges, false); err != nil {
 		t.Fatal("applying a link that is up waited on the key store", err)
 	}
+	// The live key stands in only for the key file that names it: without that file, the host's
+	// identity no longer matches what it applies.
+	keyFile := filepath.Join(a.Dir, "network", ma.MembershipID.String()+".key")
+	if err = os.Rename(keyFile, keyFile+".aside"); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Apply(ctx, held.Manifest, held.Bridges, false); err == nil {
+		t.Fatal("a link applied without the key file that names its key")
+	}
+	if err = os.Rename(keyFile+".aside", keyFile); err != nil {
+		t.Fatal(err)
+	}
 	// WireGuard took the sealed key through a pipe: nothing in the state directory holds it.
 	if holdsKey(t, a.Dir, privateKeyOf(t, a, ma.MembershipID)) {
 		t.Fatal("applying a sealed private-link key left it in the clear on disk")

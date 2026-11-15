@@ -208,9 +208,9 @@ func TestUnopenableNetworkKeyKeepsTheServerOffTheNetwork(t *testing.T) {
 	}
 }
 
-// A key store that isn't working only delays a network command, which runs again. Until a minute
-// has passed, network commands wait without calling the store again.
-func TestNetworkCommandsWaitForAKeyStoreThatIsNotWorking(t *testing.T) {
+// A key store that isn't working only delays a network command, which runs again. Other network
+// commands aren't held back: changing a link that is up needs no key store.
+func TestKeyStoreThatIsNotWorkingOnlyDelaysTheCommandThatNeedsIt(t *testing.T) {
 	unavailable := fmt.Errorf("%w: systemd-creds failed", hostnetwork.ErrKeyStoreUnavailable)
 	for _, at := range []string{"making a key", "opening a key"} {
 		t.Run(at, func(t *testing.T) {
@@ -224,16 +224,57 @@ func TestNetworkCommandsWaitForAKeyStoreThatIsNotWorking(t *testing.T) {
 			if !errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) || r.Report.State != "running" {
 				t.Fatalf("a key store not working ended the command: %v %s %q", err, r.Report.State, r.Report.Note)
 			}
-			applied := host.applied
-			host.identity, host.apply = nil, nil
-			if err = e.executeNetwork(t.Context(), c, r); !errors.Is(err, errWaitingForKeyStore) || host.applied != applied {
-				t.Fatal("the command tried the key store again at once", err)
+			if until := e.keyStoreWait.Load(); until == nil || !time.Now().Before(*until) {
+				t.Fatal("the agent will call a key store that isn't working again at once")
 			}
-			e.keyStoreWait.Store(0)
-			if r, err = runNetworkCommand(t, e, c); err != nil || r.Report.State == "running" {
-				t.Fatal("the command didn't run once the store could work", err, r.Report.State)
+			host.identity, host.apply = nil, nil
+			if r, err = runNetworkCommand(t, e, c); err != nil || r.Report.State == "running" || host.applied == 0 {
+				t.Fatal("a network command that needs no key store waited for it", err, r.Report.State)
 			}
 		})
+	}
+}
+
+// countingStore is a key store that counts the calls made to it.
+type countingStore struct {
+	KeyStore
+	calls int
+}
+
+func (s *countingStore) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	s.calls++
+	return s.KeyStore.Seal(ctx, name, plain)
+}
+
+func (s *countingStore) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	s.calls++
+	return s.KeyStore.Unseal(ctx, name, sealed)
+}
+
+// While network commands wait for the key store, they fail at once without calling it, and that
+// failure doesn't make them wait longer.
+func TestNetworkCommandsLeaveTheKeyStoreAloneWhileTheyWait(t *testing.T) {
+	ctx := context.Background()
+	store := &countingStore{KeyStore: InsecureKeyStore()}
+	j, err := OpenSealed(ctx, privateDir(t), storeOpener(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	e := &Engine{Journal: j}
+	_ = e.waitForKeyStore(hostnetwork.ErrKeyStoreUnavailable)
+	until := e.keyStoreWait.Load()
+	store.calls = 0
+	_, err = e.networkHost().Identity(ctx, uuid.New())
+	if !errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) || !errors.Is(err, errWaitingForKeyStore) || store.calls != 0 {
+		t.Fatalf("a network command called the key store while waiting for it: %v, %d calls", err, store.calls)
+	}
+	if _ = e.waitForKeyStore(err); !e.keyStoreWait.Load().Equal(*until) {
+		t.Fatal("failing while waiting made the wait longer, so it could never end")
+	}
+	e.keyStoreWait.Store(nil)
+	if _, err = e.networkHost().Identity(ctx, uuid.New()); err != nil || store.calls == 0 {
+		t.Fatal("the key store wasn't used once the wait ended", err)
 	}
 }
 

@@ -235,16 +235,22 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if err := removeNetworkLeftovers(filepath.Join(h.Dir, "network")); err != nil {
 		return err
 	}
+	// Identity made the key that m names, so a missing one is never made here. The key file is
+	// checked against m first, from its public key alone.
+	f, err := h.readKeyFile(m.MembershipID)
+	if err != nil {
+		return err
+	}
+	if f.public != m.PublicKey {
+		return errors.New("managed network public key does not match local identity")
+	}
 	// A link that is up holds its key already, so applying it again, as removing a peer does, never
-	// waits on the key store. Otherwise the key is opened before anything changes. Identity made the
-	// key that m names, so a missing one is never made here.
+	// waits on the key store. Otherwise the key is opened before anything changes.
 	key := h.liveKey(ctx, m)
 	if key == nil {
-		opened, err := h.privateKey(ctx, m.MembershipID)
-		if err != nil {
+		if key, err = h.openKeyFile(ctx, m.MembershipID, f); err != nil {
 			return err
 		}
-		key = opened
 	}
 	if publicKeyOf(key) != m.PublicKey {
 		return errors.New("managed network public key does not match local identity")

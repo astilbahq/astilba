@@ -120,8 +120,16 @@ func (h Host) publicKey(ctx context.Context, id uuid.UUID) (string, error) {
 // privateKey opens membership id's private key. It never makes one: a missing key is an error.
 func (h Host) privateKey(ctx context.Context, id uuid.UUID) (*ecdh.PrivateKey, error) {
 	f, err := h.readKeyFile(id)
-	if err != nil || f.clear != nil {
-		return f.clear, err
+	if err != nil {
+		return nil, err
+	}
+	return h.openKeyFile(ctx, id, f)
+}
+
+// openKeyFile opens the private key in membership id's key file f.
+func (h Host) openKeyFile(ctx context.Context, id uuid.UUID, f keyFile) (*ecdh.PrivateKey, error) {
+	if f.clear != nil {
+		return f.clear, nil
 	}
 	if h.Keys == nil {
 		return nil, fmt.Errorf("%w: this command has no key store to open it with", ErrSealedKey)
@@ -146,7 +154,7 @@ func (h Host) unsealFailure(ctx context.Context, cause error) error {
 			return fmt.Errorf("%w (%v). It was sealed on another machine, or this host's TPM or systemd host key has changed. If that key is gone for good, remove this server from the network and add it again, so that it gets a new key", ErrSealedKey, cause)
 		}
 	}
-	return fmt.Errorf("%w: %v", ErrKeyStoreUnavailable, cause)
+	return fmt.Errorf("%w: %w", ErrKeyStoreUnavailable, cause)
 }
 
 // writeKey replaces membership id's key file with key. It seals the key with the host's key store
@@ -157,7 +165,7 @@ func (h Host) writeKey(ctx context.Context, id uuid.UUID, key *ecdh.PrivateKey) 
 	if h.Keys != nil {
 		sealed, err := h.Keys.Seal(ctx, keyName(id), key.Bytes())
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrKeyStoreUnavailable, err)
+			return fmt.Errorf("%w: %w", ErrKeyStoreUnavailable, err)
 		}
 		// A key nothing can read would cut this host off its private network, so it replaces the
 		// file only once read back.

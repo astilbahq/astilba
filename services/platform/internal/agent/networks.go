@@ -22,7 +22,40 @@ import (
 // networkHost is this host's managed networking. Its private-link keys are sealed to the journal's
 // key store once the journal's format lets them be.
 func (e *Engine) networkHost() hostnetwork.Host {
-	return hostnetwork.Host{Dir: e.Journal.dir, Keys: e.Journal.networkKeyStore()}
+	h := hostnetwork.Host{Dir: e.Journal.dir}
+	if store := e.Journal.networkKeyStore(); store != nil {
+		h.Keys = waitingKeyStore{e, store}
+	}
+	return h
+}
+
+// waitingKeyStore is the key store, which network commands leave alone for a minute after they
+// found it not working, rather than call it again every second. A link that is up needs no key
+// store, so changing it, as removing a peer does, never waits.
+type waitingKeyStore struct {
+	e     *Engine
+	store hostnetwork.Sealer
+}
+
+func (w waitingKeyStore) waiting() error {
+	if until := w.e.keyStoreWait.Load(); until != nil && time.Now().Before(*until) {
+		return errWaitingForKeyStore
+	}
+	return nil
+}
+
+func (w waitingKeyStore) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	if err := w.waiting(); err != nil {
+		return nil, err
+	}
+	return w.store.Seal(ctx, name, plain)
+}
+
+func (w waitingKeyStore) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	if err := w.waiting(); err != nil {
+		return nil, err
+	}
+	return w.store.Unseal(ctx, name, sealed)
 }
 
 // managedHost is the part of the host's managed networking that executeNetwork uses.
@@ -44,15 +77,16 @@ func (e *Engine) managedNetworking() managedHost {
 // The agent has checked that its key store works, so the key is to blame.
 const sealedNetworkKeyNote = "This server's key store works but can't open its sealed private-link key: the key came from another machine, or this host's TPM or systemd host key changed. Nothing changed and no new key was made. Remove the server from private networks and add it back to give it a new key."
 
-// errWaitingForKeyStore says a network command waits for the key store, which wasn't working when
-// a network command last tried it. Nothing changed.
-var errWaitingForKeyStore = errors.New("private-link changes are waiting for the key store")
+// errWaitingForKeyStore says the key store wasn't working when a network command last tried it, so
+// it isn't tried again yet.
+var errWaitingForKeyStore = errors.New("the key store wasn't working a moment ago, so it isn't tried again yet")
 
-// waitForKeyStore makes network commands wait a minute before they try the key store again, and
-// logs why when they start waiting. It returns err, so the command runs again.
+// waitForKeyStore makes network commands leave the key store alone for a minute, and logs why. It
+// returns err, so the command runs again.
 func (e *Engine) waitForKeyStore(err error) error {
-	now := time.Now()
-	if e.keyStoreWait.Swap(now.Add(keyStoreRetry).UnixNano()) < now.UnixNano() {
+	if !errors.Is(err, errWaitingForKeyStore) {
+		until := time.Now().Add(keyStoreRetry)
+		e.keyStoreWait.Store(&until)
 		slog.Warn("the agent's key store isn't working, so private-link changes wait for it and try again each minute", "error", err)
 	}
 	return err
@@ -81,9 +115,6 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 	}
 	if e.cancelled(c.Id) && r.Checkpoint == "accepted" {
 		return finish("cancelled", "Cancelled before changing managed networking.")
-	}
-	if time.Now().UnixNano() < e.keyStoreWait.Load() {
-		return errWaitingForKeyStore
 	}
 	host := e.managedNetworking()
 	if !host.Supported(ctx) {
