@@ -47,11 +47,11 @@ export function ApplyReviewedPlan({
       {review && (
         <div className={s.notice}>
           <p>
-            <strong>This plan needs a workspace owner&apos;s review</strong>{" "}
-            of what it lists above beyond the environment&apos;s own services:
+            <strong>This plan needs a workspace owner&apos;s review</strong> of
+            what it lists above beyond the environment&apos;s own services:
             changes to its server&apos;s host configuration, such as the proxy,
-            published ports, certificates or elevated container privileges, or
-            a client allowlist that couldn&apos;t be checked against the
+            published ports, certificates or elevated container privileges, or a
+            client allowlist that couldn&apos;t be checked against the
             server&apos;s other containers.{" "}
             {owner
               ? "Applying it needs your approval, and you may be asked to confirm your identity."
