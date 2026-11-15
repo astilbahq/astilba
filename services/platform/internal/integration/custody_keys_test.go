@@ -211,6 +211,8 @@ func TestSessionsOpenV2ValuesOfTheirOwnWorkspace(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	a := ownerWorkspace(t, f)
+	// The start-up key job would otherwise race this test's own run for the new workspace.
+	keysJobDone(t, f)
 	b := insertWorkspace(t, f, "Other")
 	initKeys(t, f.st.Broker)
 	item := uuid.New()
@@ -373,6 +375,7 @@ func TestKeyGenerationsOnlyMoveForward(t *testing.T) {
 		t.Fatal(retiredAt, all, err)
 	}
 	// Deleting a workspace deletes its keys.
+	keysJobDone(t, f)
 	gone := insertWorkspace(t, f, "Deleted")
 	initKeys(t, f.st.Broker)
 	if err := exec(`DELETE FROM memberships WHERE workspace_id=$1`, gone); err != nil {
