@@ -103,10 +103,11 @@ remove the trigger.
 
 | Command | What it does |
 | --- | --- |
-| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, and any pending work. It changes nothing. |
+| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, and any pending work. It changes nothing. |
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
 | `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
 | `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
+| `astilba custody convert --operator <name or role> [--reason <text>]` | Moves every value still sealed under the keyring onto its workspace's key, or a second factor onto the installation key, and records custody stage 4 once none is left. See [converting values](#converting-values). |
 
 `custody status` lists a command that recorded a start and no finish, unless a run of it that
 started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
@@ -123,13 +124,15 @@ or delivering, under the backend's key for that purpose's class. A key check val
 it shows whether a wrapping opens to the right key before any value is opened with it.
 
 By custody stage 2 every key exists, and values sealed under them open; a new installation makes
-its keys when it first starts. This release (custody
-stage 3) seals every new value under its workspace's key, or a second factor under the installation
-key, and issues tokens under a token key. Going back to the stage 2 release is a redeploy: it opens
-everything this one seals. Going back to an earlier release needs the backup taken before the
-upgrade, since an earlier release cannot open these values, so never run one beside this one.
-`migrate`, `serve` and every other command refuse this release on an installation that hasn't
-completed stage 2: run the stage 2 release until `custody status` shows stage 2 first.
+its keys when it first starts. From stage 3, every new value is sealed under its workspace's key,
+or a second factor under the installation key, and tokens are issued under a token key. Values
+stored before then stay under the keyring until [converted](#converting-values), which completes
+stage 4. This release needs stage 3: `migrate`, `serve` and every other command refuse it on an
+installation that hasn't completed stage 3, so run the stage 3 release until `custody status`
+shows stage 3 first. Going back to a stage 2 or stage 3 release is a redeploy: both open
+everything this one seals, converted values included. Going back to an earlier release needs the
+backup taken before upgrading to stage 3, since an earlier release cannot open these values, so
+never run one beside this one.
 
 - **New workspaces** get their key in the transaction that creates them.
 - **Existing workspaces** without a key, such as one created by an earlier release after a
@@ -156,6 +159,34 @@ events, that guards against mistakes, not against whoever owns the database.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
+
+#### Converting values
+
+Once every instance runs a stage 4 release, run `custody convert` once:
+
+```sh
+docker compose run --rm --no-deps platform custody convert --operator "$(whoami)"
+```
+
+- It moves each value still sealed under the keyring onto its workspace's key, or a second factor
+  onto the installation key. Only the value's key is wrapped again; the value itself is kept, so
+  recovery data captured before still matches it.
+- It works in batches, one workspace at a time, and is safe to stop, run again, or run beside
+  running instances. A value saved while it runs is kept, and the next run converts it if it needs
+  to be. A workspace another run is converting, or that has no key to move onto yet, is skipped
+  and named.
+- Recovery checkpoints are never converted, since hosts hold them bound to their exact bytes.
+  They keep opening with the keyring, as do tokens issued before stage 3 until they expire, so
+  keep the keyring.
+- It records custody stage 4 once no value is sealed under the keyring and every instance seen in
+  the last five minutes runs a stage 4 release or later. For that last check it holds the tables
+  that store values against writes, briefly, so none can be stored in between.
+- An instance of a release before stage 3 that starts afterwards can still store a value under
+  the keyring. `custody status` names such values; run `custody convert` again to move them. A
+  later release that stops reading the keyring checks again first.
+
+The key history records each run, with the operator and reason, and each batch it stored. A
+workspace's access records name the run, not the operator.
 
 ### Database connections
 

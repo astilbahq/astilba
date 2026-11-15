@@ -77,7 +77,9 @@ Upgrade management before the agents. These steps assume
    - every server shows as connected within a minute;
    - `custody status` lists no pending work once `serve` has created any missing
      [workspace keys](hosting.md#workspace-keys), which it logs as it goes. Until then, saving a
-     value in a workspace without its key is refused as temporarily busy;
+     value in a workspace without its key is refused as temporarily busy. If it says values are
+     still sealed under the keyring, run [`custody convert`](hosting.md#converting-values) once
+     every instance runs the new version;
    - the log shows no errors: `docker compose logs --since 10m platform`.
 
 If any check fails, roll back now: the longer the new version runs, the more you lose.

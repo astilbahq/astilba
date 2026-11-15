@@ -435,7 +435,7 @@ func TestTokenKeysLoadAsTheyAppear(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	initKeys(t, f.st.Broker)
-	tokens, err := f.st.Broker.Tokens(ctx)
+	tokens, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 	if err != nil {
 		t.Fatal(err)
 	}

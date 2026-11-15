@@ -310,10 +310,11 @@ type CustodyBackendsVersion struct {
 }
 
 type CustodyInstance struct {
-	InstanceID       uuid.UUID `json:"instance_id"`
-	TokenGenerations []int64   `json:"token_generations"`
-	StartedAt        time.Time `json:"started_at"`
-	SeenAt           time.Time `json:"seen_at"`
+	InstanceID       uuid.UUID   `json:"instance_id"`
+	TokenGenerations []int64     `json:"token_generations"`
+	StartedAt        time.Time   `json:"started_at"`
+	SeenAt           time.Time   `json:"seen_at"`
+	Stage            pgtype.Int4 `json:"stage"`
 }
 
 type CustodyStage struct {

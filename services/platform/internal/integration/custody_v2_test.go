@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -312,7 +313,7 @@ func TestTokensSwitchOnceEveryInstanceHoldsTheKey(t *testing.T) {
 	}
 	issued := func(want int) []byte {
 		t.Helper()
-		tokens, err := f.st.Broker.Tokens(ctx)
+		tokens, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -334,7 +335,7 @@ func TestTokensSwitchOnceEveryInstanceHoldsTheKey(t *testing.T) {
 	report([]int64{}, 10*time.Minute)
 	issued(2)
 	// When it comes back, it holds every generation before its first request.
-	returned, err := f.st.Broker.Tokens(ctx)
+	returned, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 	if err != nil {
 		t.Fatal(err)
 	}
