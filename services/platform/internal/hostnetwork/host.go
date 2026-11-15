@@ -226,9 +226,11 @@ func (h Host) Apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 		return err
 	}
 	defer unlock()
-	return h.apply(ctx, m, bridges, restrict)
+	return h.apply(ctx, m, bridges, restrict, false)
 }
-func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict bool) error {
+
+// apply installs m. A restore puts back intent the host saved, which passed its checks when saved.
+func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict, restoring bool) error {
 	if runtime.GOOS != "linux" || m.Validate() != nil {
 		return errors.New("managed links require a valid Linux network manifest")
 	}
@@ -249,6 +251,7 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	// effect in the saved intent and the firewall, and the link stays down until it is restored
 	// with its key. Anything else opens the key before it changes anything.
 	key := h.liveKey(ctx, m)
+	live := key != nil
 	if key == nil && !restrict && !m.Disabled {
 		if key, err = h.openKeyFile(ctx, m.MembershipID, f); err != nil {
 			return err
@@ -289,8 +292,10 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 		return err
 	}
 	// A restriction keeps the prefix the host holds, so it can't create a conflict, and removing
-	// authority must not wait on one that appeared since.
-	if !restrict {
+	// authority must not wait on one that appeared since. Nor does a restore of a link that is up,
+	// such as finishing a restriction an earlier failure left half applied: the link holds its
+	// prefix already, and its saved intent passed this check when it was saved.
+	if !restrict && !(restoring && live) {
 		if err = h.inspectRoutes(ctx, m); err != nil {
 			return err
 		}

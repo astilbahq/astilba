@@ -329,6 +329,14 @@ func TestNativeManagedLinks(t *testing.T) {
 		t.Fatal("restriction fault did not occur")
 	}
 	b.NFT = originalNFT
+	// The agent service finishes a restriction left half applied, over the container network a
+	// restriction doesn't wait on: the link holds its prefix already.
+	if err = b.RestoreMissing(ctx, nil); err != nil {
+		t.Fatal("the restore couldn't finish a restriction left half applied", err)
+	}
+	if _, err = request("u"); err == nil {
+		t.Fatal("revoked grant remained reachable after the restore finished its restriction")
+	}
 	if err = b.Apply(ctx, next, bb, true); err != nil {
 		t.Fatal("same restriction retry", err)
 	}

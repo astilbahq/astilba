@@ -37,7 +37,7 @@ func (e *Engine) sealNetworkKeys(ctx context.Context, store hostnetwork.Sealer) 
 // restorePrivateLinks puts back the private links this host holds that aren't in place, apart from
 // the networks skip names. Their keys are opened first, with the engine free, so that no command
 // waits on the key store meanwhile. Each network that fails is a hostnetwork.NetworkError.
-func (e *Engine) restorePrivateLinks(ctx context.Context, skip func(uuid.UUID) bool) error {
+func (e *Engine) restorePrivateLinks(ctx context.Context, skip func(hostnetwork.Snapshot) bool) error {
 	host := e.networkHost()
 	var opening error
 	if host.Keys != nil {
@@ -67,7 +67,7 @@ func (c *Client) untilDone(ctx context.Context, what string, ready func() bool, 
 				return
 			case ctx.Err() != nil, errors.Is(err, errEngineBusy):
 			case errors.Is(err, hostnetwork.ErrKeyStoreUnavailable):
-				slog.Warn("the agent could not "+what+" because its key store isn't working; it tries again within a minute", "error", err)
+				// The agent logs that its key store isn't working once an hour; see waitForKeyStore.
 			default:
 				next = time.Now().Add(journalRekeyInterval)
 				slog.Warn("the agent could not "+what+"; it tries again within the hour", "error", err)
@@ -81,41 +81,53 @@ func (c *Client) untilDone(ctx context.Context, what string, ready func() bool, 
 
 // keepPrivateLinksRestored puts back the private links that aren't in place, each minute: those the
 // boot restore couldn't, as when the key store wasn't working yet that early, and those a
-// restriction took down without their key. A network that fails is left alone for a minute if the
-// key store wasn't working, or else for an hour, so one that can't be restored neither holds back
-// the others nor costs work every minute. A failure is logged at most once an hour.
+// restriction took down without their key, or left half applied. One network that fails doesn't
+// hold back the others; see restoreRetries. A failure is logged at most once an hour.
 func (c *Client) keepPrivateLinksRestored(ctx context.Context) {
 	var logged time.Time
-	retry := map[uuid.UUID]time.Time{}
+	retry := map[uuid.UUID]restoreWait{}
 	for {
 		now := time.Now()
-		tried := map[uuid.UUID]bool{}
-		err := c.Engine.restorePrivateLinks(ctx, func(id uuid.UUID) bool {
-			if now.Before(retry[id]) {
+		tried := map[uuid.UUID]string{}
+		err := c.Engine.restorePrivateLinks(ctx, func(s hostnetwork.Snapshot) bool {
+			id, intent := s.Manifest.NetworkID, hostnetwork.Hash(s.Manifest)
+			if w, ok := retry[id]; ok && w.intent == intent && now.Before(w.until) {
 				return true
 			}
-			tried[id] = true
+			tried[id] = intent
 			return false
 		})
 		if !errors.Is(err, errEngineBusy) {
-			failed := networkFailures(err)
-			for id := range tried {
-				switch {
-				case failed[id] == nil:
-					delete(retry, id)
-				case errors.Is(failed[id], hostnetwork.ErrKeyStoreUnavailable):
-					retry[id] = now.Add(keyStoreRetry)
-				default:
-					retry[id] = now.Add(journalRekeyInterval)
-				}
-			}
+			restoreRetries(retry, tried, networkFailures(err), now)
 			if err != nil && ctx.Err() == nil && time.Since(logged) >= journalRekeyInterval {
 				logged = time.Now()
-				slog.Warn("the agent could not restore some private links; it tries each again within the hour", "error", err)
+				slog.Warn("the agent could not restore some private links; it keeps trying", "error", err)
 			}
 		}
 		if !wait(ctx, journalRekeyCheck) {
 			return
+		}
+	}
+}
+
+// restoreWait is how long a network waits before it is restored again, while its saved intent is
+// the one that failed. A command that saves another intent ends the wait.
+type restoreWait struct {
+	until  time.Time
+	intent string
+}
+
+// restoreRetries records when each network tried at now, with the intent it held, may be tried
+// again. A network restored is tried whenever it next isn't in place. One whose key isn't this
+// machine's waits an hour, since only its owner can fix that and each try costs key store calls.
+// Any other failure is tried again a minute later: a restriction left half applied must finish as
+// soon as it can.
+func restoreRetries(retry map[uuid.UUID]restoreWait, tried map[uuid.UUID]string, failed map[uuid.UUID]error, now time.Time) {
+	for id, intent := range tried {
+		if errors.Is(failed[id], hostnetwork.ErrSealedKey) {
+			retry[id] = restoreWait{now.Add(journalRekeyInterval), intent}
+		} else {
+			delete(retry, id)
 		}
 	}
 }

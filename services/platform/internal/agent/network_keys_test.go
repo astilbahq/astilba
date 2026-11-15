@@ -441,3 +441,30 @@ func TestNetworkFailuresAreFoundPerNetwork(t *testing.T) {
 		t.Fatal("no error found failures")
 	}
 }
+
+// A network whose key isn't this machine's waits an hour before it is tried again, while its
+// intent stays the one that failed. Any other failure, such as a restriction left half applied, is
+// tried again at the next check, and one network waiting never holds back another.
+func TestRestoreRetriesWaitOnlyForAKeyThatIsNotThisMachines(t *testing.T) {
+	now := time.Now()
+	foreign, halfApplied, unavailable, restored, untried := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	retry := map[uuid.UUID]restoreWait{restored: {now.Add(-time.Minute), "r"}, untried: {now.Add(time.Hour), "u"}}
+	tried := map[uuid.UUID]string{foreign: "f", halfApplied: "h", unavailable: "a", restored: "r"}
+	failed := map[uuid.UUID]error{
+		foreign:     fmt.Errorf("%w: sealed elsewhere", hostnetwork.ErrSealedKey),
+		halfApplied: errors.New("managed network nft operation failed"),
+		unavailable: errWaitingForKeyStore,
+	}
+	restoreRetries(retry, tried, failed, now)
+	if w := retry[foreign]; !w.until.Equal(now.Add(journalRekeyInterval)) || w.intent != "f" {
+		t.Fatal("a key that isn't this machine's is tried again before the hour")
+	}
+	for _, id := range []uuid.UUID{halfApplied, unavailable, restored} {
+		if _, waiting := retry[id]; waiting {
+			t.Fatal("a network that can be restored soon waits")
+		}
+	}
+	if w := retry[untried]; !w.until.Equal(now.Add(time.Hour)) {
+		t.Fatal("a network not tried lost its wait")
+	}
+}
