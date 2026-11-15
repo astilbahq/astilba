@@ -338,7 +338,8 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 		grows := c[2]-c[1] > 2*(c[1]-c[0])+1 && c[2] > c[0]*1.05+10
 		excepted, isExcepted := historyReader(q, historyReaders)
 		bound, bounded := historyReader(q, boundedReaders)
-		for _, r := range []historyReaderEntry{excepted, bound} {
+		// A statement may be listed more than once, for each index that bounds a part of it.
+		for _, r := range append([]historyReaderEntry{excepted}, matchingReaders(q, boundedReaders)...) {
 			if all, unkeyed := reads(p, r.index, r.key); r.index != "" && (all == 0 || unkeyed > 0) {
 				t.Errorf("%s no longer reads %s with %q in every condition, which bounds what it reads: give it that index and condition back, or bound it another way and change its entry", q, r.index, r.key)
 			}
@@ -426,17 +427,30 @@ var historyReaders = []historyReaderEntry{
 // generic plan doesn't know, so it guesses the window holds a third of the rows. They are still
 // held to the JIT threshold, and to the index that bounds them: the one returning rows in the
 // LIMIT's order, or the one by end time, every read of which must hold the end time in its
-// condition. Each is listed whole, so its other branches are held only to the plan's other checks.
+// condition. A statement bounded by more than one index is listed once for each, and is held to
+// all of them; its branches no entry names are held only to the plan's other checks.
 var boundedReaders = []historyReaderEntry{
 	{"export_selection.go/exportSelection", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments", "execution_releases", ""},
 	{"releases.go/(*Service).ReleaseHistory", "LIMIT 20", "it reaches the environment's 20 newest deployments", "execution_releases", ""},
 	{"recovery_history.go/recoverySettled", "", "it reads the roots and runtime changes that ended inside the recovery window", "execution_operations_settled", "ended_at"},
-	{"recovery_history.go/recoveryWindowStart", "", "it reads the runtime changes recorded or ended near the recovery window, and the roots that ended in it", "execution_operations_applied_times", "GREATEST"},
-	{"recovery_history.go/recoveryLedger", "unnest(", "it reads each carried environment's runtime changes from the one it had when the recovery window opened", "execution_operations_applied_history", "generation"},
+	{"recovery_history.go/recoveryWindowStart", "", "it reads the runtime changes recorded or ended near the recovery window", "execution_operations_applied_times", "GREATEST"},
+	{"recovery_history.go/recoveryWindowStart", "o.kind='crosshost'", "it reads the roots that ended inside the recovery window", "execution_operations_settled", "ended_at"},
+	{"recovery_history.go/recoveryLedger", "unnest(", "it reads each carried environment's runtime changes at and above its floor, which all count inside the recovery window but the floor's own", "execution_operations_applied_history", "generation"},
 	{"base_selection.go/baseSelection", "'restrict'", "it reads the standalone network removals that ended inside the recovery window", "execution_network_restrictions", "ended_at"},
 }
 
-// historyReader is the entry listing a statement, if one does.
+// matchingReaders is every entry listing a statement.
+func matchingReaders(q operationQuery, readers []historyReaderEntry) []historyReaderEntry {
+	out := []historyReaderEntry{}
+	for _, r := range readers {
+		if q.name == r.name && strings.Contains(q.sql, r.fragment) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// historyReader is the first entry listing a statement, if one does.
 func historyReader(q operationQuery, readers []historyReaderEntry) (historyReaderEntry, bool) {
 	for _, r := range readers {
 		if q.name == r.name && strings.Contains(q.sql, r.fragment) {

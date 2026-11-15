@@ -236,25 +236,29 @@ func marshalValue(value any) []byte {
 // recovered_runtime_history_recorded, or by environment and generation through
 // execution_operations_applied_history and recovered_runtime_history_chain. Whether a row records an
 // entry's change is its outcome, looked up by the entry's operation as a value: written as NOT
-// EXISTS, the planner may instead hash every change the workspace has to compare them.
+// EXISTS, the planner may instead hash every change the workspace has to compare them. Each runs
+// as an unnamed statement, planned for its window every time: a cached statement turns generic
+// after a few runs, and a generic plan, not knowing where the window starts, guesses it holds a
+// third of the history and may read all of it.
 
 // recoveryWindowItems are the window's items, starting at $2: each carried environment's changes
 // that count as recorded or ended inside it, and the roots that ended in it that a base carries
 // neither as a row nor in its ledger, which its settled list names.
 // execution_operations_applied_times orders changes by the latest of their recorded and end
 // times, each without its margin, so a change that counts inside the window is among those whose
-// latest is at most the widest margin before it: a week of days, which is 169 hours at most where
-// the session's time zone changes its clocks. Roots with an end time and roots
-// without one are read apart, so each is a range of execution_operations_settled: as one
-// condition with OR, the planner reads every root the workspace has ended.
+// latest is at most the widest margin before it. That margin is a week of days in the session's
+// time zone, so the bound is a day longer, in hours, to cover any clock change inside it. Roots
+// with an end time and roots without one are read apart, so each is a range of
+// execution_operations_settled: as one condition with OR, the planner reads every root the
+// workspace has ended.
 // inline-sql: reads the base's transaction-local working set
 const recoveryWindowItems = `WITH items AS (
 	SELECT GREATEST(COALESCE(o.runtime_recorded_at+interval '1 day',o.created_at+interval '7 days'),COALESCE(o.ended_at+interval '1 day',o.created_at+interval '7 days')) AS effective
 	FROM execution_operations o JOIN archive_keep k ON k.kind='env' AND k.id=o.environment_id
-	WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND GREATEST(COALESCE(o.runtime_recorded_at,o.created_at),COALESCE(o.ended_at,o.created_at))>=$2::timestamptz-interval '169 hours'
+	WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND GREATEST(COALESCE(o.runtime_recorded_at,o.created_at),COALESCE(o.ended_at,o.created_at))>=$2::timestamptz-interval '192 hours'
 	UNION ALL SELECT h.recorded_at+CASE WHEN (h.entry->>'exact')::boolean THEN interval '1 day' ELSE interval '7 days' END
 	FROM recovered_runtime_history h JOIN archive_keep k ON k.kind='env' AND k.id=h.environment_id
-	WHERE h.workspace_id=$1 AND h.recorded_at>=$2::timestamptz-interval '169 hours'
+	WHERE h.workspace_id=$1 AND h.recorded_at>=$2::timestamptz-interval '192 hours'
 	AND (SELECT o.runtime_outcome FROM execution_operations o WHERE o.workspace_id=$1 AND o.id=h.operation_id) IS NULL
 	UNION ALL SELECT o.ended_at+interval '1 day' FROM execution_operations o
 	WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='crosshost' AND o.runtime_outcome IS NULL AND o.state IN ('succeeded','failed','cancelled')
@@ -267,36 +271,38 @@ const recoveryWindowItems = `WITH items AS (
 ) SELECT effective FROM items WHERE effective>=$2 ORDER BY effective DESC OFFSET $3 LIMIT 1`
 
 // recoveryFloors is each carried environment's floor: the generation of the newest change it had
-// counted as recorded when the window, starting at $2, opened, or 0 if it had none. Each is one
+// counted as recorded when the window, starting at $2, opened, or 0 if it had none. Each is a
 // lookup down the environment's changes from its newest, which passes only the changes counted
-// inside the window, as a row or as an entry.
+// inside the window: first its rows, then its entries above the floor the rows give. A recovery
+// keeps an entry for every change its base carried, so most entries have rows, and below that
+// floor they would all be passed without raising it.
 // inline-sql: reads the base's transaction-local working set
-const recoveryFloors = `SELECT k.id,COALESCE(GREATEST(
-	(SELECT o.generation FROM execution_operations o WHERE o.workspace_id=$1 AND o.environment_id=k.id AND o.runtime_outcome IS NOT NULL
-		AND COALESCE(o.runtime_recorded_at+interval '1 day',o.created_at+interval '7 days')<$2 ORDER BY o.generation DESC LIMIT 1),
-	(SELECT h.generation FROM recovered_runtime_history h WHERE h.workspace_id=$1 AND h.environment_id=k.id
+const recoveryFloors = `WITH r AS MATERIALIZED (
+	SELECT k.id,COALESCE((SELECT o.generation FROM execution_operations o WHERE o.workspace_id=$1 AND o.environment_id=k.id AND o.runtime_outcome IS NOT NULL
+		AND COALESCE(o.runtime_recorded_at+interval '1 day',o.created_at+interval '7 days')<$2 ORDER BY o.generation DESC LIMIT 1),0) AS floor
+	FROM archive_keep k WHERE k.kind='env'
+) SELECT r.id,GREATEST(r.floor,(SELECT h.generation FROM recovered_runtime_history h WHERE h.workspace_id=$1 AND h.environment_id=r.id AND h.generation>r.floor
 		AND h.recorded_at+CASE WHEN (h.entry->>'exact')::boolean THEN interval '1 day' ELSE interval '7 days' END<$2
 		AND (SELECT o.runtime_outcome FROM execution_operations o WHERE o.workspace_id=$1 AND o.id=h.operation_id) IS NULL
-		ORDER BY h.generation DESC LIMIT 1)),0)
-FROM archive_keep k WHERE k.kind='env' ORDER BY k.id`
+		ORDER BY h.generation DESC LIMIT 1))
+FROM r ORDER BY r.id`
 
 // recoveryLedgerEntries is each environment's changes from its floor up, given as the arrays $2
 // and $3, for the window starting at $4. The changes above an environment's floor all count as
 // recorded inside the window, so they are among those execution_operations_applied_times and
-// recovered_runtime_history_recorded hold from the widest margin before it, as recoveryWindowItems
-// reads them; the floor's own change is read by
-// its environment and generation. Each part is a range of an index whichever way the planner joins
-// it to the floors. The applied revision and hash come from the plan stored for the runtime the
+// recovered_runtime_history_recorded hold from the bound recoveryWindowItems reads them by; the
+// floor's own change is read by its environment and generation. Each part is a range of an index
+// whichever way the planner joins it to the floors. The applied revision and hash come from the plan stored for the runtime the
 // change applied, as recovery reads them for a carried row, so an entry and the row it stands for
 // agree.
 // inline-sql: reads the base's transaction-local working set
 const recoveryLedgerEntries = `WITH f AS (SELECT * FROM unnest($2::uuid[],$3::bigint[]) f(env,floor)), changes AS (
 	SELECT o.environment_id,o.id,o.generation,o.runtime_recorded_at,o.created_at,o.command,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id FROM f JOIN execution_operations o ON o.environment_id=f.env AND o.generation>f.floor
-	WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND GREATEST(COALESCE(o.runtime_recorded_at,o.created_at),COALESCE(o.ended_at,o.created_at))>=$4::timestamptz-interval '169 hours'
+	WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND GREATEST(COALESCE(o.runtime_recorded_at,o.created_at),COALESCE(o.ended_at,o.created_at))>=$4::timestamptz-interval '192 hours'
 	UNION ALL SELECT o.environment_id,o.id,o.generation,o.runtime_recorded_at,o.created_at,o.command,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id FROM f JOIN execution_operations o ON o.workspace_id=$1 AND o.environment_id=f.env AND o.generation=f.floor AND o.runtime_outcome IS NOT NULL
 ), entries AS (
 	SELECT h.environment_id,h.operation_id,h.generation,h.recorded_at,h.entry FROM f JOIN recovered_runtime_history h ON h.environment_id=f.env AND h.generation>f.floor
-	WHERE h.workspace_id=$1 AND h.recorded_at>=$4::timestamptz-interval '169 hours'
+	WHERE h.workspace_id=$1 AND h.recorded_at>=$4::timestamptz-interval '192 hours'
 	UNION ALL SELECT h.environment_id,h.operation_id,h.generation,h.recorded_at,h.entry FROM f JOIN recovered_runtime_history h ON h.workspace_id=$1 AND h.environment_id=f.env AND h.generation=f.floor
 )
 SELECT o.environment_id,o.id,o.generation,COALESCE(o.runtime_recorded_at,o.created_at),o.runtime_recorded_at IS NOT NULL,NULL::jsonb,
@@ -316,7 +322,7 @@ func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start tim
 		return time.Time{}, ErrArchive
 	}
 	var cut *time.Time
-	err := tx.QueryRow(ctx, recoveryWindowItems, ws, start, limit-1).Scan(&cut)
+	err := tx.QueryRow(ctx, recoveryWindowItems, pgx.QueryExecModeDescribeExec, ws, start, limit-1).Scan(&cut)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return start, nil
 	}
@@ -332,7 +338,7 @@ func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start tim
 // computes, so a base sealed again reads each command once.
 func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, identities map[uuid.UUID]string) ([]RecoveryEnvironment, []AppliedEntry, error) {
 	environments := []RecoveryEnvironment{}
-	rows, err := tx.Query(ctx, recoveryFloors, ws, start)
+	rows, err := tx.Query(ctx, recoveryFloors, pgx.QueryExecModeDescribeExec, ws, start)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -352,7 +358,7 @@ func recoveryLedger(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Tim
 		return nil, nil, err
 	}
 	entries := []AppliedEntry{}
-	rows, err = tx.Query(ctx, recoveryLedgerEntries, ws, ids, floors, start)
+	rows, err = tx.Query(ctx, recoveryLedgerEntries, pgx.QueryExecModeDescribeExec, ws, ids, floors, start)
 	if err != nil {
 		return nil, nil, err
 	}

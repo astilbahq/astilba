@@ -440,8 +440,10 @@ SELECT gen_random_uuid(),$1,$2,2000000+i,gen_random_uuid(),'{"network":{"action"
 FROM generate_series(1,300) i, LATERAL (SELECT now()-interval '10 days'+i*interval '30 minutes' AS at) t`, ws, in.ServerId)
 	// older seeds the operations numbered from to through, of a hundred thousand three minutes apart
 	// that ended a hundred days ago: a quarter of them deployments that each applied a runtime, with
-	// the generations they took. It also seeds the entries numbered from first to last of three
-	// thousand that a recovery kept five months ago, without their rows, after every older change.
+	// the generations they took. A recovery kept an entry for each of those changes, as it keeps its
+	// base's whole ledger, and the database has their rows. It also kept, five months ago and after
+	// every older change, the entries numbered from first to last of three thousand without their
+	// rows, in the first two environments.
 	const old, kept = 100000, 3000
 	older := func(from, to, first, last int) {
 		t.Helper()
@@ -456,13 +458,24 @@ FROM generate_series($5::int,$6::int) i,
 		seed(`INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
 SELECT $1,op,env,500000+i,at,jsonb_build_object('environment',env,'operation',op,'generation',500000+i,'identity','v2:'||repeat('ab',32),'outcome','applied','runtimePlan',plan,
 	'revision',NULL,'planHash','','state','succeeded','sequence',1,'controller',0,'recordedAt',at,'exact',true)
-FROM generate_series($4::int,$5::int) i, LATERAL (SELECT gen_random_uuid() AS op,($2::uuid[])[1+i%3] AS env,($3::uuid[])[1+i%3] AS plan,now()-interval '150 days'+i*interval '1 second' AS at) k`, ws, environments, plans, first, last)
+FROM generate_series($4::int,$5::int) i, LATERAL (SELECT gen_random_uuid() AS op,($2::uuid[])[1+i%3] AS env,($3::uuid[])[1+i%3] AS plan,now()-interval '150 days'+i*interval '1 second' AS at) k
+WHERE i%3<>2`, ws, environments, plans, first, last)
+		seed(`INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
+SELECT o.workspace_id,o.id,o.environment_id,o.generation,o.runtime_recorded_at,jsonb_build_object('environment',o.environment_id,'operation',o.id,'generation',o.generation,'identity','v2:'||repeat('ab',32),
+	'outcome','applied','runtimePlan',o.runtime_plan_id,'revision',NULL,'planHash','','state','succeeded','sequence',1,'controller',0,'recordedAt',o.runtime_recorded_at,'exact',true)
+FROM execution_operations o WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND o.generation BETWEEN $2 AND $3`, ws, from, to)
 	}
-	// capture captures a base, and counts the rows and index entries it read from the operations
-	// and the applied history recoveries kept, by relation.
+	// capture captures a base on one connection, as a coordinator captures one pass after another,
+	// and counts the rows and index entries it read from the operations and the applied history
+	// recoveries kept, by relation.
+	conn, err := f.st.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
 	capture := func() (int64, map[string]int64, portability.Archive) {
 		t.Helper()
-		tx, err := f.st.Pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -507,15 +520,19 @@ WHERE c.oid IN ('execution_operations'::regclass,'recovered_runtime_history'::re
 		if window := captured.CapturedAt.Sub(captured.WindowStart); window != portability.RecoveryWindowTarget {
 			t.Fatal("the window is shorter than its target: ", window)
 		}
-		// Each environment's floor is the newest entry the recovery kept for it: 500000+i for the
-		// largest i with i%3 equal to the environment's index. The ledger is the floor and the
-		// month's deployments.
+		// The first two environments' floors are the newest entry the recovery kept for each without
+		// its row: 500000+i for the largest i with i%3 equal to the environment's index. The third's
+		// is its newest older deployment. The ledger is the floor and the month's deployments.
 		floors := map[uuid.UUID]int64{}
 		for _, e := range archive.Recovery.Environments {
 			floors[e.Environment] = e.Floor
 		}
 		for i, env := range environments {
-			if want := int64(500000 + kept - (kept-i)%3); floors[env] != want {
+			want := int64(500000 + kept - (kept-i)%3)
+			if i == 2 {
+				want = claimCounter(t, f, `SELECT max(generation) FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND runtime_outcome IS NOT NULL AND generation<1000000`, ws, env)
+			}
+			if floors[env] != want {
 				t.Fatalf("environment %d starts its history at generation %d, not %d, the change it had when the window opened", i, floors[env], want)
 			}
 		}
@@ -524,8 +541,8 @@ WHERE c.oid IN ('execution_operations'::regclass,'recovered_runtime_history'::re
 		}
 		return total, counts, archive
 	}
-	// A thousand older operations and three hundred kept entries, then the rest, each part older
-	// than the last.
+	// A thousand older operations and three hundred kept entries without rows, then the rest, each
+	// part older than the last.
 	older(old-999, old, kept-299, kept)
 	little, littleCounts, _ := capture()
 	older(1, old-1000, 1, kept-300)
@@ -533,17 +550,22 @@ WHERE c.oid IN ('execution_operations'::regclass,'recovered_runtime_history'::re
 	if long > little {
 		t.Fatalf("a capture read %d rows and index entries with %d older operations and %d older entries (%v), and %d with %d and %d (%v)", little, 1000, 300, littleCounts, long, old, kept, longCounts)
 	}
-	// The window's cut, the floors and the ledger each read the window's changes once, and the
-	// floors and the ledger each environment's floor: the applied history read is three times the
-	// window's.
-	history := int64(0)
-	for relation, n := range longCounts {
-		if strings.HasPrefix(relation, "execution_operations_applied_") || strings.HasPrefix(relation, "recovered_runtime_history") {
-			history += n
+	// The window's cut, the floors and the ledger each read the window's changes, and the floors
+	// and the ledger each environment's floor: the applied history read is a few times the
+	// window's, where the hundred thousand older operations hold over eight thousand older changes.
+	// It stays so as a coordinator captures again and again on one connection.
+	window := int64(3*recent + len(environments))
+	for range 6 {
+		_, counts, _ := capture()
+		history := int64(0)
+		for relation, n := range counts {
+			if strings.HasPrefix(relation, "execution_operations_applied_") || strings.HasPrefix(relation, "recovered_runtime_history") {
+				history += n
+			}
 		}
-	}
-	if window := int64(3*recent + len(environments)); history > 3*window {
-		t.Fatalf("a capture read %d entries of applied history, more than three times the %d inside its window and at its floors: %v", history, window, longCounts)
+		if history > 5*window {
+			t.Fatalf("a capture read %d entries of applied history, more than five times the %d inside its window and at its floors: %v", history, window, counts)
+		}
 	}
 	t.Logf("a capture read %d rows and index entries with %d older operations, and %d with %d: %v", little, 1000, long, old, longCounts)
 }

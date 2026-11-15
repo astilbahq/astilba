@@ -23,8 +23,9 @@ var (
 	// A column, or a field a column's JSON holds, named by constant keys: `->` and `->>` give null
 	// for anything else a row holds rather than fail.
 	field = `[A-Z_][A-Z0-9_]*(?: ?->>? ?'[^']*')*`
-	// COALESCE, GREATEST and LEAST of those, nested twice at most, which compare values of a type
-	// fixed when the index is built and so cannot fail either.
+	// COALESCE, GREATEST and LEAST of those, nested twice at most. Of arguments of one type they
+	// only compare, which cannot fail; arguments of mixed types are cast to one, which can, and
+	// this check can't see the types, so a migration must not mix them.
 	pick         = `(?:COALESCE|GREATEST|LEAST) ?\(`
 	operand      = `(?:` + pick + field + `(?:, ?` + field + `)*\)|` + field + `)`
 	element      = `(?:[A-Z_][A-Z0-9_]*|\((?:` + pick + operand + `(?:, ?` + operand + `)*\)|` + field + `)\))`
