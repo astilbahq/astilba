@@ -165,9 +165,10 @@ func TestARedeliveryGetsThePipelinesOwnToken(t *testing.T) {
 	}
 }
 
-// A submission that meets GitHub's rate limit waits for the time GitHub gives, saying so, and
-// spends none of its tries meanwhile, rather than spend them all before the limit lifts.
-func TestARateLimitedSubmissionWaitsForGitHub(t *testing.T) {
+// rateLimitedSubmission submits an edited draft of an App import while GitHub limits the App
+// for seconds, and returns the submission.
+func rateLimitedSubmission(t *testing.T, seconds int64) (*heldGitHub, uuid.UUID) {
+	t.Helper()
 	h := newHeldGitHub(t)
 	f, b := h.f, h.b
 	connection := h.connect(t)
@@ -191,26 +192,46 @@ func TestARateLimitedSubmissionWaitsForGitHub(t *testing.T) {
 	draft, spec := draftSpec(t, b, path)
 	spec.Compose.Files[0].Content += "# edited\n"
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
-	h.limitMints.Store(600)
+	h.limitMints.Store(seconds)
 	var submission api.SourceSubmission
 	b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 202, &submission)
+	return h, submission.Id
+}
+
+// submissionSettled polls until the submission's note holds want and its job is no longer
+// running, as the note is written before River records what the attempt returned.
+func submissionSettled(t *testing.T, h *heldGitHub, id uuid.UUID, want string) (state, note, job string, attempt int) {
+	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		var state, note, job string
-		var attempt int
-		if err := f.st.Pool.QueryRow(t.Context(), "SELECT s.state,s.note,j.state,j.attempt FROM source_submissions s, river_job j WHERE s.id=$1 AND j.kind='platform_source_submission_v1' ORDER BY j.id DESC LIMIT 1", submission.Id).Scan(&state, &note, &job, &attempt); err != nil {
+		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT s.state,s.note,j.state,j.attempt FROM source_submissions s, river_job j WHERE s.id=$1 AND j.kind='platform_source_submission_v1' ORDER BY j.id DESC LIMIT 1", id).Scan(&state, &note, &job, &attempt); err != nil {
 			t.Fatal(err)
 		}
-		// The note is written before River records the snooze.
-		if strings.Contains(note, "when GitHub allows Astilba's GitHub App to make requests again") && job != "running" {
-			if state != "queued" || job != "scheduled" || attempt != 0 {
-				t.Fatalf("a rate-limited submission did not wait for GitHub: %s %s attempt %d", state, job, attempt)
-			}
+		if strings.Contains(note, want) && job != "running" {
 			return
 		}
-		if state != "queued" || time.Now().After(deadline) {
-			t.Fatalf("a rate-limited submission did not wait for GitHub: %s %q", state, note)
+		if time.Now().After(deadline) {
+			t.Fatalf("the submission did not settle: %s %q %s", state, note, job)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A submission that meets GitHub's rate limit waits for the time GitHub gives, saying so, and
+// spends none of its tries meanwhile, rather than spend them all before the limit lifts.
+func TestARateLimitedSubmissionWaitsForGitHub(t *testing.T) {
+	h, id := rateLimitedSubmission(t, 600)
+	state, _, job, attempt := submissionSettled(t, h, id, "when GitHub allows Astilba's GitHub App to make requests again")
+	if state != "queued" || job != "scheduled" || attempt != 0 {
+		t.Fatalf("a rate-limited submission did not wait for GitHub: %s %s attempt %d", state, job, attempt)
+	}
+}
+
+// One limited past the hour a submission has fails at once, saying when to submit again.
+func TestASubmissionLimitedPastItsHourFailsAtOnce(t *testing.T) {
+	h, id := rateLimitedSubmission(t, 7200)
+	state, note, job, _ := submissionSettled(t, h, id, "after the hour a submission has")
+	if state != "failed" || job != "completed" || !strings.Contains(note, "Submit the draft again then") {
+		t.Fatalf("a submission that could not wait was not failed at once: %s %s %q", state, job, note)
 	}
 }
