@@ -343,9 +343,6 @@ func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, e
 		if json.Unmarshal(envelope.Result, &records) != nil || envelope.Info.Page != page || len(records) > markedPage {
 			return nil, ErrProvider
 		}
-		if envelope.Info.TotalPages > markedPages {
-			return nil, ErrZoneTooLarge
-		}
 		for _, r := range records {
 			if !cloudflareID.MatchString(r.ID) || !hasFoldedPrefix(r.Comment, prefix) {
 				return nil, ErrProvider
@@ -354,6 +351,10 @@ func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, e
 				seen[r.ID] = true
 				out = append(out, Marked{r.ID, r.Type, r.Name, r.Content, r.Comment})
 			}
+		}
+		// Checked once the page's records are, so a provider that stopped filtering is told apart.
+		if envelope.Info.TotalPages > markedPages {
+			return nil, ErrZoneTooLarge
 		}
 		if len(records) == 0 || page >= envelope.Info.TotalPages {
 			return out, nil
