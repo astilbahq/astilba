@@ -39,7 +39,7 @@ Choose the starter or 250-service workspace. Each has separate browser-local sto
 | Panda dev, Vite plugin and presets    | 2.4.0         | MIT        |
 | Vite+ / React plugin                  | 1.4.0 / 6.1.2 | MIT        |
 | TypeScript                            | 7.0.2         | Apache-2.0 |
-| Playwright test                       | 1.64.1        | Apache-2.0 |
+| Playwright test                       | 1.65.1        | Apache-2.0 |
 | axe Playwright integration / axe-core | 4.14.0        | MPL-2.0    |
 | React / React DOM type declarations   | 19.3.0        | MIT        |
 | Node type declarations                | 24.19.2       | MIT        |
