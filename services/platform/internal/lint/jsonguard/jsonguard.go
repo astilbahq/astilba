@@ -26,6 +26,8 @@ var v1Importers = map[string]bool{
 	"internal/domain/compose.go":         true,
 	"internal/cryptobox/cryptobox.go":    true,
 	"internal/pipeline/railpack_plan.go": true,
+	// writes a fake provider's responses with the encoder CodeQL knows writes JSON
+	"internal/pipeline/pipelinetest/forge.go": true,
 }
 
 // Functions that write to a third party, as package.receiver.function. Nothing hashes,

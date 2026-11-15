@@ -8,5 +8,5 @@ import (
 )
 
 func TestAnalyzer(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), requestbody.Analyzer, "example/internal/httpapi", "example/internal/other")
+	analysistest.Run(t, analysistest.TestData(), requestbody.Analyzer, "example/internal/httpapi", "example/internal/other", "example/internal/pipeline/pipelinetest", "example/internal/pipeline/other")
 }
