@@ -37,9 +37,11 @@ func (h Host) RestoreMissing(ctx context.Context, skip func(Snapshot) bool) erro
 	return h.restore(ctx, true, skip)
 }
 
-// NetworkError is why one network wasn't restored.
+// NetworkError is why one network wasn't restored. NeedsKey says the attempt had to open the
+// network's key from the key store, because no live link held it.
 type NetworkError struct {
 	NetworkID uuid.UUID
+	NeedsKey  bool
 	Err       error
 }
 
@@ -49,8 +51,9 @@ func (e NetworkError) Unwrap() error { return e.Err }
 func (h Host) restore(ctx context.Context, missing bool, skip func(Snapshot) bool) error {
 	snapshots, failures := h.held(ctx, missing, skip)
 	for _, s := range snapshots {
+		needsKey := h.needsKey(ctx, s.Manifest)
 		if err := h.apply(ctx, s.Manifest, s.Bridges, false, true); err != nil {
-			failures = append(failures, NetworkError{s.Manifest.NetworkID, err})
+			failures = append(failures, NetworkError{s.Manifest.NetworkID, needsKey, err})
 		}
 	}
 	return errors.Join(failures...)
@@ -79,7 +82,7 @@ func (h Host) held(ctx context.Context, missing bool, skip func(Snapshot) bool) 
 		}
 		s, e := h.Snapshot(id)
 		if e != nil {
-			failures = append(failures, NetworkError{id, e})
+			failures = append(failures, NetworkError{NetworkID: id, Err: e})
 			continue
 		}
 		if skip != nil && skip(s) {
@@ -99,18 +102,57 @@ func (h Host) held(ctx context.Context, missing bool, skip func(Snapshot) bool) 
 func (h Host) OpenMissingKeys(ctx context.Context, skip func(Snapshot) bool) error {
 	snapshots, failures := h.held(ctx, true, skip)
 	for _, s := range snapshots {
-		if s.Manifest.Disabled || h.liveKey(ctx, s.Manifest) != nil {
+		if !h.needsKey(ctx, s.Manifest) {
 			continue
 		}
 		if _, err := h.privateKey(ctx, s.Manifest.MembershipID); err != nil {
-			failures = append(failures, NetworkError{s.Manifest.NetworkID, err})
+			failures = append(failures, NetworkError{s.Manifest.NetworkID, true, err})
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// needsKey reports whether restoring m opens its key from the key store: no live link holds it,
+// and m isn't a removal, which needs none.
+func (h Host) needsKey(ctx context.Context, m Manifest) bool {
+	return !m.Disabled && h.liveKey(ctx, m) == nil
 }
 
 // holds reports whether m's interface is there and carries m's key.
 func (h Host) holds(ctx context.Context, m Manifest) bool {
 	actual, err := h.run(ctx, "wg", nil, "show", m.Interface(), "public-key")
 	return err == nil && strings.TrimSpace(string(actual)) == m.PublicKey
+}
+
+// routesAlready reports whether m's interface already routes every peer m names.
+func (h Host) routesAlready(ctx context.Context, m Manifest) bool {
+	routed, err := h.routedPeers(ctx, m)
+	if err != nil {
+		return false
+	}
+	for _, p := range m.Peers {
+		if !routed[p.Address] {
+			return false
+		}
+	}
+	return true
+}
+
+// routedPeers is the set of addresses m's interface has a route to.
+func (h Host) routedPeers(ctx context.Context, m Manifest) (map[string]bool, error) {
+	raw, err := h.run(ctx, "ip", nil, "-j", "-4", "route", "show", "dev", m.Interface())
+	if err != nil {
+		return nil, err
+	}
+	var routes []struct {
+		Dst string `json:"dst"`
+	}
+	if readToolJSON(raw, &routes) != nil {
+		return nil, errors.New("cannot inspect managed network routes")
+	}
+	out := map[string]bool{}
+	for _, r := range routes {
+		out[strings.TrimSuffix(r.Dst, "/32")] = true
+	}
+	return out, nil
 }

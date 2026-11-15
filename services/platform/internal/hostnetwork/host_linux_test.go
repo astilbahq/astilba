@@ -4,6 +4,8 @@ package hostnetwork
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -414,6 +417,33 @@ func TestNativeManagedLinks(t *testing.T) {
 	if err = a.Apply(ctx, dropped, prior.Bridges, false); err != nil {
 		t.Fatal("dropping a peer from a link that was down failed", err)
 	}
+	// A restore that would add a route is checked afresh. A configure that saved its intent and then
+	// failed isn't put back over a container network that appeared since.
+	expand := restored
+	expand.Generation++
+	stranger, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	expand.Peers = append(slices.Clone(restored.Peers), Peer{ServerID: uuid.New(), MembershipID: uuid.New(), Address: "10.251.0.9", PublicKey: publicKeyOf(stranger), Endpoint: "192.0.2.9:51820"})
+	originalWG := b.WG
+	failWG := filepath.Join(root, "wg-once")
+	b.WG = filepath.Join(root, "interrupt-wg")
+	script = fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = 'setconf' ] && [ ! -e %s ]; then touch %s; exit 1; fi\nexec %s \"$@\"\n", failWG, failWG, originalWG)
+	if err = os.WriteFile(b.WG, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Apply(ctx, expand, bb, false); err == nil {
+		t.Fatal("configure fault did not occur")
+	}
+	b.WG = originalWG
+	in("b", "ip", "link", "add", "overlap", "type", "bridge")
+	in("b", "ip", "address", "add", "10.251.0.128/25", "dev", "overlap")
+	in("b", "ip", "link", "set", "overlap", "up")
+	if err = b.RestoreMissing(ctx, nil); !errors.As(err, &conflict) {
+		t.Fatal("a restore that adds a route skipped the route check", err)
+	}
+	if out := in("b", "ip", "route", "show", "10.251.0.9"); strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("a refused restore routed its new peer: %s", out)
+	}
+	in("b", "ip", "link", "delete", "overlap")
 	for _, key := range []string{"a", "b"} {
 		raw := in(key, "nft", "-j", "list", "table", "ip", "fixture")
 		if !jsontext.Value(raw).IsValid() {

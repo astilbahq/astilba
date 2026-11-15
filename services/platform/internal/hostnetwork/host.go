@@ -292,10 +292,10 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict,
 		return err
 	}
 	// A restriction keeps the prefix the host holds, so it can't create a conflict, and removing
-	// authority must not wait on one that appeared since. Nor does a restore of a link that is up,
-	// such as finishing a restriction an earlier failure left half applied: the link holds its
-	// prefix already, and its saved intent passed this check when it was saved.
-	if !restrict && !(restoring && live) {
+	// authority must not wait on one that appeared since. Nor does a restore that routes nothing
+	// the link doesn't route already, such as finishing a restriction an earlier failure left half
+	// applied. A restore that would add a route is checked afresh.
+	if !restrict && !(restoring && live && h.routesAlready(ctx, m)) {
 		if err = h.inspectRoutes(ctx, m); err != nil {
 			return err
 		}
@@ -417,25 +417,6 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 		present = true
 	}
 	return present, nil
-}
-
-// routedPeers is the set of addresses m's interface has a route to.
-func (h Host) routedPeers(ctx context.Context, m Manifest) (map[string]bool, error) {
-	raw, err := h.run(ctx, "ip", nil, "-j", "-4", "route", "show", "dev", m.Interface())
-	if err != nil {
-		return nil, err
-	}
-	var routes []struct {
-		Dst string `json:"dst"`
-	}
-	if readToolJSON(raw, &routes) != nil {
-		return nil, errors.New("cannot inspect managed network routes")
-	}
-	out := map[string]bool{}
-	for _, r := range routes {
-		out[strings.TrimSuffix(r.Dst, "/32")] = true
-	}
-	return out, nil
 }
 
 func (h Host) inspectRoutes(ctx context.Context, m Manifest) error {

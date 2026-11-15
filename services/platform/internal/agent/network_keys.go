@@ -118,13 +118,15 @@ type restoreWait struct {
 }
 
 // restoreRetries records when each network tried at now, with the intent it held, may be tried
-// again. A network restored is tried whenever it next isn't in place. One whose key isn't this
-// machine's waits an hour, since only its owner can fix that and each try costs key store calls.
-// Any other failure is tried again a minute later: a restriction left half applied must finish as
-// soon as it can.
-func restoreRetries(retry map[uuid.UUID]restoreWait, tried map[uuid.UUID]string, failed map[uuid.UUID]error, now time.Time) {
+// again. A network restored is tried whenever it next isn't in place. A failure that had to open
+// the key from the key store waits an hour, while the intent stays the same, since each try costs
+// key store calls: a key that isn't this machine's, or a link that can't come up. A key store that
+// wasn't working is tried again a minute later, and so is a failure on a link that holds its key
+// already, such as a restriction left half applied, which must finish as soon as it can.
+func restoreRetries(retry map[uuid.UUID]restoreWait, tried map[uuid.UUID]string, failed map[uuid.UUID]hostnetwork.NetworkError, now time.Time) {
 	for id, intent := range tried {
-		if errors.Is(failed[id], hostnetwork.ErrSealedKey) {
+		f, ok := failed[id]
+		if ok && f.NeedsKey && !errors.Is(f.Err, hostnetwork.ErrKeyStoreUnavailable) {
 			retry[id] = restoreWait{now.Add(journalRekeyInterval), intent}
 		} else {
 			delete(retry, id)
@@ -132,9 +134,10 @@ func restoreRetries(retry map[uuid.UUID]restoreWait, tried map[uuid.UUID]string,
 	}
 }
 
-// networkFailures is the failure of each network in err, which may join several.
-func networkFailures(err error) map[uuid.UUID]error {
-	out := map[uuid.UUID]error{}
+// networkFailures is the failure of each network in err, which may join several. The first one
+// found for a network is kept.
+func networkFailures(err error) map[uuid.UUID]hostnetwork.NetworkError {
+	out := map[uuid.UUID]hostnetwork.NetworkError{}
 	var walk func(error)
 	walk = func(err error) {
 		if joined, ok := err.(interface{ Unwrap() []error }); ok {
@@ -144,8 +147,11 @@ func networkFailures(err error) map[uuid.UUID]error {
 			return
 		}
 		var failed hostnetwork.NetworkError
-		if errors.As(err, &failed) && out[failed.NetworkID] == nil {
-			out[failed.NetworkID] = failed.Err
+		if !errors.As(err, &failed) {
+			return
+		}
+		if _, seen := out[failed.NetworkID]; !seen {
+			out[failed.NetworkID] = failed
 		}
 	}
 	if err != nil {

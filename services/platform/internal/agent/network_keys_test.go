@@ -430,34 +430,39 @@ func TestKeyStoreTimeoutIsUnavailable(t *testing.T) {
 func TestNetworkFailuresAreFoundPerNetwork(t *testing.T) {
 	first, second := uuid.New(), uuid.New()
 	err := errors.Join(
-		hostnetwork.NetworkError{NetworkID: first, Err: hostnetwork.ErrSealedKey},
+		hostnetwork.NetworkError{NetworkID: first, NeedsKey: true, Err: hostnetwork.ErrSealedKey},
 		errors.Join(hostnetwork.NetworkError{NetworkID: second, Err: errWaitingForKeyStore}, errors.New("invalid network state filename")),
+		hostnetwork.NetworkError{NetworkID: first, Err: errors.New("a later failure")},
 	)
 	failed := networkFailures(err)
-	if len(failed) != 2 || !errors.Is(failed[first], hostnetwork.ErrSealedKey) || !errors.Is(failed[second], hostnetwork.ErrKeyStoreUnavailable) {
-		t.Fatalf("network failures weren't found per network: %v", failed)
+	if len(failed) != 2 || !errors.Is(failed[first].Err, hostnetwork.ErrSealedKey) || !failed[first].NeedsKey || !errors.Is(failed[second].Err, hostnetwork.ErrKeyStoreUnavailable) {
+		t.Fatalf("network failures weren't found per network, first first: %v", failed)
 	}
 	if len(networkFailures(nil)) != 0 {
 		t.Fatal("no error found failures")
 	}
 }
 
-// A network whose key isn't this machine's waits an hour before it is tried again, while its
-// intent stays the one that failed. Any other failure, such as a restriction left half applied, is
-// tried again at the next check, and one network waiting never holds back another.
-func TestRestoreRetriesWaitOnlyForAKeyThatIsNotThisMachines(t *testing.T) {
+// A failure that had to open the key from the key store waits an hour before it is tried again,
+// while its intent stays the one that failed. A key store that wasn't working, or a failure on a
+// link that holds its key already, such as a restriction left half applied, is tried again at the
+// next check, and one network waiting never holds back another.
+func TestRestoreRetriesWaitOnlyWhenTheyCostTheKeyStore(t *testing.T) {
 	now := time.Now()
-	foreign, halfApplied, unavailable, restored, untried := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	foreign, cantComeUp, halfApplied, unavailable, restored, untried := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	retry := map[uuid.UUID]restoreWait{restored: {now.Add(-time.Minute), "r"}, untried: {now.Add(time.Hour), "u"}}
-	tried := map[uuid.UUID]string{foreign: "f", halfApplied: "h", unavailable: "a", restored: "r"}
-	failed := map[uuid.UUID]error{
-		foreign:     fmt.Errorf("%w: sealed elsewhere", hostnetwork.ErrSealedKey),
-		halfApplied: errors.New("managed network nft operation failed"),
-		unavailable: errWaitingForKeyStore,
+	tried := map[uuid.UUID]string{foreign: "f", cantComeUp: "c", halfApplied: "h", unavailable: "a", restored: "r"}
+	failed := map[uuid.UUID]hostnetwork.NetworkError{
+		foreign:     {NetworkID: foreign, NeedsKey: true, Err: fmt.Errorf("%w: sealed elsewhere", hostnetwork.ErrSealedKey)},
+		cantComeUp:  {NetworkID: cantComeUp, NeedsKey: true, Err: hostnetwork.RouteConflictError{}},
+		halfApplied: {NetworkID: halfApplied, Err: errors.New("managed network nft operation failed")},
+		unavailable: {NetworkID: unavailable, NeedsKey: true, Err: errWaitingForKeyStore},
 	}
 	restoreRetries(retry, tried, failed, now)
-	if w := retry[foreign]; !w.until.Equal(now.Add(journalRekeyInterval)) || w.intent != "f" {
-		t.Fatal("a key that isn't this machine's is tried again before the hour")
+	for id, intent := range map[uuid.UUID]string{foreign: "f", cantComeUp: "c"} {
+		if w := retry[id]; !w.until.Equal(now.Add(journalRekeyInterval)) || w.intent != intent {
+			t.Fatal("a failure that cost the key store is tried again before the hour")
+		}
 	}
 	for _, id := range []uuid.UUID{halfApplied, unavailable, restored} {
 		if _, waiting := retry[id]; waiting {
