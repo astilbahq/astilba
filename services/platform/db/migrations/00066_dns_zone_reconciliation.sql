@@ -14,8 +14,9 @@ ALTER TABLE dns_record_removals ADD COLUMN hold_id uuid;
 
 -- A sweep that would withdraw too many records at once withdraws none of them and holds them here,
 -- until the installation operator confirms the hold. A hold's records never change: a sweep that
--- finds another set closes the hold as superseded and opens a new one, so a confirmation applies
--- to exactly what the operator saw. At most one hold awaits confirmation per zone.
+-- finds a record the hold doesn't hold closes it as superseded and opens a new one, so a
+-- confirmation applies only to records the operator saw. At most one hold awaits confirmation per
+-- zone; a confirmed hold stays open until its records are removed, or for a day.
 CREATE TABLE dns_withdrawal_holds (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  zone text NOT NULL,
@@ -33,7 +34,6 @@ CREATE TABLE dns_withdrawal_holds (
  CHECK((closed_at IS NULL) = (close_reason IS NULL))
 );
 CREATE UNIQUE INDEX dns_withdrawal_holds_awaiting ON dns_withdrawal_holds(zone) WHERE closed_at IS NULL AND confirmed_at IS NULL;
-CREATE UNIQUE INDEX dns_withdrawal_holds_confirmed ON dns_withdrawal_holds(zone) WHERE closed_at IS NULL AND confirmed_at IS NOT NULL;
 CREATE TABLE dns_withdrawal_hold_records (
  hold_id uuid NOT NULL REFERENCES dns_withdrawal_holds(id) ON DELETE CASCADE,
  record_id text NOT NULL,

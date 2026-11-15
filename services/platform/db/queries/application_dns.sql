@@ -31,7 +31,7 @@ DELETE FROM dns_publications WHERE server_id = @server_id AND base = @base AND z
 -- failed, and the record may since have been published again, so the latest attempt replaces it.
 INSERT INTO dns_record_removals(workspace_id,server_id,name,zone,record_id,record_type,content,reason)
 VALUES(@workspace_id,@server_id,@name,@zone,@record_id,@record_type,@content,@reason)
-ON CONFLICT(zone,record_id) DO UPDATE SET content=EXCLUDED.content,reason=EXCLUDED.reason,requested_at=EXCLUDED.requested_at
+ON CONFLICT(zone,record_id) DO UPDATE SET content=EXCLUDED.content,reason=EXCLUDED.reason,requested_at=EXCLUDED.requested_at,hold_id=NULL
 WHERE dns_record_removals.confirmed_at IS NULL;
 
 -- name: ConfirmDNSRecordRemovals :exec
@@ -144,13 +144,13 @@ FROM server_domains WHERE server_id = @server_id;
 
 -- name: ZoneRecordBacking :many
 -- unscoped: the zone sweep serves every workspace. For each server and base the provider's zone
--- holds this installation's records under: whether this database knows the server, its workspace,
+-- holds this installation's records under, in the order given: whether this database knows the server, its workspace,
 -- whether a publication or a late name records the name, and whether the server's address approval
 -- is current for that base, the configured one. The approval's arguments are those of its DNS job.
 WITH given AS (
     SELECT @zone::text AS zone,@configured::text AS configured
 ), f AS (
-    SELECT a.server_id,b.base FROM unnest(@server_ids::uuid[]) WITH ORDINALITY AS a(server_id,i)
+    SELECT a.i,a.server_id,b.base FROM unnest(@server_ids::uuid[]) WITH ORDINALITY AS a(server_id,i)
     JOIN unnest(@bases::text[]) WITH ORDINALITY AS b(base,i) ON b.i=a.i
 )
 SELECT f.server_id::uuid AS server_id,f.base::text AS base,(s.id IS NOT NULL)::boolean AS known,s.workspace_id,
@@ -161,7 +161,7 @@ SELECT f.server_id::uuid AS server_id,f.base::text AS base,(s.id IS NOT NULL)::b
 FROM f CROSS JOIN given
 LEFT JOIN servers s ON s.id=f.server_id
 LEFT JOIN server_domains d ON d.server_id=f.server_id
-ORDER BY f.server_id,f.base;
+ORDER BY f.i;
 
 -- name: AdoptZonePublication :execrows
 -- unscoped: the zone sweep names the server, holding its DNS lock. Records a name the provider
@@ -195,14 +195,26 @@ SELECT pg_advisory_xact_lock(hashtextextended('dns_zone_sweep:' || @zone::text,3
 UPDATE dns_withdrawal_holds SET closed_at=clock_timestamp(),close_reason='lapsed'
 WHERE zone = @zone AND closed_at IS NULL AND confirmed_at<clock_timestamp()-interval '24 hours';
 
--- name: OpenDNSWithdrawalHolds :many
--- unscoped: installation-wide. At most one awaiting confirmation and one confirmed.
-SELECT id,records,(confirmed_at IS NOT NULL)::boolean AS confirmed FROM dns_withdrawal_holds
-WHERE zone = @zone AND closed_at IS NULL ORDER BY opened_at FOR UPDATE;
+-- name: CloseWithdrawnDNSWithdrawalHolds :exec
+-- unscoped: installation-wide. A confirmed hold is done once every record it holds has been
+-- removed from the provider's zone, by the sweep or by a publication's own withdrawal.
+UPDATE dns_withdrawal_holds h SET closed_at=clock_timestamp(),close_reason='withdrawn'
+WHERE h.zone = @zone AND h.closed_at IS NULL AND h.confirmed_at IS NOT NULL
+    AND NOT EXISTS(SELECT 1 FROM dns_withdrawal_hold_records hr WHERE hr.hold_id=h.id
+        AND NOT EXISTS(SELECT 1 FROM dns_record_removals r WHERE r.zone=h.zone AND r.record_id=hr.record_id AND r.confirmed_at IS NOT NULL));
+
+-- name: AwaitingDNSWithdrawalHold :one
+-- unscoped: installation-wide. At most one awaits confirmation.
+SELECT id FROM dns_withdrawal_holds WHERE zone = @zone AND closed_at IS NULL AND confirmed_at IS NULL;
+
+-- name: ConfirmedDNSWithdrawalHoldRecords :many
+-- unscoped: installation-wide. The records the open confirmed holds hold, and which holds them.
+SELECT r.record_id,r.hold_id FROM dns_withdrawal_hold_records r JOIN dns_withdrawal_holds h ON h.id=r.hold_id
+WHERE h.zone = @zone AND h.closed_at IS NULL AND h.confirmed_at IS NOT NULL;
 
 -- name: DNSWithdrawalHoldRecordIDs :many
 -- unscoped: installation-wide.
-SELECT record_id FROM dns_withdrawal_hold_records WHERE hold_id = @hold_id ORDER BY record_id;
+SELECT record_id FROM dns_withdrawal_hold_records WHERE hold_id = @hold_id;
 
 -- name: OpenDNSWithdrawalHold :one
 -- unscoped: installation-wide.

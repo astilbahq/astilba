@@ -32,11 +32,12 @@ const (
 )
 
 // zoneRecord is one of this installation's address records in the provider's zone, with the
-// server and base its marker and name name.
+// server and base its marker and name name, and the server's workspace once the sweep has read it.
 type zoneRecord struct {
 	applicationdns.Marked
-	server uuid.UUID
-	base   string
+	server    uuid.UUID
+	base      string
+	workspace *uuid.UUID
 }
 
 // zoneName is a server's name under one base, and the records the zone holds there.
@@ -64,12 +65,9 @@ func (s *Service) SweepZone(ctx context.Context) error {
 		return e
 	}
 	prefix := "astilba:" + installation.String() + ":"
-	listed, complete, e := s.DNS.ListMarked(ctx, prefix)
+	listed, e := s.DNS.ListMarked(ctx, prefix)
 	if e != nil {
 		return e
-	}
-	if !complete {
-		slog.Warn("the DNS zone holds more of this installation's records than one sweep reads; the rest are compared once the first are gone", "read", len(listed))
 	}
 	names, marked, strays := parseZone(listed, prefix)
 	if strays > 0 {
@@ -93,7 +91,10 @@ func (s *Service) SweepZone(ctx context.Context) error {
 		case b.Approved:
 			failures = append(failures, s.adoptZoneName(ctx, n, b))
 		default:
-			unbacked = append(unbacked, n.records...)
+			for _, r := range n.records {
+				r.workspace = b.WorkspaceID
+				unbacked = append(unbacked, r)
+			}
 		}
 	}
 	// Records are withdrawn only once the holds are settled.
@@ -129,7 +130,7 @@ func parseZone(listed []applicationdns.Marked, prefix string) ([]zoneName, int, 
 		}
 		label := "*." + domain.ServerDomain("", server)
 		base, ok := strings.CutPrefix(r.Name, label)
-		if !ok || !domain.ValidApplicationDomain(base) || dnsName(base, server) != r.Name {
+		if !ok || !domain.ValidApplicationDomain(base) {
 			strays++
 			continue
 		}
@@ -138,7 +139,7 @@ func parseZone(listed []applicationdns.Marked, prefix string) ([]zoneName, int, 
 			byName[key] = &zoneName{server: server, base: base}
 			order = append(order, key)
 		}
-		byName[key].records = append(byName[key].records, zoneRecord{r, server, base})
+		byName[key].records = append(byName[key].records, zoneRecord{Marked: r, server: server, base: base})
 	}
 	out := make([]zoneName, 0, len(order))
 	for _, k := range order {
@@ -149,41 +150,29 @@ func parseZone(listed []applicationdns.Marked, prefix string) ([]zoneName, int, 
 
 // groupZone gathers records by the server and name they're at.
 func groupZone(records []zoneRecord) []zoneName {
+	at := map[[2]string]int{}
 	var out []zoneName
 	for _, r := range records {
-		i := slices.IndexFunc(out, func(n zoneName) bool { return n.server == r.server && n.base == r.base })
-		if i < 0 {
+		key := [2]string{r.server.String(), r.base}
+		i, ok := at[key]
+		if !ok {
+			i = len(out)
+			at[key] = i
 			out = append(out, zoneName{server: r.server, base: r.base})
-			i = len(out) - 1
 		}
 		out[i].records = append(out[i].records, r)
 	}
 	return out
 }
 
-// zoneBacking reads what backs each name, in the order of names.
+// zoneBacking reads what backs each name, one row for each, in the order of names.
 func (s *Service) zoneBacking(ctx context.Context, q *db.Queries, names []zoneName) ([]db.ZoneRecordBackingRow, error) {
 	params := db.ZoneRecordBackingParams{Zone: s.DNS.Zone, Configured: s.Store.ApplicationDomain}
 	for _, n := range names {
 		params.ServerIds = append(params.ServerIds, n.server)
 		params.Bases = append(params.Bases, n.base)
 	}
-	rows, e := q.ZoneRecordBacking(ctx, params)
-	if e != nil {
-		return nil, e
-	}
-	if len(rows) != len(names) {
-		return nil, errors.New("the zone sweep read the backing of a different set of names")
-	}
-	byKey := map[[2]string]db.ZoneRecordBackingRow{}
-	for _, r := range rows {
-		byKey[[2]string{r.ServerID.String(), r.Base}] = r
-	}
-	out := make([]db.ZoneRecordBackingRow, len(names))
-	for i, n := range names {
-		out[i] = byKey[[2]string{n.server.String(), n.base}]
-	}
-	return out, nil
+	return q.ZoneRecordBacking(ctx, params)
 }
 
 // adoptZoneName records a name the database lost while the server's approval for it is current,
@@ -211,10 +200,11 @@ func (s *Service) adoptZoneName(ctx context.Context, n zoneName, b db.ZoneRecord
 }
 
 // decideHolds settles which unbacked records this sweep withdraws, under the zone's sweep lock.
-// Those a confirmed hold names are withdrawn under it. The rest are withdrawn too, unless there are
-// too many of them: then they are held, in the hold awaiting confirmation if it names exactly them,
-// or in a new one that supersedes it. A hold that is no longer needed is closed. done is told what
-// to withdraw, and the confirmed hold each record is withdrawn under, if any, once that is committed.
+// Those a confirmed hold holds are withdrawn under it. The rest are withdrawn too, unless there are
+// too many of them: then they are held, in the hold awaiting confirmation if it holds every one of
+// them, or in a new one that supersedes it. A hold that is no longer needed is closed. done is told
+// what to withdraw, and the confirmed hold each record is withdrawn under, if any, once that is
+// committed.
 func (s *Service) decideHolds(ctx context.Context, unbacked []zoneRecord, marked int, done func([]zoneRecord, map[string]uuid.UUID)) error {
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
@@ -229,33 +219,22 @@ func (s *Service) decideHolds(ctx context.Context, unbacked []zoneRecord, marked
 	if e = q.LapseDNSWithdrawalHolds(ctx, zone); e != nil {
 		return e
 	}
-	holds, e := q.OpenDNSWithdrawalHolds(ctx, zone)
+	if e = q.CloseWithdrawnDNSWithdrawalHolds(ctx, zone); e != nil {
+		return e
+	}
+	awaiting, e := q.AwaitingDNSWithdrawalHold(ctx, zone)
+	if errors.Is(e, pgx.ErrNoRows) {
+		awaiting = uuid.Nil
+	} else if e != nil {
+		return e
+	}
+	confirmed, e := q.ConfirmedDNSWithdrawalHoldRecords(ctx, zone)
 	if e != nil {
 		return e
 	}
-	var awaiting *db.OpenDNSWithdrawalHoldsRow
-	under := map[string]uuid.UUID{}
-	for _, h := range holds {
-		if !h.Confirmed {
-			awaiting = &h
-			continue
-		}
-		ids, e := q.DNSWithdrawalHoldRecordIDs(ctx, h.ID)
-		if e != nil {
-			return e
-		}
-		named := false
-		for _, id := range ids {
-			if slices.ContainsFunc(unbacked, func(r zoneRecord) bool { return r.ID == id }) {
-				under[id], named = h.ID, true
-			}
-		}
-		// Every record it named is gone, or backed again.
-		if !named {
-			if e = q.CloseDNSWithdrawalHold(ctx, db.CloseDNSWithdrawalHoldParams{ID: h.ID, CloseReason: "withdrawn"}); e != nil {
-				return e
-			}
-		}
+	under := make(map[string]uuid.UUID, len(confirmed))
+	for _, r := range confirmed {
+		under[r.RecordID] = r.HoldID
 	}
 	withdraw, rest := []zoneRecord{}, []zoneRecord{}
 	for _, r := range unbacked {
@@ -271,8 +250,8 @@ func (s *Service) decideHolds(ctx context.Context, unbacked []zoneRecord, marked
 		}
 	} else {
 		withdraw = append(withdraw, rest...)
-		if awaiting != nil {
-			if e = q.CloseDNSWithdrawalHold(ctx, db.CloseDNSWithdrawalHoldParams{ID: awaiting.ID, CloseReason: "cleared"}); e != nil {
+		if awaiting != uuid.Nil {
+			if e = q.CloseDNSWithdrawalHold(ctx, db.CloseDNSWithdrawalHoldParams{ID: awaiting, CloseReason: "cleared"}); e != nil {
 				return e
 			}
 		}
@@ -287,26 +266,25 @@ func (s *Service) decideHolds(ctx context.Context, unbacked []zoneRecord, marked
 }
 
 // holdZoneRecords keeps records held for the operator. The hold awaiting confirmation is kept if
-// it names exactly these records, and otherwise superseded, so a confirmation always applies to
-// the records the operator was shown.
-func (s *Service) holdZoneRecords(ctx context.Context, q *db.Queries, awaiting *db.OpenDNSWithdrawalHoldsRow, records []zoneRecord, marked int) error {
-	ids := make([]string, 0, len(records))
-	for _, r := range records {
-		ids = append(ids, r.ID)
-	}
-	slices.Sort(ids)
+// it holds every one of these records, and otherwise superseded, so a confirmation only ever
+// applies to records the operator was shown.
+func (s *Service) holdZoneRecords(ctx context.Context, q *db.Queries, awaiting uuid.UUID, records []zoneRecord, marked int) error {
 	hold := uuid.Nil
-	if awaiting != nil {
-		held, e := q.DNSWithdrawalHoldRecordIDs(ctx, awaiting.ID)
+	if awaiting != uuid.Nil {
+		held, e := q.DNSWithdrawalHoldRecordIDs(ctx, awaiting)
 		if e != nil {
 			return e
 		}
-		if slices.Equal(held, ids) {
-			hold = awaiting.ID
+		holds := make(map[string]bool, len(held))
+		for _, id := range held {
+			holds[id] = true
+		}
+		if !slices.ContainsFunc(records, func(r zoneRecord) bool { return !holds[r.ID] }) {
+			hold = awaiting
 			if e = q.SeeDNSWithdrawalHold(ctx, db.SeeDNSWithdrawalHoldParams{ID: hold, Marked: int32(marked)}); e != nil {
 				return e
 			}
-		} else if e = q.CloseDNSWithdrawalHold(ctx, db.CloseDNSWithdrawalHoldParams{ID: awaiting.ID, CloseReason: "superseded"}); e != nil {
+		} else if e = q.CloseDNSWithdrawalHold(ctx, db.CloseDNSWithdrawalHoldParams{ID: awaiting, CloseReason: "superseded"}); e != nil {
 			return e
 		}
 	}
@@ -315,13 +293,9 @@ func (s *Service) holdZoneRecords(ctx context.Context, q *db.Queries, awaiting *
 		if hold, e = q.OpenDNSWithdrawalHold(ctx, db.OpenDNSWithdrawalHoldParams{Zone: s.DNS.Zone, Records: int32(len(records)), Marked: int32(marked)}); e != nil {
 			return e
 		}
-		workspaces, e := s.zoneWorkspaces(ctx, q, records)
-		if e != nil {
-			return e
-		}
 		rows := make([]db.InsertDNSWithdrawalHoldRecordsParams, 0, len(records))
 		for _, r := range records {
-			rows = append(rows, db.InsertDNSWithdrawalHoldRecordsParams{HoldID: hold, RecordID: r.ID, ServerID: r.server, WorkspaceID: workspaces[r.server], Name: r.Name, RecordType: r.Type, Content: r.Content})
+			rows = append(rows, db.InsertDNSWithdrawalHoldRecordsParams{HoldID: hold, RecordID: r.ID, ServerID: r.server, WorkspaceID: r.workspace, Name: r.Name, RecordType: r.Type, Content: r.Content})
 		}
 		if _, e = q.InsertDNSWithdrawalHoldRecords(ctx, rows); e != nil {
 			return e
@@ -331,25 +305,13 @@ func (s *Service) holdZoneRecords(ctx context.Context, q *db.Queries, awaiting *
 	return nil
 }
 
-// zoneWorkspaces is the workspace of each record's server, or nil for one this database doesn't know.
-func (s *Service) zoneWorkspaces(ctx context.Context, q *db.Queries, records []zoneRecord) (map[uuid.UUID]*uuid.UUID, error) {
-	rows, e := s.zoneBacking(ctx, q, groupZone(records))
-	if e != nil {
-		return nil, e
-	}
-	out := map[uuid.UUID]*uuid.UUID{}
-	for _, r := range rows {
-		out[r.ServerID] = r.WorkspaceID
-	}
-	return out, nil
-}
-
 // withdrawUnbacked withdraws the listed records at one of a server's names, once it has checked
 // they are still unbacked. A known server's records are withdrawn under its DNS lease, so no job
 // publishes there meanwhile; if a job holds it, the next sweep tries again. A server this
-// database has never heard of has no lease, and none can appear while management runs: server IDs
-// are made only by enrolling, and never reused, and offline recovery runs with management stopped.
-// Each deletion's audit row is written only while the server is still as the sweep found it.
+// database has never heard of has no lease to take. One can appear while the sweep works, when a
+// workspace is imported with the server's ID, so each deletion's audit row is written only while
+// the server is still as known or unknown as the sweep found it; an imported server never has a
+// publication or a current approval, so its records would be unbacked either way.
 func (s *Service) withdrawUnbacked(ctx context.Context, installation uuid.UUID, n zoneName, known bool, holds map[string]uuid.UUID) error {
 	ctx, cancel := context.WithTimeout(ctx, dnsWork)
 	defer cancel()

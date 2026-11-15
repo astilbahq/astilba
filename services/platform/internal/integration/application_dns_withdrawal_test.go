@@ -82,7 +82,7 @@ func (z *dnsZone) serve(w http.ResponseWriter, r *http.Request) {
 		list := []map[string]any{}
 		for _, v := range z.records {
 			comment, _ := v["comment"].(string)
-			if prefix := query.Get("comment.startswith"); prefix != "" && strings.HasPrefix(comment, prefix) || prefix == "" && v["name"] == query.Get("name") {
+			if prefix := query.Get("comment.startswith"); prefix != "" && strings.HasPrefix(strings.ToLower(comment), strings.ToLower(prefix)) || prefix == "" && v["name"] == query.Get("name") {
 				list = append(list, v)
 			}
 		}

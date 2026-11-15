@@ -733,7 +733,11 @@ comment and name. Then, for each name:
 
 Records whose comment carries another installation's ID, records without the comment, and records
 Astilba never makes are never removed. Records Astilba never makes are anything other than A or
-AAAA, and names that aren't the commented server's. Management logs a warning counting them.
+AAAA, names that aren't the commented server's, and comments that match this installation's only
+when case is ignored. Management logs a warning counting them.
+
+The comparison reads at most 60,000 of this installation's records. A zone holding more isn't
+compared at all, and management logs an error every five minutes.
 
 #### When many records would go at once
 
@@ -753,10 +757,11 @@ astilba dns confirm-withdrawals --hold HOLD_ID --count N --operator NAME --note 
 
 `withdrawals` shows each hold: how many records it holds per workspace, a sample of names and
 addresses, and the exact command to confirm it. `--count` must match the number of records the
-hold holds. If the comparison has found a different set of records since, the hold is replaced,
-and the command asks you to look again. The next comparison, within five minutes, removes the
-confirmed records that are still unbacked. Records found later are judged afresh. A confirmation
-lapses after a day. A hold whose records fall back under the threshold, because some were backed
+hold holds. If the comparison has since found a record the hold doesn't hold, the hold is
+replaced, and the command asks you to look again. The next comparison, within five minutes,
+removes the confirmed records that are still unbacked. Records found later are judged afresh. A
+confirmed hold closes once all its records are removed. Otherwise the confirmation lapses after a
+day. A hold whose records fall back under the threshold, because some were backed
 again or deleted by hand, closes on its own and the rest are removed as usual.
 
 The threshold covers only this comparison between the zone and the database. Removals the

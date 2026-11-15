@@ -61,7 +61,7 @@ func (z *zone) serve(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		list := []record{}
 		for _, v := range z.records {
-			if prefix := query.Get("comment.startswith"); prefix != "" && strings.HasPrefix(v.Comment, prefix) || prefix == "" && v.Name == query.Get("name") {
+			if prefix := query.Get("comment.startswith"); prefix != "" && strings.HasPrefix(strings.ToLower(v.Comment), strings.ToLower(prefix)) || prefix == "" && v.Name == query.Get("name") {
 				list = append(list, v)
 			}
 		}
@@ -187,13 +187,16 @@ func TestListMarkedReadsEveryPageAndOnlyOurPrefix(t *testing.T) {
 		records = append(records, record{ID: strings.Repeat("0", 28) + strconv.FormatInt(int64(0x1000+i), 16), Type: "A", Name: "*.s" + strconv.Itoa(i) + ".apps.example.test", Content: "198.51.100.1", Comment: prefix + "server"})
 	}
 	records = append(records, record{ID: id('f'), Type: "A", Name: name, Content: "198.51.100.2", Comment: "astilba:another-installation:server"})
+	// The provider matches the prefix ignoring case, as its documentation says, so a comment that
+	// matches only so is returned rather than refusing the listing.
+	records = append(records, record{ID: id('e'), Type: "A", Name: name, Content: "198.51.100.3", Comment: "ASTILBA:INSTALLATION:server"})
 	_, c := fixture(t, records...)
-	got, complete, e := c.ListMarked(context.Background(), prefix)
-	if e != nil || !complete || len(got) != 250 {
-		t.Fatalf("listed %d records, complete %v: %v", len(got), complete, e)
+	got, e := c.ListMarked(context.Background(), prefix)
+	if e != nil || len(got) != 251 {
+		t.Fatalf("listed %d records: %v", len(got), e)
 	}
 	for _, r := range got {
-		if !strings.HasPrefix(r.Comment, prefix) {
+		if !strings.HasPrefix(strings.ToLower(r.Comment), prefix) {
 			t.Fatal("listed another installation's record", r)
 		}
 	}
@@ -206,7 +209,7 @@ func TestListMarkedRefusesAListingNamingAnotherInstallation(t *testing.T) {
 		{ID: id('2'), Type: "A", Name: name, Content: "198.51.100.2", Comment: "astilba:installation-other:server"},
 	}
 	// The second comment starts with the first's installation ID only as text, without its colon.
-	if _, _, e := c.ListMarked(context.Background(), "astilba:installation:"); !errors.Is(e, ErrProvider) {
+	if _, e := c.ListMarked(context.Background(), "astilba:installation:"); !errors.Is(e, ErrProvider) {
 		t.Fatal("trusted a listing the filter was not applied to", e)
 	}
 }
@@ -232,7 +235,7 @@ func TestTooManyRequestsHoldsEveryLaterRequest(t *testing.T) {
 	if e := c.Remove(context.Background(), name, marker, func(Removed) error { return nil }); !errors.Is(e, ErrProvider) || errors.Is(e, ErrUnanswered) {
 		t.Fatal("a 429 was not reported as a request the provider refused", e)
 	}
-	if _, _, e := c.ListMarked(context.Background(), "astilba:installation:"); e != nil {
+	if _, e := c.ListMarked(context.Background(), "astilba:installation:"); e != nil {
 		t.Fatal(e)
 	}
 	if waited := z.requests[1].Sub(z.requests[0]); waited < 900*time.Millisecond {
@@ -240,11 +243,11 @@ func TestTooManyRequestsHoldsEveryLaterRequest(t *testing.T) {
 	}
 	// A request whose context ends while held is never sent.
 	z.limited, z.retryAfter = 1, "60"
-	_, _, _ = c.ListMarked(context.Background(), "astilba:installation:")
+	_, _ = c.ListMarked(context.Background(), "astilba:installation:")
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	sent := len(z.requests)
-	if _, _, e := c.ListMarked(ctx, "astilba:installation:"); !errors.Is(e, ErrProvider) || errors.Is(e, ErrUnanswered) || len(z.requests) != sent {
+	if _, e := c.ListMarked(ctx, "astilba:installation:"); !errors.Is(e, ErrProvider) || errors.Is(e, ErrUnanswered) || len(z.requests) != sent {
 		t.Fatal("a held request was sent or reported as unanswered", e)
 	}
 }

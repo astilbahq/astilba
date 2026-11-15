@@ -68,6 +68,18 @@ func (q *Queries) AdoptZonePublication(ctx context.Context, arg AdoptZonePublica
 	return result.RowsAffected(), nil
 }
 
+const awaitingDNSWithdrawalHold = `-- name: AwaitingDNSWithdrawalHold :one
+SELECT id FROM dns_withdrawal_holds WHERE zone = $1 AND closed_at IS NULL AND confirmed_at IS NULL
+`
+
+// unscoped: installation-wide. At most one awaits confirmation.
+func (q *Queries) AwaitingDNSWithdrawalHold(ctx context.Context, zone string) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, awaitingDNSWithdrawalHold, zone)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const checkDNSPublication = `-- name: CheckDNSPublication :exec
 UPDATE dns_publications SET checked_at=clock_timestamp()
 WHERE server_id = $1 AND base = $2 AND zone = $3
@@ -96,6 +108,20 @@ type CloseDNSWithdrawalHoldParams struct {
 // unscoped: installation-wide.
 func (q *Queries) CloseDNSWithdrawalHold(ctx context.Context, arg CloseDNSWithdrawalHoldParams) error {
 	_, err := q.db.Exec(ctx, closeDNSWithdrawalHold, arg.CloseReason, arg.ID)
+	return err
+}
+
+const closeWithdrawnDNSWithdrawalHolds = `-- name: CloseWithdrawnDNSWithdrawalHolds :exec
+UPDATE dns_withdrawal_holds h SET closed_at=clock_timestamp(),close_reason='withdrawn'
+WHERE h.zone = $1 AND h.closed_at IS NULL AND h.confirmed_at IS NOT NULL
+    AND NOT EXISTS(SELECT 1 FROM dns_withdrawal_hold_records hr WHERE hr.hold_id=h.id
+        AND NOT EXISTS(SELECT 1 FROM dns_record_removals r WHERE r.zone=h.zone AND r.record_id=hr.record_id AND r.confirmed_at IS NOT NULL))
+`
+
+// unscoped: installation-wide. A confirmed hold is done once every record it holds has been
+// removed from the provider's zone, by the sweep or by a publication's own withdrawal.
+func (q *Queries) CloseWithdrawnDNSWithdrawalHolds(ctx context.Context, zone string) error {
+	_, err := q.db.Exec(ctx, closeWithdrawnDNSWithdrawalHolds, zone)
 	return err
 }
 
@@ -148,6 +174,37 @@ func (q *Queries) ConfirmDNSWithdrawalHold(ctx context.Context, arg ConfirmDNSWi
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const confirmedDNSWithdrawalHoldRecords = `-- name: ConfirmedDNSWithdrawalHoldRecords :many
+SELECT r.record_id,r.hold_id FROM dns_withdrawal_hold_records r JOIN dns_withdrawal_holds h ON h.id=r.hold_id
+WHERE h.zone = $1 AND h.closed_at IS NULL AND h.confirmed_at IS NOT NULL
+`
+
+type ConfirmedDNSWithdrawalHoldRecordsRow struct {
+	RecordID string    `json:"record_id"`
+	HoldID   uuid.UUID `json:"hold_id"`
+}
+
+// unscoped: installation-wide. The records the open confirmed holds hold, and which holds them.
+func (q *Queries) ConfirmedDNSWithdrawalHoldRecords(ctx context.Context, zone string) ([]ConfirmedDNSWithdrawalHoldRecordsRow, error) {
+	rows, err := q.db.Query(ctx, confirmedDNSWithdrawalHoldRecords, zone)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ConfirmedDNSWithdrawalHoldRecordsRow{}
+	for rows.Next() {
+		var i ConfirmedDNSWithdrawalHoldRecordsRow
+		if err := rows.Scan(&i.RecordID, &i.HoldID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const countStrandedDNSPublications = `-- name: CountStrandedDNSPublications :one
@@ -233,7 +290,7 @@ func (q *Queries) DNSPublicationTarget(ctx context.Context, arg DNSPublicationTa
 }
 
 const dNSWithdrawalHoldRecordIDs = `-- name: DNSWithdrawalHoldRecordIDs :many
-SELECT record_id FROM dns_withdrawal_hold_records WHERE hold_id = $1 ORDER BY record_id
+SELECT record_id FROM dns_withdrawal_hold_records WHERE hold_id = $1
 `
 
 // unscoped: installation-wide.
@@ -384,7 +441,7 @@ func (q *Queries) HoldDNSLease(ctx context.Context, arg HoldDNSLeaseParams) (int
 const insertDNSRecordRemoval = `-- name: InsertDNSRecordRemoval :exec
 INSERT INTO dns_record_removals(workspace_id,server_id,name,zone,record_id,record_type,content,reason)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-ON CONFLICT(zone,record_id) DO UPDATE SET content=EXCLUDED.content,reason=EXCLUDED.reason,requested_at=EXCLUDED.requested_at
+ON CONFLICT(zone,record_id) DO UPDATE SET content=EXCLUDED.content,reason=EXCLUDED.reason,requested_at=EXCLUDED.requested_at,hold_id=NULL
 WHERE dns_record_removals.confirmed_at IS NULL
 `
 
@@ -651,38 +708,6 @@ func (q *Queries) OpenDNSWithdrawalHold(ctx context.Context, arg OpenDNSWithdraw
 	return id, err
 }
 
-const openDNSWithdrawalHolds = `-- name: OpenDNSWithdrawalHolds :many
-SELECT id,records,(confirmed_at IS NOT NULL)::boolean AS confirmed FROM dns_withdrawal_holds
-WHERE zone = $1 AND closed_at IS NULL ORDER BY opened_at FOR UPDATE
-`
-
-type OpenDNSWithdrawalHoldsRow struct {
-	ID        uuid.UUID `json:"id"`
-	Records   int32     `json:"records"`
-	Confirmed bool      `json:"confirmed"`
-}
-
-// unscoped: installation-wide. At most one awaiting confirmation and one confirmed.
-func (q *Queries) OpenDNSWithdrawalHolds(ctx context.Context, zone string) ([]OpenDNSWithdrawalHoldsRow, error) {
-	rows, err := q.db.Query(ctx, openDNSWithdrawalHolds, zone)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []OpenDNSWithdrawalHoldsRow{}
-	for rows.Next() {
-		var i OpenDNSWithdrawalHoldsRow
-		if err := rows.Scan(&i.ID, &i.Records, &i.Confirmed); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const recordDNSPublication = `-- name: RecordDNSPublication :exec
 WITH legacy AS (
     DELETE FROM dns_publications WHERE server_id = $1 AND base = $3 AND zone = '' AND $4::text <> ''
@@ -891,7 +916,7 @@ const zoneRecordBacking = `-- name: ZoneRecordBacking :many
 WITH given AS (
     SELECT $1::text AS zone,$2::text AS configured
 ), f AS (
-    SELECT a.server_id,b.base FROM unnest($3::uuid[]) WITH ORDINALITY AS a(server_id,i)
+    SELECT a.i,a.server_id,b.base FROM unnest($3::uuid[]) WITH ORDINALITY AS a(server_id,i)
     JOIN unnest($4::text[]) WITH ORDINALITY AS b(base,i) ON b.i=a.i
 )
 SELECT f.server_id::uuid AS server_id,f.base::text AS base,(s.id IS NOT NULL)::boolean AS known,s.workspace_id,
@@ -902,7 +927,7 @@ SELECT f.server_id::uuid AS server_id,f.base::text AS base,(s.id IS NOT NULL)::b
 FROM f CROSS JOIN given
 LEFT JOIN servers s ON s.id=f.server_id
 LEFT JOIN server_domains d ON d.server_id=f.server_id
-ORDER BY f.server_id,f.base
+ORDER BY f.i
 `
 
 type ZoneRecordBackingParams struct {
@@ -924,7 +949,7 @@ type ZoneRecordBackingRow struct {
 }
 
 // unscoped: the zone sweep serves every workspace. For each server and base the provider's zone
-// holds this installation's records under: whether this database knows the server, its workspace,
+// holds this installation's records under, in the order given: whether this database knows the server, its workspace,
 // whether a publication or a late name records the name, and whether the server's address approval
 // is current for that base, the configured one. The approval's arguments are those of its DNS job.
 func (q *Queries) ZoneRecordBacking(ctx context.Context, arg ZoneRecordBackingParams) ([]ZoneRecordBackingRow, error) {

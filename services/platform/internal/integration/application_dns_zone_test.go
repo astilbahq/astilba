@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -93,11 +94,19 @@ func TestZoneSweepWithdrawsOnlyRecordsNothingBacks(t *testing.T) {
 	z := newDNSZone(t, f)
 	ctx := context.Background()
 	approved := publishedServer(t, f, z)
-	// A server whose approval is current, but whose publication the database lost.
+	// A server whose approval is current, but whose publication the database lost, along with one
+	// of its records.
 	lost := publishedServer(t, f, z)
 	if _, e := f.st.Pool.Exec(ctx, "DELETE FROM dns_publications WHERE server_id=$1", lost.id); e != nil {
 		t.Fatal(e)
 	}
+	z.mu.Lock()
+	for id, r := range z.records {
+		if r["comment"] == lost.marker && r["type"] == "AAAA" {
+			delete(z.records, id)
+		}
+	}
+	z.mu.Unlock()
 	installation := installationOf(t, f)
 	unknown := uuid.New()
 	pending := enrolledServer(t, f, approved.b, approved.ws)
@@ -111,7 +120,19 @@ func TestZoneSweepWithdrawsOnlyRecordsNothingBacks(t *testing.T) {
 	z.add("TXT", zoneName(zoneBase, unknown), "verification", zoneMarker(installation, unknown))
 	z.add("A", zoneName(zoneBase, pending), "203.0.113.5", zoneMarker(installation, unknown))
 	z.add("A", "www."+zoneBase, "203.0.113.6", zoneMarker(installation, unknown))
+	// The provider matches our marker ignoring case, so it lists one that matches only so; Astilba
+	// never writes it, and it neither stops the sweep nor is removed.
+	z.add("A", zoneName(zoneBase, unknown), "203.0.113.7", strings.ToUpper(zoneMarker(installation, unknown)))
 	before := z.snapshot()
+	// A job still finishing would stand in for the one the sweep queues.
+	dnsJobs := func() (all, active int) {
+		if e := f.st.Pool.QueryRow(ctx, "SELECT count(*),count(*) FILTER (WHERE state NOT IN ('completed','discarded','cancelled')) FROM river_job WHERE kind='platform_dns_v1'").Scan(&all, &active); e != nil {
+			t.Fatal(e)
+		}
+		return all, active
+	}
+	eventually(t, "the publishing jobs finish", func() bool { _, active := dnsJobs(); return active == 0 })
+	queued, _ := dnsJobs()
 
 	sweepZone(t, f)
 	expectZone(t, z, before, unknownRecord, pendingRecord, oldBase)
@@ -129,11 +150,11 @@ func TestZoneSweepWithdrawsOnlyRecordsNothingBacks(t *testing.T) {
 	if leases != 0 || holds != 0 {
 		t.Fatal("leases kept", leases, "holds opened", holds)
 	}
-	// The recorded name's job still converges it on the approval.
-	lost.waitState(t, "applied")
-	if n := z.marked(lost.name(), lost.marker); n != 2 {
-		t.Fatal("the adopted server's records were changed", n)
+	// The recorded name's job converges it on the approval, publishing the record it lost.
+	if all, _ := dnsJobs(); all != queued+1 {
+		t.Fatal("the adopted server's job was not queued", all-queued)
 	}
+	eventually(t, "the adopted server's job to publish its approved records", func() bool { return z.marked(lost.name(), lost.marker) == 2 })
 	// A second sweep finds nothing more to do.
 	before = z.snapshot()
 	sweepZone(t, f)
@@ -264,16 +285,14 @@ func TestZoneSweepHoldsAMassWithdrawalUntilTheOperatorConfirms(t *testing.T) {
 	if len(holds) != 2 || holds[0].id != first || holds[0].withdrawn != 12 || holds[1].confirmed || holds[1].records != 11 {
 		t.Fatalf("holds %+v", holds)
 	}
-	sweepZone(t, f)
-	if holds = zoneHolds(t, f); *holds[0].closeReason != "withdrawn" || holds[1].closeReason != nil {
-		t.Fatalf("holds %+v", holds)
-	}
-
-	// A confirmation lapses after a day; the records it named are held again.
+	// The new hold can be confirmed while the first is still open.
 	second := holds[1].id
 	if e = execution.ConfirmZoneHold(ctx, f.st.Pool, second, 11, "operator", "checked"); e != nil {
 		t.Fatal(e)
 	}
+
+	// The first hold closes once its records are gone. A confirmation lapses after a day; the
+	// records it held are held again.
 	if _, e = f.st.Pool.Exec(ctx, "UPDATE dns_withdrawal_holds SET confirmed_at=now()-interval '25 hours' WHERE id=$1", second); e != nil {
 		t.Fatal(e)
 	}
@@ -281,20 +300,44 @@ func TestZoneSweepHoldsAMassWithdrawalUntilTheOperatorConfirms(t *testing.T) {
 	sweepZone(t, f)
 	expectZone(t, z, before)
 	holds = zoneHolds(t, f)
-	if len(holds) != 3 || *holds[1].closeReason != "lapsed" || holds[2].closeReason != nil || holds[2].records != 11 {
+	if len(holds) != 3 || *holds[0].closeReason != "withdrawn" || *holds[1].closeReason != "lapsed" || holds[2].closeReason != nil || holds[2].records != 11 {
+		t.Fatalf("holds %+v", holds)
+	}
+	third := holds[2].id
+
+	// A record the hold doesn't hold replaces it, so a confirmation never reaches a record the
+	// operator wasn't shown.
+	extra := unknown(2)
+	sweepZone(t, f)
+	expectZone(t, z, before)
+	if e = execution.ConfirmZoneHold(ctx, f.st.Pool, third, 11, "operator", "checked"); !errors.Is(e, execution.ErrHoldChanged) {
+		t.Fatal("a superseded hold was confirmed", e)
+	}
+	holds = zoneHolds(t, f)
+	if len(holds) != 4 || *holds[2].closeReason != "superseded" || holds[3].closeReason != nil || holds[3].records != 13 {
+		t.Fatalf("holds %+v", holds)
+	}
+	// One that has gone since leaves the hold as it was, to be confirmed as shown.
+	z.mu.Lock()
+	delete(z.records, later[0])
+	z.mu.Unlock()
+	before = z.snapshot()
+	sweepZone(t, f)
+	expectZone(t, z, before)
+	if holds = zoneHolds(t, f); len(holds) != 4 || holds[3].closeReason != nil || holds[3].records != 13 {
 		t.Fatalf("holds %+v", holds)
 	}
 
 	// Once few enough remain, they are withdrawn without confirmation and the hold is cleared.
 	z.mu.Lock()
-	for _, id := range later[:5] {
+	for _, id := range later[1:6] {
 		delete(z.records, id)
 	}
 	z.mu.Unlock()
 	before = z.snapshot()
 	sweepZone(t, f)
-	expectZone(t, z, before, later[5:]...)
-	if holds = zoneHolds(t, f); *holds[2].closeReason != "cleared" {
+	expectZone(t, z, before, append(later[6:], extra...)...)
+	if holds = zoneHolds(t, f); *holds[3].closeReason != "cleared" {
 		t.Fatalf("holds %+v", holds)
 	}
 	if n := z.marked(published.name(), published.marker); n != 2 {

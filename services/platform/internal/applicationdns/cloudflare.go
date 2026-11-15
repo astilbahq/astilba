@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/time/rate"
 )
@@ -61,24 +62,36 @@ type pace struct {
 }
 
 // wait returns once a request may be sent, or false when the context ends first. Nothing has been
-// sent then, so the provider has nothing to act on later.
+// sent then, so the provider has nothing to act on later. A 429 answered while a request waits on
+// the limiter holds it too.
 func (p *pace) wait(ctx context.Context) bool {
-	p.mu.Lock()
-	if p.limiter == nil {
-		p.limiter = rate.NewLimiter(paceRate, paceBurst)
-	}
-	limiter, until := p.limiter, time.Until(p.notBefore)
-	p.mu.Unlock()
-	if until > 0 {
+	for {
+		p.mu.Lock()
+		if p.limiter == nil {
+			p.limiter = rate.NewLimiter(paceRate, paceBurst)
+		}
+		limiter, until := p.limiter, time.Until(p.notBefore)
+		p.mu.Unlock()
+		if until <= 0 {
+			if limiter.Wait(ctx) != nil {
+				return false
+			}
+			p.mu.Lock()
+			held := time.Until(p.notBefore) > 0
+			p.mu.Unlock()
+			if !held {
+				return true
+			}
+			continue
+		}
 		timer := time.NewTimer(until)
-		defer timer.Stop()
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return false
 		case <-timer.C:
 		}
 	}
-	return limiter.Wait(ctx) == nil
 }
 
 // hold keeps every request back for as long as a 429's Retry-After asks, in seconds or as a date,
@@ -297,35 +310,40 @@ func (c *Cloudflare) remove(ctx context.Context, name, marker string, chosen fun
 type Marked struct{ ID, Type, Name, Content, Comment string }
 
 // The zone listing reads pages of markedPage records, at most markedPages of them, each answer at
-// most markedBytes.
+// most markedBytes. At the client's pace that many pages take about three minutes, inside a sweep.
 const (
 	markedPage  = 100
-	markedPages = 200
+	markedPages = 600
 	markedBytes = 1 << 20
 )
 
+// ErrZoneTooLarge refuses a zone holding more of this installation's records than one listing reads.
+var ErrZoneTooLarge = errors.New("the DNS zone holds more of this installation's records than one listing reads")
+
 // ListMarked returns every record in the zone whose comment starts with prefix, reading the
-// provider's pages in turn, and whether it read them all. A zone with more than markedPages pages
-// is read only that far. Pages can shift while records change, so a record can be missed or seen
-// twice; it is returned once, and one missed is found by the next listing. An answer naming a
-// record whose comment doesn't start with prefix, exactly, refuses the whole listing: the
-// provider didn't apply the filter, so nothing in it can be taken to be ours.
-func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, bool, error) {
+// provider's pages in turn. A zone with more than markedPages pages is refused with
+// ErrZoneTooLarge, so a caller never judges part of it as if it were all. Pages can shift while
+// records change, so a record can be missed or seen twice; it is returned once, and one missed is
+// found by the next listing. The provider matches the prefix ignoring case, so a comment that
+// matches it only so is returned for the caller to leave alone. One that doesn't match it at all
+// refuses the whole listing: the provider didn't apply the filter, so nothing in it can be taken
+// to be ours.
+func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, error) {
 	seen := map[string]bool{}
 	out := []Marked{}
 	for page := 1; ; page++ {
 		query := url.Values{"comment.startswith": {prefix}, "per_page": {strconv.Itoa(markedPage)}, "page": {strconv.Itoa(page)}}
 		envelope, e := c.send(ctx, "GET", "?"+query.Encode(), nil, markedBytes)
 		if e != nil {
-			return nil, false, e
+			return nil, e
 		}
 		var records []record
 		if json.Unmarshal(envelope.Result, &records) != nil || envelope.Info.Page != page || len(records) > markedPage {
-			return nil, false, ErrProvider
+			return nil, ErrProvider
 		}
 		for _, r := range records {
-			if !cloudflareID.MatchString(r.ID) || !strings.HasPrefix(r.Comment, prefix) {
-				return nil, false, ErrProvider
+			if !cloudflareID.MatchString(r.ID) || !hasFoldedPrefix(r.Comment, prefix) {
+				return nil, ErrProvider
 			}
 			if !seen[r.ID] {
 				seen[r.ID] = true
@@ -333,10 +351,22 @@ func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, b
 			}
 		}
 		if len(records) == 0 || page >= envelope.Info.TotalPages {
-			return out, true, nil
+			return out, nil
 		}
 		if page == markedPages {
-			return out, false, nil
+			return nil, ErrZoneTooLarge
 		}
 	}
+}
+
+// hasFoldedPrefix reports whether s starts with prefix, ignoring case.
+func hasFoldedPrefix(s, prefix string) bool {
+	for _, p := range prefix {
+		r, n := utf8.DecodeRuneInString(s)
+		if n == 0 || !strings.EqualFold(string(r), string(p)) {
+			return false
+		}
+		s = s[n:]
+	}
+	return true
 }
