@@ -14,11 +14,13 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/pipeline/pipelinetest"
 	"github.com/google/uuid"
 )
 
 // submissionFixture is a workspace whose environments import from a Gitea provider that answers
 // reads and fails every write, so each submission's first attempt fails and waits to be retried.
+// With a forge, the provider is that forge instead, and takes submissions.
 type submissionFixture struct {
 	f       *fixture
 	owner   *browser
@@ -28,19 +30,39 @@ type submissionFixture struct {
 	source  pipeline.Source
 	runner  authorityAgent
 	tree    gitTree
+	forge   *pipelinetest.Forge
 	head    string
 	// writes counts the provider's refused writes, and requests every request it was sent.
 	writes, requests atomic.Int64
 }
 
+// submissionOriginal is the compose file every fixture environment imports.
+const submissionOriginal = "services:\n  web:\n    image: " + pipelineTestImage + "\n"
+
 func newSubmissionFixture(t *testing.T, ctx context.Context) *submissionFixture {
+	t.Helper()
+	return newSubmissionFixtureWith(t, ctx, false)
+}
+
+// newSubmissionFixtureWith is newSubmissionFixture, whose provider is a forge holding
+// submissionOriginal when forge is set.
+func newSubmissionFixtureWith(t *testing.T, ctx context.Context, forge bool) *submissionFixture {
 	t.Helper()
 	f := setup(t)
 	s := &submissionFixture{f: f, owner: f.browser(t), ctx: ctx, head: strings.Repeat("a", 40)}
 	ws := s.owner.login("owner@example.test", f.password).Workspaces[0].Id
 	s.prefix = "/api/v1/workspaces/" + ws.String()
+	writer, reader := "submit-write-canary", "submit-read-canary"
+	if forge {
+		s.forge, s.head = pipelinetest.NewForge("gitea", map[string]pipelinetest.File{"compose.yaml": {Content: submissionOriginal, Mode: "100644"}})
+		writer, reader = pipelinetest.Writer, pipelinetest.Reader
+	}
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.requests.Add(1)
+		if s.forge != nil {
+			s.forge.ServeHTTP(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/team/app.git/info/refs" {
 			w.WriteHeader(403)
@@ -68,7 +90,7 @@ func newSubmissionFixture(t *testing.T, ctx context.Context) *submissionFixture 
 	var connection struct {
 		Connection pipeline.Connection `json:"connection"`
 	}
-	s.owner.call("POST", s.prefix+"/git-connections", map[string]any{"name": "Source", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app", "api": map[string]string{"username": "writer", "password": "submit-write-canary"}, "clone": map[string]string{"username": "reader", "password": "submit-read-canary"}}, 201, &connection)
+	s.owner.call("POST", s.prefix+"/git-connections", map[string]any{"name": "Source", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app", "api": map[string]string{"username": "writer", "password": writer}, "clone": map[string]string{"username": "reader", "password": reader}}, 201, &connection)
 	s.owner.call("POST", s.prefix+"/projects", map[string]string{"name": "Submissions"}, 201, &s.project)
 	enrolled, in, token := enrollment(t, f, s.owner, ws, "build")
 	yes := true
@@ -94,8 +116,7 @@ func (s *submissionFixture) prepare(t *testing.T, name string, plant func(*compo
 	for _, file := range baseline {
 		source.Paths = append(source.Paths, file.Path)
 	}
-	original := "services:\n  web:\n    image: " + pipelineTestImage + "\n"
-	files := append([]composeproject.File{{Path: "compose.yaml", Content: original}}, baseline...)
+	files := append([]composeproject.File{{Path: "compose.yaml", Content: submissionOriginal}}, baseline...)
 	s.tree.record(s.head, files)
 	var imported api.Operation
 	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 202, &imported)

@@ -2,11 +2,13 @@ package integration
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/google/uuid"
 )
@@ -142,5 +144,56 @@ func holdSubmission(t *testing.T, x *submissionFixture, id uuid.UUID) (int64, in
 		if time.Now().After(deadline) {
 			t.Fatal("the submission did not wait to be retried:", err)
 		}
+	}
+}
+
+// An attempt already sending a submission when its submitter loses write access was started on
+// their say-so, so it finishes and records what the provider did, and no other attempt for the
+// draft starts beside it.
+func TestSubmissionWithdrawnWhileSendingRecordsWhatTheProviderDid(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	x := newSubmissionFixtureWith(t, ctx, true)
+	submitter := inviteMember(t, x.f, x.owner, x.prefix, "submitter@example.test", "operator")
+	var account uuid.UUID
+	if err := x.f.st.Pool.QueryRow(ctx, "SELECT id FROM accounts WHERE email='submitter@example.test'").Scan(&account); err != nil {
+		t.Fatal(err)
+	}
+	path, draft := x.prepare(t, "Withdrawn while sending", func(bundle *composeproject.Bundle) {
+		bundle.Files[0].Content += "# proposed\n"
+	})
+	// Gitea's submission starts by making the branch, so holding that holds the attempt after
+	// it has decided to send.
+	entered, release := x.forge.Hold("POST", "/branches")
+	defer release()
+	sending := x.submit(t, submitter, path, draft)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the attempt did not start sending")
+	}
+	x.owner.call("DELETE", x.prefix+"/members/"+account.String(), nil, 204, nil)
+	if state, note := x.await(t, sending.Id, submissionFinished); state != "failed" || !strings.Contains(note, "lost write access") {
+		t.Fatal("removing the submitter did not fail the submission", state, note)
+	}
+	if again := x.submit(t, nil, path, draft); again.Id != sending.Id {
+		t.Fatal("a submission started beside the attempt still sending", again)
+	}
+	release()
+	state, note := x.await(t, sending.Id, func(state, _ string) bool { return state == "succeeded" })
+	var status struct {
+		Status     string                `json:"status"`
+		Submission *api.SourceSubmission `json:"submission"`
+	}
+	x.owner.call("GET", path+"/source", nil, 200, &status)
+	recorded := status.Submission
+	if recorded == nil || recorded.Id != sending.Id || recorded.ReviewNumber == nil || *recorded.ReviewNumber != 1 || recorded.Commit == nil || status.Status != "awaiting_merge" || !strings.Contains(note, "already started") {
+		t.Fatalf("the provider's answer was not recorded: %s %s %+v %s", state, note, recorded, status.Status)
+	}
+	unlock := x.forge.Lock()
+	writes := slices.Clone(x.forge.Writes)
+	unlock()
+	if !slices.Equal(writes, []string{"commit", "review"}) {
+		t.Fatal("the provider was written to other than by the one attempt", writes)
 	}
 }
