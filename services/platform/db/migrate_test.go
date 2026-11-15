@@ -22,8 +22,13 @@ var (
 	createIndex = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [A-Z0-9_]+ ON ([A-Z_][A-Z0-9_]*) ?(.*)$`)
 	// A column, or a field a column's JSON holds, named by constant keys: `->` and `->>` give null
 	// for anything else a row holds rather than fail.
-	field        = `[A-Z_][A-Z0-9_]*(?: ?->>? ?'[^']*')*`
-	element      = `(?:[A-Z_][A-Z0-9_]*|\(` + field + `\))`
+	field = `[A-Z_][A-Z0-9_]*(?: ?->>? ?'[^']*')*`
+	// COALESCE, GREATEST and LEAST of those, nested twice at most. Of arguments of one type they
+	// only compare, which cannot fail; arguments of mixed types are cast to one, which can, and
+	// this check can't see the types, so a migration must not mix them.
+	pick         = `(?:COALESCE|GREATEST|LEAST) ?\(`
+	operand      = `(?:` + pick + field + `(?:, ?` + field + `)*\)|` + field + `)`
+	element      = `(?:[A-Z_][A-Z0-9_]*|\((?:` + pick + operand + `(?:, ?` + operand + `)*\)|` + field + `)\))`
 	plainColumns = regexp.MustCompile(`^\((?:` + element + `(?: ASC| DESC)?(?:, ?|\)$))+$`)
 	// Columns and fields compared with string constants, or columns required to be present, which
 	// no row an older release writes can fail.
@@ -340,6 +345,11 @@ func TestAdditiveClaims(t *testing.T) {
 		{"dropped column", "ALTER TABLE secret_versions DROP COLUMN n;", false},
 		{"unique index on existing table", "CREATE UNIQUE INDEX i ON secret_versions (id);", false},
 		{"index on existing table", "CREATE INDEX i ON secret_versions (workspace_id, created_at);", true},
+		{"index on the latest of columns", "CREATE INDEX i ON execution_operations(workspace_id, (GREATEST(COALESCE(runtime_recorded_at, created_at), COALESCE(ended_at, created_at)))) WHERE runtime_outcome IS NOT NULL;", true},
+		{"index on a column or a field", "CREATE INDEX i ON servers ((coalesce(name, labels->>'p')));", true},
+		{"index on a cast", "CREATE INDEX i ON servers ((COALESCE((labels->>'p')::int, 0)));", false},
+		{"index on a function of a column", "CREATE INDEX i ON servers ((lower(name)));", false},
+		{"index on arithmetic", "CREATE INDEX i ON servers ((GREATEST(a, b) + 1));", false},
 		{"replaced function", "CREATE OR REPLACE FUNCTION immutable_specification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;", false},
 		{"trigger on new table", "CREATE TABLE a (at timestamptz);\nCREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN DELETE FROM a; UPDATE b SET c=1; RETURN NEW; END; $$;\nCREATE TRIGGER t BEFORE INSERT ON a FOR EACH ROW EXECUTE FUNCTION f();", true},
 		{"trigger on existing table", "CREATE TRIGGER t BEFORE INSERT ON secret_versions FOR EACH ROW EXECUTE FUNCTION f();", false},
