@@ -171,6 +171,15 @@ type BackupPolicy struct {
 	CoordinatedCheckedAt time.Time `json:"coordinated_checked_at"`
 }
 
+type BackupSnapshotReceipt struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	PolicyID        uuid.UUID `json:"policy_id"`
+	Snapshot        string    `json:"snapshot"`
+	ServerID        uuid.UUID `json:"server_id"`
+	FirstReportedAt time.Time `json:"first_reported_at"`
+}
+
 type BuildArtifact struct {
 	ID            uuid.UUID `json:"id"`
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
@@ -954,6 +963,7 @@ type Server struct {
 	IdentityHistoryUntil        *time.Time  `json:"identity_history_until"`
 	EnrollmentIssuerID          *uuid.UUID  `json:"enrollment_issuer_id"`
 	EnrollmentIssuerAuthVersion pgtype.Int8 `json:"enrollment_issuer_auth_version"`
+	RevokedAt                   *time.Time  `json:"revoked_at"`
 }
 
 type ServerDomain struct {

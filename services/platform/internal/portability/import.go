@@ -117,6 +117,20 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			setValue(row, "released_by_revocation", false)
 		}
 	}
+	if version < 13 {
+		// Nothing recorded when a revocation began or when a snapshot was first reported. A server
+		// revoked then shows no time, and its snapshots stay on the manual route (docs/backups.md).
+		for _, row := range archive.Tables["servers"] {
+			if _, exists := row["revoked_at"]; exists {
+				return archive, ErrArchive
+			}
+			setValue(row, "revoked_at", nil)
+		}
+		if _, exists := archive.Tables["backup_snapshot_receipts"]; exists {
+			return archive, ErrArchive
+		}
+		archive.Tables["backup_snapshot_receipts"] = []Row{}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -207,6 +221,8 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		{"preview_requests", "build_id", "execution_operations"},
 		{"preview_requests", "operation_id", "execution_operations"},
 		{"preview_requests", "plan_id", "visual_requests"},
+		{"backup_snapshot_receipts", "policy_id", "backup_policies"},
+		{"backup_snapshot_receipts", "server_id", "servers"},
 	}
 	for _, ref := range refs {
 		ids := map[string]bool{}
@@ -494,63 +510,6 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		return out, store.Normalize(e)
 	}
 	return out, nil
-}
-
-func normalizeLegacyArchive(a *Archive) error {
-	if len(a.Tables) != len(legacyTables) {
-		return ErrArchive
-	}
-	for _, t := range legacyTables {
-		rows, ok := a.Tables[t.Name]
-		if !ok || rows == nil {
-			return ErrArchive
-		}
-		columns := strings.Split(t.Columns, ",")
-		for _, row := range rows {
-			if len(row) != len(columns) {
-				return ErrArchive
-			}
-			for _, column := range columns {
-				if _, ok := row[column]; !ok {
-					return ErrArchive
-				}
-			}
-			if t.Name == "environments" {
-				setValue(row, "purpose", "standard")
-			}
-			if t.Name == "servers" {
-				setValue(row, "preview_only", false)
-			}
-		}
-	}
-	a.Tables["preview_policies"] = []Row{}
-	a.Tables["preview_requests"] = []Row{}
-	a.Version = 2
-	return nil
-}
-
-func normalizePreNetworkArchive(a *Archive) error {
-	for _, table := range tables {
-		if strings.HasPrefix(table.Name, "network_") || table.Name == "workspace_networks" || strings.HasPrefix(table.Name, "cross_host_") || table.Name == "backup_cutovers" {
-			if _, ok := a.Tables[table.Name]; ok {
-				return ErrArchive
-			}
-			a.Tables[table.Name] = []Row{}
-		}
-	}
-	for _, row := range a.Tables["deployment_units"] {
-		if _, ok := row["primary_unit"]; ok {
-			return ErrArchive
-		}
-		setValue(row, "primary_unit", true)
-	}
-	for _, row := range a.Tables["execution_operations"] {
-		if _, ok := row["parent_id"]; ok {
-			return ErrArchive
-		}
-		setValue(row, "parent_id", nil)
-	}
-	return nil
 }
 
 // checkReleasedRoutes refuses an archive in which an environment whose server confirmed its

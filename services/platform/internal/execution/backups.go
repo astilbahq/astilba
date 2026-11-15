@@ -447,7 +447,53 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	if err = db.New(tx).SaveBackupPolicyReport(ctx, db.SaveBackupPolicyReportParams{Status: raw, StatusSequence: sequence, WorkspaceID: a.Workspace, ID: p.ID}); err != nil {
 		return err
 	}
+	if err = recordSnapshotReceipts(ctx, db.New(tx), a, p.ID, status.Runs); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// recordSnapshotReceipts keeps a receipt for each snapshot a report lists as available: one an
+// upload put there that has not been pruned since. A snapshot keeps the time management first
+// received it for as long as reports go on listing it. Restore runs name a snapshot without
+// making one, so they add nothing.
+func recordSnapshotReceipts(ctx context.Context, q *db.Queries, a Identity, policy uuid.UUID, runs []backup.Run) error {
+	listed := map[string]bool{}
+	snapshots := []string{}
+	for _, r := range runs {
+		if r.State == "succeeded" && r.Snapshot != "" && r.TargetID == uuid.Nil && !r.Pruned && !listed[r.Snapshot] {
+			listed[r.Snapshot] = true
+			snapshots = append(snapshots, r.Snapshot)
+		}
+	}
+	if err := q.DropUnlistedBackupSnapshotReceipts(ctx, db.DropUnlistedBackupSnapshotReceiptsParams{WorkspaceID: a.Workspace, PolicyID: policy, Snapshots: snapshots}); err != nil {
+		return err
+	}
+	return q.RecordBackupSnapshotReceipts(ctx, db.RecordBackupSnapshotReceiptsParams{ServerID: a.ID, Snapshots: snapshots, WorkspaceID: a.Workspace, PolicyID: policy})
+}
+
+// BackupSnapshotReceipts lists when management first received each snapshot its policy's reports
+// list as available, by its own clock, newest first. Unlike the times a server reports, a host
+// can't backdate these.
+func (s *Service) BackupSnapshotReceipts(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) ([]api.BackupSnapshotReceipt, error) {
+	out := []api.BackupSnapshotReceipt{}
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
+		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+			return err
+		}
+		if _, err := loadBackupPolicy(ctx, tx, ws, env, id); err != nil {
+			return err
+		}
+		rows, err := db.New(tx).ListBackupSnapshotReceipts(ctx, db.ListBackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, PolicyID: id})
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			out = append(out, api.BackupSnapshotReceipt{Snapshot: r.Snapshot, ServerId: r.ServerID, FirstReportedAt: r.FirstReportedAt.UTC()})
+		}
+		return nil
+	})
+	return out, err
 }
 
 func requireGeneralSchedule(ctx context.Context, q db.DBTX, ws, server uuid.UUID, p backup.Policy) error {

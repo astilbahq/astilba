@@ -318,6 +318,22 @@ func (q *Queries) DisableEnvironmentBackupPolicies(ctx context.Context, arg Disa
 	return err
 }
 
+const dropUnlistedBackupSnapshotReceipts = `-- name: DropUnlistedBackupSnapshotReceipts :exec
+DELETE FROM backup_snapshot_receipts
+WHERE workspace_id = $1 AND policy_id = $2 AND snapshot <> ALL($3::text[])
+`
+
+type DropUnlistedBackupSnapshotReceiptsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	PolicyID    uuid.UUID `json:"policy_id"`
+	Snapshots   []string  `json:"snapshots"`
+}
+
+func (q *Queries) DropUnlistedBackupSnapshotReceipts(ctx context.Context, arg DropUnlistedBackupSnapshotReceiptsParams) error {
+	_, err := q.db.Exec(ctx, dropUnlistedBackupSnapshotReceipts, arg.WorkspaceID, arg.PolicyID, arg.Snapshots)
+	return err
+}
+
 const insertBackupCutover = `-- name: InsertBackupCutover :exec
 INSERT INTO backup_cutovers(workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration)
 VALUES($1,$2,$3,$4,$5,$6)
@@ -413,6 +429,44 @@ func (q *Queries) ListBackupPolicies(ctx context.Context, arg ListBackupPolicies
 			return nil, err
 		}
 		items = append(items, configuration)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBackupSnapshotReceipts = `-- name: ListBackupSnapshotReceipts :many
+SELECT snapshot,server_id,first_reported_at FROM backup_snapshot_receipts
+WHERE workspace_id = $1 AND environment_id = $2 AND policy_id = $3
+ORDER BY first_reported_at DESC,snapshot LIMIT 256
+`
+
+type ListBackupSnapshotReceiptsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+}
+
+type ListBackupSnapshotReceiptsRow struct {
+	Snapshot        string    `json:"snapshot"`
+	ServerID        uuid.UUID `json:"server_id"`
+	FirstReportedAt time.Time `json:"first_reported_at"`
+}
+
+func (q *Queries) ListBackupSnapshotReceipts(ctx context.Context, arg ListBackupSnapshotReceiptsParams) ([]ListBackupSnapshotReceiptsRow, error) {
+	rows, err := q.db.Query(ctx, listBackupSnapshotReceipts, arg.WorkspaceID, arg.EnvironmentID, arg.PolicyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBackupSnapshotReceiptsRow{}
+	for rows.Next() {
+		var i ListBackupSnapshotReceiptsRow
+		if err := rows.Scan(&i.Snapshot, &i.ServerID, &i.FirstReportedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -533,6 +587,32 @@ func (q *Queries) OperationCommandByRequestKey(ctx context.Context, arg Operatio
 	var command []byte
 	err := row.Scan(&command)
 	return command, err
+}
+
+const recordBackupSnapshotReceipts = `-- name: RecordBackupSnapshotReceipts :exec
+INSERT INTO backup_snapshot_receipts(workspace_id,environment_id,policy_id,snapshot,server_id,first_reported_at)
+SELECT p.workspace_id,p.environment_id,p.id,s.snapshot,$1::uuid,clock_timestamp()
+FROM backup_policies p CROSS JOIN unnest($2::text[]) AS s(snapshot)
+WHERE p.workspace_id = $3 AND p.id = $4
+ON CONFLICT (policy_id,snapshot) DO NOTHING
+`
+
+type RecordBackupSnapshotReceiptsParams struct {
+	ServerID    uuid.UUID `json:"server_id"`
+	Snapshots   []string  `json:"snapshots"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	PolicyID    uuid.UUID `json:"policy_id"`
+}
+
+// A snapshot already listed keeps the time management first received it.
+func (q *Queries) RecordBackupSnapshotReceipts(ctx context.Context, arg RecordBackupSnapshotReceiptsParams) error {
+	_, err := q.db.Exec(ctx, recordBackupSnapshotReceipts,
+		arg.ServerID,
+		arg.Snapshots,
+		arg.WorkspaceID,
+		arg.PolicyID,
+	)
+	return err
 }
 
 const rewrapBackupDestinationAccess = `-- name: RewrapBackupDestinationAccess :exec

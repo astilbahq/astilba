@@ -96,6 +96,8 @@ func recoveryKeys(name string) string {
 		return "workspace_id,environment_id,revision_id"
 	case "backup_cutovers":
 		return "revision_id"
+	case "backup_snapshot_receipts":
+		return "policy_id,snapshot"
 	case "network_members":
 		return "workspace_id,server_id"
 	case "network_endpoint_sources":

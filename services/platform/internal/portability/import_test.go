@@ -3,6 +3,7 @@ package portability
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -148,6 +149,7 @@ func withoutVersionNine(a Archive) {
 // withoutVersionEleven makes a decoded archive look as one written before it recorded which preview
 // requests revocation released.
 func withoutVersionEleven(a Archive) {
+	withoutVersionThirteen(a)
 	for _, row := range a.Tables["preview_requests"] {
 		delete(row, "released_by_revocation")
 	}
@@ -192,8 +194,13 @@ func TestArchiveCarriesPreviewsRevocationReleased(t *testing.T) {
 		if !released {
 			delete(row, "released_by_revocation")
 		}
-		a.Version, a.Tables["preview_requests"] = version, []Row{row}
-		raw, err := stablejson.Marshal(a)
+		older := a
+		older.Version, older.Tables = version, maps.Clone(a.Tables)
+		if version < 13 {
+			withoutVersionThirteen(older)
+		}
+		older.Tables["preview_requests"] = []Row{row}
+		raw, err := stablejson.Marshal(older)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -365,5 +372,72 @@ func TestArchiveRefusesAmbiguousNames(t *testing.T) {
 		if _, err = decodeArchive([]byte(altered)); err == nil {
 			t.Fatalf("accepted a %s", name)
 		}
+	}
+}
+
+// withoutVersionThirteen makes a decoded archive look as one written before it recorded when
+// revocations began and when snapshots were first reported. It copies the rows it changes.
+func withoutVersionThirteen(a Archive) {
+	servers := []Row{}
+	for _, row := range a.Tables["servers"] {
+		row = maps.Clone(row)
+		delete(row, "revoked_at")
+		servers = append(servers, row)
+	}
+	a.Tables["servers"] = servers
+	delete(a.Tables, "backup_snapshot_receipts")
+}
+
+// An archive carries when each server's revocation began and when management first received each
+// snapshot. One from before version 13 records neither and may not carry them, and a receipt must
+// name a policy and a server the archive holds.
+func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a.Tables["servers"][0]["revoked_at"]) != "null" || len(a.Tables["backup_snapshot_receipts"]) != 0 {
+		t.Fatal("an archive from before version 13 was given a revocation time or a receipt")
+	}
+	server := a.Tables["servers"][0]
+	receipt := Row{"workspace_id": server["workspace_id"], "environment_id": jsontext.Value(`"` + uuid.NewString() + `"`), "policy_id": jsontext.Value(`"` + uuid.NewString() + `"`), "snapshot": jsontext.Value(`"` + strings.Repeat("a", 64) + `"`), "server_id": server["id"], "first_reported_at": jsontext.Value(`"2026-11-01T00:00:00Z"`)}
+	decode := func(version int, change func(Archive)) error {
+		t.Helper()
+		older := a
+		older.Version, older.Tables = version, maps.Clone(a.Tables)
+		older.Tables["servers"] = []Row{maps.Clone(server)}
+		older.Tables["servers"][0]["revoked_at"] = jsontext.Value(`"2026-11-02T00:00:00Z"`)
+		if version < 13 {
+			withoutVersionThirteen(older)
+		}
+		change(older)
+		raw, err := stablejson.Marshal(older)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = decodeArchive(raw)
+		return err
+	}
+	if err = decode(ArchiveVersion, func(Archive) {}); err != nil {
+		t.Fatal("the current version refused a revocation time", err)
+	}
+	if decode(ArchiveVersion, func(a Archive) { delete(a.Tables, "backup_snapshot_receipts") }) == nil {
+		t.Fatal("the current version accepted an archive without receipts")
+	}
+	if decode(ArchiveVersion, func(a Archive) { a.Tables["backup_snapshot_receipts"] = []Row{receipt} }) == nil {
+		t.Fatal("a receipt for a policy the archive doesn't hold was accepted")
+	}
+	if err = decode(11, func(Archive) {}); err != nil {
+		t.Fatal("version 11 was refused", err)
+	}
+	if decode(11, func(a Archive) { a.Tables["backup_snapshot_receipts"] = []Row{} }) == nil {
+		t.Fatal("version 11 accepted a receipts table")
+	}
+	if decode(11, func(a Archive) { a.Tables["servers"][0]["revoked_at"] = jsontext.Value("null") }) == nil {
+		t.Fatal("version 11 accepted a revocation time")
 	}
 }

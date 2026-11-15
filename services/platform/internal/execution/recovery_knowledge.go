@@ -10,7 +10,6 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -103,6 +102,11 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					selected, err = recoveryOperationKnowledge(prior, row)
 				case "servers":
 					err = recoveryMonotonic(selected, prior, row, []string{"revoked"}, []string{"controller_generation", "update_generation"})
+					if err == nil {
+						err = recoveryRevocationTime(selected, prior, row)
+					}
+				case "backup_snapshot_receipts":
+					selected, err = recoveryReceiptKnowledge(prior, row)
 				case "environments":
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"execution_generation"})
 					if err == nil {
@@ -405,40 +409,6 @@ func recoveryUpgradeKnowledge(prior, incoming portability.Row) (portability.Row,
 	return out, nil
 }
 
-func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, error) {
-	a, err := recoveryValue[backup.Policy](prior, "configuration")
-	if err != nil {
-		return nil, err
-	}
-	b, err := recoveryValue[backup.Policy](incoming, "configuration")
-	if err != nil {
-		return nil, err
-	}
-	out := maps.Clone(prior)
-	if b.Generation > a.Generation {
-		out["configuration"], out["encrypted_access"] = incoming["configuration"], incoming["encrypted_access"]
-	}
-	sa, err := recoveryValue[backup.Status](prior, "status")
-	if err != nil {
-		return nil, err
-	}
-	sb, err := recoveryValue[backup.Status](incoming, "status")
-	if err != nil {
-		return nil, err
-	}
-	qa, err := recoveryValue[int64](prior, "status_sequence")
-	if err != nil {
-		return nil, err
-	}
-	qb, err := recoveryValue[int64](incoming, "status_sequence")
-	if err != nil {
-		return nil, err
-	}
-	if sb.Generation > sa.Generation || sb.Generation == sa.Generation && qb > qa {
-		out["status"], out["status_sequence"] = incoming["status"], incoming["status_sequence"]
-	}
-	return out, nil
-}
 func preflightRecoveryKnownProofs(ctx context.Context, tx pgx.Tx) error {
 	var conflict bool
 	// inline-sql: recovery session temporary table

@@ -191,7 +191,7 @@ var archiveFilters = func() map[string]string {
 		"execution_plans":           ` AND id IN (SELECT o.plan_id FROM execution_operations o JOIN archive_keep k ON k.kind='op' AND k.id=o.id)`,
 		"secret_versions":           ` AND secret_id IN (SELECT s.id FROM secrets s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1)`,
 	}
-	for _, table := range []string{"deployment_units", "environment_layouts", "secrets", "managed_volumes", "managed_resources", "route_claims", "visual_runtime", "cross_host_runtime", "git_sources", "build_targets", "backup_policies", "backup_cutovers"} {
+	for _, table := range []string{"deployment_units", "environment_layouts", "secrets", "managed_volumes", "managed_resources", "route_claims", "visual_runtime", "cross_host_runtime", "git_sources", "build_targets", "backup_policies", "backup_cutovers", "backup_snapshot_receipts"} {
 		out[table] = archiveKept("env", "environment_id")
 	}
 	return out

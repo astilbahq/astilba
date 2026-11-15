@@ -119,3 +119,20 @@ RETURNING postgres_major;
 
 -- name: OperationCommandByRequestKey :one
 SELECT command FROM execution_operations WHERE workspace_id = @workspace_id AND request_key = @request_key;
+
+-- name: RecordBackupSnapshotReceipts :exec
+-- A snapshot already listed keeps the time management first received it.
+INSERT INTO backup_snapshot_receipts(workspace_id,environment_id,policy_id,snapshot,server_id,first_reported_at)
+SELECT p.workspace_id,p.environment_id,p.id,s.snapshot,@server_id::uuid,clock_timestamp()
+FROM backup_policies p CROSS JOIN unnest(@snapshots::text[]) AS s(snapshot)
+WHERE p.workspace_id = @workspace_id AND p.id = @policy_id
+ON CONFLICT (policy_id,snapshot) DO NOTHING;
+
+-- name: DropUnlistedBackupSnapshotReceipts :exec
+DELETE FROM backup_snapshot_receipts
+WHERE workspace_id = @workspace_id AND policy_id = @policy_id AND snapshot <> ALL(@snapshots::text[]);
+
+-- name: ListBackupSnapshotReceipts :many
+SELECT snapshot,server_id,first_reported_at FROM backup_snapshot_receipts
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND policy_id = @policy_id
+ORDER BY first_reported_at DESC,snapshot LIMIT 256;

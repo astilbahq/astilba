@@ -72,6 +72,14 @@ astilba-agent resolve-run --policy POLICY_UUID --run RUN_UUID
 
 This resumes recorded file writers where their identity still matches, refuses active run containers, and records failure rather than claiming a valid backup. It also records the run's own command as failed. Any other operation the host refused while the run was unresolved still needs `astilba-agent retry`. The operator can then retry a new run. A restore's snapshot stays protected until its run is resolved. A run under a coordinated reservation is resolved with `astilba-agent reject-cross-host-effect` instead; see [Cross-host placement](cross-host-placement.md). Existing application data is never deleted by these operations.
 
+## Snapshot receipts
+
+A server reports its own times for the snapshots it uploads, and a host that was compromised can backdate them. A snapshot's ID is the SHA-256 of its content, so management also records when it first received each one, by its own clock, along with the server whose report listed it. That time bounds when the snapshot's content existed, whatever the server claims. Management keeps a receipt while the policy's reports go on listing its snapshot as available. A snapshot pruned or left out of a report loses its receipt, and one reported again later gets a later time, so a server can make a snapshot look newer than it is but never older. Restores and failed runs record nothing. Owners and members read receipts through the policy's `receipts` endpoint.
+
+Revoking a server records when the revocation began, and the servers list shows it as `revokedAt`. Revoking it again keeps the first time, and renewing or transferring it clears the time. A revocation from before this release has no time. A revoked server's reports are refused, so its receipts stay as they were when it was revoked.
+
+Workspace exports and cross-host recovery carry both. When recovery finds two copies of a receipt or a revocation, it keeps the earlier time. When one copy of a revocation has no time, it shows the time as unknown.
+
 ## Restore and cutover
 
 Choose an uploaded snapshot and request a fresh restore. The agent checks source ownership, repository identity, manifest checksums and capacity before creating a new volume. Capacity must cover the existing workload, staging and the new target; an unknown or insufficient capacity blocks restoration. PostgreSQL restore is isolated from application networks. A successful recipe check records a separate verified result and target volume.

@@ -4261,6 +4261,51 @@
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/receipts:
+    get:
+      operationId: ListBackupSnapshotReceipts
+      description: When management first received each snapshot the policy's reports list as available, by its own clock, newest first. A server's reported times are its own claims; these are not.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 256
+                items:
+                  $ref: '#/components/schemas/BackupSnapshotReceipt'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover:
     post:
       operationId: PrepareBackupCutover
@@ -5725,6 +5770,10 @@
           description: Immutable reservation for preview workloads.
 
         transferRequired: {type: boolean}
+        revokedAt:
+          type: string
+          format: date-time
+          description: When the revocation in force began, by management's clock. Absent while the server isn't revoked, and for a revocation from before this was recorded.
         "id":
           "type": "string"
           "format": "uuid"
@@ -9638,6 +9687,24 @@
         - exitCode
         - manifest
         - targetId
+    BackupSnapshotReceipt:
+      type: object
+      additionalProperties: false
+      properties:
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        serverId:
+          type: string
+          format: uuid
+          description: The server whose authenticated report first listed the snapshot.
+        firstReportedAt:
+          type: string
+          format: date-time
+      required:
+        - snapshot
+        - serverId
+        - firstReportedAt
     BackupStatus:
       type: object
       additionalProperties: false

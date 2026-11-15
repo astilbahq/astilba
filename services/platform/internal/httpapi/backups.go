@@ -52,6 +52,10 @@ func (s *Server) GetBackupStatus(w http.ResponseWriter, r *http.Request, ws, pid
 	v, e := s.Execution.BackupStatus(r.Context(), *principal(r.Context()), ws, pid, env, id)
 	s.executionResponse(w, r, 200, v, e)
 }
+func (s *Server) ListBackupSnapshotReceipts(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
+	v, e := s.Execution.BackupSnapshotReceipts(r.Context(), *principal(r.Context()), ws, pid, env, id)
+	s.executionResponse(w, r, 200, v, e)
+}
 func (s *Server) RunBackupCommand(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
 	b, e := decode[api.BackupCommandRequest](r)
 	if e != nil {
