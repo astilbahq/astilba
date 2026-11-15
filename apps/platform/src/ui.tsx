@@ -104,9 +104,10 @@ export function useAction({
     ...mutation,
     formId,
     setFormId,
-    // The control is read now: a busy control is disabled, which drops its focus.
-    run: (fn: () => Promise<unknown>) =>
-      mutation.mutate({ fn, origin: document.activeElement }),
+    // The control is read now: a busy control is disabled, which drops its focus. A caller whose
+    // control is about to go away, such as a dialog's button, names the one to return to instead.
+    run: (fn: () => Promise<unknown>, origin?: Element | null) =>
+      mutation.mutate({ fn, origin: origin ?? document.activeElement }),
   };
 }
 const FormErrorContext = createContext<{

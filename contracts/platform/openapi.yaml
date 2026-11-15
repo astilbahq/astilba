@@ -1282,6 +1282,27 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/mfa-requirement:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getMfaRequirement
+      description: >-
+        Owners only. The standing approvals and deferred actions that act only while the workspace doesn't require
+        two-factor authentication, and who gave each, so an owner can review them before changing the requirement.
+        Each one's approver hasn't set up two-factor authentication. While the requirement is off, these are what
+        turning it on would stop; while it is on, what turning it off would let act again.
+      responses:
+        '200':
+          description: What the two-factor requirement stops, or would stop
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MfaRequirement'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/cross-host-recovery:
     parameters:
       - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -6460,6 +6481,47 @@
         - "name"
         - "role"
         - "requireMfa"
+    MfaRequirement:
+      type: object
+      additionalProperties: false
+      required: [approvals]
+      properties:
+        approvals: {type: array, items: {$ref: '#/components/schemas/MfaRequirementApproval'}}
+    MfaRequirementApproval:
+      type: object
+      additionalProperties: false
+      required: [kind, approverId, approverName, approverEmail, projectId, projectName, environmentId, environmentName, subject]
+      description: >-
+        A standing approval or deferred action that stops while the workspace requires two-factor authentication and its
+        approver hasn't set it up. A standing approval acts again if the requirement is turned off. A pending automatic
+        deployment or queued source submission that comes due while it is required is refused for good. Setting up
+        two-factor authentication changes the approver's credentials, which ends it: they, or another owner, approve it
+        again afterwards.
+      properties:
+        kind:
+          type: string
+          description: >-
+            `gitSource`: a Git source's automatic imports and deployments. `buildTarget`: a build target's builds,
+            automatic or run by automation, and deployments if it deploys. `automaticDeployment`: an automatic deployment
+            not yet planned. `previewPolicy`: an environment's previews. `previewApproval`: a fork commit approved for a
+            preview, while it is still the pull request's head.
+            `previewCleanup`: a preview cleanup an owner asked for. `invitation`: an invitation
+            not yet accepted. `enrollmentCode`: a server enrollment code not yet used. `sourceSubmission`: a queued source
+            submission. `automationCredential`: an automation credential, which keeps reading but can't write.
+          enum: [gitSource, buildTarget, automaticDeployment, previewPolicy, previewApproval, previewCleanup, invitation, enrollmentCode, sourceSubmission, automationCredential]
+        approverId: {type: string, format: uuid}
+        approverName: {type: string}
+        approverEmail: {type: string, format: email}
+        projectId: {type: string, format: uuid, nullable: true}
+        projectName: {type: string, nullable: true}
+        environmentId: {type: string, format: uuid, nullable: true, description: "The environment it acts in, or a preview's template environment. Null for invitations and enrollment codes."}
+        environmentName: {type: string, nullable: true}
+        subject:
+          type: string
+          description: >-
+            What it is within the environment or workspace: a build target's application name, a preview's pull request
+            number, an invitation's email address, an enrollment code's server name or an automation credential's name.
+            Empty for the others.
     CrossHostRecovery:
       type: object
       additionalProperties: false
@@ -8653,10 +8715,12 @@
         Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is
         approved again, after a restore, an import, a disconnected repository or its approver's role change.
         `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs.
-        `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only
-        owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an
-        owner to approve it again; a target that only builds automatically, an owner or operator.
-      enum: [current, approvalRequired, approverRemoved, approverRole, approverCredentials]
+        `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since.
+        `approverMfa`: the workspace requires two-factor authentication, which its approver hasn't set up; it runs
+        again if the requirement is turned off, or once it is approved by someone who has set it up. Only owners see
+        `approverCredentials` and `approverMfa`; others see `approvalRequired`. A paused Git source, or a target that
+        deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
+      enum: [current, approvalRequired, approverRemoved, approverRole, approverCredentials, approverMfa]
     ApproveGitSource:
       type: object
       additionalProperties: false

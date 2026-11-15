@@ -729,6 +729,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/mfa-requirement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        /** @description Owners only. The standing approvals and deferred actions that act only while the workspace doesn't require two-factor authentication, and who gave each, so an owner can review them before changing the requirement. Each one's approver hasn't set up two-factor authentication. While the requirement is off, these are what turning it on would stop; while it is on, what turning it off would let act again. */
+        get: operations["getMfaRequirement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/cross-host-recovery": {
         parameters: {
             query?: never;
@@ -3284,6 +3303,33 @@ export interface components {
             role: components["schemas"]["Role"];
             requireMfa: boolean;
         };
+        MfaRequirement: {
+            approvals: components["schemas"]["MfaRequirementApproval"][];
+        };
+        /** @description A standing approval or deferred action that stops while the workspace requires two-factor authentication and its approver hasn't set it up. A standing approval acts again if the requirement is turned off. A pending automatic deployment or queued source submission that comes due while it is required is refused for good. Setting up two-factor authentication changes the approver's credentials, which ends it: they, or another owner, approve it again afterwards. */
+        MfaRequirementApproval: {
+            /**
+             * @description `gitSource`: a Git source's automatic imports and deployments. `buildTarget`: a build target's builds, automatic or run by automation, and deployments if it deploys. `automaticDeployment`: an automatic deployment not yet planned. `previewPolicy`: an environment's previews. `previewApproval`: a fork commit approved for a preview, while it is still the pull request's head. `previewCleanup`: a preview cleanup an owner asked for. `invitation`: an invitation not yet accepted. `enrollmentCode`: a server enrollment code not yet used. `sourceSubmission`: a queued source submission. `automationCredential`: an automation credential, which keeps reading but can't write.
+             * @enum {string}
+             */
+            kind: "gitSource" | "buildTarget" | "automaticDeployment" | "previewPolicy" | "previewApproval" | "previewCleanup" | "invitation" | "enrollmentCode" | "sourceSubmission" | "automationCredential";
+            /** Format: uuid */
+            approverId: string;
+            approverName: string;
+            /** Format: email */
+            approverEmail: string;
+            /** Format: uuid */
+            projectId: string | null;
+            projectName: string | null;
+            /**
+             * Format: uuid
+             * @description The environment it acts in, or a preview's template environment. Null for invitations and enrollment codes.
+             */
+            environmentId: string | null;
+            environmentName: string | null;
+            /** @description What it is within the environment or workspace: a build target's application name, a preview's pull request number, an invitation's email address, an enrollment code's server name or an automation credential's name. Empty for the others. */
+            subject: string;
+        };
         CrossHostRecovery: {
             /**
              * Format: date-time
@@ -4230,10 +4276,10 @@ export interface components {
             failedAt: string;
         };
         /**
-         * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
+         * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since. `approverMfa`: the workspace requires two-factor authentication, which its approver hasn't set up; it runs again if the requirement is turned off, or once it is approved by someone who has set it up. Only owners see `approverCredentials` and `approverMfa`; others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
          * @enum {string}
          */
-        PolicyApproval: "current" | "approvalRequired" | "approverRemoved" | "approverRole" | "approverCredentials";
+        PolicyApproval: "current" | "approvalRequired" | "approverRemoved" | "approverRole" | "approverCredentials" | "approverMfa";
         ApproveGitSource: {
             /** @description The hash returned with the source, so the approval covers exactly the configuration shown. */
             sourceHash: string;
@@ -6800,6 +6846,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMfaRequirement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the two-factor requirement stops, or would stop */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaRequirement"];
                 };
             };
             /** @description Error */

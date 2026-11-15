@@ -966,11 +966,10 @@ func (q *Queries) SourceSubmissionByRequestKey(ctx context.Context, arg SourceSu
 }
 
 const sourceSubmissionSubmitter = `-- name: SourceSubmissionSubmitter :one
-SELECT (policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)
-        AND NOT (w.require_mfa AND a.totp_secret IS NULL))::boolean AS holds,
-    (s.actor_auth_version IS NOT NULL)::boolean AS recorded
-FROM source_submissions s JOIN workspaces w ON w.id = s.workspace_id JOIN accounts a ON a.id = s.actor_id
-WHERE s.workspace_id = $1 AND s.id = $2
+SELECT policy_approver_holds(workspace_id, actor_id, actor_auth_version, false)::boolean AS holds,
+    (actor_auth_version IS NOT NULL)::boolean AS recorded
+FROM source_submissions
+WHERE workspace_id = $1 AND id = $2
 `
 
 type SourceSubmissionSubmitterParams struct {
@@ -984,9 +983,9 @@ type SourceSubmissionSubmitterRow struct {
 }
 
 // Whether the member who submitted it may still have it sent: the check every standing approval
-// makes, at the role writing needs, and the workspace's two-factor requirement, which writing also
-// needs. Losing write access has already failed it (WithdrawActorSourceSubmissions). A version is
-// recorded unless an older release queued it.
+// makes, which includes the workspace's two-factor requirement, at the role writing needs. Losing
+// write access has already failed it (WithdrawActorSourceSubmissions). A version is recorded unless
+// an older release queued it.
 func (q *Queries) SourceSubmissionSubmitter(ctx context.Context, arg SourceSubmissionSubmitterParams) (SourceSubmissionSubmitterRow, error) {
 	row := q.db.QueryRow(ctx, sourceSubmissionSubmitter, arg.WorkspaceID, arg.ID)
 	var i SourceSubmissionSubmitterRow

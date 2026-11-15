@@ -30,8 +30,7 @@ func (s *Service) previewCleanupAuthority(ctx context.Context, tx pgx.Tx, p prev
 	if r.CleanupActor == nil || r.CleanupAuth == nil || r.CleanupController == nil {
 		return domain.Forbidden
 	}
-	var valid bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM memberships m JOIN accounts a ON a.id=m.account_id JOIN servers s ON s.workspace_id=m.workspace_id WHERE m.workspace_id=$1 AND m.account_id=$2 AND m.role='owner' AND a.auth_version=$3 AND s.id=$4 AND s.controller_generation=$5 AND s.preview_only AND s.role='combined' AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false))`, p.Workspace, *r.CleanupActor, *r.CleanupAuth, host, *r.CleanupController).Scan(&valid)
+	valid, err := db.New(tx).PreviewApproverHolds(ctx, db.PreviewApproverHoldsParams{WorkspaceID: p.Workspace, ActorID: *r.CleanupActor, AuthVersion: *r.CleanupAuth, ServerID: host, ControllerGeneration: *r.CleanupController})
 	if err != nil {
 		return err
 	}
@@ -55,7 +54,7 @@ func (s *Service) reconcilePreviewCleanup(ctx context.Context, tx pgx.Tx, p prev
 		if !errors.Is(err, domain.Forbidden) {
 			return err
 		}
-		return s.previewState(ctx, tx, id, "blocked", "Cleanup needs renewed owner approval or a verified agent transfer.", 5*time.Minute)
+		return s.previewState(ctx, tx, id, "blocked", "Cleanup needs renewed owner approval or a verified agent transfer. An owner's approval ends when they leave, stop being an owner or change their password or two-factor settings, and pauses while the workspace requires two-factor authentication they haven't set up.", 5*time.Minute)
 	}
 	if err := s.cancelPreviewEnvironment(ctx, tx, p.Workspace, r.View.EnvironmentId); err != nil {
 		return err
