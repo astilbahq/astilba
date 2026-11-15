@@ -73,3 +73,30 @@ LIMIT 100;
 -- name: CountStrandedDNSPublications :one
 -- unscoped: an installation-wide startup check.
 SELECT count(*) FROM dns_publications WHERE NOT @automatic::boolean OR zone NOT IN ('',@zone::text);
+
+-- name: TakeDNSLease :execrows
+-- unscoped: a DNS job names the server. The lease is taken when it is free or has run out.
+INSERT INTO server_dns_leases(server_id,holder,expires_at) VALUES(@server_id,@holder,clock_timestamp()+make_interval(secs => @seconds::float8))
+ON CONFLICT(server_id) DO UPDATE SET holder=EXCLUDED.holder,expires_at=EXCLUDED.expires_at
+WHERE server_dns_leases.expires_at<=clock_timestamp();
+
+-- name: HoldDNSLease :execrows
+-- unscoped: a DNS job names the server. Locks the lease for the rest of its holder's
+-- transaction, so a job taking it over waits until that commits.
+SELECT 1 FROM server_dns_leases WHERE server_id = @server_id AND holder = @holder FOR UPDATE;
+
+-- name: ReleaseDNSLease :exec
+-- unscoped: a DNS job names the server.
+DELETE FROM server_dns_leases WHERE server_id = @server_id AND holder = @holder;
+
+-- name: DNSPublicationTarget :one
+-- unscoped: a DNS job names the server. The addresses a job may publish: the generation it was
+-- queued for, still approved under the server's current controller, in the configured base.
+SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id AS installation_id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i
+WHERE d.server_id = @server_id AND d.generation = @generation AND d.approved_controller = @controller AND s.controller_generation = @controller
+    AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base = @base;
+
+-- name: ObserveServerDomain :exec
+-- unscoped: a DNS job names the server. Ignored once the profile has moved on.
+UPDATE server_domains SET state = @state,note = @note,observed_at=clock_timestamp(),records = @records
+WHERE server_id = @server_id AND generation = @generation AND approved_controller = @controller;

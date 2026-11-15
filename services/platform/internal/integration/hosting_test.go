@@ -79,9 +79,36 @@ type stripeFixture struct {
 	status       string
 	loseResponse bool
 	workspace    string
+	lookups      int
+	// While gate is set, a request held matches answers as Stripe stood when it arrived, but
+	// only once the gate closes, after saying so on entered.
+	held    func(*http.Request) bool
+	once    bool
+	gate    chan struct{}
+	entered chan struct{}
 }
 
 func (s *stripeFixture) RoundTrip(r *http.Request) (*http.Response, error) {
+	response, err := s.answer(r)
+	s.mu.Lock()
+	gate, entered := s.gate, s.entered
+	held := gate != nil && s.held(r)
+	if held && s.once {
+		s.gate = nil
+	}
+	s.mu.Unlock()
+	if held {
+		entered <- struct{}{}
+		select {
+		case <-gate:
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	}
+	return response, err
+}
+
+func (s *stripeFixture) answer(r *http.Request) (*http.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r.URL.Host != "api.stripe.com" || r.Header.Get("Stripe-Version") != hosting.StripeVersion {
@@ -135,6 +162,7 @@ func (s *stripeFixture) RoundTrip(r *http.Request) (*http.Response, error) {
 			body = v
 		}
 	case r.URL.Path == "/v1/subscriptions/sub_fixture":
+		s.lookups++
 		body = map[string]any{"id": "sub_fixture", "customer": s.customer, "status": s.status, "items": map[string]any{"data": []any{map[string]any{"quantity": 1, "current_period_end": s.until.Unix(), "price": map[string]any{"id": "price_monthly", "recurring": map[string]any{"interval": "month", "interval_count": 1}}}}}}
 	default:
 		s.t.Errorf("unexpected Stripe call %s %s", r.Method, r.URL.Path)

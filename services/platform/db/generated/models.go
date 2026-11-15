@@ -540,15 +540,16 @@ type HostedInvitation struct {
 }
 
 type HostedSubscription struct {
-	WorkspaceID     uuid.UUID   `json:"workspace_id"`
-	CustomerID      pgtype.Text `json:"customer_id"`
-	SubscriptionID  pgtype.Text `json:"subscription_id"`
-	Status          string      `json:"status"`
-	ManagementUntil *time.Time  `json:"management_until"`
-	ServerLimit     int32       `json:"server_limit"`
-	NotifiedUntil   *time.Time  `json:"notified_until"`
-	UpdatedAt       time.Time   `json:"updated_at"`
-	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	CustomerID       pgtype.Text `json:"customer_id"`
+	SubscriptionID   pgtype.Text `json:"subscription_id"`
+	Status           string      `json:"status"`
+	ManagementUntil  *time.Time  `json:"management_until"`
+	ServerLimit      int32       `json:"server_limit"`
+	NotifiedUntil    *time.Time  `json:"notified_until"`
+	UpdatedAt        time.Time   `json:"updated_at"`
+	NoticeCheckedAt  time.Time   `json:"notice_checked_at"`
+	ProviderRevision int64       `json:"provider_revision"`
 }
 
 type Installation struct {
@@ -954,6 +955,12 @@ type Server struct {
 	IdentityHistoryUntil        *time.Time  `json:"identity_history_until"`
 	EnrollmentIssuerID          *uuid.UUID  `json:"enrollment_issuer_id"`
 	EnrollmentIssuerAuthVersion pgtype.Int8 `json:"enrollment_issuer_auth_version"`
+}
+
+type ServerDnsLease struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	Holder    uuid.UUID `json:"holder"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type ServerDomain struct {
