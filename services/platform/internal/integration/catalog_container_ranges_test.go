@@ -2,6 +2,7 @@ package integration
 
 import (
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -221,7 +222,6 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	}
 	image := execution.TestImage
 	other := domain.Application{ID: uuid.New(), Name: "Other", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{}}
-	kaneo := spec.Routes[0].TargetID
 	spec.Applications = append(spec.Applications, other)
 	office := spec.Routes[0]
 	office.ID, office.Domain, office.AllowCIDRs = uuid.New(), "office.example.com", []string{"198.51.100.0/24"}
@@ -236,8 +236,19 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	if len(stagings) != 1 || stagings[0].RecipeId != "kaneo" {
 		t.Fatal("the clone did not keep its staging", stagings)
 	}
-	if spec.Routes[1].TargetID != kaneo {
-		t.Fatal("the owner's route moved")
+	// The clone records only the still-staged route, under its own identity.
+	var recorded []byte
+	if err := f.st.Pool.QueryRow(t.Context(), `SELECT staged_routes FROM catalog_stagings WHERE workspace_id=$1 AND environment_id=$2`, ws, uuid.MustParse(copied[strings.LastIndex(copied, "/")+1:])).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	var kept map[string][]string
+	if err := json.Unmarshal(recorded, &kept); err != nil || len(kept) != 1 {
+		t.Fatal("the clone's record of staged routes", string(recorded), err)
+	}
+	for id, allow := range kept {
+		if id == spec.Routes[0].ID.String() || !slices.Equal(allow, []string{"10.0.0.0/8"}) {
+			t.Fatal("the clone recorded another route", string(recorded))
+		}
 	}
 
 	// A record management can't read leaves the staged routes unknown, so planning asks for

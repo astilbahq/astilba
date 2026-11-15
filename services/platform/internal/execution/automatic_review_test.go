@@ -295,7 +295,7 @@ func TestReviewElevatedServicesReportsEachPrivilegedService(t *testing.T) {
 // A plan reviewed because a staged allowlist went unchecked says so, not that the host changes,
 // and doesn't promise that applying one plan lets the next push through.
 func TestAutomaticStopNamesAnUncheckedAllowlist(t *testing.T) {
-	for _, effect := range []string{deployment.UnreportedContainerRangesEffect, deployment.UnreadContainerRangesEffect} {
+	for _, effect := range []string{deployment.UnreportedContainerRangesEffect, deployment.UnreadContainerRangesEffect, deployment.UnresolvedStagingEffect, deployment.UnconfirmedStagingEffect} {
 		note := automaticStopForReview([]string{"Publish ports 80 and 443.", effect})
 		if !strings.Contains(note, "client allowlist") || strings.Contains(note, "next push") {
 			t.Errorf("%q", note)

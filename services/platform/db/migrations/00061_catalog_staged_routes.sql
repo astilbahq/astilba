@@ -8,8 +8,9 @@
 --
 -- Additive: the previous release makes no such check, so nothing it must obey lives only here. A
 -- row it writes, before this release or while rolled back, has no value, and planning works out the
--- staged routes from the staging's saved revision instead, so no row needs filling in. Rows are
--- never changed.
+-- staged routes from the staging's saved revision instead, so no staging row needs filling in. A
+-- clone the previous release makes records no stagings and keeps no link to its source, so its
+-- copy of a staged route is not checked; nothing could fill that in. Rows are never changed.
 ALTER TABLE catalog_stagings ADD COLUMN staged_routes jsonb;
 INSERT INTO schema_additive_migrations (version) VALUES (61);
 

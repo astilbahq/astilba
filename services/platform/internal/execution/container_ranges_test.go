@@ -35,6 +35,7 @@ func TestStagedRoutesAreReadStrictly(t *testing.T) {
 		{"too many entries", `{"` + route + `":[` + strings.Repeat(`"203.0.113.7/32",`, 32) + `"203.0.113.8/32"]}`, 0, true, false},
 		{"too many routes", many, 0, true, false},
 		{"another shape", `["` + route + `"]`, 0, true, false},
+		{"null", `null`, 0, true, false},
 	} {
 		got := readStagingRoutes([]byte(c.recorded), nil, nil)
 		if len(got.staged) != c.routes || got.unresolved != c.unresolved || got.unconfirmed != c.unconfirmed {

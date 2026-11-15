@@ -82,7 +82,8 @@ func readStagingRoutes(recorded, services, specification []byte) stagingRoutes {
 			return out
 		}
 		var routes map[string][]string
-		if json.Unmarshal(recorded, &routes) != nil || len(routes) > maxStagedRoutes {
+		// A JSON null reads as no map at all, which is no record of routes either.
+		if json.Unmarshal(recorded, &routes) != nil || routes == nil || len(routes) > maxStagedRoutes {
 			out.unresolved = true
 			return out
 		}
