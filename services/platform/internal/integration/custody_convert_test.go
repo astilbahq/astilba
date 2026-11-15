@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"encoding/json/v2"
 	"strings"
 	"testing"
@@ -151,7 +152,7 @@ func convert(t *testing.T, f *fixture) secretbroker.Conversion {
 }
 
 func remaining(c secretbroker.Conversion) (n int64) {
-	for _, r := range c.Remaining {
+	for _, r := range c.Counts {
 		n += r.Remaining
 	}
 	return n
@@ -454,6 +455,36 @@ func TestConvertWaitsForARewrap(t *testing.T) {
 	r := <-done
 	if r.err != nil || r.c.Values == 0 || r.c.Stage != 4 {
 		t.Fatalf("conversion after the rewrap %+v %v", r.c, r.err)
+	}
+}
+
+// Recording the stage gives up, after a few tries, while a writer holds a table with stored values,
+// rather than queue later writers behind it, and leaves the stage as it was.
+func TestConvertGivesUpWhileWritersHoldTheTables(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	seedLegacyValues(t, f)
+	writer, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	if _, err = writer.Exec(ctx, `LOCK TABLE alert_settings IN ROW EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	c, err := f.st.Broker.Convert(ctx, "operator@example.test", "beside a writer")
+	if !errors.Is(err, secretbroker.ErrConversionBusy) || remaining(c) != 0 || c.Stage != 0 {
+		t.Fatalf("conversion beside a writer %+v %v", c, err)
+	}
+	var stage int32
+	if err = f.st.Pool.QueryRow(ctx, `SELECT stage FROM custody_stage`).Scan(&stage); err != nil || stage != 3 {
+		t.Fatal("stage", stage, err)
+	}
+	if err = writer.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c = convert(t, f); c.Stage != 4 {
+		t.Fatalf("conversion once the writer finished %+v", c)
 	}
 }
 

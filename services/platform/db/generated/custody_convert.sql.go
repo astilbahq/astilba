@@ -12,17 +12,7 @@ import (
 )
 
 const conversionWorkspaces = `-- name: ConversionWorkspaces :many
-SELECT DISTINCT w.workspace_id::uuid AS workspace_id FROM (
-    SELECT workspace_id FROM secret_versions WHERE workspace_id > $1::uuid AND encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
-    UNION ALL SELECT workspace_id FROM git_connections WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT workspace_id FROM github_app_authorizations WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT workspace_id FROM registries WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT workspace_id FROM build_secret_versions WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_value) IS NOT TRUE
-    UNION ALL SELECT workspace_id FROM backup_destinations WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT workspace_id FROM backup_policies WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT workspace_id FROM alert_settings WHERE workspace_id > $1::uuid AND encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
-) w
-ORDER BY 1 LIMIT $2
+SELECT id FROM workspaces WHERE id > $1 ORDER BY id LIMIT $2
 `
 
 type ConversionWorkspacesParams struct {
@@ -30,7 +20,7 @@ type ConversionWorkspacesParams struct {
 	Batch int32     `json:"batch"`
 }
 
-// unscoped: the workspaces with a value still sealed under the keyring, in ID order from after.
+// unscoped: converting goes through every workspace, in ID order from after.
 func (q *Queries) ConversionWorkspaces(ctx context.Context, arg ConversionWorkspacesParams) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, conversionWorkspaces, arg.After, arg.Batch)
 	if err != nil {
@@ -39,11 +29,11 @@ func (q *Queries) ConversionWorkspaces(ctx context.Context, arg ConversionWorksp
 	defer rows.Close()
 	items := []uuid.UUID{}
 	for rows.Next() {
-		var workspace_id uuid.UUID
-		if err := rows.Scan(&workspace_id); err != nil {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		items = append(items, workspace_id)
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -342,28 +332,31 @@ func (q *Queries) LegacyTOTPSecrets(ctx context.Context, arg LegacyTOTPSecretsPa
 }
 
 const legacyValueCounts = `-- name: LegacyValueCounts :many
-SELECT v.kind::text AS kind, count(*)::bigint AS remaining FROM (
-    SELECT 'secret-version' AS kind FROM secret_versions WHERE encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
-    UNION ALL SELECT 'git' FROM git_connections WHERE custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT 'github-authorization' FROM github_app_authorizations WHERE custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT 'registry' FROM registries WHERE custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT 'build-secret' FROM build_secret_versions WHERE custody_value_converted(encrypted_value) IS NOT TRUE
-    UNION ALL SELECT 'backup-destination' FROM backup_destinations WHERE custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT 'backup-policy' FROM backup_policies WHERE custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT 'alert-webhook' FROM alert_settings WHERE encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
-    UNION ALL SELECT 'totp' FROM accounts WHERE totp_secret IS NOT NULL AND custody_value_converted(totp_secret) IS NOT TRUE
-    UNION ALL SELECT 'totp-pending' FROM accounts WHERE totp_pending IS NOT NULL AND custody_value_converted(totp_pending) IS NOT TRUE
+SELECT v.kind::text AS kind, count(*)::bigint AS stored,
+    count(*) FILTER (WHERE custody_value_converted(v.sealed) IS NOT TRUE)::bigint AS remaining
+FROM (
+    SELECT 'secret-version' AS kind, encrypted_value AS sealed FROM secret_versions WHERE encrypted_value IS NOT NULL
+    UNION ALL SELECT 'git', encrypted_access FROM git_connections
+    UNION ALL SELECT 'github-authorization', encrypted_access FROM github_app_authorizations
+    UNION ALL SELECT 'registry', encrypted_access FROM registries
+    UNION ALL SELECT 'build-secret', encrypted_value FROM build_secret_versions
+    UNION ALL SELECT 'backup-destination', encrypted_access FROM backup_destinations
+    UNION ALL SELECT 'backup-policy', encrypted_access FROM backup_policies
+    UNION ALL SELECT 'alert-webhook', encrypted_webhook FROM alert_settings WHERE encrypted_webhook IS NOT NULL
+    UNION ALL SELECT 'totp', totp_secret FROM accounts WHERE totp_secret IS NOT NULL
+    UNION ALL SELECT 'totp-pending', totp_pending FROM accounts WHERE totp_pending IS NOT NULL
 ) v
 GROUP BY v.kind ORDER BY v.kind
 `
 
 type LegacyValueCountsRow struct {
 	Kind      string `json:"kind"`
+	Stored    int64  `json:"stored"`
 	Remaining int64  `json:"remaining"`
 }
 
-// unscoped: how many values across the installation are still sealed under the keyring, by kind,
-// read through the *_under_keyring indexes.
+// unscoped: how many values each kind stores across the installation, and how many of them are
+// still sealed under the keyring. Counting reads every stored value.
 func (q *Queries) LegacyValueCounts(ctx context.Context) ([]LegacyValueCountsRow, error) {
 	rows, err := q.db.Query(ctx, legacyValueCounts)
 	if err != nil {
@@ -373,7 +366,7 @@ func (q *Queries) LegacyValueCounts(ctx context.Context) ([]LegacyValueCountsRow
 	items := []LegacyValueCountsRow{}
 	for rows.Next() {
 		var i LegacyValueCountsRow
-		if err := rows.Scan(&i.Kind, &i.Remaining); err != nil {
+		if err := rows.Scan(&i.Kind, &i.Stored, &i.Remaining); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -413,7 +406,7 @@ type LegacyWorkspaceValuesRow struct {
 }
 
 // One workspace's values still sealed under the installation keyring, after (after_kind,
-// after_id), for `custody convert`. Each table's condition is its *_under_keyring index's.
+// after_id), for `custody convert`.
 // Recovery checkpoints are never converted: hosts hold them bound by digest.
 func (q *Queries) LegacyWorkspaceValues(ctx context.Context, arg LegacyWorkspaceValuesParams) ([]LegacyWorkspaceValuesRow, error) {
 	rows, err := q.db.Query(ctx, legacyWorkspaceValues,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -13,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/recoveryrows"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // convertStage is the custody stage converting completes: no stored value is sealed under the
@@ -21,6 +23,14 @@ const convertStage = 4
 
 // convertBatch is how many values one of a conversion's transactions moves.
 const convertBatch = 100
+
+// convertLockAttempts is how many times recording the stage tries to hold the tables with sealed
+// values, waiting a little longer each time, before it reports them busy.
+const convertLockAttempts = 3
+
+// ErrConversionBusy is a stage check that could not hold the tables with sealed values: writers
+// kept them busy, and it gave up rather than make later writers queue behind it.
+var ErrConversionBusy = errors.New("the tables with stored values stayed busy, so custody stage 4 was not recorded: run it again at a quieter time")
 
 // convertRestarts is how many sessions in a row a holder may need without moving a value before
 // conversion gives up on it: a generation that keeps changing is a rotation, which it does not race.
@@ -35,8 +45,9 @@ type Conversion struct {
 	Holders, Values, Raced int64
 	// Skipped names the holders it could not convert, and why.
 	Skipped []string
-	// Remaining is what is still sealed under the keyring afterwards, by kind.
-	Remaining []db.LegacyValueCountsRow
+	// Counts is, by kind, how many values are stored afterwards, and how many of them are still
+	// sealed under the keyring. Recording the stage reads every one of them.
+	Counts []db.LegacyValueCountsRow
 	// Stage is the custody stage recorded afterwards, and Waiting why it is not convertStage.
 	Stage   int32
 	Waiting string
@@ -65,7 +76,7 @@ func (b *Broker) Convert(ctx context.Context, operator, reason string) (Conversi
 	err := b.convert(ctx, &c)
 	details := map[string]string{"holders": strconv.FormatInt(c.Holders, 10), "values": strconv.FormatInt(c.Values, 10), "raced": strconv.FormatInt(c.Raced, 10), "skipped": strconv.Itoa(len(c.Skipped))}
 	var remaining int64
-	for _, r := range c.Remaining {
+	for _, r := range c.Counts {
 		remaining += r.Remaining
 	}
 	details["remaining"] = strconv.FormatInt(remaining, 10)
@@ -95,11 +106,11 @@ func (b *Broker) convert(ctx context.Context, c *Conversion) error {
 		}
 	}
 	var err error
-	if c.Remaining, err = q.LegacyValueCounts(ctx); err != nil {
+	if c.Counts, err = q.LegacyValueCounts(ctx); err != nil {
 		return err
 	}
 	var remaining int64
-	for _, r := range c.Remaining {
+	for _, r := range c.Counts {
 		remaining += r.Remaining
 	}
 	switch {
@@ -124,6 +135,15 @@ func (b *Broker) convertHolder(ctx context.Context, c *Conversion, holder uuid.U
 		scope = custody.ScopeInstallation
 	}
 	name := string(scope) + ":" + holder.String()
+	if holder != uuid.Nil {
+		// Most workspaces have nothing under the keyring: look before locking it or opening its
+		// keys. One with nothing yet that gains a value is left for the next run, as the counts
+		// afterwards say.
+		values, _, _, err := legacyValues(ctx, db.New(b.pool), holder, convertCursor{})
+		if err != nil || len(values) == 0 {
+			return err
+		}
+	}
 	conn, err := b.pool.Acquire(ctx)
 	if err != nil {
 		return err
@@ -397,8 +417,28 @@ func legacySecondFactors(ctx context.Context, q *db.Queries, cursor convertCurso
 
 // completeConversion records custody stage 4 once no value is sealed under the keyring and no
 // instance seen lately runs a release that seals under it. It reports the stage recorded, and
-// otherwise why not.
+// otherwise why not. Holding the tables waits at most a few seconds for each, so writers do not
+// queue behind it: it lets go and tries again, a few times, then reports ErrConversionBusy.
 func (b *Broker) completeConversion(ctx context.Context) (int32, string, error) {
+	for attempt := 1; ; attempt++ {
+		stage, waiting, err := b.recordConverted(ctx)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+			return stage, waiting, err
+		}
+		if attempt == convertLockAttempts {
+			return 0, "", fmt.Errorf("%w: %w", ErrConversionBusy, err)
+		}
+		select {
+		case <-ctx.Done():
+			return 0, "", ctx.Err()
+		case <-time.After(time.Duration(attempt) * time.Second):
+		}
+	}
+}
+
+// recordConverted is one attempt at completeConversion, in one transaction.
+func (b *Broker) recordConverted(ctx context.Context) (int32, string, error) {
 	tx, err := b.pool.Begin(ctx)
 	if err != nil {
 		return 0, "", err

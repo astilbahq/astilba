@@ -89,6 +89,10 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 		}
 		result, err := st.Broker.Convert(ctx, *operator, *reason)
 		printConversion(os.Stdout, result)
+		if err == nil && result.Waiting != "" {
+			// A run that did not record the stage is not done, whatever it moved.
+			return errors.New("custody stage 4 is not recorded yet")
+		}
 		return err
 	case "init-keys":
 		// `serve` does the same in the background; this runs it to the end, and is safe to run
@@ -142,6 +146,9 @@ func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {
 	fmt.Fprintf(w, "custody stage  %d\n", s.Stage)
 	fmt.Fprintf(w, "keys           %d of %d workspaces, installation key %s, token key %s\n", s.Keys.WithKeys, s.Keys.Workspaces, keyState(s.Keys.Installation), keyState(s.Keys.Token))
 	fmt.Fprintf(w, "under keyring  %s\n", legacyValues(s.Legacy))
+	if s.Stage < 4 {
+		fmt.Fprintf(w, "stored values  %d, which recording stage 4 reads while writes to them wait\n", storedValues(s.Legacy))
+	}
 	pending := s.Pending()
 	if len(pending) == 0 {
 		fmt.Fprintln(w, "pending        none")
@@ -165,20 +172,30 @@ func keyState(present bool) string {
 
 // legacyValues lists how many values of each kind are still sealed under the installation keyring.
 func legacyValues(counts []db.LegacyValueCountsRow) string {
-	if len(counts) == 0 {
+	var parts []string
+	for _, c := range counts {
+		if c.Remaining > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c.Remaining, c.Kind))
+		}
+	}
+	if len(parts) == 0 {
 		return "none"
 	}
-	parts := make([]string, 0, len(counts))
-	for _, c := range counts {
-		parts = append(parts, fmt.Sprintf("%d %s", c.Remaining, c.Kind))
-	}
 	return strings.Join(parts, ", ")
+}
+
+// storedValues is how many sealed values the installation stores, of every kind.
+func storedValues(counts []db.LegacyValueCountsRow) (n int64) {
+	for _, c := range counts {
+		n += c.Stored
+	}
+	return n
 }
 
 // printConversion prints what a run did, and only what it found out: nothing for a run refused
 // before it started, and no counts or stage for one that failed before reading them.
 func printConversion(w io.Writer, c secretbroker.Conversion) {
-	if c.Holders == 0 && c.Remaining == nil {
+	if c.Holders == 0 && c.Counts == nil {
 		return
 	}
 	fmt.Fprintf(w, "run            %s\n", c.Run)
@@ -189,8 +206,9 @@ func printConversion(w io.Writer, c secretbroker.Conversion) {
 	for _, s := range c.Skipped {
 		fmt.Fprintf(w, "skipped        %s\n", s)
 	}
-	if c.Remaining != nil {
-		fmt.Fprintf(w, "under keyring  %s\n", legacyValues(c.Remaining))
+	if c.Counts != nil {
+		fmt.Fprintf(w, "under keyring  %s\n", legacyValues(c.Counts))
+		fmt.Fprintf(w, "stored values  %d\n", storedValues(c.Counts))
 	}
 	if c.Stage > 0 {
 		fmt.Fprintf(w, "custody stage  %d\n", c.Stage)
