@@ -31,10 +31,12 @@ const javascript = (path) =>
     "scripts/install-pnpm.mjs",
     "vite.config.ts",
   ].includes(path);
-// Every suite with fixture images pulls them through these.
+// Every suite with fixture images pulls them through these, from Docker Hub through its mirror.
 const imagePulls = (path) =>
   path.startsWith(".github/actions/pull-images/") ||
-  path === "scripts/fetch-attempts.mjs";
+  path.startsWith(".github/actions/docker-hub-mirror/") ||
+  path === "scripts/fetch-attempts.mjs" ||
+  path === "scripts/docker-hub-mirror.mjs";
 
 const vulnerabilityInputs = (path) =>
   path.endsWith(".go") ||
