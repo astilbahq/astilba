@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
@@ -27,16 +28,26 @@ const keyedStateVersion = 2
 // from before sealing refuse it before they act, and every agent that reads it holds keys.
 const sealedStateVersion = 3
 
+// networkSealedStateVersion marks a sealed journal whose agent also seals its private-link keys
+// to the same key store. Agents from before that refuse it before they act, rather than finding
+// a sealed key they can't read once they do. The agent seals a private-link key only once its
+// journal is in this format. So a sealed key never sits beside a journal that an earlier agent
+// would open.
+const networkSealedStateVersion = hostnetwork.SealedKeyVersion
+
 // StateVersion is the newest journal format this agent reads. describe reports it, and an agent
 // installs only a release that reads the format its journal is in.
-const StateVersion = sealedStateVersion
+const StateVersion = networkSealedStateVersion
+
+// sealedVersion reports whether a journal in format version holds its keyring sealed.
+func sealedVersion(version int64) bool { return version >= sealedStateVersion }
 
 // ErrSealedJournal says the journal's keyring is sealed to this machine and can't be opened now:
 // the key store is unavailable, or can't read what was sealed. Nothing in the journal changed.
 var ErrSealedJournal = errors.New("the agent journal's keyring is sealed to this machine, and it can't be opened now")
 
-// localStateKeys is keyring.json. Versions 1 and 2 hold the keyring in the clear; version 3 holds
-// it sealed by the key store.
+// localStateKeys is keyring.json. Versions 1 and 2 hold the keyring in the clear. Versions 3 and 4
+// hold it sealed by the key store.
 type localStateKeys struct {
 	Version       int            `json:"agentStateVersion"`
 	Keyring       jsontext.Value `json:"keyring,omitempty"`
@@ -89,8 +100,8 @@ func (j *Journal) openLocalKeys(ctx context.Context, open func(context.Context) 
 					return err
 				}
 				version, write = envelope.Version, false
-			case envelope.Version == sealedStateVersion && len(envelope.SealedKeyring) > 0 && len(envelope.Keyring) == 0:
-				return j.openSealedKeys(ctx, open, envelope.SealedKeyring)
+			case (envelope.Version == sealedStateVersion || envelope.Version == networkSealedStateVersion) && len(envelope.SealedKeyring) > 0 && len(envelope.Keyring) == 0:
+				return j.openSealedKeys(ctx, open, envelope.Version, envelope.SealedKeyring)
 			default:
 				return errors.New("unsupported agent local state version; use a compatible agent")
 			}
@@ -122,8 +133,8 @@ func (j *Journal) openLocalKeys(ctx context.Context, open func(context.Context) 
 	return j.writeKeys(ctx, keys, version, point)
 }
 
-// openSealedKeys unseals keyring.json with this machine's key store.
-func (j *Journal) openSealedKeys(ctx context.Context, open func(context.Context) (KeyStore, error), sealed []byte) error {
+// openSealedKeys unseals keyring.json, in format version, with this machine's key store.
+func (j *Journal) openSealedKeys(ctx context.Context, open func(context.Context) (KeyStore, error), version int, sealed []byte) error {
 	if open == nil {
 		return fmt.Errorf("%w: only the agent's own commands can open it", ErrSealedJournal)
 	}
@@ -132,8 +143,9 @@ func (j *Journal) openSealedKeys(ctx context.Context, open func(context.Context)
 		return err
 	}
 	j.keys.Store(keys)
-	j.formatVersion.Store(sealedStateVersion)
+	j.formatVersion.Store(int64(version))
 	j.sealing, j.store = true, store
+	j.publishNetworkKeyStore()
 	return syncLocalStateDirectory(j.dir)
 }
 
@@ -162,7 +174,7 @@ func SealedJournalNote(ctx context.Context, dir string, open func(context.Contex
 		return ""
 	}
 	var envelope localStateKeys
-	if json.Unmarshal(raw, &envelope, json.RejectUnknownMembers(true)) != nil || envelope.Version != sealedStateVersion || len(envelope.SealedKeyring) == 0 {
+	if json.Unmarshal(raw, &envelope, json.RejectUnknownMembers(true)) != nil || !sealedVersion(int64(envelope.Version)) || len(envelope.SealedKeyring) == 0 {
 		return ""
 	}
 	if _, _, err = unsealKeys(ctx, open, envelope.SealedKeyring); err != nil {
@@ -175,16 +187,17 @@ func SealedJournalNote(ctx context.Context, dir string, open func(context.Contex
 // write that fails once the sealed file has replaced the old one leaves the journal sealed.
 func (j *Journal) sealWith(ctx context.Context, store KeyStore, keys *cryptobox.Keyring, point func(string) error) error {
 	j.store = store
-	err := j.writeKeys(ctx, keys, sealedStateVersion, point)
-	if err != nil && j.formatVersion.Load() != sealedStateVersion {
+	err := j.writeKeys(ctx, keys, networkSealedStateVersion, point)
+	if err != nil && !sealedVersion(j.formatVersion.Load()) {
 		j.store = nil
 	}
 	return err
 }
 
-// writeKeys replaces keyring.json with keys: sealed by the journal's key store when it has one, or
-// else in the clear at version. The caller holds stateMu. Once the new file has replaced the old,
-// the journal is in its format, even if syncing the directory then fails.
+// writeKeys replaces keyring.json with keys. It seals them by the journal's key store, in the newest
+// sealed format, when the journal has one. Without a store it writes them in the clear at version.
+// The caller holds stateMu. Once the new file has replaced the old, the journal is in its format,
+// even if syncing the directory then fails.
 func (j *Journal) writeKeys(ctx context.Context, keys *cryptobox.Keyring, version int, point func(string) error) error {
 	raw, err := stablejson.Marshal(keys)
 	if err != nil {
@@ -200,7 +213,7 @@ func (j *Journal) writeKeys(ctx context.Context, keys *cryptobox.Keyring, versio
 		if back, err := j.store.Unseal(ctx, journalCredentialName, sealed); err != nil || !bytes.Equal(back, raw) {
 			return errors.New("the key store could not read back the journal keyring it sealed")
 		}
-		envelope = localStateKeys{Version: sealedStateVersion, SealedKeyring: sealed}
+		envelope = localStateKeys{Version: networkSealedStateVersion, SealedKeyring: sealed}
 	}
 	body, err := stablejson.Marshal(envelope)
 	if err != nil {
@@ -209,6 +222,7 @@ func (j *Journal) writeKeys(ctx context.Context, keys *cryptobox.Keyring, versio
 	renamed, err := writeLocalState(j.dir, filepath.Join(j.dir, "keyring.json"), body, point)
 	if renamed {
 		j.formatVersion.Store(int64(envelope.Version))
+		j.publishNetworkKeyStore()
 	}
 	return err
 }
@@ -385,14 +399,15 @@ func (j *Journal) HoldsKey(cfg Config) bool {
 func (j *Journal) StateVersion() int { return int(j.formatVersion.Load()) }
 
 // InstallStateVersion is the format a release the agent service installs must read to run on this
-// journal. The service seals its journal's keyring as soon as it can, even while an update
-// installs. A command run with the service stopped never seals an existing keyring, so for it the
-// journal's own format is exact.
+// journal. The service seals its journal's keyring, and then its private-link keys, as soon as it
+// can, even while an update installs. A command run with the service stopped never seals an
+// existing keyring, so for it the journal's own format is exact. It seals a private-link key only
+// once the journal's format says so.
 func (j *Journal) InstallStateVersion() int {
 	j.stateMu.Lock()
 	defer j.stateMu.Unlock()
 	if j.sealing {
-		return sealedStateVersion
+		return networkSealedStateVersion
 	}
 	return j.StateVersion()
 }
@@ -402,4 +417,26 @@ func (j *Journal) KeyStore() KeyStore {
 	j.stateMu.Lock()
 	defer j.stateMu.Unlock()
 	return j.store
+}
+
+// networkKeyStore is the store this host's private-link keys are sealed to. It is nil until the
+// journal is in the format that tells earlier agents they can't read those keys. It never waits on
+// stateMu, which a rekey holds while it calls the key store: removing access must never wait on it.
+func (j *Journal) networkKeyStore() hostnetwork.Sealer {
+	if ref := j.networkStore.Load(); ref != nil {
+		return ref.KeyStore
+	}
+	return nil
+}
+
+// keyStoreRef holds a key store for an atomic pointer.
+type keyStoreRef struct{ KeyStore }
+
+// publishNetworkKeyStore makes the journal's store the network key store once the journal is in the
+// format that lets private-link keys be sealed. From then on the journal is sealed for good, so the
+// store never changes. The caller holds stateMu.
+func (j *Journal) publishNetworkKeyStore() {
+	if j.store != nil && j.formatVersion.Load() >= networkSealedStateVersion && j.networkStore.Load() == nil {
+		j.networkStore.Store(&keyStoreRef{j.store})
+	}
 }

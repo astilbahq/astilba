@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -108,7 +109,7 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 	}
 	// Releases from before the field read every format up to the keyed one, which Keyed covers.
 	if running.StateVersion > keyedStateVersion && identity.StateVersion < running.StateVersion {
-		return errors.New("this agent seals its journal's keyring to this machine, and this release can't read a sealed keyring; install a release that can")
+		return fmt.Errorf("this agent's state is in format %d, and this release reads formats up to %d, so it couldn't open the sealed journal keyring or private-link keys; install a release that can", running.StateVersion, identity.StateVersion)
 	}
 	backup := temp.Name() + ".previous"
 	if e = os.Link(executable, backup); e != nil {

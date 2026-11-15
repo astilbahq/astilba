@@ -25,7 +25,7 @@ func TestRecoveryTransferHoldsReplayAndPreservesFrozenReservation(t *testing.T) 
 		t.Fatal(err)
 	}
 	member := uuid.New()
-	identity, err := (hostnetwork.Host{Dir: j.dir}).Identity(member)
+	identity, err := (hostnetwork.Host{Dir: j.dir}).Identity(context.Background(), member)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,11 +190,11 @@ func TestRecoveryHandoverLargeNetworkFencesAnUncontactedHost(t *testing.T) {
 	}
 	host := hostnetwork.Host{Dir: j.dir}
 	member, peerMember, peerServer := uuid.New(), uuid.New(), uuid.New()
-	own, err := host.Identity(member)
+	own, err := host.Identity(context.Background(), member)
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer, err := host.Identity(peerMember)
+	peer, err := host.Identity(context.Background(), peerMember)
 	if err != nil {
 		t.Fatal(err)
 	}

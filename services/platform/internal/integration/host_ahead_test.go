@@ -163,7 +163,7 @@ func (n *aheadNetwork) round(t *testing.T) {
 		}
 		// As the agent does, a host that never joined acknowledges a removal without applying it.
 		if command.Manifest != nil && h.held.NetworkID == uuid.Nil && (command.Manifest.Disabled || h.forgeRemoval && command.Action == "configure") {
-			identity, err := h.store.Identity(command.MembershipID)
+			identity, err := h.store.Identity(context.Background(), command.MembershipID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func (n *aheadNetwork) round(t *testing.T) {
 			continue
 		}
 		if h.conflict && (command.Action == "configure" || h.conflictRemovals) {
-			identity, err := h.store.Identity(command.MembershipID)
+			identity, err := h.store.Identity(context.Background(), command.MembershipID)
 			if err != nil {
 				t.Fatal(err)
 			}
