@@ -26,7 +26,7 @@ import (
 // host has. Apply returns what the host's own checks would have.
 type fakeManagedHost struct {
 	key string
-	// identity fails Identity, as a key that won't open does.
+	// identity fails Identity, as making a key with a key store that isn't working does.
 	identity error
 	held     *hostnetwork.Manifest
 	apply    error

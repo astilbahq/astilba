@@ -59,6 +59,9 @@ type Engine struct {
 	// networkRefusals is whether management reads a refusal's reason, which it advertises
 	// with Astilba-Agent-Network-Refusals v1. It is unknown until management first answers.
 	networkRefusals atomic.Int32
+	// keyStoreWait is when network commands may next try the key store, in Unix nanoseconds, after
+	// they found it not working. Until then they wait, rather than call it again every second.
+	keyStoreWait atomic.Int64
 	// hostChangeReviews is whether management reviews the host changes a plan resolution reports,
 	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
 	// first answers, using the refusal states.

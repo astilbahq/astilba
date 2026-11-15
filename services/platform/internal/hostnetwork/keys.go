@@ -171,6 +171,23 @@ func (h Host) writeKey(ctx context.Context, id uuid.UUID, key *ecdh.PrivateKey) 
 	return atomicPrivate(h.identityPath(id), body)
 }
 
+// liveKey is the private key m's interface holds, when it is the key m names, or else nil.
+func (h Host) liveKey(ctx context.Context, m Manifest) *ecdh.PrivateKey {
+	out, err := h.run(ctx, "wg", nil, "show", m.Interface(), "private-key")
+	if err != nil {
+		return nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(out)))
+	if err != nil {
+		return nil
+	}
+	key, err := ecdh.X25519().NewPrivateKey(raw)
+	if err != nil || publicKeyOf(key) != m.PublicKey {
+		return nil
+	}
+	return key
+}
+
 // SealKeys seals every private-link key this host holds in the clear with its key store. Each
 // sealed key is read back before it replaces the key in the clear. A key file it can't handle
 // doesn't stop it sealing the others; it reports every one. It never opens a key sealed already.

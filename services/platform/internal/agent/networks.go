@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -39,7 +41,22 @@ func (e *Engine) managedNetworking() managedHost {
 }
 
 // sealedNetworkKeyNote says why a server whose private-link key won't open stays off the network.
-const sealedNetworkKeyNote = "This server's private-link key is sealed to this machine's key store, which can't open it: the key store is unavailable, or the state directory came from another machine or its TPM or systemd host key changed. Nothing changed and no new key was made. If the store is lost for good, remove the server from private networks and add it back to give it a new key."
+// The agent has checked that its key store works, so the key is to blame.
+const sealedNetworkKeyNote = "This server's key store works but can't open its sealed private-link key: the key came from another machine, or this host's TPM or systemd host key changed. Nothing changed and no new key was made. Remove the server from private networks and add it back to give it a new key."
+
+// errWaitingForKeyStore says a network command waits for the key store, which wasn't working when
+// a network command last tried it. Nothing changed.
+var errWaitingForKeyStore = errors.New("private-link changes are waiting for the key store")
+
+// waitForKeyStore makes network commands wait a minute before they try the key store again, and
+// logs why when they start waiting. It returns err, so the command runs again.
+func (e *Engine) waitForKeyStore(err error) error {
+	now := time.Now()
+	if e.keyStoreWait.Swap(now.Add(keyStoreRetry).UnixNano()) < now.UnixNano() {
+		slog.Warn("the agent's key store isn't working, so private-link changes wait for it and try again each minute", "error", err)
+	}
+	return err
+}
 
 func networkRestriction(c api.ExecutionCommand) bool {
 	var n hostnetwork.Command
@@ -65,14 +82,17 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 	if e.cancelled(c.Id) && r.Checkpoint == "accepted" {
 		return finish("cancelled", "Cancelled before changing managed networking.")
 	}
+	if time.Now().UnixNano() < e.keyStoreWait.Load() {
+		return errWaitingForKeyStore
+	}
 	host := e.managedNetworking()
 	if !host.Supported(ctx) {
 		return finish("failed", "Managed networking tools, kernel support or service permissions are unavailable.")
 	}
 	identity, err := host.Identity(ctx, command.MembershipID)
 	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
-		// Nothing changed. The command runs again, and the store may work by then.
-		return err
+		// Nothing changed. The command runs again once the store may work.
+		return e.waitForKeyStore(err)
 	}
 	if err != nil {
 		return finish("needs_attention", "Local network identity requires inspection.")
@@ -138,8 +158,8 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 		}
 		if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
 			// The key is opened before anything changes. The command runs again from its
-			// checkpoint, and the store may work by then.
-			return err
+			// checkpoint once the store may work.
+			return e.waitForKeyStore(err)
 		}
 		if errors.Is(err, hostnetwork.ErrSealedKey) {
 			// The key stays as it is: a new one would change this server's identity on the network

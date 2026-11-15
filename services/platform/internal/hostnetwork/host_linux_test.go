@@ -258,6 +258,10 @@ func TestNativeManagedLinks(t *testing.T) {
 	// When the boot restore couldn't put a link back, as when the key store wasn't working yet,
 	// the agent service does. It leaves links already in place alone.
 	in("a", "ip", "link", "delete", ma.Interface())
+	inPlace, err := os.Stat(filepath.Join(b.Dir, "network", mb.NetworkID.String()+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, h := range []Host{a, b} {
 		if err = h.RestoreMissing(ctx); err != nil {
 			t.Fatal("restore of missing links", err)
@@ -265,6 +269,20 @@ func TestNativeManagedLinks(t *testing.T) {
 	}
 	if out, err := request("u"); err != nil || !strings.Contains(string(out), "private-endpoint-canary") {
 		t.Fatal("link restored by the agent service unavailable", err)
+	}
+	// Applying again would replace the snapshot and reset the link's WireGuard sessions.
+	if after, err := os.Stat(filepath.Join(b.Dir, "network", mb.NetworkID.String()+".json")); err != nil || !os.SameFile(inPlace, after) || !after.ModTime().Equal(inPlace.ModTime()) {
+		t.Fatal("a link already in place was applied again", err)
+	}
+	// A link that is up holds its key, so changing it, as removing a peer does, needs no key store.
+	held, err := a.Snapshot(ma.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := a
+	broken.Keys = unsealable{}
+	if err = broken.Apply(ctx, held.Manifest, held.Bridges, false); err != nil {
+		t.Fatal("applying a link that is up waited on the key store", err)
 	}
 	// WireGuard took the sealed key through a pipe: nothing in the state directory holds it.
 	if holdsKey(t, a.Dir, privateKeyOf(t, a, ma.MembershipID)) {

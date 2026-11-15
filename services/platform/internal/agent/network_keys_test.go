@@ -198,29 +198,40 @@ func TestCopiedStateDirectoryYieldsNoPrivateLinkKeyElsewhere(t *testing.T) {
 }
 
 // A server whose sealed key won't open, as on a copied disk, stays off the network and says why.
-// It makes no key in its place: that would change its identity without its owner knowing. A key
-// store that isn't working yet only delays the command, which runs again.
+// It makes no key in its place: that would change its identity without its owner knowing.
 func TestUnopenableNetworkKeyKeepsTheServerOffTheNetwork(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		cause    error
-		finished bool
-	}{
-		{"not this machine's key", hostnetwork.ErrSealedKey, true},
-		{"store not working", hostnetwork.ErrKeyStoreUnavailable, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	e, host, c := networkJoinFixture(t, serveFakeNetworks(t), nil)
+	host.apply = fmt.Errorf("%w: it can't read it", hostnetwork.ErrSealedKey)
+	r, err := runNetworkCommand(t, e, c)
+	if err != nil || r.Report.State != "needs_attention" || r.Report.Note != sealedNetworkKeyNote {
+		t.Fatalf("the server didn't stay off the network with its reason: %v %s %q", err, r.Report.State, r.Report.Note)
+	}
+}
+
+// A key store that isn't working only delays a network command, which runs again. Until a minute
+// has passed, network commands wait without calling the store again.
+func TestNetworkCommandsWaitForAKeyStoreThatIsNotWorking(t *testing.T) {
+	unavailable := fmt.Errorf("%w: systemd-creds failed", hostnetwork.ErrKeyStoreUnavailable)
+	for _, at := range []string{"making a key", "opening a key"} {
+		t.Run(at, func(t *testing.T) {
 			e, host, c := networkJoinFixture(t, serveFakeNetworks(t), nil)
-			host.apply = fmt.Errorf("%w: it can't read it", tc.cause)
-			r, err := runNetworkCommand(t, e, c)
-			if tc.finished {
-				if err != nil || r.Report.State != "needs_attention" || r.Report.Note != sealedNetworkKeyNote {
-					t.Fatalf("the server didn't stay off the network with its reason: %v %s %q", err, r.Report.State, r.Report.Note)
-				}
-				return
+			if at == "making a key" {
+				host.identity = unavailable
+			} else {
+				host.apply = unavailable
 			}
+			r, err := runNetworkCommand(t, e, c)
 			if !errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) || r.Report.State != "running" {
-				t.Fatalf("a key store not working yet ended the command: %v %s %q", err, r.Report.State, r.Report.Note)
+				t.Fatalf("a key store not working ended the command: %v %s %q", err, r.Report.State, r.Report.Note)
+			}
+			applied := host.applied
+			host.identity, host.apply = nil, nil
+			if err = e.executeNetwork(t.Context(), c, r); !errors.Is(err, errWaitingForKeyStore) || host.applied != applied {
+				t.Fatal("the command tried the key store again at once", err)
+			}
+			e.keyStoreWait.Store(0)
+			if r, err = runNetworkCommand(t, e, c); err != nil || r.Report.State == "running" {
+				t.Fatal("the command didn't run once the store could work", err, r.Report.State)
 			}
 		})
 	}
