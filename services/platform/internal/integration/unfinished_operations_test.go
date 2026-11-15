@@ -418,8 +418,6 @@ var historyReaders = []historyReaderEntry{
 	{"StampOperationControllerGenerations", "", "offline recovery stamps every operation with its host's controller generation; PLAT-323 bounds it", "", ""},
 	{"RaiseServerUpdateGenerations", "", "offline recovery raises each host's generation past every command it ran; PLAT-323 bounds it", "", ""},
 	{"EnvironmentSecretVersionsInUse", "", "it reads every plan the environment has made to find those that can still be applied; PLAT-400 bounds it", "", ""},
-	{"recovery_history.go/recoveryLedger", "", "it reads every applied runtime change in the workspace to find each environment's floor; PLAT-352 bounds it", "", ""},
-	{"recovery_history.go/recoveryWindowStart", "", "it reads every applied runtime change in the workspace to find the window's items; PLAT-352 bounds it", "execution_operations_settled", "ended_at"},
 }
 
 // boundedReaders are statements whose estimate rises with history though they read only part of
@@ -433,6 +431,8 @@ var boundedReaders = []historyReaderEntry{
 	{"export_selection.go/exportSelection", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments", "execution_releases", ""},
 	{"releases.go/(*Service).ReleaseHistory", "LIMIT 20", "it reaches the environment's 20 newest deployments", "execution_releases", ""},
 	{"recovery_history.go/recoverySettled", "", "it reads the roots and runtime changes that ended inside the recovery window", "execution_operations_settled", "ended_at"},
+	{"recovery_history.go/recoveryWindowStart", "", "it reads the runtime changes recorded or ended near the recovery window, and the roots that ended in it", "execution_operations_applied_times", "GREATEST"},
+	{"recovery_history.go/recoveryLedger", "unnest(", "it reads each carried environment's runtime changes from the one it had when the recovery window opened", "execution_operations_applied_history", "generation"},
 	{"base_selection.go/baseSelection", "'restrict'", "it reads the standalone network removals that ended inside the recovery window", "execution_network_restrictions", "ended_at"},
 }
 
@@ -533,7 +533,7 @@ func temporaryTables(code []moduleString) []string {
 type moduleString struct{ at, owner, value string }
 
 // moduleStrings is every constant string in the module's code, sqlc's generated code included. A
-// string built from constants, such as recoveryChanges+recoveryFloors+`SELECT …`, is taken whole
+// string built from constants, such as a shared prefix+`SELECT …`, is taken whole
 // where it is used, so a fragment isn't taken alone; a constant used by name is placed where it is
 // declared, and one nothing uses is taken there too.
 func moduleStrings(t *testing.T) []moduleString {

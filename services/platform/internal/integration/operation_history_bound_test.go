@@ -381,3 +381,169 @@ FROM generate_series(1,11000) i, LATERAL (SELECT now()-interval '80 days'+i*inte
 		t.Fatalf("the window covers %s with %d settled roots", window, len(archive.Recovery.Settled))
 	}
 }
+
+// The coordinator captures a recovery base on every cross-host root, in up to six passes and
+// three seals, and each pass reads the window's applied history. It used to read every runtime
+// change the workspace ever made to find each environment's floor and the window's cut, so the
+// cost grew with the workspace's age. It now reads the changes near the window, and looks up each
+// environment's floor once: a workspace with a hundred times the older history, and a hundred
+// times the applied history an earlier recovery kept from long ago, costs a capture nothing more.
+func TestRecoveryCaptureReadsOnlyTheWindow(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var project api.Project
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects", map[string]string{"name": "Long-lived"}, 201, &project)
+	environments, plans := []uuid.UUID{}, []uuid.UUID{}
+	for _, name := range []string{"Web", "Worker", "Jobs"} {
+		var environment api.Environment
+		b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": name}, 201, &environment)
+		environments, plans = append(environments, environment.Id), append(plans, uuid.New())
+	}
+	_, in, _ := enrollment(t, f, b, ws, "deployment")
+	if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
+		t.Fatal(err)
+	}
+	// seed writes history as the times trigger would have dated it, with the trigger and the
+	// plans' requests left out.
+	seed := func(statement string, args ...any) {
+		t.Helper()
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec(ctx, statement, args...); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, table := range []string{"execution_operations", "recovered_runtime_history"} {
+			if _, err = f.st.Pool.Exec(ctx, `ANALYZE `+table); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed(`INSERT INTO visual_plans(id,workspace_id,environment_id,plan) SELECT p,$1,e,'{}' FROM unnest($2::uuid[],$3::uuid[]) x(e,p)`, ws, environments, plans)
+	// The last month: twenty deployments in each environment, and the host's network commands.
+	const recent = 20
+	seed(`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,runtime_outcome,runtime_plan_id,runtime_recorded_at,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,($3::uuid[])[1+i%3],1000000+i,gen_random_uuid(),'{"visual":{"action":"deploy"}}','visual','succeeded',1,true,'applied',($4::uuid[])[1+i%3],at+interval '1 minute',at,at+interval '1 minute'
+FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-interval '30 days'+i*interval '1 hour' AS at) t`, ws, in.ServerId, environments, plans, 3*recent)
+	seed(`INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,2000000+i,gen_random_uuid(),'{"network":{"action":"configure"}}','network','succeeded',1,true,at,at+interval '1 minute'
+FROM generate_series(1,300) i, LATERAL (SELECT now()-interval '10 days'+i*interval '30 minutes' AS at) t`, ws, in.ServerId)
+	// older seeds the operations numbered from to through, of a hundred thousand three minutes apart
+	// that ended a hundred days ago: a quarter of them deployments that each applied a runtime, with
+	// the generations they took. It also seeds the entries numbered from first to last of three
+	// thousand that a recovery kept five months ago, without their rows, after every older change.
+	const old, kept = 100000, 3000
+	older := func(from, to, first, last int) {
+		t.Helper()
+		seed(`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,runtime_outcome,runtime_plan_id,runtime_recorded_at,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,CASE WHEN kind<>'network' THEN env END,i,gen_random_uuid(),
+	CASE kind WHEN 'network' THEN '{"network":{"action":"configure"}}' WHEN 'visual' THEN '{"visual":{"action":"deploy"}}' ELSE '{}' END::jsonb,
+	kind,state,1,true,CASE WHEN applied THEN 'applied' END,CASE WHEN applied THEN plan END,CASE WHEN applied THEN at+interval '1 minute' END,at,at+interval '1 minute'
+FROM generate_series($5::int,$6::int) i,
+	LATERAL (SELECT ($3::uuid[])[1+i%3] AS env,($4::uuid[])[1+i%3] AS plan,(ARRAY['network','visual','backup','pipeline'])[1+i/3%4] AS kind,(ARRAY['succeeded','failed','cancelled'])[1+i/12%3] AS state,
+		now()-interval '100 days'-($7::int-i)*interval '3 minutes' AS at) k,
+	LATERAL (SELECT kind='visual' AND state='succeeded' AS applied) a`, ws, in.ServerId, environments, plans, from, to, old)
+		seed(`INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
+SELECT $1,op,env,500000+i,at,jsonb_build_object('environment',env,'operation',op,'generation',500000+i,'identity','v2:'||repeat('ab',32),'outcome','applied','runtimePlan',plan,
+	'revision',NULL,'planHash','','state','succeeded','sequence',1,'controller',0,'recordedAt',at,'exact',true)
+FROM generate_series($4::int,$5::int) i, LATERAL (SELECT gen_random_uuid() AS op,($2::uuid[])[1+i%3] AS env,($3::uuid[])[1+i%3] AS plan,now()-interval '150 days'+i*interval '1 second' AS at) k`, ws, environments, plans, first, last)
+	}
+	// capture captures a base, and counts the rows and index entries it read from the operations
+	// and the applied history recoveries kept, by relation.
+	capture := func() (int64, map[string]int64, portability.Archive) {
+		t.Helper()
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		read := func() map[string]int64 {
+			rows, err := tx.Query(ctx, `SELECT c.relname,pg_stat_get_xact_tuples_returned(c.oid) FROM pg_class c
+WHERE c.oid IN ('execution_operations'::regclass,'recovered_runtime_history'::regclass)
+	OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN ('execution_operations'::regclass,'recovered_runtime_history'::regclass))`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]int64{}
+			for rows.Next() {
+				var relation string
+				var n int64
+				if err = rows.Scan(&relation, &n); err != nil {
+					t.Fatal(err)
+				}
+				counts[relation] = n
+			}
+			if err = rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			return counts
+		}
+		before := read()
+		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total, counts := int64(0), read()
+		for relation, n := range counts {
+			if counts[relation] = n - before[relation]; counts[relation] == 0 {
+				delete(counts, relation)
+			}
+			total += counts[relation]
+		}
+		archive, err := portability.DecodeRecovery(captured.Raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if window := captured.CapturedAt.Sub(captured.WindowStart); window != portability.RecoveryWindowTarget {
+			t.Fatal("the window is shorter than its target: ", window)
+		}
+		// Each environment's floor is the newest entry the recovery kept for it: 500000+i for the
+		// largest i with i%3 equal to the environment's index. The ledger is the floor and the
+		// month's deployments.
+		floors := map[uuid.UUID]int64{}
+		for _, e := range archive.Recovery.Environments {
+			floors[e.Environment] = e.Floor
+		}
+		for i, env := range environments {
+			if want := int64(500000 + kept - (kept-i)%3); floors[env] != want {
+				t.Fatalf("environment %d starts its history at generation %d, not %d, the change it had when the window opened", i, floors[env], want)
+			}
+		}
+		if len(archive.Recovery.Applied) != 3*recent+len(environments) {
+			t.Fatalf("the base carries %d applied changes, not the %d deployments inside the window and each environment's floor", len(archive.Recovery.Applied), 3*recent)
+		}
+		return total, counts, archive
+	}
+	// A thousand older operations and three hundred kept entries, then the rest, each part older
+	// than the last.
+	older(old-999, old, kept-299, kept)
+	little, littleCounts, _ := capture()
+	older(1, old-1000, 1, kept-300)
+	long, longCounts, _ := capture()
+	if long > little {
+		t.Fatalf("a capture read %d rows and index entries with %d older operations and %d older entries (%v), and %d with %d and %d (%v)", little, 1000, 300, littleCounts, long, old, kept, longCounts)
+	}
+	// The window's cut, the floors and the ledger each read the window's changes once, and the
+	// floors and the ledger each environment's floor: the applied history read is three times the
+	// window's.
+	history := int64(0)
+	for relation, n := range longCounts {
+		if strings.HasPrefix(relation, "execution_operations_applied_") || strings.HasPrefix(relation, "recovered_runtime_history") {
+			history += n
+		}
+	}
+	if window := int64(3*recent + len(environments)); history > 3*window {
+		t.Fatalf("a capture read %d entries of applied history, more than three times the %d inside its window and at its floors: %v", history, window, longCounts)
+	}
+	t.Logf("a capture read %d rows and index entries with %d older operations, and %d with %d: %v", little, 1000, long, old, longCounts)
+}
