@@ -32,7 +32,7 @@ type fakeManagedHost struct {
 }
 
 func (h *fakeManagedHost) Supported(context.Context) bool { return true }
-func (h *fakeManagedHost) Identity(id uuid.UUID) (hostnetwork.Identity, error) {
+func (h *fakeManagedHost) Identity(_ context.Context, id uuid.UUID) (hostnetwork.Identity, error) {
 	return hostnetwork.Identity{MembershipID: id, PublicKey: h.key}, nil
 }
 func (h *fakeManagedHost) Snapshot(id uuid.UUID) (hostnetwork.Snapshot, error) {

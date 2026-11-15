@@ -109,7 +109,7 @@ sudo astilba-agent enroll --management https://platform.example.com \
 sudo systemctl enable --now astilba-agent
 ```
 
-Enrollment and run use the same protected `/var/lib/astilba-agent` directory. It holds a bbolt journal and its keyring, `keyring.json`, both required for recovery. Where the host can seal, the keyring is sealed to the machine, so the directory opens only on the machine that wrote it; see [the journal's keyring](#the-journals-keyring). Only one process may open the directory. Preserve it during upgrades; do not clone it to a different machine. A lost enrollment response can be retried with the same directory and code: the agent sends whatever it first sent with that code. A new code preserves the original machine binding and allows that host to reconnect after revocation.
+Enrollment and run use the same protected `/var/lib/astilba-agent` directory. It holds a bbolt journal and its keyring, `keyring.json`, both required for recovery, and the server's private-link keys in `network/`. Where the host can seal, the keyring and those keys are sealed to the machine, so the directory opens only on the machine that wrote it; see [the journal's keyring](#the-journals-keyring) and [private-link keys](#private-link-keys). Only one process may open the directory. Preserve it during upgrades; do not clone it to a different machine. A lost enrollment response can be retried with the same directory and code: the agent sends whatever it first sent with that code. A new code preserves the original machine binding and allows that host to reconnect after revocation.
 
 ### The agent's key
 
@@ -126,7 +126,7 @@ How well the key is protected depends on the host, and the Servers page says whi
 
 The agent registers a key only after it has sealed a value and read it back. Until then it keeps authenticating with its bearer credential. While its key store is unavailable, the agent opens it again every minute and keeps running local work, such as scheduled backups. An agent that already holds a key can't authenticate until its store opens, so the server shows as offline; `journalctl -u astilba-agent` shows why.
 
-A copy of the state directory still holds the host's private network keys, in the clear. Treat a copied state directory as a leak of those network keys even when it can't authenticate. While the journal's keyring isn't sealed, a copy also opens every journal record; see [the journal's keyring](#the-journals-keyring).
+A copy of the state directory holds no private-link key that the agent has sealed; see [private-link keys](#private-link-keys). While the journal's keyring isn't sealed, a copy opens every journal record, and the private-link keys are still in the clear; see [the journal's keyring](#the-journals-keyring).
 
 ### The journal's keyring
 
@@ -143,6 +143,18 @@ A host whose key store isn't available yet, such as one that needs `sudo systemd
 - **If the store is lost for good,** the journal can't be opened again, and the agent's error says so. That happens when the TPM is cleared or the host's hardware replaced, `/var/lib/systemd/credential.secret` is deleted, or the operating system is reinstalled around the old state directory. Revoke the server, enroll the host as a new server with a fresh state directory, and [move the work off the revoked one](cross-host-placement.md#moving-off-a-revoked-server).
 
 The agent replaces its key every 30 days, or when an owner asks with **Rotate key now**, proving that it holds both the old and the new key. Rotation waits while a terminal session is open, because a new key ends it.
+
+### Private-link keys
+
+A server in a [private network](cross-host-placement.md) holds a WireGuard private key for each membership, in `network/<membership>.key`. The agent seals each key with the same key store as the journal's keyring. The name it is sealed under includes the membership, so one membership's key can't stand in for another's.
+
+- **A copied state directory joins no private network elsewhere.** On another machine, or with a TPM or host key the key wasn't sealed with, the key doesn't open. The agent then leaves the file as it is rather than make a new one, which would change the server's identity on the network. As for the agent key, a copy of the whole disk of a host without a TPM includes the host key, so it can open the key.
+- **WireGuard gets the key through a pipe.** Applying a network never writes the key to disk in the clear. The agent also removes the configuration files that earlier agents left behind when an apply was cut short, which held the key in the clear.
+- **`astilba-network.service` opens the keys at boot** with the same store, to restore the server's private links before the agent starts. It opens the store only when it finds a sealed key. If the store isn't available yet, the restore fails, and `journalctl -u astilba-network` shows why. The links stay down until you run `sudo systemctl restart astilba-network` once the store is available.
+
+Agents from before sealing made these keys in the clear. Once the agent service has sealed the journal's keyring, it seals the keys too. It first moves the journal to a format that earlier agents refuse, so an earlier agent restored by hand stops before it acts rather than meeting a key it can't read. Then it seals each key and reads it back before it replaces the key in the clear. Sealing keeps the keys as they were, so the server's identity on its networks doesn't change and its peers need nothing. A host whose key store isn't available keeps its keys in the clear until the store opens, as it does its keyring. Commands run by hand, and the boot-time restore, never seal a key that is in the clear.
+
+Sealing doesn't replace the keys. A copy of the state directory taken before the upgrade still holds them in the clear, and so can the filesystem's freed space, as for `keyring.json`. If such a copy may have leaked, give the server new keys: **Remove from private networks**, then add it back. Each new membership gets a new key, sealed when it is made, and its peers stop accepting the old one.
 
 ### Identity conflicts
 
@@ -164,7 +176,7 @@ By default a conflict only alerts, and both copies can keep authenticating until
 If you see a conflict, or suspect the state directory leaked:
 
 1. Stop the agent service (`sudo systemctl stop astilba-agent`), since `enroll` can't open the state directory while the service has it.
-2. Create a **New enrollment code**, enroll this host again with its existing state directory, and start the service. The agent registers a new key, and every copy of the old one stops working. A new code also takes the server out of its private networks, since a copy of the state directory holds its network key; add it back to give it a new one.
+2. Create a **New enrollment code**, enroll this host again with its existing state directory, and start the service. The agent registers a new key, and every copy of the old one stops working. A new code also takes the server out of its private networks, since a copy can hold its network key: one taken before the agent sealed it, or a whole-disk copy of a host without a TPM. Add it back to give it a new one.
 3. If the host itself may be compromised, revoke the connection instead and enroll a rebuilt host as a new server; then [move the work off the revoked server](cross-host-placement.md#moving-off-a-revoked-server). Renewal accepts only the machine that enrolled. After a whole-disk copy of a host without a TPM, the systemd host key leaked too: rebuild the host, or regenerate that key before re-keying.
 
 Revoking still ends unfinished work, and the host keeps the secrets, registry access and TLS keys it was given, so rotate those at their source.
@@ -177,7 +189,7 @@ Until a host is updated, the response to a suspected leak is to revoke it and en
 
 ### Rollback and downgrade
 
-An agent refuses any release whose minimum version is below that of the release it runs; see [minimum version](#minimum-version). Once an agent holds a key, it also refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. An agent service that can seal its journal's keyring refuses to install a release that can't read a sealed keyring, even before it has sealed one, since it may seal the keyring at any moment. `update-local`, run with the service stopped, checks the journal's format as it is, so a host that hasn't sealed its keyring can still go back to an earlier release that way. An earlier agent restored by hand refuses a sealed journal before it does anything; restore a release that reads it. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
+An agent refuses any release whose minimum version is below that of the release it runs; see [minimum version](#minimum-version). Once an agent holds a key, it also refuses to install a release that can't authenticate with one, and its journal is marked so that an earlier agent, restored by hand, refuses to start rather than presenting a retired credential. An agent service that can seal its journal's keyring refuses to install a release that can't read a sealed keyring and sealed private-link keys, even before it has sealed them, since it may seal them at any moment. `update-local`, run with the service stopped, checks the journal's format as it is, so a host that hasn't sealed its keyring can still go back to an earlier release that way. An earlier agent restored by hand refuses a sealed journal before it does anything; restore a release that reads it. That includes an agent that seals its keyring but not its private-link keys, once the journal is in the format that seals them. Don't replace the agent with an earlier release while an enrollment is waiting for its answer: it can't send what the newer agent sent with that code, so you'd need a new code. Running `enroll` again with a code already used fails and leaves the agent's key as it was.
 
 Upgrade every management replica before updating agents: a replica from before keys refuses the access tokens an updated agent presents.
 
@@ -228,7 +240,7 @@ Local updates refuse unresolved workload operations. If an update was interrupte
 
 The agent-local keyring now has an explicit versioned envelope. First startup migrates an idle legacy journal atomically, preserving every key and encrypted record. Finish active cross-host maintenance or controller recovery, database upgrades, paused or uncertain scheduled runs, and unacknowledged workload commands with the previous agent before upgrading. Pending signed agent updates remain eligible for migration, including replacement before success recording and success awaiting acknowledgment. Idle distributed-runtime compatibility fences are retained and do not count as pending workload commands.
 
-An agent service that can seal its journal's keyring does so when it starts, as it rekeys the journal; see [the journal's keyring](#the-journals-keyring). Other agent commands open a sealed keyring but never seal an existing one; they seal only a new journal's keyring, as `enroll` does. So running a newer `astilba-agent` by hand doesn't change the format under the installed service. Unlike the envelope migration above, sealing doesn't need the work in progress finished with the previous agent first, because this agent reads every record it wrote. Agents from before sealing refuse it before journal initialization, pruning, command replay or maintenance effects. A host that can't seal yet keeps its keyring as it was.
+An agent service that can seal its journal's keyring does so when it starts, as it rekeys the journal; see [the journal's keyring](#the-journals-keyring). Other agent commands open a sealed keyring but never seal an existing one; they seal only a new journal's keyring, as `enroll` does. So running a newer `astilba-agent` by hand doesn't change the format under the installed service. Unlike the envelope migration above, sealing doesn't need the work in progress finished with the previous agent first, because this agent reads every record it wrote. Agents from before sealing refuse it before journal initialization, pruning, command replay or maintenance effects. A host that can't seal yet keeps its keyring as it was. Once the keyring is sealed, the service also seals the server's private-link keys; see [private-link keys](#private-link-keys).
 
 A refused migration leaves the legacy journal and keyring unchanged. Once migrated, use a format-compatible agent for executable recovery: previous agents refuse the key envelope before journal initialization, pruning, command replay or maintenance effects. There is no automatic format downgrade. Keep the journal, keys and retained recovery capsules together; offline recovery exports keep their existing format. Previously stranded legacy terminal resumptions require separate inspected recovery and are not made successful by migration.
 
@@ -305,7 +317,7 @@ UDP endpoints, capacity budgets and application grants.
 
 Allow the selected UDP listener through the server's upstream firewall. Servers
 need direct UDP reachability; this release has no rendezvous or traffic relay.
-Private keys stay in the protected host state directory. Approved private links
+Private keys stay in the protected host state directory, sealed to the machine; see [private-link keys](#private-link-keys). Approved private links
 survive management outages and are restored on host boot; revocation remains
 pending until the affected peers acknowledge it.
 

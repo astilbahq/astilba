@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/google/uuid"
 )
 
-// The journal's keyring sealed with the host's real systemd-creds: upgraded from a keyring in the
-// clear, rekeyed, cut short mid-rekey by a process crash, and copied to a machine with another
-// host key.
+// The journal's keyring and a private-link key sealed with the host's real systemd-creds: upgraded
+// from keys in the clear, rekeyed, cut short mid-rekey by a process crash, and copied to a machine
+// with another host key.
 func TestNativeJournalSealedToTheMachine(t *testing.T) {
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
 		t.Skip("requires an explicitly disposable Ubuntu systemd host")
@@ -42,6 +45,11 @@ func TestNativeJournalSealedToTheMachine(t *testing.T) {
 	}
 	clear := j.keys.Load()
 	j.Close()
+	member := uuid.New()
+	identity, err := (hostnetwork.Host{Dir: dir}).Identity(ctx, member)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	j, err = OpenSealed(ctx, dir, SystemKeyStore)
 	if err != nil {
@@ -51,11 +59,21 @@ func TestNativeJournalSealedToTheMachine(t *testing.T) {
 	if err = j.Rekey(ctx, store); err != nil {
 		t.Fatal(err)
 	}
-	if state := readLocalState(t, dir); state.Version != sealedStateVersion || state.Keyring != nil {
+	if state := readLocalState(t, dir); state.Version != StateVersion || state.Keyring != nil {
 		t.Fatal("upgrading didn't seal the keyring with systemd-creds", state.Version)
 	}
 	if j.KeyStore().Protection() != store.Protection() {
 		t.Fatal("the journal is sealed with another protection than the agent key")
+	}
+	if err = (&Engine{Journal: j}).sealNetworkKeys(ctx, j.networkKeyStore()); err != nil {
+		t.Fatal(err)
+	}
+	if !sealedKeyFile(networkKeyFile(t, dir, member)) {
+		t.Fatal("upgrading didn't seal the private-link key with systemd-creds")
+	}
+	// The boot-time restore opens it with its own store.
+	if again, err := (hostnetwork.Host{Dir: dir, Keys: OnDemandKeyStore(SystemKeyStore)}).Identity(ctx, member); err != nil || again != identity {
+		t.Fatal("the sealed private-link key doesn't open on its own machine", err)
 	}
 	if openableCanaries(t, dir, clear) != 0 || openableCanaries(t, dir, j.keys.Load()) != 0 {
 		t.Fatal("a key opens a version the rekey replaced")
@@ -104,5 +122,8 @@ func TestNativeJournalSealedToTheMachine(t *testing.T) {
 		t.Fatal("a copied state directory opened with another machine's host key")
 	} else if !errors.Is(err, ErrSealedJournal) || !strings.Contains(err.Error(), "can't read it") {
 		t.Fatal("a copied state directory failed for another reason:", err)
+	}
+	if _, err := (hostnetwork.Host{Dir: copied, Keys: OnDemandKeyStore(SystemKeyStore)}).Identity(ctx, member); !errors.Is(err, hostnetwork.ErrSealedKey) || !strings.Contains(err.Error(), "can't read it") {
+		t.Fatal("a copied private-link key opened with another machine's host key, or failed for another reason:", err)
 	}
 }

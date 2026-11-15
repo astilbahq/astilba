@@ -98,6 +98,11 @@ func TestNativeManagedLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		h := Host{Dir: dir}
+		// Host a seals its private-link key, as an agent does once its journal is sealed; host b
+		// holds its key in the clear, as an earlier agent did.
+		if key == "a" {
+			h.Keys = newMachine(t)
+		}
 		for _, tool := range []string{"wg", "ip", "nft"} {
 			path := filepath.Join(dir, tool)
 			script := "#!/bin/sh\n/usr/sbin/ip netns exec " + ns[key] + " " + tool + " \"$@\" 2>>" + filepath.Join(dir, "tool-errors") + "\nstatus=$?\nif [ $status -ne 0 ]; then echo \"" + tool + " $*\" >>" + filepath.Join(dir, "tool-errors") + "; fi\nexit $status\n"
@@ -127,11 +132,11 @@ func TestNativeManagedLinks(t *testing.T) {
 	mb.Address = "10.251.0.2"
 	ma.MembershipID = uuid.New()
 	mb.MembershipID = uuid.New()
-	ka, err := a.Identity(ma.MembershipID)
+	ka, err := a.Identity(context.Background(), ma.MembershipID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	kb, err := b.Identity(mb.MembershipID)
+	kb, err := b.Identity(context.Background(), mb.MembershipID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +244,10 @@ func TestNativeManagedLinks(t *testing.T) {
 	}
 	if out, err := request("u"); err != nil || !strings.Contains(string(out), "private-endpoint-canary") {
 		t.Fatal("restored link unavailable", err)
+	}
+	// WireGuard took the sealed key through a pipe: nothing in the state directory holds it.
+	if holdsKey(t, a.Dir, privateKeyOf(t, a, ma.MembershipID)) {
+		t.Fatal("applying a sealed private-link key left it in the clear on disk")
 	}
 	// A container network can come up inside the prefix after the host joined, as its bridge
 	// route shows. It stops new authority, but not removals: a revoked grant must not stay

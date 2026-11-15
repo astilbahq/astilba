@@ -1,6 +1,7 @@
 package hostnetwork
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
@@ -85,15 +86,15 @@ func TestRecoveryOnlyRemovesInstalledNetworkAuthority(t *testing.T) {
 func TestNetworkKeyRemainsHostLocalAcrossReconciliation(t *testing.T) {
 	h := Host{Dir: t.TempDir()}
 	member := uuid.New()
-	first, err := h.Identity(member)
+	first, err := h.Identity(context.Background(), member)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := h.Identity(member)
+	again, err := h.Identity(context.Background(), member)
 	if err != nil || again != first {
 		t.Fatal("network identity changed across restart", err)
 	}
-	other, err := h.Identity(uuid.New())
+	other, err := h.Identity(context.Background(), uuid.New())
 	if err != nil || other.PublicKey == first.PublicKey {
 		t.Fatal("renewed membership reused its predecessor key", err)
 	}

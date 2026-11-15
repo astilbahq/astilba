@@ -17,12 +17,16 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func (e *Engine) networkHost() hostnetwork.Host { return hostnetwork.Host{Dir: e.Journal.dir} }
+// networkHost is this host's managed networking. Its private-link keys are sealed to the journal's
+// key store once the journal's format lets them be.
+func (e *Engine) networkHost() hostnetwork.Host {
+	return hostnetwork.Host{Dir: e.Journal.dir, Keys: e.Journal.networkKeyStore()}
+}
 
 // managedHost is the part of the host's managed networking that executeNetwork uses.
 type managedHost interface {
 	Supported(context.Context) bool
-	Identity(uuid.UUID) (hostnetwork.Identity, error)
+	Identity(context.Context, uuid.UUID) (hostnetwork.Identity, error)
 	Snapshot(uuid.UUID) (hostnetwork.Snapshot, error)
 	Apply(context.Context, hostnetwork.Manifest, []hostnetwork.Bridge, bool) error
 }
@@ -62,7 +66,7 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 	if !host.Supported(ctx) {
 		return finish("failed", "Managed networking tools, kernel support or service permissions are unavailable.")
 	}
-	identity, err := host.Identity(command.MembershipID)
+	identity, err := host.Identity(ctx, command.MembershipID)
 	if err != nil {
 		return finish("needs_attention", "Local network identity requires inspection.")
 	}

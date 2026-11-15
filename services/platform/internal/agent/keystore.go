@@ -6,19 +6,67 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 )
 
-// KeyStore seals the agent's private keys, outstanding enrollment codes and the journal's keyring
-// to this machine, so that a copy of the state directory alone can't authenticate as the agent or
-// read its journal. Each value is sealed under a name, and unsealing it under another name fails,
-// so one sealed value can't stand in for another.
+// KeyStore seals the agent's private keys, outstanding enrollment codes, the journal's keyring and
+// the host's private-link keys to this machine. So a copy of the state directory alone can't
+// authenticate as the agent, read its journal or join its private network. Each value is sealed
+// under a name, and unsealing it under another name fails, so one sealed value can't stand in for
+// another.
 type KeyStore interface {
 	Seal(ctx context.Context, name string, plain []byte) ([]byte, error)
 	Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error)
 	Protection() api.AgentCapabilitiesKeyProtection
+}
+
+// A KeyStore seals the host's private-link keys too.
+var _ hostnetwork.Sealer = KeyStore(nil)
+
+// OnDemandKeyStore opens the store that open returns the first time it seals or unseals a value,
+// and keeps it once it opens. A command that finds nothing sealed never waits on the store or
+// fails for it.
+func OnDemandKeyStore(open func(context.Context) (KeyStore, error)) hostnetwork.Sealer {
+	return &onDemandStore{open: open}
+}
+
+type onDemandStore struct {
+	open  func(context.Context) (KeyStore, error)
+	mu    sync.Mutex
+	store KeyStore
+}
+
+func (s *onDemandStore) opened(ctx context.Context) (KeyStore, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil {
+		store, err := s.open(ctx)
+		if err != nil {
+			return nil, err
+		}
+		s.store = store
+	}
+	return s.store, nil
+}
+
+func (s *onDemandStore) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	store, err := s.opened(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.Seal(ctx, name, plain)
+}
+
+func (s *onDemandStore) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	store, err := s.opened(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.Unseal(ctx, name, sealed)
 }
 
 // errKeyStoreSetup says sealing needs a one-time setup the running service can't do itself.

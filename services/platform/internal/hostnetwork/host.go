@@ -3,7 +3,6 @@ package hostnetwork
 import (
 	"bytes"
 	"context"
-	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -57,7 +56,14 @@ type Snapshot struct {
 	Bridges        []Bridge `json:"bridges"`
 	AppliedHash    string   `json:"appliedHash"`
 }
-type Host struct{ Dir, WG, IP, NFT string }
+
+// Host is this machine's managed networking, with its state under Dir. Keys, when set, seals the
+// private-link keys the host makes and opens the ones sealed already. Without it, the host makes
+// keys in the clear and can't open a sealed one.
+type Host struct {
+	Dir, WG, IP, NFT string
+	Keys             Sealer
+}
 
 func (h Host) tool(name string) string {
 	switch name {
@@ -172,40 +178,19 @@ func atomicPrivate(path string, data []byte) error {
 	defer d.Close()
 	return d.Sync()
 }
-func (h Host) Identity(id uuid.UUID) (Identity, error) {
+
+// Identity is this host's identity on the network for membership id. It makes the membership's
+// private key if the host has none yet.
+func (h Host) Identity(ctx context.Context, id uuid.UUID) (Identity, error) {
 	unlock, err := h.lock()
 	if err != nil {
 		return Identity{}, err
 	}
 	defer unlock()
-	return h.identity(id)
-}
-func (h Host) identity(id uuid.UUID) (Identity, error) {
 	out := Identity{MembershipID: id}
-	if id == uuid.Nil {
-		return out, errors.New("membership identity required")
-	}
-	path := h.identityPath(id)
-	raw, err := privateRead(path)
-	if os.IsNotExist(err) {
-		key, e := ecdh.X25519().GenerateKey(rand.Reader)
-		if e != nil {
-			return out, e
-		}
-		raw = []byte(base64.StdEncoding.EncodeToString(key.Bytes()))
-		if err = atomicPrivate(path, raw); err != nil {
-			return out, err
-		}
-	} else if err != nil {
+	key, err := h.privateKey(ctx, id, true)
+	if err != nil {
 		return out, err
-	}
-	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return out, errors.New("invalid local network key")
-	}
-	key, err := ecdh.X25519().NewPrivateKey(b)
-	if err != nil {
-		return out, errors.New("invalid local network key")
 	}
 	out.PublicKey = base64.StdEncoding.EncodeToString(key.PublicKey().Bytes())
 	return out, nil
@@ -254,6 +239,9 @@ func (h Host) restore(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err = removeNetworkLeftovers(filepath.Join(h.Dir, "network")); err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -284,11 +272,15 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if runtime.GOOS != "linux" || m.Validate() != nil {
 		return errors.New("managed links require a valid Linux network manifest")
 	}
-	identity, err := h.identity(m.MembershipID)
+	if err := removeNetworkLeftovers(filepath.Join(h.Dir, "network")); err != nil {
+		return err
+	}
+	// Identity made the key that m names, so a missing one is never made here.
+	key, err := h.privateKey(ctx, m.MembershipID, false)
 	if err != nil {
 		return err
 	}
-	if identity.PublicKey != m.PublicKey {
+	if base64.StdEncoding.EncodeToString(key.PublicKey().Bytes()) != m.PublicKey {
 		return errors.New("managed network public key does not match local identity")
 	}
 	old, err := h.Snapshot(m.NetworkID)
@@ -348,31 +340,14 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if _, err = h.run(ctx, "ip", nil, "address", "replace", m.Address+"/32", "dev", m.Interface()); err != nil {
 		return err
 	}
-	private, err := privateRead(h.identityPath(m.MembershipID))
-	if err != nil {
-		return err
-	}
 	var config strings.Builder
-	fmt.Fprintf(&config, "[Interface]\nPrivateKey = %s\nListenPort = %d\n", strings.TrimSpace(string(private)), m.ListenPort)
+	fmt.Fprintf(&config, "[Interface]\nPrivateKey = %s\nListenPort = %d\n", base64.StdEncoding.EncodeToString(key.Bytes()), m.ListenPort)
 	for _, p := range m.Peers {
 		fmt.Fprintf(&config, "\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\nEndpoint = %s\nPersistentKeepalive = 25\n", p.PublicKey, p.Address, p.Endpoint)
 	}
-	f, err := os.CreateTemp(filepath.Join(h.Dir, "network"), ".wg-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.WriteString(config.String())
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if _, err = h.run(ctx, "wg", nil, "setconf", m.Interface(), f.Name()); err != nil {
+	// The configuration holds the private key in the clear, so it reaches wg through a pipe and
+	// is never written to disk.
+	if _, err = h.run(ctx, "wg", []byte(config.String()), "setconf", m.Interface(), "/dev/stdin"); err != nil {
 		return err
 	}
 	if _, err = h.run(ctx, "ip", nil, "link", "set", "dev", m.Interface(), "mtu", "1280", "up"); err != nil {
