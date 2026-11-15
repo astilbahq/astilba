@@ -310,8 +310,9 @@ func (e *Engine) inspect(ctx context.Context, c api.ExecutionCommand) (client.Co
 	if err != nil {
 		return v, false, err
 	}
-	// A probe is ours by its name and four labels, which tenants cannot set. Its image is not
-	// part of that: a probe started before the test image moved stays managed after it.
+	// A probe is ours by its name, which only the agent gives a container, and its four labels.
+	// Labels alone prove nothing, since an image's own LABELs reach its containers. The image
+	// is not part of it: a probe started before the test image moved stays managed after it.
 	labels := v.Container.Config.Labels
 	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.ResourceId.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != "probe-v1" {
 		return v, true, errors.New("resource ownership mismatch")
