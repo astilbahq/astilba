@@ -29,12 +29,15 @@ type ContainerRange struct {
 }
 
 var containerRangeSources = map[string]string{
-	"networkPool":    "the agent's container network pool",
-	"defaultBridge":  "Docker's default bridge network",
-	"dockerNetwork":  "a Docker network on it",
-	"addressPool":    "one of Docker's default address pools",
-	"managedNetwork": "a managed network it holds",
+	"networkPool":    "the agent's network pool",
+	"defaultBridge":  "Docker's default bridge",
+	"dockerNetwork":  "a Docker network",
+	"addressPool":    "a pool Docker may assign from",
+	"managedNetwork": "a managed network",
 }
+
+// ownerAllowlistMessageLength is the longest error message the API describes.
+const ownerAllowlistMessageLength = 240
 
 // ParseContainerRange reads one range an agent reported, refusing one that is not a masked
 // prefix from a known source.
@@ -79,13 +82,20 @@ func ValidateOwnerAllowlist(cidrs []string, containers []ContainerRange) error {
 		for _, c := range containers {
 			// Overlaps never matches across address families either.
 			if p.Overlaps(c.Prefix) {
-				why := ""
-				if c.Source == "addressPool" {
-					why = " The server reports it because Docker may give a new network a subnet from it; setting explicit default-address-pools in the server's Docker daemon.json narrows it."
-				}
-				return &Error{Code: "invalid_input", Message: "The allowlist entry " + p.String() + " also admits other containers on this server, such as other deployments and pull request previews: it overlaps " + containerRangeSources[c.Source] + ", " + c.Prefix.String() + "." + why + " Until you have created the application's administrator account, allow only your own networks: name your own address, or a narrower range that leaves " + c.Prefix.String() + " out.", Fields: []string{"route.allowCidrs"}}
+				return &Error{Code: "invalid_input", Message: overlapMessage(p, c), Fields: []string{"route.allowCidrs"}}
 			}
 		}
 	}
 	return nil
+}
+
+// overlapMessage names the entry and the range it overlaps. A default address pool may hold no
+// network yet, so its refusal says how to narrow it. It fits the API's message length even for
+// the longest IPv6 prefixes.
+func overlapMessage(entry netip.Prefix, c ContainerRange) string {
+	next := " Allow only your own networks until the app has an administrator."
+	if c.Source == "addressPool" {
+		next = " Name your own networks or narrow Docker's default-address-pools."
+	}
+	return entry.String() + " also admits this server's other containers: it overlaps " + containerRangeSources[c.Source] + ", " + c.Prefix.String() + "." + next
 }

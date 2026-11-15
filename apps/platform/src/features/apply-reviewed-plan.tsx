@@ -47,11 +47,12 @@ export function ApplyReviewedPlan({
       {review && (
         <div className={s.notice}>
           <p>
-            <strong>
-              This plan also changes its server&apos;s host configuration,
-            </strong>{" "}
-            such as the proxy, published ports, certificates or elevated
-            container privileges listed above.{" "}
+            <strong>This plan needs a workspace owner&apos;s review</strong>{" "}
+            of what it lists above beyond the environment&apos;s own services:
+            changes to its server&apos;s host configuration, such as the proxy,
+            published ports, certificates or elevated container privileges, or
+            a client allowlist that couldn&apos;t be checked against the
+            server&apos;s other containers.{" "}
             {owner
               ? "Applying it needs your approval, and you may be asked to confirm your identity."
               : "Only a workspace owner can apply it."}
@@ -62,7 +63,7 @@ export function ApplyReviewedPlan({
                 checked={approved}
                 onChange={(event) => setApproved(event.currentTarget.checked)}
               />
-              Approve the host changes listed in this plan
+              Approve what this plan lists for review
             </Label>
           )}
           <p>

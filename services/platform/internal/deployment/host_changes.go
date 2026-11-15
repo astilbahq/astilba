@@ -22,7 +22,7 @@ const UnreportedHostChangesEffect = "Review host changes: this server's agent do
 // first account to its owner, and management could not check it against the ranges the server's
 // containers send traffic from.
 const (
-	UnreportedContainerRangesEffect = "Review client allowlist: this server's agent does not report the ranges its containers send traffic from, so a staged route's allowlist was not checked against its network pool, Docker's networks and address pools, or its managed networks. Update the agent."
+	UnreportedContainerRangesEffect = "Review client allowlist: this server's agent has not reported the ranges its containers send traffic from, so a staged route's allowlist was not checked against them. An agent that predates the report needs updating; a newly enrolled one reports them once it runs."
 	UnreadContainerRangesEffect     = "Review client allowlist: this server's agent could not read the ranges its containers send traffic from, so a staged route's allowlist was not checked against its network pool, Docker's networks and address pools, or its managed networks."
 )
 

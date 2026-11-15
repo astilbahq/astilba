@@ -8,8 +8,6 @@ import (
 	"slices"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
-	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/client"
 )
@@ -69,19 +67,12 @@ func (e *Engine) containerRanges(ctx context.Context) ([]api.ContainerRange, err
 	if err != nil {
 		return nil, err
 	}
-	// A reserved cross-host candidate joins its managed network later; until then the
-	// reservation is the only record of that prefix, as for occupiedRanges.
-	reserved, err := e.Journal.crossHost()
+	// A reserved cross-host candidate joins its managed network later, as for occupiedRanges.
+	reserved, err := e.reservedManagedPrefix()
 	if err != nil {
 		return nil, err
 	}
-	if reserved.ParentID != uuid.Nil && reserved.Unit.Plan.Local != nil {
-		prefix, err := hostnetwork.Prefix(reserved.Unit.Plan.Local.Network.Prefix)
-		if err != nil {
-			return nil, err
-		}
-		managed = append(managed, prefix)
-	}
+	managed = append(managed, reserved...)
 	bridge, networks := []netip.Prefix{}, []netip.Prefix{}
 	for _, n := range list.Items {
 		for _, c := range n.IPAM.Config {

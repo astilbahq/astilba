@@ -153,3 +153,17 @@ func TestContainerRangesWaitForTheirNegotiation(t *testing.T) {
 		t.Fatalf("ranges sent %d times after negotiation, %d rejected", received.Load(), rejected.Load())
 	}
 }
+
+// The note about unread ranges speaks of a check only a controller that reads them makes.
+func TestUnreadRangesNoteWaitsForItsNegotiation(t *testing.T) {
+	j, _ := testVisualJournal(t)
+	c := NewClient(j, nil)
+	in := api.HostPreflight{Notes: []string{"Existing containers stay unmanaged.", containerRangesUnreadNote}}
+	if got := c.advertisedPreflight(in).Notes; len(got) != 1 || len(in.Notes) != 2 {
+		t.Fatal("a controller that doesn't read ranges was told they went unread:", got)
+	}
+	c.containerRanges.Store(true)
+	if got := c.advertisedPreflight(in).Notes; len(got) != 2 {
+		t.Fatal(got)
+	}
+}

@@ -81,7 +81,7 @@ func stagedAllowlists(ctx context.Context, q *db.Queries, ws, env, server uuid.U
 	for _, r := range routes {
 		if err := domain.ValidateOwnerAllowlist(r.AllowCIDRs, host.ranges); err != nil {
 			if invalid := (*domain.Error)(nil); errors.As(err, &invalid) {
-				return "", &domain.Error{Code: invalid.Code, Message: "Route " + r.Domain + ": " + invalid.Message, Fields: []string{"routes.allowCidrs"}}
+				return "", &domain.Error{Code: invalid.Code, Message: invalid.Message, Fields: []string{"routes.allowCidrs"}}
 			}
 			return "", err
 		}

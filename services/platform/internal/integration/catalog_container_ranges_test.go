@@ -94,7 +94,7 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	}
 	refusesNaming := func(raw []byte, entry, overlaps string) {
 		t.Helper()
-		if !strings.Contains(string(raw), "The allowlist entry "+entry+" also admits other containers on this server") || !strings.Contains(string(raw), overlaps) {
+		if !strings.Contains(string(raw), entry+" also admits this server's other containers") || !strings.Contains(string(raw), overlaps) {
 			t.Fatalf("refusal does not name %s and %s: %s", entry, overlaps, raw)
 		}
 	}
@@ -111,12 +111,12 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	if code != 400 {
 		t.Fatal("staged an allowlist admitting the server's network pool", code)
 	}
-	refusesNaming(raw, "10.0.0.0/8", "the agent's container network pool, 10.252.0.0/14")
+	refusesNaming(raw, "10.0.0.0/8", "the agent's network pool, 10.252.0.0/14")
 	code, raw = stage(deployed, "kaneo", "Kaneo", "172.17.0.0/16")
 	if code != 400 {
 		t.Fatal("staged an allowlist admitting Docker's default bridge", code)
 	}
-	refusesNaming(raw, "172.17.0.0/16", "Docker's default bridge network, 172.17.0.0/16")
+	refusesNaming(raw, "172.17.0.0/16", "Docker's default bridge, 172.17.0.0/16")
 	if code, raw = stage(deployed, "kaneo", "Kaneo", "203.0.113.7/32", "192.168.1.0/24"); code != 201 {
 		t.Fatal("refused the owner's own networks", code, string(raw))
 	}
@@ -128,9 +128,6 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	}
 	raw, _ = plan(fresh, reporting, 400)
 	refusesNaming(raw, "10.0.0.0/8", "10.252.0.0/14")
-	if !strings.Contains(string(raw), "Route tracker.example.com: ") {
-		t.Fatal("planning refusal does not name the route", string(raw))
-	}
 
 	// A server whose agent reports no ranges gets a plan an owner reviews, which says why.
 	_, status = plan(fresh, silent, 201)

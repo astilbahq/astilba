@@ -291,3 +291,17 @@ func TestReviewElevatedServicesReportsEachPrivilegedService(t *testing.T) {
 		t.Fatal("resolved images were not compared as reviewed")
 	}
 }
+
+// A plan reviewed because a staged allowlist went unchecked says so, not that the host changes,
+// and doesn't promise that applying one plan lets the next push through.
+func TestAutomaticStopNamesAnUncheckedAllowlist(t *testing.T) {
+	for _, effect := range []string{deployment.UnreportedContainerRangesEffect, deployment.UnreadContainerRangesEffect} {
+		note := automaticStopForReview([]string{"Publish ports 80 and 443.", effect})
+		if !strings.Contains(note, "client allowlist") || strings.Contains(note, "next push") {
+			t.Errorf("%q", note)
+		}
+	}
+	if note := automaticStopForReview([]string{deployment.UnreportedHostChangesEffect, deployment.UnreadContainerRangesEffect}); !strings.Contains(note, "Update the agent") {
+		t.Errorf("an agent that reports no host changes was not named first: %q", note)
+	}
+}

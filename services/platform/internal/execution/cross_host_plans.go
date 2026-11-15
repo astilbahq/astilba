@@ -97,7 +97,7 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, keys value
 	}
 	boundary, err := readRestoreCutover(ctx, tx, ws, env, v.Revision)
 	if err == nil {
-		return s.createRestoreReview(ctx, tx, ws, in, v, previous, network, boundary)
+		return s.createRestoreReview(ctx, tx, ws, in, v, previous, network, boundary, reviewEffects)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return out, err

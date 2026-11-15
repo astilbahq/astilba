@@ -72,11 +72,21 @@ func TestContainerRangesOverlapOnlyTheirOwnFamily(t *testing.T) {
 	}
 }
 
-// A default address pool may hold no network yet, so the refusal says why it counts and how to narrow it.
-func TestAddressPoolRefusalSaysHowToNarrowIt(t *testing.T) {
-	pool, _ := ParseContainerRange("172.16.0.0/12", "addressPool")
-	err := ValidateOwnerAllowlist([]string{"172.20.0.0/16"}, []ContainerRange{pool})
-	if err == nil || !strings.Contains(err.Error(), "default-address-pools") {
-		t.Fatal(err)
+// Every refusal fits the API's message length, even between the longest IPv6 prefixes, and one
+// for a default address pool, which may hold no network yet, says how to narrow it.
+func TestOverlapRefusalsFitTheAPI(t *testing.T) {
+	longest := "ffff:ffff:ffff:ffff:ffff:ffff:ffff:fff0/124"
+	for source := range containerRangeSources {
+		c, ok := ParseContainerRange(longest, source)
+		if !ok {
+			t.Fatal(source)
+		}
+		err := ValidateOwnerAllowlist([]string{longest}, []ContainerRange{c})
+		if err == nil || len(err.Error()) > ownerAllowlistMessageLength || !strings.Contains(err.Error(), longest) {
+			t.Errorf("%s: %v", source, err)
+		}
+		if source == "addressPool" && !strings.Contains(err.Error(), "default-address-pools") {
+			t.Error("an address pool refusal does not say how to narrow the pool")
+		}
 	}
 }

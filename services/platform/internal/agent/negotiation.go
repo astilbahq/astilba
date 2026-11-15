@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
@@ -191,6 +192,8 @@ func (c *Client) advertisedPreflight(v api.HostPreflight) api.HostPreflight {
 	}
 	if !c.containerRanges.Load() {
 		v.ContainerRanges = nil
+		// The note speaks of a check this controller doesn't make.
+		v.Notes = slices.DeleteFunc(slices.Clone(v.Notes), func(note string) bool { return note == containerRangesUnreadNote })
 	}
 	return v
 }
