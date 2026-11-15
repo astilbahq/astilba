@@ -187,7 +187,7 @@ Downgrading management below this release clears the credential of every key-bou
 
 The dashboard shows connectivity, the last reported preflight and operation state separately. Heartbeats run every 15 seconds, polls last at most 25 seconds and 45 seconds without contact is offline. Configure reverse proxies for at least a 30-second upstream-header timeout and a 35-second response timeout. Do not cache agent responses. Browser closure or a lost poll never cancels accepted work.
 
-Start a reviewed probe from the Servers page, inspect it, then review a separate remove operation. The probe has the `com.astilba.server`, `resource`, `environment` and `kind` labels. Removal checks all four, then targets the inspected container ID; it never deletes a volume or network. A probe keeps running while management or the agent is stopped. Cancellation retains any created probe at a safe checkpoint; remove it through a new reviewed plan.
+Start a reviewed probe from the Servers page, inspect it, then review a separate remove operation. The probe is named `astilba-probe-<resource>`, a name only the agent gives a container, and has the `com.astilba.server`, `resource`, `environment` and `kind` labels. Inspection, start and removal check the name and all four labels, not the image, so a probe started before an upgrade moved the probe image is still managed. Removal then targets the inspected container ID; it never deletes a volume or network. A probe keeps running while management or the agent is stopped. Cancellation retains any created probe at a safe checkpoint; remove it through a new reviewed plan.
 
 A `needs_attention` result blocks conflicting work. Inspect the named resource and Docker state before retrying the same command:
 
