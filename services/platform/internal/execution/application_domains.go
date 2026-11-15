@@ -9,6 +9,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -23,6 +24,16 @@ type domainArgs struct {
 	Server     uuid.UUID `json:"server"`
 	Generation int64     `json:"generation"`
 	Controller int64     `json:"controller"`
+	// Late is a name an earlier job may have published after losing its lease.
+	Late *latePublication `json:"late,omitempty"`
+}
+
+// latePublication is the name a job asked the provider for under the profile generation it
+// claimed, recorded by the job queued once that job found its lease taken over.
+type latePublication struct {
+	Base       string `json:"base"`
+	Zone       string `json:"zone"`
+	Generation int64  `json:"generation"`
 }
 
 func (domainArgs) Kind() string { return "platform_dns_v1" }
@@ -126,7 +137,7 @@ func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, 
 			return e
 		}
 		if s.DNS != nil {
-			if e = s.enqueueDomain(ctx, tx, domainArgs{id, generation, controller}); e != nil {
+			if e = s.enqueueDomain(ctx, tx, domainArgs{Server: id, Generation: generation, Controller: controller}); e != nil {
 				return e
 			}
 		}
@@ -261,16 +272,30 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 	if !taken {
 		return river.JobSnooze(time.Second)
 	}
-	defer s.releaseDNSLease(lease)
+	if a.Late != nil {
+		// Recorded under the lease, so no withdrawal that looked before the late request
+		// landed can forget the name afterwards.
+		e = s.underDNSLease(ctx, lease, func(tx pgx.Tx) error {
+			return db.New(tx).RecordLateDNSPublication(ctx, db.RecordLateDNSPublicationParams{Base: a.Late.Base, Zone: a.Late.Zone, Generation: a.Late.Generation, ServerID: a.Server})
+		})
+	}
 	// Withdrawal converges on what the database says now, whichever job runs it.
-	e = s.withdrawStalePublications(ctx, lease)
+	if e == nil {
+		e = s.withdrawStalePublications(ctx, lease)
+	}
 	target, claimed := s.claimPublication(ctx, lease, a)
 	e = errors.Join(e, claimed)
 	if target != nil {
 		e = errors.Join(e, s.publish(ctx, lease, a, target))
 	}
+	unanswered := errors.Is(e, applicationdns.ErrUnanswered)
 	if errors.Is(e, errDNSLeaseLost) {
-		e = errors.Join(e, s.recheckAfterLostLease(ctx, a.Server, target))
+		e = errors.Join(e, s.recheckAfterLostLease(ctx, a, target, unanswered))
+	}
+	// A request that got no answer may still reach the provider. Its lease then runs out on its
+	// own, which keeps the next job from looking before that request lands.
+	if !unanswered {
+		s.releaseDNSLease(lease)
 	}
 	return e
 }

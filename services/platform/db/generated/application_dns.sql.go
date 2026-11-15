@@ -324,22 +324,29 @@ func (q *Queries) RecordDNSPublication(ctx context.Context, arg RecordDNSPublica
 
 const recordLateDNSPublication = `-- name: RecordLateDNSPublication :exec
 INSERT INTO dns_publications(server_id,workspace_id,base,zone,revoked)
-SELECT s.id,s.workspace_id,$1,$2,s.revoked OR d.approved_controller IS NULL
-FROM servers s LEFT JOIN server_domains d ON d.server_id=s.id WHERE s.id = $3
-ON CONFLICT(server_id,base,zone) DO UPDATE SET checked_at=NULL
+SELECT s.id,s.workspace_id,$1,$2,s.revoked OR COALESCE(d.approved_controller IS NULL AND d.generation <> $3,true)
+FROM servers s LEFT JOIN server_domains d ON d.server_id=s.id WHERE s.id = $4
+ON CONFLICT(server_id,base,zone) DO NOTHING
 `
 
 type RecordLateDNSPublicationParams struct {
-	Base     string    `json:"base"`
-	Zone     string    `json:"zone"`
-	ServerID uuid.UUID `json:"server_id"`
+	Base       string    `json:"base"`
+	Zone       string    `json:"zone"`
+	Generation int64     `json:"generation"`
+	ServerID   uuid.UUID `json:"server_id"`
 }
 
-// unscoped: a DNS job names the server. A job whose lease was taken over may have published
-// here after the job that took it over had finished. The row brings the name back to withdrawal
-// unless the server is still approved, and a row already there keeps its revocation.
+// unscoped: a DNS job names the server. A job whose lease was taken over may have published here
+// after the job that took it over had looked. The row brings the name back to withdrawal when the
+// server is revoked or the approval the job published under has since ended, as revocation does;
+// a recovery fence ends approval without a new generation, and keeps records as before.
 func (q *Queries) RecordLateDNSPublication(ctx context.Context, arg RecordLateDNSPublicationParams) error {
-	_, err := q.db.Exec(ctx, recordLateDNSPublication, arg.Base, arg.Zone, arg.ServerID)
+	_, err := q.db.Exec(ctx, recordLateDNSPublication,
+		arg.Base,
+		arg.Zone,
+		arg.Generation,
+		arg.ServerID,
+	)
 	return err
 }
 

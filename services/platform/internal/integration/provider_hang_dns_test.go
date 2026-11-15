@@ -203,3 +203,31 @@ func TestLateDNSPublicationIsWithdrawnAgain(t *testing.T) {
 		return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0
 	})
 }
+
+// A request the job gave up on may still reach the provider. The job keeps its lease, so the
+// next job doesn't look at the zone until that request has had time to land.
+func TestUnansweredDNSRequestKeepsTheLease(t *testing.T) {
+	f := setup(t)
+	f.st.ApplicationDomain = "apps.example.test"
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	entered, release := z.hold(t, true)
+	s.b.call("PUT", s.path+"/domain", api.ConfigureServerDomain{Ipv4: "198.51.100.21", BaseGeneration: 1}, 200, nil)
+	waitEntered(t, entered)
+	// The client gives up on the held lookup, and the job fails.
+	eventually(t, "the job gives up on the provider", func() bool {
+		var failed bool
+		if e := f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_dns_v1' AND args->>'server'=$1 AND (args->>'generation')::bigint=2 AND state<>'running' AND errors IS NOT NULL)", s.id.String()).Scan(&failed); e != nil {
+			t.Fatal(e)
+		}
+		return failed
+	})
+	var kept bool
+	if e := f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM server_dns_leases WHERE server_id=$1 AND expires_at>clock_timestamp())", s.id).Scan(&kept); e != nil {
+		t.Fatal(e)
+	}
+	if !kept {
+		t.Fatal("the job released its lease while its request might still land")
+	}
+	release()
+}

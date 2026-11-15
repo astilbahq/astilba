@@ -102,13 +102,14 @@ UPDATE server_domains SET state = @state,note = @note,observed_at=clock_timestam
 WHERE server_id = @server_id AND generation = @generation AND approved_controller = @controller;
 
 -- name: RecordLateDNSPublication :exec
--- unscoped: a DNS job names the server. A job whose lease was taken over may have published
--- here after the job that took it over had finished. The row brings the name back to withdrawal
--- unless the server is still approved, and a row already there keeps its revocation.
+-- unscoped: a DNS job names the server. A job whose lease was taken over may have published here
+-- after the job that took it over had looked. The row brings the name back to withdrawal when the
+-- server is revoked or the approval the job published under has since ended, as revocation does;
+-- a recovery fence ends approval without a new generation, and keeps records as before.
 INSERT INTO dns_publications(server_id,workspace_id,base,zone,revoked)
-SELECT s.id,s.workspace_id,@base,@zone,s.revoked OR d.approved_controller IS NULL
+SELECT s.id,s.workspace_id,@base,@zone,s.revoked OR COALESCE(d.approved_controller IS NULL AND d.generation <> @generation,true)
 FROM servers s LEFT JOIN server_domains d ON d.server_id=s.id WHERE s.id = @server_id
-ON CONFLICT(server_id,base,zone) DO UPDATE SET checked_at=NULL;
+ON CONFLICT(server_id,base,zone) DO NOTHING;
 
 -- name: CurrentDNSJob :one
 -- unscoped: a DNS job names the server. The arguments of a job for the server's names as they

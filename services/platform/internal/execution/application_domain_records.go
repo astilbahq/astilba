@@ -61,12 +61,15 @@ func (s *Service) withdrawRevokedDomain(ctx context.Context, tx pgx.Tx, ws, serv
 }
 
 // River ends a DNS job's context after dnsWork, which it starts before the job takes its lease.
-// The lease lasts a little longer, for a request already sent when the context ended, so it
-// runs out only after its job has stopped asking. A job paused for longer than that can still
-// send a request late; recheckAfterLostLease deals with what it may have changed.
+// The lease lasts dnsLateMargin longer, so a request the job gave up on, whose lease it then
+// keeps, lands before the next job looks. A job paused for longer than the lease can still send
+// a request late; recheckAfterLostLease deals with what it may have changed. dnsWrite bounds the
+// writes a job makes after asking, which outlive its deadline.
 const (
-	dnsWork      = time.Minute
-	dnsLeaseTerm = dnsWork + 30*time.Second
+	dnsWork       = time.Minute
+	dnsLateMargin = 30 * time.Second
+	dnsLeaseTerm  = dnsWork + dnsLateMargin
+	dnsWrite      = 10 * time.Second
 )
 
 // dnsLease is one DNS job's hold on a server. Only its holder asks the provider about the
@@ -96,6 +99,10 @@ func (s *Service) releaseDNSLease(lease dnsLease) {
 // the same lock first, so the job's writes and theirs never wait on each other's rows. A job
 // whose lease was taken over writes nothing, and one taking it over waits until this commits.
 func (s *Service) underDNSLease(ctx context.Context, lease dnsLease, fn func(pgx.Tx) error) error {
+	// Made whatever the job's deadline: a job's lease is only taken over after its deadline has
+	// passed, and it must still find that out.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dnsWrite)
+	defer cancel()
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return e
@@ -118,38 +125,30 @@ func (s *Service) underDNSLease(ctx context.Context, lease dnsLease, fn func(pgx
 }
 
 // recheckAfterLostLease runs once a job finds its lease was taken over after it asked the
-// provider. A paused job's request can reach the provider after the next job's, so the
-// provider may hold records the database doesn't know of, or lack ones it does. The name the
-// job may have published is recorded again, which keeps it for withdrawal if the server is no
-// longer approved, and a job for the server as it is now is queued to converge the provider.
-func (s *Service) recheckAfterLostLease(ctx context.Context, server uuid.UUID, published *db.DNSPublicationTargetRow) error {
-	// The job's own deadline has often passed by now: that's how its lease ran out.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+// provider. A paused job's request can reach the provider after the next job has looked, so the
+// provider may hold records the database doesn't know of, or lack ones it does. It queues a job
+// for the server as it is now, carrying the name this job may have published, which that job
+// records under its own lease before it withdraws and publishes. When this job's request got no
+// answer, the new job waits out the margin a kept lease would have given it.
+func (s *Service) recheckAfterLostLease(ctx context.Context, a domainArgs, published *db.DNSPublicationTargetRow, unanswered bool) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dnsWrite)
 	defer cancel()
-	tx, e := s.Store.Pool.Begin(ctx)
+	job, e := db.New(s.Store.Pool).CurrentDNSJob(ctx, a.Server)
 	if e != nil {
 		return e
 	}
-	defer tx.Rollback(ctx)
-	if e = store.LockServerDNS(ctx, tx, server); e != nil {
-		return e
-	}
-	q := db.New(tx)
+	args := domainArgs{Server: a.Server, Generation: job.Generation, Controller: job.Controller}
 	if published != nil {
-		if e = q.RecordLateDNSPublication(ctx, db.RecordLateDNSPublicationParams{Base: published.Base, Zone: s.DNS.Zone, ServerID: server}); e != nil {
-			return e
-		}
+		args.Late = &latePublication{Base: published.Base, Zone: s.DNS.Zone, Generation: a.Generation}
 	}
-	job, e := q.CurrentDNSJob(ctx, server)
-	if e != nil {
-		return e
+	opts := &river.InsertOpts{MaxAttempts: 10}
+	if unanswered {
+		opts.ScheduledAt = time.Now().Add(dnsLateMargin)
 	}
 	// Not unique: a job with the same arguments may be running, holding the lease, and have
 	// looked at the provider before this job's late request. This one starts after it.
-	if _, e = s.Queue.InsertTx(ctx, tx, domainArgs{Server: server, Generation: job.Generation, Controller: job.Controller}, &river.InsertOpts{MaxAttempts: 10}); e != nil {
-		return e
-	}
-	return tx.Commit(ctx)
+	_, e = s.Queue.Insert(ctx, args, opts)
+	return e
 }
 
 // withdrawReason says why a publication must go, or "" while it may stay. A server that's
