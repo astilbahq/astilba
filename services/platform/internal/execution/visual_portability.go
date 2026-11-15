@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -65,6 +66,8 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		}()}); err != nil {
 			return err
 		}
+		// The source's routes as they stand, before they take the clone's identities.
+		routes := slices.Clone(v.Spec.Routes)
 		ids := map[uuid.UUID]uuid.UUID{}
 		for _, a := range v.Spec.Applications {
 			ids[a.ID] = uuid.New()
@@ -201,6 +204,9 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		if _, err = store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: rev, AuthorID: p.Account.ID, Specification: canonical, ContentHash: hash[:]}); err != nil {
 			return err
 		}
+		if err = cloneCatalogStagings(ctx, q, p, ws, source, env, rev, ids, routes); err != nil {
+			return err
+		}
 		if _, err = tx.Exec(ctx, "INSERT INTO deployment_units(workspace_id,id,environment_id) VALUES($1,$2,$3)", ws, unit, env); err != nil {
 			return err
 		}
@@ -288,4 +294,55 @@ func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid
 		return rows.Err()
 	})
 	return out, err
+}
+
+// cloneCatalogStagings records each catalog staging of the source again for the clone, under the
+// clone's identities and against its first revision, so the backups page recommends the same
+// presets and planning checks the clone's copy of each route still staged in the source, as the
+// clone's services start empty and its first account is new. A route the owner has since changed
+// is the owner's choice in the clone too. A staging whose routes can't be read is recorded as
+// unconfirmed, so planning in the clone asks for review. routes are the source's, before the clone
+// gave them new identities.
+func cloneCatalogStagings(ctx context.Context, q *db.Queries, p store.Principal, ws, source, env, rev uuid.UUID, ids map[uuid.UUID]uuid.UUID, routes []domain.Route) error {
+	rows, err := q.ListCatalogStagingProvenance(ctx, db.ListCatalogStagingProvenanceParams{WorkspaceID: ws, EnvironmentID: source})
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		services := row.Services
+		var created map[string]uuid.UUID
+		if json.Unmarshal(row.Services, &created) == nil {
+			cloned := map[string]uuid.UUID{}
+			for placeholder, id := range created {
+				if next, ok := ids[id]; ok {
+					cloned[placeholder] = next
+				}
+			}
+			if services, err = stablejson.Marshal(cloned); err != nil {
+				return err
+			}
+			created = cloned
+		}
+		recorded := []byte(unconfirmedStaging)
+		staging := readStagingRoutes(row.StagedRoutes, row.Services, row.Specification)
+		if !staging.unresolved && !staging.unconfirmed {
+			kept := map[string][]string{}
+			for _, r := range routes {
+				if allow, ok := staging.staged[r.ID]; ok && slices.Equal(allow, r.AllowCIDRs) {
+					kept[ids[r.ID].String()] = r.AllowCIDRs
+				}
+			}
+			// Nothing of a staging the clone has left behind is worth recording.
+			if len(kept) == 0 && len(created) == 0 {
+				continue
+			}
+			if recorded, err = stablejson.Marshal(kept); err != nil {
+				return err
+			}
+		}
+		if err = q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), RecipeID: row.RecipeID, RecipeVersion: row.RecipeVersion, RevisionID: rev, Services: services, AuthorID: p.Account.ID, StagedRoutes: recorded}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

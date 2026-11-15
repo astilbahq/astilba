@@ -405,7 +405,9 @@ func run() error {
 	c.Observe = func(ctx context.Context) api.AgentHeartbeat {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return preflight(ctx)
+		h := preflight(ctx)
+		engine.ReportContainerRanges(ctx, &h)
+		return h
 	}
 	var updated atomic.Bool
 	engine.VerifyInstalledUpdate = func(r api.AgentRelease) error {

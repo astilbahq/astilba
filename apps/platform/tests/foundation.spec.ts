@@ -565,7 +565,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   });
   await expect(apply).toBeDisabled();
   await page
-    .getByLabel("Approve the host changes listed in this plan", {
+    .getByLabel("Approve what this plan lists for review", {
       exact: true,
     })
     .check();
