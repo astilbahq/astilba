@@ -14,7 +14,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
-	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -101,8 +100,17 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return true, tx.Commit(ctx)
 		}
 		// No runner holds this command, and its public arguments have not passed the
-		// delivery check, so it finishes here rather than reaching one to be cancelled.
-		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: "Cancelled or expired before runner delivery."}); err != nil {
+		// delivery check, so it finishes here rather than reaching one to be cancelled. One that
+		// waited on GitHub's rate limits still says so.
+		note := "Cancelled or expired before runner delivery."
+		waited, err := queries.OperationNoteHas(ctx, db.OperationNoteHasParams{WorkspaceID: ws, ID: c.Id, Note: gitHubBusyNote})
+		if err != nil {
+			return false, err
+		}
+		if waited {
+			note += " " + gitHubBusyNote
+		}
+		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: note}); err != nil {
 			return false, err
 		}
 		if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
@@ -199,7 +207,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Deadline, &p); err != nil {
+	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Id, c.Deadline, &p); err != nil {
 		// A clone credential that can push, or that the Git server won't vouch for, is never sent,
 		// and refusing it at every poll would hold the runner queue, so the run ends here. A runner
 		// that may hold an earlier delivery is told to stop.
@@ -218,6 +226,14 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			}
 			c.CancelRequested = true
 			return true, tx.Commit(ctx)
+		}
+		// GitHub limiting the App passes, so the pipeline says why it waits and is asked for at
+		// the runner's next poll, until its deadline.
+		if errors.Is(err, errGitHubBusy) {
+			if err = queries.AddOperationNote(ctx, db.AddOperationNoteParams{WorkspaceID: ws, ID: c.Id, Note: gitHubBusyNote}); err != nil {
+				return false, err
+			}
+			return false, tx.Commit(ctx)
 		}
 		var rejected *buildInputRejection
 		if errors.As(err, &rejected) && undelivered && p.Action == "build" && p.Preview == nil {
@@ -245,6 +261,10 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	return true, nil
 }
 
+// gitHubBusyNote says why a pipeline's delivery waited. It is added once, and kept if the pipeline
+// then expires undelivered.
+const gitHubBusyNote = "GitHub limited how fast Astilba's GitHub App could make requests, so delivery to the runner waited and retried."
+
 // pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
 // management has heard its runner started it. The start must reach management by the deadline
 // (pipelineReport cancels one heard of later), so an agent whose clock lags can neither start a
@@ -264,47 +284,6 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	}
 	allowed, err := s.previewCommandAllowed(ctx, tx, nil, ws, c)
 	return !allowed, err
-}
-
-// populatePipeline fills in the values of a pipeline that may start until deadline. A zero
-// deadline only checks they can be had, for a copy that never leaves management.
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, deadline time.Time, p *pipeline.Command) error {
-	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID, deadline)
-	if err != nil {
-		return err
-	}
-	if clone.Err != nil {
-		return clone.Err
-	}
-	p.Access = &clone.Value
-	if p.Build != nil {
-		p.BuildSecrets, err = s.buildInputs(ctx, tx, git, ws, env, *p.Build)
-		if err != nil {
-			return err
-		}
-		if p.Registry != nil {
-			_, cipher, err := loadRegistry(ctx, tx, ws, p.Registry.ID)
-			if err != nil {
-				return err
-			}
-			var access pipeline.RegistryAccess
-			plain, err := git.keys.inspect.open(secretbroker.Item{Kind: secretbroker.Registry, ID: p.Registry.ID}, cipher)
-			if err != nil {
-				return err
-			}
-			err = json.Unmarshal(plain, &access)
-			clear(plain)
-			if err != nil {
-				return err
-			}
-			p.RegistryAccess = &pipeline.RegistryAccess{Push: access.Push}
-		}
-	}
-	raw, err := stablejson.Marshal(p)
-	if err != nil || len(raw) > 250000 {
-		return domain.Invalid("pipeline.payloadBudget")
-	}
-	return nil
 }
 
 // writePipelineRevision is the one path by which management, rather than a draft edit, replaces an

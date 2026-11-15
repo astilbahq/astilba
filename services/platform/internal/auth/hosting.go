@@ -9,6 +9,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -101,6 +102,12 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 	if e != nil {
 		return account, ws, e
 	}
+	ws = uuid.New()
+	keys, e := s.Store.Broker.Create(ctx, secretbroker.Request{Workspace: ws, Principal: secretbroker.System("hosted-signup")})
+	if e != nil {
+		return account, ws, e
+	}
+	defer keys.Close(ctx, secretbroker.Used)
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return account, ws, e
@@ -129,11 +136,7 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 	if e = q.MarkEmailVerified(ctx, db.MarkEmailVerifiedParams{ID: account.ID, EmailVerifiedAt: ptrTime(s.Now())}); e != nil {
 		return account, ws, e
 	}
-	ws = uuid.New()
-	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: ws, Name: workspace}); e != nil {
-		return account, ws, e
-	}
-	if e = q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: ws, AccountID: account.ID, Role: "owner"}); e != nil {
+	if e = store.CreateWorkspace(ctx, q, keys, workspace, account.ID); e != nil {
 		return account, ws, e
 	}
 	if e = q.InsertHostedSubscription(ctx, db.InsertHostedSubscriptionParams{WorkspaceID: ws, ServerLimit: s.Store.Hosting.ServerLimit}); e != nil {

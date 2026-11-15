@@ -55,6 +55,19 @@ type Provider struct {
 	access     Credential
 	client     *http.Client
 	base       string
+	// rejected runs when the server does not accept the credential.
+	rejected func()
+}
+
+// OnRejected has f run whenever the server answers a request with 401, not accepting the
+// credential, as a cache of minted credentials needs to know.
+func (p *Provider) OnRejected(f func()) { p.rejected = f }
+
+// unauthorized notes a 401 answer for the OnRejected function.
+func (p *Provider) unauthorized(status int) {
+	if status == http.StatusUnauthorized && p.rejected != nil {
+		p.rejected()
+	}
 }
 
 func NewProvider(c Connection, credential Credential, policy Policy) (*Provider, error) {
@@ -144,6 +157,7 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		p.unauthorized(response.StatusCode)
 		return &ProviderError{Status: response.StatusCode}
 	}
 	if out == nil {

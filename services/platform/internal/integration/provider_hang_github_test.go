@@ -11,9 +11,11 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,13 +40,21 @@ type heldGitHub struct {
 	exchanged, revoked atomic.Int64
 	userFails          atomic.Bool
 	previewMints       atomic.Int64
-	challenge          atomic.Value
-	tree               gitTree
-	fileToken          atomic.Value
-	mu                 sync.Mutex
-	match              string
-	gate               chan struct{}
-	entered            chan struct{}
+	// minted counts installation tokens; each has its own value, which revoke ends.
+	minted        atomic.Int64
+	revokedTokens sync.Map
+	// limitMints, when set, answers token requests as GitHub does under its rate limits, for
+	// that many seconds.
+	limitMints atomic.Int64
+	// repositoryToken is the token management last checked the repository with.
+	repositoryToken atomic.Value
+	challenge       atomic.Value
+	tree            gitTree
+	fileToken       atomic.Value
+	mu              sync.Mutex
+	match           string
+	gate            chan struct{}
+	entered         chan struct{}
 }
 
 func newHeldGitHub(t *testing.T) *heldGitHub {
@@ -78,6 +88,11 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if _, revoked := h.revokedTokens.Load(bearer); revoked {
+			w.WriteHeader(401)
+			return
+		}
 		if strings.Contains(r.URL.Path, "/contents/") {
 			h.fileToken.Store(r.Header.Get("Authorization"))
 			h.tree.answer(w, r)
@@ -107,10 +122,16 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 		case "/repos/team/app/installation":
 			_ = stablejson.Encode(w, map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
 		case "/repos/team/app":
+			h.repositoryToken.Store(bearer)
 			_ = stablejson.Encode(w, map[string]any{"id": 12, "full_name": "team/app", "private": true, "permissions": map[string]bool{"admin": true}})
 		case "/repos/team/app/branches/main":
 			_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": strings.Repeat("a", 40)}})
 		case "/app/installations/2/access_tokens":
+			if seconds := h.limitMints.Load(); seconds > 0 {
+				w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+				w.WriteHeader(429)
+				return
+			}
 			var in struct {
 				Permissions map[string]string `json:"permissions"`
 			}
@@ -118,7 +139,12 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 			if in.Permissions["pull_requests"] != "" {
 				h.previewMints.Add(1)
 			}
-			_ = stablejson.Encode(w, map[string]any{"token": "installation-" + in.Permissions["contents"] + "-canary", "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]int{{"id": 12}}, "permissions": in.Permissions})
+			token := fmt.Sprintf("installation-%s-canary-%d", in.Permissions["contents"], h.minted.Add(1))
+			_ = stablejson.Encode(w, map[string]any{"token": token, "expires_at": time.Now().Add(time.Hour), "repositories": []map[string]int{{"id": 12}}, "permissions": in.Permissions})
+		case "/installation/token":
+			// The token's holder ends it, as a runner or its build's code can.
+			h.revokedTokens.Store(bearer, true)
+			w.WriteHeader(204)
 		case "/applications/fixture-client/token":
 			h.revoked.Add(1)
 			w.WriteHeader(204)
