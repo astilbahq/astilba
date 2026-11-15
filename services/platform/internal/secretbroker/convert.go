@@ -211,6 +211,10 @@ func rekeyRestoredRows(ctx context.Context, conn pgxConn, ws uuid.UUID) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// A rewrap moves the same records, in its own transaction: wait for it rather than deadlock.
+	if err = db.New(tx).LockBootstrap(ctx); err != nil {
+		return err
+	}
 	if _, err = recoveryrows.Rekey(ctx, tx, ws); err != nil {
 		return err
 	}
@@ -436,12 +440,13 @@ func (b *Broker) completeConversion(ctx context.Context) (int32, string, error) 
 // recorded. An instance of an older release that starts later, or one unseen for longer, can still
 // store such a value afterwards, so whatever stops reading the keyring runs this again first.
 func (b *Broker) CheckConverted(ctx context.Context, q *db.Queries) (string, error) {
-	if err := q.LimitLockWait(ctx, "2s"); err != nil {
+	// A rewrap holds these tables' rows for its whole transaction: wait for it before holding any.
+	// Nothing waits behind this lock but other rewraps and conversions, so the wait is not bounded.
+	if err := q.LockBootstrap(ctx); err != nil {
 		return "", err
 	}
-	// A rewrap holds these tables' rows for its whole transaction: wait for it before holding any.
-	if err := q.LockBootstrap(ctx); err != nil {
-		return "", fmt.Errorf("a rewrap is running; try again once it finishes: %w", err)
+	if err := q.LimitLockWait(ctx, "2s"); err != nil {
+		return "", err
 	}
 	if err := q.HoldSealedValueTables(ctx); err != nil {
 		return "", fmt.Errorf("cannot hold the tables with sealed values against writes; try again: %w", err)
