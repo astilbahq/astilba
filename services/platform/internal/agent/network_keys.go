@@ -57,10 +57,16 @@ func (c *Client) untilDone(ctx context.Context, what string, ready func() bool, 
 	}
 }
 
-// keepPrivateLinksRestored puts back the private links the boot restore couldn't, as when the key
-// store wasn't working yet that early.
+// keepPrivateLinksRestored puts back the private links that aren't in place, each minute: those the
+// boot restore couldn't, as when the key store wasn't working yet that early, and those a
+// restriction took down because it couldn't open their key.
 func (c *Client) keepPrivateLinksRestored(ctx context.Context) {
-	c.untilDone(ctx, "restore its private links", func() bool { return true }, c.Engine.restorePrivateLinks)
+	for {
+		c.untilDone(ctx, "restore its private links", func() bool { return true }, c.Engine.restorePrivateLinks)
+		if !wait(ctx, journalRekeyCheck) {
+			return
+		}
+	}
 }
 
 // keepNetworkKeysSealed seals the private-link keys this host holds in the clear once its journal

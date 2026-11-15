@@ -244,15 +244,19 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if f.public != m.PublicKey {
 		return errors.New("managed network public key does not match local identity")
 	}
-	// A link that is up holds its key already, so applying it again, as removing a peer does, never
-	// waits on the key store. Otherwise the key is opened before anything changes.
+	// A link that is up holds its key already, so applying it again never waits on the key store.
+	// Otherwise the key is opened before anything changes. Removing authority never waits on it
+	// either: without a key, a restriction still takes effect in the saved intent and the firewall,
+	// and the link stays down until its key opens.
 	key := h.liveKey(ctx, m)
 	if key == nil {
-		if key, err = h.openKeyFile(ctx, m.MembershipID, f); err != nil {
-			return err
+		var keyErr error
+		key, keyErr = h.openKeyFile(ctx, m.MembershipID, f)
+		if keyErr != nil && !(restrict && (errors.Is(keyErr, ErrKeyStoreUnavailable) || errors.Is(keyErr, ErrSealedKey))) {
+			return keyErr
 		}
 	}
-	if publicKeyOf(key) != m.PublicKey {
+	if key != nil && publicKeyOf(key) != m.PublicKey {
 		return errors.New("managed network public key does not match local identity")
 	}
 	old, err := h.Snapshot(m.NetworkID)
@@ -297,6 +301,17 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	}
 	// The owned filter is installed before any new peer or published port is enabled.
 	if err = h.publishRules(ctx, m, rules); err != nil {
+		return err
+	}
+	if key == nil {
+		// A link without a key it can use carries nothing: any interface of this network goes
+		// down. The saved intent has no applied hash, so the link comes back as m once its key
+		// opens, as the agent service restores it.
+		if _, err = h.run(ctx, "ip", nil, "link", "show", "dev", m.Interface()); err == nil {
+			_, err = h.run(ctx, "ip", nil, "link", "set", "dev", m.Interface(), "down")
+		} else {
+			err = nil
+		}
 		return err
 	}
 	if _, err = h.run(ctx, "ip", nil, "link", "show", "dev", m.Interface()); err != nil {

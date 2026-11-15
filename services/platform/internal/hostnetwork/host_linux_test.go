@@ -359,6 +359,33 @@ func TestNativeManagedLinks(t *testing.T) {
 	if err = b.Apply(ctx, next, bb, false); !errors.Is(err, ErrGenerationConflict) {
 		t.Fatal("the older controller's manifest was accepted after the newer one", err)
 	}
+	// Removing authority never waits on the key store. With no live link holding the key and a
+	// store that can't open it, a restriction still takes effect: the reduced intent and firewall
+	// are in place and the link stays down. It comes back, reduced, once the key opens.
+	in("a", "ip", "link", "delete", ma.Interface())
+	prior, err := a.Snapshot(ma.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reduced := prior.Manifest
+	reduced.Generation++
+	reduced.Exports = nil
+	broken.Keys = unsealable{}
+	if err = broken.Apply(ctx, reduced, prior.Bridges, true); err != nil {
+		t.Fatal("a restriction waited on the key store", err)
+	}
+	if held, err := a.Snapshot(ma.NetworkID); err != nil || Hash(held.Manifest) != Hash(reduced) || held.AppliedHash == Hash(reduced) {
+		t.Fatal("a restriction without its key didn't hold the reduced intent for the link to come back to", err)
+	}
+	if exec.Command("ip", "netns", "exec", ns["a"], "ip", "link", "show", "dev", ma.Interface()).Run() == nil {
+		t.Fatal("a link without its key came up")
+	}
+	if err = a.RestoreMissing(ctx); err != nil {
+		t.Fatal("the restricted link didn't come back once its key opened", err)
+	}
+	if held, err := a.Snapshot(ma.NetworkID); err != nil || held.AppliedHash != Hash(reduced) || !a.holds(ctx, reduced) {
+		t.Fatal("the link came back without its reduced intent", err)
+	}
 	for _, key := range []string{"a", "b"} {
 		raw := in(key, "nft", "-j", "list", "table", "ip", "fixture")
 		if !jsontext.Value(raw).IsValid() {
