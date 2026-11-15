@@ -499,7 +499,6 @@ func (p *Provider) CanPush(ctx context.Context) (bool, error) {
 		return false, errors.New("Git server request failed")
 	}
 	response.Body.Close()
-	p.unauthorized(response.StatusCode)
 	switch {
 	case response.StatusCode >= 200 && response.StatusCode < 300:
 		return true, nil

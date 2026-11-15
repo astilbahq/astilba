@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type tokenKey struct {
@@ -33,11 +35,76 @@ func (c *Client) MintPreview(ctx context.Context, installation, repository int64
 	return c.mintCached(ctx, tokenKey{installation, repository, false, true})
 }
 
-// MintRunnerClone mints a token for one delivery to a runner: read-only contents of the one
-// repository, never cached or shared, so a runner that revokes it affects only itself. It is
-// fresh, lasting as long as GitHub makes them, an hour, and it returns when it expires.
-func (c *Client) MintRunnerClone(ctx context.Context, installation, repository int64) (string, time.Time, error) {
-	return c.mint(ctx, installation, repository, false, false)
+// runnerTokenLimit bounds the runner tokens one workspace holds in the cache. It is more than the
+// pipelines a workspace may have unfinished, so a workspace's tokens give way only to its own.
+const runnerTokenLimit = 64
+
+// runnerKey is one pipeline's runner token.
+type runnerKey struct {
+	Pipeline                 uuid.UUID
+	Installation, Repository int64
+}
+type runnerToken struct {
+	token   string
+	expires time.Time
+}
+
+// MintRunnerClone returns the token for one pipeline's runner: read-only contents of the one
+// repository, valid until at least until, and when it expires. It is the pipeline's own, never
+// management's or another pipeline's, so a runner that revokes it affects only itself. The
+// pipeline's retries and redeliveries get the same token while it lasts, so a runner cannot
+// make management mint more by asking again. Tokens are held apart by workspace, so one
+// workspace's pipelines never displace another's.
+func (c *Client) MintRunnerClone(ctx context.Context, workspace, pipeline uuid.UUID, installation, repository int64, until time.Time) (string, time.Time, error) {
+	key := runnerKey{pipeline, installation, repository}
+	c.mu.Lock()
+	if v, ok := c.runners[workspace][key]; ok && !v.expires.Before(until) {
+		c.mu.Unlock()
+		return v.token, v.expires, nil
+	}
+	c.mu.Unlock()
+	token, expires, err := c.mint(ctx, installation, repository, false, false)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneRunnerTokens()
+	tokens := c.runners[workspace]
+	if tokens == nil {
+		tokens = map[runnerKey]runnerToken{}
+		c.runners[workspace] = tokens
+	}
+	if _, held := tokens[key]; !held && len(tokens) >= runnerTokenLimit {
+		var soonest runnerKey
+		for k, v := range tokens {
+			if old, ok := tokens[soonest]; !ok || v.expires.Before(old.expires) {
+				soonest = k
+			}
+		}
+		delete(tokens, soonest)
+	}
+	tokens[key] = runnerToken{token, expires}
+	return token, expires, nil
+}
+
+// pruneRunnerTokens drops expired runner tokens, at most once a minute.
+func (c *Client) pruneRunnerTokens() {
+	now := time.Now()
+	if now.Before(c.runnersPruned.Add(time.Minute)) {
+		return
+	}
+	c.runnersPruned = now
+	for workspace, tokens := range c.runners {
+		for k, v := range tokens {
+			if !v.expires.After(now) {
+				delete(tokens, k)
+			}
+		}
+		if len(tokens) == 0 {
+			delete(c.runners, workspace)
+		}
+	}
 }
 
 // Forget drops token from the cache, as when GitHub has rejected it, so the next call mints a

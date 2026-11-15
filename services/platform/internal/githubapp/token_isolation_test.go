@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/google/uuid"
 )
 
 // revokingGitHub mints a distinct token each time and, like GitHub, lets a token's holder
@@ -27,8 +28,10 @@ type revokingGitHub struct {
 	minted, appCalls atomic.Int64
 	mu               sync.Mutex
 	revoked          map[string]bool
-	// limit, when set, answers every App request with it.
-	limit func(w http.ResponseWriter)
+	// limit, when set, answers every App request with it, and limitRepository the repository's
+	// installation-token request.
+	limit, limitRepository func(w http.ResponseWriter)
+	repositoryCalls        atomic.Int64
 }
 
 func (g *revokingGitHub) client(t *testing.T) *Client {
@@ -45,6 +48,13 @@ func (g *revokingGitHub) client(t *testing.T) *Client {
 				return
 			}
 		default:
+			if r.URL.Path == "/repos/team/app" {
+				g.repositoryCalls.Add(1)
+				if g.limitRepository != nil {
+					g.limitRepository(w)
+					return
+				}
+			}
 			g.mu.Lock()
 			revoked := g.revoked[token]
 			g.mu.Unlock()
@@ -110,11 +120,12 @@ func TestRunnerTokensAreNotShared(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	first, expires, e := c.MintRunnerClone(ctx, 2, 12)
+	workspace, until := uuid.New(), time.Now().Add(50*time.Minute)
+	first, expires, e := c.MintRunnerClone(ctx, workspace, uuid.New(), 2, 12, until)
 	if e != nil || time.Until(expires) < 55*time.Minute {
 		t.Fatal("a runner's token is not fresh", expires, e)
 	}
-	second, _, e := c.MintRunnerClone(ctx, 2, 12)
+	second, _, e := c.MintRunnerClone(ctx, workspace, uuid.New(), 2, 12, until)
 	if e != nil || first == own || second == own || first == second || g.minted.Load() != 3 {
 		t.Fatal("runners were given a token someone else holds", g.minted.Load(), e)
 	}
@@ -203,7 +214,7 @@ func TestRateLimitsPauseAppRequests(t *testing.T) {
 		w.WriteHeader(429)
 	}}
 	c := g.client(t)
-	_, _, e := c.MintRunnerClone(ctx, 2, 12)
+	_, _, e := c.MintRunnerClone(ctx, uuid.New(), uuid.New(), 2, 12, time.Now())
 	until, limited := Limited(e)
 	if !limited || time.Until(until) < 50*time.Second {
 		t.Fatal("a rate limit was not reported as one", e)
@@ -221,7 +232,7 @@ func TestRateLimitsPauseAppRequests(t *testing.T) {
 	c.mu.Lock()
 	c.paused = time.Now()
 	c.mu.Unlock()
-	if _, _, e = c.MintRunnerClone(ctx, 2, 12); e != nil {
+	if _, _, e = c.MintRunnerClone(ctx, uuid.New(), uuid.New(), 2, 12, time.Now()); e != nil {
 		t.Fatal("the App did not resume after the limit", e)
 	}
 }
@@ -234,3 +245,87 @@ func isLimited(err error) bool {
 type readCloser struct{ *strings.Reader }
 
 func (readCloser) Close() error { return nil }
+
+// A rate limit on an installation-token request is the check's answer until GitHub's time, so a
+// delivery that waits on it doesn't ask GitHub again every second.
+func TestALimitedRepositoryCheckIsNotAskedAgainEarly(t *testing.T) {
+	ctx := context.Background()
+	g := &revokingGitHub{limitRepository: func(w http.ResponseWriter) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(time.Now().Add(time.Minute).Unix()))
+		w.WriteHeader(403)
+	}}
+	c := g.client(t)
+	for range 3 {
+		if e := c.Validate(ctx, 2, 12, 1, "team/app", true); !isLimited(e) {
+			t.Fatal("a limited check was not reported as one", e)
+		}
+	}
+	if g.repositoryCalls.Load() != 1 || g.appCalls.Load() != 3 {
+		t.Fatalf("a limited check asked GitHub again: repository=%d app=%d", g.repositoryCalls.Load(), g.appCalls.Load())
+	}
+	// Another installation's or generation's check is its own.
+	if e := c.Validate(ctx, 2, 12, 2, "team/app", true); !isLimited(e) || g.repositoryCalls.Load() != 2 {
+		t.Fatal("a different check reused another's limit", e)
+	}
+}
+
+// A pipeline's retries and redeliveries get its one token while it lasts, so a runner can't make
+// management mint more by asking again. One that would expire too soon is replaced.
+func TestARunnerTokenServesItsPipelineAgain(t *testing.T) {
+	ctx := context.Background()
+	g := &revokingGitHub{}
+	c := g.client(t)
+	workspace, pipeline := uuid.New(), uuid.New()
+	until := time.Now().Add(50 * time.Minute)
+	first, _, e := c.MintRunnerClone(ctx, workspace, pipeline, 2, 12, until)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for range 5 {
+		if again, _, e := c.MintRunnerClone(ctx, workspace, pipeline, 2, 12, until); e != nil || again != first {
+			t.Fatal("a redelivery minted another token", e)
+		}
+	}
+	if g.minted.Load() != 1 {
+		t.Fatal("a pipeline's token was minted again", g.minted.Load())
+	}
+	if later, _, e := c.MintRunnerClone(ctx, workspace, pipeline, 2, 12, time.Now().Add(2*time.Hour)); e != nil || later == first {
+		t.Fatal("a token that expires too soon was reused", e)
+	}
+}
+
+// One workspace filling its share of the cache gives way only to itself: another workspace's
+// pipeline keeps its token.
+func TestAWorkspaceCannotDisplaceAnothersRunnerTokens(t *testing.T) {
+	ctx := context.Background()
+	g := &revokingGitHub{}
+	c := g.client(t)
+	until := time.Now().Add(50 * time.Minute)
+	other, otherPipeline := uuid.New(), uuid.New()
+	kept, _, e := c.MintRunnerClone(ctx, other, otherPipeline, 2, 12, until)
+	if e != nil {
+		t.Fatal(e)
+	}
+	flood := uuid.New()
+	pipelines := make([]uuid.UUID, runnerTokenLimit+8)
+	for i := range pipelines {
+		pipelines[i] = uuid.New()
+		if _, _, e = c.MintRunnerClone(ctx, flood, pipelines[i], 2, 12, until); e != nil {
+			t.Fatal(e)
+		}
+	}
+	minted := g.minted.Load()
+	if again, _, e := c.MintRunnerClone(ctx, other, otherPipeline, 2, 12, until); e != nil || again != kept || g.minted.Load() != minted {
+		t.Fatal("one workspace's pipelines displaced another's token", e)
+	}
+	c.mu.Lock()
+	held := len(c.runners[flood])
+	c.mu.Unlock()
+	if held != runnerTokenLimit {
+		t.Fatal("a workspace's runner tokens are not bounded", held)
+	}
+	if _, _, e = c.MintRunnerClone(ctx, flood, pipelines[len(pipelines)-1], 2, 12, until); e != nil || g.minted.Load() != minted {
+		t.Fatal("a workspace's newest token was displaced", e)
+	}
+}

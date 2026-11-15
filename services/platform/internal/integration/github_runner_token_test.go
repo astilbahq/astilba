@@ -116,3 +116,51 @@ func TestARateLimitedDeliveryWaitsAndSaysWhy(t *testing.T) {
 	}
 	deliveredToken(t, command)
 }
+
+// A delivery that waits on GitHub until its deadline expires undelivered, and still says why.
+func TestARateLimitedDeliveryThatExpiresSaysWhy(t *testing.T) {
+	h := newHungBuild(t)
+	github := heldGitHubFor(t, h.f, h.b, h.ws)
+	config := h.config
+	config.ConnectionID = github.connect(t)
+	op := h.createBuild(t, config)
+	github.limitMints.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	_, _ = pollReleased(h.f.execution, ctx, h.identity)
+	cancel()
+	execSQL(t, h, "UPDATE execution_operations SET command=jsonb_set(command,'{deadline}','\"2000-01-01T00:00:00Z\"') WHERE id=$1", op.Id)
+	ctx, cancel = context.WithTimeout(t.Context(), 3*time.Second)
+	_, _ = pollReleased(h.f.execution, ctx, h.identity)
+	cancel()
+	var state, note string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state,note FROM execution_operations WHERE id=$1", op.Id).Scan(&state, &note); err != nil {
+		t.Fatal(err)
+	}
+	if state != "cancelled" || !strings.Contains(note, "expired before runner delivery") || !strings.Contains(note, "GitHub limited how fast") {
+		t.Fatalf("an expired rate-limited delivery lost why it waited: %s %q", state, note)
+	}
+}
+
+// A runner that asks for its pipeline again gets the pipeline's own token back, so asking again
+// and again mints nothing more.
+func TestARedeliveryGetsThePipelinesOwnToken(t *testing.T) {
+	h := newHungBuild(t)
+	github := heldGitHubFor(t, h.f, h.b, h.ws)
+	config := h.config
+	config.ConnectionID = github.connect(t)
+	first := h.deliver(t, config)
+	token := deliveredToken(t, first)
+	minted := github.minted.Load()
+	for range 3 {
+		agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/releases", h.token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: first.Id, Epoch: first.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		again, err := pollReleased(h.f.execution, ctx, h.identity)
+		cancel()
+		if err != nil || again == nil || again.Id != first.Id || deliveredToken(t, again) != token {
+			t.Fatal("a redelivery did not carry the pipeline's own token", err)
+		}
+	}
+	if github.minted.Load() != minted {
+		t.Fatal("redeliveries minted more tokens", github.minted.Load()-minted)
+	}
+}

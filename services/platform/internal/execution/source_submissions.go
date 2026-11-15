@@ -264,6 +264,10 @@ func submissionFailure(err error) (string, bool) {
 		return refused.Reason, true
 	}
 	var invalid *domain.Error
+	// GitHub limiting the App, or a cached token it stopped accepting, passes.
+	if errors.As(err, &invalid) && invalid.Code == "temporarily_busy" {
+		return invalid.Message, false
+	}
 	if errors.As(err, &invalid) {
 		return "The connection's credential cannot be used: " + invalid.Message, true
 	}

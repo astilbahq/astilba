@@ -372,14 +372,18 @@ func cloneRefusal(err error) (*domain.Error, bool) {
 // errCloneCanPush refuses a stored clone credential that the Git server would let push.
 var errCloneCanPush = &domain.Error{Code: "invalid_input", Message: "The connection's clone credential can push to the repository. Runners build code that may be hostile, so give the connection a read-only clone credential, such as a deploy token with only read_repository or a token with only read access to repository contents.", Fields: []string{"clone.canPush"}}
 
-// cloneAccess asks for the only credential a runner receives, for a pipeline delivered now
-// that may start until deadline. A zero deadline, as at admission, asks only whether one can be
-// had, for a copy that never leaves management. A GitHub App's is minted for this delivery
-// alone, with read access to the one repository's contents (MintRunnerClone); at admission it
-// is management's own cached token, so nothing is minted for a copy no runner receives. A
-// stored one is first put to the Git server, which answers whether it may push without
-// anything being pushed, and is refused if it may.
-func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID, deadline time.Time) (gitAnswer[pipeline.RunnerAccess], error) {
+// runnerCloneMargin is how long a runner's GitHub token outlasts its pipeline's deadline, the
+// latest the runner may start it, for the runner to prepare and fetch the source.
+const runnerCloneMargin = 25 * time.Minute
+
+// cloneAccess asks for the only credential a runner receives, for pipeline run delivered now,
+// which may start until deadline. A zero deadline, as at admission, asks only whether one can be
+// had, for a copy that never leaves management. A GitHub App's is the run's own token, with read
+// access to the one repository's contents, lasting until runnerCloneMargin after the deadline
+// (MintRunnerClone); at admission it is management's own cached token, so nothing is minted for
+// a copy no runner receives. A stored one is first put to the Git server, which answers whether
+// it may push without anything being pushed, and is refused if it may.
+func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id, run uuid.UUID, deadline time.Time) (gitAnswer[pipeline.RunnerAccess], error) {
 	known, err := g.current(ctx, tx, id)
 	if err != nil {
 		return gitAnswer[pipeline.RunnerAccess]{}, err
@@ -399,7 +403,7 @@ func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID, d
 			// Admission's copy holds an expiry as delivery's will, so it is checked at the same size.
 			expires := time.Now().Add(time.Hour)
 			if delivery {
-				token, expires, err = g.service.GitHub.MintRunnerClone(ctx, b.InstallationID, b.RepositoryID)
+				token, expires, err = g.service.GitHub.MintRunnerClone(ctx, g.ws, run, b.InstallationID, b.RepositoryID, deadline.Add(runnerCloneMargin))
 			} else {
 				token, err = g.service.GitHub.Mint(ctx, b.InstallationID, b.RepositoryID, false)
 			}

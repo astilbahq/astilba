@@ -100,8 +100,17 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return true, tx.Commit(ctx)
 		}
 		// No runner holds this command, and its public arguments have not passed the
-		// delivery check, so it finishes here rather than reaching one to be cancelled.
-		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: "Cancelled or expired before runner delivery."}); err != nil {
+		// delivery check, so it finishes here rather than reaching one to be cancelled. One that
+		// waited on GitHub's rate limits still says so.
+		note := "Cancelled or expired before runner delivery."
+		waited, err := queries.OperationNoteHas(ctx, db.OperationNoteHasParams{WorkspaceID: ws, ID: c.Id, Note: gitHubBusyNote})
+		if err != nil {
+			return false, err
+		}
+		if waited {
+			note += " " + gitHubBusyNote
+		}
+		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: note}); err != nil {
 			return false, err
 		}
 		if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
@@ -198,7 +207,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Deadline, &p); err != nil {
+	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Id, c.Deadline, &p); err != nil {
 		// A clone credential that can push, or that the Git server won't vouch for, is never sent,
 		// and refusing it at every poll would hold the runner queue, so the run ends here. A runner
 		// that may hold an earlier delivery is told to stop.
@@ -252,8 +261,8 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	return true, nil
 }
 
-// gitHubBusyNote says why a pipeline's delivery waited. It is added once, and stays true once
-// the pipeline has gone.
+// gitHubBusyNote says why a pipeline's delivery waited. It is added once, and kept if the pipeline
+// then expires undelivered.
 const gitHubBusyNote = "GitHub limited how fast Astilba's GitHub App could make requests, so delivery to the runner waited and retried."
 
 // pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once

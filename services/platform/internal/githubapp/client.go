@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/outbound"
+	"github.com/google/uuid"
 )
 
 type Config struct {
@@ -55,6 +56,9 @@ type Client struct {
 	tokens             map[tokenKey]*cachedToken
 	// paused is when GitHub said the App may make requests again, after limiting them.
 	paused time.Time
+	// runners holds pipelines' runner tokens by workspace, pruned at runnersPruned.
+	runners       map[uuid.UUID]map[runnerKey]runnerToken
+	runnersPruned time.Time
 }
 
 func New(c Config, origin string, development bool) (*Client, error) {
@@ -114,7 +118,7 @@ func New(c Config, origin string, development bool) (*Client, error) {
 	// The PEM is not retained in the general configuration value.
 	c.PrivateKey = ""
 	c.PrivateKeyFile = ""
-	return &Client{Config: c, api: api, web: web, callback: origin + "/github/callback", key: key, http: outbound.Client(development, 20*time.Second), tokens: make(map[tokenKey]*cachedToken), validations: make(map[authorityKey]*cachedAuthority)}, nil
+	return &Client{Config: c, api: api, web: web, callback: origin + "/github/callback", key: key, http: outbound.Client(development, 20*time.Second), tokens: make(map[tokenKey]*cachedToken), runners: make(map[uuid.UUID]map[runnerKey]runnerToken), validations: make(map[authorityKey]*cachedAuthority)}, nil
 }
 func (c *Client) FixtureAPI() string {
 	if c.api != "https://api.github.com" {
@@ -389,8 +393,9 @@ type cachedAuthority struct {
 	ready chan struct{}
 }
 
-// Validate reuses only a successful, exact identity check for five seconds.
-// Every consumer must still establish its controller-local active binding.
+// Validate reuses only a successful, exact identity check for five seconds, and a refusal under
+// GitHub's rate limits until GitHub allows requests again. Every consumer must still establish
+// its controller-local active binding.
 func (c *Client) Validate(ctx context.Context, installation, repository, generation int64, name string, private bool) error {
 	key := authorityKey{installation, repository, generation, name, private}
 	c.mu.Lock()
@@ -407,7 +412,7 @@ func (c *Client) Validate(ctx context.Context, installation, repository, generat
 		}
 		if time.Now().Before(v.until) {
 			c.mu.Unlock()
-			return nil
+			return v.err
 		}
 		delete(c.validations, key)
 	}
@@ -450,7 +455,12 @@ func (c *Client) Validate(ctx context.Context, installation, repository, generat
 	c.mu.Lock()
 	pending.err = err
 	ready := pending.ready
-	if err != nil {
+	// A refusal under GitHub's rate limits is the answer until GitHub allows requests again, so
+	// the check, App requests and all, is not asked for again sooner.
+	if until, limited := Limited(err); limited {
+		pending.until = until
+		pending.ready = nil
+	} else if err != nil {
 		delete(c.validations, key)
 	} else {
 		pending.until = time.Now().Add(5 * time.Second)

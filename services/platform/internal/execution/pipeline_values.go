@@ -15,8 +15,8 @@ import (
 
 // populatePipeline fills in the values of a pipeline that may start until deadline. A zero
 // deadline only checks they can be had, for a copy that never leaves management.
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, deadline time.Time, p *pipeline.Command) error {
-	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID, deadline)
+func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env, run uuid.UUID, deadline time.Time, p *pipeline.Command) error {
+	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID, run, deadline)
 	if err != nil {
 		return err
 	}

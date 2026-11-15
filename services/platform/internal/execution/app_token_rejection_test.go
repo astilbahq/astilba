@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -89,5 +90,18 @@ func TestManagementProviderDropsARejectedAppToken(t *testing.T) {
 	}
 	if err = resolve(next, true); err != nil {
 		t.Fatal("the new token was not used", err)
+	}
+}
+
+// GitHub limiting the App, or a cached token it stopped accepting, passes, so a submission that
+// meets one is tried again rather than failed as if its credential were unusable.
+func TestSubmissionRetriesAPassingGitHubFailure(t *testing.T) {
+	for _, err := range []error{appFailure(&githubapp.RateLimited{Until: time.Now().Add(time.Minute)}), appFailure(fmt.Errorf("%w: %w", githubapp.ErrTokenRejected, &githubapp.APIError{Status: 401}))} {
+		if note, terminal := submissionFailure(err); terminal || !strings.Contains(note, "Try again") {
+			t.Fatalf("a passing GitHub failure ended the submission: %q", note)
+		}
+	}
+	if _, terminal := submissionFailure(domain.Invalid("credential")); !terminal {
+		t.Fatal("an unusable credential was retried")
 	}
 }
