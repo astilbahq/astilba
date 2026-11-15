@@ -738,7 +738,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Owners only. The standing approvals and deferred actions that requiring two-factor authentication would stop, and who gave each, so an owner can review them before turning the requirement on. Each one's approver hasn't set up two-factor authentication. While the workspace requires it, none of these act, so the list is empty. */
+        /** @description Owners only. The standing approvals and deferred actions that act only while the workspace doesn't require two-factor authentication, and who gave each, so an owner can review them before changing the requirement. Each one's approver hasn't set up two-factor authentication. While the requirement is off, these are what turning it on would stop; while it is on, what turning it off would let act again. */
         get: operations["getMfaRequirement"];
         put?: never;
         post?: never;
@@ -3306,10 +3306,10 @@ export interface components {
         MfaRequirement: {
             approvals: components["schemas"]["MfaRequirementApproval"][];
         };
-        /** @description A standing approval or deferred action that stops while the workspace requires two-factor authentication and its approver hasn't set it up. It acts again if the requirement is turned off. Setting up two-factor authentication changes the approver's credentials, which ends it: they approve it again afterwards. */
+        /** @description A standing approval or deferred action that stops while the workspace requires two-factor authentication and its approver hasn't set it up. A standing approval acts again if the requirement is turned off. A pending automatic deployment or queued source submission that comes due while it is required is refused for good. Setting up two-factor authentication changes the approver's credentials, which ends it: they, or another owner, approve it again afterwards. */
         MfaRequirementApproval: {
             /**
-             * @description `gitSource`: a Git source's automatic imports and deployments. `buildTarget`: a build target's automatic builds, and deployments if it deploys. `automaticDeployment`: an automatic deployment not yet planned. `previewPolicy`: an environment's previews. `previewApproval`: a fork commit approved for a preview. `previewCleanup`: a preview cleanup an owner asked for. `invitation`: an invitation not yet accepted. `enrollmentCode`: a server enrollment code not yet used. `sourceSubmission`: a queued source submission. `automationCredential`: an automation credential, which keeps reading but can't write.
+             * @description `gitSource`: a Git source's automatic imports and deployments. `buildTarget`: a build target's builds, automatic or run by automation, and deployments if it deploys. `automaticDeployment`: an automatic deployment not yet planned. `previewPolicy`: an environment's previews. `previewApproval`: a fork commit approved for a preview, while it is still the pull request's head. `previewCleanup`: a preview cleanup an owner asked for. `invitation`: an invitation not yet accepted. `enrollmentCode`: a server enrollment code not yet used. `sourceSubmission`: a queued source submission. `automationCredential`: an automation credential, which keeps reading but can't write.
              * @enum {string}
              */
             kind: "gitSource" | "buildTarget" | "automaticDeployment" | "previewPolicy" | "previewApproval" | "previewCleanup" | "invitation" | "enrollmentCode" | "sourceSubmission" | "automationCredential";
@@ -6870,7 +6870,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description What requiring two-factor authentication would stop */
+            /** @description What the two-factor requirement stops, or would stop */
             200: {
                 headers: {
                     [name: string]: unknown;

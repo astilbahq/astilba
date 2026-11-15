@@ -14,9 +14,10 @@ import (
 // Requiring two-factor authentication stops every standing approval given by a member who hasn't
 // set it up, as it stops their own writes: Git sources, build targets, pending automatic
 // deployments, preview policies, fork approvals, cleanup requests, invitations and enrollment
-// codes. Owners see beforehand what it would stop. Turning the requirement off lets them act
-// again; setting up two-factor authentication changes the approver's credentials, so it ends
-// them instead, and the approver approves again. Queued source submissions, automation
+// codes. Owners see beforehand what it would stop, and while it is required, what turning it off
+// would let act again. Turning the requirement off lets them act again; a setup the approver
+// hasn't confirmed changes nothing, and confirming it changes the approver's credentials, so it
+// ends them instead, and the approver approves again. Queued source submissions, automation
 // credentials and terminal sessions have tests of their own.
 func TestTwoFactorRequirementStopsStandingApprovals(t *testing.T) {
 	p := newPolicyFixture(t)
@@ -53,8 +54,8 @@ func TestTwoFactorRequirementStopsStandingApprovals(t *testing.T) {
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,1,1,true,'{}')`, policy, p.ws, project, env, revision, p.builder, p.connection, host, p.approverID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.f.st.Pool.Exec(ctx, `INSERT INTO preview_requests(id,workspace_id,policy_id,number,head,fork,approved_head,approved_by,approved_auth_version,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,next_check_at)
- VALUES($1,$2,$3,7,'abc',true,'abc',$4,1,true,$4,1,1,now()+interval '1 day')`, request, p.ws, policy, p.approverID); err != nil {
+	if _, err := p.f.st.Pool.Exec(ctx, `INSERT INTO preview_requests(id,workspace_id,policy_id,number,head,fork,approved_head,approved_generation,approved_by,approved_auth_version,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,next_check_at)
+ VALUES($1,$2,$3,7,'abc',true,'abc',1,$4,1,true,$4,1,1,now()+interval '1 day')`, request, p.ws, policy, p.approverID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -140,8 +141,16 @@ func TestTwoFactorRequirementStopsStandingApprovals(t *testing.T) {
 		t.Fatal("a target built on the approval of a member without two-factor authentication", started)
 	}
 	agentRequest(t, p.f.server.Client(), p.f.server.URL, "/agent/v1/enroll", "", in, 401, nil)
-	if got := listed(); len(got) != 0 {
-		t.Fatal("listed approvals that have already stopped", got)
+	// While it is required, owners see the same approvals as what turning it off would let act again.
+	if got := listed(); !maps.Equal(got, wantListed) {
+		t.Fatalf("listed %v while required, want %v", got, wantListed)
+	}
+
+	// Only a confirmed authenticator meets the requirement: a setup not yet confirmed changes nothing.
+	enrollSecret(t, p.approver)
+	want("with an unconfirmed two-factor setup", false)
+	if got := listed(); !maps.Equal(got, wantListed) {
+		t.Fatalf("listed %v with an unconfirmed setup, want %v", got, wantListed)
 	}
 
 	// The requirement is the workspace's policy, not a judgement of the approver: dropping it lets
@@ -171,4 +180,30 @@ func TestTwoFactorRequirementStopsStandingApprovals(t *testing.T) {
 	if started := p.push(t); !started[p.builder] || !started[p.deployer] {
 		t.Fatal("approvals given with two-factor authentication did not run", started)
 	}
+}
+
+// Turning the two-factor requirement on or off stops or resumes what members without it approved,
+// so the audit history records each change of it as such, besides the settings save.
+func TestTwoFactorRequirementChangesAreAudited(t *testing.T) {
+	f := setup(t)
+	owner := f.browser(t)
+	session := owner.login("owner@example.test", f.password)
+	ws, actor := session.Workspaces[0].Id, session.User.Id
+	mfaOwner(t, f, owner)
+	path := "/api/v1/workspaces/" + ws.String()
+	audited := func() [3]int {
+		t.Helper()
+		return [3]int{auditedBy(t, f, ws, actor, "workspace.require_mfa"), auditedBy(t, f, ws, actor, "workspace.stop_requiring_mfa"), auditedBy(t, f, ws, actor, "workspace.settings")}
+	}
+	save := func(name string, require bool, want [3]int) {
+		t.Helper()
+		owner.call("PUT", path, map[string]any{"name": name, "requireMfa": require}, 200, nil)
+		if got := audited(); got != want {
+			t.Fatalf("after saving %q with requireMfa %v, audited %v, want %v", name, require, got, want)
+		}
+	}
+	save("Requires two-factor", true, [3]int{1, 0, 1})
+	save("Renamed", true, [3]int{1, 0, 2})
+	save("Renamed", false, [3]int{1, 1, 3})
+	save("Renamed again", false, [3]int{1, 1, 4})
 }

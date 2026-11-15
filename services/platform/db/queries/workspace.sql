@@ -55,66 +55,72 @@ SELECT * FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DES
 UPDATE workspaces SET name=$2,require_mfa=$3 WHERE id=$1;
 
 -- name: MFARequirementApprovals :many
--- The standing approvals and deferred actions that requiring two-factor authentication would
--- stop, so an owner sees them before turning it on: each still holds (policy_approver_holds), and
--- its approver hasn't set up two-factor authentication. Once the workspace requires it, none of
--- these hold, so the list is empty. Retired environments' sources, targets and previews run
--- nothing, so they are left out. An automation credential whose creator lacks two-factor
--- authentication keeps reading but can't write.
+-- The standing approvals and deferred actions that act only while the workspace doesn't require
+-- two-factor authentication: each holds apart from that requirement (approver_role_holds), and its
+-- approver hasn't set up two-factor authentication. So an owner sees what requiring it would stop,
+-- or, while it is required, what turning it off would let act again. A deferred action that came
+-- due while it was required was refused for good, so it is no longer pending and isn't listed.
+-- Retired environments' sources, targets and previews run nothing, so they are left out, and so are
+-- a build target that neither builds automatically nor has an owner's approval for automation to
+-- run it, and a fork commit's approval once the pull request or preview policy has moved on. An automation credential whose creator lacks two-factor authentication keeps reading
+-- but can't write.
 WITH approvals(kind,approver,environment_id,subject) AS (
     SELECT 'gitSource',g.policy_actor,g.environment_id,''
     FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
     WHERE g.workspace_id = @workspace_id AND e.state='active' AND g.status<>'approval_required'
-        AND policy_approver_holds(g.workspace_id,g.policy_actor,g.policy_auth_version,true)
+        AND approver_role_holds(g.workspace_id,g.policy_actor,g.policy_auth_version,true)
     UNION ALL
     SELECT 'buildTarget',b.policy_actor,b.environment_id,COALESCE((
         SELECT x->>'name' FROM specification_revisions r, jsonb_array_elements(r.specification->'applications') x
         WHERE r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id AND x->>'id'=b.application_id::text LIMIT 1),'')
     FROM build_targets b JOIN environments e ON e.workspace_id=b.workspace_id AND e.id=b.environment_id
     WHERE b.workspace_id = @workspace_id AND e.state='active'
-        AND policy_approver_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,COALESCE((b.configuration->>'autoDeploy')::boolean,false))
+        AND (COALESCE((b.configuration->>'autoBuild')::boolean,false) OR b.policy_owner)
+        AND approver_role_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,COALESCE((b.configuration->>'autoDeploy')::boolean,false))
     UNION ALL
     SELECT 'automaticDeployment',d.actor_id,d.environment_id,''
     FROM pipeline_auto_deployments d
     WHERE d.workspace_id = @workspace_id AND d.state='pending'
-        AND policy_approver_holds(d.workspace_id,d.actor_id,d.actor_auth_version,true)
+        AND approver_role_holds(d.workspace_id,d.actor_id,d.actor_auth_version,true)
     UNION ALL
     SELECT 'previewPolicy',p.actor_id,p.environment_id,''
     FROM preview_policies p JOIN environments e ON e.workspace_id=p.workspace_id AND e.id=p.environment_id
     WHERE p.workspace_id = @workspace_id AND p.enabled AND e.state='active'
-        AND policy_approver_holds(p.workspace_id,p.actor_id,p.auth_version,true)
+        AND approver_role_holds(p.workspace_id,p.actor_id,p.auth_version,true)
     UNION ALL
     SELECT 'previewApproval',r.approved_by,p.environment_id,'#'||r.number
     FROM preview_requests r JOIN preview_policies p ON p.workspace_id=r.workspace_id AND p.id=r.policy_id
-    WHERE r.workspace_id = @workspace_id AND r.approved_head<>'' AND r.state<>'deleted'
-        AND policy_approver_holds(r.workspace_id,r.approved_by,r.approved_auth_version,true)
+        JOIN environments e ON e.workspace_id=p.workspace_id AND e.id=p.environment_id
+    WHERE r.workspace_id = @workspace_id AND r.fork AND r.state<>'deleted' AND p.enabled AND e.state='active'
+        AND r.approved_head=r.head AND r.approved_repository=r.head_repository AND r.approved_generation=p.generation
+        AND approver_role_holds(r.workspace_id,r.approved_by,r.approved_auth_version,true)
     UNION ALL
     SELECT 'previewCleanup',r.cleanup_actor,p.environment_id,'#'||r.number
     FROM preview_requests r JOIN preview_policies p ON p.workspace_id=r.workspace_id AND p.id=r.policy_id
     WHERE r.workspace_id = @workspace_id AND r.cleanup_requested AND r.state<>'deleted'
-        AND policy_approver_holds(r.workspace_id,r.cleanup_actor,r.cleanup_auth_version,true)
+        AND approver_role_holds(r.workspace_id,r.cleanup_actor,r.cleanup_auth_version,true)
     UNION ALL
     SELECT 'invitation',i.issuer_id,NULL::uuid,i.email
     FROM invitations i
     WHERE i.workspace_id = @workspace_id AND i.expires_at>now()
-        AND policy_approver_holds(i.workspace_id,i.issuer_id,i.issuer_auth_version,true)
+        AND approver_role_holds(i.workspace_id,i.issuer_id,i.issuer_auth_version,true)
     UNION ALL
     SELECT 'enrollmentCode',s.enrollment_issuer_id,NULL::uuid,s.name
     FROM servers s
     WHERE s.workspace_id = @workspace_id AND s.enrollment_hash IS NOT NULL AND s.enrollment_expires>now()
         AND s.credential_hash IS NULL AND NOT s.revoked
-        AND policy_approver_holds(s.workspace_id,s.enrollment_issuer_id,s.enrollment_issuer_auth_version,true)
+        AND approver_role_holds(s.workspace_id,s.enrollment_issuer_id,s.enrollment_issuer_auth_version,true)
     UNION ALL
     SELECT 'sourceSubmission',q.actor_id,q.environment_id,''
     FROM source_submissions q
     WHERE q.workspace_id = @workspace_id AND q.state='queued' AND q.withdrawn_at IS NULL
-        AND policy_approver_holds(q.workspace_id,q.actor_id,q.actor_auth_version,false)
+        AND approver_role_holds(q.workspace_id,q.actor_id,q.actor_auth_version,false)
     UNION ALL
     SELECT 'automationCredential',c.creator_id,c.environment_id,c.name
     FROM automation_credentials c
     WHERE c.workspace_id = @workspace_id AND c.revoked_at IS NULL AND c.expires_at>now()
         AND NOT c.capabilities <@ ARRAY['environment:read']::text[]
-        AND policy_approver_holds(c.workspace_id,c.creator_id,c.auth_version,true)
+        AND approver_role_holds(c.workspace_id,c.creator_id,c.auth_version,true)
 )
 SELECT x.kind::text AS kind,a.id AS approver_id,a.name AS approver_name,a.email AS approver_email,
     p.id AS project_id,p.name AS project_name,e.id AS environment_id,e.name AS environment_name,x.subject::text AS subject
