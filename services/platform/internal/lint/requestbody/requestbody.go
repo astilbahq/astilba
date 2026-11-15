@@ -26,7 +26,7 @@ var rawReaders = map[string]bool{
 }
 
 // Test fakes of a service outside Astilba, by package. Their handlers stand in for that service
-// and read what Astilba itself sends; only tests import them.
+// and read what Astilba itself sends; testsupport keeps them to tests.
 var fakes = map[string]bool{
 	"internal/pipeline/pipelinetest": true,
 }
