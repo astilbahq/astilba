@@ -87,4 +87,8 @@ SELECT nextval('hosted_observation_tickets')::bigint;
 SELECT workspace_id FROM hosted_subscriptions WHERE customer_id = @customer_id;
 
 -- name: HeldSubscription :one
-SELECT subscription_id,status FROM hosted_subscriptions WHERE workspace_id = @workspace_id;
+-- checkout_open: a checkout intent not yet completed, which could still be applied however
+-- long ago it expired, since a session completed in time can be delivered later.
+SELECT s.subscription_id,s.status,COALESCE(NOT c.completed,false)::boolean AS checkout_open
+FROM hosted_subscriptions s LEFT JOIN hosted_checkouts c USING(workspace_id)
+WHERE s.workspace_id = @workspace_id;

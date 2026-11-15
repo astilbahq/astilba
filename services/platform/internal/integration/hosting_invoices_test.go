@@ -200,6 +200,33 @@ func TestInvoicePaidBeforeCheckoutIsAppliedIsRedelivered(t *testing.T) {
 	requireManagementUntil(t, f, ws, allowed(stripe.periodEnd))
 }
 
+// Once its subscription has ended, a workspace waits for an invoice of another subscription
+// only while a checkout that could bring that subscription is open.
+func TestInvoiceOfAnotherSubscriptionWaitsOnlyForAnOpenCheckout(t *testing.T) {
+	f, p, ws, stripe, svc := subscribedWorkspace(t)
+	stripe.workspace = ws.String()
+	stripe.cancel(time.Now())
+	stripe.deliver(t, svc, "customer.subscription.deleted", "cancelled")
+	other := func(id string) error {
+		raw, sig := signedEvent(t, "invoice.paid", id, map[string]any{"id": "in_other", "customer": stripe.customer, "parent": map[string]any{"type": "subscription_details", "subscription_details": map[string]any{"subscription": "sub_other"}}})
+		return svc.Webhook(t.Context(), raw, sig)
+	}
+	if e := other("evt_nocheckout"); e != nil {
+		t.Fatal("an invoice no checkout can bring was refused:", e)
+	}
+	if _, e := svc.Checkout(t.Context(), p, ws); e != nil {
+		t.Fatal(e)
+	}
+	if e := other("evt_checkoutopen"); !errors.Is(e, domain.Conflict) {
+		t.Fatal("an invoice an open checkout may bring was consumed:", e)
+	}
+	var recorded bool
+	if e := f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM hosted_billing_events WHERE id='evt_checkoutopen')").Scan(&recorded); e != nil || recorded {
+		t.Fatal("the refused delivery was recorded", e)
+	}
+	stripe.deliver(t, svc, "invoice.paid", "held_subscription")
+}
+
 // A checkout can complete before its first invoice is paid, as with a delayed payment method.
 // Management starts only when it is.
 func TestUnpaidCheckoutGrantsNothingUntilPaid(t *testing.T) {

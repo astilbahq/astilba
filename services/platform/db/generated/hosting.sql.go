@@ -171,18 +171,23 @@ func (q *Queries) GrantHostedManagement(ctx context.Context, arg GrantHostedMana
 }
 
 const heldSubscription = `-- name: HeldSubscription :one
-SELECT subscription_id,status FROM hosted_subscriptions WHERE workspace_id = $1
+SELECT s.subscription_id,s.status,COALESCE(NOT c.completed,false)::boolean AS checkout_open
+FROM hosted_subscriptions s LEFT JOIN hosted_checkouts c USING(workspace_id)
+WHERE s.workspace_id = $1
 `
 
 type HeldSubscriptionRow struct {
 	SubscriptionID pgtype.Text `json:"subscription_id"`
 	Status         string      `json:"status"`
+	CheckoutOpen   bool        `json:"checkout_open"`
 }
 
+// checkout_open: a checkout intent not yet completed, which could still be applied however
+// long ago it expired, since a session completed in time can be delivered later.
 func (q *Queries) HeldSubscription(ctx context.Context, workspaceID uuid.UUID) (HeldSubscriptionRow, error) {
 	row := q.db.QueryRow(ctx, heldSubscription, workspaceID)
 	var i HeldSubscriptionRow
-	err := row.Scan(&i.SubscriptionID, &i.Status)
+	err := row.Scan(&i.SubscriptionID, &i.Status, &i.CheckoutOpen)
 	return i, err
 }
 

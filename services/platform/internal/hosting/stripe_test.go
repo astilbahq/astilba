@@ -58,8 +58,10 @@ func paidThroughPaging(t *testing.T, pages map[string]map[string]any, invoices .
 	s := Stripe{Key: "sk_test_unit", Price: "price_now", HTTP: &http.Client{Transport: answerFunc(func(r *http.Request) (any, error) {
 		q := r.URL.Query()
 		if invoice, ok := strings.CutPrefix(r.URL.Path, "/v1/invoices/"); ok && r.Method == "GET" && q.Get("limit") == "100" {
-			if page, ok := pages[strings.TrimSuffix(invoice, "/lines")+"/"+q.Get("starting_after")]; ok {
-				return page, nil
+			if invoice, ok = strings.CutSuffix(invoice, "/lines"); ok {
+				if page, ok := pages[invoice+"/"+q.Get("starting_after")]; ok {
+					return page, nil
+				}
 			}
 		}
 		if r.Method != "GET" || r.URL.Path != "/v1/invoices" || q.Get("customer") != "cus_one" || q.Get("subscription") != "sub_one" || q.Get("status") != "paid" || q.Get("limit") != "10" {

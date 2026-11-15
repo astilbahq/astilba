@@ -448,10 +448,16 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 			// The invoice's own subscription only says whether to wait, never what was paid.
 			named := obj.Parent.Details.Subscription
 			ended := held.Status == "canceled" || held.Status == "incomplete_expired"
-			if !held.SubscriptionID.Valid || ended && named != "" && named != held.SubscriptionID.String {
-				// A checkout not yet applied may have observed Stripe before this payment.
-				// Recording the event would lose it, so Stripe is asked to deliver it again.
+			unheld := !held.SubscriptionID.Valid || ended && named != "" && named != held.SubscriptionID.String
+			if unheld && held.CheckoutOpen {
+				// The open checkout may have observed Stripe before this payment and not yet
+				// be applied. Recording the event would lose it, so Stripe is asked to
+				// deliver it again.
 				return domain.Conflict
+			}
+			if !held.SubscriptionID.Valid {
+				// No checkout can bring the invoice's subscription here.
+				return tx.Commit(ctx)
 			}
 			subscription = held.SubscriptionID.String
 		}
