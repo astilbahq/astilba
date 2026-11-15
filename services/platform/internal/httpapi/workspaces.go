@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -77,11 +78,14 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := uuid.New()
+	keys, e := s.Store.Broker.Create(r.Context(), secretbroker.Request{Workspace: id, Principal: p.Secrets()})
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	defer keys.Close(r.Context(), secretbroker.Used)
 	e = s.Store.Transaction(r.Context(), func(q *db.Queries) error {
-		if e := q.InsertWorkspace(r.Context(), db.InsertWorkspaceParams{ID: id, Name: name}); e != nil {
-			return e
-		}
-		if e := q.InsertMembership(r.Context(), db.InsertMembershipParams{WorkspaceID: id, AccountID: p.Account.ID, Role: "owner"}); e != nil {
+		if e := store.CreateWorkspace(r.Context(), q, keys, name, p.Account.ID); e != nil {
 			return e
 		}
 		if e := store.Audit(r.Context(), q, p, id, "workspace.create", id); e != nil {
