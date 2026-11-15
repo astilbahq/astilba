@@ -10,6 +10,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
@@ -174,49 +175,97 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	}
 	resolve(fresh, silentToken, status)
 
-	// A clone starts its services empty, so its first account is new: its copy of a staged
-	// route is checked as the original is, and it keeps the staging's backup recommendations.
+	// From here the server reports its ranges again, so a check refuses rather than reviews.
+	heartbeat.Preflight.ContainerRanges = &ranges
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", silentToken, heartbeat, 200, nil)
+	// setStaged replaces the environment's record of staged routes; nil removes it, as a row
+	// from before the record has none.
+	setStaged := func(path string, value *string) {
+		t.Helper()
+		env := uuid.MustParse(path[strings.LastIndex(path, "/")+1:])
+		if _, err := f.st.Pool.Exec(t.Context(), `UPDATE catalog_stagings SET staged_routes=$3::jsonb WHERE workspace_id=$1 AND environment_id=$2`, ws, env, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reviews := func(path, effect string) {
+		t.Helper()
+		_, status := plan(path, silent, 201)
+		status = resolve(path, silentToken, status)
+		if !status.HostReview || !slices.Contains(status.Plan.Effects, effect) {
+			t.Fatal("planning did not ask for review", status.HostReview, status.Plan.Effects)
+		}
+	}
+	clone := func(path, name string) string {
+		t.Helper()
+		var copied api.Environment
+		b.call("POST", path+"/clone", api.CloneEnvironment{Name: name}, 201, &copied)
+		return prefix + "/projects/" + project.Id.String() + "/environments/" + copied.Id.String()
+	}
+
+	// A staging from before the record of its routes is worked out from the revision it saved.
 	original := environment("Original")
 	if code, raw = stage(original, "kaneo", "Original", "10.0.0.0/8"); code != 201 {
 		t.Fatal("staging without a server", code, string(raw))
 	}
-	var clone api.Environment
-	b.call("POST", original+"/clone", api.CloneEnvironment{Name: "Copy"}, 201, &clone)
-	cloned := prefix + "/projects/" + project.Id.String() + "/environments/" + clone.Id.String()
-	raw, _ = plan(cloned, reporting, 400)
+	setStaged(original, nil)
+	raw, _ = plan(original, silent, 400)
 	refusesNaming(raw, "10.0.0.0/8", "10.252.0.0/14")
-	var stagings []api.CatalogStaging
-	b.call("GET", cloned+"/catalog-stagings", nil, 200, &stagings)
-	if len(stagings) != 1 || stagings[0].RecipeId != "kaneo" {
-		t.Fatal("the clone did not keep its staging", stagings)
-	}
 
-	// A staging management can't read leaves the routes it created unknown, so planning asks
-	// for review rather than passing them.
-	if _, err := f.st.Pool.Exec(t.Context(), `UPDATE catalog_stagings SET services='{"unknown":"not an identity"}' WHERE workspace_id=$1 AND environment_id=$2`, ws, clone.Id); err != nil {
-		t.Fatal(err)
-	}
-	_, status = plan(cloned, silent, 201)
-	status = resolve(cloned, silentToken, status)
-	if !status.HostReview || !slices.Contains(status.Plan.Effects, deployment.UnresolvedStagingEffect) {
-		t.Fatal("an unreadable staging did not need review", status.HostReview, status.Plan.Effects)
-	}
-
-	// Once the owner has opened the route, as they do after creating the administrator, a clone
-	// routes as the owner chose: its open route is no staged allowlist to refuse or review.
+	// The owner moves the staged route to another service, keeping its allowlist, and gives the
+	// staged service a route of their own. A clone starts its services empty, so its first
+	// account is new: its copy of the still-staged route is checked as the original is, its
+	// other route is the owner's, and it keeps the staging's backup recommendations.
 	current = draft(original)
 	if spec, _, err = domain.ParseSpec(current.Specification); err != nil {
 		t.Fatal(err)
 	}
-	spec.Routes[0].AllowCIDRs = []string{}
+	image := execution.TestImage
+	other := domain.Application{ID: uuid.New(), Name: "Other", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Variables: []domain.Variable{}}
+	kaneo := spec.Routes[0].TargetID
+	spec.Applications = append(spec.Applications, other)
+	office := spec.Routes[0]
+	office.ID, office.Domain, office.AllowCIDRs = uuid.New(), "office.example.com", []string{"198.51.100.0/24"}
+	spec.Routes[0].TargetID = other.ID
+	spec.Routes = append(spec.Routes, office)
 	b.call("PUT", original+"/draft", map[string]any{"baseRevisionId": current.Id, "specification": spec}, 200, nil)
-	b.call("POST", original+"/clone", api.CloneEnvironment{Name: "Opened copy"}, 201, &clone)
-	opened := prefix + "/projects/" + project.Id.String() + "/environments/" + clone.Id.String()
+	copied := clone(original, "Copy")
+	raw, _ = plan(copied, silent, 400)
+	refusesNaming(raw, "10.0.0.0/8", "10.252.0.0/14")
+	var stagings []api.CatalogStaging
+	b.call("GET", copied+"/catalog-stagings", nil, 200, &stagings)
+	if len(stagings) != 1 || stagings[0].RecipeId != "kaneo" {
+		t.Fatal("the clone did not keep its staging", stagings)
+	}
+	if spec.Routes[1].TargetID != kaneo {
+		t.Fatal("the owner's route moved")
+	}
+
+	// A record management can't read leaves the staged routes unknown, so planning asks for
+	// review rather than passing them; a clone of it says it could not confirm them.
+	unreadable := `{"not a route":["10.0.0.0/8"]}`
+	setStaged(copied, &unreadable)
+	reviews(copied, deployment.UnresolvedStagingEffect)
+	reviews(clone(copied, "Unconfirmed copy"), deployment.UnconfirmedStagingEffect)
+
+	// Once the owner has opened the route, as they do after creating the administrator, a clone
+	// routes as the owner chose: its open route is no staged allowlist to refuse or review.
+	opening := environment("Opening")
+	if code, raw = stage(opening, "kaneo", "Opening", "203.0.113.7/32"); code != 201 {
+		t.Fatal("staging", code, string(raw))
+	}
+	current = draft(opening)
+	if spec, _, err = domain.ParseSpec(current.Specification); err != nil {
+		t.Fatal(err)
+	}
+	spec.Routes[0].AllowCIDRs = []string{}
+	b.call("PUT", opening+"/draft", map[string]any{"baseRevisionId": current.Id, "specification": spec}, 200, nil)
+	opened := clone(opening, "Opened copy")
 	if _, status = plan(opened, silent, 201); status.HostReview {
 		t.Fatal("a clone of an opened route still treated it as staged")
 	}
+	resolve(opened, silentToken, status)
 	b.call("GET", opened+"/catalog-stagings", nil, 200, &stagings)
 	if len(stagings) != 1 {
-		t.Fatal("the clone lost the staging's other services", stagings)
+		t.Fatal("the clone lost the staging", stagings)
 	}
 }

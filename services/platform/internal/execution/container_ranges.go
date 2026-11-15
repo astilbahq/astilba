@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"maps"
+	"net/netip"
 	"slices"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -53,38 +55,82 @@ func containerRangesOf(ctx context.Context, q *db.Queries, ws, server uuid.UUID)
 	return out, nil
 }
 
-// stagedRoutes works out the routes catalog stagings created in the environment, each with the
-// allowlist it was staged with: the routes in the specification a staging saved that target a
-// service it created. Those services were new then, so nothing else could route to them in that
-// revision. A clone records its source's stagings against its own first revision, keeping only
-// services whose routes were all still staged, see cloneCatalogStagings. Unresolved is whether a staging
-// could not be read, in which case which routes it created is unknown.
-func stagedRoutes(ctx context.Context, q *db.Queries, ws, env uuid.UUID) (staged map[uuid.UUID][]string, unresolved bool, err error) {
-	// Every staging is read, whatever its entry: what an entry creates can change between
-	// releases, and the saved revision is what this one staged.
-	rows, err := q.ListCatalogStagedRevisions(ctx, db.ListCatalogStagedRevisionsParams{WorkspaceID: ws, EnvironmentID: env})
-	if err != nil {
-		return nil, false, err
-	}
-	staged = map[uuid.UUID][]string{}
-	for _, row := range rows {
-		var services map[uuid.UUID]uuid.UUID
-		spec, _, parseErr := domain.ParseSpec(row.Specification)
-		if row.Specification == nil || parseErr != nil || json.Unmarshal(row.Services, &services) != nil {
-			unresolved = true
-			continue
+// unconfirmedStaging is what a clone records as the staged routes of a staging of its source
+// whose routes could not be read, so planning in the clone still asks for review.
+const unconfirmedStaging = `"unconfirmed"`
+
+// maxStagedRoutes bounds the routes one staging may record. An entry creates at most one.
+const maxStagedRoutes = 32
+
+// stagingRoutes is what one staging says about the routes it created.
+type stagingRoutes struct {
+	// staged maps each route the staging created to the allowlist it was staged with.
+	staged map[uuid.UUID][]string
+	// unresolved is a staging that could not be read; unconfirmed, a clone's copy of one.
+	unresolved, unconfirmed bool
+}
+
+// readStagingRoutes reads the routes a staging recorded, strictly: any value but route IDs to
+// allowlists of masked prefixes, within the bounds a route has, makes it unresolved. A staging from
+// before the record is worked out from the specification it saved instead: the routes there that
+// target a service it created, which were new then, so nothing else could route to them.
+func readStagingRoutes(recorded, services, specification []byte) stagingRoutes {
+	out := stagingRoutes{staged: map[uuid.UUID][]string{}}
+	if recorded != nil {
+		if string(recorded) == unconfirmedStaging {
+			out.unconfirmed = true
+			return out
 		}
-		created := map[uuid.UUID]bool{}
-		for _, id := range services {
-			created[id] = true
+		var routes map[string][]string
+		if json.Unmarshal(recorded, &routes) != nil || len(routes) > maxStagedRoutes {
+			out.unresolved = true
+			return out
 		}
-		for _, r := range spec.Routes {
-			if created[r.TargetID] {
-				staged[r.ID] = r.AllowCIDRs
+		for key, allow := range routes {
+			id, err := uuid.Parse(key)
+			if err != nil || id.String() != key || len(allow) == 0 || len(allow) > 32 {
+				return stagingRoutes{unresolved: true}
 			}
+			for _, raw := range allow {
+				if p, err := netip.ParsePrefix(raw); err != nil || p != p.Masked() || p.Addr().Is4In6() {
+					return stagingRoutes{unresolved: true}
+				}
+			}
+			out.staged[id] = allow
+		}
+		return out
+	}
+	var created map[uuid.UUID]uuid.UUID
+	spec, _, err := domain.ParseSpec(specification)
+	if specification == nil || err != nil || json.Unmarshal(services, &created) != nil {
+		return stagingRoutes{unresolved: true}
+	}
+	targets := map[uuid.UUID]bool{}
+	for _, id := range created {
+		targets[id] = true
+	}
+	for _, r := range spec.Routes {
+		if targets[r.TargetID] {
+			out.staged[r.ID] = r.AllowCIDRs
 		}
 	}
-	return staged, unresolved, nil
+	return out
+}
+
+// stagedRoutes gathers what every staging in the environment says about the routes it created.
+func stagedRoutes(ctx context.Context, q *db.Queries, ws, env uuid.UUID) (stagingRoutes, error) {
+	rows, err := q.ListCatalogStagingProvenance(ctx, db.ListCatalogStagingProvenanceParams{WorkspaceID: ws, EnvironmentID: env})
+	if err != nil {
+		return stagingRoutes{}, err
+	}
+	out := stagingRoutes{staged: map[uuid.UUID][]string{}}
+	for _, row := range rows {
+		one := readStagingRoutes(row.StagedRoutes, row.Services, row.Specification)
+		out.unresolved = out.unresolved || one.unresolved
+		out.unconfirmed = out.unconfirmed || one.unconfirmed
+		maps.Copy(out.staged, one.staged)
+	}
+	return out, nil
 }
 
 // stagedAllowlists checks each route a catalog staging created in the environment, while it
@@ -93,18 +139,21 @@ func stagedRoutes(ctx context.Context, q *db.Queries, ws, env uuid.UUID) (staged
 // what an owner must review instead when it can't check: the server's ranges are unknown, or a
 // staging could not be read. So a staged allowlist never passes unchecked.
 func stagedAllowlists(ctx context.Context, q *db.Queries, ws, env, server uuid.UUID, spec domain.Specification) ([]string, error) {
-	staged, unresolved, err := stagedRoutes(ctx, q, ws, env)
+	stagings, err := stagedRoutes(ctx, q, ws, env)
 	if err != nil {
 		return nil, err
 	}
 	review := []string{}
 	// Only a route can admit anyone, so a plan without one needs no review for it.
-	if unresolved && len(spec.Routes) > 0 {
+	if stagings.unresolved && len(spec.Routes) > 0 {
 		review = append(review, deployment.UnresolvedStagingEffect)
+	}
+	if stagings.unconfirmed && len(spec.Routes) > 0 {
+		review = append(review, deployment.UnconfirmedStagingEffect)
 	}
 	routes := []domain.Route{}
 	for _, r := range spec.Routes {
-		if allow, ok := staged[r.ID]; ok && slices.Equal(allow, r.AllowCIDRs) {
+		if allow, ok := stagings.staged[r.ID]; ok && slices.Equal(allow, r.AllowCIDRs) {
 			routes = append(routes, r)
 		}
 	}

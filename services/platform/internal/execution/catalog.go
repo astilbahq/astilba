@@ -167,7 +167,20 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 		if err != nil {
 			return err
 		}
-		return q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: staging, RecipeID: recipe.ID, RecipeVersion: recipe.Version, RevisionID: out.ID, Services: encoded, AuthorID: p.Account.ID})
+		// Planning checks each route staging created while it keeps the allowlist it has now.
+		routes := map[string][]string{}
+		for _, r := range staged.Specification.Routes {
+			for _, saved := range spec.Routes {
+				if saved.ID == r.ID {
+					routes[saved.ID.String()] = saved.AllowCIDRs
+				}
+			}
+		}
+		recorded, err := stablejson.Marshal(routes)
+		if err != nil {
+			return err
+		}
+		return q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: staging, RecipeID: recipe.ID, RecipeVersion: recipe.Version, RevisionID: out.ID, Services: encoded, AuthorID: p.Account.ID, StagedRoutes: recorded})
 	})
 	return out, err
 }

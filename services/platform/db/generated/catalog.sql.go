@@ -13,8 +13,8 @@ import (
 )
 
 const insertCatalogStaging = `-- name: InsertCatalogStaging :exec
-INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id,staged_routes)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 `
 
 type InsertCatalogStagingParams struct {
@@ -26,6 +26,7 @@ type InsertCatalogStagingParams struct {
 	RevisionID    uuid.UUID `json:"revision_id"`
 	Services      []byte    `json:"services"`
 	AuthorID      uuid.UUID `json:"author_id"`
+	StagedRoutes  []byte    `json:"staged_routes"`
 }
 
 func (q *Queries) InsertCatalogStaging(ctx context.Context, arg InsertCatalogStagingParams) error {
@@ -38,39 +39,51 @@ func (q *Queries) InsertCatalogStaging(ctx context.Context, arg InsertCatalogSta
 		arg.RevisionID,
 		arg.Services,
 		arg.AuthorID,
+		arg.StagedRoutes,
 	)
 	return err
 }
 
-const listCatalogStagedRevisions = `-- name: ListCatalogStagedRevisions :many
-SELECT s.services, r.specification FROM catalog_stagings s
-LEFT JOIN specification_revisions r ON r.workspace_id = s.workspace_id AND r.environment_id = s.environment_id AND r.id = s.revision_id
+const listCatalogStagingProvenance = `-- name: ListCatalogStagingProvenance :many
+SELECT s.recipe_id, s.recipe_version, s.services, s.staged_routes, r.specification FROM catalog_stagings s
+LEFT JOIN specification_revisions r ON s.staged_routes IS NULL AND r.workspace_id = s.workspace_id AND r.environment_id = s.environment_id AND r.id = s.revision_id
 WHERE s.workspace_id = $1 AND s.environment_id = $2
+ORDER BY s.created_at, s.id
 `
 
-type ListCatalogStagedRevisionsParams struct {
+type ListCatalogStagingProvenanceParams struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
 }
 
-type ListCatalogStagedRevisionsRow struct {
+type ListCatalogStagingProvenanceRow struct {
+	RecipeID      string `json:"recipe_id"`
+	RecipeVersion string `json:"recipe_version"`
 	Services      []byte `json:"services"`
+	StagedRoutes  []byte `json:"staged_routes"`
 	Specification []byte `json:"specification"`
 }
 
-// Every staging in the environment with the specification it saved, from which planning works
-// out the routes it created. The revision always exists while the staging does; the outer join
-// keeps a staging whose revision can't be found, which planning then reviews.
-func (q *Queries) ListCatalogStagedRevisions(ctx context.Context, arg ListCatalogStagedRevisionsParams) ([]ListCatalogStagedRevisionsRow, error) {
-	rows, err := q.db.Query(ctx, listCatalogStagedRevisions, arg.WorkspaceID, arg.EnvironmentID)
+// Every staging in the environment with the routes it records as staged. A staging from before
+// that record also brings the specification it saved, from which planning works them out; its
+// revision always exists while the staging does, and the outer join keeps one whose revision can't
+// be found, which planning then reviews.
+func (q *Queries) ListCatalogStagingProvenance(ctx context.Context, arg ListCatalogStagingProvenanceParams) ([]ListCatalogStagingProvenanceRow, error) {
+	rows, err := q.db.Query(ctx, listCatalogStagingProvenance, arg.WorkspaceID, arg.EnvironmentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListCatalogStagedRevisionsRow{}
+	items := []ListCatalogStagingProvenanceRow{}
 	for rows.Next() {
-		var i ListCatalogStagedRevisionsRow
-		if err := rows.Scan(&i.Services, &i.Specification); err != nil {
+		var i ListCatalogStagingProvenanceRow
+		if err := rows.Scan(
+			&i.RecipeID,
+			&i.RecipeVersion,
+			&i.Services,
+			&i.StagedRoutes,
+			&i.Specification,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -120,44 +133,6 @@ func (q *Queries) ListCatalogStagings(ctx context.Context, arg ListCatalogStagin
 			&i.Services,
 			&i.CreatedAt,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listCatalogStagingsForClone = `-- name: ListCatalogStagingsForClone :many
-SELECT recipe_id,recipe_version,services FROM catalog_stagings
-WHERE workspace_id = $1 AND environment_id = $2
-ORDER BY created_at, id
-`
-
-type ListCatalogStagingsForCloneParams struct {
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-}
-
-type ListCatalogStagingsForCloneRow struct {
-	RecipeID      string `json:"recipe_id"`
-	RecipeVersion string `json:"recipe_version"`
-	Services      []byte `json:"services"`
-}
-
-// Every staging in the environment, for a clone to record under its own identities.
-func (q *Queries) ListCatalogStagingsForClone(ctx context.Context, arg ListCatalogStagingsForCloneParams) ([]ListCatalogStagingsForCloneRow, error) {
-	rows, err := q.db.Query(ctx, listCatalogStagingsForClone, arg.WorkspaceID, arg.EnvironmentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListCatalogStagingsForCloneRow{}
-	for rows.Next() {
-		var i ListCatalogStagingsForCloneRow
-		if err := rows.Scan(&i.RecipeID, &i.RecipeVersion, &i.Services); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

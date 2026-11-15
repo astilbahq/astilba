@@ -1,6 +1,6 @@
 -- name: InsertCatalogStaging :exec
-INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id)
-VALUES(@workspace_id,@environment_id,@id,@recipe_id,@recipe_version,@revision_id,@services,@author_id);
+INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id,staged_routes)
+VALUES(@workspace_id,@environment_id,@id,@recipe_id,@recipe_version,@revision_id,@services,@author_id,@staged_routes);
 
 -- name: ListCatalogStagings :many
 -- The newest hundred. An older row's services are still in the environment only if a hundred
@@ -9,16 +9,12 @@ SELECT id,recipe_id,recipe_version,revision_id,services,created_at FROM catalog_
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id
 ORDER BY created_at DESC, id LIMIT 100;
 
--- name: ListCatalogStagedRevisions :many
--- Every staging in the environment with the specification it saved, from which planning works
--- out the routes it created. The revision always exists while the staging does; the outer join
--- keeps a staging whose revision can't be found, which planning then reviews.
-SELECT s.services, r.specification FROM catalog_stagings s
-LEFT JOIN specification_revisions r ON r.workspace_id = s.workspace_id AND r.environment_id = s.environment_id AND r.id = s.revision_id
-WHERE s.workspace_id = @workspace_id AND s.environment_id = @environment_id;
-
--- name: ListCatalogStagingsForClone :many
--- Every staging in the environment, for a clone to record under its own identities.
-SELECT recipe_id,recipe_version,services FROM catalog_stagings
-WHERE workspace_id = @workspace_id AND environment_id = @environment_id
-ORDER BY created_at, id;
+-- name: ListCatalogStagingProvenance :many
+-- Every staging in the environment with the routes it records as staged. A staging from before
+-- that record also brings the specification it saved, from which planning works them out; its
+-- revision always exists while the staging does, and the outer join keeps one whose revision can't
+-- be found, which planning then reviews.
+SELECT s.recipe_id, s.recipe_version, s.services, s.staged_routes, r.specification FROM catalog_stagings s
+LEFT JOIN specification_revisions r ON s.staged_routes IS NULL AND r.workspace_id = s.workspace_id AND r.environment_id = s.environment_id AND r.id = s.revision_id
+WHERE s.workspace_id = @workspace_id AND s.environment_id = @environment_id
+ORDER BY s.created_at, s.id;

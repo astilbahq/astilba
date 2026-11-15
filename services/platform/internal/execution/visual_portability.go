@@ -297,46 +297,50 @@ func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid
 }
 
 // cloneCatalogStagings records each catalog staging of the source again for the clone, under the
-// clone's service identities and against its first revision. Planning then checks the clone's
-// copy of a staged route's allowlist as it checks the source's, since the clone's services start
-// empty and its first account is new, and the backups page recommends the same presets. A
-// service keeps its staging only while every route to it in the source is still staged: one
-// whose route the owner has since edited, or that has gained a route of its own, routes as the
-// owner chose. A staging none of whose services the clone keeps is left out; one that can't be
-// read is copied as it is, so planning still asks for review.
+// clone's identities and against its first revision, so the backups page recommends the same
+// presets and planning checks the clone's copy of each route still staged in the source, as the
+// clone's services start empty and its first account is new. A route the owner has since changed
+// is the owner's choice in the clone too. A staging whose routes can't be read is recorded as
+// unconfirmed, so planning in the clone asks for review. routes are the source's, before the clone
+// gave them new identities.
 func cloneCatalogStagings(ctx context.Context, q *db.Queries, p store.Principal, ws, source, env, rev uuid.UUID, ids map[uuid.UUID]uuid.UUID, routes []domain.Route) error {
-	rows, err := q.ListCatalogStagingsForClone(ctx, db.ListCatalogStagingsForCloneParams{WorkspaceID: ws, EnvironmentID: source})
-	if err != nil || len(rows) == 0 {
-		return err
-	}
-	staged, _, err := stagedRoutes(ctx, q, ws, source)
+	rows, err := q.ListCatalogStagingProvenance(ctx, db.ListCatalogStagingProvenanceParams{WorkspaceID: ws, EnvironmentID: source})
 	if err != nil {
 		return err
 	}
-	ordinary := map[uuid.UUID]bool{}
-	for _, r := range routes {
-		if allow, ok := staged[r.ID]; !ok || !slices.Equal(allow, r.AllowCIDRs) {
-			ordinary[r.TargetID] = true
-		}
-	}
 	for _, row := range rows {
-		encoded := row.Services
-		var services map[string]uuid.UUID
-		if json.Unmarshal(row.Services, &services) == nil {
+		services := row.Services
+		var created map[string]uuid.UUID
+		if json.Unmarshal(row.Services, &created) == nil {
 			cloned := map[string]uuid.UUID{}
-			for placeholder, id := range services {
-				if next, ok := ids[id]; ok && !ordinary[id] {
+			for placeholder, id := range created {
+				if next, ok := ids[id]; ok {
 					cloned[placeholder] = next
 				}
 			}
-			if len(cloned) == 0 {
+			if services, err = stablejson.Marshal(cloned); err != nil {
+				return err
+			}
+			created = cloned
+		}
+		recorded := []byte(unconfirmedStaging)
+		staging := readStagingRoutes(row.StagedRoutes, row.Services, row.Specification)
+		if !staging.unresolved && !staging.unconfirmed {
+			kept := map[string][]string{}
+			for _, r := range routes {
+				if allow, ok := staging.staged[r.ID]; ok && slices.Equal(allow, r.AllowCIDRs) {
+					kept[ids[r.ID].String()] = r.AllowCIDRs
+				}
+			}
+			// Nothing of a staging the clone has left behind is worth recording.
+			if len(kept) == 0 && len(created) == 0 {
 				continue
 			}
-			if encoded, err = stablejson.Marshal(cloned); err != nil {
+			if recorded, err = stablejson.Marshal(kept); err != nil {
 				return err
 			}
 		}
-		if err = q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), RecipeID: row.RecipeID, RecipeVersion: row.RecipeVersion, RevisionID: rev, Services: encoded, AuthorID: p.Account.ID}); err != nil {
+		if err = q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), RecipeID: row.RecipeID, RecipeVersion: row.RecipeVersion, RevisionID: rev, Services: services, AuthorID: p.Account.ID, StagedRoutes: recorded}); err != nil {
 			return err
 		}
 	}

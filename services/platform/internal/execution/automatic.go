@@ -568,7 +568,7 @@ func automaticStopForReview(effects []string) string {
 	switch {
 	case slices.Contains(effects, deployment.UnreportedHostChangesEffect):
 		return "Not deployed: this server's agent does not report what deployments would change on its host, so every deployment that keeps host permissions needs an owner's review. Update the agent; automatic deployment then resumes with the next push."
-	case slices.Contains(effects, deployment.UnreportedContainerRangesEffect), slices.Contains(effects, deployment.UnreadContainerRangesEffect), slices.Contains(effects, deployment.UnresolvedStagingEffect):
+	case slices.Contains(effects, deployment.UnreportedContainerRangesEffect), slices.Contains(effects, deployment.UnreadContainerRangesEffect), slices.Contains(effects, deployment.UnresolvedStagingEffect), slices.Contains(effects, deployment.UnconfirmedStagingEffect):
 		return "Not deployed: a route staged from the service catalog keeps a client allowlist that could not be checked against the ranges this server's containers send traffic from, so each deployment needs an owner's review. Prepare and apply a deployment plan."
 	}
 	return "Not deployed: this change also changes its server's host configuration. Prepare and apply a deployment plan to review and approve it; automatic deployment then resumes with the next push."
