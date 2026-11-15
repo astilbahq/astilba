@@ -27,9 +27,11 @@ type dnsZone struct {
 	failDelete int
 	lose       bool
 	deletes    int
-	// While gate is set, every lookup waits for it to close, after saying so on entered.
+	// While gate is set, every lookup waits for it to close, after saying so on entered. With
+	// once set, only the next lookup does.
 	gate    chan struct{}
 	entered chan struct{}
+	once    bool
 }
 
 func newDNSZone(t *testing.T, f *fixture) *dnsZone {
@@ -43,9 +45,16 @@ func newDNSZone(t *testing.T, f *fixture) *dnsZone {
 
 func (z *dnsZone) serve(w http.ResponseWriter, r *http.Request) {
 	z.mu.Lock()
-	gate, entered := z.gate, z.entered
+	var gate chan struct{}
+	if r.Method == "GET" {
+		gate = z.gate
+		if z.once {
+			z.gate = nil
+		}
+	}
+	entered := z.entered
 	z.mu.Unlock()
-	if gate != nil && r.Method == "GET" {
+	if gate != nil {
 		entered <- struct{}{}
 		<-gate
 	}

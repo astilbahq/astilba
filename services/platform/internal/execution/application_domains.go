@@ -262,14 +262,54 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 		return river.JobSnooze(time.Second)
 	}
 	defer s.releaseDNSLease(lease)
-	ctx, cancel := context.WithTimeout(ctx, dnsWork)
-	defer cancel()
 	// Withdrawal converges on what the database says now, whichever job runs it.
-	withdrawn := s.withdrawStalePublications(ctx, lease)
-	target, e := s.claimPublication(ctx, lease, a)
-	if e != nil || target == nil {
-		return errors.Join(withdrawn, e)
+	e = s.withdrawStalePublications(ctx, lease)
+	target, claimed := s.claimPublication(ctx, lease, a)
+	e = errors.Join(e, claimed)
+	if target != nil {
+		e = errors.Join(e, s.publish(ctx, lease, a, target))
 	}
+	if errors.Is(e, errDNSLeaseLost) {
+		e = errors.Join(e, s.recheckAfterLostLease(ctx, a.Server, target))
+	}
+	return e
+}
+
+// claimPublication returns the addresses the job may publish, recording the name first, or nil
+// when it may publish none. It holds the server's DNS lock, so no revocation commits between
+// the check and the record: recording a publication ends a revocation's withdrawal.
+func (s *Service) claimPublication(ctx context.Context, lease dnsLease, a domainArgs) (*db.DNSPublicationTargetRow, error) {
+	var claimed *db.DNSPublicationTargetRow
+	e := s.underDNSLease(ctx, lease, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		target, e := q.DNSPublicationTarget(ctx, db.DNSPublicationTargetParams{ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}, Base: s.Store.ApplicationDomain})
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		e = s.Store.ManagementAdmission(ctx, tx, target.WorkspaceID)
+		if errors.Is(e, store.SubscriptionRequired) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		if e = s.recordPublication(ctx, q, target.WorkspaceID, a.Server, target.Base); e != nil {
+			return e
+		}
+		claimed = &target
+		return nil
+	})
+	if e != nil {
+		return nil, e
+	}
+	return claimed, nil
+}
+
+// publish asks the provider for the claimed addresses, then records what it observed.
+func (s *Service) publish(ctx context.Context, lease dnsLease, a domainArgs, target *db.DNSPublicationTargetRow) error {
 	name := dnsName(target.Base, a.Server)
 	records, providerErr := s.DNS.Reconcile(ctx, name, dnsMarker(target.InstallationID, a.Server), target.Ipv4, target.Ipv6, s.auditDeletion(ctx, target.WorkspaceID, a.Server, name, withdrawAddress))
 	state, note := "applied", "Provider records observed. DNS propagation, TLS and application reachability are separate checks."
@@ -280,7 +320,8 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 	if records == nil {
 		raw = []byte(`{}`)
 	}
-	e = s.underDNSLease(ctx, lease, func(q *db.Queries) error {
+	e := s.underDNSLease(ctx, lease, func(tx pgx.Tx) error {
+		q := db.New(tx)
 		if providerErr == nil {
 			if e := s.confirmDeletions(ctx, q, a.Server, name, records); e != nil {
 				return e
@@ -288,42 +329,5 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 		}
 		return q.ObserveServerDomain(ctx, db.ObserveServerDomainParams{State: state, Note: note, Records: raw, ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}})
 	})
-	return errors.Join(withdrawn, providerErr, e)
-}
-
-// claimPublication returns the addresses the job may publish, recording the name first, or nil
-// when it may publish none. It takes the server's DNS lock, which revocation, recovery and
-// configuration also take, so none of them commits between the check and the record: recording
-// a publication ends a revocation's withdrawal.
-func (s *Service) claimPublication(ctx context.Context, lease dnsLease, a domainArgs) (*db.DNSPublicationTargetRow, error) {
-	tx, e := s.Store.Pool.Begin(ctx)
-	if e != nil {
-		return nil, e
-	}
-	defer tx.Rollback(ctx)
-	if e = store.LockServerDNS(ctx, tx, a.Server); e != nil {
-		return nil, e
-	}
-	q := db.New(tx)
-	if e = holdDNSLease(ctx, q, lease); e != nil {
-		return nil, e
-	}
-	target, e := q.DNSPublicationTarget(ctx, db.DNSPublicationTargetParams{ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}, Base: s.Store.ApplicationDomain})
-	if errors.Is(e, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if e != nil {
-		return nil, e
-	}
-	e = s.Store.ManagementAdmission(ctx, tx, target.WorkspaceID)
-	if errors.Is(e, store.SubscriptionRequired) {
-		return nil, nil
-	}
-	if e != nil {
-		return nil, e
-	}
-	if e = s.recordPublication(ctx, q, target.WorkspaceID, a.Server, target.Base); e != nil {
-		return nil, e
-	}
-	return &target, tx.Commit(ctx)
+	return errors.Join(providerErr, e)
 }

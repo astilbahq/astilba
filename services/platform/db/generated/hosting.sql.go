@@ -298,6 +298,18 @@ func (q *Queries) MarkEmailVerified(ctx context.Context, arg MarkEmailVerifiedPa
 	return err
 }
 
+const takeObservationTicket = `-- name: TakeObservationTicket :one
+SELECT nextval('hosted_observation_tickets')::bigint
+`
+
+// Taken before Stripe is asked, so tickets order answers by the earliest moment each could describe.
+func (q *Queries) TakeObservationTicket(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, takeObservationTicket)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const upsertEmailVerification = `-- name: UpsertEmailVerification :exec
 INSERT INTO email_verifications(account_id,token_hash,expires_at) VALUES($1,$2,$3)
 ON CONFLICT(account_id) DO UPDATE SET token_hash = $2,expires_at = $3

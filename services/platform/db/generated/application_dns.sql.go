@@ -69,6 +69,25 @@ func (q *Queries) CountStrandedDNSPublications(ctx context.Context, arg CountStr
 	return count, err
 }
 
+const currentDNSJob = `-- name: CurrentDNSJob :one
+SELECT COALESCE(max(generation),0)::bigint AS generation,COALESCE(max(approved_controller),0)::bigint AS controller
+FROM server_domains WHERE server_id = $1
+`
+
+type CurrentDNSJobRow struct {
+	Generation int64 `json:"generation"`
+	Controller int64 `json:"controller"`
+}
+
+// unscoped: a DNS job names the server. The arguments of a job for the server's names as they
+// are now, as revocation and the sweep queue it.
+func (q *Queries) CurrentDNSJob(ctx context.Context, serverID uuid.UUID) (CurrentDNSJobRow, error) {
+	row := q.db.QueryRow(ctx, currentDNSJob, serverID)
+	var i CurrentDNSJobRow
+	err := row.Scan(&i.Generation, &i.Controller)
+	return i, err
+}
+
 const dNSPublicationTarget = `-- name: DNSPublicationTarget :one
 SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id AS installation_id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i
 WHERE d.server_id = $1 AND d.generation = $2 AND d.approved_controller = $3 AND s.controller_generation = $3
@@ -300,6 +319,27 @@ func (q *Queries) RecordDNSPublication(ctx context.Context, arg RecordDNSPublica
 		arg.Base,
 		arg.Zone,
 	)
+	return err
+}
+
+const recordLateDNSPublication = `-- name: RecordLateDNSPublication :exec
+INSERT INTO dns_publications(server_id,workspace_id,base,zone,revoked)
+SELECT s.id,s.workspace_id,$1,$2,s.revoked OR d.approved_controller IS NULL
+FROM servers s LEFT JOIN server_domains d ON d.server_id=s.id WHERE s.id = $3
+ON CONFLICT(server_id,base,zone) DO UPDATE SET checked_at=NULL
+`
+
+type RecordLateDNSPublicationParams struct {
+	Base     string    `json:"base"`
+	Zone     string    `json:"zone"`
+	ServerID uuid.UUID `json:"server_id"`
+}
+
+// unscoped: a DNS job names the server. A job whose lease was taken over may have published
+// here after the job that took it over had finished. The row brings the name back to withdrawal
+// unless the server is still approved, and a row already there keeps its revocation.
+func (q *Queries) RecordLateDNSPublication(ctx context.Context, arg RecordLateDNSPublicationParams) error {
+	_, err := q.db.Exec(ctx, recordLateDNSPublication, arg.Base, arg.Zone, arg.ServerID)
 	return err
 }
 

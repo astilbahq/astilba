@@ -1,4 +1,5 @@
 -- +goose Up
+-- astilba: not additive: an older release ignores the DNS lease and the Stripe tickets, so running beside one, a new DNS job's records can outlive a revoked server's withdrawal and a stale Stripe answer can restore a cancelled subscription.
 -- A DNS job holds its server's lease while it asks the provider, instead of a session lock on
 -- a pinned connection. A job takes the lease when it is free or has run out, and every write
 -- it makes after asking the provider checks that it still holds it, so a job whose lease ran
@@ -14,10 +15,8 @@ CREATE TABLE server_dns_leases (
 -- asked for later and saw every change it could have.
 CREATE SEQUENCE hosted_observation_tickets;
 ALTER TABLE hosted_subscriptions ADD COLUMN observed_ticket bigint NOT NULL DEFAULT 0;
-INSERT INTO schema_additive_migrations (version) VALUES (62);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 62;
 ALTER TABLE hosted_subscriptions DROP COLUMN observed_ticket;
 DROP SEQUENCE hosted_observation_tickets;
 DROP TABLE server_dns_leases;

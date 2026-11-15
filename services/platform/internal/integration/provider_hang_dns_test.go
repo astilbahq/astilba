@@ -10,16 +10,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// hold makes every record lookup wait until release, which the test's cleanup also calls.
-func (z *dnsZone) hold(t *testing.T) (<-chan struct{}, func()) {
+// hold makes every record lookup, or with once only the next, wait until release, which the
+// test's cleanup also calls.
+func (z *dnsZone) hold(t *testing.T, once bool) (<-chan struct{}, func()) {
 	t.Helper()
 	gate, entered := make(chan struct{}), make(chan struct{}, 64)
 	z.mu.Lock()
-	z.gate, z.entered = gate, entered
+	z.gate, z.entered, z.once = gate, entered, once
 	z.mu.Unlock()
 	release := sync.OnceFunc(func() {
 		z.mu.Lock()
-		z.gate = nil
+		if z.gate == gate {
+			z.gate = nil
+		}
 		z.mu.Unlock()
 		close(gate)
 	})
@@ -68,7 +71,7 @@ func TestHungDNSProviderHoldsNothing(t *testing.T) {
 	f.st.ApplicationDomain = "apps.example.test"
 	z := hungDNSZone(t, f)
 	s := publishedServer(t, f, z)
-	entered, release := z.hold(t)
+	entered, release := z.hold(t, false)
 	// DNS jobs share the default queue, which runs four at a time: fill it.
 	servers := []dnsServer{s}
 	s.b.call("PUT", s.path+"/domain", api.ConfigureServerDomain{Ipv4: "198.51.100.21", Ipv6: "2001:db8::21", BaseGeneration: 1}, 200, nil)
@@ -131,7 +134,7 @@ func TestDNSWriteIsRefusedOnceTheLeaseIsTakenOver(t *testing.T) {
 	f.st.ApplicationDomain = "apps.example.test"
 	z := hungDNSZone(t, f)
 	s := publishedServer(t, f, z)
-	entered, release := z.hold(t)
+	entered, release := z.hold(t, false)
 	s.b.call("PUT", s.path+"/domain", api.ConfigureServerDomain{Ipv4: "198.51.100.21", BaseGeneration: 1}, 200, nil)
 	waitEntered(t, entered)
 	var first uuid.UUID
@@ -165,5 +168,38 @@ func TestDNSWriteIsRefusedOnceTheLeaseIsTakenOver(t *testing.T) {
 			}
 		}
 		return z.marked(s.name(), s.marker) == 1
+	})
+}
+
+// A job paused past its lease can reach the provider after the job that took over has withdrawn
+// a revoked server's records, and publish them again. It finds its lease gone afterwards, and
+// must leave enough behind that the records are withdrawn again rather than kept for good.
+func TestLateDNSPublicationIsWithdrawnAgain(t *testing.T) {
+	f := setup(t)
+	f.st.ApplicationDomain = "apps.example.test"
+	z := hungDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	entered, release := z.hold(t, true)
+	// The job has recorded the name it will publish and waits before looking at the zone.
+	s.b.call("PUT", s.path+"/domain", api.ConfigureServerDomain{Ipv4: "198.51.100.21", BaseGeneration: 1}, 200, nil)
+	waitEntered(t, entered)
+	s.b.call("POST", s.path+"/revoke", nil, 204, nil)
+	// The paused job's lease runs out, and revocation's job takes it and withdraws the records.
+	if _, e := f.st.Pool.Exec(t.Context(), "UPDATE server_dns_leases SET expires_at=now()-interval '1 second' WHERE server_id=$1", s.id); e != nil {
+		t.Fatal(e)
+	}
+	eventually(t, "the revoked server's records are removed", func() bool {
+		return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0
+	})
+	release()
+	eventually(t, "the paused job publishes, then finds its lease gone", func() bool {
+		var refused bool
+		if e := f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_dns_v1' AND args->>'server'=$1 AND (args->>'generation')::bigint=2 AND errors::text LIKE '%DNS lease%')", s.id.String()).Scan(&refused); e != nil {
+			t.Fatal(e)
+		}
+		return refused
+	})
+	eventually(t, "the late records are withdrawn again", func() bool {
+		return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0
 	})
 }

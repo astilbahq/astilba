@@ -7,9 +7,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Configuration, revocation, recovery and DNS jobs share this server-scoped lock. A DNS job
-// takes it only to check an approval and record the name it will publish, in one short
-// transaction; it asks the provider holding the server's lease, with nothing open.
+// Configuration, revocation, recovery and DNS jobs share this server-scoped lock, and each takes
+// it before any row of the server's. A DNS job takes it only in the short transactions that
+// record what it will publish or what the provider did; it asks the provider holding the
+// server's lease, with nothing open.
 func LockServerDNS(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
 	_, e := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,32))", id.String())
 	return e

@@ -100,3 +100,18 @@ WHERE d.server_id = @server_id AND d.generation = @generation AND d.approved_con
 -- unscoped: a DNS job names the server. Ignored once the profile has moved on.
 UPDATE server_domains SET state = @state,note = @note,observed_at=clock_timestamp(),records = @records
 WHERE server_id = @server_id AND generation = @generation AND approved_controller = @controller;
+
+-- name: RecordLateDNSPublication :exec
+-- unscoped: a DNS job names the server. A job whose lease was taken over may have published
+-- here after the job that took it over had finished. The row brings the name back to withdrawal
+-- unless the server is still approved, and a row already there keeps its revocation.
+INSERT INTO dns_publications(server_id,workspace_id,base,zone,revoked)
+SELECT s.id,s.workspace_id,@base,@zone,s.revoked OR d.approved_controller IS NULL
+FROM servers s LEFT JOIN server_domains d ON d.server_id=s.id WHERE s.id = @server_id
+ON CONFLICT(server_id,base,zone) DO UPDATE SET checked_at=NULL;
+
+-- name: CurrentDNSJob :one
+-- unscoped: a DNS job names the server. The arguments of a job for the server's names as they
+-- are now, as revocation and the sweep queue it.
+SELECT COALESCE(max(generation),0)::bigint AS generation,COALESCE(max(approved_controller),0)::bigint AS controller
+FROM server_domains WHERE server_id = @server_id;

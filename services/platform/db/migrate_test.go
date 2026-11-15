@@ -30,7 +30,6 @@ var (
 	term              = `(?:(?:\(` + field + `\)|` + field + `) ?(?:(?:NOT )?IN ?\('[^']*'(?:, ?'[^']*')*\)|(?:=|<>) ?'[^']*')|[A-Z_][A-Z0-9_]* IS NOT NULL)`
 	constantPredicate = regexp.MustCompile(`^` + term + `(?: AND ` + term + `)*$`)
 	createFunc        = regexp.MustCompile(`^CREATE FUNCTION [A-Z_][A-Z0-9_]* ?\(`)
-	createSequence    = regexp.MustCompile(`^CREATE SEQUENCE [A-Z_][A-Z0-9_]*$`)
 	createTrigger     = regexp.MustCompile(`^CREATE TRIGGER [A-Z0-9_]+ (?:BEFORE|AFTER) .*? ON ([A-Z_][A-Z0-9_]*) FOR EACH (?:ROW|STATEMENT) EXECUTE FUNCTION [A-Z_][A-Z0-9_]* ?\(\)$`)
 	addColumn         = regexp.MustCompile(`^ALTER TABLE ([A-Z_][A-Z0-9_]*) ADD COLUMN [A-Z_][A-Z0-9_]* (.*)$`)
 	insertValues      = regexp.MustCompile(`^INSERT INTO ([A-Z_][A-Z0-9_]*) ?(?:\([A-Z0-9_, ]*\) ?)?VALUES ?\(`)
@@ -129,9 +128,8 @@ func checkClaim(version int64, text string) string {
 
 // additive returns why one statement is not additive, or "".
 func additive(s string, created map[string]bool) string {
-	if marker.MatchString(s) || strings.HasPrefix(s, "COMMENT ON ") || strings.HasPrefix(s, "GRANT ") || createFunc.MatchString(s) || createSequence.MatchString(s) {
-		// A function or sequence is created, never replaced: one that exists already makes the
-		// migration fail. A sequence named and nothing more belongs to no existing table.
+	if marker.MatchString(s) || strings.HasPrefix(s, "COMMENT ON ") || strings.HasPrefix(s, "GRANT ") || createFunc.MatchString(s) {
+		// A function is created, never replaced: one that exists already makes the migration fail.
 		return ""
 	}
 	if m := createTable.FindStringSubmatch(s); m != nil {
@@ -384,9 +382,6 @@ func TestAdditiveClaims(t *testing.T) {
 		{"seed in house style", "CREATE TABLE a (n integer);\nINSERT INTO a(n) VALUES(1);", true},
 		{"cascading column on existing table", "ALTER TABLE deployment_units ADD COLUMN preview_id uuid REFERENCES previews(id) ON DELETE CASCADE;", false},
 		{"emptied column on existing table", "ALTER TABLE deployment_units ADD COLUMN preview_id uuid REFERENCES previews(id) ON DELETE SET NULL;", true},
-		{"new sequence", "CREATE SEQUENCE s;", true},
-		{"sequence owned by an existing column", "CREATE SEQUENCE s OWNED BY servers.n;", false},
-		{"sequence that may exist", "CREATE SEQUENCE IF NOT EXISTS s;", false},
 		{"generated column on existing table", "ALTER TABLE servers ADD COLUMN p text GENERATED ALWAYS AS ((labels->>'p')::int::text) STORED;", false},
 	} {
 		if why := checkClaim(40, "-- +goose Up\n"+test.up+mark); (why == "") != test.ok {

@@ -144,8 +144,8 @@ func (s *Service) ask(ctx context.Context, q question) (answer, error) {
 	a := answer{question: q}
 	// The ticket is taken before Stripe is asked anything, so it orders the answers by the
 	// earliest moment each could describe.
-	var ticket int64
-	if e := s.Store.Pool.QueryRow(ctx, "SELECT nextval('hosted_observation_tickets')").Scan(&ticket); e != nil {
+	ticket, e := db.New(s.Store.Pool).TakeObservationTicket(ctx)
+	if e != nil {
 		return a, e
 	}
 	switch {
@@ -287,9 +287,6 @@ func (s *Service) Checkout(ctx context.Context, p store.Principal, ws uuid.UUID)
 // row holds an observation asked for later.
 func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID, id, customer string, seen observation, allowNew bool) error {
 	sub := seen.Subscription
-	if sub.ID != id || sub.Customer != customer {
-		return domain.Conflict
-	}
 	var previous *time.Time
 	var known *string
 	var previousStatus string
@@ -317,7 +314,7 @@ func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 			until = &end
 		}
 	}
-	_, e := tx.Exec(ctx, `UPDATE hosted_subscriptions SET subscription_id=$2,status=$3,management_until=$4,updated_at=now(),observed_ticket=$6 WHERE workspace_id=$1 AND customer_id=$5 AND (subscription_id IS DISTINCT FROM $2 OR observed_ticket<$6)`, ws, id, sub.Status, until, customer, seen.Ticket)
+	_, e := tx.Exec(ctx, `UPDATE hosted_subscriptions SET subscription_id=$2,status=$3,management_until=$4,updated_at=now(),observed_ticket=$6 WHERE workspace_id=$1 AND customer_id=$5`, ws, id, sub.Status, until, customer, seen.Ticket)
 	return e
 }
 

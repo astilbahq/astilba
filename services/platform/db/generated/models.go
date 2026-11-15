@@ -540,16 +540,16 @@ type HostedInvitation struct {
 }
 
 type HostedSubscription struct {
-	WorkspaceID      uuid.UUID   `json:"workspace_id"`
-	CustomerID       pgtype.Text `json:"customer_id"`
-	SubscriptionID   pgtype.Text `json:"subscription_id"`
-	Status           string      `json:"status"`
-	ManagementUntil  *time.Time  `json:"management_until"`
-	ServerLimit      int32       `json:"server_limit"`
-	NotifiedUntil    *time.Time  `json:"notified_until"`
-	UpdatedAt        time.Time   `json:"updated_at"`
-	NoticeCheckedAt  time.Time   `json:"notice_checked_at"`
-	ProviderRevision int64       `json:"provider_revision"`
+	WorkspaceID     uuid.UUID   `json:"workspace_id"`
+	CustomerID      pgtype.Text `json:"customer_id"`
+	SubscriptionID  pgtype.Text `json:"subscription_id"`
+	Status          string      `json:"status"`
+	ManagementUntil *time.Time  `json:"management_until"`
+	ServerLimit     int32       `json:"server_limit"`
+	NotifiedUntil   *time.Time  `json:"notified_until"`
+	UpdatedAt       time.Time   `json:"updated_at"`
+	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
+	ObservedTicket  int64       `json:"observed_ticket"`
 }
 
 type Installation struct {
