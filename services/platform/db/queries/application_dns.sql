@@ -77,9 +77,12 @@ LIMIT 100;
 
 -- name: CountStrandedDNSPublications :one
 -- unscoped: an installation-wide startup check.
--- A late name not yet recorded as a publication counts too.
-SELECT ((SELECT count(*) FROM dns_publications WHERE NOT @automatic::boolean OR zone NOT IN ('',@zone::text))
-    +(SELECT count(*) FROM dns_late_publications WHERE NOT @automatic::boolean OR zone NOT IN ('',@zone::text)))::bigint AS count;
+-- A late name not yet recorded as a publication counts too, once.
+SELECT count(*)::bigint AS count FROM (
+    SELECT server_id,base,zone FROM dns_publications
+    UNION
+    SELECT server_id,base,zone FROM dns_late_publications
+) n WHERE NOT @automatic::boolean OR n.zone NOT IN ('',@zone::text);
 
 -- name: TakeDNSLease :execrows
 -- unscoped: a DNS job names the server. The lease is taken when it is free or has run out.

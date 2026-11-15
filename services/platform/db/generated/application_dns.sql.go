@@ -77,8 +77,11 @@ func (q *Queries) ConfirmDNSRecordRemovals(ctx context.Context, arg ConfirmDNSRe
 }
 
 const countStrandedDNSPublications = `-- name: CountStrandedDNSPublications :one
-SELECT ((SELECT count(*) FROM dns_publications WHERE NOT $1::boolean OR zone NOT IN ('',$2::text))
-    +(SELECT count(*) FROM dns_late_publications WHERE NOT $1::boolean OR zone NOT IN ('',$2::text)))::bigint AS count
+SELECT count(*)::bigint AS count FROM (
+    SELECT server_id,base,zone FROM dns_publications
+    UNION
+    SELECT server_id,base,zone FROM dns_late_publications
+) n WHERE NOT $1::boolean OR n.zone NOT IN ('',$2::text)
 `
 
 type CountStrandedDNSPublicationsParams struct {
@@ -87,7 +90,7 @@ type CountStrandedDNSPublicationsParams struct {
 }
 
 // unscoped: an installation-wide startup check.
-// A late name not yet recorded as a publication counts too.
+// A late name not yet recorded as a publication counts too, once.
 func (q *Queries) CountStrandedDNSPublications(ctx context.Context, arg CountStrandedDNSPublicationsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countStrandedDNSPublications, arg.Automatic, arg.Zone)
 	var count int64
