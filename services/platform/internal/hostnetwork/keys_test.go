@@ -481,3 +481,28 @@ func TestOnlyASealedKeyNeedsTheKeyStoreToRestore(t *testing.T) {
 		t.Fatal("a removal needed the key store")
 	}
 }
+
+// A restriction whose save fails keeps the mark of the restriction it would have replaced, so the
+// restore still finishes that one as a restriction. Saving another intent clears both.
+func TestARestrictionsMarkOutlivesAFailedSaveOfTheNext(t *testing.T) {
+	network := uuid.New()
+	first := Manifest{NetworkID: network, Generation: 1}
+	second := Manifest{NetworkID: network, Generation: 2}
+	h := Host{Dir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(h.Dir, "network"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.markRestriction(first, true, Manifest{}); err != nil || !h.restrictionMarked(first) {
+		t.Fatal("a restriction wasn't marked", err)
+	}
+	// The second restriction marks itself, then its save fails: the first is still saved.
+	if err := h.markRestriction(second, true, first); err != nil {
+		t.Fatal(err)
+	}
+	if !h.restrictionMarked(first) || !h.restrictionMarked(second) {
+		t.Fatal("marking the next restriction dropped the saved one's mark")
+	}
+	if err := h.markRestriction(Manifest{NetworkID: network, Generation: 3}, false, second); err != nil || h.restrictionMarked(first) || h.restrictionMarked(second) {
+		t.Fatal("saving another intent didn't clear the marks", err)
+	}
+}

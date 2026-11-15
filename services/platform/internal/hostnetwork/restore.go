@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -169,8 +170,9 @@ func (h Host) restrictionPath(id uuid.UUID) string {
 
 // markRestriction records whether a restriction saved m, so that a restore that finishes m, even
 // after one that failed, applies it as the restriction would. The caller holds the host lock, and
-// marks before saving a restriction's intent and clears after saving another.
-func (h Host) markRestriction(m Manifest, restriction bool) error {
+// marks before saving a restriction's intent and clears after saving another. Marking keeps the
+// mark of saved, the intent m replaces, until m is saved: if that save fails, saved keeps its mark.
+func (h Host) markRestriction(m Manifest, restriction bool, saved Manifest) error {
 	path := h.restrictionPath(m.NetworkID)
 	if !restriction {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -178,11 +180,15 @@ func (h Host) markRestriction(m Manifest, restriction bool) error {
 		}
 		return nil
 	}
-	return atomicPrivate(path, []byte(Hash(m)))
+	marks := Hash(m)
+	if Hash(saved) != marks && h.restrictionMarked(saved) {
+		marks += "\n" + Hash(saved)
+	}
+	return atomicPrivate(path, []byte(marks))
 }
 
 // restrictionMarked reports whether a restriction saved m.
 func (h Host) restrictionMarked(m Manifest) bool {
 	raw, err := privateRead(h.restrictionPath(m.NetworkID))
-	return err == nil && string(raw) == Hash(m)
+	return err == nil && slices.Contains(strings.Split(string(raw), "\n"), Hash(m))
 }
