@@ -63,6 +63,9 @@ type Engine struct {
 	// working. Until then they leave it alone, rather than call it again every second. It keeps the
 	// monotonic clock reading, so a clock step early in boot doesn't stretch it.
 	keyStoreWait atomic.Pointer[time.Time]
+	// keyStoreLogged is when the agent last logged that the key store isn't working. It logs that at
+	// most once an hour.
+	keyStoreLogged atomic.Pointer[time.Time]
 	// hostChangeReviews is whether management reviews the host changes a plan resolution reports,
 	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
 	// first answers, using the refusal states.

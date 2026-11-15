@@ -263,7 +263,7 @@ func TestNativeManagedLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, h := range []Host{a, b} {
-		if err = h.RestoreMissing(ctx); err != nil {
+		if err = h.RestoreMissing(ctx, nil); err != nil {
 			t.Fatal("restore of missing links", err)
 		}
 	}
@@ -386,16 +386,25 @@ func TestNativeManagedLinks(t *testing.T) {
 	prepared := Prepare(store)
 	restoring := a
 	restoring.Keys = prepared
-	if err = restoring.OpenMissingKeys(ctx); err != nil || store.calls == 0 {
+	if err = restoring.OpenMissingKeys(ctx, nil); err != nil || store.calls == 0 {
 		t.Fatal("the restore didn't open the missing link's key ahead of time", err)
 	}
 	prepared.Replay()
 	before := store.calls
-	if err = restoring.RestoreMissing(ctx); err != nil || store.calls != before {
+	if err = restoring.RestoreMissing(ctx, nil); err != nil || store.calls != before {
 		t.Fatal("the restore called the key store under the host lock, or failed", err, store.calls-before)
 	}
 	if held, err := a.Snapshot(ma.NetworkID); err != nil || held.AppliedHash != Hash(reduced) || !a.holds(ctx, reduced) {
 		t.Fatal("the link came back without its reduced intent", err)
+	}
+	// A configure that drops a peer from a link that was down has no route to remove: the kernel
+	// dropped it with the link.
+	in("a", "ip", "link", "set", "dev", ma.Interface(), "down")
+	dropped := reduced
+	dropped.Generation++
+	dropped.Peers, dropped.Egress, dropped.Exports = []Peer{}, nil, nil
+	if err = a.Apply(ctx, dropped, prior.Bridges, false); err != nil {
+		t.Fatal("dropping a peer from a link that was down failed", err)
 	}
 	for _, key := range []string{"a", "b"} {
 		raw := in(key, "nft", "-j", "list", "table", "ip", "fixture")

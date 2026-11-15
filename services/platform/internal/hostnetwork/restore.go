@@ -18,14 +18,14 @@ func (h Host) Restore(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	return h.restore(ctx, false)
+	return h.restore(ctx, false, nil)
 }
 
 // RestoreMissing puts back the private links this host holds that aren't in place, as after a boot
 // restore that couldn't open the key store. A link whose interface carries its key and whose
-// last apply finished is left alone. A host that has never held managed network state has nothing
-// to restore.
-func (h Host) RestoreMissing(ctx context.Context) error {
+// last apply finished is left alone, and so is a network skip names. Each failure is a
+// NetworkError. A host that has never held managed network state has nothing to restore.
+func (h Host) RestoreMissing(ctx context.Context, skip func(uuid.UUID) bool) error {
 	if _, err := os.Lstat(filepath.Join(h.Dir, "network")); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -34,22 +34,31 @@ func (h Host) RestoreMissing(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	return h.restore(ctx, true)
+	return h.restore(ctx, true, skip)
 }
 
-func (h Host) restore(ctx context.Context, missing bool) error {
-	snapshots, failures := h.held(ctx, missing)
+// NetworkError is why one network wasn't restored.
+type NetworkError struct {
+	NetworkID uuid.UUID
+	Err       error
+}
+
+func (e NetworkError) Error() string { return e.NetworkID.String() + ": " + e.Err.Error() }
+func (e NetworkError) Unwrap() error { return e.Err }
+
+func (h Host) restore(ctx context.Context, missing bool, skip func(uuid.UUID) bool) error {
+	snapshots, failures := h.held(ctx, missing, skip)
 	for _, s := range snapshots {
 		if err := h.apply(ctx, s.Manifest, s.Bridges, false); err != nil {
-			failures = append(failures, err)
+			failures = append(failures, NetworkError{s.Manifest.NetworkID, err})
 		}
 	}
 	return errors.Join(failures...)
 }
 
 // held lists the snapshots of the networks this host holds, or with missing only those whose links
-// aren't in place, and every snapshot it couldn't read.
-func (h Host) held(ctx context.Context, missing bool) ([]Snapshot, []error) {
+// aren't in place, apart from those skip names, and every snapshot it couldn't read.
+func (h Host) held(ctx context.Context, missing bool, skip func(uuid.UUID) bool) ([]Snapshot, []error) {
 	entries, err := os.ReadDir(filepath.Join(h.Dir, "network"))
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -68,9 +77,12 @@ func (h Host) held(ctx context.Context, missing bool) ([]Snapshot, []error) {
 			failures = append(failures, errors.New("invalid network state filename"))
 			continue
 		}
+		if skip != nil && skip(id) {
+			continue
+		}
 		s, e := h.Snapshot(id)
 		if e != nil {
-			failures = append(failures, e)
+			failures = append(failures, NetworkError{id, e})
 			continue
 		}
 		// A removal that was applied is in place whatever the interface holds: it carries nothing.
@@ -84,14 +96,14 @@ func (h Host) held(ctx context.Context, missing bool) ([]Snapshot, []error) {
 
 // OpenMissingKeys opens the keys of the links RestoreMissing would put back, without taking the
 // host lock or changing anything, so that RestoreMissing can then replay it from a Prepared store.
-func (h Host) OpenMissingKeys(ctx context.Context) error {
-	snapshots, failures := h.held(ctx, true)
+func (h Host) OpenMissingKeys(ctx context.Context, skip func(uuid.UUID) bool) error {
+	snapshots, failures := h.held(ctx, true, skip)
 	for _, s := range snapshots {
 		if s.Manifest.Disabled || h.liveKey(ctx, s.Manifest) != nil {
 			continue
 		}
 		if _, err := h.privateKey(ctx, s.Manifest.MembershipID); err != nil {
-			failures = append(failures, err)
+			failures = append(failures, NetworkError{s.Manifest.NetworkID, err})
 		}
 	}
 	return errors.Join(failures...)

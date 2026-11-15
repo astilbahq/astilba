@@ -278,29 +278,37 @@ func TestNetworkCommandsLeaveTheKeyStoreAloneWhileTheyWait(t *testing.T) {
 	}
 }
 
-// The boot restore's store opens only when a sealed key needs it, is kept once open, and is opened
-// again after a failure.
+// The boot restore's store opens only when a sealed key needs it, and is kept once open. One that
+// doesn't open isn't tried again for every other key, and says it isn't working.
 func TestOnDemandKeyStoreOpensWhenFirstUsed(t *testing.T) {
 	ctx := context.Background()
-	opened, fail := 0, true
-	store := InsecureKeyStore()
+	opened := 0
 	keys := OnDemandKeyStore(func(context.Context) (KeyStore, error) {
 		opened++
-		if fail {
-			return nil, errors.New("the key store is unavailable")
-		}
-		return store, nil
+		return InsecureKeyStore(), nil
 	})
-	if _, err := keys.Seal(ctx, "name", []byte("value")); err == nil || opened != 1 {
-		t.Fatal("an unavailable store sealed", err)
+	if opened != 0 {
+		t.Fatal("the store was opened before it was needed")
 	}
-	fail = false
 	sealed, err := keys.Seal(ctx, "name", []byte("value"))
-	if err != nil || opened != 2 {
-		t.Fatal("the store wasn't opened again after failing", err)
+	if err != nil || opened != 1 {
+		t.Fatal(err)
 	}
-	if plain, err := keys.Unseal(ctx, "name", sealed); err != nil || string(plain) != "value" || opened != 2 {
+	if plain, err := keys.Unseal(ctx, "name", sealed); err != nil || string(plain) != "value" || opened != 1 {
 		t.Fatal("the opened store wasn't kept", err)
+	}
+	failed := 0
+	broken := OnDemandKeyStore(func(context.Context) (KeyStore, error) {
+		failed++
+		return nil, errors.New("the key store is unavailable")
+	})
+	for range 3 {
+		if _, err := broken.Unseal(ctx, "name", sealed); !errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+			t.Fatal("a store that didn't open was blamed on the value", err)
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("a store that didn't open was tried %d times", failed)
 	}
 }
 
@@ -414,5 +422,22 @@ func TestKeyStoreTimeoutIsUnavailable(t *testing.T) {
 	defer cancel()
 	if _, err := capture(ctx, nil, "sleep", "5"); !errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
 		t.Fatal("a call that timed out wasn't reported as the store not working", err)
+	}
+}
+
+// Each network's failure is found in a joined error, so one network's backoff never holds back
+// another's restore.
+func TestNetworkFailuresAreFoundPerNetwork(t *testing.T) {
+	first, second := uuid.New(), uuid.New()
+	err := errors.Join(
+		hostnetwork.NetworkError{NetworkID: first, Err: hostnetwork.ErrSealedKey},
+		errors.Join(hostnetwork.NetworkError{NetworkID: second, Err: errWaitingForKeyStore}, errors.New("invalid network state filename")),
+	)
+	failed := networkFailures(err)
+	if len(failed) != 2 || !errors.Is(failed[first], hostnetwork.ErrSealedKey) || !errors.Is(failed[second], hostnetwork.ErrKeyStoreUnavailable) {
+		t.Fatalf("network failures weren't found per network: %v", failed)
+	}
+	if len(networkFailures(nil)) != 0 {
+		t.Fatal("no error found failures")
 	}
 }

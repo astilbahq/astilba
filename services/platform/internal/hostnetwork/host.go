@@ -284,7 +284,8 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if err != nil {
 		return err
 	}
-	if err = h.inspectInterface(ctx, m, group, recoverCreate); err != nil {
+	present, err := h.inspectInterface(ctx, m, group, recoverCreate)
+	if err != nil {
 		return err
 	}
 	// A restriction keeps the prefix the host holds, so it can't create a conflict, and removing
@@ -305,7 +306,7 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 		// A link without its key carries nothing: any interface of this network goes down. A
 		// removal is then done. A restriction's saved intent has no applied hash, so the link comes
 		// back as m once it is restored with its key.
-		if _, err = h.run(ctx, "ip", nil, "link", "show", "dev", m.Interface()); err == nil {
+		if present {
 			if _, err = h.run(ctx, "ip", nil, "link", "set", "dev", m.Interface(), "down"); err != nil {
 				return err
 			}
@@ -346,8 +347,13 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 			return err
 		}
 	}
+	// A route the kernel already dropped, with the link down or new, needs no removal.
+	routed, err := h.routedPeers(ctx, m)
+	if err != nil {
+		return err
+	}
 	for _, p := range old.Manifest.Peers {
-		if !slices.ContainsFunc(m.Peers, func(next Peer) bool { return next.Address == p.Address }) {
+		if routed[p.Address] && !slices.ContainsFunc(m.Peers, func(next Peer) bool { return next.Address == p.Address }) {
 			if _, err = h.run(ctx, "ip", nil, "route", "del", p.Address+"/32", "dev", m.Interface()); err != nil {
 				return err
 			}
@@ -364,10 +370,13 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	}
 	return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m)})
 }
-func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, recoverCreate bool) error {
+
+// inspectInterface refuses m's interface name when something else holds it, and reports whether
+// the interface is there.
+func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, recoverCreate bool) (bool, error) {
 	raw, err := h.run(ctx, "ip", nil, "-N", "-j", "-d", "link", "show")
 	if err != nil {
-		return err
+		return false, err
 	}
 	var links []struct {
 		IfName string         `json:"ifname"`
@@ -378,8 +387,9 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 		} `json:"linkinfo"`
 	}
 	if readToolJSON(raw, &links) != nil {
-		return errors.New("cannot inspect host interfaces")
+		return false, errors.New("cannot inspect host interfaces")
 	}
+	present := false
 	for _, l := range links {
 		if l.IfName != m.Interface() {
 			continue
@@ -388,21 +398,41 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 		var text string
 		if json.Unmarshal(l.Group, &observed) != nil {
 			if json.Unmarshal(l.Group, &text) != nil {
-				return errors.New("cannot inspect interface ownership marker")
+				return false, errors.New("cannot inspect interface ownership marker")
 			}
 			value, err := strconv.ParseUint(text, 10, 32)
 			if err != nil {
-				return errors.New("invalid interface ownership marker")
+				return false, errors.New("invalid interface ownership marker")
 			}
 			observed = uint32(value)
 		}
 		if l.Info.Kind != "wireguard" || observed != group || l.Alias != m.Alias() && !(recoverCreate && l.Alias == "") {
-			return errors.New("managed interface name is occupied by unrelated state")
+			return false, errors.New("managed interface name is occupied by unrelated state")
 		}
+		present = true
 	}
-
-	return nil
+	return present, nil
 }
+
+// routedPeers is the set of addresses m's interface has a route to.
+func (h Host) routedPeers(ctx context.Context, m Manifest) (map[string]bool, error) {
+	raw, err := h.run(ctx, "ip", nil, "-j", "-4", "route", "show", "dev", m.Interface())
+	if err != nil {
+		return nil, err
+	}
+	var routes []struct {
+		Dst string `json:"dst"`
+	}
+	if readToolJSON(raw, &routes) != nil {
+		return nil, errors.New("cannot inspect managed network routes")
+	}
+	out := map[string]bool{}
+	for _, r := range routes {
+		out[strings.TrimSuffix(r.Dst, "/32")] = true
+	}
+	return out, nil
+}
+
 func (h Host) inspectRoutes(ctx context.Context, m Manifest) error {
 	raw, err := h.run(ctx, "ip", nil, "-j", "-4", "route", "show", "table", "all")
 	if err != nil {

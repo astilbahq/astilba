@@ -93,9 +93,14 @@ func (e *Engine) noteKeyStore(err error) {
 // waitForKeyStore makes the agent leave the key store alone for a minute, and logs why. It returns
 // err, so a command runs again.
 func (e *Engine) waitForKeyStore(err error) error {
-	if !errors.Is(err, errWaitingForKeyStore) {
-		until := time.Now().Add(keyStoreRetry)
-		e.keyStoreWait.Store(&until)
+	if errors.Is(err, errWaitingForKeyStore) {
+		return err
+	}
+	now := time.Now()
+	until := now.Add(keyStoreRetry)
+	e.keyStoreWait.Store(&until)
+	if logged := e.keyStoreLogged.Load(); logged == nil || now.Sub(*logged) >= journalRekeyInterval {
+		e.keyStoreLogged.Store(&now)
 		slog.Warn("the agent's key store isn't working, so private-link changes wait for it and try again each minute", "error", err)
 	}
 	return err
@@ -288,7 +293,7 @@ func (e *Engine) refuseRouteConflict(ctx context.Context, c api.ExecutionCommand
 // membership's peers. A disabled one doesn't count, since its removal was not checked. Nor does
 // a disabled manifest, which is how management removes a
 // member it has no record of: refusing it would leave that member's removal pending for good,
-// and it installs no peers, only its own address on an interface it leaves down. The route
+// and it installs no peers: at most its own address on an interface it leaves down. The route
 // check still applies to it. Only networks with addresses on this host count, so swarm-scoped
 // and config-only networks, and ipvlan in L3 mode, which the host doesn't route to, are left
 // out. An error other than a RouteConflictError means Docker's record was not read.

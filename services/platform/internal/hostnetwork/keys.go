@@ -190,13 +190,19 @@ func (h Host) sealKey(ctx context.Context, id uuid.UUID, key *ecdh.PrivateKey) (
 
 // Prepared is a key store that does its work ahead of time, before any lock is taken, so that work
 // done later under a lock replays it rather than call the store. Once Replay is called, it answers
-// only what it did before, and refuses anything else as not working.
+// only what it did before, failures included, and refuses anything else as not working.
 type Prepared struct {
 	store  Sealer
 	mu     sync.Mutex
 	replay bool
-	sealed map[string][]byte
-	opened map[string][]byte
+	sealed map[string]prepared
+	opened map[string]prepared
+}
+
+// prepared is one answer a Prepared store recorded.
+type prepared struct {
+	value []byte
+	err   error
 }
 
 // errNotPrepared says a key store call wasn't made ahead of time, so it isn't made now.
@@ -204,7 +210,7 @@ var errNotPrepared = fmt.Errorf("%w: it wasn't used ahead of time", ErrKeyStoreU
 
 // Prepare is a Prepared store that does its work with store.
 func Prepare(store Sealer) *Prepared {
-	return &Prepared{store: store, sealed: map[string][]byte{}, opened: map[string][]byte{}}
+	return &Prepared{store: store, sealed: map[string]prepared{}, opened: map[string]prepared{}}
 }
 
 // Replay makes p answer only what it did before.
@@ -215,43 +221,31 @@ func (p *Prepared) Replay() {
 }
 
 func (p *Prepared) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
-	at := name + "\x00" + string(plain)
-	p.mu.Lock()
-	if v, ok := p.sealed[at]; ok || p.replay {
-		p.mu.Unlock()
-		if !ok {
-			return nil, errNotPrepared
-		}
-		return v, nil
-	}
-	p.mu.Unlock()
-	sealed, err := p.store.Seal(ctx, name, plain)
-	if err == nil {
-		p.mu.Lock()
-		p.sealed[at] = sealed
-		p.mu.Unlock()
-	}
-	return sealed, err
+	return p.answer(ctx, p.sealed, name+"\x00"+string(plain), func() ([]byte, error) { return p.store.Seal(ctx, name, plain) })
 }
 
 func (p *Prepared) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
-	at := name + "\x00" + string(sealed)
+	return p.answer(ctx, p.opened, name+"\x00"+string(sealed), func() ([]byte, error) { return p.store.Unseal(ctx, name, sealed) })
+}
+
+// answer replays what call answered for at, or else, before Replay, calls it and records the
+// answer.
+func (p *Prepared) answer(_ context.Context, answers map[string]prepared, at string, call func() ([]byte, error)) ([]byte, error) {
 	p.mu.Lock()
-	if v, ok := p.opened[at]; ok || p.replay {
-		p.mu.Unlock()
-		if !ok {
-			return nil, errNotPrepared
-		}
-		return v, nil
-	}
+	recorded, ok := answers[at]
+	replay := p.replay
 	p.mu.Unlock()
-	plain, err := p.store.Unseal(ctx, name, sealed)
-	if err == nil {
-		p.mu.Lock()
-		p.opened[at] = plain
-		p.mu.Unlock()
+	switch {
+	case ok:
+		return recorded.value, recorded.err
+	case replay:
+		return nil, errNotPrepared
 	}
-	return plain, err
+	value, err := call()
+	p.mu.Lock()
+	answers[at] = prepared{value, err}
+	p.mu.Unlock()
+	return value, err
 }
 
 // PrepareSealKeys seals, with the host's key store, the keys SealKeys would seal, without taking

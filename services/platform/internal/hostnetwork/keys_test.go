@@ -434,3 +434,25 @@ func TestAStoreThatIsNotWorkingIsNotProbed(t *testing.T) {
 		t.Fatal("a store that isn't working was probed or the key blamed", err, store.calls)
 	}
 }
+
+// A Prepared store replays a failure as it happened, so a key that isn't this machine's is blamed
+// under the lock too, not the store.
+func TestPreparedStoreReplaysFailures(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	member := uuid.New()
+	if _, err := (Host{Dir: dir, Keys: newMachine(t)}).Identity(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	store := &counting{machine: newMachine(t)}
+	prepared := Prepare(store)
+	h := Host{Dir: dir, Keys: prepared}
+	if _, err := h.privateKey(ctx, member); !errors.Is(err, ErrSealedKey) {
+		t.Fatal(err)
+	}
+	prepared.Replay()
+	store.calls = 0
+	if _, err := h.privateKey(ctx, member); !errors.Is(err, ErrSealedKey) || store.calls != 0 {
+		t.Fatal("a replayed failure wasn't the key's, or called the store", err, store.calls)
+	}
+}

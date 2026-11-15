@@ -30,26 +30,31 @@ var _ hostnetwork.Sealer = KeyStore(nil)
 
 // OnDemandKeyStore opens the store that open returns the first time it seals or unseals a value,
 // and keeps it once it opens. A command that finds nothing sealed never waits on the store or
-// fails for it.
+// fails for it. A store that doesn't open isn't tried again: the boot restore it serves would
+// otherwise wait on it once for every sealed key, and the agent service restores what it can't.
 func OnDemandKeyStore(open func(context.Context) (KeyStore, error)) hostnetwork.Sealer {
 	return &onDemandStore{open: open}
 }
 
 type onDemandStore struct {
-	open  func(context.Context) (KeyStore, error)
-	mu    sync.Mutex
-	store KeyStore
+	open   func(context.Context) (KeyStore, error)
+	mu     sync.Mutex
+	store  KeyStore
+	failed error
 }
 
 func (s *onDemandStore) opened(ctx context.Context) (KeyStore, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.store == nil {
+	if s.store == nil && s.failed == nil {
 		store, err := s.open(ctx)
 		if err != nil {
-			return nil, err
+			s.failed = fmt.Errorf("%w: %w", hostnetwork.ErrKeyStoreUnavailable, err)
 		}
 		s.store = store
+	}
+	if s.failed != nil {
+		return nil, s.failed
 	}
 	return s.store, nil
 }
@@ -109,6 +114,9 @@ func probe(ctx context.Context, store KeyStore) error {
 		return err
 	}
 	read, err := store.Unseal(ctx, credentialName, sealed)
+	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		return err
+	}
 	if err != nil || !bytes.Equal(read, plain) {
 		return errors.New("systemd-creds could not read back what it sealed")
 	}

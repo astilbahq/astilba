@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/google/uuid"
 )
 
 // errEngineBusy says host work held the engine, so nothing was tried.
@@ -33,17 +34,24 @@ func (e *Engine) sealNetworkKeys(ctx context.Context, store hostnetwork.Sealer) 
 	return e.betweenCommands(ctx, host.SealKeys)
 }
 
-// restorePrivateLinks puts back the private links this host holds that aren't in place. Their keys
-// are opened first, with the engine free, so that no command waits on the key store meanwhile.
-func (e *Engine) restorePrivateLinks(ctx context.Context) error {
+// restorePrivateLinks puts back the private links this host holds that aren't in place, apart from
+// the networks skip names. Their keys are opened first, with the engine free, so that no command
+// waits on the key store meanwhile. Each network that fails is a hostnetwork.NetworkError.
+func (e *Engine) restorePrivateLinks(ctx context.Context, skip func(uuid.UUID) bool) error {
 	host := e.networkHost()
+	var opening error
 	if host.Keys != nil {
 		prepared := hostnetwork.Prepare(host.Keys)
 		host.Keys = prepared
-		e.noteKeyStore(host.OpenMissingKeys(ctx))
+		opening = host.OpenMissingKeys(ctx, skip)
+		e.noteKeyStore(opening)
 		prepared.Replay()
 	}
-	return e.betweenCommands(ctx, host.RestoreMissing)
+	err := e.betweenCommands(ctx, func(ctx context.Context) error { return host.RestoreMissing(ctx, skip) })
+	if errors.Is(err, errEngineBusy) {
+		return err
+	}
+	return errors.Join(opening, err)
 }
 
 // untilDone runs step between commands until it succeeds once, once ready says it can. A step that
@@ -73,20 +81,65 @@ func (c *Client) untilDone(ctx context.Context, what string, ready func() bool, 
 
 // keepPrivateLinksRestored puts back the private links that aren't in place, each minute: those the
 // boot restore couldn't, as when the key store wasn't working yet that early, and those a
-// restriction took down without their key. One link that can't be restored doesn't hold back the
-// others. A failure is logged at most once an hour.
+// restriction took down without their key. A network that fails is left alone for a minute if the
+// key store wasn't working, or else for an hour, so one that can't be restored neither holds back
+// the others nor costs work every minute. A failure is logged at most once an hour.
 func (c *Client) keepPrivateLinksRestored(ctx context.Context) {
 	var logged time.Time
+	retry := map[uuid.UUID]time.Time{}
 	for {
-		err := c.Engine.restorePrivateLinks(ctx)
-		if err != nil && !errors.Is(err, errEngineBusy) && ctx.Err() == nil && time.Since(logged) >= journalRekeyInterval {
-			logged = time.Now()
-			slog.Warn("the agent could not restore some private links; it tries again each minute", "error", err)
+		now := time.Now()
+		tried := map[uuid.UUID]bool{}
+		err := c.Engine.restorePrivateLinks(ctx, func(id uuid.UUID) bool {
+			if now.Before(retry[id]) {
+				return true
+			}
+			tried[id] = true
+			return false
+		})
+		if !errors.Is(err, errEngineBusy) {
+			failed := networkFailures(err)
+			for id := range tried {
+				switch {
+				case failed[id] == nil:
+					delete(retry, id)
+				case errors.Is(failed[id], hostnetwork.ErrKeyStoreUnavailable):
+					retry[id] = now.Add(keyStoreRetry)
+				default:
+					retry[id] = now.Add(journalRekeyInterval)
+				}
+			}
+			if err != nil && ctx.Err() == nil && time.Since(logged) >= journalRekeyInterval {
+				logged = time.Now()
+				slog.Warn("the agent could not restore some private links; it tries each again within the hour", "error", err)
+			}
 		}
 		if !wait(ctx, journalRekeyCheck) {
 			return
 		}
 	}
+}
+
+// networkFailures is the failure of each network in err, which may join several.
+func networkFailures(err error) map[uuid.UUID]error {
+	out := map[uuid.UUID]error{}
+	var walk func(error)
+	walk = func(err error) {
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range joined.Unwrap() {
+				walk(e)
+			}
+			return
+		}
+		var failed hostnetwork.NetworkError
+		if errors.As(err, &failed) && out[failed.NetworkID] == nil {
+			out[failed.NetworkID] = failed.Err
+		}
+	}
+	if err != nil {
+		walk(err)
+	}
+	return out
 }
 
 // keepNetworkKeysSealed seals the private-link keys this host holds in the clear once its journal
