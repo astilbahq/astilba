@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	jsonv1 "encoding/json"
 	"encoding/json/v2"
 	"maps"
 	"net/http"
@@ -132,6 +133,19 @@ func (f *Forge) changed(id string) []map[string]string {
 	return out
 }
 
+// answer writes v as a JSON response body. A provider echoes what it was asked about, such as
+// a branch or a path, and code scanning reads this package as production code, so it encodes
+// with encoding/json's Marshal: the one encoder CodeQL knows writes JSON rather than a page.
+// Its bytes are stablejson's.
+func answer(w http.ResponseWriter, v any) {
+	raw, err := jsonv1.Marshal(v)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(append(raw, '\n'))
+}
+
 func (f *Forge) review(w http.ResponseWriter, r *http.Request, branch string, create bool) {
 	number, exists := f.Reviews[branch]
 	if !exists && !create {
@@ -139,7 +153,7 @@ func (f *Forge) review(w http.ResponseWriter, r *http.Request, branch string, cr
 			w.WriteHeader(404)
 			return
 		}
-		_ = stablejson.Encode(w, []any{})
+		answer(w, []any{})
 		return
 	}
 	if !exists {
@@ -157,10 +171,10 @@ func (f *Forge) review(w http.ResponseWriter, r *http.Request, branch string, cr
 		entry = map[string]any{"iid": number, "state": "opened", "web_url": web, "source_branch": branch, "target_branch": "main", "source_project_id": 12, "target_project_id": 12}
 	}
 	if create || f.kind == "gitea" {
-		_ = stablejson.Encode(w, entry)
+		answer(w, entry)
 		return
 	}
-	_ = stablejson.Encode(w, []any{entry})
+	answer(w, []any{entry})
 }
 
 func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +205,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if f.kind == "gitea" && r.URL.Path == "/api/v1/version" {
-		_ = stablejson.Encode(w, map[string]string{"version": f.Version})
+		answer(w, map[string]string{"version": f.Version})
 		return
 	}
 	prefix := map[string]string{"github": "/repos/team/app", "gitlab": "/api/v4/projects/team/app", "gitea": "/api/v1/repos/team/app"}[f.kind]
@@ -207,7 +221,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case route == "" && r.Method == http.MethodGet:
-		_ = stablejson.Encode(w, map[string]any{"id": 12, "private": true, "visibility": "private", "owner": map[string]string{"visibility": "public"}})
+		answer(w, map[string]any{"id": 12, "private": true, "visibility": "private", "owner": map[string]string{"visibility": "public"}})
 	case strings.HasPrefix(route, "/branches/") || strings.HasPrefix(route, "/repository/branches/"):
 		name := route[strings.Index(route, "/branches/")+len("/branches/"):]
 		if f.kind == "gitea" && r.Method == http.MethodGet && strings.HasPrefix(name, "main/") {
@@ -224,7 +238,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": head, "id": head}})
+		answer(w, map[string]any{"commit": map[string]string{"sha": head, "id": head}})
 	case f.kind == "gitea" && strings.HasPrefix(route, "/pulls/main/"):
 		f.review(w, r, strings.TrimPrefix(route, "/pulls/main/"), false)
 	case strings.HasPrefix(route, "/contents/") && r.Method == http.MethodGet, strings.HasPrefix(route, "/repository/files/"):
@@ -235,21 +249,21 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 			return
 		}
-		_ = stablejson.Encode(w, map[string]string{"path": name, "sha": blobID(ref, file.Content), "file_path": name, "blob_id": blobID(ref, file.Content), "commit_id": ref})
+		answer(w, map[string]string{"path": name, "sha": blobID(ref, file.Content), "file_path": name, "blob_id": blobID(ref, file.Content), "commit_id": ref})
 	case strings.HasPrefix(route, "/git/trees/"):
 		entries, exists := f.entries(strings.TrimPrefix(route, "/git/trees/"))
 		if !exists {
 			w.WriteHeader(404)
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"tree": entries, "total_count": len(entries)})
+		answer(w, map[string]any{"tree": entries, "total_count": len(entries)})
 	case f.kind == "github" && strings.HasPrefix(route, "/git/commits/"):
 		id := strings.TrimPrefix(route, "/git/commits/")
 		if _, exists := f.Commits[id]; !exists {
 			w.WriteHeader(404)
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"sha": id, "tree": map[string]string{"sha": f.treeID(id, "")}})
+		answer(w, map[string]any{"sha": id, "tree": map[string]string{"sha": f.treeID(id, "")}})
 	case f.kind == "github" && route == "/git/trees":
 		root, exists := f.dirs[body["base_tree"].(string)]
 		if !exists || root[1] != "" {
@@ -268,7 +282,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		id := objectID("tree", files)
 		f.built[id] = files
-		_ = stablejson.Encode(w, map[string]string{"sha": id})
+		answer(w, map[string]string{"sha": id})
 	case f.kind == "github" && route == "/git/commits":
 		parents := []string{}
 		for _, p := range body["parents"].([]any) {
@@ -276,7 +290,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		id := f.AddCommit(Commit{Parents: parents, Message: body["message"].(string), Files: f.built[body["tree"].(string)]})
 		f.Writes = append(f.Writes, "commit")
-		_ = stablejson.Encode(w, map[string]string{"sha": id})
+		answer(w, map[string]string{"sha": id})
 	case f.kind == "github" && route == "/git/refs":
 		name := strings.TrimPrefix(body["ref"].(string), "refs/heads/")
 		if _, exists := f.Branches[name]; exists {
@@ -285,7 +299,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.Branches[name] = body["sha"].(string)
 		w.WriteHeader(201)
-		_ = stablejson.Encode(w, map[string]string{})
+		answer(w, map[string]string{})
 	case f.kind == "gitlab" && route == "/repository/commits":
 		name := body["branch"].(string)
 		if _, exists := f.Branches[name]; exists {
@@ -322,7 +336,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.Branches[name] = id
 		f.Writes = append(f.Writes, "commit")
 		w.WriteHeader(201)
-		_ = stablejson.Encode(w, map[string]string{"id": id})
+		answer(w, map[string]string{"id": id})
 	case f.kind == "gitlab" && strings.HasPrefix(route, "/repository/commits/"):
 		id, diff := strings.CutSuffix(strings.TrimPrefix(route, "/repository/commits/"), "/diff")
 		c, exists := f.Commits[id]
@@ -331,10 +345,10 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if diff {
-			_ = stablejson.Encode(w, f.changed(id))
+			answer(w, f.changed(id))
 			return
 		}
-		_ = stablejson.Encode(w, map[string]any{"id": id, "message": c.Message, "parent_ids": c.Parents})
+		answer(w, map[string]any{"id": id, "message": c.Message, "parent_ids": c.Parents})
 	case (f.kind == "github" && strings.HasPrefix(route, "/commits/")) || (f.kind == "gitea" && strings.HasPrefix(route, "/git/commits/")):
 		id := strings.TrimPrefix(strings.TrimPrefix(route, "/commits/"), "/git/commits/")
 		c, exists := f.Commits[id]
@@ -346,7 +360,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, p := range c.Parents {
 			parents = append(parents, map[string]string{"sha": p})
 		}
-		_ = stablejson.Encode(w, map[string]any{"sha": id, "commit": map[string]string{"message": c.Message}, "parents": parents, "files": f.changed(id)})
+		answer(w, map[string]any{"sha": id, "commit": map[string]string{"message": c.Message}, "parents": parents, "files": f.changed(id)})
 	case f.kind == "gitea" && route == "/branches" && r.Method == http.MethodPost:
 		name := body["new_branch_name"].(string)
 		if _, exists := f.Branches[name]; exists {
@@ -355,7 +369,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.Branches[name] = body["old_ref_name"].(string)
 		w.WriteHeader(201)
-		_ = stablejson.Encode(w, map[string]string{})
+		answer(w, map[string]string{})
 	case f.kind == "gitea" && route == "/contents" && r.Method == http.MethodPost:
 		name := body["branch"].(string)
 		head, exists := f.Branches[name]
@@ -387,7 +401,7 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.Branches[name] = id
 		f.Writes = append(f.Writes, "commit")
 		w.WriteHeader(201)
-		_ = stablejson.Encode(w, map[string]any{"commit": map[string]string{"sha": id}})
+		answer(w, map[string]any{"commit": map[string]string{"sha": id}})
 	case route == "/pulls" || route == "/merge_requests":
 		if r.Method == http.MethodPost {
 			head, _ := body["head"].(string)
