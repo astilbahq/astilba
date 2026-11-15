@@ -33,7 +33,8 @@ func (s *Service) ConfiguredBuildTargets(ctx context.Context, p store.Principal,
 		// policy_approver_holds decides what runs; the approver's role and version only explain why
 		// automatic work doesn't, in the terms of policyApproval.
 		rows, err := tx.Query(ctx, `SELECT b.application_id,b.configuration,b.policy_actor,b.policy_auth_version,
- b.policy_owner AND policy_approver_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,true),m.role,a.auth_version
+ b.policy_owner AND policy_approver_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,true),m.role,a.auth_version,
+ account_meets_workspace_mfa(b.workspace_id,b.policy_actor)
  FROM build_targets b LEFT JOIN memberships m ON m.workspace_id=b.workspace_id AND m.account_id=b.policy_actor LEFT JOIN accounts a ON a.id=b.policy_actor
  WHERE b.workspace_id=$1 AND b.environment_id=$2 ORDER BY b.application_id`, ws, env)
 		if err != nil {
@@ -43,10 +44,10 @@ func (s *Service) ConfiguredBuildTargets(ctx context.Context, p store.Principal,
 		for rows.Next() {
 			var app, actor uuid.UUID
 			var raw []byte
-			var runnable bool
+			var runnable, mfa bool
 			var role *string
 			var approved, current *int64
-			if err = rows.Scan(&app, &raw, &actor, &approved, &runnable, &role, &current); err != nil {
+			if err = rows.Scan(&app, &raw, &actor, &approved, &runnable, &role, &current, &mfa); err != nil {
 				return err
 			}
 			if p.Automation != nil && !runnable {
@@ -60,7 +61,7 @@ func (s *Service) ConfiguredBuildTargets(ctx context.Context, p store.Principal,
 				if application.ID == app {
 					target := api.ConfiguredBuildTarget{ApplicationId: app, BaseRevisionId: v.Revision, Name: application.Name, Branch: cfg.Branch, Builder: cfg.Canonical().Builder, TargetHash: targetHash(cfg, actor)}
 					if p.Automation == nil {
-						approval := policyApproval(role, current, approved, cfg.AutoDeploy, false, w.Role)
+						approval := policyApproval(role, current, approved, cfg.AutoDeploy, false, mfa, w.Role)
 						target.AutomaticBuild, target.AutomaticDeploy, target.Approval, target.Runnable = &cfg.AutoBuild, &cfg.AutoDeploy, &approval, &runnable
 					}
 					out = append(out, target)

@@ -132,7 +132,7 @@ SELECT t.workspace_id,
   WHEN a.auth_version <> t.auth_version THEN 'account security changed'
   WHEN m.role IS NULL OR m.role NOT IN ('owner','operator') THEN 'role changed'
   WHEN p.owners_only AND m.role <> 'owner' THEN 'environment setting changed'
-  WHEN w.require_mfa AND a.totp_secret IS NULL THEN 'multi-factor authentication required'
+  WHEN NOT account_meets_workspace_mfa(t.workspace_id, t.actor_id) THEN 'multi-factor authentication required'
   WHEN NOT EXISTS(SELECT 1 FROM sessions b WHERE b.expiry > now()
    AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')) THEN 'browser session ended'
   WHEN s.revoked OR s.awaiting_transfer OR s.credential_hash IS DISTINCT FROM t.agent_credential_hash
@@ -144,7 +144,6 @@ SELECT t.workspace_id,
  h.status AS subscription_status,h.management_until AS subscription_until
 FROM troubleshooting_sessions t
 JOIN accounts a ON a.id = t.actor_id
-JOIN workspaces w ON w.id = t.workspace_id
 JOIN servers s ON s.workspace_id = t.workspace_id AND s.id = t.server_id
 LEFT JOIN memberships m ON m.workspace_id = t.workspace_id AND m.account_id = t.actor_id
 LEFT JOIN troubleshooting_policies p ON p.workspace_id = t.workspace_id AND p.environment_id = t.environment_id

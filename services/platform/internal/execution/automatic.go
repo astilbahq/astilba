@@ -95,7 +95,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		return err
 	}
 	if !approved {
-		return stop("The owner who approved automatic deployment no longer approves it: they left, are no longer an owner, or changed their password or two-factor settings. An owner can approve the policy again and deploy this build.")
+		return stop("The owner who approved automatic deployment no longer approves it: they left, are no longer an owner, changed their password or two-factor settings, or haven't set up the two-factor authentication the workspace requires. An owner can approve the policy again and deploy this build.")
 	}
 	if err = tx.QueryRow(ctx, "SELECT project_id FROM environments WHERE workspace_id=$1 AND id=$2", ws, env).Scan(&pid); err != nil {
 		return err
