@@ -46,9 +46,10 @@ func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3fi
 		return authorizationFailure{err}
 	}
 	op := strings.ToLower(in.Route.Operation.OperationID)
-	// A retiring or retired environment is read-only. A retired preview template still cleans up
-	// its previews; the service admits only that action, under the workspace lock.
-	if state != "active" && op != "retireenvironment" && op != "restoreenvironment" && (op != "actonpreview" || purpose != "preview_template") {
+	// An environment that is not active is read-only but for its lifecycle: retiring, restoring and
+	// purging, which the service admits by state under the workspace lock. A retired preview
+	// template still cleans up its previews; the service admits only that action.
+	if state != "active" && op != "retireenvironment" && op != "restoreenvironment" && op != "purgeenvironment" && (op != "actonpreview" || purpose != "preview_template") {
 		return authorizationFailure{domain.EnvironmentInactive}
 	}
 	if purpose == "standard" {
@@ -66,7 +67,7 @@ func (s *Server) authorizeEnvironmentPurpose(ctx context.Context, in *openapi3fi
 		}
 	}
 	switch op {
-	case "updatedraft", "updatelayout", "createsecret", "createsecretversion", "createbuild", "getserviceoutput", "resolveserviceoutput", "exportenvironment", "exportenvironmentarchive", "savepreviewpolicy", "actonpreview", "createautomationcredential", "revokeautomationcredential", "retireenvironment", "restoreenvironment":
+	case "updatedraft", "updatelayout", "createsecret", "createsecretversion", "createbuild", "getserviceoutput", "resolveserviceoutput", "exportenvironment", "exportenvironmentarchive", "savepreviewpolicy", "actonpreview", "createautomationcredential", "revokeautomationcredential", "retireenvironment", "restoreenvironment", "purgeenvironment", "retiresecret", "retiresecretversion":
 		return nil
 	default:
 		return domain.Forbidden

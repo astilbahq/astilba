@@ -9,12 +9,14 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
-func (s *Service) hydrateCrossHost(ctx context.Context, c *api.ExecutionCommand) error {
+// hydrateCrossHost fills a cross-host command's values. With nil keys it makes the delivery's
+// checks and opens nothing.
+func (s *Service) hydrateCrossHost(ctx context.Context, keys valueKeys, c *api.ExecutionCommand) error {
 	var p deployment.CrossHostCommand
 	if c.ParentId == nil || c.Crosshost == nil || hostnetwork.Decode(*c.Crosshost, &p) != nil || p.ParentID != *c.ParentId || p.Digest() != c.PlanHash || p.Unit.Plan.ServerID != c.ServerId || p.Unit.Plan.EnvironmentID != c.EnvironmentId {
 		return domain.Forbidden
@@ -26,6 +28,9 @@ func (s *Service) hydrateCrossHost(ctx context.Context, c *api.ExecutionCommand)
 	}
 	if !enabled {
 		return domain.Forbidden
+	}
+	if keys == nil {
+		return nil
 	}
 	p.Secrets = map[string]string{}
 	p.RegistryAccess = map[string]pipeline.Credential{}
@@ -39,7 +44,7 @@ func (s *Service) hydrateCrossHost(ctx context.Context, c *api.ExecutionCommand)
 				return err
 			}
 			var access pipeline.RegistryAccess
-			if err := s.legacyOpenIntegration(ws, *a.RegistryID, "registry", registry.EncryptedAccess, &access); err != nil {
+			if err := openJSON(keys, secretbroker.Item{Kind: secretbroker.Registry, ID: *a.RegistryID}, registry.EncryptedAccess, &access); err != nil {
 				return err
 			}
 			p.RegistryAccess[key] = access.Pull
@@ -52,7 +57,7 @@ func (s *Service) hydrateCrossHost(ctx context.Context, c *api.ExecutionCommand)
 			if err != nil {
 				return err
 			}
-			plain, err := s.Store.Keys.Open(v.EncryptedValue, store.SecretIdentity(ws, id))
+			plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, v.EncryptedValue)
 			if err != nil {
 				return err
 			}

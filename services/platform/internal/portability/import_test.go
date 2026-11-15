@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/google/uuid"
 )
 
 func TestLegacyArchivePurposeAndStrictShape(t *testing.T) {
@@ -128,8 +129,95 @@ func TestVersionFivePreservesUnknownAppliedProvenance(t *testing.T) {
 	}
 }
 
+// withoutVersionNine makes a decoded archive look as one written before purges and retired secrets.
+func withoutVersionNine(a Archive) {
+	withoutVersionEleven(a)
+	for _, row := range a.Tables["environments"] {
+		for _, field := range []string{"purged_at", "purged_by", "purge_operation_id", "purged_without_host"} {
+			delete(row, field)
+		}
+	}
+	for _, row := range a.Tables["secrets"] {
+		delete(row, "retired_at")
+	}
+	for _, row := range a.Tables["secret_versions"] {
+		delete(row, "erased_at")
+	}
+}
+
+// withoutVersionEleven makes a decoded archive look as one written before it recorded which preview
+// requests revocation released.
+func withoutVersionEleven(a Archive) {
+	for _, row := range a.Tables["preview_requests"] {
+		delete(row, "released_by_revocation")
+	}
+}
+
+// previewRequestRow is a preview request revocation released, with every column the current format
+// carries.
+func previewRequestRow(t *testing.T, a Archive) Row {
+	t.Helper()
+	row := Row{}
+	for _, table := range tables {
+		if table.Name == "preview_requests" {
+			for _, column := range strings.Split(table.Columns, ",") {
+				row[column] = jsontext.Value("null")
+			}
+		}
+	}
+	ws, _ := stablejson.Marshal(a.Workspace)
+	row["workspace_id"] = ws
+	row["id"] = jsontext.Value(`"` + uuid.NewString() + `"`)
+	row["policy_id"] = jsontext.Value(`"` + uuid.NewString() + `"`)
+	row["state"] = jsontext.Value(`"deleted"`)
+	row["released_by_revocation"] = jsontext.Value("true")
+	return row
+}
+
+// An archive records which preview requests revoking their host released, so a request that came
+// back keeps saying it's a new preview. One from before version 11 records none, and may not carry
+// the field itself.
+func TestArchiveCarriesPreviewsRevocationReleased(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(version int, released bool) (Archive, error) {
+		t.Helper()
+		row := previewRequestRow(t, a)
+		if !released {
+			delete(row, "released_by_revocation")
+		}
+		a.Version, a.Tables["preview_requests"] = version, []Row{row}
+		raw, err := stablejson.Marshal(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decodeArchive(raw)
+	}
+	decoded, err := decode(ArchiveVersion, true)
+	if err != nil || string(decoded.Tables["preview_requests"][0]["released_by_revocation"]) != "true" {
+		t.Fatal("the current version lost a release by revocation", err)
+	}
+	if _, err = decode(ArchiveVersion, false); err == nil {
+		t.Fatal("the current version accepted a request without the field")
+	}
+	decoded, err = decode(9, false)
+	if err != nil || string(decoded.Tables["preview_requests"][0]["released_by_revocation"]) != "false" {
+		t.Fatal("a version nine request was imported released by revocation, or refused", err)
+	}
+	if _, err = decode(9, true); err == nil {
+		t.Fatal("version nine accepted the field")
+	}
+}
+
 // withoutVersionEight makes a decoded archive look as one written before retirement.
 func withoutVersionEight(a Archive) {
+	withoutVersionNine(a)
 	for _, row := range a.Tables["environments"] {
 		for _, field := range []string{"state", "retired_at", "retired_by", "retirement_operation_id", "retired_without_host"} {
 			delete(row, field)
@@ -169,6 +257,57 @@ func TestVersionSevenArchiveImportsActiveEnvironments(t *testing.T) {
 	}
 }
 
+// An archive from before purges imports nothing purged, retired or erased, and may not carry the
+// newer fields itself.
+func TestVersionEightArchiveImportsNothingPurged(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version = 8
+	withoutVersionNine(a)
+	raw, _ = stablejson.Marshal(a)
+	decoded, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal("version eight rejected", err)
+	}
+	env := decoded.Tables["environments"][0]
+	if string(env["purged_at"]) != "null" || string(env["purged_by"]) != "null" || string(env["purge_operation_id"]) != "null" || string(env["purged_without_host"]) != "false" {
+		t.Fatal("a version eight environment was imported purged", env)
+	}
+	a.Tables["environments"][0]["purged_without_host"] = jsontext.Value("false")
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("version eight accepted a purge field")
+	}
+}
+
+// An erased secret version holds nothing to open or seal, and a row whose value and erasure
+// disagree is not one an export writes.
+func TestErasedSecretVersionsCarryNoValue(t *testing.T) {
+	id := jsontext.Value(`"` + uuid.NewString() + `"`)
+	for _, c := range []struct {
+		name          string
+		value, erased string
+		field         string
+		fails         bool
+	}{
+		{"kept", `"\x00"`, "null", "encrypted_value", false},
+		{"erased", "null", `"2026-11-13T00:00:00Z"`, "", false},
+		{"value without erasure", "null", "null", "", true},
+		{"erasure with a value", `"\x00"`, `"2026-11-13T00:00:00Z"`, "", true},
+	} {
+		field, _, err := credential("secret_versions", Row{"id": id, "encrypted_value": jsontext.Value(c.value), "erased_at": jsontext.Value(c.erased)})
+		if (err != nil) != c.fails || !c.fails && field != c.field {
+			t.Errorf("%s: field %q, error %v", c.name, field, err)
+		}
+	}
+}
+
 // A retirement its server confirmed released the environment's hostnames and ports, so an archive
 // that still has it claiming one is refused rather than taking them back.
 func TestArchiveRefusesClaimsOfAConfirmedRetirement(t *testing.T) {
@@ -192,6 +331,15 @@ func TestArchiveRefusesClaimsOfAConfirmedRetirement(t *testing.T) {
 	if _, err = decodeArchive(raw); err == nil {
 		t.Fatal("a released claim was imported")
 	}
+	// A purge follows the retirement that released them.
+	for _, state := range []string{`"purging"`, `"purged"`} {
+		env["state"] = jsontext.Value(state)
+		raw, _ = stablejson.Marshal(a)
+		if _, err = decodeArchive(raw); err == nil {
+			t.Fatal("a purged environment's released claim was imported", state)
+		}
+	}
+	env["state"] = jsontext.Value(`"retired"`)
 	// A server that could not be reached may still serve them, so they stay with it.
 	env["retired_without_host"] = jsontext.Value("true")
 	raw, _ = stablejson.Marshal(a)

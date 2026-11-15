@@ -68,10 +68,12 @@ var version5Tables = func() []table {
 		table{Name: "preview_requests", Columns: "id,workspace_id,policy_id,number,head,head_repository,fork,approved_head,approved_repository,approved_generation,generation,environment_id,application_id,policy_generation,configuration,state,build_id,plan_id,operation_id,built_head,closed_at,cleanup_at,cleanup_requested,resume_after_cancel,cleanup_actor,cleanup_auth_version,cleanup_controller,next_check_at,note,created_at,updated_at"})
 }()
 
-// ArchiveVersion is the format exports and recovery bases write. Version 7 added
-// source_submissions; version 8 added each environment's retirement and the PostgreSQL major each
-// managed volume was initialised by.
-const ArchiveVersion = 8
+// ArchiveVersion is the format exports write, and the tables recovery bases carry
+// (RecoveryArchiveVersion). Version 7 added source_submissions; version 8 added each environment's
+// retirement and the PostgreSQL major each managed volume was initialised by; version 9 added
+// purges, retired secrets and erased secret values; version 11 added which preview requests
+// revoking their preview's host released. Version 10 is a recovery base.
+const ArchiveVersion = 11
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -89,7 +91,7 @@ var version7Tables = func() []table {
 
 // Version 8 carries each environment's retirement and the PostgreSQL major each managed volume
 // was initialised by. docs/environment-retirement.md says how an import treats them.
-var tables = func() []table {
+var version8Tables = func() []table {
 	out := append([]table{}, version7Tables...)
 	for i := range out {
 		switch out[i].Name {
@@ -97,6 +99,35 @@ var tables = func() []table {
 			out[i].Columns += ",state,retired_at,retired_by,retirement_operation_id,retired_without_host"
 		case "managed_volumes":
 			out[i].Columns += ",postgres_major"
+		}
+	}
+	return out
+}()
+
+// Version 9 carries each environment's purge, each secret's retirement and which secret versions
+// were erased. An erased version has no value to carry, and imports erased.
+var version9Tables = func() []table {
+	out := append([]table{}, version8Tables...)
+	for i := range out {
+		switch out[i].Name {
+		case "environments":
+			out[i].Columns += ",purged_at,purged_by,purge_operation_id,purged_without_host"
+		case "secrets":
+			out[i].Columns += ",retired_at"
+		case "secret_versions":
+			out[i].Columns += ",erased_at"
+		}
+	}
+	return out
+}()
+
+// Version 11 carries whether revoking its preview's host released a preview request, which its
+// note tells the owner while the request has a new preview elsewhere.
+var tables = func() []table {
+	out := append([]table{}, version9Tables...)
+	for i := range out {
+		if out[i].Name == "preview_requests" {
+			out[i].Columns += ",released_by_revocation"
 		}
 	}
 	return out

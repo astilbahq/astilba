@@ -12,6 +12,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// errJobCleanup marks a job that finished, exiting 0, but whose own cleanup then failed.
 var errJobCleanup = errors.New("job cleanup unconfirmed")
 
 // errElevatedJob refuses a job whose source is privileged, or shares a volume or network with
@@ -56,6 +57,10 @@ func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backu
 	labels := visualLabels(p.Plan, a.ID)
 	labels[labelKind] = "scheduled-job-v1"
 	labels["com.astilba.run"] = r.ID.String()
+	// A create that fails may still have made the container.
+	if err = e.beginEffects(ctx, s, r); err != nil {
+		return err
+	}
 	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-job-" + r.ID.String(), Config: &container.Config{Image: p.Plan.Images[a.ID.String()], Cmd: p.Command, Env: source.Config.Env, Labels: labels, WorkingDir: source.Config.WorkingDir, User: source.Config.User}, HostConfig: &container.HostConfig{NetworkMode: mode, ReadonlyRootfs: true, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Mounts: source.HostConfig.Mounts, Resources: container.Resources{Memory: 256 << 20, PidsLimit: ptr(int64(64))}}, NetworkingConfig: &network.NetworkingConfig{EndpointsConfig: endpoints}})
 	if err != nil {
 		return err
@@ -92,9 +97,10 @@ func (e *Engine) runContainerJob(ctx context.Context, s *scheduleState, r *backu
 				}
 			}
 		}
-		if cleanupErr != nil {
-			result = errors.Join(result, errJobCleanup, cleanupErr)
+		if cleanupErr != nil && result == nil {
+			cleanupErr = errors.Join(errJobCleanup, cleanupErr)
 		}
+		result = errors.Join(result, cleanupErr)
 	}()
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return err

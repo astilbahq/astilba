@@ -70,6 +70,7 @@ func InsertSecretValue(ctx context.Context, q *db.Queries, keys *secretbroker.Se
 	if err != nil {
 		return err
 	}
-	_, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: version, EncryptedValue: encrypted, AuthorID: p.Account.ID})
+	plain, encoded := SecretLengths([]byte(value))
+	_, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: version, EncryptedValue: encrypted, AuthorID: p.Account.ID, PlaintextBytes: plain, JsonBytes: encoded})
 	return err
 }

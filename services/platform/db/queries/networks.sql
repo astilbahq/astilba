@@ -71,17 +71,18 @@ UPDATE network_members SET note = @note WHERE workspace_id = @workspace_id AND s
 -- is held up, so a removal goes without it.
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND server_id = @server_id AND kind='network'
     AND command->'network'->>'action'='configure'
-    AND (command->'network'->'manifest'->>'generation')::bigint = @generation::bigint
+    AND command->'network'->'manifest'->'generation' = to_jsonb(@generation::bigint)
     AND state IN ('queued','dispatched','running','needs_attention') AND created_at > now()-interval '30 seconds');
 
 -- name: NetworkManifestMissed :one
 -- A whole manifest at this generation that ended without landing, for instance because the host had
 -- already taken a later command, carried no removal there. Another may not land either, so the
--- removal goes first, on its own.
+-- removal goes first, on its own. The host's commands are read by manifest generation through
+-- execution_network_configure, not through every network command the host ever ran.
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND server_id = @server_id AND kind='network'
     AND command->'network'->>'action'='configure'
     AND command->'network'->>'membershipId' = @membership_id::text
-    AND (command->'network'->'manifest'->>'generation')::bigint = @generation::bigint
+    AND command->'network'->'manifest'->'generation' = to_jsonb(@generation::bigint)
     AND state IN ('failed','cancelled'));
 
 -- name: NoteRefusedNetworkConfigure :exec

@@ -39,7 +39,7 @@ func queuedPreparation(t *testing.T, primaryState, childState api.ExecutionState
 		yes := true
 		in.Capabilities.CrossHost = &yes
 		in.Capabilities.MaintenanceContinuation = &yes
-		if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+		if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 			t.Fatal(err)
 		}
 		servers = append(servers, in)
@@ -142,7 +142,7 @@ func TestCrossHostPreparationWaitsForPrimary(t *testing.T) {
 			f.wait(t, func(state api.ExecutionState, _ string) bool { return state == "dispatched" })
 			poll, cancel := context.WithTimeout(ctx, time.Second)
 			defer cancel()
-			command, err := f.service.execution.Poll(poll, f.identity)
+			command, err := pollReleased(f.service.execution, poll, f.identity)
 			if err != nil || command == nil || command.Id != f.child {
 				t.Fatal("successful primary preparation did not release its consumer", err)
 			}
@@ -186,7 +186,7 @@ func TestCrossHostPreparationKeepsDispatchedReconciliation(t *testing.T) {
 	f.wait(t, func(state api.ExecutionState, _ string) bool { return state == "dispatched" })
 	poll, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	command, err := f.service.execution.Poll(poll, f.identity)
+	command, err := pollReleased(f.service.execution, poll, f.identity)
 	if err != nil || command == nil || command.Id != f.child {
 		t.Fatal("existing host work lost its reconciliation delivery", err)
 	}
@@ -206,7 +206,7 @@ func TestCrossHostPreparationDoesNotReplayObsoleteChild(t *testing.T) {
 	f.wait(t, func(state api.ExecutionState, job string) bool { return state == "cancelled" && job == "completed" })
 	poll, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	command, err := f.service.execution.Poll(poll, f.identity)
+	command, err := pollReleased(f.service.execution, poll, f.identity)
 	if command != nil || err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("obsolete restored preparation was delivered", command, err)
 	}

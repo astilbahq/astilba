@@ -8,7 +8,6 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
@@ -22,10 +21,7 @@ type Store struct {
 	Pool    *pgxpool.Pool
 	Queries *db.Queries
 	// Broker is the one path to stored values.
-	Broker *secretbroker.Broker
-	// Keys is read only by the agent delivery paths that have not moved to the broker yet. The
-	// secretkeys analyzer allows no other use.
-	Keys              *cryptobox.Keyring
+	Broker            *secretbroker.Broker
 	Hosted            bool
 	Hosting           hosting.Config
 	LogRetention      time.Duration
@@ -120,12 +116,18 @@ func IfMissing(err, missing error) error {
 }
 
 func (s *Store) Transaction(ctx context.Context, fn func(*db.Queries) error) error {
+	return s.TransactionTx(ctx, func(_ pgx.Tx, q *db.Queries) error { return fn(q) })
+}
+
+// TransactionTx is Transaction for work that also needs the transaction itself, such as a job
+// queued to commit or roll back with it.
+func (s *Store) TransactionTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err = fn(db.New(tx)); err != nil {
+	if err = fn(tx, db.New(tx)); err != nil {
 		return Normalize(err)
 	}
 	return Normalize(tx.Commit(ctx))
@@ -342,21 +344,17 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 	return id, err
 }
 
-// SecretIdentity is a secret version's identity, for the delivery paths that have not moved to
-// the broker yet, which builds its own.
-func SecretIdentity(workspace, id uuid.UUID) string {
-	return "secret:v1:" + workspace.String() + ":" + id.String()
-}
-
 // rewrapFailed names the row, because rotation stops until an operator deals with it and
 // the keyring's own error is deliberately the same for every cause.
 func rewrapFailed(table string, workspace, id uuid.UUID, err error) error {
 	return fmt.Errorf("cannot rewrap %s row %s in workspace %s: %w", table, id, workspace, err)
 }
 
-// Rewrap moves every stored value onto the active key, for an operator, as one recorded run.
-func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
-	rotation, err := s.Broker.BeginRotation(ctx, operator)
+// Rewrap moves every stored value, and the installation's canaries, onto the active key, for an
+// operator, as one recorded run. It wraps each value's data key again and keeps the data, and it
+// never touches cross-host checkpoints, which hosts hold copies of by digest.
+func (s *Store) Rewrap(ctx context.Context, operator, reason string) (err error) {
+	rotation, err := s.Broker.BeginRotation(ctx, operator, reason)
 	if err != nil {
 		return err
 	}
@@ -367,6 +365,13 @@ func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
 		}
 		rotation.Close(ctx, outcome)
 	}()
+	if err = s.rewrapValues(ctx, rotation); err != nil {
+		return err
+	}
+	return rotation.RewrapCanaries(ctx)
+}
+
+func (s *Store) rewrapValues(ctx context.Context, rotation *secretbroker.Rotation) error {
 	return s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
 			return err
@@ -500,7 +505,7 @@ func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
 				return err
 			}
 		}
-		return nil
+		return rotation.ValuesRewrapped(ctx, q)
 	})
 }
 

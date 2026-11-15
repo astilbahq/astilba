@@ -143,6 +143,9 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if err := e.checkBackupSource(ctx, in.Policy); err != nil {
 		return err
 	}
+	if err := e.beginEffects(ctx, s, r); err != nil {
+		return err
+	}
 	if err := e.prepareRepository(ctx, in, false); err != nil {
 		return err
 	}
@@ -156,7 +159,7 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	defer os.RemoveAll(stage)
 	m := backup.Manifest{Recipe: backup.Recipe, PolicyID: in.Policy.ID, RunID: r.ID, EnvironmentID: in.Policy.EnvironmentID, ResourceID: in.Policy.ResourceID, Method: in.Policy.Method, CreatedAt: r.StartedAt, Roles: []backup.Role{}, Extensions: []string{}}
 	if in.Policy.Method == "postgres-logical" {
-		err = e.dumpPostgres(ctx, in.Policy, stage, &m)
+		err = e.dumpPostgres(ctx, *in, r.ID, stage, &m)
 	} else {
 		err = e.dumpFiles(ctx, s, stage, &m)
 	}
@@ -167,6 +170,7 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if err = os.WriteFile(filepath.Join(stage, "manifest.json"), raw, 0600); err != nil {
 		return err
 	}
+	e.point("backup-uploading")
 	out, err := e.restic(ctx, *in, stage, "backup", "--quiet", "--host", in.Policy.ID.String(), "--tag", "policy="+in.Policy.ID.String(), "--tag", "run="+r.ID.String(), ".")
 	if err != nil {
 		return err

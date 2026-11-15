@@ -35,7 +35,7 @@ func newRetirementFixture(t *testing.T) retirementFixture {
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects", map[string]string{"name": "Retirement"}, 201, &project)
 	enrolled, in, token := enrollment(t, f, b, ws, "deployment")
 	yes := true
-	in.Capabilities.Visual, in.Capabilities.Retirement = &yes, &yes
+	in.Capabilities.Visual, in.Capabilities.Retirement, in.Capabilities.Purge = &yes, &yes, &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	return retirementFixture{t, f, b, ws, "/api/v1/workspaces/" + ws.String() + "/projects/" + project.Id.String() + "/environments", authorityAgent{t, f, token, in}, enrolled.Server.Id}
 }

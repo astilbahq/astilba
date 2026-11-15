@@ -170,6 +170,20 @@ func TestAppTemplateStagesWithGeneratedSecretsAndDeploys(t *testing.T) {
 	if len(auth) != 64 || strings.Trim(auth, "0123456789abcdef") != "" || len(dbPassword) != 43 {
 		t.Fatal("agent did not receive the generated values")
 	}
+	// Generated versions record their lengths as any stored value does, so planning and the
+	// runtime-secret check measure them without opening them.
+	for _, v := range []struct {
+		id    uuid.UUID
+		value string
+	}{{names["Kaneo · AUTH_SECRET"], auth}, {database.Postgres.PasswordSecretVersionID, dbPassword}} {
+		var plain, encoded int
+		if err := f.st.Pool.QueryRow(context.Background(), "SELECT plaintext_bytes,json_bytes FROM secret_versions WHERE workspace_id=$1 AND id=$2", ws, v.id).Scan(&plain, &encoded); err != nil {
+			t.Fatal(err)
+		}
+		if p, j := domain.SecretLengths([]byte(v.value)); plain != p || encoded != j {
+			t.Fatal("generated secret lengths", plain, encoded, p, j)
+		}
+	}
 	resources := []deployment.Resource{}
 	for _, a := range []domain.Application{kaneo, database} {
 		resources = append(resources, deployment.Resource{ID: a.ID, Kind: a.ServiceKind(), State: "running", Image: images[a.ID.String()]})

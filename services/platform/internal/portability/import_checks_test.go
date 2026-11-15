@@ -72,7 +72,7 @@ func TestImportRefusesACredentialThatCouldNotBeOpened(t *testing.T) {
 	}
 	row := func(size int) Row {
 		value := `\\x` + hex.EncodeToString([]byte(strings.Repeat("x", size)))
-		r := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "encrypted_value": jsontext.Value(`"` + value + `"`)}
+		r := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "encrypted_value": jsontext.Value(`"` + value + `"`), "erased_at": jsontext.Value("null")}
 		return r
 	}
 	if err = transformCredential(keys, "secret_versions", row(1024), false); err != nil {

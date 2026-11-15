@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -98,6 +100,25 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	s.scope(w, r, id, store.WorkspaceAccess{}, func(_ *db.Queries, ws store.Workspace) (any, error) { return workspace(ws), nil })
+}
+
+// GetCrossHostRecovery shows owners and operators the newest recovery checkpoint and how old a
+// management backup cross-host recovery can use with it. It is its own read so that sessions and
+// workspace lists don't look up checkpoints.
+func (s *Server) GetCrossHostRecovery(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
+	s.scope(w, r, id, store.WorkspaceAccess{}, func(q *db.Queries, ws store.Workspace) (any, error) {
+		if !domain.CanWrite(ws.Role) {
+			return nil, domain.Forbidden
+		}
+		base, err := q.NewestRecoveryBase(r.Context(), id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return api.CrossHostRecovery{}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return api.CrossHostRecovery{CheckpointAt: &base.CapturedAt, WindowStart: base.WindowStart, ShortWindow: portability.ShortRecoveryWindow(base.CapturedAt, base.WindowStart)}, nil
+	})
 }
 func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	b, e := decode[api.WorkspaceSettings](r)

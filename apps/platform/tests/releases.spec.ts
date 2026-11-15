@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
+import { acknowledgesReleases } from "./fixtures/agent-releases";
 import { managedDatabase } from "./fixtures/managed-database";
 
 test("protected release review and rollback draft remain separate from deployment", async ({
@@ -24,6 +25,7 @@ test("protected release review and rollback draft remain separate from deploymen
         docker: true,
         visual: true,
         safeReleases: true,
+        ...acknowledgesReleases,
         backups: true,
         upgrades: true,
       },

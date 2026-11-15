@@ -133,19 +133,19 @@ func (s *Service) insert(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID, plan
 	if err := s.commandAdmission(ctx, tx, ws, c); err != nil {
 		return out, err
 	}
-	// Every new operation for a retiring or retired environment is refused here, so each kind of
-	// work inherits it. Only the retirement command itself still reaches the environment's server.
+	// Every new operation for an environment that is not active is refused here, so each kind of
+	// work inherits it. Only the retirement and purge commands still reach its server.
 	if c.EnvironmentId != uuid.Nil {
 		state, err := db.New(tx).EnvironmentState(ctx, db.EnvironmentStateParams{WorkspaceID: ws, ID: c.EnvironmentId})
 		if err != nil {
 			return out, err
 		}
-		if state != "active" && !retirementCommand(c) {
+		if !lifecycleAdmits(state, c) {
 			return out, domain.EnvironmentInactive
 		}
 	}
 	var pending int
-	if err := tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND state NOT IN ('succeeded','failed','cancelled')", ws).Scan(&pending); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND state IN ('queued','dispatched','running','needs_attention')", ws).Scan(&pending); err != nil {
 		return out, err
 	}
 	if pending >= 50 && c.ParentId == nil && !(c.Kind == "network" && recoveryCommand(c)) {
@@ -226,7 +226,7 @@ func (s *Service) operationAvailability(ctx context.Context, out *api.Operation)
 }
 func (s *Service) Cancel(ctx context.Context, p store.Principal, ws, id uuid.UUID) error {
 	return s.scope(ctx, p, ws, workspaceAccess{Write: true, Recovery: true}, "operation.cancel", id, func(tx pgx.Tx) error {
-		n, e := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true,state=CASE WHEN kind='pipeline' AND state='queued' THEN 'cancelled' ELSE state END WHERE workspace_id=$1 AND id=$2 AND state NOT IN ('succeeded','failed','cancelled')`, ws, id)
+		n, e := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true,state=CASE WHEN kind='pipeline' AND state='queued' THEN 'cancelled' ELSE state END WHERE workspace_id=$1 AND id=$2 AND state IN ('queued','dispatched','running','needs_attention')`, ws, id)
 		if e == nil && n.RowsAffected() != 1 {
 			return domain.Conflict
 		}

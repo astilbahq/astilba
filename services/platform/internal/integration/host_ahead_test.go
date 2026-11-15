@@ -120,7 +120,7 @@ func (n *aheadNetwork) round(t *testing.T) {
 			continue
 		}
 		poll, done := context.WithTimeout(n.ctx, aheadPollWait)
-		c, err := n.f.execution.Poll(poll, h.identity)
+		c, err := pollReleased(n.f.execution, poll, h.identity)
 		expired := poll.Err()
 		done()
 		if err != nil {
@@ -352,7 +352,7 @@ func (n *aheadNetwork) transfer(t *testing.T, h *aheadHost) {
 	input := h.input
 	input.Token, input.Credential, input.ControllerGeneration = ticket.Token, &credential, &generation
 	input.Inventory = &api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}}
-	if _, err = n.f.execution.Enroll(n.ctx, input, "test"); err != nil {
+	if _, err = n.f.execution.Enroll(n.ctx, acknowledging(input), "test"); err != nil {
 		t.Fatal(err)
 	}
 	if h.identity, err = n.f.execution.Authenticate(n.ctx, h.id, credential); err != nil {
@@ -546,7 +546,7 @@ func TestHostileClaimsAfterRestoreMoveNothing(t *testing.T) {
 					t.Fatal(err)
 				}
 				poll, done := context.WithTimeout(n.ctx, aheadPollWait)
-				delivered, err := n.f.execution.Poll(poll, a.identity)
+				delivered, err := pollReleased(n.f.execution, poll, a.identity)
 				expired := poll.Err()
 				done()
 				if err != nil {

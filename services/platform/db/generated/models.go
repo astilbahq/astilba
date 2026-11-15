@@ -28,6 +28,13 @@ type Account struct {
 	RecoveryCodesGeneration *uuid.UUID `json:"recovery_codes_generation"`
 }
 
+type AccountSecurityEvent struct {
+	ID        uuid.UUID `json:"id"`
+	AccountID uuid.UUID `json:"account_id"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type AgentCounterValue struct {
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	ServerID    uuid.UUID `json:"server_id"`
@@ -194,6 +201,11 @@ type BuildTarget struct {
 	RejectedAt               *time.Time  `json:"rejected_at"`
 	PolicyAuthVersion        pgtype.Int8 `json:"policy_auth_version"`
 	PolicyOwner              bool        `json:"policy_owner"`
+	WaitingCommit            pgtype.Text `json:"waiting_commit"`
+	WaitingReason            pgtype.Text `json:"waiting_reason"`
+	WaitingRunnerID          *uuid.UUID  `json:"waiting_runner_id"`
+	WaitingSince             *time.Time  `json:"waiting_since"`
+	WaitingUntil             *time.Time  `json:"waiting_until"`
 }
 
 type CatalogStaging struct {
@@ -284,6 +296,18 @@ type CrossHostRuntime struct {
 	MemoryMib     int64     `json:"memory_mib"`
 }
 
+type CustodyBackend struct {
+	BackendID string    `json:"backend_id"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type CustodyStage struct {
+	Singleton  bool      `json:"singleton"`
+	Stage      int32     `json:"stage"`
+	AdvancedAt time.Time `json:"advanced_at"`
+}
+
 type DeploymentUnit struct {
 	WorkspaceID   uuid.UUID  `json:"workspace_id"`
 	ID            uuid.UUID  `json:"id"`
@@ -291,11 +315,6 @@ type DeploymentUnit struct {
 	Runtime       string     `json:"runtime"`
 	ServerID      *uuid.UUID `json:"server_id"`
 	PrimaryUnit   bool       `json:"primary_unit"`
-}
-
-type DnsInstallation struct {
-	Singleton bool      `json:"singleton"`
-	ID        uuid.UUID `json:"id"`
 }
 
 type DnsPublication struct {
@@ -345,6 +364,10 @@ type Environment struct {
 	RetiredBy             *uuid.UUID `json:"retired_by"`
 	RetirementOperationID *uuid.UUID `json:"retirement_operation_id"`
 	RetiredWithoutHost    bool       `json:"retired_without_host"`
+	PurgedAt              *time.Time `json:"purged_at"`
+	PurgedBy              *uuid.UUID `json:"purged_by"`
+	PurgeOperationID      *uuid.UUID `json:"purge_operation_id"`
+	PurgedWithoutHost     bool       `json:"purged_without_host"`
 }
 
 type EnvironmentLayout struct {
@@ -378,6 +401,7 @@ type ExecutionOperation struct {
 	RuntimePlanID     *uuid.UUID  `json:"runtime_plan_id"`
 	RuntimeRecordedAt *time.Time  `json:"runtime_recorded_at"`
 	EndedAt           *time.Time  `json:"ended_at"`
+	DispatchEpoch     int64       `json:"dispatch_epoch"`
 }
 
 type ExecutionPlan struct {
@@ -427,6 +451,9 @@ type GitSource struct {
 	Status             string      `json:"status"`
 	PolicyActor        uuid.UUID   `json:"policy_actor"`
 	PolicyAuthVersion  pgtype.Int8 `json:"policy_auth_version"`
+	FailedCommit       string      `json:"failed_commit"`
+	FailureReason      string      `json:"failure_reason"`
+	FailedAt           *time.Time  `json:"failed_at"`
 }
 
 type GitSubmission struct {
@@ -508,6 +535,33 @@ type HostedSubscription struct {
 	NotifiedUntil   *time.Time  `json:"notified_until"`
 	UpdatedAt       time.Time   `json:"updated_at"`
 	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
+}
+
+type Installation struct {
+	Singleton bool      `json:"singleton"`
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type InstallationKeyCanary struct {
+	BackendID string    `json:"backend_id"`
+	Class     string    `json:"class"`
+	Wrapped   []byte    `json:"wrapped"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type InstallationKeyEvent struct {
+	ID          uuid.UUID   `json:"id"`
+	At          time.Time   `json:"at"`
+	RunID       uuid.UUID   `json:"run_id"`
+	Kind        string      `json:"kind"`
+	Operator    pgtype.Text `json:"operator"`
+	Reason      pgtype.Text `json:"reason"`
+	BackendID   pgtype.Text `json:"backend_id"`
+	Scope       pgtype.Text `json:"scope"`
+	WorkspaceID *uuid.UUID  `json:"workspace_id"`
+	Generation  pgtype.Int8 `json:"generation"`
+	Details     []byte      `json:"details"`
 }
 
 type InstallationSecret struct {
@@ -722,6 +776,15 @@ type Project struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type RecoveredRuntimeHistory struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Generation    int64     `json:"generation"`
+	RecordedAt    time.Time `json:"recorded_at"`
+	Entry         []byte    `json:"entry"`
+}
+
 type RecoveryBasis struct {
 	WorkspaceID     uuid.UUID  `json:"workspace_id"`
 	ID              uuid.UUID  `json:"id"`
@@ -730,6 +793,7 @@ type RecoveryBasis struct {
 	PrimaryServerID uuid.UUID  `json:"primary_server_id"`
 	CapturedAt      time.Time  `json:"captured_at"`
 	ClosedAt        *time.Time `json:"closed_at"`
+	WindowStart     *time.Time `json:"window_start"`
 }
 
 type RecoveryCode struct {
@@ -757,10 +821,11 @@ type SchemaAdditiveMigration struct {
 }
 
 type Secret struct {
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	ID            uuid.UUID `json:"id"`
-	Name          string    `json:"name"`
+	WorkspaceID   uuid.UUID  `json:"workspace_id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	ID            uuid.UUID  `json:"id"`
+	Name          string     `json:"name"`
+	RetiredAt     *time.Time `json:"retired_at"`
 }
 
 type SecretAccess struct {
@@ -790,13 +855,34 @@ type SecretAccessOutcome struct {
 	ProviderRequestIds []byte    `json:"provider_request_ids"`
 }
 
+type SecretAccessSetting struct {
+	Singleton     bool  `json:"singleton"`
+	RetentionDays int32 `json:"retention_days"`
+}
+
+type SecretRelease struct {
+	OperationID    uuid.UUID  `json:"operation_id"`
+	DispatchEpoch  int64      `json:"dispatch_epoch"`
+	AgentInstance  string     `json:"agent_instance"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	ServerID       uuid.UUID  `json:"server_id"`
+	Digest         string     `json:"digest"`
+	Attempts       int32      `json:"attempts"`
+	LastAttemptAt  time.Time  `json:"last_attempt_at"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	Redelivery     bool       `json:"redelivery"`
+}
+
 type SecretVersion struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	SecretID       uuid.UUID `json:"secret_id"`
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-	AuthorID       uuid.UUID `json:"author_id"`
-	CreatedAt      time.Time `json:"created_at"`
+	WorkspaceID    uuid.UUID   `json:"workspace_id"`
+	SecretID       uuid.UUID   `json:"secret_id"`
+	ID             uuid.UUID   `json:"id"`
+	EncryptedValue []byte      `json:"encrypted_value"`
+	AuthorID       uuid.UUID   `json:"author_id"`
+	CreatedAt      time.Time   `json:"created_at"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
+	JsonBytes      pgtype.Int4 `json:"json_bytes"`
+	ErasedAt       *time.Time  `json:"erased_at"`
 }
 
 type Server struct {

@@ -295,57 +295,57 @@ func TestRecoveryExtendsARevokedPrimarysRootOnlyAsManagementSealedIt(t *testing.
 	}{
 		"management's checkpoints alone": {func(*testing.T, *claimRecovery, []string) {}, nil},
 		"the checkpoint management sealed next": {func(t *testing.T, r *claimRecovery, exports []string) {
-			d, envelope := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+			d, envelope := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 			supplyCapsule(t, exports[0], d, envelope)
 		}, []string{"reserve"}},
 		"two checkpoints in turn": {func(t *testing.T, r *claimRecovery, exports []string) {
-			d, envelope := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+			d, envelope := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 			supplyCapsule(t, exports[0], d, envelope)
-			d, envelope = r.continuation(t, r.f.st.Keys, d, "prepare")
+			d, envelope = r.continuation(t, keysOf(r.f.st), d, "prepare")
 			supplyCapsule(t, exports[0], d, envelope)
 		}, []string{"reserve", "prepare"}},
 		"a checkpoint resealed under another identity": {func(t *testing.T, r *claimRecovery, exports []string) {
-			d, _ := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+			d, _ := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 			forged := d
 			forged.CheckpointID = uuid.New()
-			_, envelope := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+			_, envelope := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 			forged.Digest, forged.Bytes = deployment.RecoveryDigest(envelope), len(envelope)
 			supplyCapsule(t, exports[0], forged, envelope)
 		}, nil},
 		"bytes management never sealed": {func(t *testing.T, r *claimRecovery, exports []string) {
-			d, _ := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+			d, _ := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 			envelope := []byte("made up by the revoked host")
 			d.Digest, d.Bytes = deployment.RecoveryDigest(envelope), len(envelope)
 			supplyCapsule(t, exports[0], d, envelope)
 		}, nil},
 		"a gap": {func(t *testing.T, r *claimRecovery, exports []string) {
-			d, _ := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
-			d, envelope := r.continuation(t, r.f.st.Keys, d, "prepare")
+			d, _ := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
+			d, envelope := r.continuation(t, keysOf(r.f.st), d, "prepare")
 			supplyCapsule(t, exports[0], d, envelope)
 		}, nil},
 		"a checkpoint that follows another": {func(t *testing.T, r *claimRecovery, exports []string) {
 			elsewhere := r.descriptor
 			elsewhere.Digest = strings.Repeat("0", 64)
-			d, envelope := r.continuation(t, r.f.st.Keys, elsewhere, "reserve")
+			d, envelope := r.continuation(t, keysOf(r.f.st), elsewhere, "reserve")
 			supplyCapsule(t, exports[0], d, envelope)
 		}, nil},
 		"a copy from another revoked server": {func(t *testing.T, r *claimRecovery, exports []string) {
 			r.revokePeer(t)
-			d, envelope := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+			d, envelope := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 			supplyCapsule(t, exports[1], d, envelope)
 		}, nil},
 		"another revoked server's forgery beside the primary's copy": {func(t *testing.T, r *claimRecovery, exports []string) {
 			r.revokePeer(t)
-			forged, _ := r.continuation(t, r.f.st.Keys, r.descriptor, "abort")
+			forged, _ := r.continuation(t, keysOf(r.f.st), r.descriptor, "abort")
 			junk := []byte("made up by another revoked host")
 			forged.Digest, forged.Bytes = deployment.RecoveryDigest(junk), len(junk)
 			supplyCapsule(t, exports[1], forged, junk)
-			d, envelope := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+			d, envelope := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 			supplyCapsule(t, exports[0], d, envelope)
 		}, []string{"reserve"}},
 		"two continuations": {func(t *testing.T, r *claimRecovery, exports []string) {
 			for _, phase := range []string{"reserve", "abort"} {
-				d, envelope := r.continuation(t, r.f.st.Keys, r.descriptor, phase)
+				d, envelope := r.continuation(t, keysOf(r.f.st), r.descriptor, phase)
 				supplyCapsule(t, exports[0], d, envelope)
 			}
 		}, nil},
@@ -377,7 +377,7 @@ func TestRecoveryFitsAParticipantsProofOfProgressBeyondTheBackup(t *testing.T) {
 	r := newParticipantRecovery(t)
 	r.revokeThird(t, r.a)
 	exports := r.exports(t, claimExport{})
-	next, envelope := r.continuation(t, r.f.st.Keys, r.descriptor, "reserve")
+	next, envelope := r.continuation(t, keysOf(r.f.st), r.descriptor, "reserve")
 	child := uuid.NewSHA1(r.root.Id, []byte("crosshost:reserve:"+r.peerUnit.String()))
 	body := deployment.CrossHostCommand{ParentID: r.root.Id, GroupHash: r.group.Hash, Phase: "reserve", Unit: r.peerPlan}
 	header := api.ExecutionCommand{Id: child, ParentId: &r.root.Id, ServerId: r.peer.ServerId, EnvironmentId: r.env, ResourceId: r.peerUnit, Kind: "crosshost", Action: "inspect", Generation: claimEnvironmentGeneration + 10 + 1, PlanHash: body.Digest(), Deadline: continuationDeadline, RecoveryCheckpoint: claimMessage(t, next)}

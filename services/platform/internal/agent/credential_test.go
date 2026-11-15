@@ -176,8 +176,8 @@ func TestRotationNamesTheMachineOnlyToControllersThatReadIt(t *testing.T) {
 	}
 }
 
-// The enrollment and the first heartbeat after a restart go out before negotiation, so what the
-// agent supports is reported again as soon as the answer arrives.
+// The enrollment may go out before negotiation, so what the agent supports is reported again as
+// soon as the answer arrives. A restarted agent negotiates before its first heartbeat.
 func TestNegotiatedSupportIsReportedAtOnce(t *testing.T) {
 	c, m, _ := credentialClient(t)
 	m.machineRotation.Store(true)
@@ -195,7 +195,7 @@ func TestNegotiatedSupportIsReportedAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if m.advertised != 2 {
-		t.Fatal("a restarted agent waited an interval to report negotiated support", m.advertised)
+		t.Fatal("a restarted agent's first heartbeat left out negotiated support", m.advertised)
 	}
 	if err := restarted.heartbeat(ctx, cfg.Credential, &api.AgentStatus{}); err != nil || m.advertised != 3 {
 		t.Fatal("a negotiated heartbeat was sent twice", err, m.advertised)

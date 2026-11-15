@@ -56,6 +56,9 @@
     "retired": "Retired environments ({{total}})",
     "retiredState": "Retired",
     "retiringState": "Being retired",
+    "purgingState": "Retained data being deleted",
+    "purgedState": "Retained data deleted",
+    "purgedWithoutHostState": "Secret values erased, volumes not deleted",
     "allRetired": "Every environment in this project is retired."
   },
   "createEnvironment": {

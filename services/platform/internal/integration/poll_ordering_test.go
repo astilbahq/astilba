@@ -23,7 +23,7 @@ func TestPollDeliversRestrictionDuringPausedCrossHostOperation(t *testing.T) {
 	in.Capabilities.CrossHost = &yes
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+	if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 		t.Fatal(err)
 	}
 	identity, err := f.execution.Authenticate(ctx, in.ServerId, *in.Credential)
@@ -77,7 +77,7 @@ func TestPollDeliversRestrictionDuringPausedCrossHostOperation(t *testing.T) {
 
 	poll := func(want uuid.UUID) {
 		t.Helper()
-		command, err := f.execution.Poll(ctx, identity)
+		command, err := pollReleased(f.execution, ctx, identity)
 		if err != nil || command == nil {
 			t.Fatalf("poll returned no command: %v; want %s", err, want)
 		}

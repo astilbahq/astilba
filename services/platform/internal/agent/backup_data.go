@@ -40,126 +40,44 @@ func (e *Engine) dataTool(ctx context.Context, input io.Reader, out io.Writer, a
 	}
 	return nil
 }
-func (e *Engine) dataOutput(ctx context.Context, id string, args ...string) ([]byte, error) {
+func (e *Engine) dataOutput(ctx context.Context, db pgClient, args ...string) ([]byte, error) {
 	out := &boundedOutput{limit: 65536, stopOnLimit: true}
-	if err := e.dataTool(ctx, nil, out, append([]string{"exec", id}, args...)...); err != nil {
+	if err := e.containerExec(ctx, db, out, args...); err != nil {
 		return nil, err
 	}
 	return out.b.Bytes(), nil
 }
-func (e *Engine) sourceContainer(ctx context.Context, p backup.Policy, id uuid.UUID) (container.InspectResponse, error) {
-	list, err := e.ownedContainers(ctx, p.Plan)
-	if err != nil {
-		return container.InspectResponse{}, err
-	}
-	for _, v := range list {
-		if v.Labels[labelResource] == id.String() {
-			found, err := e.Docker.ContainerInspect(ctx, v.ID, client.ContainerInspectOptions{})
-			if err != nil {
-				return container.InspectResponse{}, err
-			}
-			if !visualOwned(found.Container.Config.Labels, p.Plan) || found.Container.Config.Labels[labelResource] != id.String() || found.Container.Config.Image != p.Plan.Images[id.String()] {
-				return container.InspectResponse{}, errors.New("source ownership or image changed")
-			}
-			return found.Container, nil
-		}
-	}
-	return container.InspectResponse{}, errors.New("source not found")
+func (e *Engine) pgQuery(ctx context.Context, db pgClient, a domain.Application, sql string) ([]byte, error) {
+	return e.dataOutput(ctx, db, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", a.Postgres.Database, "-c", sql)
 }
-func sourceApp(p backup.Policy) (domain.Application, error) {
-	for _, a := range p.Plan.Specification.Applications {
-		if a.ID == p.ResourceID {
-			return a, nil
-		}
-	}
-	return domain.Application{}, errors.New("source not found")
-}
-func (e *Engine) checkBackupSource(ctx context.Context, p backup.Policy) error {
-	if e.Docker == nil {
-		return errors.New("Docker unavailable")
-	}
-	cfg, err := e.Journal.Config()
-	if err != nil || cfg.ServerID != p.ServerID || cfg.Role == "build" {
-		return errors.New("source server mismatch")
-	}
-	unit, err := e.Journal.unit(p.Plan.UnitID)
-	if err != nil || unit.Plan.Hash != p.Plan.Hash {
-		return errors.New("policy must be refreshed after deployment")
-	}
-	if p.Method == "container-job" && elevatedService(p.Plan, p.ResourceID) {
-		return errElevatedJob
-	}
-	observation, _, err := e.observeUnit(ctx, p.Plan, nil)
-	for _, resource := range observation.Resources {
-		observation.ResourceDrift = observation.ResourceDrift || resource.Drift
-	}
-	if err != nil || observation.ResourceDrift || observation.InfrastructureDrift {
-		return errors.New("source drift requires review")
-	}
-	if p.Method == "postgres-logical" || p.Method == "container-job" {
-		a, err := sourceApp(p)
-		if err != nil {
-			return err
-		}
-		if p.Method == "postgres-logical" && (a.Postgres == nil || p.Plan.Specification.Compose != nil || !deployment.ResolvedImage(*a.Source.Image, p.Plan.Images[a.ID.String()])) {
-			return errors.New("unsupported PostgreSQL recipe")
-		}
-		if p.Method == "container-job" && (a.Postgres != nil || p.Plan.Specification.Compose != nil) {
-			return errors.New("scheduled jobs require an image worker")
-		}
-		c, err := e.sourceContainer(ctx, p, p.ResourceID)
-		if err != nil {
-			return err
-		}
-		if !c.State.Running {
-			return errors.New("source is stopped")
-		}
-		return nil
-	}
-	exists := false
-	for _, v := range p.Plan.Specification.Volumes {
-		exists = exists || v.ID == p.ResourceID
-	}
-	if !exists {
-		return errors.New("volume missing")
-	}
-	for _, a := range p.Plan.Specification.Applications {
-		for _, m := range a.Mounts {
-			if m.VolumeID == p.ResourceID && a.Postgres != nil {
-				return errors.New("database files require native logical backup")
-			}
-		}
-	}
-	_, err = e.volumePath(ctx, p, p.ResourceID)
-	return err
-}
-func (e *Engine) volumePath(ctx context.Context, p backup.Policy, id uuid.UUID) (string, error) {
-	v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(id), client.VolumeInspectOptions{})
-	if err != nil || !visualOwned(v.Volume.Labels, p.Plan) || v.Volume.Labels[labelResource] != id.String() || v.Volume.Driver != "local" || len(v.Volume.Options) > 0 {
-		return "", errors.New("volume ownership or driver mismatch")
-	}
-	return v.Volume.Mountpoint, nil
-}
-func (e *Engine) pgQuery(ctx context.Context, c string, a domain.Application, sql string) ([]byte, error) {
-	return e.dataOutput(ctx, c, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", a.Postgres.Database, "-c", sql)
-}
-func (e *Engine) dumpPostgres(ctx context.Context, p backup.Policy, stage string, m *backup.Manifest) error {
-	a, err := sourceApp(p)
+
+// dumpPostgres dumps the source database from a helper labelled with the run, so removing the
+// run's containers ends the dump and its connection whatever stopped it.
+func (e *Engine) dumpPostgres(ctx context.Context, in backup.Installation, run uuid.UUID, stage string, m *backup.Manifest) error {
+	a, err := sourceApp(in.Policy)
 	if err != nil {
 		return err
 	}
-	c, err := e.sourceContainer(ctx, p, a.ID)
+	c, err := e.sourceContainer(ctx, in.Policy, a.ID)
 	if err != nil {
 		return err
 	}
-	if err = e.postgresManifest(ctx, c.ID, a, *a.Source.Image, m); err != nil {
+	labels := visualLabels(in.Policy.Plan, a.ID)
+	labels[labelKind] = "backup-dump-v1"
+	labels["com.astilba.run"] = run.String()
+	helper, err := e.postgresHelper(ctx, "astilba-dump-"+run.String(), labels, c.ID, *a.Source.Image, in.Access.DatabasePassword)
+	if err != nil {
+		return err
+	}
+	defer e.removeHelper(helper)
+	if err = e.postgresManifest(ctx, helper, a, *a.Source.Image, m); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(filepath.Join(stage, "data.dump"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	err = e.dataTool(ctx, nil, file, "exec", c.ID, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", a.Postgres.Username, "-d", a.Postgres.Database)
+	err = e.containerExec(ctx, helper, file, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", a.Postgres.Username, "-d", a.Postgres.Database)
 	if err == nil {
 		err = file.Sync()
 	}
@@ -268,7 +186,8 @@ func (e *Engine) dumpFiles(ctx context.Context, s *scheduleState, stage string, 
 	if err = e.quiesceFiles(ctx, s); err != nil {
 		return err
 	}
-	name, cleanup, err := e.dataContainer(ctx, s.Installation.Policy, s.Installation.Policy.ResourceID, uuid.New(), true)
+	// Labelled with the run, so an interrupted run's helper is found where the run is inspected.
+	name, cleanup, err := e.dataContainer(ctx, s.Installation.Policy, s.Installation.Policy.ResourceID, m.RunID, true)
 	if err != nil {
 		return err
 	}
@@ -316,6 +235,9 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 		return errors.New("invalid restore")
 	}
 	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
+		return err
+	}
+	if err := e.beginEffects(ctx, s, r); err != nil {
 		return err
 	}
 	if err := e.prepareRepository(ctx, in, false); err != nil {
@@ -474,7 +396,7 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup
 		if role.Name == m.Username || len(role.Name) > 63 || strings.ContainsRune(role.Name, 0) {
 			return errors.New("invalid role")
 		}
-		if _, err = e.pgQuery(ctx, created.ID, a, "CREATE ROLE "+quoteIdentifier(role.Name)+" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
+		if _, err = e.pgQuery(ctx, pgClient{container: created.ID}, a, "CREATE ROLE "+quoteIdentifier(role.Name)+" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
 			return err
 		}
 	}
@@ -540,7 +462,7 @@ func (e *Engine) waitPostgresStartup(ctx context.Context, container, user, datab
 	for range 60 {
 		// The image's temporary initialization server accepts Unix-socket
 		// connections. TCP becomes available only after initialization finishes.
-		if _, err := e.dataOutput(ctx, container, "pg_isready", "-h", "127.0.0.1", "-U", user, "-d", database); err == nil {
+		if _, err := e.dataOutput(ctx, pgClient{container: container}, "pg_isready", "-h", "127.0.0.1", "-U", user, "-d", database); err == nil {
 			return nil
 		}
 		if !wait(ctx, time.Second) {
@@ -585,24 +507,24 @@ func (e *Engine) checkRestoreOwnership(ctx context.Context, p backup.Policy) err
 	return err
 }
 
-func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Application, image string, m *backup.Manifest) error {
+func (e *Engine) postgresManifest(ctx context.Context, db pgClient, a domain.Application, image string, m *backup.Manifest) error {
 	versionNumber, dataDirectory := "180004", "/var/lib/postgresql/18/docker"
 	if image == domain.Postgres17Image {
 		versionNumber, dataDirectory = "170010", "/var/lib/postgresql/data"
 	} else if image != domain.PostgresImage {
-		return errors.New("unsupported PostgreSQL image")
+		return errUnsupportedPostgresImage
 	}
-	version, err := e.pgQuery(ctx, id, a, "SHOW server_version_num")
+	version, err := e.pgQuery(ctx, db, a, "SHOW server_version_num")
 	if err != nil || strings.TrimSpace(string(version)) != versionNumber {
 		return errors.New("unsupported PostgreSQL version")
 	}
-	layout, err := e.pgQuery(ctx, id, a, "SHOW data_directory")
+	layout, err := e.pgQuery(ctx, db, a, "SHOW data_directory")
 	if err != nil || strings.TrimSpace(string(layout)) != dataDirectory {
 		return errors.New("unsupported PostgreSQL layout")
 	}
 	// Restore is intentionally limited to unprivileged NOLOGIN roles. SQL from a
 	// source database is never passed through as arbitrary cluster administration.
-	raw, err := e.pgQuery(ctx, id, a, `SELECT coalesce(json_agg(json_build_object('name',rolname,'unsupported',rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolconfig IS NOT NULL) ORDER BY rolname),'[]') FROM pg_roles WHERE rolname NOT LIKE 'pg_%' AND rolname<>current_user`)
+	raw, err := e.pgQuery(ctx, db, a, `SELECT coalesce(json_agg(json_build_object('name',rolname,'unsupported',rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolconfig IS NOT NULL) ORDER BY rolname),'[]') FROM pg_roles WHERE rolname NOT LIKE 'pg_%' AND rolname<>current_user`)
 	if err != nil {
 		return err
 	}
@@ -619,11 +541,11 @@ func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Appli
 		}
 		m.Roles = append(m.Roles, backup.Role{Name: r.Name})
 	}
-	members, err := e.pgQuery(ctx, id, a, "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member WHERE r.rolname NOT LIKE 'pg_%' OR u.rolname NOT LIKE 'pg_%'")
+	members, err := e.pgQuery(ctx, db, a, "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles u ON u.oid=m.member WHERE r.rolname NOT LIKE 'pg_%' OR u.rolname NOT LIKE 'pg_%'")
 	if err != nil || strings.TrimSpace(string(members)) != "0" {
 		return errors.New("role memberships require a separate recipe")
 	}
-	raw, err = e.pgQuery(ctx, id, a, "SELECT coalesce(json_agg(extname ORDER BY extname),'[]') FROM pg_extension")
+	raw, err = e.pgQuery(ctx, db, a, "SELECT coalesce(json_agg(extname ORDER BY extname),'[]') FROM pg_extension")
 	if err != nil || json.Unmarshal(raw, &m.Extensions) != nil {
 		return errors.New("extension query failed")
 	}
@@ -632,7 +554,7 @@ func (e *Engine) postgresManifest(ctx context.Context, id string, a domain.Appli
 			return errors.New("unsupported extension")
 		}
 	}
-	supported, err := e.pgQuery(ctx, id, a, "SELECT coalesce(bool_and(extversion=CASE extname WHEN 'plpgsql' THEN '1.0' WHEN 'hstore' THEN '1.8' ELSE '' END),false) FROM pg_extension")
+	supported, err := e.pgQuery(ctx, db, a, "SELECT coalesce(bool_and(extversion=CASE extname WHEN 'plpgsql' THEN '1.0' WHEN 'hstore' THEN '1.8' ELSE '' END),false) FROM pg_extension")
 	if err != nil || strings.TrimSpace(string(supported)) != "t" {
 		return errors.New("unsupported extension version")
 	}
