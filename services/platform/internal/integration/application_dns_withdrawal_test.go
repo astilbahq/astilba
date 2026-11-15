@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,15 +34,22 @@ type dnsZone struct {
 	gate    chan struct{}
 	entered chan struct{}
 	once    bool
+	url     *url.URL
 }
 
 func newDNSZone(t *testing.T, f *fixture) *dnsZone {
 	z := &dnsZone{records: map[string]map[string]any{}}
 	provider := httptest.NewServer(http.HandlerFunc(z.serve))
 	t.Cleanup(provider.Close)
-	u, _ := url.Parse(provider.URL)
-	f.execution.DNS = &applicationdns.Cloudflare{Zone: strings.Repeat("a", 32), Token: "fixture-dns", HTTP: &http.Client{Transport: dnsTransport{u}, Timeout: time.Second}}
+	z.url, _ = url.Parse(provider.URL)
+	z.attach(f)
 	return z
+}
+
+// attach gives a fixture's management the zone's credentials, as a management restored from a
+// backup has the same zone as the one it replaces.
+func (z *dnsZone) attach(f *fixture) {
+	f.execution.DNS = &applicationdns.Cloudflare{Zone: strings.Repeat("a", 32), Token: "fixture-dns", HTTP: &http.Client{Transport: dnsTransport{z.url}, Timeout: time.Second}}
 }
 
 func (z *dnsZone) serve(w http.ResponseWriter, r *http.Request) {
@@ -65,14 +74,25 @@ func (z *dnsZone) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var result any = map[string]any{}
+	info := map[string]any{}
 	id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 	switch r.Method {
 	case "GET":
+		query := r.URL.Query()
 		list := []map[string]any{}
 		for _, v := range z.records {
-			if v["name"] == r.URL.Query().Get("name") {
+			comment, _ := v["comment"].(string)
+			if prefix := query.Get("comment.startswith"); prefix != "" && strings.HasPrefix(comment, prefix) || prefix == "" && v["name"] == query.Get("name") {
 				list = append(list, v)
 			}
+		}
+		// Paged as Cloudflare pages a listing.
+		if query.Has("page") {
+			sort.Slice(list, func(i, j int) bool { return list[i]["id"].(string) < list[j]["id"].(string) })
+			page, _ := strconv.Atoi(query.Get("page"))
+			size, _ := strconv.Atoi(query.Get("per_page"))
+			info = map[string]any{"page": page, "per_page": size, "total_count": len(list), "total_pages": (len(list) + size - 1) / size}
+			list = list[min((page-1)*size, len(list)):min(page*size, len(list))]
 		}
 		result = list
 	case "POST", "PUT":
@@ -104,14 +124,15 @@ func (z *dnsZone) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		delete(z.records, id)
 	}
-	_ = stablejson.Encode(w, map[string]any{"success": true, "result": result})
+	_ = stablejson.Encode(w, map[string]any{"success": true, "result": result, "result_info": info})
 }
 
-func (z *dnsZone) add(kind, name, content, comment string) {
+func (z *dnsZone) add(kind, name, content, comment string) string {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	id := strings.ReplaceAll(uuid.NewString(), "-", "")
 	z.records[id] = map[string]any{"id": id, "type": kind, "name": name, "content": content, "comment": comment, "proxied": false, "ttl": 300}
+	return id
 }
 
 // marked counts the address records at name that carry marker.

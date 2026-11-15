@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,19 +38,39 @@ type zone struct {
 	lose       bool
 	deletes    []string
 	listed     []record // answered to every listing when set
+	// limited answers that many requests with a 429 and retryAfter.
+	limited    int
+	retryAfter string
+	requests   []time.Time
 }
 
 func (z *zone) serve(w http.ResponseWriter, r *http.Request) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
+	z.requests = append(z.requests, time.Now())
+	if z.limited > 0 {
+		z.limited--
+		w.Header().Set("Retry-After", z.retryAfter)
+		w.WriteHeader(429)
+		return
+	}
 	var result any = map[string]any{}
+	info := map[string]any{}
 	switch r.Method {
 	case "GET":
+		query := r.URL.Query()
 		list := []record{}
 		for _, v := range z.records {
-			if v.Name == r.URL.Query().Get("name") {
+			if prefix := query.Get("comment.startswith"); prefix != "" && strings.HasPrefix(v.Comment, prefix) || prefix == "" && v.Name == query.Get("name") {
 				list = append(list, v)
 			}
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+		if query.Has("page") {
+			page, _ := strconv.Atoi(query.Get("page"))
+			size, _ := strconv.Atoi(query.Get("per_page"))
+			info = map[string]any{"page": page, "per_page": size, "total_count": len(list), "total_pages": (len(list) + size - 1) / size}
+			list = list[min((page-1)*size, len(list)):min(page*size, len(list))]
 		}
 		result = list
 		if z.listed != nil {
@@ -74,7 +96,7 @@ func (z *zone) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(405)
 		return
 	}
-	_ = stablejson.Encode(w, map[string]any{"success": true, "result": result})
+	_ = stablejson.Encode(w, map[string]any{"success": true, "result": result, "result_info": info})
 }
 
 func fixture(t *testing.T, records ...record) (*zone, *Cloudflare) {
@@ -155,5 +177,74 @@ func TestRemoveRefusesAnswersForOtherNamesAndStopsWhenNotAudited(t *testing.T) {
 	refused := errors.New("audit unavailable")
 	if e := c.Remove(context.Background(), name, marker, func(Removed) error { return refused }); !errors.Is(e, refused) || len(z.deletes) != 0 {
 		t.Fatal("deleted a record the audit did not record", e, z.deletes)
+	}
+}
+
+func TestListMarkedReadsEveryPageAndOnlyOurPrefix(t *testing.T) {
+	prefix := "astilba:installation:"
+	var records []record
+	for i := range 250 {
+		records = append(records, record{ID: strings.Repeat("0", 28) + strconv.FormatInt(int64(0x1000+i), 16), Type: "A", Name: "*.s" + strconv.Itoa(i) + ".apps.example.test", Content: "198.51.100.1", Comment: prefix + "server"})
+	}
+	records = append(records, record{ID: id('f'), Type: "A", Name: name, Content: "198.51.100.2", Comment: "astilba:another-installation:server"})
+	_, c := fixture(t, records...)
+	got, complete, e := c.ListMarked(context.Background(), prefix)
+	if e != nil || !complete || len(got) != 250 {
+		t.Fatalf("listed %d records, complete %v: %v", len(got), complete, e)
+	}
+	for _, r := range got {
+		if !strings.HasPrefix(r.Comment, prefix) {
+			t.Fatal("listed another installation's record", r)
+		}
+	}
+}
+
+func TestListMarkedRefusesAListingNamingAnotherInstallation(t *testing.T) {
+	z, c := fixture(t)
+	z.listed = []record{
+		{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: "astilba:installation:server"},
+		{ID: id('2'), Type: "A", Name: name, Content: "198.51.100.2", Comment: "astilba:installation-other:server"},
+	}
+	// The second comment starts with the first's installation ID only as text, without its colon.
+	if _, _, e := c.ListMarked(context.Background(), "astilba:installation:"); !errors.Is(e, ErrProvider) {
+		t.Fatal("trusted a listing the filter was not applied to", e)
+	}
+}
+
+func TestRemoveListedLeavesRecordsItWasNotGiven(t *testing.T) {
+	z, c := fixture(t,
+		record{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker},
+		record{ID: id('2'), Type: "AAAA", Name: name, Content: "2001:db8::1", Comment: marker},
+		record{ID: id('3'), Type: "A", Name: name, Content: "198.51.100.2", Comment: "someone else"},
+	)
+	left, e := c.RemoveListed(context.Background(), name, marker, []string{id('1'), id('3'), id('9')}, func(Removed) error { return nil })
+	if e != nil || len(left) != 1 || left[0] != id('2') {
+		t.Fatal("left", left, e)
+	}
+	if _, ok := z.records[id('1')]; ok || len(z.records) != 2 || len(z.deletes) != 1 {
+		t.Fatalf("records %v, deletes %v", z.records, z.deletes)
+	}
+}
+
+func TestTooManyRequestsHoldsEveryLaterRequest(t *testing.T) {
+	z, c := fixture(t, record{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker})
+	z.limited, z.retryAfter = 1, "1"
+	if e := c.Remove(context.Background(), name, marker, func(Removed) error { return nil }); !errors.Is(e, ErrProvider) || errors.Is(e, ErrUnanswered) {
+		t.Fatal("a 429 was not reported as a request the provider refused", e)
+	}
+	if _, _, e := c.ListMarked(context.Background(), "astilba:installation:"); e != nil {
+		t.Fatal(e)
+	}
+	if waited := z.requests[1].Sub(z.requests[0]); waited < 900*time.Millisecond {
+		t.Fatal("the next request did not wait for Retry-After", waited)
+	}
+	// A request whose context ends while held is never sent.
+	z.limited, z.retryAfter = 1, "60"
+	_, _, _ = c.ListMarked(context.Background(), "astilba:installation:")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	sent := len(z.requests)
+	if _, _, e := c.ListMarked(ctx, "astilba:installation:"); !errors.Is(e, ErrProvider) || errors.Is(e, ErrUnanswered) || len(z.requests) != sent {
+		t.Fatal("a held request was sent or reported as unanswered", e)
 	}
 }

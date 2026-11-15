@@ -267,7 +267,7 @@ func (s *Service) recordWithdrawal(ctx context.Context, lease dnsLease, p db.Lis
 func (s *Service) auditDeletion(ctx context.Context, ws, server uuid.UUID, name, reason string) applicationdns.Deleting {
 	return func(r applicationdns.Removed) error {
 		slog.Info("removing an application DNS record", "server", server, "record", r.ID, "type", r.Type, "reason", reason)
-		return db.New(s.Store.Pool).InsertDNSRecordRemoval(ctx, db.InsertDNSRecordRemovalParams{WorkspaceID: ws, ServerID: server, Name: name, Zone: s.DNS.Zone, RecordID: r.ID, RecordType: r.Type, Content: r.Content, Reason: reason})
+		return db.New(s.Store.Pool).InsertDNSRecordRemoval(ctx, db.InsertDNSRecordRemovalParams{WorkspaceID: &ws, ServerID: server, Name: name, Zone: s.DNS.Zone, RecordID: r.ID, RecordType: r.Type, Content: r.Content, Reason: reason})
 	}
 }
 

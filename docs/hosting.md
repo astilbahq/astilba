@@ -708,6 +708,62 @@ record Astilba made there, for live and revoked servers alike. Delete them yours
 their comment starts with `astilba:` followed by the installation's ID. At startup,
 management logs a warning with the number of names it can no longer clean up.
 
+### Records the database has lost
+
+The database is Astilba's only record of which names it published. It can lose some: a restore
+from an older [management backup](management-backups.md) forgets every server enrolled or
+approved after the backup, and a crash, or a provider request that lands after its job gave up,
+can leave a record the database doesn't know about. Such a record may point at an address the
+server no longer holds, which someone else could then be given.
+
+So with automatic Cloudflare DNS, management compares the zone with the database at startup,
+which covers a restore, and every five minutes after. It lists the zone's records whose comment
+starts with `astilba:` and this installation's ID, and reads the server and base from each one's
+comment and name. Then, for each name:
+
+- **The database records it.** Nothing changes here: the rules in
+  [removing generated records](#removing-generated-records) apply, so a server fenced by
+  recovery keeps its records.
+- **The database lost it, and the server's approval for that name is current.** The name is
+  recorded again and the server's records are reconciled with the approval. Approved records are
+  never removed by the comparison.
+- **Anything else.** The record is unbacked and is removed. That includes servers the database
+  has never heard of, servers no longer approved, and names under a base other than
+  `ASTILBA_APPLICATION_DOMAIN`. Each deletion is audited first, with reason `unbacked`.
+
+Records whose comment carries another installation's ID, records without the comment, and records
+Astilba never makes are never removed. Records Astilba never makes are anything other than A or
+AAAA, and names that aren't the commented server's. Management logs a warning counting them.
+
+#### When many records would go at once
+
+If one comparison would remove more than 10 records, and more than a fifth of this installation's
+records it listed, it removes none of them and holds them instead. That covers a fault in the
+comparison, and a management that shouldn't be acting on this zone at all, such as a restore
+drill given the live zone's credentials. A genuine restore from an older backup can trip it too.
+While records are held, management logs an error every five minutes. On a self-hosted
+installation, each workspace whose servers have held records also gets a
+[`dns_withdrawal_held` alert](operational-alerts.md). Held records may resolve to addresses
+Astilba no longer controls, so review them promptly:
+
+```sh
+astilba dns withdrawals
+astilba dns confirm-withdrawals --hold HOLD_ID --count N --operator NAME --note REASON
+```
+
+`withdrawals` shows each hold: how many records it holds per workspace, a sample of names and
+addresses, and the exact command to confirm it. `--count` must match the number of records the
+hold holds. If the comparison has found a different set of records since, the hold is replaced,
+and the command asks you to look again. The next comparison, within five minutes, removes the
+confirmed records that are still unbacked. Records found later are judged afresh. A confirmation
+lapses after a day. A hold whose records fall back under the threshold, because some were backed
+again or deleted by hand, closes on its own and the rest are removed as usual.
+
+The threshold covers only this comparison between the zone and the database. Removals the
+database itself decides on, such as a revoked server's, are never held.
+
+Never give a restore drill the DNS settings: see [restore drills](management-backups.md#restore-drills).
+
 ### The pinned list
 
 Astilba checks against its own copy of the list in
@@ -871,7 +927,9 @@ encrypt and upload the database nightly to storage the server cannot erase, with
 alert when it fails, and the full restore procedure.
 
 Restore with the matching application version, or a newer one after `astilba migrate`,
-into a clean database and private keyring mount. Cross-host recovery reads the checkpoints the
+into a clean database and private keyring mount. With automatic DNS, the restored management
+removes, as soon as it starts, the records of servers enrolled or approved after the backup; see
+[records the database has lost](#records-the-database-has-lost). Cross-host recovery reads the checkpoints the
 hosts hold, so run it with the release that sealed the newest of them or a newer one, even when
 the backup is older. Restore the backup, migrate to that release, then recover. An older release
 refuses those checkpoints. Recovery starts from the workspaces the backup holds and opens their

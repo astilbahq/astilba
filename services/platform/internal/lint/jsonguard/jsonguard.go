@@ -33,16 +33,16 @@ var v1Importers = map[string]bool{
 // Functions that write to a third party, as package.receiver.function. Nothing hashes,
 // stores or compares what they send, so they do not need the frozen format.
 var plainWriters = map[string]bool{
-	"internal/stablejson.Marshal":                true,
-	"internal/pipeline.Provider.request":         true,
-	"internal/applicationdns.Cloudflare.request": true,
-	"internal/githubapp.Client.jwt":              true,
-	"internal/githubapp.Client.request":          true,
-	"internal/githubapp.Client.RevokeUser":       true,
-	"internal/alerts.Service.send":               true,
-	"internal/agent.visualRegistryAuth":          true,
-	"internal/agent.buildKitAuthConfig":          true,
-	"internal/agent.builderSeccompJSON":          true,
+	"internal/stablejson.Marshal":             true,
+	"internal/pipeline.Provider.request":      true,
+	"internal/applicationdns.Cloudflare.send": true,
+	"internal/githubapp.Client.jwt":           true,
+	"internal/githubapp.Client.request":       true,
+	"internal/githubapp.Client.RevokeUser":    true,
+	"internal/alerts.Service.send":            true,
+	"internal/agent.visualRegistryAuth":       true,
+	"internal/agent.buildKitAuthConfig":       true,
+	"internal/agent.builderSeccompJSON":       true,
 }
 
 func run(pass *analysis.Pass) (any, error) {
