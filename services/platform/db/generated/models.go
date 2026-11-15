@@ -29,10 +29,11 @@ type Account struct {
 }
 
 type AccountSecurityEvent struct {
-	ID        uuid.UUID `json:"id"`
-	AccountID uuid.UUID `json:"account_id"`
-	Kind      string    `json:"kind"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID   `json:"id"`
+	AccountID uuid.UUID   `json:"account_id"`
+	Kind      string      `json:"kind"`
+	CreatedAt time.Time   `json:"created_at"`
+	Reason    pgtype.Text `json:"reason"`
 }
 
 type AgentCounterValue struct {
@@ -201,6 +202,23 @@ type BuildTarget struct {
 	RejectedAt               *time.Time  `json:"rejected_at"`
 	PolicyAuthVersion        pgtype.Int8 `json:"policy_auth_version"`
 	PolicyOwner              bool        `json:"policy_owner"`
+	WaitingCommit            pgtype.Text `json:"waiting_commit"`
+	WaitingReason            pgtype.Text `json:"waiting_reason"`
+	WaitingRunnerID          *uuid.UUID  `json:"waiting_runner_id"`
+	WaitingSince             *time.Time  `json:"waiting_since"`
+	WaitingUntil             *time.Time  `json:"waiting_until"`
+}
+
+type CatalogStaging struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	RecipeID      string    `json:"recipe_id"`
+	RecipeVersion string    `json:"recipe_version"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	Services      []byte    `json:"services"`
+	AuthorID      uuid.UUID `json:"author_id"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type CrossHostApproval struct {
@@ -279,6 +297,30 @@ type CrossHostRuntime struct {
 	MemoryMib     int64     `json:"memory_mib"`
 }
 
+type CustodyBackend struct {
+	BackendID string    `json:"backend_id"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type CustodyBackendsVersion struct {
+	Singleton bool  `json:"singleton"`
+	Version   int64 `json:"version"`
+}
+
+type CustodyInstance struct {
+	InstanceID       uuid.UUID `json:"instance_id"`
+	TokenGenerations []int64   `json:"token_generations"`
+	StartedAt        time.Time `json:"started_at"`
+	SeenAt           time.Time `json:"seen_at"`
+}
+
+type CustodyStage struct {
+	Singleton  bool      `json:"singleton"`
+	Stage      int32     `json:"stage"`
+	AdvancedAt time.Time `json:"advanced_at"`
+}
+
 type DeploymentUnit struct {
 	WorkspaceID   uuid.UUID  `json:"workspace_id"`
 	ID            uuid.UUID  `json:"id"`
@@ -286,11 +328,6 @@ type DeploymentUnit struct {
 	Runtime       string     `json:"runtime"`
 	ServerID      *uuid.UUID `json:"server_id"`
 	PrimaryUnit   bool       `json:"primary_unit"`
-}
-
-type DnsInstallation struct {
-	Singleton bool      `json:"singleton"`
-	ID        uuid.UUID `json:"id"`
 }
 
 type DnsPublication struct {
@@ -427,6 +464,9 @@ type GitSource struct {
 	Status             string      `json:"status"`
 	PolicyActor        uuid.UUID   `json:"policy_actor"`
 	PolicyAuthVersion  pgtype.Int8 `json:"policy_auth_version"`
+	FailedCommit       string      `json:"failed_commit"`
+	FailureReason      string      `json:"failure_reason"`
+	FailedAt           *time.Time  `json:"failed_at"`
 }
 
 type GitSubmission struct {
@@ -508,6 +548,52 @@ type HostedSubscription struct {
 	NotifiedUntil   *time.Time  `json:"notified_until"`
 	UpdatedAt       time.Time   `json:"updated_at"`
 	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
+}
+
+type Installation struct {
+	Singleton bool      `json:"singleton"`
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type InstallationKey struct {
+	Scope      string     `json:"scope"`
+	Generation int64      `json:"generation"`
+	State      string     `json:"state"`
+	Sealable   bool       `json:"sealable"`
+	Kcv        []byte     `json:"kcv"`
+	CreatedAt  time.Time  `json:"created_at"`
+	RetiredAt  *time.Time `json:"retired_at"`
+}
+
+type InstallationKeyCanary struct {
+	BackendID string    `json:"backend_id"`
+	Class     string    `json:"class"`
+	Wrapped   []byte    `json:"wrapped"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type InstallationKeyEvent struct {
+	ID          uuid.UUID   `json:"id"`
+	At          time.Time   `json:"at"`
+	RunID       uuid.UUID   `json:"run_id"`
+	Kind        string      `json:"kind"`
+	Operator    pgtype.Text `json:"operator"`
+	Reason      pgtype.Text `json:"reason"`
+	BackendID   pgtype.Text `json:"backend_id"`
+	Scope       pgtype.Text `json:"scope"`
+	WorkspaceID *uuid.UUID  `json:"workspace_id"`
+	Generation  pgtype.Int8 `json:"generation"`
+	Details     []byte      `json:"details"`
+}
+
+type InstallationKeyWrapping struct {
+	Scope      string    `json:"scope"`
+	Generation int64     `json:"generation"`
+	Purpose    string    `json:"purpose"`
+	BackendID  string    `json:"backend_id"`
+	Wrapped    []byte    `json:"wrapped"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type InstallationSecret struct {
@@ -1005,6 +1091,25 @@ type Workspace struct {
 	RequireMfa     bool      `json:"require_mfa"`
 	CreatedAt      time.Time `json:"created_at"`
 	AlertScannedAt time.Time `json:"alert_scanned_at"`
+}
+
+type WorkspaceKey struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	Generation  int64      `json:"generation"`
+	State       string     `json:"state"`
+	Sealable    bool       `json:"sealable"`
+	Kcv         []byte     `json:"kcv"`
+	CreatedAt   time.Time  `json:"created_at"`
+	RetiredAt   *time.Time `json:"retired_at"`
+}
+
+type WorkspaceKeyWrapping struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	Generation  int64     `json:"generation"`
+	Purpose     string    `json:"purpose"`
+	BackendID   string    `json:"backend_id"`
+	Wrapped     []byte    `json:"wrapped"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type WorkspaceNetwork struct {

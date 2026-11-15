@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -20,34 +21,43 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command func(string, deployment.Plan, map[string]string) api.ExecutionCommand) {
+// nativeCatalogJourney stages every catalog entry as the API does and deploys it privately, with
+// a consumer of its first service's outputs. An entry with a route publishes it on this host's
+// ingress, which must refuse a client outside the staged allowlist.
+func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command func(string, deployment.Plan, map[string]string) api.ExecutionCommand, requests *http.Client) {
 	for _, recipe := range catalog.Recipes() {
 		t.Run(recipe.ID, func(t *testing.T) {
 			ctx := context.Background()
-			spec := recipe.Specification
-			a := &spec.Applications[0]
-			a.ID = uuid.New()
-			for i := range spec.Volumes {
-				old := spec.Volumes[i].ID
-				spec.Volumes[i].ID = uuid.New()
-				for j := range a.Mounts {
-					if a.Mounts[j].VolumeID == old {
-						a.Mounts[j].VolumeID = spec.Volumes[i].ID
-					}
+			in := catalog.Stage{Name: recipe.Name}
+			host := recipe.ID + ".catalog.example.test"
+			if recipe.Route != nil {
+				// Not this host's address, so the ingress must turn the request away.
+				in.Route = &catalog.StageRoute{Domain: host, TLS: "off", AllowCIDRs: []string{"203.0.113.7/32"}}
+			}
+			staged, err := recipe.Stage(in, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := staged.Specification
+			secrets := map[string]string{}
+			for _, g := range staged.Generated {
+				if secrets[g.VersionID.String()], err = g.Value(); err != nil {
+					t.Fatal(err)
 				}
 			}
-			secrets := map[string]string{}
-			if a.Postgres != nil {
-				a.Postgres.PasswordSecretVersionID = uuid.New()
-				secrets[a.Postgres.PasswordSecretVersionID.String()] = "catalog/$secret@canary"
+			// A database password that needs URL encoding, to check each consumer decodes it.
+			for _, a := range spec.Applications {
+				if a.Postgres != nil {
+					secrets[a.Postgres.PasswordSecretVersionID.String()] = "catalog/$secret@canary"
+				}
 			}
-			source := a.ID
+			source := spec.Applications[0].ID
 			consumer, image := uuid.New(), execution.TestImage
 			spec.Applications = append(spec.Applications, domain.Application{ID: consumer, Name: "Consumer", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Command: []string{"sleep", "3600"}})
 			for _, output := range []string{"HOST", "PORT", "URL"} {
 				spec.Bindings = append(spec.Bindings, domain.Binding{ID: uuid.New(), SourceID: source, TargetID: consumer, Output: output, Variable: "SOURCE_" + output})
 			}
-			p := deployment.Plan{ID: uuid.New(), ServerID: server, EnvironmentID: uuid.New(), UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{}, ExpiresAt: time.Now().Add(time.Hour)}.WithHash()
+			p := deployment.Plan{ID: uuid.New(), ServerID: server, EnvironmentID: uuid.New(), UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: deployment.Recipe, Specification: spec, Images: map[string]string{}, HostChanges: len(spec.Routes) > 0, ExpiresAt: time.Now().Add(time.Hour)}.WithHash()
 			t.Cleanup(func() {
 				filter := client.Filters{}.Add("label", labelServer+"="+server.String(), "com.astilba.unit="+p.UnitID.String())
 				containers, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filter})
@@ -177,6 +187,69 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 				}
 			}
 			finish("observe", secrets)
+			if recipe.Route == nil {
+				return
+			}
+			get := func(path string) int {
+				t.Helper()
+				req, _ := http.NewRequest("GET", "http://127.0.0.1"+path, nil)
+				req.Host = host
+				res, err := requests.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res.Body.Close()
+				return res.StatusCode
+			}
+			if code := get("/"); code != http.StatusForbidden {
+				t.Fatal("route admitted a client outside its allowlist", code)
+			}
+			// Opening the route, once the owner has their account, is a later, reviewed change.
+			redeploy := func(next deployment.Plan, secrets map[string]string) {
+				t.Helper()
+				next.ID, next.RevisionID, next.Images = uuid.New(), uuid.New(), map[string]string{}
+				p = next.WithHash()
+				resolved := finish("resolve", nil)
+				p.Images, p.ExpectedState = resolved.Images, resolved.StateHash
+				p = p.WithHash()
+				finish("deploy", secrets)
+			}
+			opened := p
+			opened.Specification.Routes = []domain.Route{spec.Routes[0]}
+			opened.Specification.Routes[0].AllowCIDRs = []string{}
+			redeploy(opened, secrets)
+			// The application may still be migrating its database behind its readiness check.
+			health := "/"
+			for _, a := range spec.Applications {
+				if a.ID == spec.Routes[0].TargetID && a.Health != nil {
+					health = a.Health.Path
+				}
+			}
+			for deadline := time.Now().Add(3 * time.Minute); ; time.Sleep(time.Second) {
+				code := get(health)
+				if code == http.StatusOK {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("route did not reach the application's readiness", code)
+				}
+			}
+			if recipe.ID == "kaneo" {
+				// Kaneo reached its database through the bound URL, whose password needs
+				// encoding, and created its schema there.
+				database := spec.Applications[1].ID
+				tables := exec(database, "psql", "-U", "kaneo", "-d", "kaneo", "-tAc", "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
+				if n := strings.TrimSpace(tables); n == "" || n == "0" {
+					t.Fatal("Kaneo created no tables in its database")
+				}
+			}
+			// An empty plan removes the entry's services and route from this host's ingress.
+			empty := p
+			empty.Specification = domain.Specification{Version: 1, Applications: []domain.Application{}, Variables: []domain.Variable{}}
+			redeploy(empty, map[string]string{})
+			if code := get("/"); code == http.StatusOK {
+				t.Fatal("removed route still answers")
+			}
 		})
 	}
 }

@@ -283,7 +283,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	})
 
 	databaseURL := url.URL{Scheme: "postgres", Host: "127.0.0.1:15432", Path: "/app", User: url.UserPassword("app", password), RawQuery: "sslmode=disable"}
-	t.Run("catalog", func(t *testing.T) { nativeCatalogJourney(t, f.engine, server, command) })
+	t.Run("catalog", func(t *testing.T) { nativeCatalogJourney(t, f.engine, server, command, f.requestClient) })
 	db, err := pgx.Connect(ctx, databaseURL.String())
 	if err != nil {
 		t.Fatal("TCP route did not connect to PostgreSQL")
@@ -296,11 +296,11 @@ func TestNativeVisualDeployment(t *testing.T) {
 		nativePostgresMetadataRestore(t, f.engine, p)
 	})
 	t.Run("backup_and_fresh_restore", func(t *testing.T) {
-		nativeBackupJourney(t, f.engine, p, func(b backup.Command) Record {
+		nativeBackupJourney(t, f.engine, p, func(b backup.Command) api.ExecutionCommand {
 			f.generation++
 			raw, _ := stablejson.Marshal(b)
 			value := jsontext.Value(raw)
-			return finish(api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: "backup", Action: "inspect", Generation: f.generation, PlanHash: b.Digest(), Backup: &value, Deadline: time.Now().Add(time.Minute)})
+			return api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: p.EnvironmentID, ResourceId: b.Installation.Policy.ID, Kind: "backup", Action: "inspect", Generation: f.generation, PlanHash: b.Digest(), Backup: &value, Deadline: time.Now().Add(time.Minute)}
 		})
 	})
 	nativeFilesAndJobs(t, f.engine, server)

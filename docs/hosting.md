@@ -34,7 +34,8 @@ an owner-only environment file outside source control:
 | --- | --- |
 | `ASTILBA_DATABASE_URL` | PostgreSQL connection URL; use verified TLS for a remote database. |
 | `ASTILBA_KEYRING` | Path to a mounted owner-only keyring, readable by UID 65532. |
-| `ASTILBA_KEYRING_JSON` | Alternative keyring JSON supplied directly by a secret manager or container environment. Configure exactly one keyring source. |
+| `ASTILBA_INSTALLATION_ID` | The installation's ID, which `astilba custody status` shows after `astilba migrate`. Required when hosted, and recommended everywhere: a database that belongs to another installation is then refused. See [key custody](#key-custody). |
+| `ASTILBA_KEY_BACKEND` | Optional. The key service keys are read from; `file`, the keyring file, is the default and the only one so far. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
@@ -52,7 +53,8 @@ previously encrypted data.
 
 1. Provision an empty PostgreSQL database and the keyring. Do not expose the database publicly.
 2. With the same image and configuration as the server, run `astilba migrate`.
-   Migrations are explicit; normal startup refuses an incompatible schema.
+   Migrations are explicit; normal startup refuses an incompatible schema. Then run
+   `astilba custody status` and set `ASTILBA_INSTALLATION_ID` to the installation ID it shows.
 3. Run `astilba bootstrap --email owner@example.com --name Owner --workspace Personal`.
    Provide the password on stdin or with `--password-file` pointing to an owner-only file.
 4. Configure an HTTPS reverse proxy for the public origin, forwarding to the
@@ -67,6 +69,79 @@ previously encrypted data.
    on disposable infrastructure before admitting customer workloads.
 
 To move to a newer version later, follow [upgrading management](management-upgrades.md).
+
+### Key custody
+
+The keyring is a file. Management doesn't read a keyring from its environment, where anything
+that can read the environment would find it beside the database URL. `ASTILBA_KEYRING_JSON` was
+removed, and setting it stops management from starting.
+
+Each installation has an ID, made by `astilba migrate`, which every key wrapping is bound to.
+`astilba custody status` shows it. Set `ASTILBA_INSTALLATION_ID` to it: then a database that
+belongs to another installation is refused, such as a copy restored for testing. A restore of the
+same installation keeps its ID.
+
+Every command that uses keys checks them before it starts:
+
+- the first start registers its key backend, and wraps a canary under each key class. If the
+  database already holds values sealed under the keyring, as after upgrading or restoring a backup
+  from before canaries, it first opens one of each kind, recorded once for the installation as a
+  rewrap is, and refuses a keyring that cannot;
+- later starts open the canaries, so a keyring other than the installation's is refused, as is a
+  database whose installation ID was changed;
+- a refused start is recorded, with its cause.
+
+`astilba custody` reports on and changes the installation's keys. Each change it makes is
+recorded in the installation's key history. The history holds the operator's name and reason. The
+[secret access record](#operational-bounds-and-retention) of a run is one for the whole
+installation and names only the run.
+`--operator` can be a role, such as `on-call`, rather than a person. Every event is kept, but its
+operator and reason are blanked once it is older than the secret access retention period, 400
+days by default. A database trigger refuses any other change to an event, and its removal. That
+is defence in depth against mistakes, not proof against whoever owns the database, who can
+remove the trigger.
+
+| Command | What it does |
+| --- | --- |
+| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, and any pending work. It changes nothing. |
+| `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
+| `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+| `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
+
+`custody status` lists a command that recorded a start and no finish, unless a run of it that
+started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
+has moved through key custody changes. `astilba migrate` refuses a release more than one stage
+ahead of the installation, so a release that starts a stage says so in its notes.
+
+#### Workspace keys
+
+Each workspace has a key of its own. The installation has an installation key, for second
+factors, and token keys, for the device and password reset tokens management issues to itself.
+Each key is random and is stored only wrapped: once for each purpose it serves, such as sealing
+or delivering, under the backend's key for that purpose's class. A key check value stored beside
+it shows whether a wrapping opens to the right key before any value is opened with it.
+
+This release (custody stage 2) creates the keys, and opens values sealed under them. It still
+seals new values, and issues tokens, under the keyring. The release after it seals under the keys,
+so going back from that release to this one needs no restore.
+
+- **New workspaces** get their key in the transaction that creates them.
+- **Existing workspaces** get theirs from `serve`, in the background, which also creates the
+  installation and token keys. Its log shows progress, and so does `custody status`; `custody
+  init-keys` does the same work in the foreground. Once every key exists the custody stage becomes
+  2, which the next release's `migrate` needs.
+- **Rewrap** wraps every key again, and leaves values sealed under them as they are. If you go
+  back to the previous release after this one has created keys, don't remove a key from the
+  keyring until you've returned to this release and run `custody rewrap`: the previous release
+  doesn't rewrap workspace keys.
+- **Deleting a workspace** deletes its keys, so nothing sealed under them opens again.
+- **Token keys** stay in each instance's memory. Instances look for new ones every minute, and
+  record which they hold, so a new token key is used for tokens only once every instance holds
+  it.
+
+Database triggers let a key's state move only forward, keep the seal wrapping only for the key
+new values are sealed under, and refuse to delete a key except with its workspace. As with key
+events, that guards against mistakes, not against whoever owns the database.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
@@ -233,6 +308,9 @@ No per-address limit stops a flood from hundreds of addresses, each staying with
 That delays or refuses sign-in on browsers without the cookie, with a 503, for as long as it
 runs, while live sessions and known browsers keep working. Stop it upstream, with a CDN or
 firewall that can challenge or block that traffic.
+
+An account holder locked out by a lost authenticator, or by one someone else enrolled, needs the
+operator's `astilba reset-mfa`. See [account takeover or lost authenticator](incident-response.md#account-takeover-or-lost-authenticator).
 
 ### When password reset mail fails
 
@@ -469,6 +547,7 @@ tls:
 
 Set `ASTILBA_HOSTED=true`, plus all of:
 
+- `ASTILBA_INSTALLATION_ID`: the installation ID from `astilba custody status`. See [key custody](#key-custody).
 - `ASTILBA_HOSTED_COHORT_LIMIT`: total admitted and reserved workspace invitations.
 - `ASTILBA_HOSTED_SERVER_LIMIT`: allowance applied to new hosted workspaces.
 - `ASTILBA_HOSTED_SUPPORT`: published support hours and scope.
@@ -717,11 +796,15 @@ workspace's second, and its jobs run in the Git queue described above, sharing i
 
 Secret access records note every time management was given the keys to a workspace's stored
 values: who it was for, why, which items by ID, and how it ended. Workspace owners see them on
-the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-access`. They are
-not part of workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
+the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-access`. Key
+maintenance across the installation, a rewrap or the keyring check before an installation's first
+canaries, is one record for the whole installation rather than one per workspace. Workspace pages
+don't show it; the installation's [key history](#key-custody) does. Records are not part of
+workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
 kept, from 30 to 3650 days with a default of 400; hosted installations keep 400. `astilba
 migrate` writes the value into the database, so a change takes effect at the next migrate, and
-serving never changes it. An hourly job removes expired records, up to 5,000 a run.
+serving never changes it. An hourly job removes expired records, up to 5,000 a run. The same
+job blanks the operator and reason of [installation key events](#key-custody) past that period.
 
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each
@@ -847,4 +930,4 @@ schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
 
-Workspace exports use archive version 9, which adds environment purges, retired secrets and erased secret values to version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–8 remain importable; their environments import as active or retired as recorded, nothing in them is purged or erased, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
+Workspace exports use archive version 11, which adds which preview requests revoking their preview host released to version 9's environment purges, retired secrets and erased secret values, version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Cross-host recovery checkpoints use version 12, with version 11's tables; version 10 is a checkpoint with version 9's, and no export uses either. Versions 1–9 remain importable. Nothing in them is recorded as released by revocation, and nothing in versions 1–8 is purged or erased. Their environments import as active or retired as recorded, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).

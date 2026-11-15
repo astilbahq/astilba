@@ -297,7 +297,7 @@ try {
   const restoredRuntime = join(directory, "restored.env");
   await writeFile(restoredRuntime, `ASTILBA_DATABASE_URL=postgres://postgres:${password}@restored-database:5432/postgres?sslmode=disable\nASTILBA_KEYRING=/keys/keyring.json\nASTILBA_ORIGIN=https://example.test\nASTILBA_LISTEN=0.0.0.0:8080\n`, { mode: 0o600 });
   const restoredCommon = ["--network", network, "--env-file", restoredRuntime, "-v", `${restoredKeys}:/keys:ro`];
-  docker(["run", "--rm", ...restoredCommon, image, "rewrap"]);
+  docker(["run", "--rm", ...restoredCommon, image, "custody", "rewrap", "--operator", "image-test", "--reason", "restore drill"]);
   docker(["run", "--rm", ...restoredCommon, image, "prepare-recovery", "--server", server.server.id, "--controller-generation", "1"]);
   const restoredApp = `astilba-restored-app-${id}`;
   docker(["run", "-d", "--name", restoredApp, "--label", label, ...restoredCommon, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", image]);

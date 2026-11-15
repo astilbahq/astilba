@@ -1,6 +1,7 @@
 import { type ReactNode, useId, useState } from "react";
 import { ApiError, client, result, type Schema } from "../../api/client";
 import type { EnvironmentPath } from "../../api/environment";
+import { railpackInputs, railpackVersion } from "../../api/generated/railpack";
 import { Button } from "../../components/button";
 import { Checkbox } from "../../components/checkbox";
 import { Input } from "../../components/input";
@@ -157,15 +158,19 @@ export function BuildServiceForm({
             }
             if (builder === "railpack") {
               for (const id of [runner, text(d, "fallback")].filter(Boolean)) {
+                const capabilities = servers?.find(
+                  (server) => server.id === id,
+                )?.capabilities;
+                // Management sends a Railpack build only to a runner on this release's pins.
                 if (
-                  servers?.find((server) => server.id === id)?.capabilities
-                    ?.railpackVersion !== "0.43.0"
+                  !capabilities ||
+                  capabilities.railpackInputs !==
+                    railpackInputs[capabilities.arch]
                 ) {
                   throw new ApiError(
                     {
                       code: "invalid_input",
-                      message:
-                        "Update the selected runner and fallback to support Railpack 0.43.0 before queuing this build.",
+                      message: `Update the selected runner and fallback to this Astilba release, which builds with Railpack ${railpackVersion}, before queuing this build.`,
                       fields: ["build.builder"],
                       requestId: "",
                     },
@@ -258,7 +263,7 @@ export function BuildServiceForm({
           {builderError && action.error instanceof Error
             ? action.error.message
             : builder === "railpack"
-              ? "Railpack 0.43.0 supports Node/npm, Go and shell projects here. Review the resource limits below; recommended limits are 6 GiB memory, 1 GiB source and 4 GiB builder storage."
+              ? `Railpack ${railpackVersion} supports Node/npm, Go and shell projects here. Review the resource limits below; recommended limits are 6 GiB memory, 1 GiB source and 4 GiB builder storage.`
               : "Use a Dockerfile from your build context."}
         </p>
         {builder === "dockerfile" ? (

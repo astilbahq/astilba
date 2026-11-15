@@ -64,6 +64,8 @@ type Queries interface {
 	InsertSecretAccess(ctx context.Context, arg db.InsertSecretAccessParams) error
 	InsertSecretAccessOutcome(ctx context.Context, arg db.InsertSecretAccessOutcomeParams) error
 	AbandonSecretAccess(ctx context.Context, olderThanSeconds float64) (int64, error)
+	WorkspaceKeyWrappings(ctx context.Context, arg db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error)
+	InstallationKeyWrappings(ctx context.Context, arg db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error)
 }
 
 type Broker struct {
@@ -72,6 +74,9 @@ type Broker struct {
 	budgets *budgets
 	log     *slog.Logger
 	now     func() time.Time
+	// installation and pool are set by Install, which an operator's command needs first.
+	installation uuid.UUID
+	pool         Pool
 }
 
 // New takes queries that do not run in a caller's transaction: each record commits on its own.
@@ -82,9 +87,10 @@ func New(q Queries, backend custody.Legacy, log *slog.Logger) *Broker {
 	return &Broker{q: q, backend: backend, budgets: newBudgets(), log: log, now: time.Now}
 }
 
-// Begin checks the request, records it, and only then returns a session holding the keys.
-// It must not run with a transaction open: it commits a record of its own, and with an external
-// key service it waits on the network.
+// Begin checks the request, records it, and only then returns a session holding the keys: the
+// installation keyring, and each live generation of the workspace's key, or of the installation
+// key for the installation's own values. It must not run with a transaction open: it commits a
+// record of its own, and with an external key service it waits on the network.
 func (b *Broker) Begin(ctx context.Context, r Request) (*Session, error) {
 	rule, err := b.admit(ctx, r)
 	if err != nil {
@@ -93,8 +99,12 @@ func (b *Broker) Begin(ctx context.Context, r Request) (*Session, error) {
 	if !b.budgets.take(budgetKeys(r)) {
 		return nil, domain.RateLimited
 	}
+	scope, wrapped, err := b.wrappedKeys(ctx, r)
+	if err != nil {
+		return nil, err
+	}
 	id := uuid.New()
-	if err = b.record(ctx, id, r); err != nil {
+	if err = b.record(ctx, id, r, generationsOf(wrapped)); err != nil {
 		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
@@ -102,7 +112,12 @@ func (b *Broker) Begin(ctx context.Context, r Request) (*Session, error) {
 		b.outcome(ctx, id, Refused)
 		return nil, err
 	}
-	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring()}
+	keys, err := b.unwrap(ctx, scope, r.Workspace, string(r.Purpose), wrapped)
+	if err != nil {
+		b.outcome(ctx, id, Failed)
+		return nil, err
+	}
+	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: keys}
 	b.log.Info("secret access", "access", id, "workspace", r.Workspace, "purpose", r.Purpose, "principal", r.Principal.Kind, "items", len(r.Items), "kinds", len(r.Kinds), "backend", b.backend.ID())
 	return s, nil
 }
@@ -174,7 +189,8 @@ func (r rule) covers(kind Kind) bool {
 // maxRecordedItems bounds a record. Beyond it the record keeps the count, and the kinds.
 const maxRecordedItems = 256
 
-func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request) error {
+// record commits the request's record, naming the key generations its session holds.
+func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request, held []int64) error {
 	type recorded struct {
 		Kind Kind       `json:"kind"`
 		ID   *uuid.UUID `json:"id,omitempty"`
@@ -190,9 +206,7 @@ func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request) error {
 	if err != nil {
 		return err
 	}
-	// Before per-workspace keys exist every value is under the installation keyring, which
-	// counts as generation 0.
-	generations, err := stablejson.Marshal([]int64{0})
+	generations, err := stablejson.Marshal(held)
 	if err != nil {
 		return err
 	}
@@ -205,20 +219,22 @@ func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request) error {
 	if r.Workspace != uuid.Nil {
 		workspace = &r.Workspace
 	}
-	optional := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
 	// A request cancelled now must not give out keys with no record: the insert runs to its end
 	// either way, and Begin refuses after it.
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	err = b.q.InsertSecretAccess(write, db.InsertSecretAccessParams{
 		ID: id, WorkspaceID: workspace, Purpose: string(r.Purpose), PrincipalKind: string(p.Kind),
-		AccountID: p.Account, AutomationID: p.Automation, ServerID: p.Server, AgentInstance: optional(p.Instance),
-		Job: optional(p.Job), OperatorRef: optional(p.Operator), OperationID: r.Operation,
+		AccountID: p.Account, AutomationID: p.Automation, ServerID: p.Server, AgentInstance: optionalText(p.Instance),
+		Job: optionalText(p.Job), OperatorRef: optionalText(p.Operator), OperationID: r.Operation,
 		Items: rawItems, ItemCount: int32(len(r.Items) + len(r.Kinds)), Generations: generations,
 		BackendID: b.backend.ID(), Reason: reason,
 	})
 	return err
 }
+
+// optionalText is an empty string as NULL.
+func optionalText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
 
 func (b *Broker) outcome(ctx context.Context, id uuid.UUID, outcome Outcome) error {
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
