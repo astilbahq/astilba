@@ -166,14 +166,80 @@ func (s Stripe) Subscription(ctx context.Context, id, customer string) (Subscrip
 	}
 	return out, nil
 }
-func (s Subscription) Entitlement() Entitlement {
-	end := time.Unix(s.Items.Data[0].End, 0)
-	if s.EndedAt != nil && time.Unix(*s.EndedAt, 0).Before(end) {
-		end = time.Unix(*s.EndedAt, 0)
+
+// maxPaidPeriod bounds one paid line's service period. The price is monthly, and the
+// longest month plus clock adjustments fits well inside this.
+const maxPaidPeriod = 32 * 24 * time.Hour
+
+// paidInvoiceWindow is how many paid invoices PaidThrough reads. Stripe lists invoices
+// newest-created first ("sorted by creation date, with the most recently created invoices
+// appearing first"), so this page always holds the latest paid periods; older paid invoices
+// can only cover earlier periods.
+const paidInvoiceWindow = 10
+
+type paidInvoices struct {
+	Data []struct {
+		ID       string `json:"id"`
+		Customer string `json:"customer"`
+		Status   string `json:"status"`
+		Parent   *struct {
+			Details *struct {
+				Subscription string `json:"subscription"`
+			} `json:"subscription_details"`
+		} `json:"parent"`
+		Lines struct {
+			Data []struct {
+				Period struct {
+					Start int64 `json:"start"`
+					End   int64 `json:"end"`
+				} `json:"period"`
+				Parent *struct {
+					Item *struct {
+						Subscription string `json:"subscription"`
+						Proration    bool   `json:"proration"`
+					} `json:"subscription_item_details"`
+				} `json:"parent"`
+			} `json:"data"`
+		} `json:"lines"`
+	} `json:"data"`
+}
+
+// PaidThrough returns the end of the latest service period of subscription id that a paid
+// invoice covers, or nil when no invoice of it is paid. Paid is final for a Stripe invoice, so
+// what this returns never moves earlier. A line counts whatever its price: a workspace that
+// paid for a period at an earlier price paid for it. Proration lines adjust a period already
+// billed, so they never count. Anything Stripe returns that was not asked for is refused.
+func (s Stripe) PaidThrough(ctx context.Context, id, customer string) (*time.Time, error) {
+	if !validID(id, "sub_") || !validID(customer, "cus_") {
+		return nil, ErrProvider
 	}
-	// Delinquent subscriptions retain only their already paid period. Expiration
-	// is never moved to the webhook delivery time.
-	return Entitlement{Status: s.Status, Until: &end}
+	q := url.Values{"customer": {customer}, "subscription": {id}, "status": {"paid"}, "limit": {strconv.Itoa(paidInvoiceWindow)}}
+	var out paidInvoices
+	if e := s.request(ctx, "GET", "invoices?"+q.Encode(), "", nil, &out); e != nil {
+		return nil, e
+	}
+	if len(out.Data) > paidInvoiceWindow {
+		return nil, ErrProvider
+	}
+	var end *time.Time
+	for _, invoice := range out.Data {
+		if !validID(invoice.ID, "in_") || invoice.Customer != customer || invoice.Status != "paid" || invoice.Parent == nil || invoice.Parent.Details == nil || invoice.Parent.Details.Subscription != id {
+			return nil, ErrProvider
+		}
+		for _, line := range invoice.Lines.Data {
+			if line.Parent == nil || line.Parent.Item == nil || line.Parent.Item.Subscription != id || line.Parent.Item.Proration {
+				continue
+			}
+			start, until := time.Unix(line.Period.Start, 0), time.Unix(line.Period.End, 0)
+			if line.Period.Start <= 0 || !until.After(start) || until.Sub(start) > maxPaidPeriod {
+				return nil, ErrProvider
+			}
+			if end == nil || until.After(*end) {
+				end = &until
+			}
+		}
+	}
+	return end, nil
 }
 
 type Event struct {

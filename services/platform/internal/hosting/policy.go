@@ -8,6 +8,13 @@ import (
 
 const GracePeriod = 30 * 24 * time.Hour
 
+// RenewalAllowance is how long management outlasts the last paid period. Stripe finalizes a
+// renewal invoice about an hour after the period ends and only then charges it, so without
+// this every paying workspace would lose management at each renewal. A renewal that fails
+// keeps management this long past the paid period, once: the next extension needs another
+// paid invoice.
+const RenewalAllowance = 24 * time.Hour
+
 // Config contains operator choices, not feature flags. Self-hosted installations
 // expose the same product without subscription admission.
 type Config struct {

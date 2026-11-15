@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const claimExpiryNotice = `-- name: ClaimExpiryNotice :one
@@ -214,6 +215,34 @@ func (q *Queries) HostedInvitationOpen(ctx context.Context, arg HostedInvitation
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const hostedSubscriptionOfCustomer = `-- name: HostedSubscriptionOfCustomer :one
+SELECT subscription_id FROM hosted_subscriptions WHERE workspace_id = $1 AND customer_id = $2
+`
+
+type HostedSubscriptionOfCustomerParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	CustomerID  pgtype.Text `json:"customer_id"`
+}
+
+func (q *Queries) HostedSubscriptionOfCustomer(ctx context.Context, arg HostedSubscriptionOfCustomerParams) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, hostedSubscriptionOfCustomer, arg.WorkspaceID, arg.CustomerID)
+	var subscription_id pgtype.Text
+	err := row.Scan(&subscription_id)
+	return subscription_id, err
+}
+
+const hostedWorkspaceOfCustomer = `-- name: HostedWorkspaceOfCustomer :one
+SELECT workspace_id FROM hosted_subscriptions WHERE customer_id = $1
+`
+
+// unscoped: a Stripe invoice event names only the customer, and each workspace has its own.
+func (q *Queries) HostedWorkspaceOfCustomer(ctx context.Context, customerID pgtype.Text) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, hostedWorkspaceOfCustomer, customerID)
+	var workspace_id uuid.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
 }
 
 const insertHostedInvitation = `-- name: InsertHostedInvitation :exec
