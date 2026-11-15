@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
@@ -34,6 +35,18 @@ func gitEnvironment(p pipeline.Command) []string {
 func (e *Engine) pipelineGit(ctx context.Context, c api.ExecutionCommand, p pipeline.Command, input []byte, args ...string) ([]byte, error) {
 	return e.pipelineCLI(ctx, pipelineName(c), gitEnvironment(p), input, 1<<20, append([]string{"git", "--git-dir=/workspace/repo"}, args...)...)
 }
+
+// errCloneExpired is a pipeline's failure when the repository credential management minted for
+// it ran out before the runner fetched the source, such as after a long wait for the host.
+var errCloneExpired = errors.New("the repository access token for this run expired before the runner fetched the source; run it again")
+
+// cloneExpired says whether the pipeline's minted clone credential has expired by this host's
+// clock. It only explains a fetch that failed: the Git server decides whether the credential
+// works, and the expiry extends nothing management issued.
+func cloneExpired(p pipeline.Command) bool {
+	return p.Access != nil && p.Access.CloneExpires != nil && !time.Now().Before(*p.Access.CloneExpires)
+}
+
 func (e *Engine) clonePipeline(ctx context.Context, c api.ExecutionCommand, p pipeline.Command) error {
 	if _, err := e.pipelineCLI(ctx, pipelineName(c), nil, nil, 1024, "mkdir", "-p", "/workspace/repo"); err != nil {
 		return err
@@ -49,6 +62,9 @@ func (e *Engine) clonePipeline(ctx context.Context, c api.ExecutionCommand, p pi
 		fetch = pipeline.PullRequestRef(p.Connection.Provider, p.Preview.Number)
 	}
 	if _, err := e.pipelineGit(ctx, c, p, nil, "fetch", "--quiet", "--depth=1", "--no-tags", "origin", fetch); err != nil {
+		if cloneExpired(p) {
+			return errCloneExpired
+		}
 		return errors.New("exact-commit fetch failed or exceeded the source storage budget")
 	}
 	out, err := e.pipelineGit(ctx, c, p, nil, "rev-parse", "FETCH_HEAD")

@@ -226,18 +226,20 @@ func TestImportCheckComparesEverySelectedFile(t *testing.T) {
 	latest := strings.Repeat("e", 40)
 	i.source.head.Store(latest)
 	second := []composeproject.File{importHonest[0], {Path: "config/app.env", Content: "MODE=forged\n"}}
-	for name, tree := range map[string][]composeproject.File{
-		"second file differs":       importHonest,
-		"provider lacks the second": importHonest[:1],
-	} {
-		i.source.tree.record(latest, tree)
-		c := i.refresh(t)
-		i.runner.reportImport(c, latest, second)
-		if got := i.operation(t, c.Id); got.State != "failed" || !strings.Contains(got.Note, "differ from what the Git provider holds") {
-			t.Fatalf("%s: not refused: %s %q", name, got.State, got.Note)
-		}
-		i.requireUnchanged(t)
+	i.source.tree.record(latest, importHonest)
+	c := i.refresh(t)
+	i.runner.reportImport(c, latest, second)
+	if got := i.operation(t, c.Id); got.State != "failed" || !strings.Contains(got.Note, "differ from what the Git provider holds") {
+		t.Fatalf("a second file that differs was not refused: %s %q", got.State, got.Note)
 	}
+	i.requireUnchanged(t)
+	// A selected file the provider lacks is refused before any runner is asked, by name.
+	i.source.tree.record(latest, importHonest[:1])
+	var refused api.Error
+	if err := json.Unmarshal(i.b.call("POST", i.path+"/source/refresh", map[string]any{"baseRevisionId": i.draft.Id}, 400, nil), &refused); err != nil || !strings.Contains(refused.Message, `"config/app.env"`) {
+		t.Fatalf("a file the provider lacks was not refused by name: %q %v", refused.Message, err)
+	}
+	i.requireUnchanged(t)
 }
 
 // The commit's tree cannot change after admission, so a report needs no network. An outage
@@ -686,7 +688,7 @@ func TestImportCheckThroughAGitHubApp(t *testing.T) {
 	if draft, _ = draftSpec(t, b, path); draft.Id == env.DraftRevisionId {
 		t.Fatal("an honest App import was not saved")
 	}
-	if got := h.fileToken.Load(); got != "Bearer installation-read-canary" {
+	if got, _ := h.fileToken.Load().(string); !strings.HasPrefix(got, "Bearer installation-read-canary-") {
 		t.Fatalf("the check used another credential: %v", got)
 	}
 }

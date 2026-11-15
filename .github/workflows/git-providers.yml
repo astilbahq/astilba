@@ -69,6 +69,8 @@ jobs:
         with:
           go-version-file: experiments/git-compose/go.mod
           cache-dependency-path: experiments/git-compose/go.sum
+      - name: Read Docker Hub through its mirror
+        uses: ./.github/actions/docker-hub-mirror
       - name: Pull pinned provider images
         uses: ./.github/actions/pull-images
         with:

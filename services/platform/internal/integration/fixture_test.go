@@ -190,10 +190,12 @@ func warnPastBudget(took time.Duration) {
 }
 
 type fixture struct {
-	st        *store.Store
-	auth      *auth.Service
-	server    *httptest.Server
-	mail      chan string
+	st     *store.Store
+	auth   *auth.Service
+	server *httptest.Server
+	mail   chan string
+	// notices holds the account security notices sent, apart from other mail.
+	notices   chan string
 	password  string
 	owner     uuid.UUID
 	execution *execution.Service
@@ -214,16 +216,68 @@ func testStore(t *testing.T, pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted
 	return st
 }
 
+// workersStarted holds the workers each test store started, which read its broker and keyring in
+// the background until they stop.
+var workersStarted sync.Map
+
+// keysSettled waits, for a store whose workers run, until the key job they run at start has
+// finished; nothing then reads the broker or its keyring in the background for ten minutes. A test
+// that changes a live store's keyring or broker waits first: a real process never changes either,
+// as a new keyring takes a restart.
+func keysSettled(t *testing.T, st *store.Store) {
+	t.Helper()
+	workers, ok := workersStarted.Load(st)
+	if !ok {
+		return
+	}
+	stopped := workers.(*execution.Service).Queue.Stopped()
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		var done bool
+		if err := st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_custody_keys_v1' AND state='completed')`).Scan(&done); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-stopped:
+			// Stopping waits for running jobs, and nothing starts another.
+			return
+		default:
+		}
+		if done {
+			return
+		}
+	}
+	var jobs string
+	_ = st.Pool.QueryRow(context.Background(), `SELECT coalesce(string_agg(state::text || ' attempt ' || attempt || ' ' || coalesce(errors::text, ''), '; '), 'none') FROM river_job WHERE kind='platform_custody_keys_v1'`).Scan(&jobs)
+	t.Fatalf("the key job the workers run at start did not finish: %s", jobs)
+}
+
 // useKeys gives a store a keyring, as configuring another keyring and restarting does: the
 // broker and the paths not yet moved to it both use the new one.
 func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 	t.Helper()
+	keysSettled(t, st)
 	backend, e := custody.NewFile(keys)
 	if e != nil {
 		t.Fatal(e)
 	}
 	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
+	// As every command does at start, with an operator's checks so tests may rewrap.
+	if e = st.Broker.Install(context.Background(), st.Pool, uuid.Nil, true); e != nil {
+		t.Fatal(e)
+	}
 	storeKeys.Store(st, keys)
+}
+
+// restoredKeys gives a store another installation's keyring, as restoring that installation's
+// database beside its keyring does: the custody the store set up under its own keyring is not
+// part of what was restored.
+func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
+	t.Helper()
+	keysSettled(t, st)
+	if _, err := st.Pool.Exec(context.Background(), "DELETE FROM custody_backends"); err != nil {
+		t.Fatal(err)
+	}
+	useKeys(t, st, keys)
 }
 
 // secretIdentity is the identity a secret version's value is sealed under, for tests that open
@@ -276,7 +330,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	})
 	// The one value a migration makes up. Each installation has its own.
-	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
+	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)
 	}
 	keys, _ := cryptobox.New("test")
@@ -300,7 +354,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	}
 
-	mail, address := smtpFixture(t)
+	mail, notices, address := smtpFixture(t)
 	sender, e := mailer.New(mailer.Config{Address: address, From: "Astilba <accounts@example.test>", Mode: "plain", Development: true})
 	if e != nil {
 		t.Fatal(e)
@@ -321,6 +375,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if e = apiServer.Execution.Start(workerCtx); e != nil {
 		t.Fatal(e)
 	}
+	workersStarted.Store(st, apiServer.Execution)
 	t.Cleanup(func() {
 		workerCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -332,17 +387,22 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	server := httptest.NewServer(handler)
 	apiServer.Origin = server.URL
 	apiServer.Execution.ResetMail.Origin = server.URL
+	apiServer.Execution.SecurityNotice.Origin = server.URL
 	t.Cleanup(server.Close)
-	return &fixture{st, service, server, mail, fixturePassword, owner, apiServer.Execution, apiServer, log}
+	return &fixture{st, service, server, mail, notices, fixturePassword, owner, apiServer.Execution, apiServer, log}
 }
-func smtpFixture(t *testing.T) (chan string, string) {
+
+// securityNoticeMarker is in every account security notice, which smtpFixture keeps apart.
+const securityNoticeMarker = "your workspace owners."
+
+func smtpFixture(t *testing.T) (chan string, chan string, string) {
 	t.Helper()
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	messages := make(chan string, 10)
+	messages, notices := make(chan string, 10), make(chan string, 32)
 	go func() {
 		for {
 			conn, e := listener.Accept()
@@ -371,7 +431,11 @@ func smtpFixture(t *testing.T) (chan string, string) {
 						if e != nil {
 							return
 						}
-						messages <- string(body)
+						if strings.Contains(string(body), securityNoticeMarker) {
+							notices <- string(body)
+						} else {
+							messages <- string(body)
+						}
 						reply("250 queued")
 					case strings.HasPrefix(line, "QUIT"):
 						reply("221 bye")
@@ -383,7 +447,7 @@ func smtpFixture(t *testing.T) (chan string, string) {
 			}()
 		}
 	}()
-	return messages, listener.Addr().String()
+	return messages, notices, listener.Addr().String()
 }
 
 type browser struct {

@@ -149,6 +149,33 @@ func (q *Queries) AutomaticBuildArtifact(ctx context.Context, arg AutomaticBuild
 	return identity, err
 }
 
+const automaticBuildsBehind = `-- name: AutomaticBuildsBehind :one
+SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = $1 AND environment_id = $2 AND connection_id = $3
+    AND configuration->>'branch' = $4::text AND configuration->>'autoBuild' = 'true' AND automatic_requested_commit <> $5::text)::boolean AS behind
+`
+
+type AutomaticBuildsBehindParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ConnectionID  uuid.UUID `json:"connection_id"`
+	Branch        string    `json:"branch"`
+	Commit        string    `json:"commit"`
+}
+
+// Whether an environment builds this branch automatically and has not yet been asked to build commit.
+func (q *Queries) AutomaticBuildsBehind(ctx context.Context, arg AutomaticBuildsBehindParams) (bool, error) {
+	row := q.db.QueryRow(ctx, automaticBuildsBehind,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ConnectionID,
+		arg.Branch,
+		arg.Commit,
+	)
+	var behind bool
+	err := row.Scan(&behind)
+	return behind, err
+}
+
 const automaticDeploymentWorkspace = `-- name: AutomaticDeploymentWorkspace :one
 SELECT workspace_id FROM pipeline_auto_deployments WHERE id = $1
 `
@@ -163,17 +190,70 @@ func (q *Queries) AutomaticDeploymentWorkspace(ctx context.Context, id uuid.UUID
 }
 
 const awaitSubmittedMerge = `-- name: AwaitSubmittedMerge :exec
-UPDATE git_sources SET status = 'awaiting_merge' WHERE workspace_id = $1 AND environment_id = $2 AND status <> 'approval_required'
+UPDATE git_sources g SET status = 'awaiting_merge' FROM source_submissions s
+WHERE g.workspace_id = $1 AND g.environment_id = $2 AND g.status <> 'approval_required'
+    AND s.workspace_id = g.workspace_id AND s.id = $3 AND g.imported_commit = s.configuration->>'commit'
 `
 
 type AwaitSubmittedMergeParams struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
+	SubmissionID  uuid.UUID `json:"submission_id"`
 }
 
-// A source that needs renewed approval keeps needing it: a submission doesn't grant it.
+// A source that needs renewed approval keeps needing it: a submission doesn't grant it. A source bound
+// again since the submission was made no longer imports the commit it proposed edits to.
 func (q *Queries) AwaitSubmittedMerge(ctx context.Context, arg AwaitSubmittedMergeParams) error {
-	_, err := q.db.Exec(ctx, awaitSubmittedMerge, arg.WorkspaceID, arg.EnvironmentID)
+	_, err := q.db.Exec(ctx, awaitSubmittedMerge, arg.WorkspaceID, arg.EnvironmentID, arg.SubmissionID)
+	return err
+}
+
+const bindGitSource = `-- name: BindGitSource :exec
+INSERT INTO git_sources (workspace_id, environment_id, connection_id, configuration, policy_actor, policy_auth_version)
+VALUES ($1, $2, $3, $4, $5, $6::bigint)
+ON CONFLICT (workspace_id, environment_id) DO UPDATE SET connection_id = EXCLUDED.connection_id, configuration = EXCLUDED.configuration,
+    policy_actor = EXCLUDED.policy_actor, policy_auth_version = EXCLUDED.policy_auth_version,
+    imported_revision_id = NULL, imported_commit = '', pending_commit = '', status = 'pending',
+    failed_commit = '', failure_reason = '', failed_at = NULL
+`
+
+type BindGitSourceParams struct {
+	WorkspaceID       uuid.UUID `json:"workspace_id"`
+	EnvironmentID     uuid.UUID `json:"environment_id"`
+	ConnectionID      uuid.UUID `json:"connection_id"`
+	Configuration     []byte    `json:"configuration"`
+	PolicyActor       uuid.UUID `json:"policy_actor"`
+	PolicyAuthVersion int64     `json:"policy_auth_version"`
+}
+
+// Binding a source again replaces all it was, as a first binding sets it: its approver, and the import
+// it compares drafts with, which the next import sets. An environment runs one operation at a time,
+// so no import for what the source was bound to before is still running.
+func (q *Queries) BindGitSource(ctx context.Context, arg BindGitSourceParams) error {
+	_, err := q.db.Exec(ctx, bindGitSource,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ConnectionID,
+		arg.Configuration,
+		arg.PolicyActor,
+		arg.PolicyAuthVersion,
+	)
+	return err
+}
+
+const clearGitSourceFailure = `-- name: ClearGitSourceFailure :exec
+UPDATE git_sources SET failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = $1 AND environment_id = $2 AND failed_commit <> ''
+`
+
+type ClearGitSourceFailureParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// An import admitted for a source ends its failure.
+func (q *Queries) ClearGitSourceFailure(ctx context.Context, arg ClearGitSourceFailureParams) error {
+	_, err := q.db.Exec(ctx, clearGitSourceFailure, arg.WorkspaceID, arg.EnvironmentID)
 	return err
 }
 
@@ -193,8 +273,27 @@ func (q *Queries) ClearGitSourcePendingCommit(ctx context.Context, arg ClearGitS
 	return err
 }
 
+const endBranchBuildWaits = `-- name: EndBranchBuildWaits :exec
+UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = $1 AND connection_id = $2 AND configuration->>'branch' = $3::text AND waiting_commit IS NOT NULL
+`
+
+type EndBranchBuildWaitsParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ConnectionID uuid.UUID `json:"connection_id"`
+	Branch       string    `json:"branch"`
+}
+
+// A branch's refresh that ends ends every wait it recorded, at any commit, as when the source they
+// build on failed and holds them: a wait it no longer looks at would never end. One job refreshes
+// a branch at a time.
+func (q *Queries) EndBranchBuildWaits(ctx context.Context, arg EndBranchBuildWaitsParams) error {
+	_, err := q.db.Exec(ctx, endBranchBuildWaits, arg.WorkspaceID, arg.ConnectionID, arg.Branch)
+	return err
+}
+
 const environmentHoldsAutomaticWork = `-- name: EnvironmentHoldsAutomaticWork :one
-SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state NOT IN ('succeeded','failed','cancelled'))
+SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state IN ('queued','dispatched','running','needs_attention'))
     OR EXISTS(SELECT 1 FROM pipeline_auto_deployments d JOIN pipeline_runs r ON r.workspace_id = d.workspace_id AND r.id = d.id
               WHERE d.workspace_id = $1 AND d.environment_id = $2::uuid AND d.state = 'pending' AND r.created_at > now() - interval '1 hour'))::boolean AS busy
 `
@@ -212,6 +311,23 @@ func (q *Queries) EnvironmentHoldsAutomaticWork(ctx context.Context, arg Environ
 	var busy bool
 	err := row.Scan(&busy)
 	return busy, err
+}
+
+const environmentOperationRunning = `-- name: EnvironmentOperationRunning :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND environment_id = $2::uuid
+    AND parent_id IS NULL AND state IN ('queued','dispatched','running','needs_attention'))::boolean AS running
+`
+
+type EnvironmentOperationRunningParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) EnvironmentOperationRunning(ctx context.Context, arg EnvironmentOperationRunningParams) (bool, error) {
+	row := q.db.QueryRow(ctx, environmentOperationRunning, arg.WorkspaceID, arg.EnvironmentID)
+	var running bool
+	err := row.Scan(&running)
+	return running, err
 }
 
 const finishSourceSubmission = `-- name: FinishSourceSubmission :exec
@@ -390,6 +506,84 @@ func (q *Queries) LatestSourceSubmission(ctx context.Context, arg LatestSourceSu
 	return i, err
 }
 
+const listBuildWaits = `-- name: ListBuildWaits :many
+SELECT application_id, waiting_commit::text AS waiting_commit, waiting_reason::text AS waiting_reason,
+    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since, waiting_until::timestamptz AS waiting_until
+FROM build_targets WHERE workspace_id = $1 AND environment_id = $2 AND waiting_until > now()
+    AND configuration->>'autoBuild' = 'true'
+ORDER BY application_id
+`
+
+type ListBuildWaitsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+type ListBuildWaitsRow struct {
+	ApplicationID   uuid.UUID `json:"application_id"`
+	WaitingCommit   string    `json:"waiting_commit"`
+	WaitingReason   string    `json:"waiting_reason"`
+	WaitingRunnerID uuid.UUID `json:"waiting_runner_id"`
+	WaitingSince    time.Time `json:"waiting_since"`
+	WaitingUntil    time.Time `json:"waiting_until"`
+}
+
+// A wait whose refresh ended without saying so, as when it was discarded or recovery removed it, or
+// whose target no longer builds automatically, is over, so it isn't shown.
+func (q *Queries) ListBuildWaits(ctx context.Context, arg ListBuildWaitsParams) ([]ListBuildWaitsRow, error) {
+	rows, err := q.db.Query(ctx, listBuildWaits, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBuildWaitsRow{}
+	for rows.Next() {
+		var i ListBuildWaitsRow
+		if err := rows.Scan(
+			&i.ApplicationID,
+			&i.WaitingCommit,
+			&i.WaitingReason,
+			&i.WaitingRunnerID,
+			&i.WaitingSince,
+			&i.WaitingUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockDeliveredPipeline = `-- name: LockDeliveredPipeline :one
+SELECT o.command, o.state, o.cancel_requested FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
+WHERE o.workspace_id = $1 AND o.id = $2 AND o.server_id = $3 AND o.kind = 'pipeline' AND (r.delivery_started IS NOT FALSE OR o.report_sequence > 0)
+FOR UPDATE OF o
+`
+
+type LockDeliveredPipelineParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type LockDeliveredPipelineRow struct {
+	Command         []byte `json:"command"`
+	State           string `json:"state"`
+	CancelRequested bool   `json:"cancel_requested"`
+}
+
+// A pipeline operation that may have been delivered to the server's runner, locked to decide
+// about it. One never delivered, or assigned to another server, has no row.
+func (q *Queries) LockDeliveredPipeline(ctx context.Context, arg LockDeliveredPipelineParams) (LockDeliveredPipelineRow, error) {
+	row := q.db.QueryRow(ctx, lockDeliveredPipeline, arg.WorkspaceID, arg.ID, arg.ServerID)
+	var i LockDeliveredPipelineRow
+	err := row.Scan(&i.Command, &i.State, &i.CancelRequested)
+	return i, err
+}
+
 const lockSourceSubmission = `-- name: LockSourceSubmission :one
 SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = $1 AND id = $2 FOR UPDATE
 `
@@ -418,6 +612,23 @@ func (q *Queries) LockSourceSubmission(ctx context.Context, arg LockSourceSubmis
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const markGitSourceConflict = `-- name: MarkGitSourceConflict :exec
+UPDATE git_sources SET pending_commit = $1::text, status = 'conflict', failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = $2 AND environment_id = $3
+`
+
+type MarkGitSourceConflictParams struct {
+	Commit        string    `json:"commit"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// A conflict says why the commit waits, so an earlier failure no longer does.
+func (q *Queries) MarkGitSourceConflict(ctx context.Context, arg MarkGitSourceConflictParams) error {
+	_, err := q.db.Exec(ctx, markGitSourceConflict, arg.Commit, arg.WorkspaceID, arg.EnvironmentID)
+	return err
 }
 
 const markPipelineDeliveryStarted = `-- name: MarkPipelineDeliveryStarted :exec
@@ -449,6 +660,42 @@ func (q *Queries) NoteSourceSubmission(ctx context.Context, arg NoteSourceSubmis
 	return err
 }
 
+const operationNoteHas = `-- name: OperationNoteHas :one
+SELECT strpos(note, $1::text) > 0 AS has FROM execution_operations WHERE workspace_id = $2 AND id = $3
+`
+
+type OperationNoteHasParams struct {
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether an operation's note already says something, such as why its delivery waited.
+func (q *Queries) OperationNoteHas(ctx context.Context, arg OperationNoteHasParams) (bool, error) {
+	row := q.db.QueryRow(ctx, operationNoteHas, arg.Note, arg.WorkspaceID, arg.ID)
+	var has bool
+	err := row.Scan(&has)
+	return has, err
+}
+
+const pipelineReportedStart = `-- name: PipelineReportedStart :one
+SELECT (steps @> jsonb_build_array(jsonb_build_object('name', $1::text)))::boolean AS started FROM execution_operations WHERE workspace_id = $2 AND id = $3
+`
+
+type PipelineReportedStartParams struct {
+	Step        string    `json:"step"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether management has a report that the pipeline's runner started it: its start step.
+func (q *Queries) PipelineReportedStart(ctx context.Context, arg PipelineReportedStartParams) (bool, error) {
+	row := q.db.QueryRow(ctx, pipelineReportedStart, arg.Step, arg.WorkspaceID, arg.ID)
+	var started bool
+	err := row.Scan(&started)
+	return started, err
+}
+
 const pipelineRunReason = `-- name: PipelineRunReason :one
 SELECT COALESCE((SELECT reason FROM pipeline_runs WHERE workspace_id = $1 AND id = $2), '')::text
 `
@@ -463,6 +710,57 @@ func (q *Queries) PipelineRunReason(ctx context.Context, arg PipelineRunReasonPa
 	var column_1 string
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recordGitSourceFailure = `-- name: RecordGitSourceFailure :exec
+UPDATE git_sources SET failed_commit = $1::text, failure_reason = $2::text, failed_at = clock_timestamp(),
+    pending_commit = CASE WHEN status = 'conflict' THEN pending_commit ELSE '' END
+WHERE workspace_id = $3 AND environment_id = $4
+`
+
+type RecordGitSourceFailureParams struct {
+	Commit        string    `json:"commit"`
+	Reason        string    `json:"reason"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// The commit stops waiting to import: it failed. A conflict keeps its commit until an owner's refresh
+// settles the draft.
+func (q *Queries) RecordGitSourceFailure(ctx context.Context, arg RecordGitSourceFailureParams) error {
+	_, err := q.db.Exec(ctx, recordGitSourceFailure,
+		arg.Commit,
+		arg.Reason,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+	)
+	return err
+}
+
+const rejectBuildTarget = `-- name: RejectBuildTarget :exec
+UPDATE build_targets SET rejected_commit = $1::text, rejection_reason = $2::text, rejected_at = clock_timestamp(),
+    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = $3 AND environment_id = $4 AND application_id = $5
+`
+
+type RejectBuildTargetParams struct {
+	Commit        string    `json:"commit"`
+	Reason        string    `json:"reason"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ApplicationID uuid.UUID `json:"application_id"`
+}
+
+// A rejection ends any wait, since it says why the commit was not built.
+func (q *Queries) RejectBuildTarget(ctx context.Context, arg RejectBuildTargetParams) error {
+	_, err := q.db.Exec(ctx, rejectBuildTarget,
+		arg.Commit,
+		arg.Reason,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ApplicationID,
+	)
+	return err
 }
 
 const rewrapBuildSecret = `-- name: RewrapBuildSecret :exec
@@ -523,6 +821,49 @@ type RewrapRegistryAccessParams struct {
 func (q *Queries) RewrapRegistryAccess(ctx context.Context, arg RewrapRegistryAccessParams) error {
 	_, err := q.db.Exec(ctx, rewrapRegistryAccess, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
 	return err
+}
+
+const runnerCapabilities = `-- name: RunnerCapabilities :one
+SELECT capabilities FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type RunnerCapabilitiesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) RunnerCapabilities(ctx context.Context, arg RunnerCapabilitiesParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, runnerCapabilities, arg.WorkspaceID, arg.ID)
+	var capabilities []byte
+	err := row.Scan(&capabilities)
+	return capabilities, err
+}
+
+const runnerCredential = `-- name: RunnerCredential :one
+SELECT COALESCE(bool_or(NOT revoked AND credential_hash IS NOT NULL), false)::boolean AS enrolled,
+    COALESCE(bool_or(NOT revoked AND credential_hash IS NULL AND enrollment_hash IS NOT NULL AND enrollment_expires > now()), false)::boolean AS enrolling
+FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type RunnerCredentialParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type RunnerCredentialRow struct {
+	Enrolled  bool `json:"enrolled"`
+	Enrolling bool `json:"enrolling"`
+}
+
+// Whether a runner has its credential, or is enrolling again or moving to another management with
+// a code that is still valid: it has no credential until it finishes, but it is still the
+// workspace's, so work for it waits rather than fails. A runner whose credential was withdrawn with
+// no enrollment under way, or whose code expired, is neither.
+func (q *Queries) RunnerCredential(ctx context.Context, arg RunnerCredentialParams) (RunnerCredentialRow, error) {
+	row := q.db.QueryRow(ctx, runnerCredential, arg.WorkspaceID, arg.ID)
+	var i RunnerCredentialRow
+	err := row.Scan(&i.Enrolled, &i.Enrolling)
+	return i, err
 }
 
 const setGitSourcePendingCommit = `-- name: SetGitSourcePendingCommit :exec
@@ -658,4 +999,72 @@ func (q *Queries) SubmittedReviews(ctx context.Context, arg SubmittedReviewsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const unbindGitSource = `-- name: UnbindGitSource :execrows
+DELETE FROM git_sources WHERE workspace_id = $1 AND environment_id = $2
+`
+
+type UnbindGitSourceParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+func (q *Queries) UnbindGitSource(ctx context.Context, arg UnbindGitSourceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, unbindGitSource, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const waitBuildTarget = `-- name: WaitBuildTarget :exec
+UPDATE build_targets SET waiting_commit = $1::text, waiting_reason = $2::text, waiting_runner_id = $3::uuid,
+    waiting_until = $4::timestamptz,
+    waiting_since = CASE WHEN waiting_commit = $1::text AND waiting_reason = $2::text AND waiting_runner_id = $3::uuid
+        THEN waiting_since ELSE clock_timestamp() END
+WHERE workspace_id = $5 AND environment_id = $6 AND application_id = $7
+`
+
+type WaitBuildTargetParams struct {
+	Commit        string    `json:"commit"`
+	Reason        string    `json:"reason"`
+	RunnerID      uuid.UUID `json:"runner_id"`
+	Until         time.Time `json:"until"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ApplicationID uuid.UUID `json:"application_id"`
+}
+
+// A target waits for its runner at a commit, until the refresh stops waiting. It keeps the time it
+// started waiting while it waits for the same runner, for the same reason, at the same commit.
+func (q *Queries) WaitBuildTarget(ctx context.Context, arg WaitBuildTargetParams) error {
+	_, err := q.db.Exec(ctx, waitBuildTarget,
+		arg.Commit,
+		arg.Reason,
+		arg.RunnerID,
+		arg.Until,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ApplicationID,
+	)
+	return err
+}
+
+const workspaceRunnerKnown = `-- name: WorkspaceRunnerKnown :one
+SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = $1 AND id = $2 AND NOT revoked)::boolean AS known
+`
+
+type WorkspaceRunnerKnownParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether a server is one of the workspace's and not revoked, as a fallback runner saved with a
+// configuration must be.
+func (q *Queries) WorkspaceRunnerKnown(ctx context.Context, arg WorkspaceRunnerKnownParams) (bool, error) {
+	row := q.db.QueryRow(ctx, workspaceRunnerKnown, arg.WorkspaceID, arg.ID)
+	var known bool
+	err := row.Scan(&known)
+	return known, err
 }

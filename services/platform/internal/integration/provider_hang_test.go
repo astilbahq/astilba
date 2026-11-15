@@ -30,6 +30,8 @@ type heldGitea struct {
 	repository atomic.Int64
 	pullHead   atomic.Value
 	pullClosed atomic.Bool
+	// secondPull opens pull request 8 beside 7, from the same head.
+	secondPull atomic.Bool
 	onRequest  atomic.Pointer[func(path string)]
 
 	mu       sync.Mutex
@@ -98,8 +100,14 @@ func newHeldGitea(t *testing.T) *heldGitea {
 			answerBranch(w, "gitea", head)
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
 			answerPull(w, 7, pullState, 12, pullHead, 99)
+		case h.secondPull.Load() && strings.HasSuffix(r.URL.Path, "/pulls/8"):
+			answerPull(w, 8, pullState, 12, pullHead, 99)
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
-			_ = stablejson.Encode(w, []map[string]int{{"number": 7}})
+			pulls := []map[string]int{{"number": 7}}
+			if h.secondPull.Load() {
+				pulls = append(pulls, map[string]int{"number": 8})
+			}
+			_ = stablejson.Encode(w, pulls)
 		default:
 			answerRepository(w, "gitea", repository, false)
 		}

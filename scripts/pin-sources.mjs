@@ -100,17 +100,27 @@ export function findGoTools(modules) {
 }
 
 // Release binaries fetched from GitHub with the version written in the URL or in a
-// constant of the same file.
+// constant of the same file, spliced in as a shell `${name}` or a Go `" + name + "`.
 const releaseDownload =
-  /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/(v?)(?:\$\{(\w+)\}|([0-9][\w.+-]*))\//g;
+  /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/(v?)(?:\$\{(\w+)\}|"\s*\+\s*(\w+)\s*\+\s*"|([0-9][\w.+-]*))\//g;
+// Every GitHub release link, read or not, so one in a form the pattern above misses stops
+// the report and the release-age gate rather than going unchecked.
+const releaseLink = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/(?!tag\/)/g;
 
 export function findReleases(files) {
   const releases = new Map();
   for (const { path, text } of files) {
     if (path.endsWith(".md")) continue;
-    for (const [, repository, prefix, constant, literal] of text.matchAll(
+    const read = new Set(
+      [...text.matchAll(releaseDownload)].map(({ index }) => index),
+    );
+    for (const { index, 1: repository } of text.matchAll(releaseLink))
+      if (!read.has(index))
+        throw new Error(`${path}: cannot read the version of ${repository}`);
+    for (const [, repository, prefix, shell, go, literal] of text.matchAll(
       releaseDownload,
     )) {
+      const constant = shell ?? go;
       const version =
         literal ??
         new RegExp(

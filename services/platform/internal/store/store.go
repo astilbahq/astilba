@@ -116,12 +116,18 @@ func IfMissing(err, missing error) error {
 }
 
 func (s *Store) Transaction(ctx context.Context, fn func(*db.Queries) error) error {
+	return s.TransactionTx(ctx, func(_ pgx.Tx, q *db.Queries) error { return fn(q) })
+}
+
+// TransactionTx is Transaction for work that also needs the transaction itself, such as a job
+// queued to commit or roll back with it.
+func (s *Store) TransactionTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if err = fn(db.New(tx)); err != nil {
+	if err = fn(tx, db.New(tx)); err != nil {
 		return Normalize(err)
 	}
 	return Normalize(tx.Commit(ctx))
@@ -303,9 +309,30 @@ func Audit(ctx context.Context, q *db.Queries, p Principal, w uuid.UUID, action 
 	return q.InsertAudit(ctx, db.InsertAuditParams{WorkspaceID: w, ID: uuid.New(), ActorID: p.Account.ID, Action: action, ResourceID: resource, AutomationCredentialID: credential})
 }
 
+// CreateWorkspace creates a workspace with its first owner and its keys, in the caller's
+// transaction. It is the one way a workspace is created, so every new workspace has keys: they
+// come from Broker.Create, called before the transaction because wrapping them waits on the key
+// service.
+func CreateWorkspace(ctx context.Context, q *db.Queries, keys *secretbroker.NewKeys, name string, owner uuid.UUID) error {
+	ws := keys.Workspace()
+	if err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: ws, Name: name}); err != nil {
+		return err
+	}
+	if err := keys.Insert(ctx, q); err != nil {
+		return err
+	}
+	return q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: ws, AccountID: owner, Role: "owner"})
+}
+
 func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, workspaceName string) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := s.Transaction(ctx, func(q *db.Queries) error {
+	w := uuid.New()
+	keys, err := s.Broker.Create(ctx, secretbroker.Request{Workspace: w, Principal: secretbroker.System("bootstrap")})
+	if err != nil {
+		return id, err
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	err = s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
 			return err
 		}
@@ -321,11 +348,7 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 		if err != nil {
 			return err
 		}
-		w := uuid.New()
-		if err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: w, Name: workspaceName}); err != nil {
-			return err
-		}
-		if err := q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: w, AccountID: a.ID, Role: "owner"}); err != nil {
+		if err := CreateWorkspace(ctx, q, keys, workspaceName, a.ID); err != nil {
 			return err
 		}
 		if s.Hosted {
@@ -344,9 +367,11 @@ func rewrapFailed(table string, workspace, id uuid.UUID, err error) error {
 	return fmt.Errorf("cannot rewrap %s row %s in workspace %s: %w", table, id, workspace, err)
 }
 
-// Rewrap moves every stored value onto the active key, for an operator, as one recorded run.
-func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
-	rotation, err := s.Broker.BeginRotation(ctx, operator)
+// Rewrap moves every stored value, and the installation's canaries, onto the active key, for an
+// operator, as one recorded run. It wraps each value's data key again and keeps the data, and it
+// never touches cross-host checkpoints, which hosts hold copies of by digest.
+func (s *Store) Rewrap(ctx context.Context, operator, reason string) (err error) {
+	rotation, err := s.Broker.BeginRotation(ctx, operator, reason)
 	if err != nil {
 		return err
 	}
@@ -357,6 +382,16 @@ func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
 		}
 		rotation.Close(ctx, outcome)
 	}()
+	if err = s.rewrapValues(ctx, rotation); err != nil {
+		return err
+	}
+	if err = rotation.RewrapCanaries(ctx); err != nil {
+		return err
+	}
+	return rotation.RewrapWrappings(ctx)
+}
+
+func (s *Store) rewrapValues(ctx context.Context, rotation *secretbroker.Rotation) error {
 	return s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
 			return err
@@ -490,7 +525,7 @@ func (s *Store) Rewrap(ctx context.Context, operator string) (err error) {
 				return err
 			}
 		}
-		return nil
+		return rotation.ValuesRewrapped(ctx, q)
 	})
 }
 

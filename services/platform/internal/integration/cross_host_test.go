@@ -59,7 +59,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 			t.Fatal(err)
 		}
 		var codes api.RecoveryCodes
-		b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+		b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": f.password}}, 200, &codes)
 		b.csrf = codes.Session.CsrfToken
 	}
 	refreshAuthentication := stayRecentlyAuthenticated(t, f, b, mfaSecret)

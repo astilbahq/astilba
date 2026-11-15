@@ -69,6 +69,8 @@ jobs:
         with:
           go-version-file: experiments/durable-execution/go.mod
           cache-dependency-path: experiments/durable-execution/go.sum
+      - name: Read Docker Hub through its mirror
+        uses: ./.github/actions/docker-hub-mirror
       - name: Pull pinned fixture images
         uses: ./.github/actions/pull-images
         with:

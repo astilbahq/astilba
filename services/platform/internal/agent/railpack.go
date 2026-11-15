@@ -90,7 +90,8 @@ func (e *Engine) prepareRailpack(ctx context.Context, c api.ExecutionCommand, p 
 			return nil, "", err
 		}
 		// Half the time left, at most, so a short assignment can still report which download failed.
-		download, stopDownload := context.WithTimeout(ctx, min(5*time.Minute, time.Until(c.Deadline)/2))
+		end, _ := ctx.Deadline()
+		download, stopDownload := context.WithTimeout(ctx, min(5*time.Minute, time.Until(end)/2))
 		defer stopDownload()
 		if _, err = e.pipelineCLI(download, pipelineName(c), nil, nil, 1024, "sh", "-ec", railpackMiseDownload, "--", p.Railpack.MiseArchive); err != nil {
 			return nil, "", fmt.Errorf("cannot download the pinned Railpack helper from %s; check this server's outbound access and source storage limit, then retry the build", p.Railpack.MiseArchive)

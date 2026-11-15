@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json/v2"
 	"go/ast"
-	"go/parser"
+	"go/constant"
 	"go/token"
-	"io/fs"
+	"go/types"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -16,6 +16,8 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/jackc/pgx/v5"
+	"golang.org/x/tools/go/packages"
 )
 
 // operationStates is every state the operations table allows, read from its CHECK constraint.
@@ -35,42 +37,48 @@ func operationStates(t *testing.T, f *fixture) []string {
 	return states
 }
 
-// execution_unfinished_server holds a host's unfinished operations, so its predicate admits exactly
-// the states the table allows that don't end an operation. A state added to the table, or a change
-// to which states end one, fails here until the index agrees.
+// execution_unfinished_server and execution_unfinished_workspace hold unfinished operations, by host
+// and by workspace, so each predicate admits exactly the states the table allows that don't end an
+// operation. A state added to the table, or a change to which states end one, fails here until both
+// indexes agree.
 func TestUnfinishedIndexHoldsExactlyTheStatesThatHaveNotEnded(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
-	var predicate string
-	if err := f.st.Pool.QueryRow(ctx, `SELECT pg_get_expr(indpred,indrelid) FROM pg_index WHERE indexrelid='execution_unfinished_server'::regclass`).Scan(&predicate); err != nil {
-		t.Fatal(err)
-	}
-	for _, state := range operationStates(t, f) {
-		var indexed bool
-		if err := f.st.Pool.QueryRow(ctx, `SELECT `+predicate+` FROM (SELECT $1::text AS state) operation`, state).Scan(&indexed); err != nil {
+	for _, index := range []string{"execution_unfinished_server", "execution_unfinished_workspace"} {
+		var predicate string
+		if err := f.st.Pool.QueryRow(ctx, `SELECT pg_get_expr(indpred,indrelid) FROM pg_index WHERE indexrelid=$1::regclass`, index).Scan(&predicate); err != nil {
 			t.Fatal(err)
 		}
-		if ended := execution.Terminal(api.ExecutionState(state)); indexed == ended {
-			t.Errorf("state %s ends an operation: %v; the index holds it: %v", state, ended, indexed)
+		for _, state := range operationStates(t, f) {
+			var indexed bool
+			if err := f.st.Pool.QueryRow(ctx, `SELECT `+predicate+` FROM (SELECT $1::text AS state) operation`, state).Scan(&indexed); err != nil {
+				t.Fatal(err)
+			}
+			if ended := execution.Terminal(api.ExecutionState(state)); indexed == ended {
+				t.Errorf("%s: state %s ends an operation: %v; the index holds it: %v", index, state, ended, indexed)
+			}
 		}
 	}
 }
 
-// Every agent polls about once a second, and placement, upgrades, pipelines, networks and
-// revocation ask whether a host has unfinished work. Operation rows are permanent, so a query that
-// reads a host's operations must not read its history: the poll once did, and past PostgreSQL's
-// JIT threshold each poll spent hundreds of milliseconds compiling. This takes every statement that
-// reads a host's operations from the code, as the inline SQL check counts them, and sqlc's, so a
-// new one is held to the same plan: no sequential scan of operations, and a cost that stays put
-// as ended history triples.
-func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
+// Operation rows are permanent, so a statement that reads operations must not read their history:
+// agents poll about once a second, and placement, upgrades, pipelines, networks, previews,
+// coordinators and sweeps ask about unfinished work or a root's children on every pass. The poll
+// once read every operation, and past PostgreSQL's JIT threshold each poll spent hundreds of
+// milliseconds compiling. This takes every statement that reads operations from the code, as the
+// inline SQL check counts them, and sqlc's, so a new one is held to the same plan: no sequential
+// scan of operations, and a cost that doesn't rise with ended history. A statement built from
+// constants is read whole; one assembled at run time from values that aren't constant, such as a
+// recovery base's capture, isn't seen here (PLAT-325).
+func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 	ctx := context.Background()
-	queries := hostOperationQueries(t)
-	if len(queries) < 10 {
-		t.Fatalf("found only %d statements reading a host's operations", len(queries))
-	}
-	t.Logf("%d statements read a host's operations", len(queries))
 	f := setup(t)
+	code := moduleStrings(t)
+	queries := operationQueries(code)
+	if len(queries) < 100 {
+		t.Fatalf("found only %d statements reading operations", len(queries))
+	}
+	t.Logf("%d statements read operations", len(queries))
 	// Each lists the states it reads, so each list is one of these exactly, and a state added to
 	// the table fails here until every query agrees. Excluding states would read history: the
 	// planner estimates NOT IN as if most rows matched.
@@ -85,11 +93,40 @@ func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 	}
 	slices.Sort(unfinished)
 	slices.Sort(started)
+	// A list may also be one a partial index holds, as the alert sweep reads its candidates.
+	indexed := [][]string{}
+	predicates, err := f.st.Pool.Query(ctx, `SELECT pg_get_expr(indpred,indrelid) FROM pg_index WHERE indrelid='execution_operations'::regclass AND indpred IS NOT NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := pgx.CollectRows(predicates, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, predicate := range listed {
+		for _, list := range indexedStates.FindAllStringSubmatch(predicate, -1) {
+			states := []string{}
+			for _, state := range quotedState.FindAllStringSubmatch(list[1], -1) {
+				states = append(states, state[1])
+			}
+			slices.Sort(states)
+			indexed = append(indexed, states)
+		}
+	}
+	// Other tables with a state of their own, whose lists aren't an operation's.
+	rows, err := f.st.Pool.Query(ctx, `SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='state' AND table_name<>'execution_operations'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateful, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, q := range queries {
 		if other := otherState.FindString(q.sql); other != "" {
-			t.Errorf("%s compares the state with %q; list the states it reads with IN", q, other)
+			t.Errorf("%s compares the state with %q: list the operation states it reads with state IN (...), as PostgreSQL estimates arrays as if most rows matched", q, other)
 		}
-		for _, list := range stateLists.FindAllStringSubmatch(q.sql, -1) {
+		for _, list := range operationStateLists(q.sql, stateful) {
 			states := []string{}
 			for _, state := range quotedState.FindAllStringSubmatch(list[3], -1) {
 				states = append(states, state[1])
@@ -100,9 +137,9 @@ func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 			case len(states) == 0:
 				t.Errorf("%s lists no states it can be checked against: %s", q, list[0])
 			case list[1] != "" || list[2] != "":
-				t.Errorf("%s excludes states; list the unfinished ones: %s", q, list[0])
-			case !ended && !slices.Equal(states, unfinished) && !slices.Equal(states, started):
-				t.Errorf("%s reads %v, not the unfinished states %v or the started ones %v", q, states, unfinished, started)
+				t.Errorf("%s excludes operation states with NOT IN, which PostgreSQL estimates as if most rows matched, so it reads history: write state IN ('%s') instead of %s", q, strings.Join(unfinished, "','"), list[0])
+			case !ended && !slices.Equal(states, unfinished) && !slices.Equal(states, started) && !slices.ContainsFunc(indexed, func(list []string) bool { return slices.Equal(states, list) }):
+				t.Errorf("%s reads states %v: list exactly the unfinished states %v, the started ones %v or a list a partial index holds, so an index serves it", q, states, unfinished, started)
 			}
 		}
 	}
@@ -112,22 +149,60 @@ func TestHostOperationQueriesDoNotReadHistory(t *testing.T) {
 	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
 		t.Fatal(err)
 	}
+	env := envForExecution(t, f, b, ws)
 	var threshold float64
 	if err := f.st.Pool.QueryRow(ctx, `SELECT current_setting('jit_above_cost')::float8`).Scan(&threshold); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := f.st.Pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Release()
-	// Ended operations on the one host, of several kinds and in every ended state.
+	// History as a long-lived environment on one host leaves it: deployments that applied their
+	// runtime, coordinated roots with their children, network commands that configure each
+	// generation or, one in eight, remove the host, backups and builds, in every ended state. Each
+	// is seen by the alert sweep and ended a minute after it was created, as the operation times
+	// trigger records it. Generations count up as the host's and environment's do.
+	generation := 0
 	history := func(count int) {
 		t.Helper()
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state,report_sequence,created_at)
-SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual','crosshost','backup'])[1+i%4],(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,now()-interval '1 day'-i*interval '1 second' FROM generate_series(1,$3::int) i`, ws, in.ServerId, count); err != nil {
+		roots := count / 8
+		// Deployments carry plans, as real ones do. The requests behind them would need a deployment
+		// of their own, so the seed writes the plans without them, and the times as the trigger
+		// would have.
+		seed, err := f.st.Pool.Begin(ctx)
+		if err != nil {
 			t.Fatal(err)
 		}
+		defer seed.Rollback(ctx)
+		if _, err := seed.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,$4+i,gen_random_uuid(),'{}','crosshost',(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,true,at,at+interval '1 minute'
+FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-interval '1 day'-i*interval '1 second' AS at) t`, ws, in.ServerId, env, generation, roots); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,root.id,$4+row_number() OVER (),gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',root.state,1,true,root.created_at,root.ended_at
+FROM execution_operations root, generate_series(1,3) child WHERE root.workspace_id=$1 AND root.kind='crosshost' AND root.parent_id IS NULL AND root.generation>$5`, ws, in.ServerId, env, generation+roots, generation); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,visual_plan_id,runtime_outcome,runtime_plan_id,runtime_recorded_at,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,CASE WHEN kind<>'network' THEN $3::uuid END,$4+i,gen_random_uuid(),
+    CASE WHEN kind='network' AND i%32=0 THEN jsonb_build_object('network',jsonb_build_object('action','restrict','membershipId',gen_random_uuid()))
+        WHEN kind='network' THEN jsonb_build_object('network',jsonb_build_object('action','configure','membershipId',gen_random_uuid(),'manifest',jsonb_build_object('generation',$4+i)))
+        WHEN kind='visual' THEN '{"visual":{"action":"deploy"}}' ELSE '{}' END,
+    kind,state,1,true,CASE WHEN kind='visual' THEN plan END,
+    CASE WHEN applied THEN 'applied' END,CASE WHEN applied THEN plan END,CASE WHEN applied THEN at+interval '1 minute' END,at,at+interval '1 minute'
+FROM generate_series(1,$5::int) i,
+    LATERAL (SELECT (ARRAY['network','visual','backup','pipeline'])[1+i%4] AS kind,(ARRAY['succeeded','failed','cancelled'])[1+i%3] AS state,gen_random_uuid() AS plan,now()-interval '1 day'-i*interval '1 second' AS at) k,
+    LATERAL (SELECT kind='visual' AND state='succeeded' AS applied) a`, ws, in.ServerId, env, generation+4*roots, count-4*roots); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `INSERT INTO visual_plans(id,workspace_id,environment_id,plan) SELECT visual_plan_id,workspace_id,environment_id,'{}' FROM execution_operations WHERE workspace_id=$1 AND visual_plan_id IS NOT NULL AND generation>$2`, ws, generation); err != nil {
+			t.Fatal(err)
+		}
+		if err := seed.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		generation += count
 		if _, err := f.st.Pool.Exec(ctx, `ANALYZE execution_operations`); err != nil {
 			t.Fatal(err)
 		}
@@ -135,6 +210,8 @@ SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual
 	type node struct {
 		Type     string  `json:"Node Type"`
 		Relation string  `json:"Relation Name"`
+		Index    string  `json:"Index Name"`
+		Cond     string  `json:"Index Cond"`
 		Cost     float64 `json:"Total Cost"`
 		Plans    []node  `json:"Plans"`
 	}
@@ -142,11 +219,60 @@ SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual
 	scans = func(n node) bool {
 		return n.Type == "Seq Scan" && n.Relation == "execution_operations" || slices.ContainsFunc(n.Plans, scans)
 	}
+	// The unfinished and active indexes hold every tenant's unfinished work, so a plan that reads
+	// one without its leading key, its host or its workspace, reads other tenants' work.
+	var crossTenant func(node) string
+	crossTenant = func(n node) string {
+		for index, key := range map[string]string{"execution_unfinished_server": "server_id", "execution_unfinished_workspace": "workspace_id", "execution_active_server": "server_id", "execution_active_restriction": "server_id", "execution_active_environment": "workspace_id"} {
+			if n.Index == index && !strings.Contains(n.Cond, key) {
+				return index
+			}
+		}
+		for _, c := range n.Plans {
+			if index := crossTenant(c); index != "" {
+				return index
+			}
+		}
+		return ""
+	}
+	// How often a plan reads an index, and how often without key in its condition.
+	var reads func(n node, index, key string) (all, unkeyed int)
+	reads = func(n node, index, key string) (all, unkeyed int) {
+		if n.Index == index {
+			all++
+			if !strings.Contains(n.Cond, key) {
+				unkeyed++
+			}
+		}
+		for _, c := range n.Plans {
+			a, u := reads(c, index, key)
+			all, unkeyed = all+a, unkeyed+u
+		}
+		return all, unkeyed
+	}
+	// Statements in recovery and export read the temporary tables their transaction creates, so
+	// they are explained in one that has them too.
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	for _, create := range temporaryTables(code) {
+		if _, err := tx.Exec(ctx, create); err != nil {
+			t.Fatalf("%s: %v", create, err)
+		}
+	}
 	// A prepared statement runs on the generic plan after a few executions. Its parameters stay
-	// unbound, so it goes as plain text.
-	plan := func(q hostOperationQuery) (node, bool) {
+	// unbound, so it goes as plain text, each behind a savepoint so one that fails leaves the rest.
+	plan := func(q operationQuery) (node, bool) {
 		t.Helper()
-		results, err := conn.Conn().PgConn().Exec(ctx, `EXPLAIN (GENERIC_PLAN, FORMAT JSON) `+q.sql).ReadAll()
+		if _, err := tx.Exec(ctx, `SAVEPOINT explaining`); err != nil {
+			t.Fatal(err)
+		}
+		results, err := tx.Conn().PgConn().Exec(ctx, `EXPLAIN (GENERIC_PLAN, FORMAT JSON) `+q.sql).ReadAll()
+		if _, rollback := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT explaining`); rollback != nil {
+			t.Fatal(rollback)
+		}
 		if err != nil || len(results) != 1 || len(results[0].Rows) != 1 {
 			t.Errorf("%s: explaining: %v", q, err)
 			return node{}, false
@@ -160,63 +286,170 @@ SELECT gen_random_uuid(),$1,$2,1,gen_random_uuid(),'{}',(ARRAY['network','visual
 		}
 		return plans[0].Plan, true
 	}
-	history(10000)
-	before := map[string]float64{}
-	for _, q := range queries {
-		if p, ok := plan(q); ok {
-			before[q.at] = p.Cost
+	// History stays small enough that no index gains a level between the sizes measured: a plan of
+	// index probes would otherwise rise in a step that looks like growth.
+	history(3333)
+	// River's queue holds the jobs it finished in the last day, as a running installation's does.
+	// Recovery's statements read it, and the few jobs the fixture's workers add as the test runs
+	// then hardly move their plans.
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO river_job(kind,args,state,attempt,max_attempts,attempted_at,finalized_at,queue,priority)
+SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(),now(),'default',1 FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 2000`, ws); err != nil {
+		t.Fatal(err)
+	}
+	// Every other table keeps the statistics it has now, so only the operations the seeds add
+	// change between plans.
+	if _, err := f.st.Pool.Exec(ctx, `ANALYZE`); err != nil {
+		t.Fatal(err)
+	}
+	// Each statement is planned with ended history, three times as much and nine times, and then
+	// beside a thousand other tenants' stuck work and three thousand.
+	costs := map[string][]float64{}
+	crossed, tenanted := []string{}, false
+	measure := func() {
+		t.Helper()
+		for _, q := range queries {
+			if p, ok := plan(q); ok {
+				costs[q.String()] = append(costs[q.String()], p.Cost)
+				if index := crossTenant(p); tenanted && index != "" && !slices.Contains(crossed, q.String()) {
+					crossed = append(crossed, q.String())
+					t.Errorf("%s reads all of %s, every tenant's unfinished work: narrow it by host or workspace so one tenant's stuck work can't slow another's", q, index)
+				}
+			}
 		}
 	}
-	for _, r := range historyReaders {
-		if !slices.ContainsFunc(queries, func(q hostOperationQuery) bool { return q.name == r.name && strings.Contains(q.sql, r.fragment) }) {
-			t.Errorf("historyReaders names %s %q, which reads no host's operations now", r.name, r.fragment)
+	measure()
+	for _, r := range append(slices.Clone(historyReaders), boundedReaders...) {
+		if !slices.ContainsFunc(queries, func(q operationQuery) bool { return q.name == r.name && strings.Contains(q.sql, r.fragment) }) {
+			t.Errorf("%s %q is listed in historyReaders or boundedReaders, but no statement reading operations matches it now: change the entry to match the statement, or remove it", r.name, r.fragment)
 		}
 	}
+	history(6667)
+	measure()
 	history(20000)
 	for _, q := range queries {
 		p, ok := plan(q)
-		if !ok {
+		if !ok || len(costs[q.String()]) != 2 {
 			continue
 		}
-		reason, excepted := historyReader(q)
-		read := scans(p) || p.Cost >= threshold || p.Cost > before[q.at]*1.05+1
+		// A plan that reads history adds three times as much cost for each tripling as it did for
+		// the last, and across both it rises by more than a step in its indexes' depth: a plan of
+		// index probes rises a little, in steps, as each index gains a level.
+		c := append(costs[q.String()], p.Cost)
+		grows := c[2]-c[1] > 2*(c[1]-c[0])+1 && c[2] > c[0]*1.05+10
+		excepted, isExcepted := historyReader(q, historyReaders)
+		bound, bounded := historyReader(q, boundedReaders)
+		for _, r := range []historyReaderEntry{excepted, bound} {
+			if all, unkeyed := reads(p, r.index, r.key); r.index != "" && (all == 0 || unkeyed > 0) {
+				t.Errorf("%s no longer reads %s with %q in every condition, which bounds what it reads: give it that index and condition back, or bound it another way and change its entry", q, r.index, r.key)
+			}
+		}
 		switch {
-		case excepted && !read:
-			t.Errorf("%s no longer reads history; take it out of historyReaders", q)
-		case excepted:
-			t.Logf("%s reads history: %s", q, reason)
+		case isExcepted && !scans(p) && p.Cost < threshold && !grows:
+			t.Errorf("%s no longer reads history: take it out of historyReaders, or narrow its entry's fragment to the statements that still do", q)
+		case isExcepted:
+			t.Logf("%s reads history: %s", q, excepted.reason)
 		case scans(p):
-			t.Errorf("%s reads every operation:\n%s", q, q.sql)
+			t.Errorf("%s reads every operation with a sequential scan: narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q)
 		case p.Cost >= threshold:
-			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f", q, p.Cost, threshold)
-		case p.Cost > before[q.at]*1.05+1:
-			t.Errorf("%s grows with history: %.0f, then %.0f with three times as much", q, before[q.at], p.Cost)
+			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f: narrow it with an index so every call doesn't compile", q, p.Cost, threshold)
+		case bounded:
+			t.Logf("%s costs %.0f, %.0f, %.0f, bounded as %s", q, c[0], c[1], c[2], bound.reason)
+		case grows:
+			t.Errorf("%s grows with ended history (cost %.0f, %.0f, %.0f as it triples twice): narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q, c[0], c[1], c[2])
+		}
+	}
+	// Other workspaces' stuck work: tenants each with an active command on a host of their own and
+	// an unfinished coordinated root with its unfinished children, as much as a tenant has. A check
+	// scoped to a workspace, environment, host or root reads only its own, so more tenants don't
+	// move its plan; one that reads every tenant's unfinished work grows with how many there are.
+	// The rows stand for tenants that never connect, so the seed doesn't need the servers and
+	// environments behind them.
+	tenants := func(count int) {
+		t.Helper()
+		seed, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer seed.Rollback(ctx)
+		if _, err := seed.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `WITH tenants AS (SELECT gen_random_uuid() AS ws,gen_random_uuid() AS server,gen_random_uuid() AS env,gen_random_uuid() AS root FROM generate_series(1,$1::int)),
+active AS (INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence)
+	SELECT gen_random_uuid(),ws,server,NULL,1,gen_random_uuid(),'{}','backup','running',1 FROM tenants RETURNING id),
+roots AS (INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence)
+	SELECT root,ws,server,env,1,gen_random_uuid(),'{}','crosshost','running',1 FROM tenants RETURNING id)
+INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence)
+SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',(ARRAY['queued','dispatched','running'])[1+i%3],1 FROM tenants, generate_series(1,3) i`, count); err != nil {
+			t.Fatal(err)
+		}
+		if err := seed.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.st.Pool.Exec(ctx, `ANALYZE execution_operations`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clear(costs)
+	tenanted = true
+	tenants(1000)
+	measure()
+	tenants(2000)
+	measure()
+	for _, q := range queries {
+		if c := costs[q.String()]; len(c) == 2 && c[1] > c[0]*1.1+10 {
+			if _, excepted := historyReader(q, historyReaders); !excepted {
+				t.Errorf("%s reads other workspaces' unfinished work (cost %.0f with a thousand tenants' stuck work, %.0f with three thousand): narrow it by workspace, environment, host or root so one tenant's stuck work can't slow another's", q, c[0], c[1])
+			}
 		}
 	}
 }
 
-// historyReaders are the statements known to read a host's ended history, each named by its sqlc
-// name or file and function, with a fragment of its SQL, and why it does.
-var historyReaders = []struct{ name, fragment, reason string }{
-	{"NetworkManifestMissed", "", "it looks up ended commands; PLAT-317 bounds it"},
-	{"operations.go/(*worker).work", "primary_child.parent_id", "it finds a parent's children, and operations have no parent index yet; PLAT-317 adds one"},
-	{"recovery.go/(*Store).PrepareRecovery", "DELETE FROM river_job", "offline recovery drops the queued jobs of every operation the host ever ran"},
+// historyReaderEntry is a statement named by its sqlc name or file and function, with a fragment
+// of its SQL and why it is listed. One that is bounded names the index that bounds it and what
+// every condition the plan reads that index by holds.
+type historyReaderEntry struct{ name, fragment, reason, index, key string }
+
+// historyReaders are the statements known to read a workspace's ended history, and why they may.
+// One that reads part of its history by an index is still held to it.
+var historyReaders = []historyReaderEntry{
+	{"import.go/(*Service).Import", "alert_observed=true", "it marks what it imported, which the archive limit bounds, in the workspace it creates", "", ""},
+	{"ClearWorkspaceOperationJobs", "", "offline recovery forgets every operation's River job; PLAT-323 bounds it", "", ""},
+	{"StampOperationControllerGenerations", "", "offline recovery stamps every operation with its host's controller generation; PLAT-323 bounds it", "", ""},
+	{"RaiseServerUpdateGenerations", "", "offline recovery raises each host's generation past every command it ran; PLAT-323 bounds it", "", ""},
+	{"EnvironmentSecretVersionsInUse", "", "it reads every plan the environment has made to find those that can still be applied; PLAT-400 bounds it", "", ""},
+	{"recovery_history.go/recoveryLedger", "", "it reads every applied runtime change in the workspace to find each environment's floor; PLAT-352 bounds it", "", ""},
+	{"recovery_history.go/recoveryWindowStart", "", "it reads every applied runtime change in the workspace to find the window's items; PLAT-352 bounds it", "execution_operations_settled", "ended_at"},
 }
 
-// historyReader is why a statement reads history, if it is known to.
-func historyReader(q hostOperationQuery) (string, bool) {
-	for _, r := range historyReaders {
+// boundedReaders are statements whose estimate rises with history though they read only part of
+// it. A LIMIT caps some, whose estimate rises until it does because the planner can't tell how
+// many rows match a command's JSON and guesses few. A time window bounds others, whose start a
+// generic plan doesn't know, so it guesses the window holds a third of the rows. They are still
+// held to the JIT threshold, and to the index that bounds them: the one returning rows in the
+// LIMIT's order, or the one by end time, every read of which must hold the end time in its
+// condition. Each is listed whole, so its other branches are held only to the plan's other checks.
+var boundedReaders = []historyReaderEntry{
+	{"export_selection.go/exportSelection", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments", "execution_releases", ""},
+	{"releases.go/(*Service).ReleaseHistory", "LIMIT 20", "it reaches the environment's 20 newest deployments", "execution_releases", ""},
+	{"recovery_history.go/recoverySettled", "", "it reads the roots and runtime changes that ended inside the recovery window", "execution_operations_settled", "ended_at"},
+	{"base_selection.go/baseSelection", "'restrict'", "it reads the standalone network removals that ended inside the recovery window", "execution_network_restrictions", "ended_at"},
+}
+
+// historyReader is the entry listing a statement, if one does.
+func historyReader(q operationQuery, readers []historyReaderEntry) (historyReaderEntry, bool) {
+	for _, r := range readers {
 		if q.name == r.name && strings.Contains(q.sql, r.fragment) {
-			return r.reason, true
+			return r, true
 		}
 	}
-	return "", false
+	return historyReaderEntry{}, false
 }
 
-// hostOperationQuery is a statement, where it is, and its sqlc name if it has one.
-type hostOperationQuery struct{ at, name, sql string }
+// operationQuery is a statement, where it is, and its sqlc name if it has one.
+type operationQuery struct{ at, name, sql string }
 
-func (q hostOperationQuery) String() string {
+func (q operationQuery) String() string {
 	if q.name == q.at {
 		return q.at
 	}
@@ -225,39 +458,126 @@ func (q hostOperationQuery) String() string {
 
 var (
 	// A state list, and whether it excludes: NOT before the column or before IN.
-	stateLists  = regexp.MustCompile(`(?i)(\bNOT\s*\(?\s*)?(?:\w+\.)?\bstate\s+(NOT\s+)?IN\s*\(([^)]*)\)`)
+	stateLists  = regexp.MustCompile(`(?i)(\bNOT\s*\(?\s*)?(?:(\w+)\.)?\bstate\s+(NOT\s+)?IN\s*\(([^)]*)\)`)
 	quotedState = regexp.MustCompile(`'([a-z_]+)'`)
+	// A list of states an index predicate holds, as PostgreSQL prints it.
+	indexedStates = regexp.MustCompile(`\(state = ANY \(ARRAY\[([^\]]*)\]\)\)`)
 	// A state list written as an array, which these statements don't use.
 	otherState = regexp.MustCompile(`(?i)\bstate\s*(?:=\s*ANY|<>\s*ALL|!=\s*ALL)`)
 	// A literal that begins a statement, as scripts/inline-sql.mjs counts them, after sqlc's name.
 	statement = regexp.MustCompile(`^\s*(?:-- name: (\w+)[^\n]*\n\s*)?(?:SELECT|INSERT|UPDATE|DELETE|WITH)\s`)
-	byHost    = regexp.MustCompile(`\bserver_id ?= ?\$\d`)
+	// The names a statement gives operations, and the tables it reads with a state column.
+	operationAlias = regexp.MustCompile(`(?i)\bexecution_operations(?:\s+(?:AS\s+)?(\w+))?`)
+	otherTable     = regexp.MustCompile(`(?i)\b(?:FROM|JOIN|UPDATE)\s+(\w+)`)
+	temporaryTable = regexp.MustCompile(`(?i)^\s*CREATE\s+TEMP(?:ORARY)?\s+TABLE\s`)
 )
 
-// hostOperationQueries is every statement in the module's code, sqlc's generated ones included,
-// that reads operations by host.
-func hostOperationQueries(t *testing.T) []hostOperationQuery {
+// operationStateLists is each state list in a statement that reads an operation's state, with its
+// excluding NOT, its qualifier and its states in that order. A list on another table's state is
+// that table's business: the state is an operation's when it is qualified by a name the statement
+// gives operations, or unqualified when no other table the statement reads has a state.
+func operationStateLists(sql string, stateful []string) [][]string {
+	aliases := map[string]bool{"execution_operations": true}
+	for _, m := range operationAlias.FindAllStringSubmatch(sql, -1) {
+		aliases[strings.ToLower(m[1])] = m[1] != ""
+	}
+	alone := !slices.ContainsFunc(otherTable.FindAllStringSubmatch(sql, -1), func(m []string) bool {
+		return !strings.EqualFold(m[1], "execution_operations") && slices.Contains(stateful, strings.ToLower(m[1]))
+	})
+	lists := [][]string{}
+	for _, m := range stateLists.FindAllStringSubmatch(sql, -1) {
+		if m[2] == "" && alone || m[2] != "" && aliases[strings.ToLower(m[2])] {
+			lists = append(lists, []string{m[0], m[1], m[3], m[4]})
+		}
+	}
+	return lists
+}
+
+// operationQueries is every statement in the module's code, sqlc's generated ones included, that
+// reads operations, each once where it is and by the name it has there.
+func operationQueries(code []moduleString) []operationQuery {
+	found := []operationQuery{}
+	seen := map[operationQuery]bool{}
+	for _, c := range code {
+		if !strings.Contains(c.value, "execution_operations") {
+			continue
+		}
+		if begins := statement.FindStringSubmatch(c.value); begins != nil {
+			name := begins[1]
+			if name == "" {
+				name = c.owner
+			}
+			if q := (operationQuery{c.at, name, c.value}); !seen[q] {
+				seen[q] = true
+				found = append(found, q)
+			}
+		}
+	}
+	return found
+}
+
+// temporaryTables is each temporary table a statement in the module's code creates.
+func temporaryTables(code []moduleString) []string {
+	found := []string{}
+	for _, c := range code {
+		for _, s := range strings.Split(c.value, ";") {
+			if temporaryTable.MatchString(s) && !slices.Contains(found, s) {
+				found = append(found, s)
+			}
+		}
+	}
+	return found
+}
+
+// moduleString is a constant string in the module's code, where it is and the function it is in.
+type moduleString struct{ at, owner, value string }
+
+// moduleStrings is every constant string in the module's code, sqlc's generated code included. A
+// string built from constants, such as recoveryChanges+recoveryFloors+`SELECT …`, is taken whole
+// where it is used, so a fragment isn't taken alone; a constant used by name is placed where it is
+// declared, and one nothing uses is taken there too.
+func moduleStrings(t *testing.T) []moduleString {
 	t.Helper()
-	found := []hostOperationQuery{}
-	for _, root := range []string{"..", "../../db/generated"} {
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
+	found := []moduleString{}
+	config := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  "../..",
+	}
+	loaded, err := packages.Load(config, "./internal/...", "./db/generated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	here, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packages.PrintErrors(loaded) > 0 {
+		t.Fatal("cannot type-check the module's code")
+	}
+	// A package sees what it imports through export data, so a constant is known across packages by
+	// its package and name.
+	used := map[string]bool{}
+	for _, pkg := range loaded {
+		for _, object := range pkg.TypesInfo.Uses {
+			if c, ok := object.(*types.Const); ok {
+				used[constKey(c)] = true
 			}
-			if d.IsDir() {
-				if d.Name() == "testdata" || path == "../integration" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			files := token.NewFileSet()
-			file, err := parser.ParseFile(files, path, nil, 0)
-			if err != nil {
-				return err
-			}
+		}
+	}
+	// Where a string is, relative to this test, as a failure prints it.
+	where := func(pos token.Pos) string {
+		position := loaded[0].Fset.Position(pos)
+		if relative, err := filepath.Rel(here, position.Filename); err == nil {
+			position.Filename = relative
+		}
+		return position.String()
+	}
+	for _, pkg := range loaded {
+		if strings.HasSuffix(pkg.PkgPath, "/internal/integration") {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			path := pkg.Fset.Position(file.Pos()).Filename
 			for _, decl := range file.Decls {
 				// A statement outside sqlc is named by its file and function, which stay put as
 				// lines move.
@@ -266,31 +586,62 @@ func hostOperationQueries(t *testing.T) []hostOperationQuery {
 					owner += "/" + funcName(fn)
 				}
 				ast.Inspect(decl, func(n ast.Node) bool {
-					literal, ok := n.(*ast.BasicLit)
-					if !ok || literal.Kind != token.STRING {
-						return true
-					}
-					sql, err := strconv.Unquote(literal.Value)
-					if err != nil || !strings.Contains(sql, "execution_operations") || !byHost.MatchString(sql) {
-						return true
-					}
-					if begins := statement.FindStringSubmatch(sql); begins != nil {
-						name := begins[1]
-						if name == "" {
-							name = owner
+					switch n := n.(type) {
+					case *ast.ValueSpec:
+						if _, ok := pkg.TypesInfo.Defs[n.Names[0]].(*types.Const); !ok {
+							return true
 						}
-						found = append(found, hostOperationQuery{files.Position(literal.Pos()).String(), name, sql})
+						for _, name := range n.Names {
+							if object, ok := pkg.TypesInfo.Defs[name].(*types.Const); ok && !used[constKey(object)] && object.Val().Kind() == constant.String {
+								found = append(found, moduleString{where(name.Pos()), owner, constant.StringVal(object.Val())})
+							}
+						}
+						// A constant's value is passed where it is used.
+						return false
+					case ast.Expr:
+						value := pkg.TypesInfo.Types[n].Value
+						if value == nil || value.Kind() != constant.String {
+							return true
+						}
+						at := n.Pos()
+						if object := namedConst(pkg.TypesInfo, n); object != nil {
+							at = object.Pos()
+						}
+						found = append(found, moduleString{where(at), owner, constant.StringVal(value)})
+						return false
 					}
 					return true
 				})
 			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
 	}
 	return found
+}
+
+// constKey names a constant across packages: a package's by its path and name, and a function's
+// by where it is declared, which only its own package uses.
+func constKey(c *types.Const) string {
+	if c.Pkg() == nil {
+		return c.Name()
+	}
+	if c.Parent() == c.Pkg().Scope() {
+		return c.Pkg().Path() + "." + c.Name()
+	}
+	return c.Pkg().Path() + "." + c.Name() + "@" + strconv.Itoa(int(c.Pos()))
+}
+
+// namedConst is the constant an expression names, if it is only that name.
+func namedConst(info *types.Info, e ast.Expr) types.Object {
+	e = ast.Unparen(e)
+	if selector, ok := e.(*ast.SelectorExpr); ok {
+		e = selector.Sel
+	}
+	if ident, ok := e.(*ast.Ident); ok {
+		if object, ok := info.Uses[ident].(*types.Const); ok {
+			return object
+		}
+	}
+	return nil
 }
 
 // funcName is a function's name, with its receiver's type for a method.

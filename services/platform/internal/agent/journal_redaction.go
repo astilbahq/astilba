@@ -222,3 +222,27 @@ func (j *Journal) redactFinished(tx *bolt.Tx) error {
 	}
 	return nil
 }
+
+// withoutSubmissionAccess drops the access block from a runner submission. Agents refuse them, but
+// an older management, as after a rollback, still sends one hydrated with a write credential.
+func withoutSubmissionAccess(c api.ExecutionCommand) (api.ExecutionCommand, bool, error) {
+	if c.Kind != "pipeline" || c.Pipeline == nil {
+		return c, false, nil
+	}
+	var fields map[string]jsontext.Value
+	var action string
+	if json.Unmarshal(*c.Pipeline, &fields) != nil || json.Unmarshal(fields["action"], &action) != nil || action != "submit" {
+		return c, false, nil
+	}
+	if _, held := fields["access"]; !held {
+		return c, false, nil
+	}
+	delete(fields, "access")
+	raw, err := stablejson.Marshal(fields)
+	if err != nil {
+		return c, false, err
+	}
+	message := jsontext.Value(raw)
+	c.Pipeline = &message
+	return c, true, nil
+}

@@ -298,7 +298,7 @@ func TestRewrapNamesTheRowItCannotRead(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id) VALUES($1,$2,$3,decode(repeat('41',1048577),'hex'),$4)`, ws, secret, version, f.owner); err != nil {
 		t.Fatal(err)
 	}
-	err := f.st.Rewrap(ctx, "test")
+	err := f.st.Rewrap(ctx, "test", "")
 	if err == nil || !strings.Contains(err.Error(), "secret_versions") || !strings.Contains(err.Error(), version.String()) || !strings.Contains(err.Error(), ws.String()) {
 		t.Fatalf("rewrap failure did not name the row: %v", err)
 	}

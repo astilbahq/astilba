@@ -124,7 +124,10 @@ type Identity struct {
 	KeyAuth        int    `json:"KeyAuth"`
 	MinimumVersion string `json:"MinimumVersion"`
 	Protocol       int    `json:"Protocol"`
-	Version        string `json:"Version"`
+	// StateVersion is the newest agent journal format this release reads. Releases without it
+	// read formats up to the keyed one.
+	StateVersion int    `json:"StateVersion"`
+	Version      string `json:"Version"`
 }
 
 // Describes reports whether a build with this identity is the one release r was signed for.

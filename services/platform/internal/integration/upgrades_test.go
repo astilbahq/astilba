@@ -274,7 +274,7 @@ func (h *upgradeHost) lapseOnNextQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	var codes api.RecoveryCodes
-	h.b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+	h.b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": h.f.password}}, 200, &codes)
 	h.b.csrf = codes.Session.CsrfToken
 	if _, err = h.f.st.Pool.Exec(ctx, "UPDATE accounts SET email_verified_at=now() WHERE id=$1", h.f.owner); err != nil {
 		t.Fatal(err)

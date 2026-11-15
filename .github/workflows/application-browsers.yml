@@ -77,6 +77,8 @@ jobs:
           node-version: 24.22.3
       - uses: ./.github/actions/install-pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Read Docker Hub through its mirror
+        uses: ./.github/actions/docker-hub-mirror
       # The test database comes from the same outage-prone pull as the browsers.
       - name: Pull pinned images
         uses: ./.github/actions/pull-images

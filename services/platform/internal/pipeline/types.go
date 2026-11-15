@@ -50,6 +50,10 @@ type Access struct {
 // builds untrusted code, so management makes every write to a repository itself.
 type RunnerAccess struct {
 	Clone Credential `json:"clone"`
+	// CloneExpires is when a minted clone credential, such as a GitHub App's, stops working; a
+	// stored one has none. A runner only ever refuses to use the credential after it: the time
+	// grants nothing.
+	CloneExpires *time.Time `json:"cloneExpires,omitempty"`
 }
 type Registry struct {
 	ID         uuid.UUID `json:"id"`
@@ -348,3 +352,16 @@ func EncryptionIdentity(ws, id uuid.UUID, kind string) string {
 }
 
 func (c Command) IsBuild() bool { return c.Action == "build" || c.Action == "build-preview" }
+
+// StartStep is the first step a runner reports for a pipeline, once it has started it. Management
+// allows a pipeline whose start it heard of before the deadline to run for its lifetime past it.
+const StartStep = "runner"
+
+// Lifetime is how long after it is issued a pipeline may start, its deadline, and how long it may
+// run once its runner starts it. A build's is its budget's assignment lifetime.
+func (c Command) Lifetime() time.Duration {
+	if c.IsBuild() && c.Build != nil {
+		return time.Duration(c.Build.Limits().Minutes) * time.Minute
+	}
+	return 30 * time.Minute
+}
