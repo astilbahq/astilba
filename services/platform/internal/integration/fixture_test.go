@@ -280,6 +280,40 @@ func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 	useKeys(t, st, keys)
 }
 
+// restoredWorkspaceKeys copies a workspace's keys from source to destination, as restoring the
+// source's backup brings them. The destination must hold the source's installation ID and keyring,
+// which the wrappings are bound to.
+func restoredWorkspaceKeys(t *testing.T, source, destination *store.Store, ws uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	var generation int64
+	var kcv []byte
+	if err := source.Pool.QueryRow(ctx, `SELECT generation,kcv FROM workspace_keys WHERE workspace_id=$1 AND state='active'`, ws).Scan(&generation, &kcv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.Pool.Exec(ctx, `INSERT INTO workspace_keys(workspace_id,generation,state,kcv) VALUES($1,$2,'active',$3)`, ws, generation, kcv); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := source.Pool.Query(ctx, `SELECT purpose,backend_id,wrapped FROM workspace_key_wrappings WHERE workspace_id=$1 AND generation=$2`, ws, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var purpose, backend string
+		var wrapped []byte
+		if err = rows.Scan(&purpose, &backend, &wrapped); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = destination.Pool.Exec(ctx, `INSERT INTO workspace_key_wrappings(workspace_id,generation,purpose,backend_id,wrapped) VALUES($1,$2,$3,$4,$5)`, ws, generation, purpose, backend, wrapped); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // secretIdentity is the identity a secret version's value is sealed under, for tests that open
 // it with the keyring directly.
 func secretIdentity(workspace, id uuid.UUID) string {
