@@ -3,7 +3,7 @@ import { type RefObject, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { client, result, type Schema, setSession } from "../../api/client";
 import { sessionOptions } from "../../api/session";
-import { useRequiredStepUp } from "../../api/step-up";
+import { useConfirmCredential, useRequiredStepUp } from "../../api/step-up";
 import { useSessionRequest } from "../../api/use-session-request";
 import {
   AlertDialogActions,
@@ -28,8 +28,10 @@ import * as styles from "./account.styles";
 function PasswordSection() {
   const { t } = useTranslation("account");
   const queries = useQueryClient();
-  const request = useSessionRequest({ renewal: true });
-  const action = useAction({ recentAuth: true });
+  // The dialog holds signed-out reads while the change renews the session, not while it waits.
+  const request = useSessionRequest();
+  const action = useAction();
+  const confirmCredential = useConfirmCredential();
   const validation = useAuthValidation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -71,13 +73,18 @@ function PasswordSection() {
               action.run(() =>
                 request(
                   (signal) =>
-                    result(
-                      client.POST("/api/v1/auth/password", {
-                        signal,
-                        body: { password },
-                      }),
+                    confirmCredential(
+                      (current, signal) =>
+                        result(
+                          client.POST("/api/v1/auth/password", {
+                            signal,
+                            body: { password, current },
+                          }),
+                        ),
+                      { signal },
                     ),
                   (next) => {
+                    if (!next) return;
                     queries.setQueryData(
                       sessionOptions.queryKey,
                       setSession(next),
@@ -139,8 +146,10 @@ function CredentialDialog({
 }) {
   const { t } = useTranslation("account");
   const queries = useQueryClient();
-  const action = useAction({ recentAuth: true });
-  const request = useSessionRequest({ renewal: true });
+  const action = useAction();
+  const confirmCredential = useConfirmCredential();
+  // The dialog holds signed-out reads while the change renews the session, not while it waits.
+  const request = useSessionRequest();
   const validation = useAuthValidation();
   const cancel = useRef<HTMLButtonElement>(null);
   const dismiss = () => {
@@ -152,8 +161,18 @@ function CredentialDialog({
       task === "disable"
         ? request(
             (signal) =>
-              result(client.POST("/api/v1/auth/mfa/disable", { signal })),
+              confirmCredential(
+                (current, signal) =>
+                  result(
+                    client.POST("/api/v1/auth/mfa/disable", {
+                      signal,
+                      body: { current },
+                    }),
+                  ),
+                { signal },
+              ),
             (next) => {
+              if (!next) return;
               queries.setQueryData(sessionOptions.queryKey, setSession(next));
               onDisabled();
               dismiss();
@@ -161,10 +180,18 @@ function CredentialDialog({
           )
         : request(
             (signal) =>
-              result(
-                client.POST("/api/v1/auth/mfa/recovery-codes", { signal }),
+              confirmCredential(
+                (current, signal) =>
+                  result(
+                    client.POST("/api/v1/auth/mfa/recovery-codes", {
+                      signal,
+                      body: { current },
+                    }),
+                  ),
+                { signal },
               ),
             (next) => {
+              if (!next) return;
               queries.setQueryData(
                 sessionOptions.queryKey,
                 setSession(next.session),

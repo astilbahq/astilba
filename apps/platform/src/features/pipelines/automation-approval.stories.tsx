@@ -30,6 +30,7 @@ const source: Schema["GitSourceStatus"] = {
   status: "ready",
   sourceHash: "f".repeat(64),
   submission: null,
+  failure: null,
 };
 const target = (
   id: string,

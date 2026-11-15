@@ -61,6 +61,14 @@ install -m 0755 "$scratch"/docker/* "$base/bin/"
 install -m 0755 "$scratch/compose" "$base/cli-plugins/docker-compose"
 tar -xzf "$scratch/go.tgz" -C "$base"
 
+# The fixture daemon reads only its own configuration, never /etc/docker/daemon.json. It reads
+# Docker Hub images through Google's public mirror, so test pulls do not use Docker Hub's
+# anonymous rate limit. Docker checks what the mirror serves against each pinned digest, and
+# reads Docker Hub itself when the mirror lacks an image or fails. docs/continuous-integration.md
+# describes it.
+install -d -m 0755 /etc/astilba-plat4
+printf '{\n  "registry-mirrors": ["https://mirror.gcr.io"]\n}\n' > /etc/astilba-plat4/daemon.json
+
 cat > /etc/systemd/system/astilba-plat4-docker.service <<'UNIT'
 [Unit]
 Description=Disposable Astilba PLAT-4 Docker daemon
@@ -70,7 +78,7 @@ Wants=network-online.target
 [Service]
 Type=notify
 Environment=PATH=/opt/astilba-plat4/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/opt/astilba-plat4/bin/dockerd --host=unix:///run/astilba-plat4/docker.sock --data-root=/var/lib/astilba-plat4/docker --exec-root=/run/astilba-plat4/exec --pidfile=/run/astilba-plat4/docker.pid --group=root --exec-opt native.cgroupdriver=systemd
+ExecStart=/opt/astilba-plat4/bin/dockerd --host=unix:///run/astilba-plat4/docker.sock --data-root=/var/lib/astilba-plat4/docker --exec-root=/run/astilba-plat4/exec --pidfile=/run/astilba-plat4/docker.pid --group=root --exec-opt native.cgroupdriver=systemd --config-file=/etc/astilba-plat4/daemon.json
 RuntimeDirectory=astilba-plat4
 Delegate=yes
 TasksMax=infinity
@@ -83,5 +91,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now astilba-plat4-docker.service
 "$base/bin/docker" --host unix:///run/astilba-plat4/docker.sock version --format '{{.Server.Version}}'
+mirrors=$("$base/bin/docker" --host unix:///run/astilba-plat4/docker.sock info --format '{{json .RegistryConfig.Mirrors}}')
+[[ "$mirrors" == '["https://mirror.gcr.io/"]' ]] || { echo "The fixture daemon lists unexpected Docker Hub mirrors: $mirrors" >&2; exit 1; }
 "$base/cli-plugins/docker-compose" version --short
 "$base/go/bin/go" version

@@ -327,25 +327,40 @@ func TestRecoveryRefusesHostsRunningARootTheNewestBaseDoesNotKnow(t *testing.T) 
 	newest := windowTestHistory(t, full, plans, 1)
 	server := uuid.New()
 	newest.Tables["servers"] = []portability.Row{appliedTestRow(map[string]any{"id": server, "name": "edge-1", "revoked": false})}
-	carried, _ := recoveryValue[uuid.UUID](newest.Tables["execution_operations"][0], "id")
+	// A finished cross-host root, one of its steps that hasn't finished, and an operation of another
+	// kind that hasn't finished either.
+	carried, step := uuid.New(), uuid.New()
+	visual, _ := recoveryValue[uuid.UUID](newest.Tables["execution_operations"][0], "id")
+	ended := newest.Tables["execution_operations"][0]["state"]
+	recoverySet(newest.Tables["execution_operations"][0], "state", "running")
+	known := newest
+	known.Tables = maps.Clone(newest.Tables)
+	root := appliedTestRow(map[string]any{"id": carried, "parent_id": nil, "state": "succeeded", "command": api.ExecutionCommand{Id: carried, Kind: "crosshost"}})
+	known.Tables["execution_operations"] = append(slices.Clone(newest.Tables["execution_operations"]), root,
+		appliedTestRow(map[string]any{"id": step, "parent_id": carried, "state": "running", "command": api.ExecutionCommand{Id: step, Kind: "crosshost", ParentId: &carried}}))
 	listed, unknown := uuid.New(), uuid.New()
 	n := loadedBase{ID: uuid.New(), Parent: uuid.New(), Supersedes: map[uuid.UUID]uuid.UUID{uuid.New(): listed}}
 	running := func(parent uuid.UUID) map[uuid.UUID]deployment.RecoveryEvidence {
 		return map[uuid.UUID]deployment.RecoveryEvidence{server: {ServerID: server, ActiveParent: parent}}
 	}
-	if err := refuseUnknownActiveRoots(newest, n, running(uuid.Nil)); err != nil {
+	if err := refuseUnknownActiveRoots(known, n, running(uuid.Nil)); err != nil {
 		t.Fatal("a host running no root was refused", err)
 	}
 	// A root the newest base carries finished stays finished, whatever a host reports.
-	if err := refuseUnknownActiveRoots(newest, n, running(carried)); err == nil || !strings.Contains(err.Error(), carried.String()) || !strings.Contains(err.Error(), "records as ended") || !strings.Contains(err.Error(), "revoke those servers") {
+	if err := refuseUnknownActiveRoots(known, n, running(carried)); err == nil || !strings.Contains(err.Error(), carried.String()) || !strings.Contains(err.Error(), "records as ended") || !strings.Contains(err.Error(), "revoke those servers") {
 		t.Fatal("a stale report of a root the newest base carries finished wasn't refused by name", err)
 	}
-	finished := newest.Tables["execution_operations"][0]["state"]
-	recoverySet(newest.Tables["execution_operations"][0], "state", "running")
-	if err := refuseUnknownActiveRoots(newest, n, running(carried)); err != nil {
+	recoverySet(root, "state", "running")
+	if err := refuseUnknownActiveRoots(known, n, running(carried)); err != nil {
 		t.Fatal("a root the newest base carries unfinished was refused", err)
 	}
-	newest.Tables["execution_operations"][0]["state"] = finished
+	// No unfinished operation but a cross-host root is a host's active root.
+	for _, parent := range []uuid.UUID{step, visual} {
+		if err := refuseUnknownActiveRoots(known, n, running(parent)); err == nil || !strings.Contains(err.Error(), "edge-1 ("+server.String()+")") || !strings.Contains(err.Error(), parent.String()) || !strings.Contains(err.Error(), "another kind of operation") || !strings.Contains(err.Error(), "revoke those servers") {
+			t.Fatal("a host naming an operation that isn't a cross-host root wasn't refused by name", err)
+		}
+	}
+	newest.Tables["execution_operations"][0]["state"] = ended
 	// A listed base's root that the newest base no longer carries has ended.
 	if err := refuseUnknownActiveRoots(newest, n, running(listed)); err == nil || !strings.Contains(err.Error(), "records as ended") || !strings.Contains(err.Error(), "revoke those servers") {
 		t.Fatal("a stale report of a listed root that ended wasn't refused by name", err)

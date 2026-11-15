@@ -104,7 +104,7 @@ func journalPlaintext(t *testing.T, j *Journal) map[string][]byte {
 				if v == nil {
 					return nil
 				}
-				plain, err := j.keys.Open(v, string(name)+":"+string(k))
+				plain, err := j.keys.Load().Open(v, string(name)+":"+string(k))
 				if err != nil {
 					return err
 				}
@@ -142,7 +142,7 @@ func writeAsEarlierAgent(t *testing.T, j *Journal, bucket, key string, value any
 		t.Fatal(err)
 	}
 	if err = j.db.Update(func(tx *bolt.Tx) error {
-		data, err := j.keys.Seal(raw, bucket+":"+key)
+		data, err := j.keys.Load().Seal(raw, bucket+":"+key)
 		if err != nil {
 			return err
 		}

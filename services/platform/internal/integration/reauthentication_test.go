@@ -28,8 +28,10 @@ func staleOwner(t *testing.T, f *fixture, mfa bool) (*browser, api.Workspace, st
 		if err != nil {
 			t.Fatal(err)
 		}
-		b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+		b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": f.password}}, 200, &codes)
 		b.csrf = codes.Session.CsrfToken
+		// Turning two-factor on spent a confirmation attempt; the tests count from none.
+		clearBudgets(t, f)
 	}
 	later := time.Now().Add(16 * time.Minute)
 	f.auth.Now = func() time.Time { return later }
@@ -199,7 +201,7 @@ func TestReauthenticationCannotRestoreAnEndedSession(t *testing.T) {
 	if err := f.st.Queries.BumpAuthVersion(ctx, f.owner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.auth.Reauthenticate(ctx, principal, "", codeAt(t, secret, f.auth.Now())); !errors.Is(err, domain.Unauthenticated) {
+	if _, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Code: codeAt(t, secret, f.auth.Now())}); !errors.Is(err, domain.Unauthenticated) {
 		t.Fatal("an ended session was confirmed", err)
 	}
 }
@@ -221,7 +223,7 @@ func TestReauthenticationConcurrentGuessesStayWithinTheDailyAllowance(t *testing
 	results := make(chan error, 5)
 	for range 5 {
 		go func() {
-			_, err := f.auth.Reauthenticate(ctx, principal, "", "000000")
+			_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Code: "000000"})
 			results <- err
 		}()
 	}

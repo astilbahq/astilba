@@ -56,7 +56,7 @@ func (e *Engine) RejectCrossHostEffect(ctx context.Context, id uuid.UUID) error 
 		if !found {
 			return errors.New("the frozen run is not awaiting local inspection")
 		}
-		list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", labelServer+"="+r.Command.ServerId.String(), "com.astilba.run="+b.RunID.String())})
+		list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: runContainers(r.Command.ServerId, b.RunID)})
 		if err != nil {
 			return err
 		}

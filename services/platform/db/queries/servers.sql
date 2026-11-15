@@ -165,7 +165,7 @@ ON CONFLICT(workspace_id,unit_id) DO UPDATE SET plan_id=EXCLUDED.plan_id,invento
 -- behind decided on it too, so it must hold until they finish.
 SELECT EXISTS(SELECT 1 FROM execution_operations o JOIN servers s ON s.workspace_id=o.workspace_id
     WHERE o.workspace_id = @workspace_id AND s.id = @server_id AND s.revoked AND o.parent_id IS NULL AND o.kind='crosshost'
-        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND o.state IN ('queued','dispatched','running','needs_attention')
         AND (o.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',@server_id::text)))
             OR o.command->'crosshost'->'plan'->'distributed'->'abandoned' @> jsonb_build_array(@server_id::text)));
 
@@ -174,7 +174,7 @@ SELECT EXISTS(SELECT 1 FROM execution_operations o JOIN servers s ON s.workspace
 -- can't be taken back. This shares the revocation's transaction so none can start in between.
 UPDATE execution_operations child SET cancel_requested=true FROM execution_operations root
 WHERE child.workspace_id = @workspace_id AND root.workspace_id = @workspace_id AND child.parent_id=root.id
-    AND child.state NOT IN ('succeeded','failed','cancelled') AND child.command->'crosshost'->>'phase'='hook'
+    AND child.state IN ('queued','dispatched','running','needs_attention') AND child.command->'crosshost'->>'phase'='hook'
     AND root.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',@server_id::text)));
 
 -- name: CancelHeldPreparation :exec

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -185,7 +186,12 @@ func TestPushToAnotherBranchKeepsTheAdmissionsAnswer(t *testing.T) {
 
 func (h *hungBuild) pullRequestHook(t *testing.T) {
 	t.Helper()
-	raw := []byte(`{"number":7,"repository":{"id":12}}`)
+	h.pullRequestHookFor(t, 7)
+}
+
+func (h *hungBuild) pullRequestHookFor(t *testing.T, number int) {
+	t.Helper()
+	raw := []byte(`{"number":` + strconv.Itoa(number) + `,"repository":{"id":12}}`)
 	mac := hmac.New(sha256.New, []byte(h.secret))
 	mac.Write(raw)
 	request, _ := http.NewRequest("POST", h.f.server.URL+"/hooks/git/"+h.connection.ID.String(), bytes.NewReader(raw))

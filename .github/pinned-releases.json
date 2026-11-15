@@ -3,7 +3,20 @@
     "nginx": {
       "releases": "^\\d+\\.\\d*[02468]\\.\\d+(-|$)",
       "reason": "Astilba follows nginx's stable releases, whose minor version is even. Stable carries mainline's security fixes, so an odd mainline release is not an update."
+    },
+    "ghcr.io/railwayapp/railpack-builder": {
+      "releases": "^mise-2026\\.10\\.14$",
+      "reason": "Railpack 0.43.0 builds on the builder image named after the mise it pins (RailpackMiseVersion in services/platform/internal/pipeline/railpack.go), and the agent refuses any other. Move this track with the Railpack release."
+    },
+    "ghcr.io/railwayapp/railpack-runtime": {
+      "releases": "^mise-2026\\.10\\.14$",
+      "reason": "Railpack 0.43.0 builds on the runtime image named after the mise it pins (RailpackMiseVersion in services/platform/internal/pipeline/railpack.go), and the agent refuses any other. Move this track with the Railpack release."
     }
   },
-  "tools": {}
+  "tools": {
+    "jdx/mise": {
+      "releases": "^v2026\\.10\\.14$",
+      "reason": "The build fixture installs the mise that Railpack 0.43.0 pins (RailpackMiseVersion in services/platform/internal/pipeline/railpack.go), where Railpack looks for it. Move this track with the Railpack release."
+    }
+  }
 }
