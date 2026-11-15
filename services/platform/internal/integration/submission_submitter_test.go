@@ -12,7 +12,7 @@ import (
 )
 
 // A submission is sent on its submitter's say-so, and can wait up to an hour before it is. Losing
-// write access withdraws it, so getting it back sends nothing, and each attempt checks again
+// write access fails it, so getting it back sends nothing, and each attempt checks again
 // that the submitter has the credentials they submitted with and meets the workspace's two-factor
 // requirement, before it asks the provider for anything.
 func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
@@ -20,7 +20,7 @@ func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
 	defer cancel()
 	x := newSubmissionFixture(t, ctx)
 	members := x.prefix + "/members/"
-	const withdrawn, refused = "lost write access while it waited", "the member who submitted it can no longer send it"
+	const withdrawn, refused = "the member who submitted it lost write access", "the member who submitted it can no longer send it"
 	for i, test := range []struct {
 		name string
 		// change happens while the submission waits for its next attempt.
@@ -72,12 +72,21 @@ func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
 			x.await(t, queued.Id, submissionRetrying)
 			held, attempt := holdSubmission(t, x, queued.Id)
 			test.change(t, submitter, id, queued.Id)
-			// A withdrawn submission stays queued, as an attempt may be sending it, until the next
-			// attempt fails it.
+			// Losing write access fails the submission at once, but an attempt may be sending it, so
+			// another for the revision waits until that one must have ended.
 			if test.refusal == withdrawn {
-				if state, note := x.await(t, queued.Id, func(string, string) bool { return true }); state != "queued" || !strings.HasPrefix(note, "Withdrawn: ") {
-					t.Fatal("losing write access did not withdraw the submission", state, note)
+				if again := x.submit(t, nil, path, draft); again.Id != queued.Id || again.State != "failed" {
+					t.Fatal("a submission started beside one that may still be sending", again)
 				}
+				if _, err := x.f.st.Pool.Exec(ctx, "UPDATE source_submissions SET withdrawn_at=withdrawn_at-interval '1 minute' WHERE id=$1", queued.Id); err != nil {
+					t.Fatal(err)
+				}
+				again := x.submit(t, nil, path, draft)
+				if again.Id == queued.Id || again.State != "queued" {
+					t.Fatal("the draft could not be submitted again once the withdrawn attempt had ended", again)
+				}
+				x.await(t, again.Id, submissionRetrying)
+				holdSubmission(t, x, again.Id)
 			}
 			requests, writes := x.requests.Load(), x.writes.Load()
 			if _, err := x.f.st.Pool.Exec(ctx, "UPDATE river_job SET scheduled_at=now() WHERE id=$1", held); err != nil {
@@ -97,9 +106,19 @@ func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
 			if state != "failed" || !strings.HasPrefix(note, "Not submitted: ") || !strings.Contains(note, test.refusal) {
 				t.Fatal("the submission was not refused for its submitter", state, note)
 			}
-			var job string
-			if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id=$1", held).Scan(&job); err != nil || job != "completed" {
-				t.Fatal("the refused attempt did not finish its job", job, err)
+			// The held attempt runs even for a submission already failed, and must stop short of
+			// the provider.
+			for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				var job string
+				if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id=$1", held).Scan(&job); err != nil {
+					t.Fatal(err)
+				}
+				if job == "completed" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the refused attempt did not finish its job", job)
+				}
 			}
 			if x.requests.Load() != requests {
 				t.Fatal("a refused attempt reached the provider")

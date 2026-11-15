@@ -131,7 +131,10 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		prior, err := q.LatestSourceSubmission(ctx, db.LatestSourceSubmissionParams{WorkspaceID: ws, EnvironmentID: env, RevisionID: &base})
 		if err == nil {
 			abandoned := prior.State == "queued" && time.Since(prior.CreatedAt) > submissionLifetime
-			if prior.State != "failed" && !abandoned {
+			// An attempt may still be sending a submission withdrawn from its submitter, so
+			// another for the revision waits until that attempt must have ended.
+			sending := prior.WithdrawnAt != nil && time.Since(*prior.WithdrawnAt) < submissionTimeout
+			if prior.State != "failed" && !abandoned || sending {
 				out = submissionView(prior.ID, prior.RevisionID, prior.State, prior.Note, prior.Result, prior.CreatedAt)
 				return nil
 			}
@@ -416,18 +419,16 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 }
 
 // submitterRefusal says why the member who submitted the attempt may no longer have it sent, or ""
-// while they still may: they haven't lost write access since, even for a while, their password,
-// two-factor settings and recovery codes are as they were when they submitted it, and they meet
-// the workspace's two-factor requirement. Membership and the requirement change under the
-// workspace lock, which the caller holds. The note is shown to every member, so like an automatic
+// while they still may: they are an owner or operator, their password, two-factor settings and
+// recovery codes are as they were when they submitted it, and they meet the workspace's two-factor
+// requirement. Losing write access, even for a while, has already failed it (store.EndAuthority).
+// Membership and the requirement change under the workspace lock, which the caller holds. The note is shown to every member, so like an automatic
 // deployment's it says which only of what the dashboard already shows.
 func submitterRefusal(ctx context.Context, q *db.Queries, ws, id uuid.UUID) (string, error) {
 	s, err := q.SourceSubmissionSubmitter(ctx, db.SourceSubmissionSubmitterParams{WorkspaceID: ws, ID: id})
 	switch {
 	case err != nil || s.Holds:
 		return "", err
-	case s.Withdrawn:
-		return "the member who submitted it lost write access while it waited. An owner or operator can submit the draft again.", nil
 	case !s.Recorded:
 		return "an earlier release of Astilba queued it without recording who may send it. Submit the draft again.", nil
 	}
@@ -477,20 +478,38 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 		}
 		return tx.Commit(ctx)
 	}
+	// An attempt that was already sending the submission when it was withdrawn records what the
+	// provider did, so the source follows the review it opened.
+	if err == nil && row.State == "failed" && row.WithdrawnAt != nil && submitErr == nil {
+		outcome, err := submittedOutcome(row.Configuration, result)
+		if err != nil {
+			return err
+		}
+		if outcome == nil {
+			return finish("", "", nil)
+		}
+		if err = q.RecordWithdrawnSourceSubmission(ctx, db.RecordWithdrawnSourceSubmissionParams{WorkspaceID: ws, ID: id, Note: "Sent by an attempt that had already started when the member who submitted it lost write access.", Result: outcome}); err != nil {
+			return err
+		}
+		if err = q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID, SubmissionID: id}); err != nil {
+			return err
+		}
+		return finish("", "", nil)
+	}
 	if err != nil || row.State != "queued" {
 		return finish("", "", nil)
 	}
 	if submitErr == nil {
-		var c submissionConfiguration
-		if err = json.Unmarshal(row.Configuration, &c); err != nil {
-			return err
-		}
-		if !reviewURLMatches(c.Connection, result.Review.URL) {
-			return finish("failed", "Not recorded: the Git provider named a review outside the connection's own site. Check branch astilba/"+c.SubmissionID.String()+" and its review at the provider.", nil)
-		}
-		outcome, err := stablejson.Marshal(submissionOutcome{Commit: result.Commit, ReviewNumber: result.Review.Number, ReviewURL: result.Review.URL})
+		outcome, err := submittedOutcome(row.Configuration, result)
 		if err != nil {
 			return err
+		}
+		if outcome == nil {
+			var c submissionConfiguration
+			if err = json.Unmarshal(row.Configuration, &c); err != nil {
+				return err
+			}
+			return finish("failed", "Not recorded: the Git provider named a review outside the connection's own site. Check branch astilba/"+c.SubmissionID.String()+" and its review at the provider.", nil)
 		}
 		return finish("succeeded", "", outcome)
 	}
@@ -505,6 +524,19 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 		return err
 	}
 	return submitErr
+}
+
+// submittedOutcome is what a submission frozen as configuration records of the provider's result,
+// or nil when the provider named a review outside the connection's own site.
+func submittedOutcome(configuration []byte, result pipeline.SubmissionResult) ([]byte, error) {
+	var c submissionConfiguration
+	if err := json.Unmarshal(configuration, &c); err != nil {
+		return nil, err
+	}
+	if !reviewURLMatches(c.Connection, result.Review.URL) {
+		return nil, nil
+	}
+	return stablejson.Marshal(submissionOutcome{Commit: result.Commit, ReviewNumber: result.Review.Number, ReviewURL: result.Review.URL})
 }
 
 // reviewURLMatches accepts a review link only on the connection's own site, so a link the

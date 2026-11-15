@@ -14,8 +14,8 @@ import (
 // withdraws can be used after the change commits. p is the owner making the change, who is
 // recorded as withdrawing each grant.
 //
-// A credential that acts as the account is revoked for good, and a source submission it queued is
-// never sent, though one already being sent finishes. A grant the account issued for the workspace is withdrawn, and a standing policy it
+// A credential that acts as the account is revoked for good, and a source submission it queued
+// fails, though an attempt already sending it finishes. A grant the account issued for the workspace is withdrawn, and a standing policy it
 // approved is paused until a current member with the role it needs approves it again. None is
 // handed to anyone else, so nothing ever runs on the approval of someone who did not give it.
 // Re-promotion does not restore any of them.

@@ -470,7 +470,7 @@ func (q *Queries) LatestImportedCommits(ctx context.Context, arg LatestImportedC
 }
 
 const latestSourceSubmission = `-- name: LatestSourceSubmission :one
-SELECT id,environment_id,revision_id,configuration,state,note,result,created_at FROM source_submissions
+SELECT id,environment_id,revision_id,configuration,state,note,result,created_at,withdrawn_at FROM source_submissions
 WHERE workspace_id = $1 AND environment_id = $2 AND ($3::uuid IS NULL OR revision_id = $3::uuid)
 ORDER BY created_at DESC,id DESC LIMIT 1
 `
@@ -482,14 +482,15 @@ type LatestSourceSubmissionParams struct {
 }
 
 type LatestSourceSubmissionRow struct {
-	ID            uuid.UUID `json:"id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	RevisionID    uuid.UUID `json:"revision_id"`
-	Configuration []byte    `json:"configuration"`
-	State         string    `json:"state"`
-	Note          string    `json:"note"`
-	Result        []byte    `json:"result"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            uuid.UUID  `json:"id"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	RevisionID    uuid.UUID  `json:"revision_id"`
+	Configuration []byte     `json:"configuration"`
+	State         string     `json:"state"`
+	Note          string     `json:"note"`
+	Result        []byte     `json:"result"`
+	CreatedAt     time.Time  `json:"created_at"`
+	WithdrawnAt   *time.Time `json:"withdrawn_at"`
 }
 
 // The newest attempt for the environment, or for one revision of it when revision_id is set.
@@ -505,6 +506,7 @@ func (q *Queries) LatestSourceSubmission(ctx context.Context, arg LatestSourceSu
 		&i.Note,
 		&i.Result,
 		&i.CreatedAt,
+		&i.WithdrawnAt,
 	)
 	return i, err
 }
@@ -588,7 +590,7 @@ func (q *Queries) LockDeliveredPipeline(ctx context.Context, arg LockDeliveredPi
 }
 
 const lockSourceSubmission = `-- name: LockSourceSubmission :one
-SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = $1 AND id = $2 FOR UPDATE
+SELECT environment_id,revision_id,configuration,state,created_at,withdrawn_at FROM source_submissions WHERE workspace_id = $1 AND id = $2 FOR UPDATE
 `
 
 type LockSourceSubmissionParams struct {
@@ -597,11 +599,12 @@ type LockSourceSubmissionParams struct {
 }
 
 type LockSourceSubmissionRow struct {
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	RevisionID    uuid.UUID `json:"revision_id"`
-	Configuration []byte    `json:"configuration"`
-	State         string    `json:"state"`
-	CreatedAt     time.Time `json:"created_at"`
+	EnvironmentID uuid.UUID  `json:"environment_id"`
+	RevisionID    uuid.UUID  `json:"revision_id"`
+	Configuration []byte     `json:"configuration"`
+	State         string     `json:"state"`
+	CreatedAt     time.Time  `json:"created_at"`
+	WithdrawnAt   *time.Time `json:"withdrawn_at"`
 }
 
 func (q *Queries) LockSourceSubmission(ctx context.Context, arg LockSourceSubmissionParams) (LockSourceSubmissionRow, error) {
@@ -613,6 +616,7 @@ func (q *Queries) LockSourceSubmission(ctx context.Context, arg LockSourceSubmis
 		&i.Configuration,
 		&i.State,
 		&i.CreatedAt,
+		&i.WithdrawnAt,
 	)
 	return i, err
 }
@@ -736,6 +740,29 @@ func (q *Queries) RecordGitSourceFailure(ctx context.Context, arg RecordGitSourc
 		arg.Reason,
 		arg.WorkspaceID,
 		arg.EnvironmentID,
+	)
+	return err
+}
+
+const recordWithdrawnSourceSubmission = `-- name: RecordWithdrawnSourceSubmission :exec
+UPDATE source_submissions SET state = 'succeeded', note = $1, result = $2
+WHERE workspace_id = $3 AND id = $4 AND state = 'failed' AND withdrawn_at IS NOT NULL
+`
+
+type RecordWithdrawnSourceSubmissionParams struct {
+	Note        string    `json:"note"`
+	Result      []byte    `json:"result"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// What the provider did for an attempt that was already sending a submission when it was withdrawn.
+func (q *Queries) RecordWithdrawnSourceSubmission(ctx context.Context, arg RecordWithdrawnSourceSubmissionParams) error {
+	_, err := q.db.Exec(ctx, recordWithdrawnSourceSubmission,
+		arg.Note,
+		arg.Result,
+		arg.WorkspaceID,
+		arg.ID,
 	)
 	return err
 }
@@ -937,9 +964,9 @@ func (q *Queries) SourceSubmissionByRequestKey(ctx context.Context, arg SourceSu
 }
 
 const sourceSubmissionSubmitter = `-- name: SourceSubmissionSubmitter :one
-SELECT (s.withdrawn_at IS NULL AND policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)
+SELECT (policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)
         AND NOT (w.require_mfa AND a.totp_secret IS NULL))::boolean AS holds,
-    (s.withdrawn_at IS NOT NULL)::boolean AS withdrawn, (s.actor_auth_version IS NOT NULL)::boolean AS recorded
+    (s.actor_auth_version IS NOT NULL)::boolean AS recorded
 FROM source_submissions s JOIN workspaces w ON w.id = s.workspace_id JOIN accounts a ON a.id = s.actor_id
 WHERE s.workspace_id = $1 AND s.id = $2
 `
@@ -950,19 +977,18 @@ type SourceSubmissionSubmitterParams struct {
 }
 
 type SourceSubmissionSubmitterRow struct {
-	Holds     bool `json:"holds"`
-	Withdrawn bool `json:"withdrawn"`
-	Recorded  bool `json:"recorded"`
+	Holds    bool `json:"holds"`
+	Recorded bool `json:"recorded"`
 }
 
-// Whether the member who submitted it may still have it sent: it wasn't withdrawn when they lost
-// write access, and they pass the check every standing approval makes, at the role writing needs,
-// and the workspace's two-factor requirement, which writing also needs. A version is recorded
-// unless an older release queued it.
+// Whether the member who submitted it may still have it sent: the check every standing approval
+// makes, at the role writing needs, and the workspace's two-factor requirement, which writing also
+// needs. Losing write access has already failed it (WithdrawActorSourceSubmissions). A version is
+// recorded unless an older release queued it.
 func (q *Queries) SourceSubmissionSubmitter(ctx context.Context, arg SourceSubmissionSubmitterParams) (SourceSubmissionSubmitterRow, error) {
 	row := q.db.QueryRow(ctx, sourceSubmissionSubmitter, arg.WorkspaceID, arg.ID)
 	var i SourceSubmissionSubmitterRow
-	err := row.Scan(&i.Holds, &i.Withdrawn, &i.Recorded)
+	err := row.Scan(&i.Holds, &i.Recorded)
 	return i, err
 }
 
@@ -1085,9 +1111,9 @@ func (q *Queries) WaitBuildTarget(ctx context.Context, arg WaitBuildTargetParams
 }
 
 const withdrawActorSourceSubmissions = `-- name: WithdrawActorSourceSubmissions :many
-UPDATE source_submissions SET withdrawn_at = now(),
-    note = 'Withdrawn: the member who submitted it lost write access, so it will not be sent. Once it stops, an owner or operator can submit the draft again.'
-WHERE workspace_id = $1 AND actor_id = $2 AND state = 'queued' AND withdrawn_at IS NULL
+UPDATE source_submissions SET state = 'failed', finished_at = now(), withdrawn_at = now(),
+    note = 'Not submitted: the member who submitted it lost write access. An owner or operator can submit the draft again from a minute later.'
+WHERE workspace_id = $1 AND actor_id = $2 AND state = 'queued'
 RETURNING id
 `
 
@@ -1096,10 +1122,10 @@ type WithdrawActorSourceSubmissionsParams struct {
 	ActorID     uuid.UUID `json:"actor_id"`
 }
 
-// A queued submission is sent on its submitter's say-so, so losing write access withdraws it, in
-// the transaction that takes it away, and getting it back doesn't restore it. It stays queued: an
-// attempt may be sending it with nothing held, and records what the provider did, and the next
-// attempt fails it. Until then no other attempt for the revision can start and write beside it.
+// A queued submission is sent on its submitter's say-so, so losing write access fails it, in the
+// transaction that takes it away, and getting it back doesn't restore it. An attempt may be
+// sending it with nothing held, so withdrawn_at lets that attempt record what the provider did,
+// and keeps another attempt for the revision from starting beside it until it must have ended.
 func (q *Queries) WithdrawActorSourceSubmissions(ctx context.Context, arg WithdrawActorSourceSubmissionsParams) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, withdrawActorSourceSubmissions, arg.WorkspaceID, arg.ActorID)
 	if err != nil {
