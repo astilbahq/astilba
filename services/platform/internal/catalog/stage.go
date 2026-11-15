@@ -34,11 +34,14 @@ type Stage struct {
 
 // StageRoute is where an entry's route publishes. Domain is either a domain the person
 // controls or, when empty, the generated application domain the caller computes for the new
-// service. AllowCIDRs is required: see Recipe.Route.
+// service. AllowCIDRs is required: see Recipe.Route. Containers are the ranges the
+// environment's server's containers send traffic from, which AllowCIDRs must not overlap; nil
+// when the environment has no server yet or its ranges are unknown.
 type StageRoute struct {
 	Domain     string
 	TLS        string
 	AllowCIDRs []string
+	Containers []domain.ContainerRange
 }
 
 // Generated is a secret version staging creates. Its value comes from Value.
@@ -140,7 +143,7 @@ func (r Recipe) Stage(in Stage, hostname func(service uuid.UUID) (string, error)
 		target := ids[r.Route.ServiceID]
 		route := domain.Route{ID: uuid.New(), TargetID: target, Protocol: "http", Domain: in.Route.Domain, Port: r.Route.Port, TLS: in.Route.TLS, AllowCIDRs: in.Route.AllowCIDRs}
 		// The allowlist is what keeps a new instance's first sign-up to its owner.
-		if err = domain.ValidateOwnerAllowlist(route.AllowCIDRs); err != nil {
+		if err = domain.ValidateOwnerAllowlist(route.AllowCIDRs, in.Route.Containers); err != nil {
 			return out, err
 		}
 		if route.Domain == "" {

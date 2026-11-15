@@ -265,6 +265,10 @@ Changing the pool never moves an existing network. Running environments keep the
 
 The agent checks routes only when it creates a network. If a route appears later, for example when a VPN connects, any container network inside it takes precedence on the host: traffic from the host and its containers to those addresses goes to the containers, not through the VPN. Give the host a persistent route for networks it must reach, or set a pool outside them, before deploying. When choosing a managed network prefix, avoid ranges the workspace's hosts already use for container networks. A host won't join a managed network whose prefix overlaps any of its routes, or any of its local bridge, macvlan or ipvlan L2 networks, routed or not. It changes nothing and the member's note names the conflict. Remove the overlapping network or route on that host, then save the network again. Until then the host still receives removals, and the network's next change tries the whole configuration again. A host reserved for a cross-host placement keeps every network created on it out of that placement's prefix until it joins.
 
+### Container ranges
+
+With each heartbeat the agent's `run` process reports every range a container on the host can send traffic from: the network pool, Docker's default bridge, the daemon's `default-address-pools` (Docker's built-in pools when `daemon.json` sets none), the subnet of every other Docker network on the host and the prefixes of the managed networks it holds. Docker derives an IPv6 pool from its host ID when none is configured, and doesn't report it, so the agent reports `fd00::/8` for it. A range inside another is left out, and a host with more than 64 ranges reports none. Management refuses a [catalog entry's first-account allowlist](service-catalog.md) that overlaps any of them. The agent reports the ranges only while its controller advertises `Astilba-Agent-Container-Ranges: v1`. The `enroll` command doesn't report them, because it can't know the pool that `run` uses, so management treats them as unknown until the service's first heartbeat. If the agent can't read them, for example while Docker is unavailable, its preflight notes it.
+
 ## Image loads and pulls
 
 A local build, one that does not push to a registry, is loaded into the host's Docker. A deployment's image is pulled from its registry. Either can unpack to far more than its archive or its registry size, so the agent bounds what one load or pull may write. Two settings on the agent's `run` command control the bound for both. Only the host's owner can set them; management can't.
@@ -279,7 +283,7 @@ The agent reads a deployment's image from its registry itself; see [pulling depl
 - the system's certificate authorities;
 - those in `/etc/docker/certs.d/<registry>/`, with any client certificate there;
 - the daemon's insecure registries;
-- Docker Hub's mirrors from the daemon's configuration;
+- Docker Hub's mirrors from the daemon's configuration, which builds also use, as [Docker Hub mirrors](git-builds.md#docker-hub-mirrors) describes;
 - the daemon's proxy, as `docker info` shows it.
 
 Docker's info hides a proxy's password. If the daemon's proxy has one, set the same proxy in the agent's environment with `HTTPS_PROXY` and `NO_PROXY`, or the agent can't read registries and refuses pulls. A daemon without a proxy leaves the agent to its environment's.

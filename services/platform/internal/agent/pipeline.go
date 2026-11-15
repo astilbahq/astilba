@@ -150,21 +150,20 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 			return err
 		}
 		host.NetworkMode = container.NetworkMode(buildNetworkName)
-		nameservers := []string{}
-		for _, r := range resolvers {
-			nameservers = append(nameservers, strconv.Quote(r.String()))
+		info, err := e.Docker.Info(ctx, client.InfoOptions{})
+		if err != nil {
+			return errors.New("cannot read Docker's registry settings for the builder")
 		}
-		config.Env = append(config.Env, "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock", "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2), "ASTILBA_NAMESERVERS="+strings.Join(nameservers, ", "))
+		registryHost := ""
 		if p.Registry != nil {
-			config.Env = append(config.Env, "ASTILBA_REGISTRY_HOST="+strings.Split(p.Registry.Repository, "/")[0])
+			registryHost = strings.Split(p.Registry.Repository, "/")[0]
 		}
+		config.Env = append(config.Env, "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock", "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2), "ASTILBA_BUILDKITD_CONFIG="+builderConfig(registryHost, dockerHubMirrors(info.Info.RegistryConfig), resolvers))
 		// RUN steps share the build container's network, which the policy filters on the host.
 		// BuildKit replaces Docker's loopback resolver for them, so it is given the host's.
 		// rootlesskit creates the user namespace and keeps that network, so the policy holds.
 		config.Entrypoint = []string{"sh", "-ec"}
-		config.Cmd = []string{`mkdir -p /run/buildkit; : > /run/buildkit/buildkitd.toml
-if [ -n "$ASTILBA_REGISTRY_HOST" ]; then printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" >> /run/buildkit/buildkitd.toml; fi
-if [ -n "$ASTILBA_NAMESERVERS" ]; then printf '[dns]\n  nameservers = [%s]\n' "$ASTILBA_NAMESERVERS" >> /run/buildkit/buildkitd.toml; fi
+		config.Cmd = []string{`mkdir -p /run/buildkit; printf '%s' "$ASTILBA_BUILDKITD_CONFIG" > /run/buildkit/buildkitd.toml
 exec rootlesskit --net=host buildkitd --config /run/buildkit/buildkitd.toml --root /var/lib/buildkit --addr unix:///run/buildkit/buildkitd.sock --oci-worker-net host --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
 	}
 	made, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: pipelineName(c), Config: config, HostConfig: host})
