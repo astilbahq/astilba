@@ -8,9 +8,9 @@
 -- the provider did, and no other attempt for the revision starts beside it.
 ALTER TABLE source_submissions ADD COLUMN actor_auth_version bigint;
 ALTER TABLE source_submissions ADD COLUMN withdrawn_at timestamptz;
-INSERT INTO schema_additive_migrations (version) VALUES (60);
+INSERT INTO schema_additive_migrations (version) VALUES (61);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 60;
+DELETE FROM schema_additive_migrations WHERE version = 61;
 ALTER TABLE source_submissions DROP COLUMN withdrawn_at;
 ALTER TABLE source_submissions DROP COLUMN actor_auth_version;
