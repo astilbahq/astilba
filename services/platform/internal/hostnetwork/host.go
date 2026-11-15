@@ -302,11 +302,21 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict,
 			return err
 		}
 	}
-	if err = h.markRestriction(m, restriction); err != nil {
-		return err
+	// The mark goes down before the intent it names and comes up only after the intent that
+	// replaces it, so the saved intent is never left without a mark it had. A mark that names
+	// another intent is inert.
+	if restriction {
+		if err = h.markRestriction(m, true); err != nil {
+			return err
+		}
 	}
 	if err = h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges}); err != nil {
 		return err
+	}
+	if !restriction {
+		if err = h.markRestriction(m, false); err != nil {
+			return err
+		}
 	}
 	// The owned filter is installed before any new peer or published port is enabled.
 	if err = h.publishRules(ctx, m, rules); err != nil {

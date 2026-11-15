@@ -168,7 +168,8 @@ func (h Host) restrictionPath(id uuid.UUID) string {
 }
 
 // markRestriction records whether a restriction saved m, so that a restore that finishes m, even
-// after one that failed, applies it as the restriction would. The caller holds the host lock.
+// after one that failed, applies it as the restriction would. The caller holds the host lock, and
+// marks before saving a restriction's intent and clears after saving another.
 func (h Host) markRestriction(m Manifest, restriction bool) error {
 	path := h.restrictionPath(m.NetworkID)
 	if !restriction {
