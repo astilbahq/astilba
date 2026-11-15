@@ -16,6 +16,22 @@ const workflowPath = ".github/workflows/application.yml";
 const aggregate = "verify-app-core";
 const lanePrefix = "verify-app-go-";
 
+// A lane named for letters, such as `c-to-k` or `r`, runs only tests whose names have
+// one of those letters after `Test`, so moving a boundary renames the lane, and the
+// lane budget compares only runs of the same split. The lane ending at z takes whatever
+// the others leave, so it may also run a name outside A to Z.
+function letterProblem(lane, name) {
+  const range = /^([a-z])(?:-to-([a-z]))?$/.exec(lane.slice(lanePrefix.length));
+  if (!range) return;
+  const [, from, to = from] = range;
+  const letter = name.charAt("Test".length);
+  const inside = /^[A-Z]$/.test(letter)
+    ? from <= letter.toLowerCase() && letter.toLowerCase() <= to
+    : to === "z";
+  if (!inside)
+    return `${lane} runs ${name}, whose name is outside its letters; rename the lane to match its range`;
+}
+
 function workflowProblems(workflow, lanes) {
   const problems = matrixProblems(
     workflow,
@@ -94,7 +110,9 @@ export function appLaneProblems({ makefile, workflow, tests }) {
   problems.push(...unmatched);
   for (const test of tests) {
     const selected = selections.get(selectionKey(test)) ?? [];
-    const problem = selectionProblem(test, selected, lanePrefix);
+    const problem =
+      selectionProblem(test, selected, lanePrefix) ??
+      letterProblem(selected[0], test.name);
     if (problem) problems.push(problem);
   }
   return problems;

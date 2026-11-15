@@ -178,3 +178,46 @@ test("the workflow must run exactly the lanes, unconditionally", () => {
       `${label}: ${problems({ workflow: source })}`,
     );
 });
+
+test("a lane named for letters runs only names with those letters", () => {
+  // Splits the catch-all into a-to-n and o-to-z, as the name lanes do.
+  const lettered = replace(
+    "verify-app-go-remaining:\n\tcd services/platform && go test -race -count=1 -v -timeout=15m -skip '$(APP_PAIR)|$(APP_OPERATIONS)' ./...",
+    "verify-app-go-a-to-n:\n\tcd services/platform && go test -race -count=1 -v -timeout=15m -run '^Test[A-N]' -skip '$(APP_PAIR)|$(APP_OPERATIONS)' ./...\n\nverify-app-go-o-to-z:\n\tcd services/platform && go test -race -count=1 -v -timeout=15m -skip '$(APP_PAIR)|$(APP_OPERATIONS)|^Test[A-N]' ./...",
+    replace(
+      "-j3 verify-app-go-remaining",
+      "-j4 verify-app-go-a-to-n verify-app-go-o-to-z",
+    ),
+  );
+  const lanes = (makefile, names) => ({
+    makefile,
+    workflow: replace(
+      "[remaining, operations, pair]",
+      `[${names}, operations, pair]`,
+      workflow,
+    ),
+  });
+  assert.equal(problems(lanes(lettered, "a-to-n, o-to-z")), "");
+  // The last lane takes a name outside A to Z, as its -skip leaves it there.
+  assert.equal(
+    problems({
+      ...lanes(lettered, "a-to-n, o-to-z"),
+      tests: [...tests, { name: "Test_odd", directory: agent }],
+    }),
+    "",
+  );
+  const moved = replace("[A-N]", "[A-P]", lettered);
+  assert.match(
+    problems(lanes(moved, "a-to-n, o-to-z")),
+    /verify-app-go-a-to-n runs TestOrdinary, whose name is outside its letters/,
+  );
+  const renamed = moved
+    .replaceAll("a-to-n", "a-to-p")
+    .replaceAll("o-to-z", "q-to-z");
+  assert.equal(problems(lanes(renamed, "a-to-p, q-to-z")), "");
+  // A single letter names a lane too, and only the lane ending at z takes the rest.
+  assert.match(
+    problems(lanes(lettered.replaceAll("o-to-z", "o"), "a-to-n, o")),
+    /verify-app-go-o runs TestUnit, whose name is outside its letters/,
+  );
+});
