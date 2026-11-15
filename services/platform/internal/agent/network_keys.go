@@ -39,19 +39,15 @@ func (e *Engine) sealNetworkKeys(ctx context.Context, store hostnetwork.Sealer) 
 // waits on the key store meanwhile. Each network that fails is a hostnetwork.NetworkError.
 func (e *Engine) restorePrivateLinks(ctx context.Context, skip func(hostnetwork.Snapshot) bool) error {
 	host := e.networkHost()
-	var opening error
 	if host.Keys != nil {
 		prepared := hostnetwork.Prepare(host.Keys)
 		host.Keys = prepared
-		opening = host.OpenMissingKeys(ctx, skip)
-		e.noteKeyStore(opening)
+		e.noteKeyStore(host.OpenMissingKeys(ctx, skip))
 		prepared.Replay()
 	}
-	err := e.betweenCommands(ctx, func(ctx context.Context) error { return host.RestoreMissing(ctx, skip) })
-	if errors.Is(err, errEngineBusy) {
-		return err
-	}
-	return errors.Join(opening, err)
+	// The restore replays every failure the opening met, against the intent it then holds, so its
+	// own result is the one to go by.
+	return e.betweenCommands(ctx, func(ctx context.Context) error { return host.RestoreMissing(ctx, skip) })
 }
 
 // untilDone runs step between commands until it succeeds once, once ready says it can. A step that

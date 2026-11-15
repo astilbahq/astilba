@@ -112,10 +112,14 @@ func (h Host) OpenMissingKeys(ctx context.Context, skip func(Snapshot) bool) err
 	return errors.Join(failures...)
 }
 
-// needsKey reports whether restoring m opens its key from the key store: no live link holds it,
-// and m isn't a removal, which needs none.
+// needsKey reports whether restoring m opens its key from the key store: m isn't a removal, which
+// needs none, no live link holds the key, and the key is sealed.
 func (h Host) needsKey(ctx context.Context, m Manifest) bool {
-	return !m.Disabled && h.liveKey(ctx, m) == nil
+	if m.Disabled || h.Keys == nil || h.liveKey(ctx, m) != nil {
+		return false
+	}
+	f, err := h.readKeyFile(m.MembershipID)
+	return err == nil && f.clear == nil
 }
 
 // holds reports whether m's interface is there and carries m's key.

@@ -456,3 +456,28 @@ func TestPreparedStoreReplaysFailures(t *testing.T) {
 		t.Fatal("a replayed failure wasn't the key's, or called the store", err, store.calls)
 	}
 }
+
+// Restoring a link costs the key store only when its key is sealed: a key held in the clear, or a
+// removal, needs none.
+func TestOnlyASealedKeyNeedsTheKeyStoreToRestore(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	clear, sealed := uuid.New(), uuid.New()
+	if _, err := (Host{Dir: dir}).Identity(ctx, clear); err != nil {
+		t.Fatal(err)
+	}
+	store := newMachine(t)
+	if _, err := (Host{Dir: dir, Keys: store}).Identity(ctx, sealed); err != nil {
+		t.Fatal(err)
+	}
+	h := Host{Dir: dir, Keys: store, WG: "/nonexistent/wg"}
+	if h.needsKey(ctx, Manifest{MembershipID: clear}) {
+		t.Fatal("a key held in the clear needed the key store")
+	}
+	if !h.needsKey(ctx, Manifest{MembershipID: sealed}) {
+		t.Fatal("a sealed key with no live link didn't need the key store")
+	}
+	if h.needsKey(ctx, Manifest{MembershipID: sealed, Disabled: true}) {
+		t.Fatal("a removal needed the key store")
+	}
+}

@@ -443,6 +443,28 @@ func TestNativeManagedLinks(t *testing.T) {
 	if out := in("b", "ip", "route", "show", "10.251.0.9"); strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("a refused restore routed its new peer: %s", out)
 	}
+	// A restriction from that saved intent keeps its unrouted peer, and the restore still finishes it
+	// when it is left half applied: a restriction doesn't wait on the container network.
+	revoking := expand
+	revoking.Generation++
+	revoking.Peers = expand.Peers[len(expand.Peers)-1:]
+	revoking.Exports, revoking.Egress = nil, nil
+	failNFT := filepath.Join(root, "nft-again")
+	b.NFT = filepath.Join(root, "interrupt-nft-again")
+	script = fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = '-f' ] && [ ! -e %s ]; then touch %s; exit 1; fi\nexec %s \"$@\"\n", failNFT, failNFT, originalNFT)
+	if err = os.WriteFile(b.NFT, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Apply(ctx, revoking, bb, true); err == nil {
+		t.Fatal("restriction fault did not occur")
+	}
+	b.NFT = originalNFT
+	if err = b.RestoreMissing(ctx, nil); err != nil {
+		t.Fatal("the restore didn't finish a restriction over a container network", err)
+	}
+	if held, err := b.Snapshot(revoking.NetworkID); err != nil || held.AppliedHash != Hash(revoking) {
+		t.Fatal("the half-applied restriction wasn't finished", err)
+	}
 	in("b", "ip", "link", "delete", "overlap")
 	for _, key := range []string{"a", "b"} {
 		raw := in(key, "nft", "-j", "list", "table", "ip", "fixture")
