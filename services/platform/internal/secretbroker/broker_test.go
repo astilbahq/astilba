@@ -266,17 +266,24 @@ func TestSessionOpensOnlyWhatItWasGiven(t *testing.T) {
 	}
 }
 
-func TestSessionEndsAtItsLimit(t *testing.T) {
-	b, _, owner, _, _ := setup(t)
+// stopClock pins the broker's clock, so session limits and budgets move only when advance is
+// called, however slowly the test runs.
+func stopClock(b *Broker) (advance func(time.Duration)) {
 	now := time.Now()
 	b.now = func() time.Time { return now }
+	return func(d time.Duration) { now = now.Add(d) }
+}
+
+func TestSessionEndsAtItsLimit(t *testing.T) {
+	b, _, owner, _, _ := setup(t)
+	advance := stopClock(b)
 	ctx := context.Background()
 	item := Item{Kind: SecretVersion, ID: uuid.New()}
 	s, err := b.Begin(ctx, Request{Workspace: uuid.New(), Purpose: Seal, Principal: Account(owner), NewWorkspace: true, Items: []Item{item}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(defaultLimit)
+	advance(defaultLimit)
 	if _, err = s.Seal(ctx, fence{}, item, []byte("v")); !errors.Is(err, ErrNeedKeys) {
 		t.Fatalf("expired session: %v", err)
 	}
@@ -284,6 +291,7 @@ func TestSessionEndsAtItsLimit(t *testing.T) {
 
 func TestBudgets(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
+	advance := stopClock(b)
 	ctx := context.Background()
 	ws := uuid.New()
 	item := Item{Kind: SecretVersion, ID: uuid.New()}
@@ -297,6 +305,14 @@ func TestBudgets(t *testing.T) {
 	}
 	if len(q.inserted) != workspaceBurst {
 		t.Fatalf("a refused request was recorded: %d", len(q.inserted))
+	}
+	// The bucket refills on the broker's clock.
+	advance(time.Second / workspaceRate)
+	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}}); err != nil {
+		t.Fatalf("a refilled budget refused: %v", err)
+	}
+	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}}); !errors.Is(err, domain.RateLimited) {
+		t.Fatalf("over a refilled budget: %v", err)
 	}
 	// Another purpose in the same workspace has its own budget.
 	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}}); err != nil {
@@ -330,6 +346,7 @@ func TestBudgets(t *testing.T) {
 // One agent that never acknowledges spends its server's budget, not its workspace's.
 func TestDeliveryBudgetIsPerServer(t *testing.T) {
 	b, q, _, _, server := setup(t)
+	stopClock(b)
 	ctx := context.Background()
 	ws, other := uuid.New(), uuid.New()
 	q.servers[other] = true
