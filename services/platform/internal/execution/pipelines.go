@@ -163,11 +163,13 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		var failedAt *time.Time
 		var role *string
 		var current, approved *int64
+		var mfa bool
 		// The approver's role and version explain, in the terms of policyApproval, why imports don't
 		// run; policy_approver_holds is what stops them.
-		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version,g.failed_commit,g.failure_reason,g.failed_at
+		if err := tx.QueryRow(ctx, `SELECT g.configuration,g.policy_actor,g.imported_revision_id,g.imported_commit,g.pending_commit,g.status,g.policy_auth_version,m.role,a.auth_version,g.failed_commit,g.failure_reason,g.failed_at,
+ account_meets_workspace_mfa(g.workspace_id,g.policy_actor)
  FROM git_sources g LEFT JOIN memberships m ON m.workspace_id=g.workspace_id AND m.account_id=g.policy_actor LEFT JOIN accounts a ON a.id=g.policy_actor
- WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current, &failedCommit, &failureReason, &failedAt); err != nil {
+ WHERE g.workspace_id=$1 AND g.environment_id=$2`, ws, env).Scan(&cfg, &actor, &revision, &commit, &pending, &status, &approved, &role, &current, &failedCommit, &failureReason, &failedAt, &mfa); err != nil {
 			return err
 		}
 		baseline, err := sourceBaseline(ctx, tx, ws, env, revision)
@@ -182,7 +184,7 @@ func (s *Service) GitSource(ctx context.Context, p store.Principal, ws, pid, env
 		if clean {
 			configuration = sourceSelection(configuration, v.Spec.Compose)
 		}
-		approval := policyApproval(role, current, approved, true, status == "approval_required", w.Role)
+		approval := policyApproval(role, current, approved, true, status == "approval_required", mfa, w.Role)
 		var failure *api.GitSourceFailure
 		if failedCommit != "" && failedAt != nil {
 			failure = &api.GitSourceFailure{Commit: failedCommit, Reason: failureReason, FailedAt: *failedAt}

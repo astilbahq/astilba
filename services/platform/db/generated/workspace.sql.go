@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const deleteInvitation = `-- name: DeleteInvitation :exec
@@ -330,6 +331,119 @@ func (q *Queries) LockWorkspaceByID(ctx context.Context, id uuid.UUID) (Workspac
 		&i.AlertScannedAt,
 	)
 	return i, err
+}
+
+const mFARequirementApprovals = `-- name: MFARequirementApprovals :many
+WITH approvals(kind,approver,environment_id,subject) AS (
+    SELECT 'gitSource',g.policy_actor,g.environment_id,''
+    FROM git_sources g JOIN environments e ON e.workspace_id=g.workspace_id AND e.id=g.environment_id
+    WHERE g.workspace_id = $1 AND e.state='active' AND g.status<>'approval_required'
+        AND policy_approver_holds(g.workspace_id,g.policy_actor,g.policy_auth_version,true)
+    UNION ALL
+    SELECT 'buildTarget',b.policy_actor,b.environment_id,COALESCE((
+        SELECT x->>'name' FROM specification_revisions r, jsonb_array_elements(r.specification->'applications') x
+        WHERE r.workspace_id=e.workspace_id AND r.id=e.draft_revision_id AND x->>'id'=b.application_id::text LIMIT 1),'')
+    FROM build_targets b JOIN environments e ON e.workspace_id=b.workspace_id AND e.id=b.environment_id
+    WHERE b.workspace_id = $1 AND e.state='active'
+        AND policy_approver_holds(b.workspace_id,b.policy_actor,b.policy_auth_version,COALESCE((b.configuration->>'autoDeploy')::boolean,false))
+    UNION ALL
+    SELECT 'automaticDeployment',d.actor_id,d.environment_id,''
+    FROM pipeline_auto_deployments d
+    WHERE d.workspace_id = $1 AND d.state='pending'
+        AND policy_approver_holds(d.workspace_id,d.actor_id,d.actor_auth_version,true)
+    UNION ALL
+    SELECT 'previewPolicy',p.actor_id,p.environment_id,''
+    FROM preview_policies p JOIN environments e ON e.workspace_id=p.workspace_id AND e.id=p.environment_id
+    WHERE p.workspace_id = $1 AND p.enabled AND e.state='active'
+        AND policy_approver_holds(p.workspace_id,p.actor_id,p.auth_version,true)
+    UNION ALL
+    SELECT 'previewApproval',r.approved_by,p.environment_id,'#'||r.number
+    FROM preview_requests r JOIN preview_policies p ON p.workspace_id=r.workspace_id AND p.id=r.policy_id
+    WHERE r.workspace_id = $1 AND r.approved_head<>'' AND r.state<>'deleted'
+        AND policy_approver_holds(r.workspace_id,r.approved_by,r.approved_auth_version,true)
+    UNION ALL
+    SELECT 'previewCleanup',r.cleanup_actor,p.environment_id,'#'||r.number
+    FROM preview_requests r JOIN preview_policies p ON p.workspace_id=r.workspace_id AND p.id=r.policy_id
+    WHERE r.workspace_id = $1 AND r.cleanup_requested AND r.state<>'deleted'
+        AND policy_approver_holds(r.workspace_id,r.cleanup_actor,r.cleanup_auth_version,true)
+    UNION ALL
+    SELECT 'invitation',i.issuer_id,NULL::uuid,i.email
+    FROM invitations i
+    WHERE i.workspace_id = $1 AND i.expires_at>now()
+        AND policy_approver_holds(i.workspace_id,i.issuer_id,i.issuer_auth_version,true)
+    UNION ALL
+    SELECT 'enrollmentCode',s.enrollment_issuer_id,NULL::uuid,s.name
+    FROM servers s
+    WHERE s.workspace_id = $1 AND s.enrollment_hash IS NOT NULL AND s.enrollment_expires>now()
+        AND s.credential_hash IS NULL AND NOT s.revoked
+        AND policy_approver_holds(s.workspace_id,s.enrollment_issuer_id,s.enrollment_issuer_auth_version,true)
+    UNION ALL
+    SELECT 'sourceSubmission',q.actor_id,q.environment_id,''
+    FROM source_submissions q
+    WHERE q.workspace_id = $1 AND q.state='queued' AND q.withdrawn_at IS NULL
+        AND policy_approver_holds(q.workspace_id,q.actor_id,q.actor_auth_version,false)
+    UNION ALL
+    SELECT 'automationCredential',c.creator_id,c.environment_id,c.name
+    FROM automation_credentials c
+    WHERE c.workspace_id = $1 AND c.revoked_at IS NULL AND c.expires_at>now()
+        AND NOT c.capabilities <@ ARRAY['environment:read']::text[]
+        AND policy_approver_holds(c.workspace_id,c.creator_id,c.auth_version,true)
+)
+SELECT x.kind::text AS kind,a.id AS approver_id,a.name AS approver_name,a.email AS approver_email,
+    p.id AS project_id,p.name AS project_name,e.id AS environment_id,e.name AS environment_name,x.subject::text AS subject
+FROM approvals x JOIN accounts a ON a.id=x.approver
+LEFT JOIN environments e ON e.workspace_id = $1 AND e.id=x.environment_id
+LEFT JOIN projects p ON p.workspace_id = $1 AND p.id=e.project_id
+WHERE a.totp_secret IS NULL
+ORDER BY a.email,x.kind,p.name,e.name,x.subject
+`
+
+type MFARequirementApprovalsRow struct {
+	Kind            string      `json:"kind"`
+	ApproverID      uuid.UUID   `json:"approver_id"`
+	ApproverName    string      `json:"approver_name"`
+	ApproverEmail   string      `json:"approver_email"`
+	ProjectID       *uuid.UUID  `json:"project_id"`
+	ProjectName     pgtype.Text `json:"project_name"`
+	EnvironmentID   *uuid.UUID  `json:"environment_id"`
+	EnvironmentName pgtype.Text `json:"environment_name"`
+	Subject         string      `json:"subject"`
+}
+
+// The standing approvals and deferred actions that requiring two-factor authentication would
+// stop, so an owner sees them before turning it on: each still holds (policy_approver_holds), and
+// its approver hasn't set up two-factor authentication. Once the workspace requires it, none of
+// these hold, so the list is empty. Retired environments' sources, targets and previews run
+// nothing, so they are left out. An automation credential whose creator lacks two-factor
+// authentication keeps reading but can't write.
+func (q *Queries) MFARequirementApprovals(ctx context.Context, workspaceID uuid.UUID) ([]MFARequirementApprovalsRow, error) {
+	rows, err := q.db.Query(ctx, mFARequirementApprovals, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MFARequirementApprovalsRow{}
+	for rows.Next() {
+		var i MFARequirementApprovalsRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.ApproverID,
+			&i.ApproverName,
+			&i.ApproverEmail,
+			&i.ProjectID,
+			&i.ProjectName,
+			&i.EnvironmentID,
+			&i.EnvironmentName,
+			&i.Subject,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const ownerCount = `-- name: OwnerCount :one

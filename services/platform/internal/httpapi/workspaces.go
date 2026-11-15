@@ -154,6 +154,22 @@ func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid
 		return workspace(ws), store.Audit(r.Context(), q, *principal(r.Context()), id, "workspace.settings", id)
 	})
 }
+
+// GetMfaRequirement shows owners which standing approvals requiring two-factor authentication would
+// stop, and whose they are, before they turn it on. Owners already see which members have set it up.
+func (s *Server) GetMfaRequirement(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
+	s.scope(w, r, id, store.WorkspaceAccess{Owner: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
+		rows, err := q.MFARequirementApprovals(r.Context(), id)
+		out := api.MfaRequirement{Approvals: []api.MfaRequirementApproval{}}
+		for _, v := range rows {
+			out.Approvals = append(out.Approvals, api.MfaRequirementApproval{
+				Kind: api.MfaRequirementApprovalKind(v.Kind), ApproverId: v.ApproverID, ApproverName: v.ApproverName, ApproverEmail: openapi_types.Email(v.ApproverEmail),
+				ProjectId: v.ProjectID, ProjectName: optional(v.ProjectName), EnvironmentId: v.EnvironmentID, EnvironmentName: optional(v.EnvironmentName), Subject: v.Subject,
+			})
+		}
+		return out, err
+	})
+}
 func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	s.scope(w, r, id, store.WorkspaceAccess{Owner: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
 		rows, e := q.ListMembers(r.Context(), id)
