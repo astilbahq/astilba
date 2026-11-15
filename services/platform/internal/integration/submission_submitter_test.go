@@ -80,7 +80,7 @@ func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
 				if again := x.submit(t, nil, path, draft); again.Id != queued.Id || again.State != "failed" {
 					t.Fatal("a submission started beside one that may still be sending", again)
 				}
-				if _, err := x.f.st.Pool.Exec(ctx, "UPDATE source_submissions SET withdrawn_at=withdrawn_at-interval '1 minute' WHERE id=$1", queued.Id); err != nil {
+				if _, err := x.f.st.Pool.Exec(ctx, "UPDATE source_submissions SET withdrawn_at=withdrawn_at-interval '2 minutes' WHERE id=$1", queued.Id); err != nil {
 					t.Fatal(err)
 				}
 				again := x.submit(t, nil, path, draft)

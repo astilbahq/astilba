@@ -745,11 +745,12 @@ func (q *Queries) RecordGitSourceFailure(ctx context.Context, arg RecordGitSourc
 }
 
 const recordWithdrawnSourceSubmission = `-- name: RecordWithdrawnSourceSubmission :exec
-UPDATE source_submissions SET state = 'succeeded', note = $1, result = $2
-WHERE workspace_id = $3 AND id = $4 AND state = 'failed' AND withdrawn_at IS NOT NULL
+UPDATE source_submissions SET state = $1, note = $2, result = $3
+WHERE workspace_id = $4 AND id = $5 AND state = 'failed' AND withdrawn_at IS NOT NULL
 `
 
 type RecordWithdrawnSourceSubmissionParams struct {
+	State       string    `json:"state"`
 	Note        string    `json:"note"`
 	Result      []byte    `json:"result"`
 	WorkspaceID uuid.UUID `json:"workspace_id"`
@@ -759,6 +760,7 @@ type RecordWithdrawnSourceSubmissionParams struct {
 // What the provider did for an attempt that was already sending a submission when it was withdrawn.
 func (q *Queries) RecordWithdrawnSourceSubmission(ctx context.Context, arg RecordWithdrawnSourceSubmissionParams) error {
 	_, err := q.db.Exec(ctx, recordWithdrawnSourceSubmission,
+		arg.State,
 		arg.Note,
 		arg.Result,
 		arg.WorkspaceID,

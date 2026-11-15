@@ -462,15 +462,27 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
+	// An attempt that was already sending the submission when it was withdrawn records what the
+	// provider did, so the source follows the review it opened.
+	withdrawn := err == nil && row.State == "failed" && row.WithdrawnAt != nil
+	// finish records state, unless it is empty or the attempt is settled, and completes the job.
 	finish := func(state, note string, outcome []byte) error {
-		if err == nil && row.State == "queued" {
-			if err := q.FinishSourceSubmission(ctx, db.FinishSourceSubmissionParams{WorkspaceID: ws, ID: id, State: state, Note: boundedNote(note), Result: outcome}); err != nil {
+		var recorded error
+		switch {
+		case state == "":
+		case err == nil && row.State == "queued":
+			recorded = q.FinishSourceSubmission(ctx, db.FinishSourceSubmissionParams{WorkspaceID: ws, ID: id, State: state, Note: boundedNote(note), Result: outcome})
+		case withdrawn:
+			recorded = q.RecordWithdrawnSourceSubmission(ctx, db.RecordWithdrawnSourceSubmissionParams{WorkspaceID: ws, ID: id, State: state, Note: boundedNote(note), Result: outcome})
+		default:
+			state = ""
+		}
+		if recorded != nil {
+			return recorded
+		}
+		if state == "succeeded" {
+			if err := q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID, SubmissionID: id}); err != nil {
 				return err
-			}
-			if state == "succeeded" {
-				if err := q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID, SubmissionID: id}); err != nil {
-					return err
-				}
 			}
 		}
 		if _, err := river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
@@ -478,40 +490,22 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 		}
 		return tx.Commit(ctx)
 	}
-	// An attempt that was already sending the submission when it was withdrawn records what the
-	// provider did, so the source follows the review it opened.
-	if err == nil && row.State == "failed" && row.WithdrawnAt != nil && submitErr == nil {
-		outcome, err := submittedOutcome(row.Configuration, result)
-		if err != nil {
-			return err
-		}
-		if outcome == nil {
-			return finish("", "", nil)
-		}
-		if err = q.RecordWithdrawnSourceSubmission(ctx, db.RecordWithdrawnSourceSubmissionParams{WorkspaceID: ws, ID: id, Note: "Sent by an attempt that had already started when the member who submitted it lost write access.", Result: outcome}); err != nil {
-			return err
-		}
-		if err = q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID, SubmissionID: id}); err != nil {
-			return err
-		}
-		return finish("", "", nil)
-	}
-	if err != nil || row.State != "queued" {
+	if err != nil || row.State != "queued" && !withdrawn {
 		return finish("", "", nil)
 	}
 	if submitErr == nil {
-		outcome, err := submittedOutcome(row.Configuration, result)
+		state, note, outcome, err := submittedOutcome(row.Configuration, result)
 		if err != nil {
 			return err
 		}
-		if outcome == nil {
-			var c submissionConfiguration
-			if err = json.Unmarshal(row.Configuration, &c); err != nil {
-				return err
-			}
-			return finish("failed", "Not recorded: the Git provider named a review outside the connection's own site. Check branch astilba/"+c.SubmissionID.String()+" and its review at the provider.", nil)
+		if withdrawn && state == "succeeded" {
+			note = "Sent by an attempt that had already started when the member who submitted it lost write access."
 		}
-		return finish("succeeded", "", outcome)
+		return finish(state, note, outcome)
+	}
+	// A failure leaves a withdrawn submission as the withdrawal left it.
+	if withdrawn {
+		return finish("", "", nil)
 	}
 	note, terminal := submissionFailure(submitErr)
 	if terminal || job.Attempt >= submissionAttempts {
@@ -526,17 +520,18 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 	return submitErr
 }
 
-// submittedOutcome is what a submission frozen as configuration records of the provider's result,
-// or nil when the provider named a review outside the connection's own site.
-func submittedOutcome(configuration []byte, result pipeline.SubmissionResult) ([]byte, error) {
+// submittedOutcome is the state, note and outcome a submission frozen as configuration records of
+// the provider's result. A review outside the connection's own site is not recorded.
+func submittedOutcome(configuration []byte, result pipeline.SubmissionResult) (string, string, []byte, error) {
 	var c submissionConfiguration
 	if err := json.Unmarshal(configuration, &c); err != nil {
-		return nil, err
+		return "", "", nil, err
 	}
 	if !reviewURLMatches(c.Connection, result.Review.URL) {
-		return nil, nil
+		return "failed", "Not recorded: the Git provider named a review outside the connection's own site. Check branch astilba/" + c.SubmissionID.String() + " and its review at the provider.", nil, nil
 	}
-	return stablejson.Marshal(submissionOutcome{Commit: result.Commit, ReviewNumber: result.Review.Number, ReviewURL: result.Review.URL})
+	outcome, err := stablejson.Marshal(submissionOutcome{Commit: result.Commit, ReviewNumber: result.Review.Number, ReviewURL: result.Review.URL})
+	return "succeeded", "", outcome, err
 }
 
 // reviewURLMatches accepts a review link only on the connection's own site, so a link the

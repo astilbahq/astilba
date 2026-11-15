@@ -121,7 +121,7 @@ RETURNING id;
 
 -- name: RecordWithdrawnSourceSubmission :exec
 -- What the provider did for an attempt that was already sending a submission when it was withdrawn.
-UPDATE source_submissions SET state = 'succeeded', note = @note, result = @result
+UPDATE source_submissions SET state = @state, note = @note, result = sqlc.narg(result)
 WHERE workspace_id = @workspace_id AND id = @id AND state = 'failed' AND withdrawn_at IS NOT NULL;
 
 -- name: FinishSourceSubmission :exec
