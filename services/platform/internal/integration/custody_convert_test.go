@@ -3,8 +3,8 @@ package integration
 import (
 	"bytes"
 	"context"
-	"errors"
 	"encoding/json/v2"
+	"errors"
 	"strings"
 	"testing"
 	"time"

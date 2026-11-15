@@ -292,7 +292,8 @@ type Status struct {
 	Unfinished []db.UnfinishedCustodyRunsRow
 	// Keys is how far creating workspace, installation and token keys has got.
 	Keys db.KeyProgressRow
-	// Legacy is how many values are still sealed under the installation keyring, by kind.
+	// Legacy is, for each kind with stored values, how many there are and how many of them are
+	// still sealed under the installation keyring.
 	Legacy []db.LegacyValueCountsRow
 }
 

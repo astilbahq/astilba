@@ -103,7 +103,7 @@ remove the trigger.
 
 | Command | What it does |
 | --- | --- |
-| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, and any pending work. It changes nothing. |
+| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, how many values recording stage 4 reads, and any pending work. It changes nothing. |
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
 | `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
 | `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
@@ -190,10 +190,12 @@ docker compose run --rm --no-deps platform custody convert --operator "$(whoami)
   against writes while it reads every stored value; `custody status` shows how many there are.
   Saving a value, signing in with a second factor and changing an integration wait meanwhile: in
   testing, the check read 100,000 values in about 15 ms and a million in about 60 ms with the
-  tables in memory, and reading them from disk takes longer. It waits at most two seconds for
-  each table, so writers never queue behind it for long. If writers keep a table busy, it tries
-  twice more, then stops without recording the stage; run it again at a quieter time.
-- It exits non-zero unless it recorded stage 4, and says what is left.
+  tables in memory, and reading them from disk takes longer. It takes the tables one at a time and
+  waits at most two seconds for each, while writers to the tables it already holds wait too. If a
+  wait runs out, it lets go of every table, tries twice more, then stops without recording the
+  stage; run it again at a quieter time.
+- It exits non-zero unless nothing is left to convert and stage 4 is recorded, and says what is
+  left.
 - Rolling back after it, to a release from stage 3 on, needs no restore: that release opens
   converted values. A release that compares recovery rows by their stored bytes, as stage 3's
   first releases do, refuses a checkpoint taken before the conversion.

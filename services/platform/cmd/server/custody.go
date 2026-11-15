@@ -90,8 +90,8 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 		result, err := st.Broker.Convert(ctx, *operator, *reason)
 		printConversion(os.Stdout, result)
 		if err == nil && result.Waiting != "" {
-			// A run that did not record the stage is not done, whatever it moved.
-			return errors.New("custody stage 4 is not recorded yet")
+			// A run that left something to do is not done, whatever it moved.
+			return errors.New("conversion is not complete")
 		}
 		return err
 	case "init-keys":
