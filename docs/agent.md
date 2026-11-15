@@ -295,7 +295,7 @@ The agent reads a deployment's image from its registry itself; see [pulling depl
 - the system's certificate authorities;
 - those in `/etc/docker/certs.d/<registry>/`, with any client certificate there;
 - the daemon's insecure registries;
-- Docker Hub's mirrors from the daemon's configuration;
+- Docker Hub's mirrors from the daemon's configuration, which builds also use, as [Docker Hub mirrors](git-builds.md#docker-hub-mirrors) describes;
 - the daemon's proxy, as `docker info` shows it.
 
 Docker's info hides a proxy's password. If the daemon's proxy has one, set the same proxy in the agent's environment with `HTTPS_PROXY` and `NO_PROXY`, or the agent can't read registries and refuses pulls. A daemon without a proxy leaves the agent to its environment's.

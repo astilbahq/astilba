@@ -309,9 +309,30 @@ func Audit(ctx context.Context, q *db.Queries, p Principal, w uuid.UUID, action 
 	return q.InsertAudit(ctx, db.InsertAuditParams{WorkspaceID: w, ID: uuid.New(), ActorID: p.Account.ID, Action: action, ResourceID: resource, AutomationCredentialID: credential})
 }
 
+// CreateWorkspace creates a workspace with its first owner and its keys, in the caller's
+// transaction. It is the one way a workspace is created, so every new workspace has keys: they
+// come from Broker.Create, called before the transaction because wrapping them waits on the key
+// service.
+func CreateWorkspace(ctx context.Context, q *db.Queries, keys *secretbroker.NewKeys, name string, owner uuid.UUID) error {
+	ws := keys.Workspace()
+	if err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: ws, Name: name}); err != nil {
+		return err
+	}
+	if err := keys.Insert(ctx, q); err != nil {
+		return err
+	}
+	return q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: ws, AccountID: owner, Role: "owner"})
+}
+
 func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, workspaceName string) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := s.Transaction(ctx, func(q *db.Queries) error {
+	w := uuid.New()
+	keys, err := s.Broker.Create(ctx, secretbroker.Request{Workspace: w, Principal: secretbroker.System("bootstrap")})
+	if err != nil {
+		return id, err
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	err = s.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
 			return err
 		}
@@ -327,11 +348,7 @@ func (s *Store) Bootstrap(ctx context.Context, email, name, passwordHash, worksp
 		if err != nil {
 			return err
 		}
-		w := uuid.New()
-		if err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: w, Name: workspaceName}); err != nil {
-			return err
-		}
-		if err := q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: w, AccountID: a.ID, Role: "owner"}); err != nil {
+		if err := CreateWorkspace(ctx, q, keys, workspaceName, a.ID); err != nil {
 			return err
 		}
 		if s.Hosted {
@@ -368,7 +385,10 @@ func (s *Store) Rewrap(ctx context.Context, operator, reason string) (err error)
 	if err = s.rewrapValues(ctx, rotation); err != nil {
 		return err
 	}
-	return rotation.RewrapCanaries(ctx)
+	if err = rotation.RewrapCanaries(ctx); err != nil {
+		return err
+	}
+	return rotation.RewrapWrappings(ctx)
 }
 
 func (s *Store) rewrapValues(ctx context.Context, rotation *secretbroker.Rotation) error {

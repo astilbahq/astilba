@@ -3,6 +3,6 @@
 // advertises the same railpackInputs digest for its architecture.
 export const railpackVersion = "0.43.0";
 export const railpackInputs: Record<"amd64" | "arm64", string> = {
-  amd64: "696d41da0ea2d43cb5afbdc95e547e48e73cd713344cfbd090baf6049c9824ff",
-  arm64: "1ed9a094c7fbe843466b7654023182c2c03297a09f453512cdb52ddda113cfb3",
+  amd64: "6e51f8ec3bc48f6bae84d0678941b2c12997ada3dcae0008212298df0589f12b",
+  arm64: "05af826fe2ecf7a236768a95ac8faf7f3c8a13daca789d0ffb0a78cc7ccd3e88",
 };
