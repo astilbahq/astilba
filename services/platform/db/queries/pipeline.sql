@@ -99,23 +99,24 @@ ORDER BY created_at DESC,id DESC LIMIT 1;
 SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
 
 -- name: SourceSubmissionSubmitter :one
--- Whether the member who submitted it may still have it sent: the check every standing approval
--- makes, at the role writing needs, and the workspace's two-factor requirement, which writing also
--- needs. Losing the role fails it at once (WithdrawActorSourceSubmissions), so only a changed
--- authentication version or requirement is new here. A version is recorded unless an older
--- release queued it.
-SELECT (policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)
+-- Whether the member who submitted it may still have it sent: it wasn't withdrawn when they lost
+-- write access, and they pass the check every standing approval makes, at the role writing needs,
+-- and the workspace's two-factor requirement, which writing also needs. A version is recorded
+-- unless an older release queued it.
+SELECT (s.withdrawn_at IS NULL AND policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)
         AND NOT (w.require_mfa AND a.totp_secret IS NULL))::boolean AS holds,
-    (s.actor_auth_version IS NOT NULL)::boolean AS recorded
+    (s.withdrawn_at IS NOT NULL)::boolean AS withdrawn, (s.actor_auth_version IS NOT NULL)::boolean AS recorded
 FROM source_submissions s JOIN workspaces w ON w.id = s.workspace_id JOIN accounts a ON a.id = s.actor_id
 WHERE s.workspace_id = @workspace_id AND s.id = @id;
 
 -- name: WithdrawActorSourceSubmissions :many
--- A queued submission is sent on its submitter's say-so, so it ends when they lose write access, in
--- the transaction that takes it away. Getting it back does not send it.
-UPDATE source_submissions SET state = 'failed', finished_at = now(),
-    note = 'Not submitted: the member who submitted it lost write access before it was sent. An owner or operator can submit the draft again.'
-WHERE workspace_id = @workspace_id AND actor_id = @actor_id AND state = 'queued'
+-- A queued submission is sent on its submitter's say-so, so losing write access withdraws it, in
+-- the transaction that takes it away, and getting it back doesn't restore it. It stays queued: an
+-- attempt may be sending it with nothing held, and records what the provider did, and the next
+-- attempt fails it. Until then no other attempt for the revision can start and write beside it.
+UPDATE source_submissions SET withdrawn_at = now(),
+    note = 'Withdrawn: the member who submitted it lost write access, so it will not be sent. Once it stops, an owner or operator can submit the draft again.'
+WHERE workspace_id = @workspace_id AND actor_id = @actor_id AND state = 'queued' AND withdrawn_at IS NULL
 RETURNING id;
 
 -- name: FinishSourceSubmission :exec

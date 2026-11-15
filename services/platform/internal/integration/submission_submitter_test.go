@@ -12,7 +12,7 @@ import (
 )
 
 // A submission is sent on its submitter's say-so, and can wait up to an hour before it is. Losing
-// write access fails it at once, so getting it back sends nothing, and each attempt checks again
+// write access withdraws it, so getting it back sends nothing, and each attempt checks again
 // that the submitter has the credentials they submitted with and meets the workspace's two-factor
 // requirement, before it asks the provider for anything.
 func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
@@ -20,7 +20,7 @@ func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
 	defer cancel()
 	x := newSubmissionFixture(t, ctx)
 	members := x.prefix + "/members/"
-	const withdrawn, refused = "lost write access before it was sent", "the member who submitted it can no longer send it"
+	const withdrawn, refused = "lost write access while it waited", "the member who submitted it can no longer send it"
 	for i, test := range []struct {
 		name string
 		// change happens while the submission waits for its next attempt.
@@ -70,10 +70,17 @@ func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
 			})
 			queued := x.submit(t, submitter, path, draft)
 			x.await(t, queued.Id, submissionRetrying)
-			job, attempt := holdSubmission(t, x, queued.Id)
+			held, attempt := holdSubmission(t, x, queued.Id)
 			test.change(t, submitter, id, queued.Id)
+			// A withdrawn submission stays queued, as an attempt may be sending it, until the next
+			// attempt fails it.
+			if test.refusal == withdrawn {
+				if state, note := x.await(t, queued.Id, func(string, string) bool { return true }); state != "queued" || !strings.HasPrefix(note, "Withdrawn: ") {
+					t.Fatal("losing write access did not withdraw the submission", state, note)
+				}
+			}
 			requests, writes := x.requests.Load(), x.writes.Load()
-			if _, err := x.f.st.Pool.Exec(ctx, "UPDATE river_job SET scheduled_at=now() WHERE id=$1", job); err != nil {
+			if _, err := x.f.st.Pool.Exec(ctx, "UPDATE river_job SET scheduled_at=now() WHERE id=$1", held); err != nil {
 				t.Fatal(err)
 			}
 			if test.refusal == "" {
@@ -89,6 +96,10 @@ func TestSubmissionIsSentOnlyWhileItsSubmitterMayWrite(t *testing.T) {
 			state, note := x.await(t, queued.Id, submissionFinished)
 			if state != "failed" || !strings.HasPrefix(note, "Not submitted: ") || !strings.Contains(note, test.refusal) {
 				t.Fatal("the submission was not refused for its submitter", state, note)
+			}
+			var job string
+			if err := x.f.st.Pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id=$1", held).Scan(&job); err != nil || job != "completed" {
+				t.Fatal("the refused attempt did not finish its job", job, err)
 			}
 			if x.requests.Load() != requests {
 				t.Fatal("a refused attempt reached the provider")

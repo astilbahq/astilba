@@ -416,15 +416,18 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 }
 
 // submitterRefusal says why the member who submitted the attempt may no longer have it sent, or ""
-// while they still may: they are an owner or operator, their password, two-factor settings and
-// recovery codes are as they were when they submitted it, and they meet the workspace's two-factor
-// requirement. Membership and the requirement change under the workspace lock, which the caller
-// holds. The note is shown to every member, so like an automatic deployment's it doesn't say which.
+// while they still may: they haven't lost write access since, even for a while, their password,
+// two-factor settings and recovery codes are as they were when they submitted it, and they meet
+// the workspace's two-factor requirement. Membership and the requirement change under the
+// workspace lock, which the caller holds. The note is shown to every member, so like an automatic
+// deployment's it says which only of what the dashboard already shows.
 func submitterRefusal(ctx context.Context, q *db.Queries, ws, id uuid.UUID) (string, error) {
 	s, err := q.SourceSubmissionSubmitter(ctx, db.SourceSubmissionSubmitterParams{WorkspaceID: ws, ID: id})
 	switch {
 	case err != nil || s.Holds:
 		return "", err
+	case s.Withdrawn:
+		return "the member who submitted it lost write access while it waited. An owner or operator can submit the draft again.", nil
 	case !s.Recorded:
 		return "an earlier release of Astilba queued it without recording who may send it. Submit the draft again.", nil
 	}

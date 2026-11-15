@@ -966,6 +966,7 @@ type SourceSubmission struct {
 	CreatedAt        time.Time   `json:"created_at"`
 	FinishedAt       *time.Time  `json:"finished_at"`
 	ActorAuthVersion pgtype.Int8 `json:"actor_auth_version"`
+	WithdrawnAt      *time.Time  `json:"withdrawn_at"`
 }
 
 type SpecificationRevision struct {
