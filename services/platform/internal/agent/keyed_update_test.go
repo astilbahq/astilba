@@ -85,8 +85,9 @@ func TestAgentWithASealedJournalInstallsOnlyAReleaseThatReadsIt(t *testing.T) {
 	if err := os.WriteFile(path, current, 0755); err != nil {
 		t.Fatal(err)
 	}
-	sealed := Running{Keyed: true, MinimumVersion: fixtureFloor, StateVersion: sealedStateVersion}
-	for _, earlier := range [][]byte{fixtureAgent("0.1.0-fixture.2", true), fixtureAgentReading("0.1.0-fixture.2", keyedStateVersion)} {
+	sealed := Running{Keyed: true, MinimumVersion: fixtureFloor, StateVersion: StateVersion}
+	// A release that reads a sealed keyring but not sealed private-link keys is refused too.
+	for _, earlier := range [][]byte{fixtureAgent("0.1.0-fixture.2", true), fixtureAgentReading("0.1.0-fixture.2", keyedStateVersion), fixtureAgentReading("0.1.0-fixture.2", sealedStateVersion)} {
 		r, pub, body := signedBody(t, "0.1.0-fixture.2", earlier)
 		if Install(context.Background(), r, pub, bytes.NewReader(body), path, sealed) == nil {
 			t.Fatal("an agent with a sealed journal installed a release that would refuse to start")

@@ -13,6 +13,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/recoveryrows"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -397,6 +398,16 @@ func TestRecoveryRestoresValuesUnderTheActiveGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	v2Header(t, stored, cryptobox.ScopeWorkspace)
+	// The restored row is recorded as stored, which the release before reads too.
+	var row []byte
+	var attributed string
+	// inline-sql: the columns come from recoveryrows' compiled list
+	if err = tx.QueryRow(ctx, "SELECT to_jsonb(q) FROM (SELECT "+recoveryrows.Columns("build_secret_versions")+" FROM build_secret_versions WHERE id=$1) q", created.ID).Scan(&row); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.QueryRow(ctx, `SELECT attributed_hash FROM cross_host_recovery_rows WHERE workspace_id=$1 AND table_name='build_secret_versions'`, ws).Scan(&attributed); err != nil || attributed != recoveryrows.Hash(row) {
+		t.Fatal("the restored row was not recorded as stored", err)
+	}
 }
 
 // Recovery names why a restored backup cannot bring a workspace back: the backup was taken before

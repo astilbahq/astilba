@@ -39,7 +39,7 @@ func networkWithPendingRevocation(t *testing.T, f *fixture, b *browser, ws uuid.
 			t.Fatal(err)
 		}
 		membership := uuid.New()
-		identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(membership)
+		identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(context.Background(), membership)
 		if err != nil {
 			t.Fatal(err)
 		}

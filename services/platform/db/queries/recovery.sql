@@ -338,6 +338,20 @@ SELECT name,require_mfa,clock_timestamp()::timestamptz AS captured_at FROM works
 SELECT attributed_hash FROM cross_host_recovery_rows
 WHERE workspace_id = @workspace_id AND table_name = @table_name AND source_hash = @source_hash;
 
+-- name: RecoveryAttributedHashes :many
+-- The attributed hashes recorded for one table of a workspace, which re-keying compares with its rows.
+SELECT DISTINCT attributed_hash FROM cross_host_recovery_rows
+WHERE workspace_id = @workspace_id AND table_name = @table_name;
+
+-- name: RekeyRecoveryRowAttribution :execrows
+UPDATE cross_host_recovery_rows SET attributed_hash = @content
+WHERE workspace_id = @workspace_id AND table_name = @table_name AND attributed_hash = @previous;
+
+-- name: RecoveryAttributedWorkspaces :many
+-- unscoped: every workspace with a recorded attribution in one of the named tables, for a command
+-- that moves stored values across the installation.
+SELECT DISTINCT workspace_id FROM cross_host_recovery_rows WHERE table_name = ANY(@tables::text[]) ORDER BY workspace_id;
+
 -- name: UpsertRecoveryRowAttribution :exec
 INSERT INTO cross_host_recovery_rows(workspace_id,table_name,source_hash,attributed_hash)
 VALUES(@workspace_id,@table_name,@source_hash,@attributed_hash)

@@ -189,7 +189,7 @@ func TestAgentCannotSpendNetworkGeneration(t *testing.T) {
 				}
 			}
 			report := func(claimed int64) api.AgentReport {
-				identity, err := attacker.host.Identity(command.MembershipID)
+				identity, err := attacker.host.Identity(context.Background(), command.MembershipID)
 				if err != nil {
 					t.Fatal(err)
 				}
