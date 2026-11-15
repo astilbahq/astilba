@@ -200,13 +200,14 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session
 					}
 				}
 				// A restored row is recorded by the checkpoint row's hash as stored, which an archive
-				// never changes, and by the restored row's content. A release before this one recorded
-				// the restored row as stored, which still counts while it matches.
+				// never changes, and by the restored row's hash as stored, which the release before
+				// this one reads too. Before a value's key moves, its record moves to the row's
+				// content form, which still matches afterwards.
 				attributed, err := db.New(tx).RecoveryRowAttribution(ctx, db.RecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryrows.Hash(original)})
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					return err
 				}
-				if attributed == "" || attributed != recoveryrows.ContentHash(t.Name, existing) && attributed != recoveryrows.Hash(existing) {
+				if attributed != recoveryrows.Hash(existing) && attributed != recoveryrows.ContentHash(t.Name, existing) {
 					return fmt.Errorf("recovery conflicts with immutable %s", t.Name)
 				}
 				continue
@@ -289,7 +290,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session
 					return err
 				}
 				// Cleanup can remove a recovered row without removing its attribution.
-				if err = db.New(tx).UpsertRecoveryRowAttribution(ctx, db.UpsertRecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryrows.Hash(original), AttributedHash: recoveryrows.ContentHash(t.Name, stored)}); err != nil {
+				if err = db.New(tx).UpsertRecoveryRowAttribution(ctx, db.UpsertRecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryrows.Hash(original), AttributedHash: recoveryrows.Hash(stored)}); err != nil {
 					return err
 				}
 			}

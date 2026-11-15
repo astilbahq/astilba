@@ -1,7 +1,8 @@
 // Package recoveryrows hashes rows as cross-host recovery compares them. Recovery treats some
 // tables as immutable and compares a stored row with a checkpoint's copy of it. A row holding a
 // sealed value is compared on its content form, which is unchanged when the value's key moves.
-// The record of rows a recovery restored is kept in that form too.
+// The record of rows a recovery restored is kept as stored, which the release before reads too,
+// and moves to the content form before any value's key moves.
 package recoveryrows
 
 import (
@@ -30,15 +31,19 @@ var sealedTables = []sealedTable{
 	{"secret_versions", "workspace_id,secret_id,id,encrypted_value,author_id,created_at,erased_at", "encrypted_value"},
 }
 
+func sealedTableNamed(name string) (sealedTable, bool) {
+	i := slices.IndexFunc(sealedTables, func(t sealedTable) bool { return t.name == name })
+	if i < 0 {
+		return sealedTable{}, false
+	}
+	return sealedTables[i], true
+}
+
 // Columns is what recovery reads of an immutable table whose rows hold a sealed value, and "" for
 // any other table.
 func Columns(table string) string {
-	for _, t := range sealedTables {
-		if t.name == table {
-			return t.columns
-		}
-	}
-	return ""
+	t, _ := sealedTableNamed(table)
+	return t.columns
 }
 
 // Hash is a row's hash as stored: every column, a sealed value's bytes included. Checkpoints name
@@ -54,15 +59,15 @@ func Hash(raw []byte) string {
 // with a random nonce, so equal values have different digests. It is Hash for a table without
 // sealed values, and for a value that is not an envelope, such as an erased one.
 func ContentHash(table string, raw []byte) string {
-	i := slices.IndexFunc(sealedTables, func(t sealedTable) bool { return t.name == table })
-	if i < 0 {
+	t, ok := sealedTableNamed(table)
+	if !ok {
 		return Hash(raw)
 	}
 	var row map[string]jsontext.Value
 	if json.Unmarshal(raw, &row) != nil {
 		return Hash(raw)
 	}
-	column := sealedTables[i].sealed
+	column := t.sealed
 	digest, ok := dataDigest(row[column])
 	if !ok {
 		return Hash(raw)
@@ -95,20 +100,20 @@ func dataDigest(value jsontext.Value) (string, bool) {
 	return hex.EncodeToString(h[:]), true
 }
 
-// Rekey records a workspace's restored rows in their content form, where a release before it
-// recorded them as stored. It reads the rows as recovery does, and changes only records whose hash
-// still matches a row. Run it, in tx, before any of the workspace's stored values move to another
-// key: once a value has moved, the record of it in the old form matches nothing. It is idempotent,
-// and reports how many records it changed.
+// Rekey records a workspace's restored rows in their content form, where they were recorded as
+// stored. It reads the rows as recovery does, and changes only records whose hash still matches a
+// row. Run it, in tx, before any of the workspace's stored values move to another key: once a value
+// has moved, the record of it as stored matches nothing. It is idempotent, and reports how many
+// records it changed.
 func Rekey(ctx context.Context, tx db.DBTX, ws uuid.UUID) (int64, error) {
 	q := db.New(tx)
 	var changed int64
 	for _, t := range sealedTables {
 		recorded, err := q.RecoveryAttributedHashes(ctx, db.RecoveryAttributedHashesParams{WorkspaceID: ws, TableName: t.name})
-		if err != nil || len(recorded) == 0 {
-			if err != nil {
-				return changed, err
-			}
+		if err != nil {
+			return changed, err
+		}
+		if len(recorded) == 0 {
 			continue
 		}
 		wanted := map[string]bool{}
