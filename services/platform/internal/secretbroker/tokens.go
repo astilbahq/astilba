@@ -65,7 +65,7 @@ func (b *Broker) Tokens(ctx context.Context) (*Tokens, error) {
 		return nil, err
 	}
 	// The keys are now resident for this process's life, which is the record's whole story.
-	if err := b.outcome(ctx, id, Released); err != nil {
+	if err := b.outcome(ctx, id, Released, nil); err != nil {
 		return nil, err
 	}
 	if err := t.load(ctx); err != nil {

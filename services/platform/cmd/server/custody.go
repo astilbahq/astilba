@@ -12,6 +12,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/config"
+	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -19,12 +20,67 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// keyBackend is the configured key service, paired with the keyring that values sealed before
+// per-workspace keys still open under.
+func keyBackend(c config.Config, keys *cryptobox.Keyring) (custody.Legacy, error) {
+	if c.KeyBackend != "transit" {
+		return custody.NewFile(keys)
+	}
+	t, err := custody.NewTransit(custody.TransitConfig{
+		Address: c.Transit.Address, Mount: c.Transit.Mount, Namespace: c.Transit.Namespace, CAFile: c.Transit.CAFile,
+		Auth: custody.TransitAuth{Method: c.Transit.Auth, Mount: c.Transit.AuthMount, RoleIDFile: c.Transit.RoleIDFile, SecretIDFile: c.Transit.SecretIDFile, JWTFile: c.Transit.JWTFile, Role: c.Transit.JWTRole},
+		// Plain HTTP only to a loopback server, in local development.
+		Loopback: c.Development && !c.Hosted,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return custody.WithKeyring(t, keys)
+}
+
+// initTransitCommand sets up a local OpenBao dev server for the local stack's --custody=openbao
+// profile. A real server is set up by its operator from docs/key-custody-transit.md: management
+// never holds a token that can change the key service's own policies.
+func initTransitCommand(ctx context.Context, out io.Writer, args []string) error {
+	f := flag.NewFlagSet("custody init-transit", flag.ContinueOnError)
+	dev := f.Bool("dev", false, "set up a local OpenBao dev server")
+	address := f.String("address", "", "the dev server's loopback address, such as http://127.0.0.1:8200")
+	tokenFile := f.String("token-file", "", "private file holding the dev server's root token")
+	dir := f.String("out", "", "directory for the AppRole credential files")
+	if err := f.Parse(args); err != nil {
+		return err
+	}
+	if !*dev {
+		return errors.New("init-transit sets up only a local OpenBao dev server, with --dev; set up a real server with docs/key-custody-transit.md")
+	}
+	if *address == "" || *tokenFile == "" || *dir == "" || f.NArg() > 0 {
+		return errors.New("usage: astilba custody init-transit --dev --address <loopback URL> --token-file <file> --out <directory>")
+	}
+	info, err := os.Stat(*tokenFile)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("--token-file must be a private regular file (mode 0600)")
+	}
+	raw, err := os.ReadFile(*tokenFile)
+	if err != nil {
+		return err
+	}
+	creds, err := custody.ProvisionTransitDev(ctx, *address, strings.TrimSpace(string(raw)), *dir)
+	clear(raw)
+	if err != nil {
+		return err
+	}
+	for _, name := range custody.TransitPolicyNames {
+		fmt.Fprintf(out, "%s: role ID in %s, secret ID in %s\n", name, creds[name].RoleIDFile, creds[name].SecretIDFile)
+	}
+	return nil
+}
+
 // custodyCommand runs `astilba custody status|history|rewrap|init-keys`. Status and history change
 // nothing; rewrap records its start and finish in the installation's key history, and init-keys
 // each key it makes.
 func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st *store.Store, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: astilba custody status|history|rewrap|init-keys")
+		return errors.New("usage: astilba custody status|history|rewrap|init-keys|init-transit")
 	}
 	switch args[0] {
 	case "status":
@@ -102,7 +158,7 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 			}
 		}
 	}
-	return errors.New("usage: astilba custody status|history|rewrap|init-keys")
+	return errors.New("usage: astilba custody status|history|rewrap|init-keys|init-transit")
 }
 
 func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {

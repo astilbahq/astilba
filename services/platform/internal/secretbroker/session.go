@@ -66,6 +66,8 @@ type Session struct {
 	stale bool
 	// sealed are the checkpoints a seal session sealed, the only values it opens.
 	sealed map[[sha256.Size]byte]bool
+	// requests are the key service's IDs for the unwraps that gave the session its keys.
+	requests []string
 }
 
 // Live reports whether the session can still be used.
@@ -295,7 +297,7 @@ func (s *Session) Close(ctx context.Context, outcome Outcome) {
 	if !open {
 		return
 	}
-	if err := s.broker.outcome(ctx, s.id, outcome); err != nil {
+	if err := s.broker.outcome(ctx, s.id, outcome, s.requests); err != nil {
 		// The sweep records it as abandoned instead.
 		s.broker.log.Error("secret access outcome not recorded", "access", s.id, "error", err.Error())
 		return

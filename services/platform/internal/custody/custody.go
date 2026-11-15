@@ -34,6 +34,10 @@ var Classes = []Class{ClassServe, ClassExport, ClassRotate, ClassInstallation}
 // may only wrap: only an operator unwraps there.
 func ServingDecrypts(class Class) bool { return class != ClassRotate }
 
+// OperatorDecrypts reports whether an operator's command may unwrap under a class. It wraps under
+// every class, but unwraps only what is wrapped for its own purpose, under rotate.
+func OperatorDecrypts(class Class) bool { return class == ClassRotate }
+
 type Scope string
 
 const (
@@ -114,6 +118,8 @@ type Result struct {
 var (
 	// ErrUnavailable is a backend that cannot be reached; trying again later may work.
 	ErrUnavailable = errors.New("key service unavailable")
+	// ErrThrottled is a backend limiting how fast it is called; trying again later may work.
+	ErrThrottled = errors.New("key service is limiting requests")
 	// ErrDenied is a key the backend refuses to use, such as a disabled one: never retried.
 	ErrDenied = errors.New("key service refused the key")
 	// ErrInvalid is a wrapping that does not open under its class and context: another key made
@@ -135,6 +141,23 @@ type Legacy interface {
 	Backend
 	Keyring() *cryptobox.Keyring
 }
+
+// WithKeyring pairs a backend with the installation keyring, which values sealed before
+// per-workspace keys still open under until they are converted. The backend wraps every key; the
+// keyring wraps nothing new.
+func WithKeyring(b Backend, ring *cryptobox.Keyring) (Legacy, error) {
+	if err := ring.Validate(); err != nil {
+		return nil, err
+	}
+	return withKeyring{b, ring}, nil
+}
+
+type withKeyring struct {
+	Backend
+	ring *cryptobox.Keyring
+}
+
+func (w withKeyring) Keyring() *cryptobox.Keyring { return w.ring }
 
 // File is the self-hosted backend: the keyring file named by ASTILBA_KEYRING. Every class
 // uses its active key, as there is only one.
@@ -196,8 +219,23 @@ func RewrapCanary(ctx context.Context, b Backend, class Class, installation uuid
 	return Rewrap(ctx, b, class, blob, canaryContext(installation))
 }
 
+// Rewrapper is a backend that wraps a wrapping again inside the key service, so the key never
+// leaves it. An operator who may not unwrap under a class can then still move its wrappings onto
+// the class's newest key.
+type Rewrapper interface {
+	Rewrap(ctx context.Context, class Class, blob []byte, c Context) (wrapped []byte, requestID string, err error)
+}
+
 // Rewrap wraps a wrapped key again under the class's current key, for the same context.
 func Rewrap(ctx context.Context, b Backend, class Class, blob []byte, c Context) ([]byte, error) {
+	inner := b
+	if w, ok := b.(withKeyring); ok {
+		inner = w.Backend
+	}
+	if r, ok := inner.(Rewrapper); ok {
+		wrapped, _, err := r.Rewrap(ctx, class, blob, c)
+		return wrapped, err
+	}
 	opened, err := b.Unwrap(ctx, class, blob, c)
 	if err != nil {
 		return nil, err

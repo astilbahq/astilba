@@ -20,6 +20,7 @@ var Analyzer = &analysis.Analyzer{
 var packages = map[string]bool{
 	"internal/pipeline/pipelinetest":   true,
 	"internal/secretbroker/brokertest": true,
+	"internal/custody/custodytest":     true,
 }
 
 // modules are the module paths packages are named under, so that a nested package such as

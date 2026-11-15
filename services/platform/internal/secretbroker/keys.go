@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -104,19 +105,24 @@ func (b *Broker) wrappedKeys(ctx context.Context, r Request) (heldKeys, error) {
 }
 
 // unwrap opens each wrapping, and checks each opens to its generation's key. It also names the
-// generation new values are sealed under, or 0 when the session holds none.
-func (b *Broker) unwrap(ctx context.Context, held heldKeys, holder uuid.UUID, purpose string) (map[keyRef][]byte, int64, error) {
+// generation new values are sealed under, or 0 when the session holds none, and the key service's
+// IDs for the requests it made, including one that failed.
+func (b *Broker) unwrap(ctx context.Context, held heldKeys, holder uuid.UUID, purpose string) (map[keyRef][]byte, int64, []string, error) {
 	keys := map[keyRef][]byte{}
 	if len(held.wrapped) == 0 {
-		return keys, 0, nil
+		return keys, 0, nil, nil
 	}
 	if b.installation == uuid.Nil {
-		return nil, 0, errors.New("custody is not installed")
+		return nil, 0, nil, errors.New("custody is not installed")
 	}
 	class, _ := custody.ClassFor(held.scope, purpose)
 	var sealing int64
+	var requests []string
 	for _, k := range held.wrapped {
 		opened, err := b.backend.Unwrap(ctx, class, k.wrapped, custody.Context{Installation: b.installation, Scope: held.scope, Workspace: holder, Generation: k.generation, Purpose: purpose})
+		if opened.ProviderRequestID != "" {
+			requests = append(requests, opened.ProviderRequestID)
+		}
 		if err == nil && !custody.CheckKey(opened.Key, k.kcv) {
 			clear(opened.Key)
 			err = ErrKeyCheck
@@ -125,14 +131,14 @@ func (b *Broker) unwrap(ctx context.Context, held heldKeys, holder uuid.UUID, pu
 			for _, key := range keys {
 				clear(key)
 			}
-			return nil, 0, err
+			return nil, 0, requests, err
 		}
 		keys[keyRef{held.scope, k.generation}] = opened.Key
 		if k.sealing {
 			sealing = k.generation
 		}
 	}
-	return keys, sealing, nil
+	return keys, sealing, requests, nil
 }
 
 // generationsOf lists the generations a session holds for its record, with the installation
@@ -160,6 +166,8 @@ type NewKeys struct {
 	key       []byte
 	session   *Session
 	stored    bool
+	// requests are the key service's IDs for the wraps that made the wrappings.
+	requests []string
 }
 
 // Create makes a new workspace's first key generation, before the transaction that creates the
@@ -224,7 +232,11 @@ func (b *Broker) newKeys(ctx context.Context, scope custody.Scope, holder uuid.U
 	k := &NewKeys{broker: b, scope: scope, holder: holder, version: version, backend: b.backend.ID(), kcv: kcv, wrappings: map[string][]byte{}, source: source, key: key}
 	for _, purpose := range custody.Purposes(scope) {
 		class, _ := custody.ClassFor(scope, purpose)
-		k.wrappings[purpose], _, err = b.backend.Wrap(ctx, class, key, custody.Context{Installation: b.installation, Scope: scope, Workspace: holder, Generation: 1, Purpose: purpose})
+		var request string
+		k.wrappings[purpose], request, err = b.backend.Wrap(ctx, class, key, custody.Context{Installation: b.installation, Scope: scope, Workspace: holder, Generation: 1, Purpose: purpose})
+		if request != "" {
+			k.requests = append(k.requests, request)
+		}
 		if err != nil {
 			clear(key)
 			return nil, err
@@ -270,6 +282,9 @@ func (k *NewKeys) Insert(ctx context.Context, q *db.Queries) error {
 		}
 	}
 	e := keyEvent{run: uuid.New(), kind: "key-created", scope: k.scope, generation: 1, details: map[string]string{"source": k.source}}
+	if len(k.requests) > 0 {
+		e.details["provider_requests"] = strings.Join(k.requests, ",")
+	}
 	if k.scope == custody.ScopeWorkspace {
 		e.workspace = &k.holder
 	} else {

@@ -38,6 +38,9 @@ var (
 	// ErrCanaryMismatch is a canary the configured backend cannot open: a different keyring or
 	// provider key, or a database copied under another installation ID.
 	ErrCanaryMismatch = errors.New("the configured key backend cannot open the installation's canary")
+	// ErrBackendRefused is a key backend that will not serve the installation's keys: it refuses
+	// management's sign-in, or holds a key that could leave it, such as an exportable one.
+	ErrBackendRefused = errors.New("the configured key backend refuses to serve the installation's keys")
 	// ErrKeyringMismatch is a keyring that cannot open the values already stored, met before any
 	// canary exists to say so: a database restored or upgraded from before canaries.
 	ErrKeyringMismatch = errors.New("the configured keyring cannot open the installation's stored secrets")
@@ -68,6 +71,13 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 	if pinned != uuid.Nil && pinned != id {
 		return refuse(ErrInstallationMismatch, map[string]string{"configured": pinned.String()})
 	}
+	// A backend that refuses is recorded; one that cannot be reached is tried again at the next start.
+	if err = b.backend.Check(ctx); err != nil {
+		if errors.Is(err, custody.ErrDenied) || errors.Is(err, custody.ErrInvalid) {
+			return fmt.Errorf("%w: %w", refuse(ErrBackendRefused, map[string]string{"reason": err.Error()}), err)
+		}
+		return err
+	}
 	if err = b.register(ctx, pool, run); err != nil {
 		if errors.Is(err, ErrBackendNotRegistered) {
 			return refuse(err, map[string]string{})
@@ -82,7 +92,9 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 		}
 		for _, c := range canaries {
 			class := custody.Class(c.Class)
-			if !operator && !custody.ServingDecrypts(class) {
+			// Each checks the canaries of the classes it may unwrap under, which a key service's
+			// policy enforces.
+			if operator && !custody.OperatorDecrypts(class) || !operator && !custody.ServingDecrypts(class) {
 				continue
 			}
 			if err = custody.CheckCanary(ctx, b.backend, class, id, c.Wrapped); err != nil {
@@ -130,6 +142,7 @@ var causes = map[error]string{
 	ErrBackendNotRegistered: "backend",
 	ErrCanaryMismatch:       "canary",
 	ErrKeyringMismatch:      "keyring",
+	ErrBackendRefused:       "backend-refused",
 }
 
 // register makes the configured backend the installation's first, or checks it is already one the
@@ -235,7 +248,7 @@ func (b *Broker) checkStored(ctx context.Context, pool Pool, run uuid.UUID) erro
 			break
 		}
 	}
-	if err = b.outcome(ctx, id, outcome); err != nil {
+	if err = b.outcome(ctx, id, outcome, nil); err != nil {
 		return err
 	}
 	if outcome == Failed {
@@ -318,6 +331,10 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 		state := "ok"
 		if err := custody.CheckCanary(ctx, b.backend, custody.Class(c.Class), s.Installation, c.Wrapped); err != nil {
 			state = err.Error()
+			// A key service lets only an operator unwrap under rotate.
+			if errors.Is(err, custody.ErrDenied) && !custody.ServingDecrypts(custody.Class(c.Class)) {
+				state = operatorOnly
+			}
 		}
 		s.Canaries[custody.Class(c.Class)] = state
 	}
@@ -330,6 +347,9 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 	s.Unfinished, err = q.UnfinishedCustodyRuns(ctx)
 	return s, err
 }
+
+// operatorOnly is a canary status could not check because only an operator may unwrap it.
+const operatorOnly = "present; only an operator's command can open it"
 
 // Pending lists what an operator still has to do, or what the next start does, in plain words.
 func (s Status) Pending() []string {
@@ -348,7 +368,7 @@ func (s Status) Pending() []string {
 	}
 	for _, class := range custody.Classes {
 		switch state := s.Canaries[class]; state {
-		case "ok":
+		case "ok", operatorOnly:
 		case "missing":
 			out = append(out, "the "+string(class)+" canary is missing: the next start makes it")
 		default:

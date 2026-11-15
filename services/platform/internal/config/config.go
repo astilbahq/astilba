@@ -31,8 +31,10 @@ type Config struct {
 	SecretAccessRetentionDays            int32
 	DatabasePoolSize                     int32
 	DatabaseURL, Keyring, Listen, Origin string
-	// KeyBackend is the key service keys are read from. Only the keyring file exists so far.
+	// KeyBackend is the key service keys are read from: "file", the keyring, or "transit", an
+	// OpenBao or Vault Transit mount that Transit describes.
 	KeyBackend string
+	Transit    Transit
 	// InstallationID pins the installation the database must belong to, or is uuid.Nil when it is
 	// not set, which hosting does not allow.
 	InstallationID                       uuid.UUID
@@ -142,8 +144,12 @@ func (c *Config) loadCustody() error {
 	case "":
 		c.KeyBackend = "file"
 	case "file":
+	case "transit":
+		if err := c.loadTransit(); err != nil {
+			return err
+		}
 	default:
-		return errors.New("ASTILBA_KEY_BACKEND must be file")
+		return errors.New("ASTILBA_KEY_BACKEND must be file or transit")
 	}
 	if raw := os.Getenv("ASTILBA_INSTALLATION_ID"); raw != "" {
 		id, e := uuid.Parse(raw)
@@ -152,6 +158,50 @@ func (c *Config) loadCustody() error {
 		}
 		c.InstallationID = id
 	}
+	return nil
+}
+
+// Transit is an OpenBao or Vault Transit mount and how management signs in to it. Credentials
+// are named only by file, so the environment never holds them. See docs/key-custody-transit.md.
+type Transit struct {
+	Address, Mount, Namespace, CAFile string
+	// Auth is "approle" or "jwt", and AuthMount where that method is mounted, if not at its name.
+	Auth, AuthMount          string
+	RoleIDFile, SecretIDFile string
+	JWTFile, JWTRole         string
+}
+
+func (c *Config) loadTransit() error {
+	for _, name := range []string{"ASTILBA_TRANSIT_TOKEN", "ASTILBA_TRANSIT_SECRET_ID", "ASTILBA_TRANSIT_ROLE_ID", "VAULT_TOKEN", "BAO_TOKEN"} {
+		if os.Getenv(name) != "" {
+			return fmt.Errorf("%s is not read: management signs in to Transit with credentials in private files, named by ASTILBA_TRANSIT_ROLE_ID_FILE and ASTILBA_TRANSIT_SECRET_ID_FILE, or ASTILBA_TRANSIT_JWT_FILE", name)
+		}
+	}
+	t := Transit{
+		Address: os.Getenv("ASTILBA_TRANSIT_ADDR"), Mount: os.Getenv("ASTILBA_TRANSIT_MOUNT"), Namespace: os.Getenv("ASTILBA_TRANSIT_NAMESPACE"), CAFile: os.Getenv("ASTILBA_TRANSIT_CA_FILE"),
+		Auth: os.Getenv("ASTILBA_TRANSIT_AUTH"), AuthMount: os.Getenv("ASTILBA_TRANSIT_AUTH_MOUNT"),
+		RoleIDFile: os.Getenv("ASTILBA_TRANSIT_ROLE_ID_FILE"), SecretIDFile: os.Getenv("ASTILBA_TRANSIT_SECRET_ID_FILE"),
+		JWTFile: os.Getenv("ASTILBA_TRANSIT_JWT_FILE"), JWTRole: os.Getenv("ASTILBA_TRANSIT_JWT_ROLE"),
+	}
+	if t.Auth == "" {
+		t.Auth = "approle"
+	}
+	if t.Address == "" {
+		return errors.New("ASTILBA_TRANSIT_ADDR is required when ASTILBA_KEY_BACKEND is transit")
+	}
+	switch t.Auth {
+	case "approle":
+		if t.RoleIDFile == "" || t.SecretIDFile == "" || t.JWTFile != "" {
+			return errors.New("AppRole sign-in needs ASTILBA_TRANSIT_ROLE_ID_FILE and ASTILBA_TRANSIT_SECRET_ID_FILE, and no JWT file")
+		}
+	case "jwt":
+		if t.JWTFile == "" || t.JWTRole == "" || t.RoleIDFile != "" || t.SecretIDFile != "" {
+			return errors.New("JWT sign-in needs ASTILBA_TRANSIT_JWT_FILE and ASTILBA_TRANSIT_JWT_ROLE, and no AppRole files")
+		}
+	default:
+		return errors.New("ASTILBA_TRANSIT_AUTH must be approle or jwt")
+	}
+	c.Transit = t
 	return nil
 }
 
