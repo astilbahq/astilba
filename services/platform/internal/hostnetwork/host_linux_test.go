@@ -162,6 +162,16 @@ func TestNativeManagedLinks(t *testing.T) {
 			t.Fatalf("fixture NAT %s: %s %v", key, out, err)
 		}
 	}
+	// Only Identity makes a key: applying a manifest for a membership without one changes nothing
+	// and makes none, which would give the host an identity no peer knows.
+	unknown := ma
+	unknown.MembershipID = uuid.New()
+	if err = a.Apply(ctx, unknown, nil, false); err == nil {
+		t.Fatal("a membership without a key applied")
+	}
+	if _, err = os.Lstat(filepath.Join(a.Dir, "network", unknown.MembershipID.String()+".key")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("applying made a private-link key", err)
+	}
 	// Inject a lost response after atomic create+ownership marker. Retry must recognize its
 	// owned interface and finish its alias without adopting unrelated state.
 	originalIP := a.IP
@@ -244,6 +254,17 @@ func TestNativeManagedLinks(t *testing.T) {
 	}
 	if out, err := request("u"); err != nil || !strings.Contains(string(out), "private-endpoint-canary") {
 		t.Fatal("restored link unavailable", err)
+	}
+	// When the boot restore couldn't put a link back, as when the key store wasn't working yet,
+	// the agent service does. It leaves links already in place alone.
+	in("a", "ip", "link", "delete", ma.Interface())
+	for _, h := range []Host{a, b} {
+		if err = h.RestoreMissing(ctx); err != nil {
+			t.Fatal("restore of missing links", err)
+		}
+	}
+	if out, err := request("u"); err != nil || !strings.Contains(string(out), "private-endpoint-canary") {
+		t.Fatal("link restored by the agent service unavailable", err)
 	}
 	// WireGuard took the sealed key through a pipe: nothing in the state directory holds it.
 	if holdsKey(t, a.Dir, privateKeyOf(t, a, ma.MembershipID)) {

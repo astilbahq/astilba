@@ -31,78 +31,122 @@ type Sealer interface {
 // file is still there, it doesn't make a new key in its place.
 const SealedKeyVersion = 4
 
-// sealedKey is a sealed key file.
+// sealedKey is a sealed key file. Its public key is in the clear, since it isn't secret, so the
+// host's identity on the network never needs the key store. Applying the network opens the
+// private key and checks it against the public one.
 type sealedKey struct {
 	Version   int    `json:"agentStateVersion"`
+	PublicKey string `json:"publicKey"`
 	SealedKey []byte `json:"sealedKey"`
 }
 
-// ErrSealedKey says a private-link key is sealed to this machine and can't be opened now.
-// Nothing changed.
-var ErrSealedKey = errors.New("this server's private-link key is sealed to this machine, and it can't be opened now")
+// ErrSealedKey says this machine's key store works but can't open a private-link key: it was sealed
+// on another machine, or this host's TPM or systemd host key has changed. Nothing changed, and no
+// new key was made in its place.
+var ErrSealedKey = errors.New("this server's private-link key is sealed, and this machine's key store can't open it")
+
+// ErrKeyStoreUnavailable says the key store that seals private-link keys isn't working now, as
+// early in boot. Nothing changed; trying again later may work.
+var ErrKeyStoreUnavailable = errors.New("the key store that seals this server's private-link keys isn't working now")
 
 // keyName is the name membership id's key is sealed under. Binding the membership means a sealed
 // key copied over another membership's file won't open.
 func keyName(id uuid.UUID) string { return "astilba-agent-network-key-" + id.String() }
 
+// probeName is the name of the value sealed to check whether the key store works.
+const probeName = "astilba-agent-network-key-probe"
+
 // The temporary files that network state writes rename into place. An earlier agent's interrupted
 // apply could leave a WireGuard configuration holding the private key in the clear.
 var networkLeftovers = []string{".network-", ".wg-"}
 
-// privateKey reads membership id's private key, sealed or in the clear. With create, a missing
-// key is generated. It is sealed when the host has a key store, or else held in the clear.
-func (h Host) privateKey(ctx context.Context, id uuid.UUID, create bool) (*ecdh.PrivateKey, error) {
-	if id == uuid.Nil {
-		return nil, errors.New("membership identity required")
-	}
-	raw, err := privateRead(h.identityPath(id))
-	if errors.Is(err, os.ErrNotExist) && create {
-		key, err := ecdh.X25519().GenerateKey(rand.Reader)
-		if err != nil {
-			return nil, err
-		}
-		if err = h.writeKey(ctx, id, key); err != nil {
-			return nil, err
-		}
-		return key, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	key, _, err := h.openKey(ctx, id, raw)
-	return key, err
+// keyFile is a key file as read, without opening a sealed key. It holds either the private key in
+// the clear or the sealed one, and the public key either way.
+type keyFile struct {
+	public string
+	clear  *ecdh.PrivateKey
+	sealed []byte
 }
 
-// openKey opens a key file's contents, and reports whether they were sealed.
-func (h Host) openKey(ctx context.Context, id uuid.UUID, raw []byte) (*ecdh.PrivateKey, bool, error) {
+// readKeyFile reads membership id's key file without opening a sealed key.
+func (h Host) readKeyFile(id uuid.UUID) (keyFile, error) {
+	if id == uuid.Nil {
+		return keyFile{}, errors.New("membership identity required")
+	}
+	raw, err := privateRead(h.identityPath(id))
+	if err != nil {
+		return keyFile{}, err
+	}
 	text := strings.TrimSpace(string(raw))
 	if strings.HasPrefix(text, "{") {
 		var envelope sealedKey
-		if json.Unmarshal([]byte(text), &envelope, json.RejectUnknownMembers(true)) != nil || envelope.Version != SealedKeyVersion || len(envelope.SealedKey) == 0 {
-			return nil, true, errors.New("unsupported local network key format; use a compatible agent")
+		if json.Unmarshal([]byte(text), &envelope, json.RejectUnknownMembers(true)) != nil || envelope.Version != SealedKeyVersion || !PublicKey(envelope.PublicKey) || len(envelope.SealedKey) == 0 {
+			return keyFile{}, errors.New("unsupported local network key format; use a compatible agent")
 		}
-		if h.Keys == nil {
-			return nil, true, fmt.Errorf("%w: only the agent's own commands can open it", ErrSealedKey)
-		}
-		plain, err := h.Keys.Unseal(ctx, keyName(id), envelope.SealedKey)
-		if err != nil {
-			return nil, true, fmt.Errorf("%w: the key store can't read it (%v). It was sealed on another machine, or this host's TPM or systemd host key has changed. If that key is gone for good, remove this server from the network and add it again, so that it makes a new key", ErrSealedKey, err)
-		}
-		key, err := ecdh.X25519().NewPrivateKey(plain)
-		if err != nil {
-			return nil, true, errors.New("invalid local network key")
-		}
-		return key, true, nil
+		return keyFile{public: envelope.PublicKey, sealed: envelope.SealedKey}, nil
 	}
 	b, err := base64.StdEncoding.DecodeString(text)
 	if err != nil {
-		return nil, false, errors.New("invalid local network key")
+		return keyFile{}, errors.New("invalid local network key")
 	}
 	key, err := ecdh.X25519().NewPrivateKey(b)
 	if err != nil {
-		return nil, false, errors.New("invalid local network key")
+		return keyFile{}, errors.New("invalid local network key")
 	}
-	return key, false, nil
+	return keyFile{public: publicKeyOf(key), clear: key}, nil
+}
+
+func publicKeyOf(key *ecdh.PrivateKey) string {
+	return base64.StdEncoding.EncodeToString(key.PublicKey().Bytes())
+}
+
+// publicKey is membership id's public key. A membership without a key gets a new one, sealed when
+// the host has a key store, or else held in the clear. It never opens a sealed key.
+func (h Host) publicKey(ctx context.Context, id uuid.UUID) (string, error) {
+	f, err := h.readKeyFile(id)
+	if errors.Is(err, os.ErrNotExist) {
+		key, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			return "", err
+		}
+		if err = h.writeKey(ctx, id, key); err != nil {
+			return "", err
+		}
+		return publicKeyOf(key), nil
+	}
+	return f.public, err
+}
+
+// privateKey opens membership id's private key. It never makes one: a missing key is an error.
+func (h Host) privateKey(ctx context.Context, id uuid.UUID) (*ecdh.PrivateKey, error) {
+	f, err := h.readKeyFile(id)
+	if err != nil || f.clear != nil {
+		return f.clear, err
+	}
+	if h.Keys == nil {
+		return nil, fmt.Errorf("%w: this command has no key store to open it with", ErrSealedKey)
+	}
+	plain, err := h.Keys.Unseal(ctx, keyName(id), f.sealed)
+	if err != nil {
+		return nil, h.unsealFailure(ctx, err)
+	}
+	key, err := ecdh.X25519().NewPrivateKey(plain)
+	if err != nil || publicKeyOf(key) != f.public {
+		return nil, fmt.Errorf("%w: it doesn't match the public key beside it", ErrSealedKey)
+	}
+	return key, nil
+}
+
+// unsealFailure says why a sealed key didn't open. The store is checked with a value of its own:
+// if that works, the store is fine and this key isn't one it can open.
+func (h Host) unsealFailure(ctx context.Context, cause error) error {
+	probe := []byte("astilba private-link key store probe")
+	if sealed, err := h.Keys.Seal(ctx, probeName, probe); err == nil {
+		if back, err := h.Keys.Unseal(ctx, probeName, sealed); err == nil && bytes.Equal(back, probe) {
+			return fmt.Errorf("%w (%v). It was sealed on another machine, or this host's TPM or systemd host key has changed. If that key is gone for good, remove this server from the network and add it again, so that it gets a new key", ErrSealedKey, cause)
+		}
+	}
+	return fmt.Errorf("%w: %v", ErrKeyStoreUnavailable, cause)
 }
 
 // writeKey replaces membership id's key file with key. It seals the key with the host's key store
@@ -113,14 +157,14 @@ func (h Host) writeKey(ctx context.Context, id uuid.UUID, key *ecdh.PrivateKey) 
 	if h.Keys != nil {
 		sealed, err := h.Keys.Seal(ctx, keyName(id), key.Bytes())
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: %v", ErrKeyStoreUnavailable, err)
 		}
 		// A key nothing can read would cut this host off its private network, so it replaces the
 		// file only once read back.
 		if back, err := h.Keys.Unseal(ctx, keyName(id), sealed); err != nil || !bytes.Equal(back, key.Bytes()) {
-			return errors.New("the key store could not read back the private-link key it sealed")
+			return fmt.Errorf("%w: it could not read back the private-link key it sealed", ErrKeyStoreUnavailable)
 		}
-		if body, err = stablejson.Marshal(sealedKey{Version: SealedKeyVersion, SealedKey: sealed}); err != nil {
+		if body, err = stablejson.Marshal(sealedKey{Version: SealedKeyVersion, PublicKey: publicKeyOf(key), SealedKey: sealed}); err != nil {
 			return err
 		}
 	}
@@ -128,9 +172,10 @@ func (h Host) writeKey(ctx context.Context, id uuid.UUID, key *ecdh.PrivateKey) 
 }
 
 // SealKeys seals every private-link key this host holds in the clear with its key store. Each
-// sealed key is read back before it replaces the key in the clear. SealKeys also removes the
-// temporary files that interrupted writes left behind. A host that has never held managed network
-// state has nothing to seal.
+// sealed key is read back before it replaces the key in the clear. A key file it can't handle
+// doesn't stop it sealing the others; it reports every one. It never opens a key sealed already.
+// SealKeys also removes the temporary files that interrupted writes left behind. A host that has
+// never held managed network state has nothing to seal.
 func (h Host) SealKeys(ctx context.Context) error {
 	if h.Keys == nil {
 		return errors.New("private-link keys need a key store to be sealed")
@@ -151,29 +196,25 @@ func (h Host) SealKeys(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".key") {
 			continue
 		}
 		id, err := uuid.Parse(strings.TrimSuffix(entry.Name(), ".key"))
-		if err != nil {
-			return errors.New("invalid network key filename")
+		if err != nil || id.String()+".key" != entry.Name() {
+			failures = append(failures, fmt.Errorf("%s isn't a private-link key file this agent wrote", entry.Name()))
+			continue
 		}
-		raw, err := privateRead(h.identityPath(id))
-		if err != nil {
-			return err
+		f, err := h.readKeyFile(id)
+		if err == nil && f.clear != nil {
+			err = h.writeKey(ctx, id, f.clear)
 		}
-		key, sealed, err := h.openKey(ctx, id, raw)
 		if err != nil {
-			return err
-		}
-		if !sealed {
-			if err = h.writeKey(ctx, id, key); err != nil {
-				return err
-			}
+			failures = append(failures, fmt.Errorf("%s: %w", entry.Name(), err))
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // removeNetworkLeftovers removes the temporary files that interrupted network state writes left

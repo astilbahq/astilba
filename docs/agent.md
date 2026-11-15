@@ -150,11 +150,14 @@ A server in a [private network](cross-host-placement.md) holds a WireGuard priva
 
 - **A copied state directory joins no private network elsewhere.** On another machine, or with a TPM or host key the key wasn't sealed with, the key doesn't open. The agent then leaves the file as it is rather than make a new one, which would change the server's identity on the network. As for the agent key, a copy of the whole disk of a host without a TPM includes the host key, so it can open the key.
 - **WireGuard gets the key through a pipe.** Applying a network never writes the key to disk in the clear. The agent also removes the configuration files that earlier agents left behind when an apply was cut short, which held the key in the clear.
-- **`astilba-network.service` opens the keys at boot** with the same store, to restore the server's private links before the agent starts. It opens the store only when it finds a sealed key. If the store isn't available yet, the restore fails, and `journalctl -u astilba-network` shows why. The links stay down until you run `sudo systemctl restart astilba-network` once the store is available.
+- **`astilba-network.service` opens the keys at boot** with the same store, to restore the server's private links before the agent starts. It opens the store only when it finds a sealed key. If the store isn't working yet, as can happen early in boot, that link isn't restored and `journalctl -u astilba-network` shows why. The other links are still restored. When the agent service starts, it restores every link that isn't in place, trying again each minute while the store isn't working.
+- **The server's public key is beside the sealed key, in the clear,** since it isn't secret. So the agent reports its identity on a network without opening the key, and opens it only to apply the network, before it changes anything. A key store that isn't working then only delays the network command, which runs again.
 
 Agents from before sealing made these keys in the clear. Once the agent service has sealed the journal's keyring, it seals the keys too. It first moves the journal to a format that earlier agents refuse, so an earlier agent restored by hand stops before it acts rather than meeting a key it can't read. Then it seals each key and reads it back before it replaces the key in the clear. Sealing keeps the keys as they were, so the server's identity on its networks doesn't change and its peers need nothing. A host whose key store isn't available keeps its keys in the clear until the store opens, as it does its keyring. Commands run by hand, and the boot-time restore, never seal a key that is in the clear.
 
-Sealing doesn't replace the keys. A copy of the state directory taken before the upgrade still holds them in the clear, and so can the filesystem's freed space, as for `keyring.json`. If such a copy may have leaked, give the server new keys: **Remove from private networks**, then add it back. Each new membership gets a new key, sealed when it is made, and its peers stop accepting the old one.
+Sealing doesn't replace the keys. **A copy of the state directory taken before the upgrade still holds the server's key in the clear, and that key keeps working on its networks until the server is removed and added back.** The filesystem's freed space can hold it too, as for `keyring.json`. If such a copy may have leaked, give the server new keys: **Remove from private networks**, then add it back to each network. Adding it back gives it a new membership and a new key, sealed when it is made. Its peers then hold only the new key, so the old one joins nothing.
+
+A copied state directory on another machine doesn't get that far: its journal doesn't open either. If the journal opens but a key doesn't, for example because the key file was copied from another machine, the server stays off that network. The agent checks that its key store works before it blames the key. The network command needs attention, with a note saying why. The agent never makes a new key in its place, which would change the server's identity on the network without its owner knowing.
 
 ### Identity conflicts
 
@@ -318,7 +321,7 @@ UDP endpoints, capacity budgets and application grants.
 Allow the selected UDP listener through the server's upstream firewall. Servers
 need direct UDP reachability; this release has no rendezvous or traffic relay.
 Private keys stay in the protected host state directory, sealed to the machine; see [private-link keys](#private-link-keys). Approved private links
-survive management outages and are restored on host boot; revocation remains
+survive management outages and are restored on host boot, or by the agent service when it starts if the boot restore couldn't; revocation remains
 pending until the affected peers acknowledge it.
 
 Recipe-4 plans require the negotiated `crossHost` capability. A coordinated local

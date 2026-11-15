@@ -25,14 +25,19 @@ import (
 // fakeManagedHost answers for the kernel, WireGuard and nftables, which only a prepared Linux
 // host has. Apply returns what the host's own checks would have.
 type fakeManagedHost struct {
-	key     string
-	held    *hostnetwork.Manifest
-	apply   error
-	applied int
+	key string
+	// identity fails Identity, as a key that won't open does.
+	identity error
+	held     *hostnetwork.Manifest
+	apply    error
+	applied  int
 }
 
 func (h *fakeManagedHost) Supported(context.Context) bool { return true }
 func (h *fakeManagedHost) Identity(_ context.Context, id uuid.UUID) (hostnetwork.Identity, error) {
+	if h.identity != nil {
+		return hostnetwork.Identity{}, h.identity
+	}
 	return hostnetwork.Identity{MembershipID: id, PublicKey: h.key}, nil
 }
 func (h *fakeManagedHost) Snapshot(id uuid.UUID) (hostnetwork.Snapshot, error) {

@@ -273,6 +273,7 @@ func (c *Client) Run(ctx context.Context) error {
 	wg.Go(func() { c.keepKeyStoreOpen(ctx) })
 	wg.Go(func() { c.keepJournalRekeyed(ctx) })
 	if c.Engine != nil {
+		wg.Go(func() { c.keepPrivateLinksRestored(ctx) })
 		wg.Go(func() { c.keepNetworkKeysSealed(ctx) })
 	}
 	if c.Metrics != nil {

@@ -38,6 +38,9 @@ func (e *Engine) managedNetworking() managedHost {
 	return e.networkHost()
 }
 
+// sealedNetworkKeyNote says why a server whose private-link key won't open stays off the network.
+const sealedNetworkKeyNote = "This server's private-link key is sealed to this machine's key store, which can't open it: the key store is unavailable, or the state directory came from another machine or its TPM or systemd host key changed. Nothing changed and no new key was made. If the store is lost for good, remove the server from private networks and add it back to give it a new key."
+
 func networkRestriction(c api.ExecutionCommand) bool {
 	var n hostnetwork.Command
 	return c.Kind == "network" && c.Network != nil && hostnetwork.Decode(*c.Network, &n) == nil && n.Action == "restrict" && n.Validate() == nil
@@ -67,6 +70,10 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 		return finish("failed", "Managed networking tools, kernel support or service permissions are unavailable.")
 	}
 	identity, err := host.Identity(ctx, command.MembershipID)
+	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		// Nothing changed. The command runs again, and the store may work by then.
+		return err
+	}
 	if err != nil {
 		return finish("needs_attention", "Local network identity requires inspection.")
 	}
@@ -128,6 +135,16 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 			// Docker's record is unread and nothing changed. The command reruns from its
 			// checkpoint, after a Docker restart or the agent's own.
 			return err
+		}
+		if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+			// The key is opened before anything changes. The command runs again from its
+			// checkpoint, and the store may work by then.
+			return err
+		}
+		if errors.Is(err, hostnetwork.ErrSealedKey) {
+			// The key stays as it is: a new one would change this server's identity on the network
+			// without its owner knowing.
+			return finish("needs_attention", sealedNetworkKeyNote)
 		}
 		if errors.As(err, &conflict) {
 			// Management may hold no record of what this host has, after a lost receipt or a

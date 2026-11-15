@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,9 +164,9 @@ func TestNetworkKeysAreSealedOnlyBetweenCommands(t *testing.T) {
 	}
 }
 
-// A copy of the state directory, such as a backup or disk snapshot, opens neither the journal nor
-// any private-link key on another machine: not through the agent, nor through the boot-time
-// restore.
+// A copy of the state directory, such as a backup or disk snapshot, opens no journal on another
+// machine, and the private-link key in it stays as it was: sealing elsewhere neither opens nor
+// replaces it. hostnetwork's tests show the key itself doesn't open there.
 func TestCopiedStateDirectoryYieldsNoPrivateLinkKeyElsewhere(t *testing.T) {
 	ctx := context.Background()
 	store := InsecureKeyStore()
@@ -174,9 +175,8 @@ func TestCopiedStateDirectoryYieldsNoPrivateLinkKeyElsewhere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &Engine{Journal: j}
 	member := uuid.New()
-	if _, err = e.networkHost().Identity(ctx, member); err != nil {
+	if _, err = (&Engine{Journal: j}).networkHost().Identity(ctx, member); err != nil {
 		t.Fatal(err)
 	}
 	j.Close()
@@ -184,11 +184,6 @@ func TestCopiedStateDirectoryYieldsNoPrivateLinkKeyElsewhere(t *testing.T) {
 	if !sealedKeyFile(sealed) {
 		t.Fatal("the test proves nothing: the private-link key isn't sealed")
 	}
-	// Its own machine opens the key, as the boot-time restore does.
-	if _, err = (hostnetwork.Host{Dir: dir, Keys: OnDemandKeyStore(storeOpener(store))}).Identity(ctx, member); err != nil {
-		t.Fatal("the restore couldn't open its own machine's key", err)
-	}
-
 	copied := copyStateDirectory(t, dir)
 	elsewhere := InsecureKeyStore()
 	if j, err := OpenSealed(ctx, copied, storeOpener(elsewhere)); !errors.Is(err, ErrSealedJournal) {
@@ -197,39 +192,91 @@ func TestCopiedStateDirectoryYieldsNoPrivateLinkKeyElsewhere(t *testing.T) {
 		}
 		t.Fatal("the copied journal opened on another machine", err)
 	}
-	for name, keys := range map[string]hostnetwork.Sealer{
-		"the agent's store":   elsewhere,
-		"the restore's store": OnDemandKeyStore(storeOpener(elsewhere)),
-		"no store":            nil,
-	} {
-		if _, err := (hostnetwork.Host{Dir: copied, Keys: keys}).Identity(ctx, member); !errors.Is(err, hostnetwork.ErrSealedKey) {
-			t.Fatalf("%s: the copied private-link key opened on another machine: %v", name, err)
-		}
-	}
-	if !bytes.Equal(networkKeyFile(t, copied, member), sealed) {
-		t.Fatal("a key that couldn't be opened was replaced")
+	if err = (hostnetwork.Host{Dir: copied, Keys: elsewhere}).SealKeys(ctx); err != nil || !bytes.Equal(networkKeyFile(t, copied, member), sealed) {
+		t.Fatal("sealing on another machine changed the copied key", err)
 	}
 }
 
-// The restore opens the key store only for a key that is sealed, so a host whose store is
-// unavailable still restores keys held in the clear.
-func TestRestoreOpensTheKeyStoreOnlyForASealedKey(t *testing.T) {
+// A server whose sealed key won't open, as on a copied disk, stays off the network and says why.
+// It makes no key in its place: that would change its identity without its owner knowing. A key
+// store that isn't working yet only delays the command, which runs again.
+func TestUnopenableNetworkKeyKeepsTheServerOffTheNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cause    error
+		finished bool
+	}{
+		{"not this machine's key", hostnetwork.ErrSealedKey, true},
+		{"store not working", hostnetwork.ErrKeyStoreUnavailable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, host, c := networkJoinFixture(t, serveFakeNetworks(t), nil)
+			host.apply = fmt.Errorf("%w: it can't read it", tc.cause)
+			r, err := runNetworkCommand(t, e, c)
+			if tc.finished {
+				if err != nil || r.Report.State != "needs_attention" || r.Report.Note != sealedNetworkKeyNote {
+					t.Fatalf("the server didn't stay off the network with its reason: %v %s %q", err, r.Report.State, r.Report.Note)
+				}
+				return
+			}
+			if !errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) || r.Report.State != "running" {
+				t.Fatalf("a key store not working yet ended the command: %v %s %q", err, r.Report.State, r.Report.Note)
+			}
+		})
+	}
+}
+
+// The boot restore's store opens only when a sealed key needs it, is kept once open, and is opened
+// again after a failure.
+func TestOnDemandKeyStoreOpensWhenFirstUsed(t *testing.T) {
 	ctx := context.Background()
-	opened := 0
+	opened, fail := 0, true
+	store := InsecureKeyStore()
 	keys := OnDemandKeyStore(func(context.Context) (KeyStore, error) {
 		opened++
-		return nil, errors.New("the key store is unavailable")
+		if fail {
+			return nil, errors.New("the key store is unavailable")
+		}
+		return store, nil
 	})
-	dir := privateDir(t)
-	member := uuid.New()
-	identity, err := (hostnetwork.Host{Dir: dir}).Identity(ctx, member)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := keys.Seal(ctx, "name", []byte("value")); err == nil || opened != 1 {
+		t.Fatal("an unavailable store sealed", err)
 	}
-	if again, err := (hostnetwork.Host{Dir: dir, Keys: keys}).Identity(ctx, member); err != nil || again != identity {
-		t.Fatal("a key held in the clear needed the key store", err)
+	fail = false
+	sealed, err := keys.Seal(ctx, "name", []byte("value"))
+	if err != nil || opened != 2 {
+		t.Fatal("the store wasn't opened again after failing", err)
 	}
-	if opened != 0 {
-		t.Fatal("the key store was opened for nothing sealed")
+	if plain, err := keys.Unseal(ctx, "name", sealed); err != nil || string(plain) != "value" || opened != 2 {
+		t.Fatal("the opened store wasn't kept", err)
+	}
+}
+
+// The agent tries again a step it couldn't run: within a check when the engine was busy or the key
+// store wasn't working, and an interval after one that failed.
+func TestUntilDoneRetriesUntilTheStepSucceeds(t *testing.T) {
+	period, check := journalRekeyInterval, journalRekeyCheck
+	journalRekeyInterval, journalRekeyCheck = 200*time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { journalRekeyInterval, journalRekeyCheck = period, check })
+	results := []error{errEngineBusy, errEngineBusy, hostnetwork.ErrKeyStoreUnavailable, errors.New("failed"), nil}
+	var at []time.Time
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	(&Client{}).untilDone(ctx, "test", func() bool { return true }, func(context.Context) error {
+		at = append(at, time.Now())
+		err := results[0]
+		results = results[1:]
+		return err
+	})
+	if ctx.Err() != nil || len(at) != 5 {
+		t.Fatalf("the step ran %d times before it succeeded", len(at))
+	}
+	for i := range 3 {
+		if at[i+1].Sub(at[i]) >= journalRekeyInterval {
+			t.Fatal("a busy engine or an unavailable store waited as long as a failure")
+		}
+	}
+	if at[4].Sub(at[3]) < journalRekeyInterval {
+		t.Fatal("a failed step was tried again before the interval")
 	}
 }

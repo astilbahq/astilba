@@ -13,9 +13,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// The journal's keyring and a private-link key sealed with the host's real systemd-creds: upgraded
-// from keys in the clear, rekeyed, cut short mid-rekey by a process crash, and copied to a machine
-// with another host key.
+// The journal's keyring sealed with the host's real systemd-creds, and a private-link key with it:
+// upgraded from keys in the clear, rekeyed, cut short mid-rekey by a process crash, and copied to a
+// machine with another host key. TestNativeNetworkKeySealedToTheMachine opens the sealed key.
 func TestNativeJournalSealedToTheMachine(t *testing.T) {
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
 		t.Skip("requires an explicitly disposable Ubuntu systemd host")
@@ -71,9 +71,8 @@ func TestNativeJournalSealedToTheMachine(t *testing.T) {
 	if !sealedKeyFile(networkKeyFile(t, dir, member)) {
 		t.Fatal("upgrading didn't seal the private-link key with systemd-creds")
 	}
-	// The boot-time restore opens it with its own store.
-	if again, err := (hostnetwork.Host{Dir: dir, Keys: OnDemandKeyStore(SystemKeyStore)}).Identity(ctx, member); err != nil || again != identity {
-		t.Fatal("the sealed private-link key doesn't open on its own machine", err)
+	if again, err := (hostnetwork.Host{Dir: dir}).Identity(ctx, member); err != nil || again != identity {
+		t.Fatal("sealing changed the server's identity on its network", err)
 	}
 	if openableCanaries(t, dir, clear) != 0 || openableCanaries(t, dir, j.keys.Load()) != 0 {
 		t.Fatal("a key opens a version the rekey replaced")
@@ -122,8 +121,5 @@ func TestNativeJournalSealedToTheMachine(t *testing.T) {
 		t.Fatal("a copied state directory opened with another machine's host key")
 	} else if !errors.Is(err, ErrSealedJournal) || !strings.Contains(err.Error(), "can't read it") {
 		t.Fatal("a copied state directory failed for another reason:", err)
-	}
-	if _, err := (hostnetwork.Host{Dir: copied, Keys: OnDemandKeyStore(SystemKeyStore)}).Identity(ctx, member); !errors.Is(err, hostnetwork.ErrSealedKey) || !strings.Contains(err.Error(), "can't read it") {
-		t.Fatal("a copied private-link key opened with another machine's host key, or failed for another reason:", err)
 	}
 }
