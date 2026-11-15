@@ -15,7 +15,7 @@ check is a final `always()` gate, so it is reported on every run.
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
-| `application.yml`          | Application verification         | `make verify-app-build` and seven parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
+| `application.yml`          | Application verification         | `make verify-app-build` and ten parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
 | `workshop.yml`             | Workshop verification            | Standalone Storybook scenarios and accessibility audits in both browsers                                                          |
 
@@ -192,14 +192,16 @@ bootstraps. Native verification remains the required check.
 
 ## Application Go verification
 
-Application verification runs eight jobs in parallel: `make verify-app-build`
+Application verification runs eleven jobs in parallel: `make verify-app-build`
 (application checks, agent/CLI and dashboard builds and packaging, followed by
-the image smoke test and source archive) and seven Go race lanes: `crosshost` for
-the coordinated placement journey, `preview` for preview checkpoint recovery,
-`network` for the private network generation tests named by `APP_NETWORK_TESTS`,
-`revoked-host` for moving off a revoked server (`APP_REVOKED_HOST_TESTS`),
-`operations` for tests named by `APP_OPERATIONS_TESTS`, `m-to-z` for other tests
-whose names start `TestM` to `TestZ` and `remaining` for everything else.
+the image smoke test and source archive) and ten Go race lanes. Five family lanes
+take named groups of tests: `crosshost` for the coordinated placement journey,
+`preview` for preview checkpoint recovery, `network` for the private network
+generation tests named by `APP_NETWORK_TESTS`, `revoked-host` for moving off a
+revoked server (`APP_REVOKED_HOST_TESTS`) and `operations` for tests named by
+`APP_OPERATIONS_TESTS`. Five name lanes split every other test by the letter after
+`Test`: `a-to-b`, `c-to-k`, `l-to-p`, `q-to-r` and `s-to-z`, which also takes any
+name outside those letters.
 Each retains race detection, uncached execution and a fifteen-minute process
 timeout, and any failure fails the Application verification gate. Locally,
 `make verify-app-core` runs the build target and then the lanes concurrently.
@@ -214,14 +216,14 @@ fixture under the race detector. Preview recovery has a separate process budget 
 coordinated placement; both are isolated from the remaining tests.
 
 The Makefile selects tests by name. `-run` reaches only the packages on its own
-command line, while `remaining` applies its `-skip` to every package, so a name
-it skips must be selected in that package too; `operations` and `m-to-z` run
-against `./...` for that reason. `make check-ci` runs `scripts/app-lanes.mjs`, which
-fails when a test in the platform module is selected by no lane or by more than one,
-when a selection matches no test, or when `verify-app-core` and the workflow's matrix
-differ from the lanes. A new test needs no lane change: it lands in `remaining` or
-`m-to-z` by its name's first letter, or in `operations` if its name has one of that
-lane's prefixes.
+command line, while `s-to-z` applies its `-skip` to every package, so a name it
+skips must be selected in that package too; `operations` and the other name lanes
+run against `./...` for that reason. `make check-ci` runs `scripts/app-lanes.mjs`,
+which fails when a test in the platform module is selected by no lane or by more than
+one, when a selection matches no test, when `verify-app-core` and the workflow's
+matrix differ from the lanes, or when a lane named for letters runs a name outside
+them. A new test needs no lane change: it lands in a name lane by its name's first
+letter, or in `operations` if its name has one of that lane's prefixes.
 
 The lanes run `go test -v`, so the job log has each test's time, in `--- PASS`
 lines. One commit's package time has differed by 28% between hosted runners, so a
@@ -229,7 +231,12 @@ single run says little about a lane.
 
 `lane-budget.yml` runs `make check-lane-budget` daily and on demand. It reads the
 last five main runs of the current lanes and reports a lane whose package has a
-median above 600 seconds, listing the times in its job summary. Run by hand, that fails
+median above 600 seconds, listing the times in its job summary. Below them it
+proposes the fewest name lanes that keep every package within 400 seconds, which a
+runner 28% slower still meets. It splits the tests no family selects (by
+`APP_FAMILY_TESTS`) by the letter after `Test`, and projects each package's time
+from the medians of its tests in those runs plus its median time outside them. A
+letter with no tests joins the range after it. Run by hand, that fails
 the command; in the workflow the job fails only when it cannot check or report, since
 the issue is the notice. While a lane is over it
 keeps one issue open with the latest times, comments when another package goes over,
@@ -238,12 +245,14 @@ describes. It is not a required check, so runner variance cannot remove a pull r
 queue. The integration package also adds a warning to any run past that budget, so
 the pull request that crosses it shows it in its own checks. When a lane is past its
 budget, first look for time every test shares, because the fixture is the only place
-one change reaches every test. Then move the letter boundary and rename the lane to
-match, move a test family to another lane, or add a lane by adding a variable, its
-rule and the workflow's matrix. A lane of one test, such as `crosshost`, can only
-come down by shortening or splitting that test. Moving tests between existing lanes
-takes three main runs to show, because earlier runs stay in the sample; adding a lane
-starts a new sample, and a lane with fewer than three runs neither fails the check nor
+one change reaches every test. Then apply the proposed split: give each name lane its
+letters and the name the proposal gives it, adding or removing a variable, its rule,
+its place in `verify-app-core` and the workflow's matrix as needed. When one letter
+alone is past 400 seconds, the proposal says so: move a test family to a lane of its
+own instead. A lane of one test, such as `crosshost`, can only
+come down by shortening or splitting that test. Moving a family between existing lanes
+takes three main runs to show, because earlier runs stay in the sample; adding or
+renaming a lane, as a new split does, starts a new sample, and a lane with fewer than three runs neither fails the check nor
 closes the issue. Locally, `GITHUB_TOKEN` must allow reading Actions, and nothing is
 opened.
 
