@@ -86,5 +86,5 @@ SELECT nextval('hosted_observation_tickets')::bigint;
 -- unscoped: a Stripe invoice event names only the customer, and each workspace has its own.
 SELECT workspace_id FROM hosted_subscriptions WHERE customer_id = @customer_id;
 
--- name: HostedSubscriptionOfCustomer :one
-SELECT subscription_id FROM hosted_subscriptions WHERE workspace_id = @workspace_id AND customer_id = @customer_id;
+-- name: HeldSubscription :one
+SELECT subscription_id,status FROM hosted_subscriptions WHERE workspace_id = @workspace_id;

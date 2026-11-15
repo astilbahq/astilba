@@ -316,7 +316,7 @@ func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 	if allowNew && known != nil && *known != id && previousStatus != "canceled" && previousStatus != "incomplete_expired" {
 		return domain.Conflict
 	}
-	until := extend(previous, sub.Status, seen.PaidThrough)
+	until := extend(previous, seen.PaidThrough)
 	if sub.EndedAt != nil {
 		end := time.Unix(*sub.EndedAt, 0)
 		if until != nil && end.Before(*until) {
@@ -327,15 +327,16 @@ func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 	return e
 }
 
-// extend returns how long management lasts given what was stored and a subscription's status
-// and paid evidence. Only a paid invoice moves it later, to the end of the period paid for plus
-// hosting.RenewalAllowance, and only while the subscription is in good standing or retrying
-// payment. Stripe's current period end is not evidence: it advances when the renewal invoice
-// is created, before anything is paid, and stays advanced while collection is paused. The
-// result is never earlier than stored, so an observation applied late cannot shorten what was
-// paid for; only the subscription ending does that.
-func extend(stored *time.Time, status string, paid *time.Time) *time.Time {
-	if paid == nil || (status != "active" && status != "past_due") {
+// extend returns how long management lasts given what was stored and a subscription's paid
+// evidence. Only a paid invoice moves it later, to the end of the period paid for plus
+// hosting.RenewalAllowance. Stripe's current period end is not evidence: it advances when the
+// renewal invoice is created, before anything is paid, and stays advanced while collection is
+// paused. Status is not consulted either: a period paid for stays paid for whatever the
+// subscription became, and its ended_at, applied after this, is what ends it. So the result
+// depends only on what Stripe holds, never on which observation was applied first: it is
+// never earlier than stored, and the paid evidence only grows.
+func extend(stored *time.Time, paid *time.Time) *time.Time {
+	if paid == nil {
 		return stored
 	}
 	end := paid.Add(hosting.RenewalAllowance)
@@ -372,7 +373,7 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		return domain.Invalid("signature")
 	}
 	switch event.Type {
-	case "checkout.session.completed", "customer.subscription.updated", "customer.subscription.deleted", "invoice.paid", "invoice.payment_failed":
+	case "checkout.session.completed", "customer.subscription.updated", "customer.subscription.deleted", "invoice.paid":
 	default:
 		return nil
 	}
@@ -380,6 +381,11 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		ID        string `json:"id"`
 		Customer  string `json:"customer"`
 		Reference string `json:"client_reference_id"`
+		Parent    struct {
+			Details struct {
+				Subscription string `json:"subscription"`
+			} `json:"subscription_details"`
+		} `json:"parent"`
 	}
 	if json.Unmarshal(event.Data.Object, &obj) != nil {
 		return domain.Invalid("event")
@@ -387,8 +393,8 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 	var ws uuid.UUID
 	checkout := event.Type == "checkout.session.completed"
 	// An invoice event only says to look again: the workspace is found by its own customer,
-	// and the subscription to observe is the one it holds. Nothing else in the invoice is read.
-	invoice := event.Type == "invoice.paid" || event.Type == "invoice.payment_failed"
+	// and the subscription to observe is the one it holds.
+	invoice := event.Type == "invoice.paid"
 	switch {
 	case invoice:
 		ws, e = db.New(s.Store.Pool).HostedWorkspaceOfCustomer(ctx, pgtype.Text{String: obj.Customer, Valid: true})
@@ -435,15 +441,19 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		}
 		subscription := obj.ID
 		if invoice {
-			held, e := db.New(tx).HostedSubscriptionOfCustomer(ctx, db.HostedSubscriptionOfCustomerParams{WorkspaceID: ws, CustomerID: pgtype.Text{String: obj.Customer, Valid: true}})
-			if e != nil && !errors.Is(e, pgx.ErrNoRows) {
+			held, e := db.New(tx).HeldSubscription(ctx, ws)
+			if e != nil {
 				return e
 			}
-			if !held.Valid {
-				// No subscription yet: completing the checkout observes its paid invoices.
-				return tx.Commit(ctx)
+			// The invoice's own subscription only says whether to wait, never what was paid.
+			named := obj.Parent.Details.Subscription
+			ended := held.Status == "canceled" || held.Status == "incomplete_expired"
+			if !held.SubscriptionID.Valid || ended && named != "" && named != held.SubscriptionID.String {
+				// A checkout not yet applied may have observed Stripe before this payment.
+				// Recording the event would lose it, so Stripe is asked to deliver it again.
+				return domain.Conflict
 			}
-			subscription = held.String
+			subscription = held.SubscriptionID.String
 		}
 		q := question{customer: obj.Customer}
 		if checkout {

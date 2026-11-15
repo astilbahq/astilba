@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ const day = int64(24 * 60 * 60)
 
 func line(subscription string, start, end int64, price string, proration bool) map[string]any {
 	return map[string]any{
+		"id":      "il_" + strconv.FormatInt(start, 10),
 		"period":  map[string]any{"start": start, "end": end},
 		"pricing": map[string]any{"price_details": map[string]any{"price": price}},
 		"parent":  map[string]any{"type": "subscription_item_details", "subscription_item_details": map[string]any{"subscription": subscription, "subscription_item": "si_one", "proration": proration}},
@@ -46,8 +48,20 @@ func invoice(id, customer, status, subscription string, lines ...map[string]any)
 
 func paidThrough(t *testing.T, invoices ...map[string]any) (*time.Time, error) {
 	t.Helper()
+	return paidThroughPaging(t, nil, invoices...)
+}
+
+// paidThroughPaging also answers requests for later pages of an invoice's lines from pages,
+// keyed by "<invoice>/<starting_after>".
+func paidThroughPaging(t *testing.T, pages map[string]map[string]any, invoices ...map[string]any) (*time.Time, error) {
+	t.Helper()
 	s := Stripe{Key: "sk_test_unit", Price: "price_now", HTTP: &http.Client{Transport: answerFunc(func(r *http.Request) (any, error) {
 		q := r.URL.Query()
+		if invoice, ok := strings.CutPrefix(r.URL.Path, "/v1/invoices/"); ok && r.Method == "GET" && q.Get("limit") == "100" {
+			if page, ok := pages[strings.TrimSuffix(invoice, "/lines")+"/"+q.Get("starting_after")]; ok {
+				return page, nil
+			}
+		}
 		if r.Method != "GET" || r.URL.Path != "/v1/invoices" || q.Get("customer") != "cus_one" || q.Get("subscription") != "sub_one" || q.Get("status") != "paid" || q.Get("limit") != "10" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL)
 			return nil, errors.New("unexpected")
@@ -86,25 +100,52 @@ func TestPaidThroughWithoutPaidInvoices(t *testing.T) {
 	}
 }
 
+// A line whose period is not a month of this subscription is skipped rather than refused, so
+// it cannot stop a cancellation from being observed.
+func TestPaidThroughSkipsLinesOutsideAMonthlyPeriod(t *testing.T) {
+	const start = int64(1_800_000_000)
+	got, err := paidThrough(t, invoice("in_b", "cus_one", "paid", "sub_one",
+		line("sub_one", start+30*day, start+30*day, "price_now", false),
+		line("sub_one", start+30*day, start+29*day, "price_now", false),
+		line("sub_one", start+30*day, start+90*day, "price_now", false),
+		line("sub_one", 0, 30*day, "price_now", false),
+	), invoice("in_a", "cus_one", "paid", "sub_one", line("sub_one", start, start+30*day, "price_now", false)))
+	if err != nil || got == nil || got.Unix() != start+30*day {
+		t.Fatalf("paid through %v %v", got, err)
+	}
+}
+
+// Stripe embeds only the first page of an invoice's lines and sorts pending invoice items
+// first, so the subscription's line can be on a later page.
+func TestPaidThroughReadsLaterPagesOfLines(t *testing.T) {
+	const start = int64(1_800_000_000)
+	item := map[string]any{"id": "il_item", "period": map[string]any{"start": start, "end": start}, "parent": map[string]any{"type": "invoice_item_details"}}
+	renewal := invoice("in_b", "cus_one", "paid", "sub_one", item)
+	renewal["lines"] = map[string]any{"data": []any{item}, "has_more": true}
+	pages := map[string]map[string]any{
+		"in_b/il_item": {"data": []any{line("sub_one", start+30*day, start+60*day, "price_now", false)}, "has_more": false},
+	}
+	got, err := paidThroughPaging(t, pages, renewal, invoice("in_a", "cus_one", "paid", "sub_one", line("sub_one", start, start+30*day, "price_now", false)))
+	if err != nil || got == nil || got.Unix() != start+60*day {
+		t.Fatalf("paid through %v %v", got, err)
+	}
+	// A page that says there is more but gives no line to continue from is refused.
+	renewal["lines"] = map[string]any{"data": []any{}, "has_more": true}
+	if got, err = paidThroughPaging(t, pages, renewal); !errors.Is(err, ErrProvider) {
+		t.Fatalf("accepted %v %v", got, err)
+	}
+}
+
 func TestPaidThroughRefusesWhatWasNotAskedFor(t *testing.T) {
 	const start = int64(1_800_000_000)
 	good := line("sub_one", start, start+30*day, "price_now", false)
-	many := []map[string]any{}
-	for range 11 {
-		many = append(many, invoice("in_a", "cus_one", "paid", "sub_one", good))
-	}
 	for name, invoices := range map[string][]map[string]any{
-		"unpaid":           {invoice("in_a", "cus_one", "open", "sub_one", good)},
-		"other customer":   {invoice("in_a", "cus_two", "paid", "sub_one", good)},
-		"other parent":     {invoice("in_a", "cus_one", "paid", "sub_two", good)},
-		"no parent":        {{"id": "in_a", "customer": "cus_one", "status": "paid", "lines": map[string]any{"data": []any{good}}}},
-		"bad id":           {invoice("ch_a", "cus_one", "paid", "sub_one", good)},
-		"empty period":     {invoice("in_a", "cus_one", "paid", "sub_one", line("sub_one", start, start, "price_now", false))},
-		"reversed period":  {invoice("in_a", "cus_one", "paid", "sub_one", line("sub_one", start, start-day, "price_now", false))},
-		"overlong period":  {invoice("in_a", "cus_one", "paid", "sub_one", line("sub_one", start, start+33*day, "price_now", false))},
-		"missing start":    {invoice("in_a", "cus_one", "paid", "sub_one", line("sub_one", 0, 30*day, "price_now", false))},
-		"more than a page": many,
-		"draft":            {invoice("in_a", "cus_one", "draft", "sub_one")},
+		"unpaid":         {invoice("in_a", "cus_one", "open", "sub_one", good)},
+		"other customer": {invoice("in_a", "cus_two", "paid", "sub_one", good)},
+		"other parent":   {invoice("in_a", "cus_one", "paid", "sub_two", good)},
+		"no parent":      {{"id": "in_a", "customer": "cus_one", "status": "paid", "lines": map[string]any{"data": []any{good}}}},
+		"bad id":         {invoice("ch_a", "cus_one", "paid", "sub_one", good)},
+		"draft":          {invoice("in_a", "cus_one", "draft", "sub_one")},
 	} {
 		if got, err := paidThrough(t, invoices...); !errors.Is(err, ErrProvider) {
 			t.Errorf("%s: accepted %v %v", name, got, err)

@@ -170,6 +170,22 @@ func (q *Queries) GrantHostedManagement(ctx context.Context, arg GrantHostedMana
 	return result.RowsAffected(), nil
 }
 
+const heldSubscription = `-- name: HeldSubscription :one
+SELECT subscription_id,status FROM hosted_subscriptions WHERE workspace_id = $1
+`
+
+type HeldSubscriptionRow struct {
+	SubscriptionID pgtype.Text `json:"subscription_id"`
+	Status         string      `json:"status"`
+}
+
+func (q *Queries) HeldSubscription(ctx context.Context, workspaceID uuid.UUID) (HeldSubscriptionRow, error) {
+	row := q.db.QueryRow(ctx, heldSubscription, workspaceID)
+	var i HeldSubscriptionRow
+	err := row.Scan(&i.SubscriptionID, &i.Status)
+	return i, err
+}
+
 const hostedCohortSize = `-- name: HostedCohortSize :one
 SELECT ((SELECT count(*) FROM workspaces)+(SELECT count(*) FROM hosted_invitations WHERE claimed_at IS NULL))::bigint AS size
 `
@@ -215,22 +231,6 @@ func (q *Queries) HostedInvitationOpen(ctx context.Context, arg HostedInvitation
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
-}
-
-const hostedSubscriptionOfCustomer = `-- name: HostedSubscriptionOfCustomer :one
-SELECT subscription_id FROM hosted_subscriptions WHERE workspace_id = $1 AND customer_id = $2
-`
-
-type HostedSubscriptionOfCustomerParams struct {
-	WorkspaceID uuid.UUID   `json:"workspace_id"`
-	CustomerID  pgtype.Text `json:"customer_id"`
-}
-
-func (q *Queries) HostedSubscriptionOfCustomer(ctx context.Context, arg HostedSubscriptionOfCustomerParams) (pgtype.Text, error) {
-	row := q.db.QueryRow(ctx, hostedSubscriptionOfCustomer, arg.WorkspaceID, arg.CustomerID)
-	var subscription_id pgtype.Text
-	err := row.Scan(&subscription_id)
-	return subscription_id, err
 }
 
 const hostedWorkspaceOfCustomer = `-- name: HostedWorkspaceOfCustomer :one
