@@ -268,7 +268,7 @@ func TestRecoverySessionsDoNotWaitForKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = recover.Open(item, sealed); !errors.Is(err, cryptobox.ErrKey) || SessionFailure(err) || !recover.Live() {
+	if _, err = recover.Open(item, sealed); !errors.Is(err, ErrKeyNotInBackup) || !errors.Is(err, cryptobox.ErrKey) || SessionFailure(err) || !recover.Live() {
 		t.Fatalf("keyless recovery: %v", err)
 	}
 	// Nor can it restore a value: the operator makes the key first.

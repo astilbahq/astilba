@@ -45,6 +45,18 @@ func (keysChanged) Unwrap() []error { return []error{keysChangedBusy, ErrNeedKey
 // new generation replaces it.
 var ErrNoSealableKey = &domain.Error{Code: "temporarily_busy", Message: "New values cannot be saved until a new key replaces the current one. Try again later."}
 
+// ErrKeyNotInBackup is a value a recovery cannot open because the restored database holds no key
+// for its workspace: the backup was taken before the workspace's key existed, and what was sealed
+// under that key opens only with it. It is a value the session cannot open, as cryptobox.ErrKey is.
+var ErrKeyNotInBackup error = keyNotInBackup{}
+
+type keyNotInBackup struct{}
+
+func (keyNotInBackup) Error() string {
+	return "this management database holds no key for the workspace: it was restored from a backup taken before the workspace's key existed, so it cannot open what the hosts sealed under that key; restore a backup taken after the workspace was created"
+}
+func (keyNotInBackup) Unwrap() error { return cryptobox.ErrKey }
+
 // ErrKeyMissing is a recovery into a workspace with no key. Recovery runs with the installation
 // offline, where nothing makes keys, so the operator makes them before recovering again.
 var ErrKeyMissing = errors.New("the workspace has no key yet: run `astilba custody init-keys`, then recover again")

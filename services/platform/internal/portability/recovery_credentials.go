@@ -30,7 +30,7 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) error {
 			}
 			plain, err := keys.Open(item, cipher)
 			clear(plain)
-			if secretbroker.SessionFailure(err) {
+			if secretbroker.SessionFailure(err) || errors.Is(err, secretbroker.ErrKeyNotInBackup) {
 				return err
 			}
 			if err != nil {

@@ -984,6 +984,17 @@ func (q *Queries) RecoveryServerWorkspace(ctx context.Context, serverID uuid.UUI
 	return workspace_id, err
 }
 
+const recoveryWorkspaceExists = `-- name: RecoveryWorkspaceExists :one
+SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = $1)
+`
+
+func (q *Queries) RecoveryWorkspaceExists(ctx context.Context, workspaceID uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, recoveryWorkspaceExists, workspaceID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const registerRecoveredBase = `-- name: RegisterRecoveredBase :exec
 INSERT INTO recovery_bases(workspace_id,id,parent_id,environment_id,primary_server_id,captured_at,window_start)
 VALUES($1,$2,$3,$4,$5,$6,$7)

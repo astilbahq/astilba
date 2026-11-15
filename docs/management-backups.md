@@ -200,6 +200,11 @@ which the manifest records.
 Anything written after the backup is lost, because there is no point-in-time recovery: the
 backup interval is how much you can lose.
 
+**Take a backup after creating a workspace.** Cross-host recovery restores only workspaces the
+backup holds, using the workspace's own key, which only management's database keeps. Until a
+backup holds a new workspace, its hosts' recovery capsules can't bring it back if management is
+lost.
+
 ## Restore drills
 
 Restore a backup on a disposable machine before you rely on it, and again every quarter. Never

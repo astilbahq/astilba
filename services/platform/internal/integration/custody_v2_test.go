@@ -9,6 +9,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
@@ -395,4 +396,29 @@ func TestRecoveryRestoresValuesUnderTheActiveGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	v2Header(t, stored, cryptobox.ScopeWorkspace)
+}
+
+// Recovery names why a restored backup cannot bring a workspace back: the backup was taken before
+// the workspace was created, or before its key existed.
+func TestRecoveryNamesABackupOlderThanTheWorkspace(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	keysJobDone(t, f)
+	keyless := insertWorkspace(t, f, "Waiting for its key")
+	f.server.Close()
+	if err := f.execution.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.execution.RecoverCrossHost(ctx, execution.RecoveryImport{WorkspaceID: uuid.New(), OwnerID: f.owner}); !errors.Is(err, execution.ErrRecoveryWorkspaceMissing) {
+		t.Fatalf("recovering a workspace the backup lacks: %v", err)
+	}
+	// A capsule sealed under the key the backup lacks.
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New()}
+	sealed, err := cryptobox.SealUnder(make([]byte, 32), cryptobox.ScopeWorkspace, 1, []byte("v"), secretIdentity(keyless, item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = recoverKeys(t, f.st, keyless).Open(item, sealed); !errors.Is(err, secretbroker.ErrKeyNotInBackup) {
+		t.Fatalf("opening a value under a key the backup lacks: %v", err)
+	}
 }

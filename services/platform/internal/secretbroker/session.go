@@ -124,9 +124,13 @@ func (s *Session) Open(item Item, ciphertext []byte) ([]byte, error) {
 	if s.keys == nil {
 		return nil, ErrNeedKeys
 	}
-	if s.keyless && s.request.Purpose != Recover {
-		// The value is under a key made after this session began. Recovery runs with the
-		// installation offline, where no key is made, so to it the value is one it cannot open.
+	if s.keyless {
+		if s.request.Purpose == Recover {
+			// Recovery runs with the installation offline, where no key is made: the restored
+			// database never had the key the value was sealed under.
+			return nil, ErrKeyNotInBackup
+		}
+		// The value is under a key made after this session began.
 		s.stale = true
 		return nil, ErrKeysChanged
 	}

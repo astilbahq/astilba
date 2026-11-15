@@ -870,7 +870,11 @@ Restore with the matching application version, or a newer one after `astilba mig
 into a clean database and private keyring mount. Cross-host recovery reads the checkpoints the
 hosts hold, so run it with the release that sealed the newest of them or a newer one, even when
 the backup is older. Restore the backup, migrate to that release, then recover. An older release
-refuses those checkpoints. Keep the restored management process stopped while fencing every
+refuses those checkpoints. Recovery starts from the workspaces the backup holds and opens their
+checkpoints with each workspace's own key, which only management's database keeps. A workspace
+created after the backup can't be recovered from its hosts' capsules, so take a backup after
+creating a workspace; recovery refuses such a workspace, and one whose key the backup lacks, and
+says which. Keep the restored management process stopped while fencing every
 restored server:
 
 ```sh
