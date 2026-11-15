@@ -862,8 +862,8 @@ Some checks need Docker Hub itself:
 
 No native test breaks the mirror on purpose: Docker and BuildKit would then read Docker Hub
 itself, which is what CI must not depend on, so their fallback was checked by hand as above.
-Apart from the agent's own builder, the native tests don't use Docker Hub's anonymous token
-exchange either when the mirror serves an image. Unit tests against fake registries cover both in the agent's own image reads:
+When the mirror serves an image, the native tests don't use Docker Hub's anonymous token
+exchange either. Unit tests against fake registries cover both in the agent's own image reads:
 `TestPullReadsThroughAnAnonymousToken`, `TestPullFallsBackPastAMirrorLackingAnEntry` and
 `TestPullFallsBackPastAFailingMirror`, for a mirror that answers 429 or can't be reached.
 

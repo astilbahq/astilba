@@ -36,10 +36,12 @@ func TestBuilderConfigReadsDockerHubThroughTheDaemonsMirrors(t *testing.T) {
 			want:     "[registry.\"docker.io\"]\n  mirrors = [\"mirror.gcr.io\"]\n[registry.\"registry.example:5000\"]\n  http = false\n  insecure = false\n",
 		},
 		{
-			// BuildKit would read every Docker Hub tag through a plain HTTP mirror without TLS.
-			name:    "a plain HTTP mirror, then HTTPS ones with a path",
-			mirrors: []dockerHubMirror{{host: "10.0.0.5:5000", plainHTTP: true}, {host: "mirror.example", prefix: "hub/proxy"}, {host: "mirror.gcr.io"}, {host: "mirror.gcr.io"}},
-			want:    "[registry.\"docker.io\"]\n  mirrors = [\"mirror.example/hub/proxy\", \"mirror.gcr.io\"]\n",
+			// BuildKit would read every Docker Hub tag through a plain HTTP mirror without TLS, a
+			// loopback one without TLS on the build's own loopback, and one with a path at another
+			// repository than Docker does.
+			name:    "mirrors BuildKit can't read as Docker does, then HTTPS ones",
+			mirrors: []dockerHubMirror{{host: "10.0.0.5:5000", plainHTTP: true}, {host: "localhost:5000"}, {host: "127.0.0.1:5000"}, {host: "[::1]:5000"}, {host: "LOCALHOST"}, {host: "mirror.example", prefix: "hub/proxy"}, {host: "mirror.example"}, {host: "mirror.gcr.io"}, {host: "mirror.gcr.io"}},
+			want:    "[registry.\"docker.io\"]\n  mirrors = [\"mirror.example\", \"mirror.gcr.io\"]\n",
 		},
 		{
 			// One table for Docker Hub, which BuildKit requires; pushes still go to Docker Hub itself.
@@ -51,8 +53,8 @@ func TestBuilderConfigReadsDockerHubThroughTheDaemonsMirrors(t *testing.T) {
 		{
 			name:     "a mirror on the build's own registry",
 			registry: "registry.example",
-			mirrors:  []dockerHubMirror{{host: "registry.example", prefix: "hub"}, {host: "registry.example", plainHTTP: true}},
-			want:     "[registry.\"docker.io\"]\n  mirrors = [\"registry.example/hub\"]\n[registry.\"registry.example\"]\n  http = false\n  insecure = false\n",
+			mirrors:  []dockerHubMirror{{host: "registry.example"}, {host: "registry.example", plainHTTP: true}},
+			want:     "[registry.\"docker.io\"]\n  mirrors = [\"registry.example\"]\n[registry.\"registry.example\"]\n  http = false\n  insecure = false\n",
 		},
 		{
 			name:    "an IPv6 mirror",
@@ -62,8 +64,7 @@ func TestBuilderConfigReadsDockerHubThroughTheDaemonsMirrors(t *testing.T) {
 		{
 			name: "mirror names that could end a TOML string or table",
 			mirrors: []dockerHubMirror{
-				{host: "evil\"]\n[grpc"}, {host: "mirror.example\n[dns]"}, {host: "mirror.example]"}, {host: "[mirror.example"},
-				{host: "mirror.example", prefix: "a\"b"}, {host: "mirror.example", prefix: "a\\b"}, {host: "mirror.example", prefix: "a\nb"}, {host: "mirror.example", prefix: "a]b"}, {host: "mirror.example", prefix: "[a"},
+				{host: "evil\"]\n[grpc"}, {host: "mirror.example\n[dns]"}, {host: "mirror.example]"}, {host: "[mirror.example"}, {host: "mirror\\example"}, {host: "mirror.example\x07"},
 			},
 			want: "",
 		},

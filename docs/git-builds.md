@@ -262,10 +262,10 @@ To let builds use a private package mirror or registry on your network, an owner
 
 ### Docker Hub mirrors
 
-The `registry-mirrors` set in the runner's `/etc/docker/daemon.json` also apply to builds. BuildKit reads a build's Docker Hub base images through the daemon's HTTPS mirrors, in the order Docker tries them, as Docker and the agent's [own image reads](agent.md#image-loads-and-pulls) do. It reads Docker Hub itself when no mirror has the image or every mirror fails. Pushes always go to the registry itself.
+The `registry-mirrors` set in the runner's `/etc/docker/daemon.json` also apply to builds. BuildKit reads a build's Docker Hub base images through those mirrors, in the order Docker tries them, and reads Docker Hub itself when no mirror has the image or every mirror fails. Pushes always go to the registry itself.
 
-- A mirror answers tag lookups as well as reads by digest, so a build trusts each mirror as it trusts Docker Hub. BuildKit checks what a mirror serves against the digest only for a base image pinned by digest.
-- Plain HTTP mirrors are not used by builds. BuildKit would read every Docker Hub tag through one without TLS, and any image named on that host too.
+- A mirror answers tag lookups as well as reads by digest, so a build trusts each mirror as it trusts Docker Hub. BuildKit checks what a mirror serves against the digest only for a base image pinned by digest. A mirror can also answer a tag with an older image than Docker Hub's: pin base images by digest to build exactly what you name.
+- Builds leave out a mirror that BuildKit can't read as Docker does: a plain HTTP mirror, through which BuildKit would read every Docker Hub tag without TLS; a mirror on `localhost` or a loopback address, which is the build's own, not the host's; and a mirror URL with a path, which BuildKit would read at a different address from Docker.
 - A mirror on a private address needs a [build network entry](#allowing-private-destinations), like any private destination. Without one, the build network refuses it at once, BuildKit reads Docker Hub instead, and the build log counts the refused packets.
 - BuildKit trusts only the public certificate authorities in its own image, not those in `/etc/docker/certs.d`. So it reads Docker Hub itself rather than a mirror whose certificate needs one of those.
 
