@@ -26,7 +26,7 @@ It doesn't stop someone controlling management from opening what management can 
 they control it. It records that they did.
 
 The keyring is still required (`ASTILBA_KEYRING`): values sealed before per-workspace keys
-existed open under it until they are converted (`astilba custody convert`). It wraps nothing new.
+existed open under it until they are converted to per-workspace keys. It wraps nothing new.
 
 ## The policy files
 
@@ -36,7 +36,7 @@ Management uses two identities, each with a policy shipped in
 | File | Identity | Grants |
 | --- | --- | --- |
 | [`astilba-serving.hcl`](../services/platform/internal/custody/policies/astilba-serving.hcl) | `astilba serve` and every command except the operator's | Encrypt and decrypt with `astilba-serve`, `astilba-export` and `astilba-installation`. Encrypt only with `astilba-rotate`. Read each key's settings. |
-| [`astilba-operator.hcl`](../services/platform/internal/custody/policies/astilba-operator.hcl) | `astilba custody rewrap`, `custody convert` and later rotations | Decrypt only with `astilba-rotate`. Encrypt and rewrap with every key. Rotate keys. Change only `min_decryption_version` and `auto_rotate_period`. |
+| [`astilba-operator.hcl`](../services/platform/internal/custody/policies/astilba-operator.hcl) | `astilba custody rewrap`, and the other commands that move keys | Decrypt only with `astilba-rotate`. Encrypt and rewrap with every key. Rotate keys. Change only `min_decryption_version` and `auto_rotate_period`. |
 
 Both deny export, backup, restore and trim explicitly, so a broader policy attached to the same
 identity by mistake can't grant them. Neither grants create, delete or list.
@@ -103,8 +103,9 @@ Vault, use `vault`.
    bao write auth/approle/role/astilba-operator token_policies=astilba-operator \
      token_ttl=30m token_max_ttl=8h \
      secret_id_bound_cidrs=10.0.2.5/32 token_bound_cidrs=10.0.2.5/32
-   bao read -field=role_id auth/approle/role/astilba-serving/role-id > role-id
-   bao write -f -field=secret_id auth/approle/role/astilba-serving/secret-id > secret-id
+   (umask 077
+    bao read -field=role_id auth/approle/role/astilba-serving/role-id > role-id
+    bao write -f -field=secret_id auth/approle/role/astilba-serving/secret-id > secret-id)
    ```
 
    Install `role-id` and `secret-id` on each management host as private files (mode `0600`,
@@ -143,7 +144,9 @@ Credentials are only ever read from files. Management refuses to start if `VAULT
 `BAO_TOKEN` or an `ASTILBA_TRANSIT_*` credential is in its environment. It sends the token only
 to the configured address: it ignores proxy settings and doesn't follow redirects.
 
-Operator commands use the same variables, with the operator's role ID and secret ID files.
+Operator commands use the same variables, with the operator's role ID and secret ID files. `custody
+status` checks the canaries those credentials may open: run it with serving's, or add `--as-operator`
+with the operator's.
 
 ### What management checks
 
@@ -175,11 +178,16 @@ one backend to another is supported.
    every wrapping onto the newest version of the same key inside the key service (Transit's
    `rewrap`), with the same context, without unwrapping it. If the key service refuses a
    rewrap, the command stops; it never unwraps and wraps instead.
-3. Once `custody status` shows nothing pending, raise `min_decryption_version` so the old
-   version no longer decrypts:
+3. Once a rewrap that started after the rotation has finished, raise `min_decryption_version` so
+   the old version no longer decrypts:
    `bao write astilba-transit/keys/astilba-serve/config min_decryption_version=2`.
+   `custody history` shows each rewrap's `rewrap-finished` event, which must say
+   `"outcome":"used"`. `custody status` can't tell you: it doesn't know which version each
+   wrapping is under. Raised too early, the old wrappings stop opening; lowering it again
+   brings them back, since no version is ever trimmed.
 
-You can also set `auto_rotate_period` on each key.
+You can also set `auto_rotate_period` on each key. Each automatic rotation then needs a rewrap
+before `min_decryption_version` is raised past it.
 
 ## Backups
 

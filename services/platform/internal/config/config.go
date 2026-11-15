@@ -186,20 +186,10 @@ func (c *Config) loadTransit() error {
 	if t.Auth == "" {
 		t.Auth = "approle"
 	}
+	// The rest, such as which files each sign-in method needs, is checked where the client is
+	// made, custody.NewTransit, so the two never disagree.
 	if t.Address == "" {
 		return errors.New("ASTILBA_TRANSIT_ADDR is required when ASTILBA_KEY_BACKEND is transit")
-	}
-	switch t.Auth {
-	case "approle":
-		if t.RoleIDFile == "" || t.SecretIDFile == "" || t.JWTFile != "" {
-			return errors.New("AppRole sign-in needs ASTILBA_TRANSIT_ROLE_ID_FILE and ASTILBA_TRANSIT_SECRET_ID_FILE, and no JWT file")
-		}
-	case "jwt":
-		if t.JWTFile == "" || t.JWTRole == "" || t.RoleIDFile != "" || t.SecretIDFile != "" {
-			return errors.New("JWT sign-in needs ASTILBA_TRANSIT_JWT_FILE and ASTILBA_TRANSIT_JWT_ROLE, and no AppRole files")
-		}
-	default:
-		return errors.New("ASTILBA_TRANSIT_AUTH must be approle or jwt")
 	}
 	c.Transit = t
 	return nil

@@ -216,7 +216,7 @@ func TestCustodyStatusReportsPendingWork(t *testing.T) {
 	if more, err := f.st.Broker.InitKeys(ctx, func() bool { return true }); err != nil || more {
 		t.Fatal(more, err)
 	}
-	s, err := f.st.Broker.Status(ctx, f.st.Pool, uuid.Nil)
+	s, err := f.st.Broker.Status(ctx, f.st.Pool, uuid.Nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestCustodyStatusReportsPendingWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := len(keyEvents(t, f, "canary-created"))
-	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation); err != nil {
+	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation, false); err != nil {
 		t.Fatal(err)
 	}
 	pending := strings.Join(s.Pending(), "\n")
@@ -263,7 +263,7 @@ func TestCustodyStatusReportsPendingWork(t *testing.T) {
 	insert(failed, "rewrap-started", "")
 	insert(failed, "rewrap-finished", "failed")
 	insert(earlier, "rewrap-finished", "used")
-	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation); err != nil {
+	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation, false); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(s.Unfinished, func(r db.UnfinishedCustodyRunsRow) bool { return r.RunID == run2 }) {
@@ -273,10 +273,10 @@ func TestCustodyStatusReportsPendingWork(t *testing.T) {
 	if err = f.st.Rewrap(ctx, "operator@example.test", ""); err != nil {
 		t.Fatal(err)
 	}
-	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation); err != nil || len(s.Unfinished) != 0 {
+	if s, err = f.st.Broker.Status(ctx, f.st.Pool, s.Installation, false); err != nil || len(s.Unfinished) != 0 {
 		t.Fatalf("unfinished after a finished run: %+v %v", s.Unfinished, err)
 	}
-	if s, err = f.st.Broker.Status(ctx, f.st.Pool, uuid.New()); err != nil || s.Matches || !strings.Contains(s.Pending()[0], "names another installation") {
+	if s, err = f.st.Broker.Status(ctx, f.st.Pool, uuid.New(), false); err != nil || s.Matches || !strings.Contains(s.Pending()[0], "names another installation") {
 		t.Fatalf("mismatched pin: %v", err)
 	}
 }

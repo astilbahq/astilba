@@ -312,8 +312,10 @@ type Status struct {
 	Keys db.KeyProgressRow
 }
 
-// Status reads the installation's custody and checks every canary, changing nothing.
-func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Status, error) {
+// Status reads the installation's custody and checks every canary, changing nothing. operator says
+// the backend signs in as the operator, not as serving: a key service lets each open only its own
+// classes, so a canary of the other's that it refuses is reported as such, not as one that is wrong.
+func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID, operator bool) (Status, error) {
 	q := db.New(pool)
 	var s Status
 	var err error
@@ -333,15 +335,15 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 		s.Canaries[class] = "missing"
 	}
 	for _, c := range canaries {
+		class := custody.Class(c.Class)
 		state := "ok"
-		if err := custody.CheckCanary(ctx, b.backend, custody.Class(c.Class), s.Installation, c.Wrapped); err != nil {
+		if err := custody.CheckCanary(ctx, b.backend, class, s.Installation, c.Wrapped); err != nil {
 			state = err.Error()
-			// A key service lets only an operator unwrap under rotate.
-			if errors.Is(err, custody.ErrDenied) && !custody.ServingDecrypts(custody.Class(c.Class)) {
-				state = operatorOnly
+			if errors.Is(err, custody.ErrDenied) && !custody.MayUnwrap(b.backend, class, operator) {
+				state = notTheirs
 			}
 		}
-		s.Canaries[custody.Class(c.Class)] = state
+		s.Canaries[class] = state
 	}
 	if s.Stage, err = q.CustodyStage(ctx); err != nil {
 		return s, err
@@ -353,8 +355,9 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 	return s, err
 }
 
-// operatorOnly is a canary status could not check because only an operator may unwrap it.
-const operatorOnly = "present; only an operator's command can open it"
+// notTheirs is a canary status could not check, because the credentials it runs with may not
+// unwrap under its class: only the other identity's start checks it.
+const notTheirs = "present; the other identity's start checks it"
 
 // Pending lists what an operator still has to do, or what the next start does, in plain words.
 func (s Status) Pending() []string {
@@ -373,7 +376,7 @@ func (s Status) Pending() []string {
 	}
 	for _, class := range custody.Classes {
 		switch state := s.Canaries[class]; state {
-		case "ok", operatorOnly:
+		case "ok", notTheirs:
 		case "missing":
 			out = append(out, "the "+string(class)+" canary is missing: the next start makes it")
 		default:

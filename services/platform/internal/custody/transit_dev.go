@@ -40,7 +40,9 @@ type TransitDevCredentials struct {
 //
 // A production server is never set up this way: management would need a token that can change its
 // own policies. The guide's commands are run there by an operator instead.
-func ProvisionTransitDev(ctx context.Context, address, rootToken, dir string) (map[string]TransitDevCredentials, error) {
+//
+// tokenFile is a private file holding the dev server's root token.
+func ProvisionTransitDev(ctx context.Context, address, tokenFile, dir string) (map[string]TransitDevCredentials, error) {
 	server, err := newTransitServer(address, "", "", true)
 	if err != nil {
 		return nil, err
@@ -48,8 +50,9 @@ func ProvisionTransitDev(ctx context.Context, address, rootToken, dir string) (m
 	if !loopback(server.base.Hostname()) {
 		return nil, errors.New("init-transit --dev sets up only a local OpenBao dev server, on a loopback address")
 	}
-	if rootToken == "" {
-		return nil, errors.New("init-transit --dev needs the dev server's root token")
+	rootToken, err := readCredential(tokenFile)
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()

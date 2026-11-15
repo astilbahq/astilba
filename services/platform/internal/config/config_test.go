@@ -274,9 +274,6 @@ func TestTransitConfiguration(t *testing.T) {
 	}
 	for _, bad := range [][2]string{
 		{"ASTILBA_TRANSIT_ADDR", ""},
-		{"ASTILBA_TRANSIT_SECRET_ID_FILE", ""},
-		{"ASTILBA_TRANSIT_AUTH", "token"},
-		{"ASTILBA_TRANSIT_JWT_FILE", "/run/astilba/jwt"},
 		// A credential in the environment is refused, never used.
 		{"ASTILBA_TRANSIT_SECRET_ID", "s.123"},
 		{"VAULT_TOKEN", "hvs.123"},
@@ -293,11 +290,8 @@ func TestTransitConfiguration(t *testing.T) {
 	t.Setenv("ASTILBA_TRANSIT_ROLE_ID_FILE", "")
 	t.Setenv("ASTILBA_TRANSIT_SECRET_ID_FILE", "")
 	t.Setenv("ASTILBA_TRANSIT_JWT_FILE", "/var/run/secrets/astilba/token")
-	if _, err = Load(); err == nil {
-		t.Fatal("JWT without a role accepted")
-	}
 	t.Setenv("ASTILBA_TRANSIT_JWT_ROLE", "astilba-serving")
-	if c, err = Load(); err != nil || c.Transit.JWTRole != "astilba-serving" {
+	if c, err = Load(); err != nil || c.Transit.Auth != "jwt" || c.Transit.JWTRole != "astilba-serving" || c.Transit.JWTFile != "/var/run/secrets/astilba/token" {
 		t.Fatalf("jwt: %+v %v", c.Transit, err)
 	}
 }

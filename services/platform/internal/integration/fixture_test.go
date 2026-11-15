@@ -351,7 +351,9 @@ func recoverKeys(t testing.TB, st *store.Store, ws uuid.UUID) *secretbroker.Sess
 	return keys
 }
 
-func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
+// freshDatabase is a new, migrated database, configured as management configures its own, with
+// its own installation ID and no key backend yet.
+func freshDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("disposable PostgreSQL integration requires verify")
@@ -369,7 +371,6 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
-	// Configured as management configures its own.
 	poolConfig, e := store.PoolConfig(databaseDSN(name))
 	if e != nil {
 		t.Fatal(e)
@@ -379,16 +380,23 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		t.Fatal(e)
 	}
 	t.Cleanup(pool.Close)
+	// The one value a migration makes up. Each installation has its own.
+	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
+		t.Fatal(e)
+	}
+	return pool
+}
+
+func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
+	t.Helper()
+	ctx := context.Background()
+	pool := freshDatabase(t)
 	// Every coordinated phase management issued in the test is one the agent runs.
 	t.Cleanup(func() {
 		if unrun := unrunPhases(t, pool); len(unrun) > 0 {
 			t.Errorf("management issued coordinated phases the agent refuses: %v", unrun)
 		}
 	})
-	// The one value a migration makes up. Each installation has its own.
-	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
-		t.Fatal(e)
-	}
 	keys, _ := cryptobox.New("test")
 	st := testStore(t, pool, keys, hosted)
 	if hosted {

@@ -56,16 +56,7 @@ func initTransitCommand(ctx context.Context, out io.Writer, args []string) error
 	if *address == "" || *tokenFile == "" || *dir == "" || f.NArg() > 0 {
 		return errors.New("usage: astilba custody init-transit --dev --address <loopback URL> --token-file <file> --out <directory>")
 	}
-	info, err := os.Stat(*tokenFile)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return errors.New("--token-file must be a private regular file (mode 0600)")
-	}
-	raw, err := os.ReadFile(*tokenFile)
-	if err != nil {
-		return err
-	}
-	creds, err := custody.ProvisionTransitDev(ctx, *address, strings.TrimSpace(string(raw)), *dir)
-	clear(raw)
+	creds, err := custody.ProvisionTransitDev(ctx, *address, *tokenFile, *dir)
 	if err != nil {
 		return err
 	}
@@ -84,7 +75,12 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 	}
 	switch args[0] {
 	case "status":
-		s, err := st.Broker.Status(ctx, pool, c.InstallationID)
+		f := flag.NewFlagSet("custody status", flag.ContinueOnError)
+		operator := f.Bool("as-operator", false, "the key backend's credentials are the operator's, as for custody rewrap")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		s, err := st.Broker.Status(ctx, pool, c.InstallationID, *operator)
 		if err != nil {
 			return err
 		}

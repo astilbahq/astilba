@@ -97,14 +97,15 @@ func NewTransit(config TransitConfig) (*Transit, error) {
 	if !pathSegment.MatchString(config.Mount) {
 		return nil, errors.New("the Transit mount must be a plain path")
 	}
-	switch config.Auth.Method {
+	// Each method takes only its own credentials, so a file meant for the other is never ignored.
+	switch a := config.Auth; a.Method {
 	case "approle":
-		if config.Auth.RoleIDFile == "" || config.Auth.SecretIDFile == "" {
-			return nil, errors.New("AppRole sign-in needs a role ID file and a secret ID file")
+		if a.RoleIDFile == "" || a.SecretIDFile == "" || a.JWTFile != "" || a.Role != "" {
+			return nil, errors.New("AppRole sign-in needs a role ID file and a secret ID file, and no JWT file or role")
 		}
 	case "jwt":
-		if config.Auth.JWTFile == "" || config.Auth.Role == "" {
-			return nil, errors.New("JWT sign-in needs a token file and a role")
+		if a.JWTFile == "" || a.Role == "" || a.RoleIDFile != "" || a.SecretIDFile != "" {
+			return nil, errors.New("JWT sign-in needs a token file and a role, and no AppRole files")
 		}
 	default:
 		return nil, errors.New("the Transit sign-in method must be approle or jwt")
@@ -433,15 +434,22 @@ func transitError(status int, messages []string, unwrapping bool) error {
 	}
 }
 
-// currentToken returns a token to use, renewing or replacing it first when it is due.
+// currentToken returns a token to use, renewing or replacing it first when it is due. While the
+// token still works, one call refreshes it and the others go on using it, and a refresh the key
+// service could not answer leaves it in use until it expires: the next call tries again.
 func (t *Transit) currentToken(ctx context.Context) (string, error) {
 	t.mu.Lock()
-	token, refresh := t.token, t.refresh
+	token, refresh, expires := t.token, t.refresh, t.expires
 	t.mu.Unlock()
 	if token != "" && t.now().Before(refresh) {
 		return token, nil
 	}
-	t.signIn.Lock()
+	valid := token != "" && t.now().Before(expires)
+	if !valid {
+		t.signIn.Lock()
+	} else if !t.signIn.TryLock() {
+		return token, nil
+	}
 	defer t.signIn.Unlock()
 	t.mu.Lock()
 	token, refresh, expires, renewable := t.token, t.refresh, t.expires, t.renewable
@@ -449,12 +457,18 @@ func (t *Transit) currentToken(ctx context.Context) (string, error) {
 	if token != "" && t.now().Before(refresh) {
 		return token, nil
 	}
-	if token != "" && renewable && t.now().Before(expires) && t.renew(ctx, token) {
+	valid = token != "" && t.now().Before(expires)
+	if valid && renewable && t.renew(ctx, token) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		return t.token, nil
 	}
-	return t.login(ctx)
+	fresh, err := t.login(ctx)
+	// A refused sign-in is never papered over: its credentials need fixing.
+	if err != nil && valid && (errors.Is(err, ErrUnavailable) || errors.Is(err, ErrThrottled)) {
+		return token, nil
+	}
+	return fresh, err
 }
 
 // replaceToken signs in again after refused was refused, unless another call already has.
@@ -526,7 +540,7 @@ func (t *Transit) login(ctx context.Context) (string, error) {
 }
 
 // keep stores a token, due for renewal two thirds of the way through its lease. A token without a
-// lease never expires, and is looked at again every hour.
+// lease never expires; it is treated as a three-hour one, so it is looked at again after two.
 func (t *Transit) keep(token string, auth *transitAuth) {
 	lease := time.Duration(auth.LeaseDuration) * time.Second
 	if lease <= 0 {

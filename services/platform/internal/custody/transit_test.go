@@ -364,6 +364,8 @@ func TestTransitConfiguration(t *testing.T) {
 		"no method":              {Address: "https://bao.internal:8200"},
 		"approle without secret": {Address: "https://bao.internal:8200", Auth: TransitAuth{Method: "approle", RoleIDFile: role}},
 		"jwt without role":       {Address: "https://bao.internal:8200", Auth: TransitAuth{Method: "jwt", JWTFile: secret}},
+		"approle with a jwt":     {Address: "https://bao.internal:8200", Auth: TransitAuth{Method: "approle", RoleIDFile: role, SecretIDFile: secret, JWTFile: secret}},
+		"jwt with approle files": {Address: "https://bao.internal:8200", Auth: TransitAuth{Method: "jwt", JWTFile: secret, Role: "astilba", SecretIDFile: secret}},
 		"missing CA":             {Address: "https://bao.internal:8200", CAFile: "/nonexistent", Auth: approle},
 	} {
 		if _, err := NewTransit(c); err == nil {
@@ -476,5 +478,79 @@ func TestMayUnwrap(t *testing.T) {
 				t.Errorf("serving under %s with %s", class, b.ID())
 			}
 		}
+	}
+}
+
+// A refresh the key service cannot answer keeps the token, which still works until it expires;
+// a refused sign-in does not, and nor does a token past its lease.
+func TestTransitKeepsAWorkingTokenWhenRefreshFails(t *testing.T) {
+	f, s := newFakeTransit(t)
+	tr := newTestTransit(t, s.URL)
+	now := time.Now()
+	tr.now = func() time.Time { return now }
+	ctx := t.Context()
+	wrap := func() error {
+		_, _, err := tr.Wrap(ctx, ClassServe, []byte("k"), testContext)
+		return err
+	}
+	if err := wrap(); err != nil {
+		t.Fatal(err)
+	}
+	f.set("/auth/token/renew-self", status(http.StatusServiceUnavailable, "sealed"))
+	f.set("/auth/approle/login", status(http.StatusTooManyRequests, "rate limited"))
+	now = now.Add(50 * time.Minute)
+	if err := wrap(); err != nil {
+		t.Fatalf("a token with ten minutes left: %v", err)
+	}
+	if f.count("/auth/token/renew-self") == 0 || f.count("/auth/approle/login") < 2 {
+		t.Fatal("the refresh was not tried")
+	}
+	f.set("/auth/approle/login", status(http.StatusBadRequest, "invalid secret ID"))
+	if err := wrap(); !errors.Is(err, ErrDenied) {
+		t.Fatalf("a refused sign-in: %v", err)
+	}
+	f.set("/auth/approle/login", status(http.StatusServiceUnavailable, "sealed"))
+	now = now.Add(11 * time.Minute)
+	if err := wrap(); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("an expired token: %v", err)
+	}
+}
+
+// While one call refreshes the token, the others go on using it rather than waiting.
+func TestTransitRefreshesWithoutHoldingCallsUp(t *testing.T) {
+	f, s := newFakeTransit(t)
+	tr := newTestTransit(t, s.URL)
+	tr.timeout = 5 * time.Second
+	now := time.Now()
+	var clock sync.Mutex
+	tr.now = func() time.Time { clock.Lock(); defer clock.Unlock(); return now }
+	ctx := t.Context()
+	if _, _, err := tr.Wrap(ctx, ClassServe, []byte("k"), testContext); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	f.set("/auth/token/renew-self", func(w http.ResponseWriter) {
+		<-release
+		status(http.StatusServiceUnavailable, "sealed")(w)
+	})
+	f.set("/auth/approle/login", status(http.StatusServiceUnavailable, "sealed"))
+	clock.Lock()
+	now = now.Add(50 * time.Minute)
+	clock.Unlock()
+	renewing := make(chan error, 1)
+	go func() {
+		_, _, err := tr.Wrap(ctx, ClassServe, []byte("k"), testContext)
+		renewing <- err
+	}()
+	for f.count("/auth/token/renew-self") == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	start := time.Now()
+	if _, _, err := tr.Wrap(ctx, ClassServe, []byte("k"), testContext); err != nil || time.Since(start) > time.Second {
+		t.Fatalf("a call during the refresh waited %s: %v", time.Since(start), err)
+	}
+	close(release)
+	if err := <-renewing; err != nil {
+		t.Fatal(err)
 	}
 }

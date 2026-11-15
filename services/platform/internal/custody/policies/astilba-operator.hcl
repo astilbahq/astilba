@@ -1,4 +1,4 @@
-# Astilba operator commands (`astilba custody rewrap`, `custody convert` and later rotations).
+# Astilba operator commands (`astilba custody rewrap`, and the other commands that move keys).
 #
 # Written for the Transit mount "astilba-transit". If you mount Transit elsewhere, change every path's
 # first segment to match, and set ASTILBA_TRANSIT_MOUNT. See docs/key-custody-transit.md.

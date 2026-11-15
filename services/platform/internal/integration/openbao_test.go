@@ -28,7 +28,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/moby/moby/client"
 )
 
@@ -105,7 +104,11 @@ func startOpenBao(t *testing.T) *devOpenBao {
 		}
 		return err == nil && res.StatusCode == 200
 	})
-	if o.creds, err = custody.ProvisionTransitDev(t.Context(), o.address, root, t.TempDir()); err != nil {
+	tokenFile := filepath.Join(t.TempDir(), "root-token")
+	if err = os.WriteFile(tokenFile, []byte(root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if o.creds, err = custody.ProvisionTransitDev(t.Context(), o.address, tokenFile, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	return o
@@ -358,6 +361,10 @@ func TestOpenBaoPolicies(t *testing.T) {
 			}
 		}
 	}
+	// The listing shows the settings, so the loop above looked at them.
+	if transit, _ := mounts["astilba-transit/"].(map[string]any); transit == nil || fmt.Sprint(transit["config"].(map[string]any)["audit_non_hmac_request_keys"]) != "[context]" {
+		t.Errorf("the mount listing does not show the Transit mount's audit settings: %v", transit)
+	}
 }
 
 // The broker, on Transit: every unwrap is in the key service's audit log with its context in
@@ -562,37 +569,50 @@ func TestOpenBaoStartChecksWhatEachIdentityMayOpen(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-}
-
-// freshDatabase is a new, migrated database with its own installation ID and no key backend yet.
-func freshDatabase(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
+	// Status checks what the identity it runs as may open, and says the rest is the other's.
+	status := func(b custody.Legacy, asOperator bool) secretbroker.Status {
+		t.Helper()
+		s, err := secretbroker.New(db.New(pool), b, nil).Status(ctx, pool, uuid.Nil, asOperator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
 	}
-	defer admin.Close()
-	if err = migrated(); err != nil {
-		t.Fatal(err)
+	canaryPending := func(s secretbroker.Status) []string {
+		var out []string
+		for _, line := range s.Pending() {
+			if strings.Contains(line, "canary") {
+				out = append(out, line)
+			}
+		}
+		return out
 	}
-	name := "test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if _, err = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); err != nil {
-		t.Fatal(err)
+	for _, asOperator := range []bool{false, true} {
+		b := serving
+		if asOperator {
+			b = operator
+		}
+		s := status(b, asOperator)
+		for _, class := range custody.Classes {
+			if want := custody.MayUnwrap(b, class, asOperator); (s.Canaries[class] == "ok") != want {
+				t.Errorf("status as the operator %v: %s canary %q", asOperator, class, s.Canaries[class])
+			}
+		}
+		if pending := canaryPending(s); len(pending) != 0 {
+			t.Errorf("status as the operator %v: %v", asOperator, pending)
+		}
 	}
-	config, err := store.PoolConfig(databaseDSN(name))
-	if err != nil {
-		t.Fatal(err)
+	// A rotate canary under a version the key no longer decrypts is the operator's to see.
+	k := "astilba-transit/keys/astilba-rotate"
+	if code, _ := o.api("POST", k+"/rotate", o.root, map[string]any{}); code != 200 && code != 204 {
+		t.Fatalf("rotate: %d", code)
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
+	if code, _ := o.api("POST", k+"/config", o.root, map[string]any{"min_decryption_version": 2}); code != 200 && code != 204 {
+		t.Fatalf("config: %d", code)
 	}
-	t.Cleanup(pool.Close)
-	if _, err = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); err != nil {
-		t.Fatal(err)
+	if pending := canaryPending(status(operator, true)); len(pending) != 1 || !strings.Contains(pending[0], "rotate canary does not open") {
+		t.Errorf("an operator's status with a rotate canary too old to open: %v", pending)
 	}
-	return pool
 }
 
 // testKeyring is the keyring values sealed before per-workspace keys would open under; a new

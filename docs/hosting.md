@@ -107,7 +107,7 @@ remove the trigger.
 
 | Command | What it does |
 | --- | --- |
-| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, and any pending work. It changes nothing. |
+| `astilba custody status [--as-operator]` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, and any pending work. It changes nothing. With a [Transit](key-custody-transit.md) backend, add `--as-operator` when it runs with the operator's credentials. |
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
 | `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
 | `astilba custody init-transit --dev --address <URL> --token-file <file> --out <dir>` | Sets up a local OpenBao dev server for the local stack's `--custody openbao` profile. It refuses anything but `--dev` and a loopback address; set up a real key service as [key custody with Transit](key-custody-transit.md) describes. |
