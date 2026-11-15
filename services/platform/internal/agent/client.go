@@ -269,6 +269,10 @@ func (c *Client) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { c.keepKeyStoreOpen(ctx) })
 	wg.Go(func() { c.keepJournalRekeyed(ctx) })
+	if c.Engine != nil {
+		wg.Go(func() { c.keepPrivateLinksRestored(ctx) })
+		wg.Go(func() { c.keepNetworkKeysSealed(ctx) })
+	}
 	if c.Metrics != nil {
 		wg.Go(func() {
 			c.loop(ctx, time.Minute, func() error {
