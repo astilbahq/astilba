@@ -834,6 +834,7 @@ or secret:
 | The runner's own Docker, in Go, Application, Application browsers, Git providers and the pin report | `.github/actions/docker-hub-mirror` adds it to `/etc/docker/daemon.json` and restarts Docker |
 | The native lanes' fixture daemon, `astilba-plat4-docker.service` | `experiments/durable-execution/host/bootstrap.sh` writes `/etc/astilba-plat4/daemon.json`, the only configuration that daemon reads |
 | BuildKit in `TestBuildArtifacts` | Its `buildkitd.toml` |
+| The agent's own builder, in `TestNativePipeline` and the other build tests | The agent copies the daemon's Docker Hub mirrors into BuildKit's configuration, as on a customer's server; see [Docker Hub mirrors](git-builds.md#docker-hub-mirrors) |
 
 Docker and BuildKit use a mirror only for Docker Hub images. Every image is pinned by digest,
 and both check what the mirror serves against it, so the mirror can't change an image. When
@@ -844,10 +845,8 @@ containerd store and on BuildKit 0.34.1:
 - With Docker Hub's addresses refused, pulls and a `FROM` build succeed through the mirror,
   and the pulled image has the same name and `RepoDigests` as one pulled from Docker Hub.
 - With a mirror that answers 404, answers 429 or refuses connections, both read Docker Hub.
-
-The agent's own builder, in `TestNativePipeline` and the other build tests, still reads its
-`FROM` images from Docker Hub itself: it writes BuildKit's configuration without the daemon's
-mirrors. That is a few requests per lane.
+- With `auth.docker.io` refused, `TestNativeBuildNetwork` passes with the mirror and fails
+  without it on Docker Hub's anonymous token.
 
 `.github/actions/pull-images` refuses a Docker Hub image when the daemon doesn't list
 `https://mirror.gcr.io/` as a mirror, so a new job that pulls without the mirror step fails
