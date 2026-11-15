@@ -5,8 +5,8 @@
 -- standing approval makes. A NULL version is a submission an older release queued, which is
 -- refused with a note to submit it again.
 ALTER TABLE source_submissions ADD COLUMN actor_auth_version bigint;
-INSERT INTO schema_additive_migrations (version) VALUES (59);
+INSERT INTO schema_additive_migrations (version) VALUES (60);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 59;
+DELETE FROM schema_additive_migrations WHERE version = 60;
 ALTER TABLE source_submissions DROP COLUMN actor_auth_version;

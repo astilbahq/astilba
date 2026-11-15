@@ -14,10 +14,11 @@ import (
 // withdraws can be used after the change commits. p is the owner making the change, who is
 // recorded as withdrawing each grant.
 //
-// A credential that acts as the account is revoked for good. A grant the account issued for the
-// workspace is withdrawn, and a standing policy it approved is paused until a current member with
-// the role it needs approves it again. None is handed to anyone else, so nothing ever runs on the
-// approval of someone who did not give it. Re-promotion does not restore any of them.
+// A credential that acts as the account is revoked for good, and a source submission it queued
+// fails. A grant the account issued for the workspace is withdrawn, and a standing policy it
+// approved is paused until a current member with the role it needs approves it again. None is
+// handed to anyone else, so nothing ever runs on the approval of someone who did not give it.
+// Re-promotion does not restore any of them.
 //
 // A changed authentication version needs no write here: every check of these grants compares it.
 func EndAuthority(ctx context.Context, q *db.Queries, p Principal, ws, account uuid.UUID, from, to string) error {
@@ -39,6 +40,12 @@ func EndAuthority(ctx context.Context, q *db.Queries, p Principal, ws, account u
 	targets, err := q.WithdrawBuildTargetApprovals(ctx, db.WithdrawBuildTargetApprovalsParams{WorkspaceID: ws, PolicyActor: account, LostWrite: lostWrite})
 	if err = withdrawn(ctx, q, p, ws, "build.approval_withdraw", targets, err); err != nil {
 		return err
+	}
+	if lostWrite {
+		submissions, err := q.WithdrawActorSourceSubmissions(ctx, db.WithdrawActorSourceSubmissionsParams{WorkspaceID: ws, ActorID: account})
+		if err = withdrawn(ctx, q, p, ws, "git.source.submission_withdraw", submissions, err); err != nil {
+			return err
+		}
 	}
 	if !lostOwner {
 		return nil

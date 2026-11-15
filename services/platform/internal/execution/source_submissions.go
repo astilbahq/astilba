@@ -416,23 +416,19 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 }
 
 // submitterRefusal says why the member who submitted the attempt may no longer have it sent, or ""
-// while they still may: they are an owner or operator of the workspace, and their password,
-// two-factor settings and recovery codes are as they were when they submitted it. Membership
-// changes take the workspace lock, which the caller holds.
+// while they still may: they are an owner or operator, their password, two-factor settings and
+// recovery codes are as they were when they submitted it, and they meet the workspace's two-factor
+// requirement. Membership and the requirement change under the workspace lock, which the caller
+// holds. The note is shown to every member, so like an automatic deployment's it doesn't say which.
 func submitterRefusal(ctx context.Context, q *db.Queries, ws, id uuid.UUID) (string, error) {
 	s, err := q.SourceSubmissionSubmitter(ctx, db.SourceSubmissionSubmitterParams{WorkspaceID: ws, ID: id})
-	if err != nil || s.Holds {
-		return "", err
-	}
 	switch {
-	case s.Role == "":
-		return "the member who submitted it has left the workspace. An owner or operator can submit the draft again.", nil
-	case !domain.CanWrite(s.Role):
-		return "the member who submitted it is no longer an owner or operator. An owner or operator can submit the draft again.", nil
+	case err != nil || s.Holds:
+		return "", err
 	case !s.Recorded:
 		return "an earlier release of Astilba queued it without recording who may send it. Submit the draft again.", nil
 	}
-	return "the member who submitted it has changed their password or two-factor settings, or used a recovery code, since. They can submit the draft again.", nil
+	return "the member who submitted it can no longer send it: they are no longer an owner or operator, changed their password, two-factor settings or recovery codes since, or haven't set up the two-factor authentication the workspace now requires. An owner or operator can submit the draft again.", nil
 }
 
 // submissionWait is how long a submission created at created waits for GitHub to allow requests

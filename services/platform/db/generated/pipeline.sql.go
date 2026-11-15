@@ -937,9 +937,10 @@ func (q *Queries) SourceSubmissionByRequestKey(ctx context.Context, arg SourceSu
 }
 
 const sourceSubmissionSubmitter = `-- name: SourceSubmissionSubmitter :one
-SELECT policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)::boolean AS holds,
-    COALESCE(m.role, '')::text AS role, (s.actor_auth_version IS NOT NULL)::boolean AS recorded
-FROM source_submissions s LEFT JOIN memberships m ON m.workspace_id = s.workspace_id AND m.account_id = s.actor_id
+SELECT (policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)
+        AND NOT (w.require_mfa AND a.totp_secret IS NULL))::boolean AS holds,
+    (s.actor_auth_version IS NOT NULL)::boolean AS recorded
+FROM source_submissions s JOIN workspaces w ON w.id = s.workspace_id JOIN accounts a ON a.id = s.actor_id
 WHERE s.workspace_id = $1 AND s.id = $2
 `
 
@@ -949,17 +950,19 @@ type SourceSubmissionSubmitterParams struct {
 }
 
 type SourceSubmissionSubmitterRow struct {
-	Holds    bool   `json:"holds"`
-	Role     string `json:"role"`
-	Recorded bool   `json:"recorded"`
+	Holds    bool `json:"holds"`
+	Recorded bool `json:"recorded"`
 }
 
-// Whether the member who submitted it may still have it sent, by the check every standing approval
-// makes, at the role writing needs. Their role now, and whether a version was recorded, say why not.
+// Whether the member who submitted it may still have it sent: the check every standing approval
+// makes, at the role writing needs, and the workspace's two-factor requirement, which writing also
+// needs. Losing the role fails it at once (WithdrawActorSourceSubmissions), so only a changed
+// authentication version or requirement is new here. A version is recorded unless an older
+// release queued it.
 func (q *Queries) SourceSubmissionSubmitter(ctx context.Context, arg SourceSubmissionSubmitterParams) (SourceSubmissionSubmitterRow, error) {
 	row := q.db.QueryRow(ctx, sourceSubmissionSubmitter, arg.WorkspaceID, arg.ID)
 	var i SourceSubmissionSubmitterRow
-	err := row.Scan(&i.Holds, &i.Role, &i.Recorded)
+	err := row.Scan(&i.Holds, &i.Recorded)
 	return i, err
 }
 
@@ -1079,6 +1082,40 @@ func (q *Queries) WaitBuildTarget(ctx context.Context, arg WaitBuildTargetParams
 		arg.ApplicationID,
 	)
 	return err
+}
+
+const withdrawActorSourceSubmissions = `-- name: WithdrawActorSourceSubmissions :many
+UPDATE source_submissions SET state = 'failed', finished_at = now(),
+    note = 'Not submitted: the member who submitted it lost write access before it was sent. An owner or operator can submit the draft again.'
+WHERE workspace_id = $1 AND actor_id = $2 AND state = 'queued'
+RETURNING id
+`
+
+type WithdrawActorSourceSubmissionsParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ActorID     uuid.UUID `json:"actor_id"`
+}
+
+// A queued submission is sent on its submitter's say-so, so it ends when they lose write access, in
+// the transaction that takes it away. Getting it back does not send it.
+func (q *Queries) WithdrawActorSourceSubmissions(ctx context.Context, arg WithdrawActorSourceSubmissionsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, withdrawActorSourceSubmissions, arg.WorkspaceID, arg.ActorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const workspaceRunnerKnown = `-- name: WorkspaceRunnerKnown :one
