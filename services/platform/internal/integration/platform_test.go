@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"io"
 	"log/slog"
@@ -93,7 +94,7 @@ func TestTenantRevisionsAndSecrets(t *testing.T) {
 	if strings.Contains(string(cipher), "sensitive-canary") {
 		t.Fatal("secret stored plaintext")
 	}
-	plain, e := keysOf(f.st).Open(cipher, secretIdentity(ws, secret.Id))
+	plain, e := inspectValue(t, f.st, f.owner, ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}, cipher)
 	if e != nil || string(plain) != "sensitive-canary" {
 		t.Fatal("cannot decrypt", e)
 	}

@@ -23,10 +23,10 @@ var migrations embed.FS
 // or ahead of it when every newer migration recorded itself as additive.
 const Version int64 = 62
 
-// CustodyStage is the custody stage this release completes. Its migrations assume the one before
-// it is complete, so `migrate` refuses an installation further behind: stages are taken one
+// CustodyStage is the custody stage this release completes. It assumes the one before is
+// complete, so `migrate` and Check refuse an installation further behind: stages are taken one
 // release at a time. See docs/hosting.md#key-custody.
-const CustodyStage = 2
+const CustodyStage = 3
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
@@ -56,20 +56,33 @@ func Up(ctx context.Context, dsn string) error {
 		return err
 	}
 	defer db.Close()
-	if err = checkStage(ctx, db); err != nil {
+	fresh, err := checkStage(ctx, db)
+	if err != nil {
 		return err
 	}
 	if _, err := p.Up(ctx); err != nil {
 		return errors.New("database migration failed")
 	}
+	if fresh {
+		// A new installation holds nothing an earlier stage would bring through, so it starts at
+		// the stage this release completes. The keys it needs are made as on any installation.
+		// The installation's key history records it, as it does each stage completed later.
+		// inline-sql: written once, by the migration command, before sqlc's queries run.
+		if _, err = db.ExecContext(ctx, `WITH advanced AS (UPDATE custody_stage SET stage = $1, advanced_at = now() WHERE stage < $1 RETURNING stage)
+INSERT INTO installation_key_events(id,run_id,kind,details)
+SELECT gen_random_uuid(), gen_random_uuid(), 'stage-completed', jsonb_build_object('stage', stage::text, 'installation', 'new') FROM advanced`, CustodyStage); err != nil {
+			return errors.New("cannot record the custody stage")
+		}
+	}
 	return riverSchema(ctx, dsn, true)
 }
 
-// checkStage refuses to migrate an installation more than one custody stage behind this release.
+// checkStage refuses to migrate an installation more than one custody stage behind this release,
+// and reports whether it is a new installation.
 // A database from before stages were recorded has completed none. One with no account yet is a new
 // installation, whatever has run on it, such as a command started before the first migration or a
 // first migration that stopped part way: it holds nothing earlier stages would bring through.
-func checkStage(ctx context.Context, db *sql.DB) error {
+func checkStage(ctx context.Context, db *sql.DB) (bool, error) {
 	var fresh, recorded bool
 	completed := 0
 	// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
@@ -79,7 +92,7 @@ func checkStage(ctx context.Context, db *sql.DB) error {
 		err = db.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM accounts)`).Scan(&fresh)
 	}
 	if err == nil && fresh {
-		return nil
+		return true, nil
 	}
 	if err == nil {
 		// inline-sql: the table may not exist yet, and a query naming it would then fail to parse.
@@ -90,9 +103,9 @@ func checkStage(ctx context.Context, db *sql.DB) error {
 		err = db.QueryRowContext(ctx, `SELECT stage FROM custody_stage`).Scan(&completed)
 	}
 	if err != nil {
-		return errors.New("cannot read the custody stage")
+		return false, errors.New("cannot read the custody stage")
 	}
-	return stageRefusal(CustodyStage, completed)
+	return false, stageRefusal(CustodyStage, completed)
 }
 
 // stageRefusal refuses a release that completes stage required on an installation that has
@@ -122,6 +135,11 @@ func Check(ctx context.Context, dsn string) error {
 		if err != nil || unmarked != 0 {
 			return errors.New("database schema is newer than this release and not only added to; restore the backup taken before the upgrade to run this release")
 		}
+	}
+	// A release can add no migration and still need the stage before it complete, so the stage is
+	// checked here too, not only by migrate.
+	if _, err = checkStage(ctx, db); err != nil {
+		return err
 	}
 	return riverSchema(ctx, dsn, false)
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -151,8 +152,11 @@ func RecoveryImmutable(name string) bool {
 
 // MergeRecovery is used only inside the offline recovery transaction after its
 // process, owner and expected-state guards. It never disables immutable triggers
-// or deletes history. Ciphertext is preserved with its original key identity.
-func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) error {
+// or deletes history. Each value it writes keeps its data, with its data key moved
+// by session, a recover session for the workspace, onto the generation of the
+// workspace's key that new values are sealed under: a restored row never lands
+// under a generation on its way out.
+func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session, a Archive, owner uuid.UUID) error {
 	links := map[string]map[string]jsontext.Value{"environments": {}, "execution_operations": {}}
 	appliedOperations := map[string]jsontext.Value{}
 	for _, t := range tables {
@@ -263,6 +267,9 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					setValue(row, "runtime_operation_id", nil)
 				}
 			}
+			if err = rehomeCredential(ctx, db.New(tx), session, t.Name, row); err != nil {
+				return err
+			}
 			raw, err := stablejson.Marshal(row)
 			if err != nil {
 				return err
@@ -320,4 +327,12 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 	}
 	// A checkpoint from before archive version 8 brings volumes without the major they record.
 	return backfillPostgresMajors(ctx, db.New(tx), a.Workspace)
+}
+
+// rehomeCredential moves a recovered row's value onto the generation keys seal under, in q, the
+// transaction that writes the row.
+func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row) error {
+	return transformCredential(table, row, func(item secretbroker.Item, value []byte) ([]byte, error) {
+		return keys.Rehome(ctx, q, item, value)
+	})
 }

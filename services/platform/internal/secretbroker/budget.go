@@ -58,11 +58,10 @@ type budgets struct {
 
 func newBudgets() *budgets { return &budgets{buckets: map[string]*rate.Limiter{}} }
 
-// take spends one token from every bucket, or none when any is empty.
-func (b *budgets) take(keys []bucket) bool {
+// take spends one token from every bucket at now, the broker's clock, or none when any is empty.
+func (b *budgets) take(now time.Time, keys []bucket) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	now := time.Now()
 	reservations := make([]*rate.Reservation, 0, len(keys))
 	for _, k := range keys {
 		limiter := b.buckets[k.key]

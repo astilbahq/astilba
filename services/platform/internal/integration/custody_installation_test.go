@@ -125,8 +125,10 @@ func TestStartRefusesWhatIsNotTheInstallations(t *testing.T) {
 func TestRewrapRecordsStartAndFinish(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	owner, _, path := secretEnvironment(t, f)
+	owner, ws, path := secretEnvironment(t, f)
 	owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "rewrapped-canary"}, 201, nil)
+	// A value from before workspace keys is under the keyring, which is what a rewrap moves.
+	asLegacy(t, f, ws, "rewrapped-canary")
 	keysSettled(t, f.st)
 	ring := keysOf(f.st)
 	rotated, _ := cryptobox.New("rotated")
@@ -277,6 +279,51 @@ func TestFirstMigrationAfterAnotherCommand(t *testing.T) {
 	if err = dbmigrate.Up(ctx, databaseDSN(name)); err != nil {
 		t.Fatal(err)
 	}
+	// A new installation starts at the newest stage, so migrating it again once it has an
+	// account, before anything has made its keys, is not refused.
+	pool, err := pgxpool.New(ctx, databaseDSN(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if stage, err := db.New(pool).CustodyStage(ctx); err != nil || stage != dbmigrate.CustodyStage {
+		t.Fatal(stage, err)
+	}
+	if events, err := db.New(pool).InstallationKeyEvents(ctx, 10); err != nil || len(events) != 1 || events[0].Kind != "stage-completed" {
+		t.Fatal("a new installation's stage was not recorded in its key history", events, err)
+	}
+	hash, err := fixturePasswordHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, "INSERT INTO accounts(id,email,name,password_hash) VALUES($1,'first@example.test','First',$2)", uuid.New(), hash); err != nil {
+		t.Fatal(err)
+	}
+	if err = dbmigrate.Up(ctx, databaseDSN(name)); err != nil {
+		t.Fatal("a new installation with its first account was refused:", err)
+	}
+}
+
+// A release that adds no migration still needs the stage before it complete, so every command
+// checks the stage, not only migrate.
+func TestCommandsNeedTheStageBeforeTheirs(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	dsn := databaseDSN(f.st.Pool.Config().ConnConfig.Database)
+	// The start-up key job would advance the stage again.
+	keysJobDone(t, f)
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_stage SET stage=$1`, dbmigrate.CustodyStage-2); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbmigrate.Check(ctx, dsn); err == nil {
+		t.Fatal("a release two stages ahead of the installation passed its check")
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_stage SET stage=$1`, dbmigrate.CustodyStage-1); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbmigrate.Check(ctx, dsn); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestMigrateReadsTheRecordedStage(t *testing.T) {
@@ -348,6 +395,7 @@ func TestFirstCanariesNeedAKeyringThatOpensStoredSecrets(t *testing.T) {
 	ctx := context.Background()
 	owner, ws, path := secretEnvironment(t, f)
 	owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "stored-before-canaries"}, 201, nil)
+	asLegacy(t, f, ws, "stored-before-canaries")
 	if _, err := f.st.Pool.Exec(ctx, "DELETE FROM custody_backends"); err != nil {
 		t.Fatal(err)
 	}

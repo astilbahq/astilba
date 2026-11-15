@@ -24,8 +24,26 @@ type fakeQueries struct {
 	inserted []db.InsertSecretAccessParams
 	outcomes []db.InsertSecretAccessOutcomeParams
 	failNext error
-	// keys are each workspace's live generations, by workspace and purpose.
-	keys map[string][]db.WorkspaceKeyWrappingsRow
+	// keys are each workspace's live generations, by workspace and purpose. A workspace not
+	// named has generation 1 of a key made when a session first asks, unless keyless names it.
+	keys    map[string][]db.WorkspaceKeyWrappingsRow
+	keyless map[uuid.UUID]bool
+	made    map[string][]byte
+	wrap    func(ctx context.Context, scope custody.Scope, holder uuid.UUID, purpose string, key []byte) ([]byte, error)
+}
+
+// generation is a holder's generation 1, wrapped for purpose.
+func (f *fakeQueries) generation(ctx context.Context, scope custody.Scope, holder uuid.UUID, purpose string) (kcv, wrapped []byte, err error) {
+	name := string(scope) + ":" + holder.String()
+	key, ok := f.made[name]
+	if !ok {
+		if key, _, err = custody.NewKey(); err != nil {
+			return nil, nil, err
+		}
+		f.made[name] = key
+	}
+	wrapped, err = f.wrap(ctx, scope, holder, purpose, key)
+	return custody.KeyCheck(key), wrapped, err
 }
 
 func (f *fakeQueries) SecretAccessMember(_ context.Context, arg db.SecretAccessMemberParams) (string, error) {
@@ -54,12 +72,38 @@ func (f *fakeQueries) InsertSecretAccessOutcome(_ context.Context, arg db.Insert
 	return nil
 }
 func (f *fakeQueries) AbandonSecretAccess(context.Context, float64) (int64, error) { return 0, nil }
-func (f *fakeQueries) WorkspaceKeyWrappings(_ context.Context, arg db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error) {
-	return f.keys[arg.WorkspaceID.String()+":"+arg.Purpose], nil
+func (f *fakeQueries) WorkspaceKeyWrappings(ctx context.Context, arg db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error) {
+	if rows, ok := f.keys[arg.WorkspaceID.String()+":"+arg.Purpose]; ok || f.keyless[arg.WorkspaceID] {
+		return rows, nil
+	}
+	kcv, wrapped, err := f.generation(ctx, custody.ScopeWorkspace, arg.WorkspaceID, arg.Purpose)
+	return []db.WorkspaceKeyWrappingsRow{{Generation: 1, State: "active", Sealable: true, Kcv: kcv, Wrapped: wrapped}}, err
 }
-func (f *fakeQueries) InstallationKeyWrappings(context.Context, db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error) {
-	return nil, nil
+func (f *fakeQueries) InstallationKeyWrappings(ctx context.Context, arg db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error) {
+	kcv, wrapped, err := f.generation(ctx, custody.Scope(arg.Scope), uuid.Nil, arg.Purpose)
+	return []db.InstallationKeyWrappingsRow{{Generation: 1, State: "active", Sealable: true, Kcv: kcv, Wrapped: wrapped}}, err
 }
+
+// fence stands for the transaction sealed values are stored in. sealable is whether generation 1
+// may still be sealed under, and has whether a keyless holder has been given its key since.
+type fence struct {
+	unsealable, has bool
+}
+
+func (f fence) ShareSealableWorkspaceKey(_ context.Context, arg db.ShareSealableWorkspaceKeyParams) (int64, error) {
+	if f.unsealable {
+		return 0, pgx.ErrNoRows
+	}
+	return arg.Generation, nil
+}
+func (f fence) ShareSealableInstallationKey(_ context.Context, arg db.ShareSealableInstallationKeyParams) (int64, error) {
+	if f.unsealable {
+		return 0, pgx.ErrNoRows
+	}
+	return arg.Generation, nil
+}
+func (f fence) WorkspaceHasKeys(context.Context, uuid.UUID) (bool, error)      { return f.has, nil }
+func (f fence) InstallationScopeHasKeys(context.Context, string) (bool, error) { return f.has, nil }
 
 func setup(t *testing.T) (*Broker, *fakeQueries, uuid.UUID, uuid.UUID, uuid.UUID) {
 	t.Helper()
@@ -72,8 +116,14 @@ func setup(t *testing.T) (*Broker, *fakeQueries, uuid.UUID, uuid.UUID, uuid.UUID
 		t.Fatal(err)
 	}
 	owner, member, server := uuid.New(), uuid.New(), uuid.New()
-	q := &fakeQueries{members: map[uuid.UUID]string{owner: "owner", member: "member"}, servers: map[uuid.UUID]bool{server: true}, existing: map[uuid.UUID]bool{}}
-	return New(q, file, nil), q, owner, member, server
+	installation := uuid.New()
+	q := &fakeQueries{members: map[uuid.UUID]string{owner: "owner", member: "member"}, servers: map[uuid.UUID]bool{server: true}, existing: map[uuid.UUID]bool{}, keyless: map[uuid.UUID]bool{}, made: map[string][]byte{}}
+	q.wrap = func(ctx context.Context, scope custody.Scope, holder uuid.UUID, purpose string, key []byte) ([]byte, error) {
+		class, _ := custody.ClassFor(scope, purpose)
+		wrapped, _, err := file.Wrap(ctx, class, key, custody.Context{Installation: installation, Scope: scope, Workspace: holder, Generation: 1, Purpose: purpose})
+		return wrapped, err
+	}
+	return NewDetached(q, file, installation, nil), q, owner, member, server
 }
 
 func TestNothingOpensWithoutACommittedRecord(t *testing.T) {
@@ -95,7 +145,7 @@ func TestNothingOpensWithoutACommittedRecord(t *testing.T) {
 	if len(q.inserted) != 1 || q.inserted[0].ID != s.ID() || *q.inserted[0].WorkspaceID != ws || q.inserted[0].Purpose != "seal" || *q.inserted[0].AccountID != owner {
 		t.Fatalf("record: %+v", q.inserted)
 	}
-	sealed, err := s.Seal(item, []byte("value"))
+	sealed, err := s.Seal(ctx, fence{}, item, []byte("value"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +154,7 @@ func TestNothingOpensWithoutACommittedRecord(t *testing.T) {
 	if len(q.outcomes) != 1 || q.outcomes[0].Outcome != "used" || q.outcomes[0].AccessID != s.ID() {
 		t.Fatalf("outcomes: %+v", q.outcomes)
 	}
-	if _, err = s.Seal(item, []byte("value")); !errors.Is(err, ErrNeedKeys) {
+	if _, err = s.Seal(ctx, fence{}, item, []byte("value")); !errors.Is(err, ErrNeedKeys) {
 		t.Fatalf("closed session sealed: %v", err)
 	}
 	// Every request records again: nothing is kept between them.
@@ -176,7 +226,7 @@ func TestSessionOpensOnlyWhatItWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := seal.Seal(mine, []byte("v"))
+	sealed, err := seal.Seal(ctx, fence{}, mine, []byte("v"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,29 +261,37 @@ func TestSessionOpensOnlyWhatItWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = cp.Seal(Checkpoint(d), []byte("x")); !errors.Is(err, ErrNotAllowed) {
+	if _, err = cp.Seal(ctx, fence{}, Checkpoint(d), []byte("x")); !errors.Is(err, ErrNotAllowed) {
 		t.Fatalf("another workspace's checkpoint sealed: %v", err)
 	}
 }
 
-func TestSessionEndsAtItsLimit(t *testing.T) {
-	b, _, owner, _, _ := setup(t)
+// stopClock pins the broker's clock, so session limits and budgets move only when advance is
+// called, however slowly the test runs.
+func stopClock(b *Broker) (advance func(time.Duration)) {
 	now := time.Now()
 	b.now = func() time.Time { return now }
+	return func(d time.Duration) { now = now.Add(d) }
+}
+
+func TestSessionEndsAtItsLimit(t *testing.T) {
+	b, _, owner, _, _ := setup(t)
+	advance := stopClock(b)
 	ctx := context.Background()
 	item := Item{Kind: SecretVersion, ID: uuid.New()}
 	s, err := b.Begin(ctx, Request{Workspace: uuid.New(), Purpose: Seal, Principal: Account(owner), NewWorkspace: true, Items: []Item{item}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(defaultLimit)
-	if _, err = s.Seal(item, []byte("v")); !errors.Is(err, ErrNeedKeys) {
+	advance(defaultLimit)
+	if _, err = s.Seal(ctx, fence{}, item, []byte("v")); !errors.Is(err, ErrNeedKeys) {
 		t.Fatalf("expired session: %v", err)
 	}
 }
 
 func TestBudgets(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
+	advance := stopClock(b)
 	ctx := context.Background()
 	ws := uuid.New()
 	item := Item{Kind: SecretVersion, ID: uuid.New()}
@@ -247,6 +305,14 @@ func TestBudgets(t *testing.T) {
 	}
 	if len(q.inserted) != workspaceBurst {
 		t.Fatalf("a refused request was recorded: %d", len(q.inserted))
+	}
+	// The bucket refills on the broker's clock.
+	advance(time.Second / workspaceRate)
+	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}}); err != nil {
+		t.Fatalf("a refilled budget refused: %v", err)
+	}
+	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}}); !errors.Is(err, domain.RateLimited) {
+		t.Fatalf("over a refilled budget: %v", err)
 	}
 	// Another purpose in the same workspace has its own budget.
 	if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}}); err != nil {
@@ -280,6 +346,7 @@ func TestBudgets(t *testing.T) {
 // One agent that never acknowledges spends its server's budget, not its workspace's.
 func TestDeliveryBudgetIsPerServer(t *testing.T) {
 	b, q, _, _, server := setup(t)
+	stopClock(b)
 	ctx := context.Background()
 	ws, other := uuid.New(), uuid.New()
 	q.servers[other] = true
@@ -361,7 +428,6 @@ func (c *countingBackend) Unwrap(ctx context.Context, class custody.Class, blob 
 // inspect, and returns the key.
 func withWorkspaceKey(t *testing.T, b *Broker, q *fakeQueries, ws uuid.UUID) []byte {
 	t.Helper()
-	b.installation = uuid.New()
 	key, kcv, err := custody.NewKey()
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +436,7 @@ func withWorkspaceKey(t *testing.T, b *Broker, q *fakeQueries, ws uuid.UUID) []b
 	if err != nil {
 		t.Fatal(err)
 	}
-	q.keys = map[string][]db.WorkspaceKeyWrappingsRow{ws.String() + ":inspect": {{Generation: 1, Kcv: kcv, Wrapped: wrapped}}, ws.String() + ":seal": {{Generation: 1, Kcv: kcv}}}
+	q.keys = map[string][]db.WorkspaceKeyWrappingsRow{ws.String() + ":inspect": {{Generation: 1, State: "active", Sealable: true, Kcv: kcv, Wrapped: wrapped}}, ws.String() + ":seal": {{Generation: 1, State: "active", Sealable: true, Kcv: kcv}}}
 	return key
 }
 

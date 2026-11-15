@@ -92,7 +92,7 @@ func keyAAD(identity, scope string, generation int64) string {
 // SealUnder seals a value in a v2 envelope, with its data key wrapped under key, which is scope's
 // key at generation.
 func SealUnder(key []byte, scope string, generation int64, value []byte, identity string) ([]byte, error) {
-	if len(key) != 32 || generation < 1 || scope != ScopeWorkspace && scope != ScopeInstallation && scope != ScopeToken {
+	if !sealable(key, scope, generation) {
 		return nil, ErrKey
 	}
 	dataKey := make([]byte, 32)
@@ -104,6 +104,15 @@ func SealUnder(key []byte, scope string, generation int64, value []byte, identit
 	if err != nil {
 		return nil, err
 	}
+	return wrapUnder(key, scope, generation, dataKey, data, identity, maxBlob-maxKeyID)
+}
+
+func sealable(key []byte, scope string, generation int64) bool {
+	return len(key) == 32 && generation >= 1 && (scope == ScopeWorkspace || scope == ScopeInstallation || scope == ScopeToken)
+}
+
+// wrapUnder wraps a value's data key under scope's key at generation, beside its sealed data.
+func wrapUnder(key []byte, scope string, generation int64, dataKey, data []byte, identity string, limit int) ([]byte, error) {
 	wrapped, err := seal(key, dataKey, keyAAD(identity, scope, generation))
 	if err != nil {
 		return nil, err
@@ -112,10 +121,49 @@ func SealUnder(key []byte, scope string, generation int64, value []byte, identit
 	if err != nil {
 		return nil, err
 	}
-	if len(blob) > maxBlob-maxKeyID {
+	if len(blob) > limit {
 		return nil, ErrTooLarge
 	}
 	return blob, nil
+}
+
+// MoveUnder wraps a sealed value's data key again under key, scope's key at generation, and leaves
+// its data as it is, so the value's content digest still matches. The value may be v1, opened with
+// ring, or v2, opened with from, the key its header names. Its data is checked before it moves.
+func MoveUnder(ring *Keyring, from, blob []byte, identity string, key []byte, scope string, generation int64) ([]byte, error) {
+	if !sealable(key, scope, generation) {
+		return nil, ErrKey
+	}
+	header, err := ReadHeader(blob)
+	if err != nil {
+		return nil, err
+	}
+	var dataKey, data []byte
+	if header.Version == 1 {
+		if ring == nil {
+			return nil, ErrKey
+		}
+		var env envelope
+		env, dataKey, err = ring.unwrap(blob, identity)
+		data = env.Data
+	} else {
+		var env envelopeV2
+		if env, err = decodeV2(blob); err != nil || len(from) != 32 {
+			return nil, ErrKey
+		}
+		dataKey, err = open(from, env.Key, keyAAD(identity, env.Scope, env.Generation))
+		data = env.Data
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer clear(dataKey)
+	plain, err := open(dataKey, data, identity+":data")
+	clear(plain)
+	if err != nil {
+		return nil, err
+	}
+	return wrapUnder(key, scope, generation, dataKey, data, identity, maxBlob)
 }
 
 // OpenUnder opens a v2 envelope with key, which must be the key of the scope and generation its

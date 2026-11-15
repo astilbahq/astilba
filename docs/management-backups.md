@@ -175,7 +175,11 @@ which the manifest records.
    ```
 
 5. **Choose the image.** The manifest's `sourceRevision` is the image that took the backup. A
-   newer image also works once migrated; an older one refuses to start. Run
+   newer image also works once migrated, unless it is more than one
+   [custody stage](hosting.md#key-custody) ahead of the backup: then restore with the release in
+   between first. Don't use an older one: some refuse to start, and one
+   from before [custody stage 2](hosting.md#workspace-keys) starts but cannot open values a later
+   release sealed. Run
    `astilba migrate` with the image you choose, which does nothing when the schema already
    matches.
 
@@ -195,6 +199,11 @@ which the manifest records.
 
 Anything written after the backup is lost, because there is no point-in-time recovery: the
 backup interval is how much you can lose.
+
+**Take a backup after creating a workspace.** Cross-host recovery restores only workspaces the
+backup holds, using the workspace's own key, which only management's database keeps. Until a
+backup holds a new workspace, its hosts' recovery capsules can't bring it back if management is
+lost.
 
 ## Restore drills
 
