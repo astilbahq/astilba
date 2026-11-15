@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestOwnerAllowlistAdmitsOnlyNarrowOrPrivateNetworks(t *testing.T) {
 	for _, c := range []struct {
@@ -31,8 +34,49 @@ func TestOwnerAllowlistAdmitsOnlyNarrowOrPrivateNetworks(t *testing.T) {
 		{"one bad entry among good", []string{"10.0.0.0/8", "0.0.0.0/0"}, false},
 		{"not a prefix", []string{"everyone"}, false},
 	} {
-		if err := ValidateOwnerAllowlist(c.cidrs); (err == nil) != c.ok {
+		if err := ValidateOwnerAllowlist(c.cidrs, nil); (err == nil) != c.ok {
 			t.Errorf("%s: %v", c.name, err)
 		}
+	}
+}
+
+// Management reads only masked prefixes from known sources, so a malformed report counts as no
+// report rather than as a host with fewer ranges.
+func TestParseContainerRangeRefusesWhatNoAgentSends(t *testing.T) {
+	for _, c := range []struct {
+		prefix, source string
+		ok             bool
+	}{
+		{"10.252.0.0/14", "networkPool", true},
+		{"fd00::/8", "addressPool", true},
+		{"10.252.0.1/14", "networkPool", false},
+		{"::ffff:10.0.0.0/104", "dockerNetwork", false},
+		{"10.252.0.0/14", "elsewhere", false},
+		{"pool", "networkPool", false},
+	} {
+		if _, ok := ParseContainerRange(c.prefix, c.source); ok != c.ok {
+			t.Errorf("%s from %s: %v", c.prefix, c.source, ok)
+		}
+	}
+}
+
+// An IPv6 entry is never refused for an IPv4 range, or the other way round.
+func TestContainerRangesOverlapOnlyTheirOwnFamily(t *testing.T) {
+	pool, _ := ParseContainerRange("10.252.0.0/14", "networkPool")
+	ula, _ := ParseContainerRange("fd00::/8", "addressPool")
+	if err := ValidateOwnerAllowlist([]string{"fc00::/8", "192.168.1.0/24"}, []ContainerRange{pool, ula}); err != nil {
+		t.Fatal(err)
+	}
+	if ValidateOwnerAllowlist([]string{"fd00:1::/32"}, []ContainerRange{pool, ula}) == nil {
+		t.Fatal("admitted an IPv6 entry inside an IPv6 container range")
+	}
+}
+
+// A default address pool may hold no network yet, so the refusal says why it counts and how to narrow it.
+func TestAddressPoolRefusalSaysHowToNarrowIt(t *testing.T) {
+	pool, _ := ParseContainerRange("172.16.0.0/12", "addressPool")
+	err := ValidateOwnerAllowlist([]string{"172.20.0.0/16"}, []ContainerRange{pool})
+	if err == nil || !strings.Contains(err.Error(), "default-address-pools") {
+		t.Fatal(err)
 	}
 }

@@ -13,19 +13,21 @@ import (
 )
 
 const insertCatalogStaging = `-- name: InsertCatalogStaging :exec
-INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id,route_id,route_allow_cidrs)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 `
 
 type InsertCatalogStagingParams struct {
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	ID            uuid.UUID `json:"id"`
-	RecipeID      string    `json:"recipe_id"`
-	RecipeVersion string    `json:"recipe_version"`
-	RevisionID    uuid.UUID `json:"revision_id"`
-	Services      []byte    `json:"services"`
-	AuthorID      uuid.UUID `json:"author_id"`
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	EnvironmentID   uuid.UUID  `json:"environment_id"`
+	ID              uuid.UUID  `json:"id"`
+	RecipeID        string     `json:"recipe_id"`
+	RecipeVersion   string     `json:"recipe_version"`
+	RevisionID      uuid.UUID  `json:"revision_id"`
+	Services        []byte     `json:"services"`
+	AuthorID        uuid.UUID  `json:"author_id"`
+	RouteID         *uuid.UUID `json:"route_id"`
+	RouteAllowCidrs []string   `json:"route_allow_cidrs"`
 }
 
 func (q *Queries) InsertCatalogStaging(ctx context.Context, arg InsertCatalogStagingParams) error {
@@ -38,8 +40,47 @@ func (q *Queries) InsertCatalogStaging(ctx context.Context, arg InsertCatalogSta
 		arg.RevisionID,
 		arg.Services,
 		arg.AuthorID,
+		arg.RouteID,
+		arg.RouteAllowCidrs,
 	)
 	return err
+}
+
+const listCatalogStagedRoutes = `-- name: ListCatalogStagedRoutes :many
+SELECT route_id::uuid AS route_id, route_allow_cidrs::text[] AS route_allow_cidrs FROM catalog_stagings
+WHERE workspace_id = $1 AND environment_id = $2 AND route_id IS NOT NULL
+`
+
+type ListCatalogStagedRoutesParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+type ListCatalogStagedRoutesRow struct {
+	RouteID         uuid.UUID `json:"route_id"`
+	RouteAllowCidrs []string  `json:"route_allow_cidrs"`
+}
+
+// The routes catalog stagings created in the environment, with the allowlist each was staged
+// with. A route ID is new at each staging, so a route has at most one row.
+func (q *Queries) ListCatalogStagedRoutes(ctx context.Context, arg ListCatalogStagedRoutesParams) ([]ListCatalogStagedRoutesRow, error) {
+	rows, err := q.db.Query(ctx, listCatalogStagedRoutes, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCatalogStagedRoutesRow{}
+	for rows.Next() {
+		var i ListCatalogStagedRoutesRow
+		if err := rows.Scan(&i.RouteID, &i.RouteAllowCidrs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCatalogStagings = `-- name: ListCatalogStagings :many

@@ -245,6 +245,9 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if review && slices.Contains(candidate.Effects, deployment.UnreportedHostChangesEffect) {
 		return stop("Not deployed: this server's agent does not report what deployments would change on its host, so every deployment that keeps host permissions needs an owner's review. Update the agent; automatic deployment then resumes with the next push.")
 	}
+	if review && (slices.Contains(candidate.Effects, deployment.UnreportedContainerRangesEffect) || slices.Contains(candidate.Effects, deployment.UnreadContainerRangesEffect)) {
+		return stop("Not deployed: a route staged from the service catalog keeps a client allowlist that could not be checked against the ranges this server's containers send traffic from. Prepare and apply a deployment plan to review it, or update the agent; automatic deployment then resumes with the next push.")
+	}
 	if review {
 		return stop("Not deployed: this change also changes its server's host configuration. Prepare and apply a deployment plan to review and approve it; automatic deployment then resumes with the next push.")
 	}

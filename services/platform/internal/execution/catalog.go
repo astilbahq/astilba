@@ -81,6 +81,23 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 		if row.ConfigurationOwner != "dashboard" || v.Spec.Compose != nil {
 			return domain.Invalid("configurationOwner")
 		}
+		// The allowlist must leave out the server's own containers. Without a server yet, or with
+		// its ranges unknown, planning checks the server it chooses, or asks for review.
+		if stage.Route != nil {
+			host := v.Server
+			if host == nil {
+				host = server
+			}
+			if host != nil {
+				ranges, err := containerRangesOf(ctx, q, ws, *host)
+				if err != nil {
+					return err
+				}
+				if ranges.known {
+					stage.Route.Containers = ranges.ranges
+				}
+			}
+		}
 		// The existing secret versions are checked where SaveDraft checks every reference.
 		staged, err := recipe.Stage(stage, func(app uuid.UUID) (string, error) {
 			if v.Server != nil && *v.Server != *server {
@@ -150,7 +167,16 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 		if err != nil {
 			return err
 		}
-		return q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: staging, RecipeID: recipe.ID, RecipeVersion: recipe.Version, RevisionID: out.ID, Services: encoded, AuthorID: p.Account.ID})
+		// Planning checks the route again while it keeps this allowlist.
+		params := db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: staging, RecipeID: recipe.ID, RecipeVersion: recipe.Version, RevisionID: out.ID, Services: encoded, AuthorID: p.Account.ID}
+		for _, r := range staged.Specification.Routes {
+			for _, saved := range spec.Routes {
+				if saved.ID == r.ID {
+					params.RouteID, params.RouteAllowCidrs = &saved.ID, saved.AllowCIDRs
+				}
+			}
+		}
+		return q.InsertCatalogStaging(ctx, params)
 	})
 	return out, err
 }

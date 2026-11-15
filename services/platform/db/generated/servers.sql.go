@@ -250,6 +250,31 @@ func (q *Queries) EnvironmentVolumes(ctx context.Context, arg EnvironmentVolumes
 	return items, nil
 }
 
+const getServerContainerRanges = `-- name: GetServerContainerRanges :one
+SELECT COALESCE((capabilities->>'containerRanges')::boolean, false)::boolean AS supported,
+       (preflight->'containerRanges')::jsonb AS ranges
+FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type GetServerContainerRangesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type GetServerContainerRangesRow struct {
+	Supported bool   `json:"supported"`
+	Ranges    []byte `json:"ranges"`
+}
+
+// What the server's agent last reported about the ranges its containers send traffic from:
+// whether it reports them at all, and the ranges, absent when it could not read them.
+func (q *Queries) GetServerContainerRanges(ctx context.Context, arg GetServerContainerRangesParams) (GetServerContainerRangesRow, error) {
+	row := q.db.QueryRow(ctx, getServerContainerRanges, arg.WorkspaceID, arg.ID)
+	var i GetServerContainerRangesRow
+	err := row.Scan(&i.Supported, &i.Ranges)
+	return i, err
+}
+
 const insertSecondaryUnit = `-- name: InsertSecondaryUnit :exec
 INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_unit) VALUES($1,$2,$3,$4,false)
 `

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -139,6 +140,14 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if err != nil {
 			return err
 		}
+		uncheckedAllowlist, err := stagedAllowlists(ctx, db.New(tx), ws, env, in.ServerId, v.Spec)
+		if err != nil {
+			return err
+		}
+		// A standing policy approves host changes, not an allowlist nobody could check.
+		if uncheckedAllowlist != "" && hostApproved {
+			return &domain.Error{Code: "invalid_input", Message: "A staged route's client allowlist could not be checked against the ranges this server's containers send traffic from, so the plan needs an owner's review, which a standing policy does not give.", Fields: []string{"routes.allowCidrs"}}
+		}
 		if err = requireServiceOutputs(ctx, tx, ws, in.ServerId, v.Spec); err != nil {
 			return err
 		}
@@ -218,6 +227,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if in.AcceptDrift {
 			plan.Effects = append(plan.Effects, "Accept reported drift: changes made outside Astilba to its managed resources are replaced by this plan instead of stopping it.")
 		}
+		if uncheckedAllowlist != "" {
+			plan.Effects = append(plan.Effects, uncheckedAllowlist)
+		}
 		if v.Purpose == "preview" {
 			plan.Recipe = deployment.PreviewRecipe
 			plan.Preview, err = s.previewPlanIdentity(ctx, tx, ws, env)
@@ -230,7 +242,11 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		}
 
 		if v.Spec.Placement != nil {
-			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement)
+			reviewEffects := []string{}
+			if uncheckedAllowlist != "" {
+				reviewEffects = append(reviewEffects, uncheckedAllowlist)
+			}
+			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement, reviewEffects)
 			return err
 		}
 		if replacement != nil {
@@ -291,7 +307,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if len(raw) > 100000 {
 			return domain.Invalid("specification")
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate,host_review) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, plan.ID, ws, in.ServerId, env, plan.UnitID, v.Revision, op.Id, raw, review && !hostApproved)
+		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate,host_review) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, plan.ID, ws, in.ServerId, env, plan.UnitID, v.Revision, op.Id, raw, review && !hostApproved || uncheckedAllowlist != "")
 		out = deployment.Status{ID: plan.ID, OperationID: op.Id, State: string(op.State)}
 		return err
 	}()
