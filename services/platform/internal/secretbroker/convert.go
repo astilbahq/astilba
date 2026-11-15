@@ -441,7 +441,8 @@ func (b *Broker) completeConversion(ctx context.Context) (int32, string, error) 
 // store such a value afterwards, so whatever stops reading the keyring runs this again first.
 func (b *Broker) CheckConverted(ctx context.Context, q *db.Queries) (string, error) {
 	// A rewrap holds these tables' rows for its whole transaction: wait for it before holding any.
-	// Nothing waits behind this lock but other rewraps and conversions, so the wait is not bounded.
+	// Only rewraps, conversions and the first owner's bootstrap wait behind this lock, none of them
+	// for long, so the wait is not bounded.
 	if err := q.LockBootstrap(ctx); err != nil {
 		return "", err
 	}
