@@ -771,6 +771,63 @@ func (q *Queries) RecoveryApprovalMatches(ctx context.Context, arg RecoveryAppro
 	return matches, err
 }
 
+const recoveryAttributedHashes = `-- name: RecoveryAttributedHashes :many
+SELECT DISTINCT attributed_hash FROM cross_host_recovery_rows
+WHERE workspace_id = $1 AND table_name = $2
+`
+
+type RecoveryAttributedHashesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	TableName   string    `json:"table_name"`
+}
+
+// The attributed hashes recorded for one table of a workspace, which re-keying compares with its rows.
+func (q *Queries) RecoveryAttributedHashes(ctx context.Context, arg RecoveryAttributedHashesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, recoveryAttributedHashes, arg.WorkspaceID, arg.TableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var attributed_hash string
+		if err := rows.Scan(&attributed_hash); err != nil {
+			return nil, err
+		}
+		items = append(items, attributed_hash)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recoveryAttributedWorkspaces = `-- name: RecoveryAttributedWorkspaces :many
+SELECT DISTINCT workspace_id FROM cross_host_recovery_rows WHERE table_name = ANY($1::text[]) ORDER BY workspace_id
+`
+
+// unscoped: every workspace with a recorded attribution in one of the named tables, for a command
+// that moves stored values across the installation.
+func (q *Queries) RecoveryAttributedWorkspaces(ctx context.Context, tables []string) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, recoveryAttributedWorkspaces, tables)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var workspace_id uuid.UUID
+		if err := rows.Scan(&workspace_id); err != nil {
+			return nil, err
+		}
+		items = append(items, workspace_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recoveryCheckpointAt = `-- name: RecoveryCheckpointAt :one
 SELECT descriptor,envelope,phase,acknowledged FROM cross_host_checkpoints
 WHERE workspace_id = $1 AND parent_id = $2 AND sequence = $3
@@ -1054,6 +1111,31 @@ func (q *Queries) RegisterRecoveryBase(ctx context.Context, arg RegisterRecovery
 		arg.WindowStart,
 	)
 	return err
+}
+
+const rekeyRecoveryRowAttribution = `-- name: RekeyRecoveryRowAttribution :execrows
+UPDATE cross_host_recovery_rows SET attributed_hash = $1
+WHERE workspace_id = $2 AND table_name = $3 AND attributed_hash = $4
+`
+
+type RekeyRecoveryRowAttributionParams struct {
+	Content     string    `json:"content"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	TableName   string    `json:"table_name"`
+	Previous    string    `json:"previous"`
+}
+
+func (q *Queries) RekeyRecoveryRowAttribution(ctx context.Context, arg RekeyRecoveryRowAttributionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rekeyRecoveryRowAttribution,
+		arg.Content,
+		arg.WorkspaceID,
+		arg.TableName,
+		arg.Previous,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const removedRuntimeCommand = `-- name: RemovedRuntimeCommand :one

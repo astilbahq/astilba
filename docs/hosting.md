@@ -144,6 +144,10 @@ completed stage 2: run the stage 2 release until `custody status` shows stage 2 
 - **Recovery** moves each value it restores onto the workspace's current key, keeping the value
   itself.
 - **Rewrap** wraps every key again, and leaves values sealed under them as they are.
+- **Recovery checkpoints** taken before a value's key moved still merge: recovery compares a
+  stored value by its data, which moving its key keeps. A release before this one compares the
+  stored bytes instead, so after rolling back to one, a checkpoint older than the latest key move
+  no longer merges.
 - **Deleting a workspace** deletes its keys, so nothing sealed under them opens again.
 - **Token keys** stay in each instance's memory. Instances look for new ones every minute, and
   record which they hold. Tokens are issued under a token key only once every instance seen in the
