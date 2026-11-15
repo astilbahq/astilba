@@ -58,7 +58,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		if n >= 100 {
 			return domain.Conflict
 		}
-		secret, err := sealIntegration(keys, item, a)
+		secret, err := sealIntegration(ctx, db.New(tx), keys, item, a)
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if in.Password != nil {
 			a.Password = *in.Password
 		}
-		cipher, err := sealIntegration(keys, item, a)
+		cipher, err := sealIntegration(ctx, db.New(tx), keys, item, a)
 		if err != nil {
 			return err
 		}

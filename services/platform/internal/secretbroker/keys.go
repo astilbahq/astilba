@@ -48,61 +48,75 @@ type sealedKey struct {
 	generation int64
 	kcv        []byte
 	wrapped    []byte
+	// sealing is an active, sealable generation, which new values are sealed under.
+	sealing bool
+}
+
+// heldKeys is what a session holds of its scope's key: the generations it unwraps, and whether the
+// holder had any key at all when it began.
+type heldKeys struct {
+	scope   custody.Scope
+	wrapped []sealedKey
+	keyless bool
 }
 
 // wrappedKeys reads the generations a request's session holds, and their wrappings for its
 // purpose under the configured backend. Only an active, sealable generation has a seal wrapping,
 // so a seal session holds no other.
-func (b *Broker) wrappedKeys(ctx context.Context, r Request) (custody.Scope, []sealedKey, error) {
-	scope := custody.ScopeWorkspace
+func (b *Broker) wrappedKeys(ctx context.Context, r Request) (heldKeys, error) {
+	h := heldKeys{scope: custody.ScopeWorkspace}
 	if r.Workspace == uuid.Nil {
-		scope = custody.ScopeInstallation
+		h.scope = custody.ScopeInstallation
 	}
-	if _, ok := custody.ClassFor(scope, string(r.Purpose)); !ok {
-		return scope, nil, nil
+	if _, ok := custody.ClassFor(h.scope, string(r.Purpose)); !ok {
+		return h, nil
 	}
 	var out []sealedKey
-	if scope == custody.ScopeWorkspace {
+	if h.scope == custody.ScopeWorkspace {
 		rows, err := b.q.WorkspaceKeyWrappings(ctx, db.WorkspaceKeyWrappingsParams{Purpose: string(r.Purpose), BackendID: b.backend.ID(), WorkspaceID: r.Workspace, States: liveStates(r.Purpose)})
 		if err != nil {
-			return scope, nil, err
+			return h, err
 		}
 		for _, row := range rows {
-			out = append(out, sealedKey{row.Generation, row.Kcv, row.Wrapped})
+			out = append(out, sealedKey{row.Generation, row.Kcv, row.Wrapped, row.State == "active" && row.Sealable})
 		}
 	} else {
-		rows, err := b.q.InstallationKeyWrappings(ctx, db.InstallationKeyWrappingsParams{Purpose: string(r.Purpose), BackendID: b.backend.ID(), Scope: string(scope), States: liveStates(r.Purpose)})
+		rows, err := b.q.InstallationKeyWrappings(ctx, db.InstallationKeyWrappingsParams{Purpose: string(r.Purpose), BackendID: b.backend.ID(), Scope: string(h.scope), States: liveStates(r.Purpose)})
 		if err != nil {
-			return scope, nil, err
+			return h, err
 		}
 		for _, row := range rows {
-			out = append(out, sealedKey{row.Generation, row.Kcv, row.Wrapped})
+			out = append(out, sealedKey{row.Generation, row.Kcv, row.Wrapped, row.State == "active" && row.Sealable})
 		}
 	}
-	held := out[:0]
+	// A holder always has a live generation once it has keys: states move on only after a newer
+	// one is active.
+	h.keyless = len(out) == 0
 	for _, k := range out {
 		switch {
 		case k.wrapped != nil:
-			held = append(held, k)
+			h.wrapped = append(h.wrapped, k)
 		case r.Purpose != Seal:
-			return scope, nil, ErrMissingWrapping
+			return h, ErrMissingWrapping
 		}
 	}
-	return scope, held, nil
+	return h, nil
 }
 
-// unwrap opens each wrapping, and checks each opens to its generation's key.
-func (b *Broker) unwrap(ctx context.Context, scope custody.Scope, holder uuid.UUID, purpose string, wrapped []sealedKey) (map[keyRef][]byte, error) {
+// unwrap opens each wrapping, and checks each opens to its generation's key. It also names the
+// generation new values are sealed under, or 0 when the session holds none.
+func (b *Broker) unwrap(ctx context.Context, held heldKeys, holder uuid.UUID, purpose string) (map[keyRef][]byte, int64, error) {
 	keys := map[keyRef][]byte{}
-	if len(wrapped) == 0 {
-		return keys, nil
+	if len(held.wrapped) == 0 {
+		return keys, 0, nil
 	}
 	if b.installation == uuid.Nil {
-		return nil, errors.New("custody is not installed")
+		return nil, 0, errors.New("custody is not installed")
 	}
-	class, _ := custody.ClassFor(scope, purpose)
-	for _, k := range wrapped {
-		opened, err := b.backend.Unwrap(ctx, class, k.wrapped, custody.Context{Installation: b.installation, Scope: scope, Workspace: holder, Generation: k.generation, Purpose: purpose})
+	class, _ := custody.ClassFor(held.scope, purpose)
+	var sealing int64
+	for _, k := range held.wrapped {
+		opened, err := b.backend.Unwrap(ctx, class, k.wrapped, custody.Context{Installation: b.installation, Scope: held.scope, Workspace: holder, Generation: k.generation, Purpose: purpose})
 		if err == nil && !custody.CheckKey(opened.Key, k.kcv) {
 			clear(opened.Key)
 			err = ErrKeyCheck
@@ -111,18 +125,21 @@ func (b *Broker) unwrap(ctx context.Context, scope custody.Scope, holder uuid.UU
 			for _, key := range keys {
 				clear(key)
 			}
-			return nil, err
+			return nil, 0, err
 		}
-		keys[keyRef{scope, k.generation}] = opened.Key
+		keys[keyRef{held.scope, k.generation}] = opened.Key
+		if k.sealing {
+			sealing = k.generation
+		}
 	}
-	return keys, nil
+	return keys, sealing, nil
 }
 
 // generationsOf lists the generations a session holds for its record, with the installation
 // keyring, which v1 values are under, as generation 0.
-func generationsOf(keys []sealedKey) []int64 {
+func generationsOf(held heldKeys) []int64 {
 	out := []int64{0}
-	for _, k := range keys {
+	for _, k := range held.wrapped {
 		out = append(out, k.generation)
 	}
 	return out
@@ -162,7 +179,7 @@ func (b *Broker) Create(ctx context.Context, r Request) (*NewKeys, error) {
 		if rule, err = b.admit(ctx, r); err != nil {
 			return nil, err
 		}
-		if !b.budgets.take(budgetKeys(r)) {
+		if !b.budgets.take(b.now(), budgetKeys(r)) {
 			return nil, domain.RateLimited
 		}
 	}
@@ -175,8 +192,8 @@ func (b *Broker) Create(ctx context.Context, r Request) (*NewKeys, error) {
 		k.Close(ctx, Refused)
 		return nil, err
 	}
-	// The session holds the new key itself, which it seals under once values are sealed as v2.
-	k.session = &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: map[keyRef][]byte{{custody.ScopeWorkspace, 1}: slices.Clone(k.key)}}
+	// The session holds the new key itself, and seals under it once Insert has stored it.
+	k.session = &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: map[keyRef][]byte{{custody.ScopeWorkspace, 1}: slices.Clone(k.key)}, sealing: 1}
 	b.log.Info("secret access", "access", id, "workspace", r.Workspace, "purpose", r.Purpose, "principal", r.Principal.Kind, "items", len(r.Items), "kinds", len(r.Kinds), "backend", b.backend.ID())
 	return k, nil
 }
@@ -275,8 +292,12 @@ func (k *NewKeys) Close(ctx context.Context, outcome Outcome) {
 }
 
 // keysStage is the custody stage creating every key completes: every workspace, the
-// installation and the token keys have a generation.
-const keysStage = 2
+// installation and the token keys have a generation. sealStage follows at once in this release,
+// which seals every new value under those keys.
+const (
+	keysStage = 2
+	sealStage = 3
+)
 
 // InitKeys makes generation 1 of the installation and token keys, and of the key of every
 // workspace that has none, until it runs out of time. It reports whether any remain. Several may
@@ -333,7 +354,12 @@ func (b *Broker) InitKeys(ctx context.Context, more func() bool) (bool, error) {
 	if progress.WithKeys < progress.Workspaces || !progress.Installation || !progress.Token {
 		return true, nil
 	}
-	return false, b.completeStage(ctx, keysStage)
+	for _, stage := range []int{keysStage, sealStage} {
+		if err = b.completeStage(ctx, stage); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 // completeStage records stage as complete once, with its event in the same transaction.

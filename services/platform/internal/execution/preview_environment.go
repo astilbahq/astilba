@@ -76,7 +76,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 		if err = q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: sid, Name: "Preview " + old.String()}); err != nil {
 			return err
 		}
-		cipher, err := keys.Seal(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, []byte(value))
+		cipher, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, []byte(value))
 		if err != nil {
 			return err
 		}

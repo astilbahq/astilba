@@ -3,7 +3,6 @@ package hostnetwork
 import (
 	"bytes"
 	"context"
-	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -57,7 +56,14 @@ type Snapshot struct {
 	Bridges        []Bridge `json:"bridges"`
 	AppliedHash    string   `json:"appliedHash"`
 }
-type Host struct{ Dir, WG, IP, NFT string }
+
+// Host is this machine's managed networking, with its state under Dir. Keys, when set, seals the
+// private-link keys the host makes and opens the ones sealed already. Without it, the host makes
+// keys in the clear and can't open a sealed one.
+type Host struct {
+	Dir, WG, IP, NFT string
+	Keys             Sealer
+}
 
 func (h Host) tool(name string) string {
 	switch name {
@@ -172,43 +178,18 @@ func atomicPrivate(path string, data []byte) error {
 	defer d.Close()
 	return d.Sync()
 }
-func (h Host) Identity(id uuid.UUID) (Identity, error) {
+
+// Identity is this host's identity on the network for membership id. It makes the membership's
+// private key if the host has none yet. It never opens a sealed key, so it doesn't wait on the key
+// store or fail for it unless it makes a key.
+func (h Host) Identity(ctx context.Context, id uuid.UUID) (Identity, error) {
 	unlock, err := h.lock()
 	if err != nil {
 		return Identity{}, err
 	}
 	defer unlock()
-	return h.identity(id)
-}
-func (h Host) identity(id uuid.UUID) (Identity, error) {
-	out := Identity{MembershipID: id}
-	if id == uuid.Nil {
-		return out, errors.New("membership identity required")
-	}
-	path := h.identityPath(id)
-	raw, err := privateRead(path)
-	if os.IsNotExist(err) {
-		key, e := ecdh.X25519().GenerateKey(rand.Reader)
-		if e != nil {
-			return out, e
-		}
-		raw = []byte(base64.StdEncoding.EncodeToString(key.Bytes()))
-		if err = atomicPrivate(path, raw); err != nil {
-			return out, err
-		}
-	} else if err != nil {
-		return out, err
-	}
-	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return out, errors.New("invalid local network key")
-	}
-	key, err := ecdh.X25519().NewPrivateKey(b)
-	if err != nil {
-		return out, errors.New("invalid local network key")
-	}
-	out.PublicKey = base64.StdEncoding.EncodeToString(key.PublicKey().Bytes())
-	return out, nil
+	public, err := h.publicKey(ctx, id)
+	return Identity{MembershipID: id, PublicKey: public}, err
 }
 func (h Host) path(id uuid.UUID) string { return filepath.Join(h.Dir, "network", id.String()+".json") }
 func (h Host) Snapshot(id uuid.UUID) (Snapshot, error) {
@@ -238,57 +219,45 @@ func (h Host) save(s Snapshot) error {
 	}
 	return atomicPrivate(h.path(s.Manifest.NetworkID), b)
 }
-func (h Host) Restore(ctx context.Context) error {
-	unlock, err := h.lock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	return h.restore(ctx)
-}
-func (h Host) restore(ctx context.Context) error {
-	entries, err := os.ReadDir(filepath.Join(h.Dir, "network"))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		id, e := uuid.Parse(strings.TrimSuffix(entry.Name(), ".json"))
-		if e != nil {
-			return errors.New("invalid network state filename")
-		}
-		s, e := h.Snapshot(id)
-		if e != nil {
-			return e
-		}
-		if e = h.apply(ctx, s.Manifest, s.Bridges, false); e != nil {
-			return e
-		}
-	}
-	return nil
-}
+
 func (h Host) Apply(ctx context.Context, m Manifest, bridges []Bridge, restrict bool) error {
 	unlock, err := h.lock()
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	return h.apply(ctx, m, bridges, restrict)
+	return h.apply(ctx, m, bridges, restrict, false)
 }
-func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict bool) error {
+
+// apply installs m. A restore puts back intent the host saved, which passed its checks when saved.
+func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict, restoring bool) error {
 	if runtime.GOOS != "linux" || m.Validate() != nil {
 		return errors.New("managed links require a valid Linux network manifest")
 	}
-	identity, err := h.identity(m.MembershipID)
+	if err := removeNetworkLeftovers(filepath.Join(h.Dir, "network")); err != nil {
+		return err
+	}
+	// Identity made the key that m names, so a missing one is never made here. The key file is
+	// checked against m first, from its public key alone.
+	f, err := h.readKeyFile(m.MembershipID)
 	if err != nil {
 		return err
 	}
-	if identity.PublicKey != m.PublicKey {
+	if f.public != m.PublicKey {
+		return errors.New("managed network public key does not match local identity")
+	}
+	// A link that is up holds its key already, so applying it again never needs the key store.
+	// Removing authority never does either: without the live key, a restriction or a removal takes
+	// effect in the saved intent and the firewall, and the link stays down until it is restored
+	// with its key. Anything else opens the key before it changes anything.
+	key := h.liveKey(ctx, m)
+	live := key != nil
+	if key == nil && !restrict && !m.Disabled {
+		if key, err = h.openKeyFile(ctx, m.MembershipID, f); err != nil {
+			return err
+		}
+	}
+	if key != nil && publicKeyOf(key) != m.PublicKey {
 		return errors.New("managed network public key does not match local identity")
 	}
 	old, err := h.Snapshot(m.NetworkID)
@@ -318,22 +287,54 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if err != nil {
 		return err
 	}
-	if err = h.inspectInterface(ctx, m, group, recoverCreate); err != nil {
+	present, err := h.inspectInterface(ctx, m, group, recoverCreate)
+	if err != nil {
 		return err
 	}
 	// A restriction keeps the prefix the host holds, so it can't create a conflict, and removing
-	// authority must not wait on one that appeared since.
-	if !restrict {
+	// authority must not wait on one that appeared since. Nor does a restore that finishes a
+	// restriction an earlier failure left half applied on a live link, or one that routes nothing
+	// the link doesn't route already. A restore that would add a route is checked afresh.
+	restriction := restrict || restoring && h.restrictionMarked(m)
+	holdsPrefix := restrict || restoring && live && (restriction || h.routesAlready(ctx, m))
+	if !holdsPrefix {
 		if err = h.inspectRoutes(ctx, m); err != nil {
+			return err
+		}
+	}
+	// The mark goes down before the intent it names and comes up only after the intent that
+	// replaces it, so the saved intent is never left without a mark it had. A mark that names
+	// another intent is inert.
+	if restriction {
+		if err = h.markRestriction(m, true, old.Manifest); err != nil {
 			return err
 		}
 	}
 	if err = h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges}); err != nil {
 		return err
 	}
+	if !restriction {
+		if err = h.markRestriction(m, false, old.Manifest); err != nil {
+			return err
+		}
+	}
 	// The owned filter is installed before any new peer or published port is enabled.
 	if err = h.publishRules(ctx, m, rules); err != nil {
 		return err
+	}
+	if key == nil {
+		// A link without its key carries nothing: any interface of this network goes down. A
+		// removal is then done. A restriction's saved intent has no applied hash, so the link comes
+		// back as m once it is restored with its key.
+		if present {
+			if _, err = h.run(ctx, "ip", nil, "link", "set", "dev", m.Interface(), "down"); err != nil {
+				return err
+			}
+		}
+		if m.Disabled {
+			return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m)})
+		}
+		return nil
 	}
 	if _, err = h.run(ctx, "ip", nil, "link", "show", "dev", m.Interface()); err != nil {
 		if _, err = h.run(ctx, "ip", nil, "link", "add", "dev", m.Interface(), "group", strconv.FormatUint(uint64(group), 10), "type", "wireguard"); err != nil {
@@ -348,31 +349,14 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if _, err = h.run(ctx, "ip", nil, "address", "replace", m.Address+"/32", "dev", m.Interface()); err != nil {
 		return err
 	}
-	private, err := privateRead(h.identityPath(m.MembershipID))
-	if err != nil {
-		return err
-	}
 	var config strings.Builder
-	fmt.Fprintf(&config, "[Interface]\nPrivateKey = %s\nListenPort = %d\n", strings.TrimSpace(string(private)), m.ListenPort)
+	fmt.Fprintf(&config, "[Interface]\nPrivateKey = %s\nListenPort = %d\n", base64.StdEncoding.EncodeToString(key.Bytes()), m.ListenPort)
 	for _, p := range m.Peers {
 		fmt.Fprintf(&config, "\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\nEndpoint = %s\nPersistentKeepalive = 25\n", p.PublicKey, p.Address, p.Endpoint)
 	}
-	f, err := os.CreateTemp(filepath.Join(h.Dir, "network"), ".wg-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.WriteString(config.String())
-	}
-	closeErr := f.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if _, err = h.run(ctx, "wg", nil, "setconf", m.Interface(), f.Name()); err != nil {
+	// The configuration holds the private key in the clear, so it reaches wg through a pipe and
+	// is never written to disk.
+	if _, err = h.run(ctx, "wg", []byte(config.String()), "setconf", m.Interface(), "/dev/stdin"); err != nil {
 		return err
 	}
 	if _, err = h.run(ctx, "ip", nil, "link", "set", "dev", m.Interface(), "mtu", "1280", "up"); err != nil {
@@ -383,8 +367,13 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 			return err
 		}
 	}
+	// A route the kernel already dropped, with the link down or new, needs no removal.
+	routed, err := h.routedPeers(ctx, m)
+	if err != nil {
+		return err
+	}
 	for _, p := range old.Manifest.Peers {
-		if !slices.ContainsFunc(m.Peers, func(next Peer) bool { return next.Address == p.Address }) {
+		if routed[p.Address] && !slices.ContainsFunc(m.Peers, func(next Peer) bool { return next.Address == p.Address }) {
 			if _, err = h.run(ctx, "ip", nil, "route", "del", p.Address+"/32", "dev", m.Interface()); err != nil {
 				return err
 			}
@@ -401,10 +390,13 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	}
 	return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m)})
 }
-func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, recoverCreate bool) error {
+
+// inspectInterface refuses m's interface name when something else holds it, and reports whether
+// the interface is there.
+func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, recoverCreate bool) (bool, error) {
 	raw, err := h.run(ctx, "ip", nil, "-N", "-j", "-d", "link", "show")
 	if err != nil {
-		return err
+		return false, err
 	}
 	var links []struct {
 		IfName string         `json:"ifname"`
@@ -415,8 +407,9 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 		} `json:"linkinfo"`
 	}
 	if readToolJSON(raw, &links) != nil {
-		return errors.New("cannot inspect host interfaces")
+		return false, errors.New("cannot inspect host interfaces")
 	}
+	present := false
 	for _, l := range links {
 		if l.IfName != m.Interface() {
 			continue
@@ -425,21 +418,22 @@ func (h Host) inspectInterface(ctx context.Context, m Manifest, group uint32, re
 		var text string
 		if json.Unmarshal(l.Group, &observed) != nil {
 			if json.Unmarshal(l.Group, &text) != nil {
-				return errors.New("cannot inspect interface ownership marker")
+				return false, errors.New("cannot inspect interface ownership marker")
 			}
 			value, err := strconv.ParseUint(text, 10, 32)
 			if err != nil {
-				return errors.New("invalid interface ownership marker")
+				return false, errors.New("invalid interface ownership marker")
 			}
 			observed = uint32(value)
 		}
 		if l.Info.Kind != "wireguard" || observed != group || l.Alias != m.Alias() && !(recoverCreate && l.Alias == "") {
-			return errors.New("managed interface name is occupied by unrelated state")
+			return false, errors.New("managed interface name is occupied by unrelated state")
 		}
+		present = true
 	}
-
-	return nil
+	return present, nil
 }
+
 func (h Host) inspectRoutes(ctx context.Context, m Manifest) error {
 	raw, err := h.run(ctx, "ip", nil, "-j", "-4", "route", "show", "table", "all")
 	if err != nil {

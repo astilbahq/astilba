@@ -112,7 +112,7 @@ func (s *Service) SaveSettings(ctx context.Context, p store.Principal, ws uuid.U
 					return domain.Invalid("webhookSecret")
 				}
 				raw, _ := stablejson.Marshal(webhook{*in.WebhookUrl, *in.WebhookSecret})
-				encrypted, err = keys.Seal(hook, raw)
+				encrypted, err = keys.Seal(ctx, q, hook, raw)
 				if err != nil {
 					return err
 				}

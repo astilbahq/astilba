@@ -259,6 +259,9 @@ ON CONFLICT(parent_id,server_id) DO UPDATE SET machine_id=excluded.machine_id,co
     inventory=excluded.inventory,handover=excluded.handover,verified=false
 WHERE cross_host_recovery_servers.workspace_id=excluded.workspace_id;
 
+-- name: RecoveryWorkspaceExists :one
+SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = @workspace_id);
+
 -- name: WorkspaceOwnerExists :one
 SELECT EXISTS(SELECT 1 FROM memberships WHERE workspace_id = @workspace_id AND account_id = @account_id AND role='owner');
 

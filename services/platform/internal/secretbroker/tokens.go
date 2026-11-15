@@ -38,7 +38,8 @@ const (
 // customer values, and needing the key service on every sign-in page would add nothing to the
 // record, so these keys stay resident: the installation keyring, and every token key generation
 // not retired, each recorded in the installation's key history as it is loaded. Tokens are issued
-// under the keyring until values are sealed as v2.
+// under the newest generation every running instance holds, and under the keyring until there is
+// one.
 type Tokens struct {
 	broker   *Broker
 	ring     *cryptobox.Keyring
@@ -51,6 +52,8 @@ type Tokens struct {
 	// could not be unwrapped. A token under either may open after the next load.
 	seen   int64
 	failed map[int64]bool
+	// issuing is the generation new tokens are sealed under, or 0 for the keyring.
+	issuing int64
 }
 
 // Tokens records the resident keys, then loads them. Like Begin, it must not run inside a
@@ -112,6 +115,9 @@ func (t *Tokens) load(ctx context.Context) error {
 		if !live[g] {
 			clear(key)
 			delete(t.keys, g)
+			if t.issuing == g {
+				t.issuing = 0
+			}
 			continue
 		}
 		generations = append(generations, g)
@@ -119,8 +125,21 @@ func (t *Tokens) load(ctx context.Context) error {
 	t.mu.Unlock()
 	slices.Sort(generations)
 	if err = q.RecordCustodyInstance(ctx, db.RecordCustodyInstanceParams{InstanceID: t.instance, TokenGenerations: append([]int64{}, generations...)}); err != nil {
-		failures = append(failures, err)
+		return errors.Join(append(failures, err)...)
 	}
+	// Issuing moves to a generation only once every instance running holds it, this one included,
+	// so any of them opens what another issues. One that starts later loads every generation
+	// before it serves.
+	issuing, err := q.TokenIssuingGeneration(ctx)
+	if err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	t.mu.Lock()
+	if _, held := t.keys[issuing]; !held {
+		issuing = 0
+	}
+	t.issuing = issuing
+	t.mu.Unlock()
 	return errors.Join(failures...)
 }
 
@@ -177,11 +196,17 @@ func (t *Tokens) Run(ctx context.Context) {
 	}
 }
 
+// Seal issues a token under the generation every running instance holds.
 func (t *Tokens) Seal(kind TokenKind, plaintext []byte) ([]byte, error) {
 	if kind.identity == "" {
 		return nil, ErrNotAllowed
 	}
-	return t.ring.Seal(plaintext, kind.identity)
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.issuing == 0 {
+		return t.ring.Seal(plaintext, kind.identity)
+	}
+	return cryptobox.SealUnder(t.keys[t.issuing], cryptobox.ScopeToken, t.issuing, plaintext, kind.identity)
 }
 
 // Open opens a token sealed under the keyring or under a token key generation. ErrTokenKeyNotLoaded

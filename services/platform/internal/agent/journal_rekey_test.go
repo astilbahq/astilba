@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json/v2"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -52,27 +51,6 @@ func readLocalState(t *testing.T, dir string) localStateKeys {
 		t.Fatal(err)
 	}
 	return envelope
-}
-
-func copyStateDirectory(t *testing.T, from string) string {
-	t.Helper()
-	to := privateDir(t)
-	for _, name := range []string{"journal.db", "keyring.json"} {
-		src, err := os.Open(filepath.Join(from, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		dst, err := os.OpenFile(filepath.Join(to, name), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = io.Copy(dst, src); err != nil {
-			t.Fatal(err)
-		}
-		src.Close()
-		dst.Close()
-	}
-	return to
 }
 
 // sealedVersions finds every sealed value in the journal file's bytes, live or in a freed page.
@@ -138,7 +116,7 @@ func TestCopiedStateDirectoryOpensNothingOnAnotherMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A new journal is sealed from the start, and keyring.json holds no key in the clear.
-	if state := readLocalState(t, dir); state.Version != sealedStateVersion || state.Keyring != nil || len(state.SealedKeyring) == 0 {
+	if state := readLocalState(t, dir); state.Version != StateVersion || state.Keyring != nil || len(state.SealedKeyring) == 0 {
 		t.Fatalf("a new journal's keyring isn't sealed: %+v", state)
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "keyring.json"))
@@ -205,7 +183,7 @@ func TestJournalInTheClearIsSealedOnUpgrade(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if j.StateVersion() == sealedStateVersion || j.KeyStore() != nil {
+		if sealedVersion(int64(j.StateVersion())) || j.KeyStore() != nil {
 			t.Fatal("opening sealed a journal in the clear")
 		}
 		if after, _ := os.ReadFile(filepath.Join(dir, "keyring.json")); !bytes.Equal(raw, after) {
@@ -213,7 +191,7 @@ func TestJournalInTheClearIsSealedOnUpgrade(t *testing.T) {
 		}
 		// But no release that can't read a sealed keyring may be installed: the agent seals it as
 		// soon as it rekeys with a store.
-		if j.InstallStateVersion() != sealedStateVersion {
+		if j.InstallStateVersion() != StateVersion {
 			t.Fatal("an agent that may seal its journal would install a release that can't read it")
 		}
 		legacyKeys, _ := cryptobox.Parse(legacy)
@@ -225,7 +203,7 @@ func TestJournalInTheClearIsSealedOnUpgrade(t *testing.T) {
 		if err = j.Rekey(context.Background(), nil); err != nil {
 			t.Fatal(err)
 		}
-		if j.StateVersion() == sealedStateVersion || readLocalState(t, dir).Version == sealedStateVersion {
+		if sealedVersion(int64(j.StateVersion())) || sealedVersion(int64(readLocalState(t, dir).Version)) {
 			t.Fatal("a journal was sealed without a key store")
 		}
 		// The service rekeys with its store: the journal is sealed, and the key that sat in the
@@ -233,7 +211,7 @@ func TestJournalInTheClearIsSealedOnUpgrade(t *testing.T) {
 		if err = j.Rekey(context.Background(), store); err != nil {
 			t.Fatal(err)
 		}
-		if j.StateVersion() != sealedStateVersion || !j.HoldsKey(Config{}) || j.KeyStore() != store {
+		if j.StateVersion() != StateVersion || !j.HoldsKey(Config{}) || j.KeyStore() != store {
 			t.Fatal("the rekey didn't seal the journal or mark it keyed")
 		}
 		if cfg, err := j.Config(); err != nil || cfg.Credential != sealingCanary {
@@ -393,7 +371,7 @@ func TestAgentRekeysItsJournalAndSealsItOnceTheStoreOpens(t *testing.T) {
 		}
 	}
 	eventually("the agent didn't rekey its journal when it started", func() bool { return j.keys.Load().Active != initial })
-	if j.StateVersion() == sealedStateVersion {
+	if sealedVersion(int64(j.StateVersion())) {
 		t.Fatal("the journal was sealed without a key store")
 	}
 	store := InsecureKeyStore()
@@ -401,7 +379,7 @@ func TestAgentRekeysItsJournalAndSealsItOnceTheStoreOpens(t *testing.T) {
 	c.Keys = store
 	c.keysMu.Unlock()
 	eventually("the journal wasn't sealed once the key store opened", func() bool { return j.KeyStore() == store })
-	if state := readLocalState(t, dir); state.Version != sealedStateVersion {
+	if state := readLocalState(t, dir); state.Version != StateVersion {
 		t.Fatal("keyring.json wasn't sealed", state.Version)
 	}
 	// A changed journal is rekeyed again; an unchanged one isn't.
@@ -421,7 +399,7 @@ func TestJournalOpenedWithoutSealingNeverSeals(t *testing.T) {
 	if err := j.Rekey(context.Background(), InsecureKeyStore()); err != nil {
 		t.Fatal(err)
 	}
-	if j.KeyStore() != nil || j.StateVersion() == sealedStateVersion {
+	if j.KeyStore() != nil || sealedVersion(int64(j.StateVersion())) {
 		t.Fatal("a journal opened for tests was sealed")
 	}
 }
@@ -462,12 +440,11 @@ func TestSealedLocalStateRejectsMixedEnvelopes(t *testing.T) {
 	keys, _ := stablejson.Marshal(j.keys.Load())
 	j.Close()
 	sealed := readLocalState(t, dir).SealedKeyring
-	for _, invalid := range []localStateKeys{
-		{Version: sealedStateVersion, Keyring: keys, SealedKeyring: sealed},
-		{Version: sealedStateVersion, Keyring: keys},
-		{Version: keyedStateVersion, SealedKeyring: sealed},
-		{Version: sealedStateVersion + 1, SealedKeyring: sealed},
-	} {
+	invalids := []localStateKeys{{Version: keyedStateVersion, SealedKeyring: sealed}, {Version: StateVersion + 1, SealedKeyring: sealed}}
+	for _, version := range []int{sealedStateVersion, networkSealedStateVersion} {
+		invalids = append(invalids, localStateKeys{Version: version, Keyring: keys, SealedKeyring: sealed}, localStateKeys{Version: version, Keyring: keys})
+	}
+	for _, invalid := range invalids {
 		body, _ := stablejson.Marshal(invalid)
 		if err = os.WriteFile(filepath.Join(dir, "keyring.json"), body, 0600); err != nil {
 			t.Fatal(err)
