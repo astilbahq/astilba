@@ -20,6 +20,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/riverqueue/river"
 )
 
 // Management's provider calls hold the App's cached token, so a 401 from one must drop it, or
@@ -106,17 +107,23 @@ func TestSubmissionRetriesAPassingGitHubFailure(t *testing.T) {
 	}
 }
 
-// A submission that meets GitHub's rate limit waits for GitHub's time, within its own lifetime,
-// rather than spending its tries before the limit lifts.
+// A submission that meets GitHub's rate limit waits for GitHub's time if that comes within the
+// hour it has, and a snooze never settles it, even on its last attempt.
 func TestASubmissionWaitsForGitHubsLimit(t *testing.T) {
-	limited := appFailure(&githubapp.RateLimited{Until: time.Now().Add(20 * time.Minute)})
-	if wait, ok := submissionWait(limited, time.Now()); !ok || wait < 19*time.Minute || wait > 20*time.Minute {
+	until := time.Now().Add(20 * time.Minute)
+	if wait, ok := submissionWait(until, time.Now()); !ok || wait < 19*time.Minute || wait > 20*time.Minute {
 		t.Fatal("a submission did not wait for GitHub's time", wait, ok)
 	}
-	if wait, ok := submissionWait(limited, time.Now().Add(-50*time.Minute)); !ok || wait > 10*time.Minute {
-		t.Fatal("a submission waited past its lifetime", wait)
+	if _, ok := submissionWait(until, time.Now().Add(-50*time.Minute)); ok {
+		t.Fatal("a submission waited for a time past its hour")
 	}
-	if _, ok := submissionWait(appFailure(fmt.Errorf("%w: %w", githubapp.ErrTokenRejected, &githubapp.APIError{Status: 401})), time.Now()); ok {
-		t.Fatal("a rejected token waited for a rate limit")
+	if wait, ok := submissionWait(time.Now().Add(-time.Second), time.Now()); !ok || wait != time.Second {
+		t.Fatal("a passed time did not wait briefly", wait)
+	}
+	if settlesSubmission(river.JobSnooze(time.Minute), submissionAttempts) {
+		t.Fatal("a snoozed last attempt settled its submission")
+	}
+	if !settlesSubmission(errGitHubBusy, submissionAttempts) || settlesSubmission(errGitHubBusy, submissionAttempts-1) {
+		t.Fatal("a failed attempt settled at the wrong time")
 	}
 }

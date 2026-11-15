@@ -202,7 +202,7 @@ func TestARateLimitedSubmissionWaitsForGitHub(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The note is written before River records the snooze.
-		if strings.Contains(note, "Waiting until GitHub allows requests again") && job != "running" {
+		if strings.Contains(note, "when GitHub allows Astilba's GitHub App to make requests again") && job != "running" {
 			if state != "queued" || job != "scheduled" || attempt != 0 {
 				t.Fatalf("a rate-limited submission did not wait for GitHub: %s %s attempt %d", state, job, attempt)
 			}
