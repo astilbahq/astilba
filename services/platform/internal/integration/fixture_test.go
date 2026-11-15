@@ -295,6 +295,17 @@ func keysOf(st *store.Store) *cryptobox.Keyring {
 	return keys.(*cryptobox.Keyring)
 }
 
+// recoverKeys is a recover session for a merge a test runs itself, closed when the test ends.
+func recoverKeys(t testing.TB, st *store.Store, ws uuid.UUID) *secretbroker.Session {
+	t.Helper()
+	keys, err := st.Broker.Begin(context.Background(), secretbroker.Request{Workspace: ws, Purpose: secretbroker.Recover, Principal: secretbroker.Operator("test-merge"), Kinds: secretbroker.RecoveryKinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { keys.Close(context.Background(), secretbroker.Used) })
+	return keys
+}
+
 func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	t.Helper()
 	if testing.Short() {
@@ -358,6 +369,11 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	sender, e := mailer.New(mailer.Config{Address: address, From: "Astilba <accounts@example.test>", Mode: "plain", Development: true})
 	if e != nil {
 		t.Fatal(e)
+	}
+	// The installation's keys exist before the server starts, as they do once the release before
+	// has run: its token keys are then loaded at start and issue tokens straight away.
+	if more, e := st.Broker.InitKeys(ctx, func() bool { return true }); e != nil || more {
+		t.Fatal(more, e)
 	}
 	tokens, e := st.Broker.Tokens(ctx)
 	if e != nil {

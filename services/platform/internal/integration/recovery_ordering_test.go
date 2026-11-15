@@ -191,7 +191,7 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = portability.MergeRecovery(ctx, tx, snapshot, destination.owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, destination.st, snapshot.Workspace), snapshot, destination.owner); err != nil {
 			tx.Rollback(ctx)
 			t.Fatal("restore management snapshot", err)
 		}

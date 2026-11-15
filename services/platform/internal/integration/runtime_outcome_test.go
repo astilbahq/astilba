@@ -80,7 +80,7 @@ func TestVisualRuntimeOutcomeRequiresAppliedReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = portability.MergeRecovery(ctx, tx, before, fork.owner); err != nil {
+	if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, fork.st, before.Workspace), before, fork.owner); err != nil {
 		tx.Rollback(ctx)
 		t.Fatal(err)
 	}

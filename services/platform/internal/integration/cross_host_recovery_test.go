@@ -364,7 +364,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(ctx)
-			if err = portability.MergeRecovery(ctx, tx, savedArchive, owner); err != nil {
+			if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, destination.st, savedArchive.Workspace), savedArchive, owner); err != nil {
 				t.Fatal("restore saved management domain snapshot", err)
 			}
 			for _, raw := range savedCheckpoints {
@@ -433,7 +433,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = portability.MergeRecovery(ctx, tx, forkBase, source.owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, fork.st, forkBase.Workspace), forkBase, source.owner); err != nil {
 			tx.Rollback(ctx)
 			t.Fatal(err)
 		}
@@ -629,7 +629,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if err = portability.MergeRecovery(ctx, tx, preIdentify, owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, older.st, preIdentify.Workspace), preIdentify, owner); err != nil {
 			t.Fatal(err)
 		}
 		if err = tx.Commit(ctx); err != nil {
@@ -730,7 +730,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if err = portability.MergeRecovery(ctx, tx, beforeApply, owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, older.st, beforeApply.Workspace), beforeApply, owner); err != nil {
 			t.Fatal(err)
 		}
 		if err = tx.Commit(ctx); err != nil {

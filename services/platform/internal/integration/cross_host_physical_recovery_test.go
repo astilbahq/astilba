@@ -469,7 +469,7 @@ chmod +x /tmp/www/cgi-bin/health
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if err := portability.MergeRecovery(ctx, tx, archive, owner); err != nil {
+		if err := portability.MergeRecovery(ctx, tx, recoverKeys(t, dst.st, archive.Workspace), archive, owner); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(ctx); err != nil {
