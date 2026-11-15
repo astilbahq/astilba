@@ -83,8 +83,8 @@ func TestEnvelopeV2RefusesReservedAndUnknownFields(t *testing.T) {
 	}
 }
 
-// The database tells converted values from the rest by their first bytes
-// (custody_value_converted in migration 00062), so every envelope starts with its version.
+// The database tells converted values from the rest by their first bytes (custody_value_converted,
+// in the custody conversion migration), so every envelope starts with its version.
 func TestEnvelopesStartWithTheirVersion(t *testing.T) {
 	ring, err := New("prefix")
 	if err != nil {

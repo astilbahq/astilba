@@ -166,7 +166,8 @@ matching source archive available with every distributed or hosted version.
 
 #### Converting values
 
-Once every instance runs a stage 4 release, run `custody convert` once:
+Once every instance runs a stage 4 release, and five minutes after the last older one stopped,
+run `custody convert` once:
 
 ```sh
 docker compose run --rm --no-deps platform custody convert --operator "$(whoami)"
@@ -183,17 +184,20 @@ docker compose run --rm --no-deps platform custody convert --operator "$(whoami)
   They keep opening with the keyring, as do tokens issued before stage 3 until they expire, so
   keep the keyring.
 - It records custody stage 4 once no value is sealed under the keyring and every instance seen in
-  the last five minutes runs a stage 4 release or later. For that last check it holds the tables
-  that store values against writes, briefly, so none can be stored in between.
+  the last five minutes runs a stage 4 release or later. An instance counts as seen until five
+  minutes after it stops, so a run sooner than that finishes the values and says to run it again.
+  For the last check it waits for a running rewrap, then holds the tables that store values
+  against writes while it counts them. It waits at most two seconds for each table, and gives up
+  rather than hold writes longer.
 - Rolling back after it, to a release from stage 3 on, needs no restore: that release opens
   converted values. A release that compares recovery rows by their stored bytes, as stage 3's
   first releases do, refuses a checkpoint taken before the conversion.
 - An instance of a release before stage 3 that starts afterwards can still store a value under
-  the keyring. `custody status` names such values; run `custody convert` again to move them. A
+  the keyring. `custody status` counts such values by kind; run `custody convert` again to move them. A
   later release that stops reading the keyring checks again first.
 
-The key history records each run, with the operator and reason, and each batch it stored. A
-workspace's access records name the run, not the operator.
+The key history records each run, with the operator and reason, and each batch it stored. Each
+workspace with a value to convert gets an access record, which names the run, not the operator.
 
 ### Database connections
 

@@ -12,7 +12,17 @@ import (
 )
 
 const conversionWorkspaces = `-- name: ConversionWorkspaces :many
-SELECT id FROM workspaces WHERE id > $1 ORDER BY id LIMIT $2
+SELECT DISTINCT w.workspace_id::uuid AS workspace_id FROM (
+    SELECT workspace_id FROM secret_versions WHERE workspace_id > $1::uuid AND encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM git_connections WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM github_app_authorizations WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM registries WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM build_secret_versions WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM backup_destinations WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM backup_policies WHERE workspace_id > $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM alert_settings WHERE workspace_id > $1::uuid AND encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
+) w
+ORDER BY 1 LIMIT $2
 `
 
 type ConversionWorkspacesParams struct {
@@ -20,7 +30,7 @@ type ConversionWorkspacesParams struct {
 	Batch int32     `json:"batch"`
 }
 
-// unscoped: converting goes through every workspace, in ID order from after.
+// unscoped: the workspaces with a value still sealed under the keyring, in ID order from after.
 func (q *Queries) ConversionWorkspaces(ctx context.Context, arg ConversionWorkspacesParams) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, conversionWorkspaces, arg.After, arg.Batch)
 	if err != nil {
@@ -29,11 +39,11 @@ func (q *Queries) ConversionWorkspaces(ctx context.Context, arg ConversionWorksp
 	defer rows.Close()
 	items := []uuid.UUID{}
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var workspace_id uuid.UUID
+		if err := rows.Scan(&workspace_id); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, workspace_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -294,7 +304,8 @@ func (q *Queries) InstancesSealingUnderTheKeyring(ctx context.Context, sealingSt
 
 const legacyTOTPSecrets = `-- name: LegacyTOTPSecrets :many
 SELECT id, totp_secret, totp_pending FROM accounts
-WHERE id > $1 AND (custody_value_converted(totp_secret) IS FALSE OR custody_value_converted(totp_pending) IS FALSE)
+WHERE id > $1 AND (totp_secret IS NOT NULL AND custody_value_converted(totp_secret) IS NOT TRUE
+    OR totp_pending IS NOT NULL AND custody_value_converted(totp_pending) IS NOT TRUE)
 ORDER BY id LIMIT $2
 `
 
@@ -332,18 +343,17 @@ func (q *Queries) LegacyTOTPSecrets(ctx context.Context, arg LegacyTOTPSecretsPa
 
 const legacyValueCounts = `-- name: LegacyValueCounts :many
 SELECT v.kind::text AS kind, count(*)::bigint AS remaining FROM (
-    SELECT 'secret-version' AS kind, encrypted_value AS sealed FROM secret_versions WHERE erased_at IS NULL
-    UNION ALL SELECT 'git', encrypted_access FROM git_connections WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'github-authorization', encrypted_access FROM github_app_authorizations WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'registry', encrypted_access FROM registries WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'build-secret', encrypted_value FROM build_secret_versions
-    UNION ALL SELECT 'backup-destination', encrypted_access FROM backup_destinations WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'backup-policy', encrypted_access FROM backup_policies WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'alert-webhook', encrypted_webhook FROM alert_settings WHERE encrypted_webhook IS NOT NULL
-    UNION ALL SELECT 'totp', totp_secret FROM accounts WHERE totp_secret IS NOT NULL
-    UNION ALL SELECT 'totp-pending', totp_pending FROM accounts WHERE totp_pending IS NOT NULL
+    SELECT 'secret-version' AS kind FROM secret_versions WHERE encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'git' FROM git_connections WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'github-authorization' FROM github_app_authorizations WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'registry' FROM registries WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'build-secret' FROM build_secret_versions WHERE custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'backup-destination' FROM backup_destinations WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'backup-policy' FROM backup_policies WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'alert-webhook' FROM alert_settings WHERE encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
+    UNION ALL SELECT 'totp' FROM accounts WHERE totp_secret IS NOT NULL AND custody_value_converted(totp_secret) IS NOT TRUE
+    UNION ALL SELECT 'totp-pending' FROM accounts WHERE totp_pending IS NOT NULL AND custody_value_converted(totp_pending) IS NOT TRUE
 ) v
-WHERE custody_value_converted(v.sealed) IS NOT TRUE
 GROUP BY v.kind ORDER BY v.kind
 `
 
@@ -352,7 +362,8 @@ type LegacyValueCountsRow struct {
 	Remaining int64  `json:"remaining"`
 }
 
-// unscoped: how many values across the installation are still sealed under the keyring, by kind.
+// unscoped: how many values across the installation are still sealed under the keyring, by kind,
+// read through the *_under_keyring indexes.
 func (q *Queries) LegacyValueCounts(ctx context.Context) ([]LegacyValueCountsRow, error) {
 	rows, err := q.db.Query(ctx, legacyValueCounts)
 	if err != nil {
@@ -375,16 +386,16 @@ func (q *Queries) LegacyValueCounts(ctx context.Context) ([]LegacyValueCountsRow
 
 const legacyWorkspaceValues = `-- name: LegacyWorkspaceValues :many
 SELECT v.kind::text AS kind, v.id::uuid AS id, v.sealed::bytea AS sealed FROM (
-    SELECT 'secret-version' AS kind, id, encrypted_value AS sealed FROM secret_versions WHERE workspace_id = $1::uuid AND erased_at IS NULL
-    UNION ALL SELECT 'git', id, encrypted_access FROM git_connections WHERE workspace_id = $1::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'github-authorization', id, encrypted_access FROM github_app_authorizations WHERE workspace_id = $1::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'registry', id, encrypted_access FROM registries WHERE workspace_id = $1::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'build-secret', id, encrypted_value FROM build_secret_versions WHERE workspace_id = $1::uuid
-    UNION ALL SELECT 'backup-destination', id, encrypted_access FROM backup_destinations WHERE workspace_id = $1::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'backup-policy', id, encrypted_access FROM backup_policies WHERE workspace_id = $1::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'alert-webhook', workspace_id, encrypted_webhook FROM alert_settings WHERE workspace_id = $1::uuid AND encrypted_webhook IS NOT NULL
+    SELECT 'secret-version' AS kind, id, encrypted_value AS sealed FROM secret_versions WHERE workspace_id = $1::uuid AND encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'git', id, encrypted_access FROM git_connections WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'github-authorization', id, encrypted_access FROM github_app_authorizations WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'registry', id, encrypted_access FROM registries WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'build-secret', id, encrypted_value FROM build_secret_versions WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'backup-destination', id, encrypted_access FROM backup_destinations WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'backup-policy', id, encrypted_access FROM backup_policies WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'alert-webhook', workspace_id, encrypted_webhook FROM alert_settings WHERE workspace_id = $1::uuid AND encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
 ) v
-WHERE custody_value_converted(v.sealed) IS NOT TRUE AND (v.kind, v.id) > ($2::text, $3::uuid)
+WHERE (v.kind, v.id) > ($2::text, $3::uuid)
 ORDER BY v.kind, v.id LIMIT $4
 `
 
@@ -402,8 +413,8 @@ type LegacyWorkspaceValuesRow struct {
 }
 
 // One workspace's values still sealed under the installation keyring, after (after_kind,
-// after_id), for `custody convert`. Recovery checkpoints are never converted: hosts hold them bound
-// by digest.
+// after_id), for `custody convert`. Each table's condition is its *_under_keyring index's.
+// Recovery checkpoints are never converted: hosts hold them bound by digest.
 func (q *Queries) LegacyWorkspaceValues(ctx context.Context, arg LegacyWorkspaceValuesParams) ([]LegacyWorkspaceValuesRow, error) {
 	rows, err := q.db.Query(ctx, legacyWorkspaceValues,
 		arg.Workspace,

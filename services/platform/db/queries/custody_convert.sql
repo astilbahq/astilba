@@ -1,18 +1,18 @@
 -- name: LegacyWorkspaceValues :many
 -- One workspace's values still sealed under the installation keyring, after (after_kind,
--- after_id), for `custody convert`. Recovery checkpoints are never converted: hosts hold them bound
--- by digest.
+-- after_id), for `custody convert`. Each table's condition is its *_under_keyring index's.
+-- Recovery checkpoints are never converted: hosts hold them bound by digest.
 SELECT v.kind::text AS kind, v.id::uuid AS id, v.sealed::bytea AS sealed FROM (
-    SELECT 'secret-version' AS kind, id, encrypted_value AS sealed FROM secret_versions WHERE workspace_id = @workspace::uuid AND erased_at IS NULL
-    UNION ALL SELECT 'git', id, encrypted_access FROM git_connections WHERE workspace_id = @workspace::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'github-authorization', id, encrypted_access FROM github_app_authorizations WHERE workspace_id = @workspace::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'registry', id, encrypted_access FROM registries WHERE workspace_id = @workspace::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'build-secret', id, encrypted_value FROM build_secret_versions WHERE workspace_id = @workspace::uuid
-    UNION ALL SELECT 'backup-destination', id, encrypted_access FROM backup_destinations WHERE workspace_id = @workspace::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'backup-policy', id, encrypted_access FROM backup_policies WHERE workspace_id = @workspace::uuid AND encrypted_access IS NOT NULL
-    UNION ALL SELECT 'alert-webhook', workspace_id, encrypted_webhook FROM alert_settings WHERE workspace_id = @workspace::uuid AND encrypted_webhook IS NOT NULL
+    SELECT 'secret-version' AS kind, id, encrypted_value AS sealed FROM secret_versions WHERE workspace_id = @workspace::uuid AND encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'git', id, encrypted_access FROM git_connections WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'github-authorization', id, encrypted_access FROM github_app_authorizations WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'registry', id, encrypted_access FROM registries WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'build-secret', id, encrypted_value FROM build_secret_versions WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'backup-destination', id, encrypted_access FROM backup_destinations WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'backup-policy', id, encrypted_access FROM backup_policies WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'alert-webhook', workspace_id, encrypted_webhook FROM alert_settings WHERE workspace_id = @workspace::uuid AND encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
 ) v
-WHERE custody_value_converted(v.sealed) IS NOT TRUE AND (v.kind, v.id) > (@after_kind::text, @after_id::uuid)
+WHERE (v.kind, v.id) > (@after_kind::text, @after_id::uuid)
 ORDER BY v.kind, v.id LIMIT @batch;
 
 -- Each conversion stores a value only if it is still the one converted, so a value written since
@@ -45,7 +45,8 @@ UPDATE alert_settings SET encrypted_webhook = @converted WHERE workspace_id = @w
 -- name: LegacyTOTPSecrets :many
 -- unscoped: second factors belong to accounts, which are the installation's, not a workspace's.
 SELECT id, totp_secret, totp_pending FROM accounts
-WHERE id > @after AND (custody_value_converted(totp_secret) IS FALSE OR custody_value_converted(totp_pending) IS FALSE)
+WHERE id > @after AND (totp_secret IS NOT NULL AND custody_value_converted(totp_secret) IS NOT TRUE
+    OR totp_pending IS NOT NULL AND custody_value_converted(totp_pending) IS NOT TRUE)
 ORDER BY id LIMIT @batch;
 
 -- name: ConvertTOTPSecret :execrows
@@ -55,24 +56,34 @@ UPDATE accounts SET totp_secret = @converted WHERE id = @id AND totp_secret = @p
 UPDATE accounts SET totp_pending = @converted WHERE id = @id AND totp_pending = @previous;
 
 -- name: ConversionWorkspaces :many
--- unscoped: converting goes through every workspace, in ID order from after.
-SELECT id FROM workspaces WHERE id > @after ORDER BY id LIMIT @batch;
+-- unscoped: the workspaces with a value still sealed under the keyring, in ID order from after.
+SELECT DISTINCT w.workspace_id::uuid AS workspace_id FROM (
+    SELECT workspace_id FROM secret_versions WHERE workspace_id > @after::uuid AND encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM git_connections WHERE workspace_id > @after::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM github_app_authorizations WHERE workspace_id > @after::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM registries WHERE workspace_id > @after::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM build_secret_versions WHERE workspace_id > @after::uuid AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM backup_destinations WHERE workspace_id > @after::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM backup_policies WHERE workspace_id > @after::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT workspace_id FROM alert_settings WHERE workspace_id > @after::uuid AND encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
+) w
+ORDER BY 1 LIMIT @batch;
 
 -- name: LegacyValueCounts :many
--- unscoped: how many values across the installation are still sealed under the keyring, by kind.
+-- unscoped: how many values across the installation are still sealed under the keyring, by kind,
+-- read through the *_under_keyring indexes.
 SELECT v.kind::text AS kind, count(*)::bigint AS remaining FROM (
-    SELECT 'secret-version' AS kind, encrypted_value AS sealed FROM secret_versions WHERE erased_at IS NULL
-    UNION ALL SELECT 'git', encrypted_access FROM git_connections WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'github-authorization', encrypted_access FROM github_app_authorizations WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'registry', encrypted_access FROM registries WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'build-secret', encrypted_value FROM build_secret_versions
-    UNION ALL SELECT 'backup-destination', encrypted_access FROM backup_destinations WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'backup-policy', encrypted_access FROM backup_policies WHERE encrypted_access IS NOT NULL
-    UNION ALL SELECT 'alert-webhook', encrypted_webhook FROM alert_settings WHERE encrypted_webhook IS NOT NULL
-    UNION ALL SELECT 'totp', totp_secret FROM accounts WHERE totp_secret IS NOT NULL
-    UNION ALL SELECT 'totp-pending', totp_pending FROM accounts WHERE totp_pending IS NOT NULL
+    SELECT 'secret-version' AS kind FROM secret_versions WHERE encrypted_value IS NOT NULL AND custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'git' FROM git_connections WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'github-authorization' FROM github_app_authorizations WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'registry' FROM registries WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'build-secret' FROM build_secret_versions WHERE custody_value_converted(encrypted_value) IS NOT TRUE
+    UNION ALL SELECT 'backup-destination' FROM backup_destinations WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'backup-policy' FROM backup_policies WHERE custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'alert-webhook' FROM alert_settings WHERE encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
+    UNION ALL SELECT 'totp' FROM accounts WHERE totp_secret IS NOT NULL AND custody_value_converted(totp_secret) IS NOT TRUE
+    UNION ALL SELECT 'totp-pending' FROM accounts WHERE totp_pending IS NOT NULL AND custody_value_converted(totp_pending) IS NOT TRUE
 ) v
-WHERE custody_value_converted(v.sealed) IS NOT TRUE
 GROUP BY v.kind ORDER BY v.kind;
 
 -- name: HoldSealedValueTables :exec

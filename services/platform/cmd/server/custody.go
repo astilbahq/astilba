@@ -175,7 +175,12 @@ func legacyValues(counts []db.LegacyValueCountsRow) string {
 	return strings.Join(parts, ", ")
 }
 
+// printConversion prints what a run did, and only what it found out: nothing for a run refused
+// before it started, and no counts or stage for one that failed before reading them.
 func printConversion(w io.Writer, c secretbroker.Conversion) {
+	if c.Holders == 0 && c.Remaining == nil {
+		return
+	}
 	fmt.Fprintf(w, "run            %s\n", c.Run)
 	fmt.Fprintf(w, "converted      %d values across %d holders\n", c.Values, c.Holders)
 	if c.Raced > 0 {
@@ -184,8 +189,12 @@ func printConversion(w io.Writer, c secretbroker.Conversion) {
 	for _, s := range c.Skipped {
 		fmt.Fprintf(w, "skipped        %s\n", s)
 	}
-	fmt.Fprintf(w, "under keyring  %s\n", legacyValues(c.Remaining))
-	fmt.Fprintf(w, "custody stage  %d\n", c.Stage)
+	if c.Remaining != nil {
+		fmt.Fprintf(w, "under keyring  %s\n", legacyValues(c.Remaining))
+	}
+	if c.Stage > 0 {
+		fmt.Fprintf(w, "custody stage  %d\n", c.Stage)
+	}
 	if c.Waiting != "" {
 		fmt.Fprintf(w, "not complete   %s\n", c.Waiting)
 	}

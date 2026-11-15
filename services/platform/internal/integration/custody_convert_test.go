@@ -178,8 +178,10 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	base := capturedBase(t, f, ws)
 	restored := capturedBase(t, f, ws)
 	restoredID := restoredAs(t, f, ws, restored)
+	// A workspace with nothing under the keyring is left alone: no session opens its keys.
+	untouched := insertWorkspace(t, f, "Nothing to convert")
 	c := convert(t, f)
-	if c.Values != int64(len(seeds)) || c.Raced != 0 || len(c.Skipped) != 0 || remaining(c) != 0 || c.Stage != 4 || c.Waiting != "" {
+	if c.Holders != 2 || c.Values != int64(len(seeds)) || c.Raced != 0 || len(c.Skipped) != 0 || remaining(c) != 0 || c.Stage != 4 || c.Waiting != "" {
 		t.Fatalf("conversion %+v", c)
 	}
 	for _, s := range seeds {
@@ -220,6 +222,9 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	if err = f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM secret_access WHERE workspace_id=$1 AND purpose='rotate' AND operator_ref=$2 AND reason='convert'`, ws, c.Run.String()).Scan(&records); err != nil || records != 1 {
 		t.Fatal(records, err)
 	}
+	if err = f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM secret_access WHERE workspace_id=$1`, untouched).Scan(&records); err != nil || records != 0 {
+		t.Fatal("a workspace with nothing to convert has access records:", records, err)
+	}
 	// Recovery data from before still merges: its immutable rows compare by content, and the
 	// record of a row a recovery restored was moved to its content form before the row's key moved.
 	var attributed string
@@ -233,7 +238,7 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 		t.Fatal("a recovery base a restored row came from:", err)
 	}
 	again := convert(t, f)
-	if again.Values != 0 || again.Stage != 4 || remaining(again) != 0 {
+	if again.Holders != 1 || again.Values != 0 || again.Stage != 4 || remaining(again) != 0 {
 		t.Fatalf("second run %+v", again)
 	}
 }
@@ -412,6 +417,43 @@ func TestConvertSkipsHoldersItCannotConvert(t *testing.T) {
 		if header, err := cryptobox.ReadHeader(s.stored(t, f)); err != nil || header.Version != 1 {
 			t.Fatalf("%s moved onto a generation that was going: %+v %v", s.item.Kind, header, err)
 		}
+	}
+}
+
+// Converting waits for a running rewrap, which holds every value in its own transaction, rather
+// than deadlock with it, and records the stage once it has finished.
+func TestConvertWaitsForARewrap(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	seedLegacyValues(t, f)
+	rewrap, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rewrap.Rollback(ctx)
+	if err = db.New(rewrap).LockBootstrap(ctx); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		c   secretbroker.Conversion
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		c, err := f.st.Broker.Convert(ctx, "operator@example.test", "beside a rewrap")
+		done <- result{c, err}
+	}()
+	select {
+	case r := <-done:
+		t.Fatalf("converted while a rewrap ran: %+v %v", r.c, r.err)
+	case <-time.After(time.Second):
+	}
+	if err = rewrap.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || r.c.Values == 0 || r.c.Stage != 4 {
+		t.Fatalf("conversion after the rewrap %+v %v", r.c, r.err)
 	}
 }
 

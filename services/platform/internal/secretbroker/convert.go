@@ -29,8 +29,9 @@ const convertRestarts = 3
 // Conversion is what one `custody convert` run did.
 type Conversion struct {
 	Run uuid.UUID
-	// Holders is how many workspaces, and the installation, it went through; Values how many values
-	// it moved; Raced how many it left because they changed while it ran.
+	// Holders is how many holders it went through: the installation, and each workspace with a value
+	// under the keyring, which alone get a session and an access record. Values is how many values it
+	// moved; Raced how many it left because they changed while it ran.
 	Holders, Values, Raced int64
 	// Skipped names the holders it could not convert, and why.
 	Skipped []string
@@ -97,12 +98,20 @@ func (b *Broker) convert(ctx context.Context, c *Conversion) error {
 	if c.Remaining, err = q.LegacyValueCounts(ctx); err != nil {
 		return err
 	}
-	if len(c.Skipped) > 0 {
+	var remaining int64
+	for _, r := range c.Remaining {
+		remaining += r.Remaining
+	}
+	switch {
+	case len(c.Skipped) > 0:
 		c.Waiting = fmt.Sprintf("%d holders were not converted", len(c.Skipped))
-		c.Stage, err = q.CustodyStage(ctx)
+	case remaining > 0:
+		c.Waiting = fmt.Sprintf("%d values are still sealed under the installation keyring: run this again", remaining)
+	default:
+		c.Stage, c.Waiting, err = b.completeConversion(ctx)
 		return err
 	}
-	c.Stage, c.Waiting, err = b.completeConversion(ctx)
+	c.Stage, err = q.CustodyStage(ctx)
 	return err
 }
 
@@ -178,12 +187,8 @@ func (b *Broker) convertHolder(ctx context.Context, c *Conversion, holder uuid.U
 			// The session ended, or its generation stopped being the one to seal under: begin
 			// again from where this batch started.
 			end(err)
-			if batch.values == 0 {
-				if restarts++; restarts >= convertRestarts {
-					return fmt.Errorf("%s: its key generation kept changing: %w", name, err)
-				}
-			} else {
-				restarts = 0
+			if restarts++; restarts >= convertRestarts {
+				return fmt.Errorf("%s: its key generation kept changing: %w", name, err)
 			}
 			continue
 		case err != nil:
@@ -234,6 +239,11 @@ func (b *Broker) convertBatch(ctx context.Context, conn pgxConn, run uuid.UUID, 
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
+	// A rewrap moves values installation-wide in one transaction, locking them in another order:
+	// wait for it rather than deadlock with it.
+	if err = q.LockBootstrap(ctx); err != nil {
+		return out, err
+	}
 	values, next, full, err := legacyValues(ctx, q, holder, *cursor)
 	if err != nil {
 		return out, err
@@ -391,9 +401,14 @@ func (b *Broker) completeConversion(ctx context.Context) (int32, string, error) 
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
-	if waiting, err := b.CheckConverted(ctx, q); err != nil || waiting != "" {
-		stage, readErr := q.CustodyStage(ctx)
-		return stage, waiting, errors.Join(err, readErr)
+	waiting, err := b.CheckConverted(ctx, q)
+	if err != nil {
+		// The transaction failed with it, so the stage is read by whoever reports it.
+		return 0, "", err
+	}
+	if waiting != "" {
+		stage, err := q.CustodyStage(ctx)
+		return stage, waiting, err
 	}
 	n, err := q.AdvanceCustodyStage(ctx, convertStage-1)
 	if err != nil {
@@ -421,8 +436,12 @@ func (b *Broker) completeConversion(ctx context.Context) (int32, string, error) 
 // recorded. An instance of an older release that starts later, or one unseen for longer, can still
 // store such a value afterwards, so whatever stops reading the keyring runs this again first.
 func (b *Broker) CheckConverted(ctx context.Context, q *db.Queries) (string, error) {
-	if err := q.LimitLockWait(ctx, "10s"); err != nil {
+	if err := q.LimitLockWait(ctx, "2s"); err != nil {
 		return "", err
+	}
+	// A rewrap holds these tables' rows for its whole transaction: wait for it before holding any.
+	if err := q.LockBootstrap(ctx); err != nil {
+		return "", fmt.Errorf("a rewrap is running; try again once it finishes: %w", err)
 	}
 	if err := q.HoldSealedValueTables(ctx); err != nil {
 		return "", fmt.Errorf("cannot hold the tables with sealed values against writes; try again: %w", err)
@@ -443,7 +462,7 @@ func (b *Broker) CheckConverted(ctx context.Context, q *db.Queries) (string, err
 		return "", err
 	}
 	if older > 0 {
-		return fmt.Sprintf("%d instances seen in the last five minutes run a release that seals values under the installation keyring: upgrade them, then run this again", older), nil
+		return fmt.Sprintf("%d instances seen in the last five minutes run a release before stage 4, which may store values under the installation keyring: upgrade any still running, then run this again five minutes after the last one stopped", older), nil
 	}
 	return "", nil
 }
