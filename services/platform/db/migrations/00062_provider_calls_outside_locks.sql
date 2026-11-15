@@ -9,6 +9,19 @@ CREATE TABLE server_dns_leases (
  holder uuid NOT NULL,
  expires_at timestamptz NOT NULL
 );
+-- A job paused past its lease can still publish after the job that took the lease over has
+-- looked. The name it may have published waits here, durably, until it is due; the next job to
+-- hold the server's lease records it as a publication, and the sweep finds it should no job be
+-- queued. It is kept apart from dns_publications, whose rows a withdrawal deletes once it has
+-- removed what it saw.
+CREATE TABLE dns_late_publications (
+ server_id uuid NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+ base text NOT NULL,
+ zone text NOT NULL,
+ generation bigint NOT NULL,
+ due_at timestamptz NOT NULL,
+ PRIMARY KEY (server_id, base, zone)
+);
 -- Stripe is asked with nothing held, so answers about a subscription can arrive out of order.
 -- Each takes a ticket before it is asked for, and the row keeps the ticket of the answer it
 -- holds: an older answer about the same subscription is skipped, because the stored one was
@@ -19,4 +32,5 @@ ALTER TABLE hosted_subscriptions ADD COLUMN observed_ticket bigint NOT NULL DEFA
 -- +goose Down
 ALTER TABLE hosted_subscriptions DROP COLUMN observed_ticket;
 DROP SEQUENCE hosted_observation_tickets;
+DROP TABLE dns_late_publications;
 DROP TABLE server_dns_leases;

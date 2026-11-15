@@ -98,9 +98,9 @@ func (s *Service) releaseDNSLease(lease dnsLease) {
 // for a write made after the provider was asked. Revocation, recovery and configuration take
 // the same lock first, so the job's writes and theirs never wait on each other's rows. A job
 // whose lease was taken over writes nothing, and one taking it over waits until this commits.
-func (s *Service) underDNSLease(ctx context.Context, lease dnsLease, fn func(pgx.Tx) error) error {
-	// Made whatever the job's deadline: a job's lease is only taken over after its deadline has
-	// passed, and it must still find that out.
+// fn gets a context of its own: a job's lease is only taken over after the job's deadline has
+// passed, and the job must still find that out and record what the provider did.
+func (s *Service) underDNSLease(ctx context.Context, lease dnsLease, fn func(context.Context, pgx.Tx) error) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dnsWrite)
 	defer cancel()
 	tx, e := s.Store.Pool.Begin(ctx)
@@ -118,7 +118,7 @@ func (s *Service) underDNSLease(ctx context.Context, lease dnsLease, fn func(pgx
 	if held != 1 {
 		return errDNSLeaseLost
 	}
-	if e = fn(tx); e != nil {
+	if e = fn(ctx, tx); e != nil {
 		return e
 	}
 	return tx.Commit(ctx)
@@ -126,28 +126,61 @@ func (s *Service) underDNSLease(ctx context.Context, lease dnsLease, fn func(pgx
 
 // recheckAfterLostLease runs once a job finds its lease was taken over after it asked the
 // provider. A paused job's request can reach the provider after the next job has looked, so the
-// provider may hold records the database doesn't know of, or lack ones it does. It queues a job
-// for the server as it is now, carrying the name this job may have published, which that job
-// records under its own lease before it withdraws and publishes. When this job's request got no
-// answer, the new job waits out the margin a kept lease would have given it.
+// provider may hold records the database doesn't know of, or lack ones it does. The name this
+// job may have published is written down to be recorded as a publication by the next job to
+// hold the lease, once due, and a job for the server as it is now is queued for then. The sweep
+// finds the name too, should that job be lost. When this job's request got no answer, the name
+// is due only after the margin a kept lease would have given it.
 func (s *Service) recheckAfterLostLease(ctx context.Context, a domainArgs, published *db.DNSPublicationTargetRow, unanswered bool) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dnsWrite)
 	defer cancel()
-	job, e := db.New(s.Store.Pool).CurrentDNSJob(ctx, a.Server)
+	var delay time.Duration
+	if unanswered {
+		delay = dnsLateMargin
+	}
+	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return e
 	}
-	args := domainArgs{Server: a.Server, Generation: job.Generation, Controller: job.Controller}
+	defer tx.Rollback(ctx)
+	q := db.New(tx)
 	if published != nil {
-		args.Late = &latePublication{Base: published.Base, Zone: s.DNS.Zone, Generation: a.Generation}
+		if e = q.RecordLateDNSPublication(ctx, db.RecordLateDNSPublicationParams{Base: published.Base, Zone: s.DNS.Zone, Generation: a.Generation, Delay: delay.Seconds(), ServerID: a.Server}); e != nil {
+			return e
+		}
+	}
+	if e = s.enqueueAfterLease(ctx, tx, a.Server, delay); e != nil {
+		return e
+	}
+	return tx.Commit(ctx)
+}
+
+// adoptLatePublications records each due name a job may have published after losing its lease
+// as a publication, and queues a job for the server as it is now: the late request may have
+// put back addresses the owner has since replaced.
+func (s *Service) adoptLatePublications(ctx context.Context, lease dnsLease) error {
+	return s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
+		adopted, e := db.New(tx).AdoptLateDNSPublications(ctx, lease.server)
+		if e != nil || adopted == 0 {
+			return e
+		}
+		return s.enqueueAfterLease(ctx, tx, lease.server, 0)
+	})
+}
+
+// enqueueAfterLease queues a job for the server as it is now. It isn't unique: a job with the
+// same arguments may be running, holding the lease, and have looked at the provider too early.
+// This one starts after it.
+func (s *Service) enqueueAfterLease(ctx context.Context, tx pgx.Tx, server uuid.UUID, delay time.Duration) error {
+	job, e := db.New(tx).CurrentDNSJob(ctx, server)
+	if e != nil {
+		return e
 	}
 	opts := &river.InsertOpts{MaxAttempts: 10}
-	if unanswered {
-		opts.ScheduledAt = time.Now().Add(dnsLateMargin)
+	if delay > 0 {
+		opts.ScheduledAt = time.Now().Add(delay)
 	}
-	// Not unique: a job with the same arguments may be running, holding the lease, and have
-	// looked at the provider before this job's late request. This one starts after it.
-	_, e = s.Queue.Insert(ctx, args, opts)
+	_, e = s.Queue.InsertTx(ctx, tx, domainArgs{Server: server, Generation: job.Generation, Controller: job.Controller}, opts)
 	return e
 }
 
@@ -210,7 +243,7 @@ func (s *Service) withdrawStalePublications(ctx context.Context, lease dnsLease)
 // confirms the deletions audited for it. A failed attempt keeps the row, so the sweep retries it.
 func (s *Service) recordWithdrawal(ctx context.Context, lease dnsLease, p db.ListDNSPublicationsRow, name, reason string, complete bool) error {
 	key := db.CheckDNSPublicationParams{ServerID: lease.server, Base: p.Base, Zone: p.Zone}
-	return s.underDNSLease(ctx, lease, func(tx pgx.Tx) error {
+	return s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
 		if !complete {
 			return q.CheckDNSPublication(ctx, key)

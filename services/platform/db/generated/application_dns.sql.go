@@ -12,6 +12,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adoptLateDNSPublications = `-- name: AdoptLateDNSPublications :one
+WITH due AS (
+    DELETE FROM dns_late_publications l WHERE l.server_id = $1 AND l.due_at<=clock_timestamp()
+    RETURNING l.base,l.zone,l.generation
+), adopted AS (
+    INSERT INTO dns_publications(server_id,workspace_id,base,zone,revoked)
+    SELECT s.id,s.workspace_id,due.base,due.zone,s.revoked OR COALESCE(d.approved_controller IS NULL AND d.generation <> due.generation,true)
+    FROM due JOIN servers s ON s.id = $1 LEFT JOIN server_domains d ON d.server_id=s.id
+    ON CONFLICT(server_id,base,zone) DO NOTHING
+)
+SELECT count(*)::bigint FROM due
+`
+
+// unscoped: a DNS job names the server, holding its lease. Each due late name becomes a
+// publication, kept for withdrawal when the server is revoked or the approval the late job
+// published under has since ended, as revocation does; a recovery fence ends approval without
+// a new generation, and keeps records as before. A publication already there keeps its state.
+func (q *Queries) AdoptLateDNSPublications(ctx context.Context, serverID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, adoptLateDNSPublications, serverID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const checkDNSPublication = `-- name: CheckDNSPublication :exec
 UPDATE dns_publications SET checked_at=clock_timestamp()
 WHERE server_id = $1 AND base = $2 AND zone = $3
@@ -53,7 +77,8 @@ func (q *Queries) ConfirmDNSRecordRemovals(ctx context.Context, arg ConfirmDNSRe
 }
 
 const countStrandedDNSPublications = `-- name: CountStrandedDNSPublications :one
-SELECT count(*) FROM dns_publications WHERE NOT $1::boolean OR zone NOT IN ('',$2::text)
+SELECT ((SELECT count(*) FROM dns_publications WHERE NOT $1::boolean OR zone NOT IN ('',$2::text))
+    +(SELECT count(*) FROM dns_late_publications WHERE NOT $1::boolean OR zone NOT IN ('',$2::text)))::bigint AS count
 `
 
 type CountStrandedDNSPublicationsParams struct {
@@ -62,6 +87,7 @@ type CountStrandedDNSPublicationsParams struct {
 }
 
 // unscoped: an installation-wide startup check.
+// A late name not yet recorded as a publication counts too.
 func (q *Queries) CountStrandedDNSPublications(ctx context.Context, arg CountStrandedDNSPublicationsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countStrandedDNSPublications, arg.Automatic, arg.Zone)
 	var count int64
@@ -323,28 +349,29 @@ func (q *Queries) RecordDNSPublication(ctx context.Context, arg RecordDNSPublica
 }
 
 const recordLateDNSPublication = `-- name: RecordLateDNSPublication :exec
-INSERT INTO dns_publications(server_id,workspace_id,base,zone,revoked)
-SELECT s.id,s.workspace_id,$1,$2,s.revoked OR COALESCE(d.approved_controller IS NULL AND d.generation <> $3,true)
-FROM servers s LEFT JOIN server_domains d ON d.server_id=s.id WHERE s.id = $4
-ON CONFLICT(server_id,base,zone) DO NOTHING
+INSERT INTO dns_late_publications(server_id,base,zone,generation,due_at)
+SELECT s.id,$1,$2,$3,clock_timestamp()+make_interval(secs => $4::float8) FROM servers s WHERE s.id = $5
+ON CONFLICT(server_id,base,zone) DO UPDATE SET generation=LEAST(dns_late_publications.generation,EXCLUDED.generation),
+    due_at=GREATEST(dns_late_publications.due_at,EXCLUDED.due_at)
 `
 
 type RecordLateDNSPublicationParams struct {
 	Base       string    `json:"base"`
 	Zone       string    `json:"zone"`
 	Generation int64     `json:"generation"`
+	Delay      float64   `json:"delay"`
 	ServerID   uuid.UUID `json:"server_id"`
 }
 
-// unscoped: a DNS job names the server. A job whose lease was taken over may have published here
-// after the job that took it over had looked. The row brings the name back to withdrawal when the
-// server is revoked or the approval the job published under has since ended, as revocation does;
-// a recovery fence ends approval without a new generation, and keeps records as before.
+// unscoped: a DNS job names the server. Written before anything is queued, so a job's arguments
+// are never the only record of a name it may have published. due_at keeps any job from
+// recording it before a request that got no answer has had the margin to land.
 func (q *Queries) RecordLateDNSPublication(ctx context.Context, arg RecordLateDNSPublicationParams) error {
 	_, err := q.db.Exec(ctx, recordLateDNSPublication,
 		arg.Base,
 		arg.Zone,
 		arg.Generation,
+		arg.Delay,
 		arg.ServerID,
 	)
 	return err
@@ -379,14 +406,18 @@ func (q *Queries) RevokeDNSPublications(ctx context.Context, serverID uuid.UUID)
 }
 
 const staleDNSPublicationServers = `-- name: StaleDNSPublicationServers :many
-SELECT p.server_id,COALESCE(max(d.generation),0)::bigint AS generation,COALESCE(max(d.approved_controller),0)::bigint AS controller
-FROM dns_publications p
-LEFT JOIN server_domains d ON d.server_id=p.server_id
-WHERE p.zone IN ('',$1::text) AND (p.checked_at IS NULL OR p.checked_at<now()-interval '1 minute')
-    AND (p.revoked OR p.base <> $2::text
-        OR ($3::boolean AND NOT EXISTS (SELECT 1 FROM hosted_subscriptions h WHERE h.workspace_id=p.workspace_id AND h.management_until>now())))
-GROUP BY p.server_id
-ORDER BY min(COALESCE(p.checked_at,'-infinity'::timestamptz)),p.server_id
+SELECT x.server_id,COALESCE(max(d.generation),0)::bigint AS generation,COALESCE(max(d.approved_controller),0)::bigint AS controller
+FROM (
+    SELECT p.server_id,COALESCE(p.checked_at,'-infinity'::timestamptz) AS since FROM dns_publications p
+    WHERE p.zone IN ('',$1::text) AND (p.checked_at IS NULL OR p.checked_at<now()-interval '1 minute')
+        AND (p.revoked OR p.base <> $2::text
+            OR ($3::boolean AND NOT EXISTS (SELECT 1 FROM hosted_subscriptions h WHERE h.workspace_id=p.workspace_id AND h.management_until>now())))
+    UNION ALL
+    SELECT l.server_id,l.due_at FROM dns_late_publications l WHERE l.due_at<=now()
+) x
+LEFT JOIN server_domains d ON d.server_id=x.server_id
+GROUP BY x.server_id
+ORDER BY min(x.since),x.server_id
 LIMIT 100
 `
 
@@ -402,7 +433,8 @@ type StaleDNSPublicationServersRow struct {
 	Controller int64     `json:"controller"`
 }
 
-// unscoped: the sweep serves every workspace. Rows in another zone are stranded and left out.
+// unscoped: the sweep serves every workspace. Rows in another zone are stranded and left out. A
+// due late name is picked up in any zone: the job records it, and a stranded one is then counted.
 func (q *Queries) StaleDNSPublicationServers(ctx context.Context, arg StaleDNSPublicationServersParams) ([]StaleDNSPublicationServersRow, error) {
 	rows, err := q.db.Query(ctx, staleDNSPublicationServers, arg.Zone, arg.Base, arg.Hosted)
 	if err != nil {

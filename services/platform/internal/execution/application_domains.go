@@ -24,16 +24,6 @@ type domainArgs struct {
 	Server     uuid.UUID `json:"server"`
 	Generation int64     `json:"generation"`
 	Controller int64     `json:"controller"`
-	// Late is a name an earlier job may have published after losing its lease.
-	Late *latePublication `json:"late,omitempty"`
-}
-
-// latePublication is the name a job asked the provider for under the profile generation it
-// claimed, recorded by the job queued once that job found its lease taken over.
-type latePublication struct {
-	Base       string `json:"base"`
-	Zone       string `json:"zone"`
-	Generation int64  `json:"generation"`
 }
 
 func (domainArgs) Kind() string { return "platform_dns_v1" }
@@ -137,7 +127,7 @@ func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, 
 			return e
 		}
 		if s.DNS != nil {
-			if e = s.enqueueDomain(ctx, tx, domainArgs{Server: id, Generation: generation, Controller: controller}); e != nil {
+			if e = s.enqueueDomain(ctx, tx, domainArgs{id, generation, controller}); e != nil {
 				return e
 			}
 		}
@@ -272,13 +262,9 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 	if !taken {
 		return river.JobSnooze(time.Second)
 	}
-	if a.Late != nil {
-		// Recorded under the lease, so no withdrawal that looked before the late request
-		// landed can forget the name afterwards.
-		e = s.underDNSLease(ctx, lease, func(tx pgx.Tx) error {
-			return db.New(tx).RecordLateDNSPublication(ctx, db.RecordLateDNSPublicationParams{Base: a.Late.Base, Zone: a.Late.Zone, Generation: a.Late.Generation, ServerID: a.Server})
-		})
-	}
+	// A name a job may have published after losing its lease is recorded first, so this job
+	// withdraws it should it have to go.
+	e = s.adoptLatePublications(ctx, lease)
 	// Withdrawal converges on what the database says now, whichever job runs it.
 	if e == nil {
 		e = s.withdrawStalePublications(ctx, lease)
@@ -305,7 +291,7 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 // the check and the record: recording a publication ends a revocation's withdrawal.
 func (s *Service) claimPublication(ctx context.Context, lease dnsLease, a domainArgs) (*db.DNSPublicationTargetRow, error) {
 	var claimed *db.DNSPublicationTargetRow
-	e := s.underDNSLease(ctx, lease, func(tx pgx.Tx) error {
+	e := s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
 		target, e := q.DNSPublicationTarget(ctx, db.DNSPublicationTargetParams{ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}, Base: s.Store.ApplicationDomain})
 		if errors.Is(e, pgx.ErrNoRows) {
@@ -345,7 +331,7 @@ func (s *Service) publish(ctx context.Context, lease dnsLease, a domainArgs, tar
 	if records == nil {
 		raw = []byte(`{}`)
 	}
-	e := s.underDNSLease(ctx, lease, func(tx pgx.Tx) error {
+	e := s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
 		if providerErr == nil {
 			if e := s.confirmDeletions(ctx, q, a.Server, name, records); e != nil {

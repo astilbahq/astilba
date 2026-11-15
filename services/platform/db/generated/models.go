@@ -331,6 +331,14 @@ type DeploymentUnit struct {
 	PrimaryUnit   bool       `json:"primary_unit"`
 }
 
+type DnsLatePublication struct {
+	ServerID   uuid.UUID `json:"server_id"`
+	Base       string    `json:"base"`
+	Zone       string    `json:"zone"`
+	Generation int64     `json:"generation"`
+	DueAt      time.Time `json:"due_at"`
+}
+
 type DnsPublication struct {
 	ServerID    uuid.UUID  `json:"server_id"`
 	WorkspaceID uuid.UUID  `json:"workspace_id"`

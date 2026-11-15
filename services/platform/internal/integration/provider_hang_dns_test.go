@@ -231,3 +231,31 @@ func TestUnansweredDNSRequestKeepsTheLease(t *testing.T) {
 	}
 	release()
 }
+
+// A late name is written down before any job is queued for it. Should that job be lost, as
+// recovery deletes a server's queued DNS jobs, the sweep still finds the name and withdraws it.
+func TestSweepWithdrawsALateNameWhoseJobWasLost(t *testing.T) {
+	f := setup(t)
+	f.st.ApplicationDomain = "apps.example.test"
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	s.b.call("POST", s.path+"/revoke", nil, 204, nil)
+	eventually(t, "the revoked server's records are removed", func() bool {
+		return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0
+	})
+	// A paused job's request lands now, and the job queued for its name is gone.
+	z.add("A", s.name(), "198.51.100.21", s.marker)
+	if _, e := f.st.Pool.Exec(t.Context(), "INSERT INTO dns_late_publications(server_id,base,zone,generation,due_at) VALUES($1,$2,$3,1,now())", s.id, f.st.ApplicationDomain, f.execution.DNS.Zone); e != nil {
+		t.Fatal(e)
+	}
+	if e := f.execution.SweepDomains(t.Context()); e != nil {
+		t.Fatal(e)
+	}
+	eventually(t, "the late name is withdrawn", func() bool {
+		var late int
+		if e := f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM dns_late_publications WHERE server_id=$1", s.id).Scan(&late); e != nil {
+			t.Fatal(e)
+		}
+		return late == 0 && z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0
+	})
+}
