@@ -103,6 +103,7 @@ var automationOperations = map[string][]string{
 	"GetRuntime":                 {domain.EnvironmentRead},
 	"ListPipelineRuns":           {domain.EnvironmentRead},
 	"ListBuildRejections":        {domain.EnvironmentRead},
+	"ListBuildWaits":             {domain.EnvironmentRead},
 	"ListReleases":               {domain.EnvironmentRead},
 	"UpdateDraft":                {domain.ConfigurationWrite},
 	"CreateVisualPlan":           {domain.DeploymentPlan},

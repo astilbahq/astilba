@@ -35,6 +35,7 @@ type Client struct {
 	buildNetwork            atomic.Bool
 	rootlessBuilds          atomic.Bool
 	railpack                atomic.Bool
+	railpackInputs          atomic.Bool
 	safeReleases            atomic.Bool
 	serviceOutputs          atomic.Bool
 	previews                atomic.Bool
@@ -270,6 +271,7 @@ func (c *Client) Run(ctx context.Context) error {
 	wake <- struct{}{}
 	var wg sync.WaitGroup
 	wg.Go(func() { c.keepKeyStoreOpen(ctx) })
+	wg.Go(func() { c.keepJournalRekeyed(ctx) })
 	if c.Metrics != nil {
 		wg.Go(func() {
 			c.loop(ctx, time.Minute, func() error {

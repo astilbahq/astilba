@@ -141,6 +141,8 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 							selected = maps.Clone(row)
 						}
 					}
+				case "preview_requests":
+					selected, err = recoveryPreviewRequestKnowledge(prior, row)
 				case "deployment_units":
 					err = recoveryUnitKnowledge(selected, prior, row)
 				}
@@ -179,6 +181,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 		return err
 	}
 	if err = recoveryUnitOwnership(prepared); err != nil {
+		return err
+	}
+	if err = settleRecoveredPreviewPolicies(prepared, known, incoming); err != nil {
 		return err
 	}
 	if err = settleRevokedServers(prepared, revoked); err != nil {
@@ -399,6 +404,7 @@ func recoveryUpgradeKnowledge(prior, incoming portability.Row) (portability.Row,
 	}
 	return out, nil
 }
+
 func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, error) {
 	a, err := recoveryValue[backup.Policy](prior, "configuration")
 	if err != nil {

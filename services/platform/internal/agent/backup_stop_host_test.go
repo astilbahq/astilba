@@ -3,7 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json/jsontext"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,19 +16,27 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
-// PLAT-357 and PLAT-360. A coordinated backup leaf whose command stops while the agent runs on
-// settles by what its run did, and the primary's reservation and writers follow:
+// PLAT-357, PLAT-360, PLAT-366 and PLAT-369. A coordinated backup leaf whose command stops while
+// the agent runs on settles by what its run did and whether its cleanup was confirmed, and the
+// primary's reservation and writers follow:
 //   - stopped by the owner before its first effect, the leaf is cancelled with its run failed,
 //     and resuming the source releases the host;
-//   - stopped part way through its upload, by the owner or by a deadline it reached because it
-//     started late, the leaf and its run need attention, the host stays held with its writer
-//     stopped, and rejecting the leaf lets resumption release it;
-//   - a run that reaches its own timeout first, as one started on time does, fails, and resuming
-//     the source releases the host with no one inspecting it.
+//   - stopped by the owner part way through its upload, with nothing of the run left running, the
+//     leaf is cancelled with its run failed, and resuming the source releases the host;
+//   - stopped the same way while a container labelled with the run can't be removed, the leaf and
+//     its run need attention, the host stays held with its writer stopped, and once the owner
+//     removes the container and rejects the leaf, resumption releases it;
+//   - taken up only in its last seconds, the leaf runs past its deadline, because its work is
+//     bounded from when the agent took it up, and succeeds;
+//   - a run that reaches its own timeout fails, and resuming the source releases the host with
+//     no one inspecting it.
 //
 // The parent's resumption of other hosts after a rejection is covered by
 // TestNativeCrossHostDeployment's interrupted coordinated backup.
@@ -33,8 +46,9 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 		leaf, run    api.ExecutionState
 	}{
 		{name: "owner_cancel_before_first_effect", at: "backup-run-recorded", by: "owner", leaf: "cancelled", run: "failed"},
-		{name: "owner_cancel_mid_upload", at: "backup-uploading", by: "owner", leaf: "needs_attention", run: "needs_attention"},
-		{name: "late_start_reaching_its_deadline_mid_upload", at: "backup-uploading", by: "deadline", leaf: "needs_attention", run: "needs_attention"},
+		{name: "owner_cancel_mid_upload", at: "backup-uploading", by: "owner", leaf: "cancelled", run: "failed"},
+		{name: "owner_cancel_mid_upload_cleanup_unconfirmed", at: "backup-uploading", by: "owner-unremovable", leaf: "needs_attention", run: "needs_attention"},
+		{name: "late_start_runs_past_its_deadline", at: "backup-uploading", by: "deadline", leaf: "succeeded", run: "succeeded"},
 		{name: "run_timeout_mid_upload", at: "backup-uploading", by: "timeout", leaf: "failed", run: "failed"},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
@@ -79,11 +93,12 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 			// As management issues it: the leaf outlives its run's own timeout.
 			leaf := w.backupCommand(effect, true)
 			var stall time.Time
+			leftOver := ""
 			switch stop.by {
 			case "deadline":
 				// The agent took up the leaf only in its last seconds.
 				leaf.Deadline = time.Now().Add(10 * time.Second)
-				stall = leaf.Deadline.Add(500 * time.Millisecond)
+				stall = leaf.Deadline.Add(2 * time.Second)
 			case "timeout":
 				stall = time.Now().Add(policy.RunTimeout() + 3*time.Second)
 			}
@@ -91,7 +106,13 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 				if point != stop.at {
 					return
 				}
-				if stop.by == "owner" {
+				if stop.by == "owner-unremovable" {
+					// A container of the run that Docker refuses to remove.
+					leftOver = "astilba-leftover-" + effect.RunID.String()
+					w.runContainer(leftOver, policy, effect.RunID)
+					e.Docker = removalRefusingDocker(t)
+				}
+				if strings.HasPrefix(stop.by, "owner") {
 					cancelled := leaf
 					cancelled.CancelRequested = true
 					if _, err := w.journal.Accept(cancelled); err != nil {
@@ -103,7 +124,7 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 				time.Sleep(time.Until(stall))
 			}
 			report := w.deliver(leaf)
-			e.Point = nil
+			e.Point, e.Docker = nil, w.docker
 			if report.State != stop.leaf {
 				t.Fatalf("the stopped leaf settled as %s: %s", report.State, report.Note)
 			}
@@ -112,10 +133,16 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 				t.Fatalf("the stopped leaf's run settled as %+v (%v)", stored.Runs, err)
 			}
 			if stop.leaf == "needs_attention" {
+				if !strings.Contains(stored.Runs[0].Note, leftOver) {
+					t.Fatal("the run's note doesn't name the container it couldn't remove:", stored.Runs[0].Note)
+				}
 				// The parent waits on the uncertain leaf, so nothing resumes the writer or
-				// releases the host until the owner rejects its outcome.
+				// releases the host until the owner removes what the run left and rejects it.
 				if w.running() || !w.barrier() {
 					t.Fatal("an uncertain leaf released its host")
+				}
+				if _, err = w.docker.ContainerRemove(context.Background(), leftOver, client.ContainerRemoveOptions{Force: true}); err != nil {
+					t.Fatal(err)
 				}
 				if err = e.RejectCrossHostEffect(context.Background(), leaf.Id); err != nil {
 					t.Fatal(err)
@@ -130,7 +157,7 @@ func TestNativeCoordinatedBackupStops(t *testing.T) {
 			if err = w.journal.Acknowledge(leaf.Id, report.Sequence); err != nil {
 				t.Fatal(err)
 			}
-			// A cancelled or failed leaf moves the parent to resume the source.
+			// A settled leaf moves the parent to resume the source.
 			w.phase("resume-source")
 			w.phase("complete")
 			if w.barrier() || !w.running() {
@@ -156,4 +183,58 @@ func (w *unreadyWriter) backupCommand(b backup.Command, leaf bool) api.Execution
 		c.ParentId, c.RecoveryCheckpoint = &w.parent, &w.descriptor
 	}
 	return c
+}
+
+// runContainer starts a container labelled as run's data helper is.
+func (w *unreadyWriter) runContainer(name string, p backup.Policy, run uuid.UUID) {
+	w.t.Helper()
+	ctx := context.Background()
+	labels := visualLabels(p.Plan, p.ResourceID)
+	labels[labelKind], labels["com.astilba.run"] = "backup-data-v1", run.String()
+	created, err := w.docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: execution.TestImage, Cmd: []string{"sleep", "3600"}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none"}})
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	w.t.Cleanup(func() {
+		_, _ = w.docker.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true})
+	})
+	if _, err = w.docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// removalRefusingDocker is the test host's Docker, except that it refuses to remove containers.
+func removalRefusingDocker(t *testing.T) *client.Client {
+	return refusingDocker(t, func(r *http.Request) bool {
+		return r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/containers/")
+	})
+}
+
+// refusingDocker is the test host's Docker, except that it refuses the requests refuse picks.
+func refusingDocker(t *testing.T, refuse func(*http.Request) bool) *client.Client {
+	t.Helper()
+	host, err := client.ParseHostURL(os.Getenv("PLAT_APP_DOCKER_HOST"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) { r.Out.URL.Scheme, r.Out.URL.Host = "http", "docker" },
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, host.Scheme, host.Host)
+		}},
+	}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refuse(r) {
+			http.Error(w, `{"message":"refused"}`, http.StatusInternalServerError)
+			return
+		}
+		daemon.ServeHTTP(w, r)
+	}))
+	t.Cleanup(proxy.Close)
+	docker, err := client.New(client.WithHost("tcp://" + proxy.Listener.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	return docker
 }

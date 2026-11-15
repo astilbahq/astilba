@@ -245,18 +245,7 @@ func approvePreview(t *testing.T, h *hungPreview, path string) api.PullRequestPr
 
 func nextPreviewCommand(t *testing.T, h *hungPreview) api.ExecutionCommand {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		var p api.AgentPoll
-		agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/poll", h.token, nil, 200, &p)
-		if p.Command != nil {
-			return *p.Command
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no preview command arrived")
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
+	return nextHostCommand(t, h, h.token)
 }
 
 // readyPreview takes the policy's request through its build, image resolution and deployment.

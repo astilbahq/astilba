@@ -36,7 +36,7 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	if _, err = e.Docker.ContainerStart(ctx, worker.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.dataOutput(ctx, worker.ID, "sh", "-c", "printf 'file recovery fixture' > /data/record.txt; chmod 0640 /data/record.txt"); err != nil {
+	if _, err = e.dataOutput(ctx, pgClient{container: worker.ID}, "sh", "-c", "printf 'file recovery fixture' > /data/record.txt; chmod 0640 /data/record.txt"); err != nil {
 		t.Fatal(err)
 	}
 	_, expected, err := e.observeUnit(ctx, p, nil)
@@ -75,7 +75,7 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := e.dataOutput(ctx, helper, "cat", "/data/record.txt")
+	data, err := e.dataOutput(ctx, pgClient{container: helper}, "cat", "/data/record.txt")
 	cleanup()
 	if err != nil || string(data) != "file recovery fixture" {
 		t.Fatal("restored file differs")
@@ -139,7 +139,7 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	if err != nil || jobState.Runs[0].ExitCode == nil || *jobState.Runs[0].ExitCode != 0 {
 		t.Fatal("job exit result not persisted")
 	}
-	data, err = e.dataOutput(ctx, worker.ID, "cat", "/data/jobs.txt")
+	data, err = e.dataOutput(ctx, pgClient{container: worker.ID}, "cat", "/data/jobs.txt")
 	if err != nil || strings.Count(string(data), "completed") != 1 {
 		t.Fatal("job ran more than once")
 	}
@@ -169,7 +169,7 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	if err != nil || len(remaining.Items) != 0 {
 		t.Fatal("timeout left a run container behind", err)
 	}
-	data, err = e.dataOutput(ctx, worker.ID, "cat", "/data/jobs.txt")
+	data, err = e.dataOutput(ctx, pgClient{container: worker.ID}, "cat", "/data/jobs.txt")
 	if err != nil || strings.Count(string(data), "begin") != 1 || strings.Contains(string(data), "overrun") {
 		t.Fatal("timeout/overlap allowed additional job effects", err)
 	}

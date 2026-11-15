@@ -40,30 +40,43 @@ func scheduledJobFixture(t *testing.T, mode string) (*Engine, backup.Policy, *in
 	if err := policy.Validate(); err != nil {
 		t.Fatal("fixture policy invalid", err)
 	}
-	created, jobInspects := 0, 0
+	created, jobInspects, removals := 0, 0, 0
+	// A create that fails may still have made the container, as Docker's can.
+	exists := false
 	var jobLabels map[string]string
 	source := map[string]any{"Id": "source", "Image": image, "Config": map[string]any{"Image": image, "Labels": visualLabels(p, app)}, "HostConfig": map[string]any{}, "State": map[string]any{"Running": true, "Status": "running"}}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
 		switch {
+		case strings.HasSuffix(path, "/containers/json") && strings.Contains(r.URL.Query().Get("filters"), "com.astilba.run="):
+			jobs := []any{}
+			if exists {
+				state := "exited"
+				if running && !stopped {
+					state = "running"
+				}
+				jobs = append(jobs, map[string]any{"Id": "job", "Labels": jobLabels, "Names": []string{"/astilba-job"}, "State": state})
+			}
+			stablejson.Encode(w, jobs)
 		case strings.HasSuffix(path, "/containers/json"):
 			stablejson.Encode(w, []any{map[string]any{"Id": "source", "Labels": visualLabels(p, app), "Names": []string{"/" + p.ContainerName(app)}}})
 		case strings.HasSuffix(path, "/containers/source/json"):
 			stablejson.Encode(w, source)
 		case strings.HasSuffix(path, "/containers/create"):
 			created++
-			if cleanupFailure == "create" {
-				w.WriteHeader(500)
-				fmt.Fprint(w, `{"message":"create failed"}`)
-				return
-			}
+			exists = true
 			var b struct {
 				Labels map[string]string `json:"Labels"`
 			}
 			json.UnmarshalDecode(jsontext.NewDecoder(r.Body), &b)
 			jobLabels = b.Labels
 			jobInspects = 0
+			if cleanupFailure == "create" {
+				w.WriteHeader(500)
+				fmt.Fprint(w, `{"message":"create failed"}`)
+				return
+			}
 			w.WriteHeader(201)
 			fmt.Fprint(w, `{"Id":"job","Warnings":[]}`)
 		case strings.HasSuffix(path, "/containers/job/start"):
@@ -84,11 +97,13 @@ func scheduledJobFixture(t *testing.T, mode string) (*Engine, backup.Policy, *in
 			}
 			stablejson.Encode(w, map[string]any{"Id": "job", "Config": map[string]any{"Labels": jobLabels}, "State": map[string]any{"Running": false, "Status": "exited", "ExitCode": 0}})
 		case strings.HasSuffix(path, "/containers/job") && r.Method == "DELETE":
-			if cleanupFailure == "remove" {
+			removals++
+			if cleanupFailure == "remove" || cleanupFailure == "remove-once" && removals == 1 {
 				w.WriteHeader(500)
 				fmt.Fprint(w, `{"message":"cleanup remove failed"}`)
 				return
 			}
+			exists = false
 			w.WriteHeader(204)
 		default:
 			w.WriteHeader(404)
@@ -190,10 +205,19 @@ func TestManualAdvancedRunRejectsSupersedingLegacyMirror(t *testing.T) {
 		t.Fatal("manual execution created effects before current installation", err)
 	}
 }
+
+// PLAT-366. A known exit does not settle a job whose container may remain. One its own cleanup
+// lost track of is found by its run label and removed, so the run settles by its exit, succeeding
+// here, and the next occurrence runs. One Docker won't remove holds the host until it is
+// resolved, so the next doesn't.
 func TestKnownJobExitDoesNotReleaseUnconfirmedCleanupFence(t *testing.T) {
-	for _, failure := range []string{"inspect", "remove"} {
-		t.Run(failure, func(t *testing.T) {
-			e, p, created := scheduledJobFixture(t, failure)
+	for _, tc := range []struct {
+		failure string
+		state   string
+		runs    int
+	}{{"inspect", "succeeded", 2}, {"remove", "needs_attention", 1}} {
+		t.Run(tc.failure, func(t *testing.T) {
+			e, p, created := scheduledJobFixture(t, tc.failure)
 			at := time.Now().UTC()
 			if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: p, Next: at}}); err != nil {
 				t.Fatal(err)
@@ -205,8 +229,8 @@ func TestKnownJobExitDoesNotReleaseUnconfirmedCleanupFence(t *testing.T) {
 				}
 			}
 			state, err := e.Journal.schedule(p.ID)
-			if err != nil || *created != 1 || len(state.Runs) != 1 || state.Runs[0].State != "needs_attention" || state.Runs[0].ExitCode == nil {
-				t.Fatal("known exit discarded the cleanup fence", err)
+			if err != nil || *created != tc.runs || len(state.Runs) != tc.runs || state.Runs[0].State != tc.state || state.Runs[0].ExitCode == nil {
+				t.Fatal("a known exit settled the job by the wrong cleanup", state.Runs, err)
 			}
 		})
 	}
@@ -262,8 +286,8 @@ func TestJobFailingBeforeItsContainerDoesNotHoldTheHost(t *testing.T) {
 }
 
 // A run is uncertain only once it may have changed something outside the journal: one the agent
-// stopped during before that fails, and one stopped after it, or whose container create failed,
-// still needs inspection.
+// stopped during before that fails, and one it stopped after it still needs inspection. A job
+// whose container create failed fails once the container Docker made anyway is found and removed.
 func TestJobUncertaintyStartsAtItsFirstEffect(t *testing.T) {
 	t.Run("restart before effects", func(t *testing.T) {
 		e, p, created := scheduledJobFixture(t, "")
@@ -305,8 +329,11 @@ func TestJobUncertaintyStartsAtItsFirstEffect(t *testing.T) {
 			t.Fatal(err)
 		}
 		state, err := e.Journal.schedule(p.ID)
-		if err != nil || *created != 1 || len(state.Runs) != 1 || state.Runs[0].State != "needs_attention" {
-			t.Fatal("a failed create was taken to have made nothing", err, state.Runs)
+		if err != nil || *created != 1 || len(state.Runs) != 1 || state.Runs[0].State != "failed" {
+			t.Fatal("a failed create's container was not found and removed", err, state.Runs)
+		}
+		if left, err := e.Docker.ContainerList(context.Background(), client.ContainerListOptions{All: true, Filters: make(client.Filters).Add("label", "com.astilba.run="+state.Runs[0].ID.String())}); err != nil || len(left.Items) != 0 {
+			t.Fatal("the container a failed create made was left", left.Items, err)
 		}
 	})
 }

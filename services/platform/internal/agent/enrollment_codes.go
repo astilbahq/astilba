@@ -56,7 +56,7 @@ func (c *Client) enrollCode(ctx context.Context, code string) (api.AgentStatus, 
 			}
 		}
 		if keys != nil {
-			if entry.SealedCode, err = keys.Seal(ctx, []byte(code)); err != nil {
+			if entry.SealedCode, err = keys.Seal(ctx, credentialName, []byte(code)); err != nil {
 				return status, sent, false, err
 			}
 		} else {
@@ -178,7 +178,7 @@ func (c *Client) retryEnrollments(ctx context.Context) (api.AgentStatus, api.Age
 			if keys == nil {
 				continue
 			}
-			plain, err := keys.Unseal(ctx, e.SealedCode)
+			plain, err := keys.Unseal(ctx, credentialName, e.SealedCode)
 			if err != nil {
 				return api.AgentStatus{}, api.AgentCapabilities{}, false, err
 			}

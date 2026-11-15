@@ -72,6 +72,9 @@ type Broker struct {
 	budgets *budgets
 	log     *slog.Logger
 	now     func() time.Time
+	// installation and pool are set by Install, which an operator's command needs first.
+	installation uuid.UUID
+	pool         Pool
 }
 
 // New takes queries that do not run in a caller's transaction: each record commits on its own.
@@ -205,20 +208,22 @@ func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request) error {
 	if r.Workspace != uuid.Nil {
 		workspace = &r.Workspace
 	}
-	optional := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
 	// A request cancelled now must not give out keys with no record: the insert runs to its end
 	// either way, and Begin refuses after it.
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	err = b.q.InsertSecretAccess(write, db.InsertSecretAccessParams{
 		ID: id, WorkspaceID: workspace, Purpose: string(r.Purpose), PrincipalKind: string(p.Kind),
-		AccountID: p.Account, AutomationID: p.Automation, ServerID: p.Server, AgentInstance: optional(p.Instance),
-		Job: optional(p.Job), OperatorRef: optional(p.Operator), OperationID: r.Operation,
+		AccountID: p.Account, AutomationID: p.Automation, ServerID: p.Server, AgentInstance: optionalText(p.Instance),
+		Job: optionalText(p.Job), OperatorRef: optionalText(p.Operator), OperationID: r.Operation,
 		Items: rawItems, ItemCount: int32(len(r.Items) + len(r.Kinds)), Generations: generations,
 		BackendID: b.backend.ID(), Reason: reason,
 	})
 	return err
 }
+
+// optionalText is an empty string as NULL.
+func optionalText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
 
 func (b *Broker) outcome(ctx context.Context, id uuid.UUID, outcome Outcome) error {
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)

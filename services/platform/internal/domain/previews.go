@@ -1,8 +1,6 @@
 package domain
 
 import (
-	"errors"
-
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
@@ -87,89 +85,12 @@ func ValidatePreviewTemplate(s Specification, target uuid.UUID) error {
 // RemapPreview copies intent, not live resources, artifacts or production routes.
 // Secret mapping is supplied from the separately scoped template store.
 func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, hostname func(uuid.UUID) string) (Specification, error) {
-	// Deep-copy pointer and slice fields before changing the frozen template.
-	raw, err := stablejson.Marshal(source)
-	if err != nil {
-		return Specification{}, err
-	}
-	s, _, err := ParseSpec(raw)
+	s, err := RemapSpecification(source, ids, secrets, "preview")
 	if err != nil {
 		return s, err
 	}
-	remap := func(id uuid.UUID) (uuid.UUID, error) {
-		if v := ids[id]; v != uuid.Nil {
-			return v, nil
-		}
-		return uuid.Nil, errors.New("incomplete preview identity map")
-	}
-	variable := func(v *Variable) error {
-		if v.SecretVersionID != nil {
-			id := secrets[*v.SecretVersionID]
-			if id == uuid.Nil {
-				return Invalid("preview.secretVersionId")
-			}
-			v.SecretVersionID = &id
-		}
-		return nil
-	}
-	for i := range s.Variables {
-		if err = variable(&s.Variables[i]); err != nil {
-			return s, err
-		}
-	}
-	for i := range s.Applications {
-		a := &s.Applications[i]
-		if a.ID, err = remap(a.ID); err != nil {
-			return s, err
-		}
-		for j := range a.Variables {
-			if err = variable(&a.Variables[j]); err != nil {
-				return s, err
-			}
-		}
-		for j := range a.Mounts {
-			if a.Mounts[j].VolumeID, err = remap(a.Mounts[j].VolumeID); err != nil {
-				return s, err
-			}
-		}
-		for j := range a.DependsOn {
-			if a.DependsOn[j], err = remap(a.DependsOn[j]); err != nil {
-				return s, err
-			}
-		}
-		if a.Postgres != nil {
-			id := secrets[a.Postgres.PasswordSecretVersionID]
-			if id == uuid.Nil {
-				return s, Invalid("preview.postgresPassword")
-			}
-			a.Postgres.PasswordSecretVersionID = id
-		}
-	}
-	for i := range s.Volumes {
-		if s.Volumes[i].ID, err = remap(s.Volumes[i].ID); err != nil {
-			return s, err
-		}
-	}
-	for i := range s.Bindings {
-		b := &s.Bindings[i]
-		if b.ID, err = remap(b.ID); err != nil {
-			return s, err
-		}
-		if b.SourceID, err = remap(b.SourceID); err != nil {
-			return s, err
-		}
-		if b.TargetID, err = remap(b.TargetID); err != nil {
-			return s, err
-		}
-	}
 	routes := []Route{}
 	for _, r := range s.Routes {
-		if r.ID, err = remap(r.ID); err != nil {
-			return s, err
-		}
-		if r.TargetID, err = remap(r.TargetID); err != nil {
-			return s, err
-		}
 		r.Domain = hostname(r.TargetID)
 		if r.Domain == "" {
 			continue
@@ -179,7 +100,7 @@ func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, ho
 		routes = append(routes, r)
 	}
 	s.Routes = routes
-	raw, err = stablejson.Marshal(s)
+	raw, err := stablejson.Marshal(s)
 	if err != nil {
 		return s, err
 	}

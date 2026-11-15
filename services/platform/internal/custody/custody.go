@@ -5,6 +5,7 @@ package custody
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 
@@ -22,6 +23,13 @@ const (
 	ClassRotate       Class = "rotate"
 	ClassInstallation Class = "installation"
 )
+
+// Classes are every key class, in the order status reports them.
+var Classes = []Class{ClassServe, ClassExport, ClassRotate, ClassInstallation}
+
+// ServingDecrypts reports whether the serving process may unwrap under a class. Under rotate it
+// may only wrap: only an operator unwraps there.
+func ServingDecrypts(class Class) bool { return class != ClassRotate }
 
 type Scope string
 
@@ -54,6 +62,9 @@ var (
 	ErrUnavailable = errors.New("key service unavailable")
 	// ErrDenied is a key the backend refuses to use, such as a disabled one: never retried.
 	ErrDenied = errors.New("key service refused the key")
+	// ErrInvalid is a wrapping that does not open under its class and context: another key made
+	// it, it was made for another context, or it has been changed.
+	ErrInvalid = errors.New("the wrapping does not match its key or context")
 )
 
 // Backend wraps and unwraps keys under provider keys it alone holds.
@@ -94,7 +105,7 @@ func (f *File) Wrap(_ context.Context, class Class, key []byte, c Context) ([]by
 func (f *File) Unwrap(_ context.Context, class Class, blob []byte, c Context) (Result, error) {
 	key, err := f.ring.Open(blob, c.String()+":"+string(class))
 	if err != nil {
-		return Result{}, ErrDenied
+		return Result{}, ErrInvalid
 	}
 	return Result{Key: key}, nil
 }
@@ -102,3 +113,38 @@ func (f *File) Unwrap(_ context.Context, class Class, blob []byte, c Context) (R
 func (f *File) Check(context.Context) error { return f.ring.Validate() }
 
 func (f *File) Keyring() *cryptobox.Keyring { return f.ring }
+
+// canaryContext binds a canary to the installation alone.
+func canaryContext(installation uuid.UUID) Context {
+	return Context{Installation: installation, Scope: ScopeInstallation, Purpose: "canary"}
+}
+
+// NewCanary wraps a new random key under a class for the installation. Opening it later shows the
+// backend still holds that class's key, and that the database belongs to the installation.
+func NewCanary(ctx context.Context, b Backend, class Class, installation uuid.UUID) ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	blob, _, err := b.Wrap(ctx, class, key, canaryContext(installation))
+	return blob, err
+}
+
+// CheckCanary opens a canary. ErrInvalid means the backend's key for the class did not make it, or
+// it was made for another installation.
+func CheckCanary(ctx context.Context, b Backend, class Class, installation uuid.UUID, blob []byte) error {
+	_, err := b.Unwrap(ctx, class, blob, canaryContext(installation))
+	return err
+}
+
+// RewrapCanary wraps a canary's key again under the class's current key.
+func RewrapCanary(ctx context.Context, b Backend, class Class, installation uuid.UUID, blob []byte) ([]byte, error) {
+	c := canaryContext(installation)
+	opened, err := b.Unwrap(ctx, class, blob, c)
+	if err != nil {
+		return nil, err
+	}
+	wrapped, _, err := b.Wrap(ctx, class, opened.Key, c)
+	clear(opened.Key)
+	return wrapped, err
+}

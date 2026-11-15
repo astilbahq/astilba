@@ -206,7 +206,7 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	}
 	next.Keys["test"] = old.Keys["test"]
 	useKeys(t, f.st, next)
-	if e = f.st.Rewrap(ctx, "test"); e != nil {
+	if e = f.st.Rewrap(ctx, "test", ""); e != nil {
 		t.Fatal(e)
 	}
 	delete(next.Keys, "test")
@@ -262,6 +262,8 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 	input.Capabilities.RootlessBuilds = &yes
 	input.Capabilities.Compose = &yes
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", input, 200, nil)
+	// The branch holds the selected file, which an import is refused without.
+	tree.record(strings.Repeat("a", 40), importHonest[:1])
 	source := pipeline.Source{ConnectionID: imported, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
 	b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 400, nil)
 	source.ConnectionID = connection.ID
@@ -278,6 +280,11 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 		payload := string(*poll.Command.Pipeline)
 		if strings.Contains(payload, "installation-read-canary") != (attempt == 0) || strings.Contains(payload, "user-proof-canary") || strings.Contains(payload, "installation-write-canary") {
 			t.Fatal("runner received wrong GitHub credential scope", attempt)
+		}
+		// The runner learns when its token expires, which is after it may still start the import.
+		var delivered pipeline.Command
+		if attempt == 0 && (json.Unmarshal(*poll.Command.Pipeline, &delivered) != nil || delivered.Access == nil || delivered.Access.CloneExpires == nil || delivered.Access.CloneExpires.Before(poll.Command.Deadline.Add(25*time.Minute))) {
+			t.Fatal("runner's token may expire before it can start the import", delivered.Access)
 		}
 	}
 	if metadata.Load()-before > 1 || minted.Load() != 1 {

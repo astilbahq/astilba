@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
+import { railpackInputs, railpackVersion } from "../src/api/generated/railpack";
 import { openEnvironmentSection } from "./environment-section";
 import {
   acknowledgeRelease,
@@ -54,7 +55,8 @@ test("repository setup, Git service, queued build and cancellation use the real 
         rootlessBuilds: true,
         buildControls: true,
         ...acknowledgesReleases,
-        railpackVersion: "0.43.0",
+        railpackVersion,
+        railpackInputs: railpackInputs.arm64,
       },
       preflight: {
         ready: true,
@@ -71,6 +73,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   expect(enrolled.status()).toBe(200);
   expect(enrolled.headers()["astilba-agent-features"]).toBe("build-controls");
   expect(enrolled.headers()["astilba-agent-railpack"]).toBe("v1");
+  expect(enrolled.headers()["astilba-agent-railpack-inputs"]).toBe("v1");
   await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })

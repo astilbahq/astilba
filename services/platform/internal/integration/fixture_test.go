@@ -225,7 +225,22 @@ func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 		t.Fatal(e)
 	}
 	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
+	// As every command does at start, with an operator's checks so tests may rewrap.
+	if e = st.Broker.Install(context.Background(), st.Pool, uuid.Nil, true); e != nil {
+		t.Fatal(e)
+	}
 	storeKeys.Store(st, keys)
+}
+
+// restoredKeys gives a store another installation's keyring, as restoring that installation's
+// database beside its keyring does: the custody the store set up under its own keyring is not
+// part of what was restored.
+func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
+	t.Helper()
+	if _, err := st.Pool.Exec(context.Background(), "DELETE FROM custody_backends"); err != nil {
+		t.Fatal(err)
+	}
+	useKeys(t, st, keys)
 }
 
 // secretIdentity is the identity a secret version's value is sealed under, for tests that open
@@ -278,7 +293,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	})
 	// The one value a migration makes up. Each installation has its own.
-	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
+	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)
 	}
 	keys, _ := cryptobox.New("test")

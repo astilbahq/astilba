@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"encoding/pem"
 	"net/http/httptest"
 	"os"
@@ -104,6 +106,15 @@ func TestNativeAgentService(t *testing.T) {
 	op := apply("start")
 	await(op.Id)
 	systemctl("stop", unit)
+	// Enrollment sealed the journal's keyring to this machine, and the service, in its sandbox,
+	// opened it.
+	var keyring struct {
+		Version int            `json:"agentStateVersion"`
+		Keyring jsontext.Value `json:"keyring"`
+	}
+	if raw, err := os.ReadFile(filepath.Join(state, "keyring.json")); err != nil || json.Unmarshal(raw, &keyring) != nil || keyring.Version != agent.StateVersion || keyring.Keyring != nil {
+		t.Fatalf("the service's journal keyring isn't sealed: %v %+v", err, keyring)
+	}
 	docker, e := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
 	if e != nil {
 		t.Fatal(e)
