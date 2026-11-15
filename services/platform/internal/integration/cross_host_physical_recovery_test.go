@@ -457,10 +457,7 @@ chmod +x /tmp/www/cgi-bin/health
 		if err := dst.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		restoredKeys(t, dst.st, keysOf(source.st))
-		if _, err := dst.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Restored backup')`, ws); err != nil {
-			t.Fatal(err)
-		}
+		restoredWorkspace(t, source.st, dst.st, ws, "Restored backup")
 		if _, err := dst.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, owner); err != nil {
 			t.Fatal(err)
 		}

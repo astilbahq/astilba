@@ -351,10 +351,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err := destination.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		restoredKeys(t, destination.st, keysOf(source.st))
-		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Older management backup')`, ws); err != nil {
-			t.Fatal(err)
-		}
+		restoredWorkspace(t, source.st, destination.st, ws, "Older management backup")
 		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, owner); err != nil {
 			t.Fatal(err)
 		}
@@ -397,15 +394,12 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err := fork.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		restoredKeys(t, fork.st, keysOf(source.st))
+		restoredWorkspace(t, source.st, fork.st, ws, "Restored source history")
 		originalOwner, err := source.st.Queries.AccountByID(ctx, source.owner)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err = fork.st.Pool.Exec(ctx, `INSERT INTO accounts(id,email,name,password_hash) VALUES($1,$2,$3,$4)`, originalOwner.ID, originalOwner.Email, originalOwner.Name, originalOwner.PasswordHash); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = fork.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Restored source history')`, ws); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = fork.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, source.owner); err != nil {

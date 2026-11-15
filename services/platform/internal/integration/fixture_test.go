@@ -280,12 +280,23 @@ func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 	useKeys(t, st, keys)
 }
 
-// restoredWorkspaceKeys copies a workspace's keys from source to destination, as restoring the
-// source's backup brings them. The destination must hold the source's installation ID and keyring,
-// which the wrappings are bound to.
-func restoredWorkspaceKeys(t *testing.T, source, destination *store.Store, ws uuid.UUID) {
+// restoredWorkspace makes destination stand in for a restored backup of source that holds the
+// workspace ws: it takes source's installation ID and keyring, which key wrappings are bound to,
+// and gets the workspace, named name, with source's keys for it.
+func restoredWorkspace(t *testing.T, source, destination *store.Store, ws uuid.UUID, name string) {
 	t.Helper()
 	ctx := context.Background()
+	installation, err := db.New(source.Pool).InstallationID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = destination.Pool.Exec(ctx, `UPDATE installation SET id=$1`, installation); err != nil {
+		t.Fatal(err)
+	}
+	restoredKeys(t, destination, keysOf(source))
+	if _, err = destination.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,$2)`, ws, name); err != nil {
+		t.Fatal(err)
+	}
 	var generation int64
 	var kcv []byte
 	if err := source.Pool.QueryRow(ctx, `SELECT generation,kcv FROM workspace_keys WHERE workspace_id=$1 AND state='active'`, ws).Scan(&generation, &kcv); err != nil {

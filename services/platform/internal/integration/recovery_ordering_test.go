@@ -180,14 +180,7 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		if err := destination.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := destination.st.Pool.Exec(ctx, `UPDATE installation SET id=$1`, installationID(t, source)); err != nil {
-			t.Fatal(err)
-		}
-		restoredKeys(t, destination.st, keysOf(source.st))
-		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Ordering recovery')`, ws); err != nil {
-			t.Fatal(err)
-		}
-		restoredWorkspaceKeys(t, source.st, destination.st, ws)
+		restoredWorkspace(t, source.st, destination.st, ws, "Ordering recovery")
 		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, destination.owner); err != nil {
 			t.Fatal(err)
 		}
