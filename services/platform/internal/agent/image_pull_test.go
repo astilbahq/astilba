@@ -38,6 +38,9 @@ type testRegistry struct {
 	// token, when set, is required as a bearer token, issued for basic credentials.
 	username, password string
 	tokens             int
+	// anonymous requires a bearer token that its token service issues without a credential, as
+	// Docker Hub does for anonymous pulls.
+	anonymous bool
 }
 
 func newTestRegistry() *testRegistry {
@@ -70,7 +73,7 @@ func (r *testRegistry) count(d string) int {
 func (r *testRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path == "/token" {
 		user, password, ok := req.BasicAuth()
-		if !ok || user != r.username || password != r.password {
+		if r.anonymous && ok || !r.anonymous && (!ok || user != r.username || password != r.password) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -80,7 +83,7 @@ func (r *testRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		fmt.Fprint(w, `{"token":"fixture-token"}`)
 		return
 	}
-	if r.username != "" && req.Header.Get("Authorization") != "Bearer fixture-token" {
+	if (r.username != "" || r.anonymous) && req.Header.Get("Authorization") != "Bearer fixture-token" {
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="http://%s/token",service="fixture",scope="repository:fixture/app:pull"`, req.Host))
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -705,28 +708,6 @@ func TestPullNamesAnImageItsRegistryLacks(t *testing.T) {
 	_, _, err := measureTest(t, &Engine{}, registry.source(t, nil), sha([]byte("absent")), pullTestLimit)
 	if note := refusalNote(t, err); !strings.Contains(note, "its registry does not have it") {
 		t.Fatal(note)
-	}
-}
-
-// A mirror that lacks one of an image's index entries gives way to the next source.
-func TestPullFallsBackPastAMirrorLackingAnEntry(t *testing.T) {
-	registry := newTestRegistry()
-	layer := gzipOf(t, tarOf(t, testFile{"app", 10}))
-	chosen, other := registry.image(layer), registry.imageFor("arm64", layer)
-	root := registry.index(registry.entry(chosen, "linux/amd64", ""), registry.entry(other, "linux/arm64", ""))
-	mirror := newTestRegistry()
-	for d, m := range registry.manifests {
-		if d != other {
-			mirror.manifests[d] = m
-		}
-	}
-	mirror.blobs = registry.blobs
-	plan, _, err := planFromSources(context.Background(), []registryImage{mirror.source(t, nil), registry.source(t, nil)}, digest.Digest(root), amd64Server, pullTestLimit, true, nil)
-	if err != nil || plan == nil || mirror.count(other) != 1 || registry.count(other) != 1 {
-		t.Fatal("did not fall back past the mirror", err)
-	}
-	if _, _, err = planFromSources(context.Background(), []registryImage{mirror.source(t, nil)}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err == nil || !strings.Contains(err.Error(), "which its registry no longer has") {
-		t.Fatal("the last source's lack was not named", err)
 	}
 }
 

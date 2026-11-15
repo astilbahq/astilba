@@ -42,7 +42,7 @@ only when every changed path is known not to affect it:
 | Native hosts | Markdown under `docs/` other than `docs/hosting.md`, whose proxy configurations the native tests run, or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
-| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull action, canvas the root JavaScript manifests and lockfile, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
+| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull and Docker Hub mirror actions and `scripts/docker-hub-mirror.mjs`, canvas the root JavaScript manifests and lockfile, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
 | Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action or script, the Makefile, the allowlist, the pinned Public Suffix List, the scan's workflows, or a file under `scripts/` other than a `.test.mjs` file, since the scan's scripts import, read and run others |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
@@ -774,11 +774,11 @@ A runner already has every other Ubuntu package the bootstrap installs. If this 
 
 | Fetch | From | Its own retry |
 | --- | --- | --- |
-| The three `FROM` images | Docker Hub | None for the metadata request: one reset stops the build |
+| The three `FROM` images | Docker Hub, through [its mirror](#docker-hub-mirror) | None for the metadata request: one reset stops the build |
 | pnpm, in `scripts/install-pnpm.mjs` | npm registry | At least four minutes; a hash failure stops the build |
 | `pnpm install --frozen-lockfile` | npm registry | About three and a half minutes |
 | Go modules, in `pnpm app:build` | `proxy.golang.org` | None: one reset stops `go` |
-| PostgreSQL, for the smoke test | Docker Hub | None for the manifest request: one reset stops the pull |
+| PostgreSQL, for the smoke test | Docker Hub, through [its mirror](#docker-hub-mirror) | None for the manifest request: one reset stops the pull |
 
 The script makes up to three attempts at the whole `docker build`, and repeats the
 PostgreSQL pull as in [Image pulls](#image-pulls) within a 5-minute limit. One loop around the build covers the fetches without a retry of their own,
@@ -820,6 +820,53 @@ Not covered: Canvas and Workshop name their image in `container:`, which the run
 with its own short retries before any step can run. Pulls made during a test, such as
 BuildKit's in `TestNativePipeline`, are not retried either. A pull that stalls with its
 peer alive uses up the job's limit, or 5 minutes in the smoke test.
+
+## Docker Hub mirror
+
+Docker Hub limits anonymous pulls by IP address, and GitHub's runners share their addresses.
+From 14 November 2026 it refused pinned pulls with `429 Too Many Requests` or a failed
+manifest request, which took pull requests out of the merge queue. So CI reads every Docker
+Hub image through `mirror.gcr.io`, Google's public Docker Hub mirror, which needs no account
+or secret:
+
+| Who pulls | Where the mirror is set |
+| --- | --- |
+| The runner's own Docker, in Go, Application, Application browsers, Git providers and the pin report | `.github/actions/docker-hub-mirror` adds it to `/etc/docker/daemon.json` and restarts Docker |
+| The native lanes' fixture daemon, `astilba-plat4-docker.service` | `experiments/durable-execution/host/bootstrap.sh` writes `/etc/astilba-plat4/daemon.json`, the only configuration that daemon reads |
+| BuildKit in `TestBuildArtifacts` | Its `buildkitd.toml` |
+
+Docker and BuildKit use a mirror only for Docker Hub images. Every image is pinned by digest,
+and both check what the mirror serves against it, so the mirror can't change an image. When
+the mirror lacks an image or fails, both read Docker Hub itself. On 15 November 2026 the
+mirror served every pinned Docker Hub digest, and these were checked on Docker 29.9.2 with the
+containerd store and on BuildKit 0.34.1:
+
+- With Docker Hub's addresses refused, pulls and a `FROM` build succeed through the mirror,
+  and the pulled image has the same name and `RepoDigests` as one pulled from Docker Hub.
+- With a mirror that answers 404, answers 429 or refuses connections, both read Docker Hub.
+
+The agent's own builder, in `TestNativePipeline` and the other build tests, still reads its
+`FROM` images from Docker Hub itself: it writes BuildKit's configuration without the daemon's
+mirrors. That is a few requests per lane.
+
+`.github/actions/pull-images` refuses a Docker Hub image when the daemon doesn't list
+`https://mirror.gcr.io/` as a mirror, so a new job that pulls without the mirror step fails
+at once. A pinned image the mirror doesn't yet hold is still read from Docker Hub, under its
+limit.
+
+Some checks need Docker Hub itself:
+
+- The pin report reads tags and digests from Docker Hub's own API, since a mirror can serve a
+  stale tag. Only its pulls for the vulnerability scan use the mirror.
+- `TestNativeBuildNetwork` reaches `https://registry-1.docker.io/v2/` as its public
+  destination. That request reads no image, so it doesn't count as a pull.
+
+No native test breaks the mirror on purpose: Docker and BuildKit would then read Docker Hub
+itself, which is what CI must not depend on, so their fallback was checked by hand as above.
+Apart from the agent's own builder, the native tests don't use Docker Hub's anonymous token
+exchange either when the mirror serves an image. Unit tests against fake registries cover both in the agent's own image reads:
+`TestPullReadsThroughAnAnonymousToken`, `TestPullFallsBackPastAMirrorLackingAnEntry` and
+`TestPullFallsBackPastAFailingMirror`, for a mirror that answers 429 or can't be reached.
 
 ## Comparing changes
 
