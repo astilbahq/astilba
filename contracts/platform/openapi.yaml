@@ -5624,6 +5624,9 @@
         schedules:
           type: boolean
           description: Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1.
+        recoveryRestore:
+          type: boolean
+          description: Runs the restore command kind, which restores a snapshot from a lost server's backup repository. Advertised only after Astilba-Agent-Recovery-Restore v1.
         backups:
           type: boolean
         upgrades:
@@ -6175,6 +6178,7 @@
             - upgrade
             - network
             - crosshost
+            - restore
         "action":
           "$ref": "#/components/schemas/TestAction"
         "resourceId":
@@ -6198,7 +6202,12 @@
         pipeline:
           $ref: '#/components/schemas/PipelineCommand'
         backup:
-          $ref: '#/components/schemas/BackupCommand'
+          description: A BackupCommand for the backup and schedule kinds, and a BackupRecovery for the restore kind.
+          x-go-type: jsontext.Value
+          x-go-type-import: {path: encoding/json/jsontext}
+          oneOf:
+            - $ref: '#/components/schemas/BackupCommand'
+            - $ref: '#/components/schemas/BackupRecovery'
         upgrade:
           $ref: '#/components/schemas/UpgradeCommand'
         secretRelease:
@@ -6317,6 +6326,8 @@
           $ref: '#/components/schemas/PipelineResult'
         upgrade:
           $ref: '#/components/schemas/UpgradeStatus'
+        restore:
+          $ref: '#/components/schemas/BackupRecoveryResult'
     Operation:
       "type": "object"
       "additionalProperties": false
@@ -6358,6 +6369,7 @@
             - upgrade
             - network
             - crosshost
+            - restore
         "cancelRequested":
           "type": "boolean"
         "note":
@@ -9719,6 +9731,48 @@
         - runId
         - snapshot
         - targetId
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
+    BackupRecovery:
+      type: object
+      additionalProperties: false
+      description: >-
+        Restores a snapshot from a backup policy's repository onto a server other than the
+        policy's own. The installation is the source policy bound to the receiving server and the
+        plan applied there now. receivedAt is when management first received a report of the
+        snapshot.
+      properties:
+        installation:
+          $ref: '#/components/schemas/BackupInstallation'
+        runId:
+          type: string
+          format: uuid
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        targetId:
+          type: string
+          format: uuid
+        receivedAt:
+          type: string
+          format: date-time
+      required: [installation, runId, snapshot, targetId, receivedAt]
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
+    BackupRecoveryResult:
+      type: object
+      additionalProperties: false
+      description: The snapshot a succeeded restore command restored into its target volume, and the manifest it verified the restored data against.
+      properties:
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        targetId:
+          type: string
+          format: uuid
+        manifest:
+          $ref: '#/components/schemas/BackupManifest'
+      required: [snapshot, targetId, manifest]
       x-go-type: jsontext.Value
       x-go-type-import: {path: encoding/json/jsontext}
     BackupCommandRequest:

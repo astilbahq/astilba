@@ -2903,6 +2903,8 @@ export interface components {
             rootlessBuilds?: boolean;
             /** @description Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1. */
             schedules?: boolean;
+            /** @description Runs the restore command kind, which restores a snapshot from a lost server's backup repository. Advertised only after Astilba-Agent-Recovery-Restore v1. */
+            recoveryRestore?: boolean;
             backups?: boolean;
             upgrades?: boolean;
             /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
@@ -3169,7 +3171,7 @@ export interface components {
             generation: number;
             planHash: string;
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost" | "restore";
             action: components["schemas"]["TestAction"];
             /** Format: uuid */
             resourceId: string;
@@ -3180,7 +3182,8 @@ export interface components {
             cancelRequested: boolean;
             visual?: components["schemas"]["VisualPayload"];
             pipeline?: components["schemas"]["PipelineCommand"];
-            backup?: components["schemas"]["BackupCommand"];
+            /** @description A BackupCommand for the backup and schedule kinds, and a BackupRecovery for the restore kind. */
+            backup?: components["schemas"]["BackupCommand"] | components["schemas"]["BackupRecovery"];
             upgrade?: components["schemas"]["UpgradeCommand"];
             secretRelease?: components["schemas"]["SecretRelease"];
         };
@@ -3234,6 +3237,7 @@ export interface components {
             observation?: components["schemas"]["VisualObservation"];
             pipeline?: components["schemas"]["PipelineResult"];
             upgrade?: components["schemas"]["UpgradeStatus"];
+            restore?: components["schemas"]["BackupRecoveryResult"];
         };
         Operation: {
             /** Format: uuid */
@@ -3246,7 +3250,7 @@ export interface components {
             generation: number;
             state: components["schemas"]["ExecutionState"];
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost" | "restore";
             cancelRequested: boolean;
             /** @description Free text from management, the host or the build runner, such as why the operation failed. It can quote the environment's configuration, so an automation credential without environment:read gets a fixed note saying the details were withheld in its place. */
             note: string;
@@ -4677,6 +4681,24 @@ export interface components {
             snapshot: string;
             /** Format: uuid */
             targetId: string;
+        };
+        /** @description Restores a snapshot from a backup policy's repository onto a server other than the policy's own. The installation is the source policy bound to the receiving server and the plan applied there now. receivedAt is when management first received a report of the snapshot. */
+        BackupRecovery: {
+            installation: components["schemas"]["BackupInstallation"];
+            /** Format: uuid */
+            runId: string;
+            snapshot: string;
+            /** Format: uuid */
+            targetId: string;
+            /** Format: date-time */
+            receivedAt: string;
+        };
+        /** @description The snapshot a succeeded restore command restored into its target volume, and the manifest it verified the restored data against. */
+        BackupRecoveryResult: {
+            snapshot: string;
+            /** Format: uuid */
+            targetId: string;
+            manifest: components["schemas"]["BackupManifest"];
         };
         BackupCommandRequest: {
             /** @enum {string} */

@@ -258,21 +258,43 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if m.Recipe != backup.Recipe || m.PolicyID != in.Policy.ID || m.ResourceID != in.Policy.ResourceID || m.Method != in.Policy.Method || m.Bytes <= 0 || m.Bytes > 1<<40 || !backup.SnapshotID(m.SHA256) {
 		return errors.New("invalid backup manifest")
 	}
-	// Reserve headroom for the downloaded archive and expanded database, retaining
-	// both old and new volumes. Refuse unknown capacity rather than assuming room.
-	if freeBytes(e.Journal.dir) < m.Bytes*2+256<<20 || dockerFreeBytes(ctx, e.Docker) < m.Bytes*4+256<<20 {
-		return errors.New("insufficient restore capacity")
-	}
-	if _, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(r.TargetID), client.VolumeInspectOptions{}); !errdefs.IsNotFound(err) {
-		return errors.New("restore target must be absent")
-	}
-	stage, err := os.MkdirTemp(e.Journal.dir, "restore-stage-")
+	stored, err := e.restoreArchive(ctx, *in, r.ID, r.TargetID, r.Snapshot, m, original.ManifestHash, func() error { return nil })
 	if err != nil {
 		return err
 	}
+	r.Manifest = &stored
+	r.ManifestHash = backup.Hash(stored)
+	r.Verified = true
+	return nil
+}
+
+// restoreRefusal is a check that stopped a restore before it created anything. Its text says which.
+type restoreRefusal string
+
+func (r restoreRefusal) Error() string { return string(r) }
+
+// restoreArchive restores snapshot into the absent volume target, and returns the manifest it found
+// in the snapshot. m is the manifest the caller expects, and manifestHash its hash in full: the
+// snapshot must hold exactly one manifest with that hash, and an archive matching m's size and
+// digest. begin is called once these checks pass, just before the volume is created, which is the
+// restore's first effect outside the journal and its staging directory. The restored data is read
+// back and compared with the archive before it returns.
+func (e *Engine) restoreArchive(ctx context.Context, in backup.Installation, run, target uuid.UUID, snapshot string, m backup.Manifest, manifestHash string, begin func() error) (backup.Manifest, error) {
+	// Reserve headroom for the downloaded archive and expanded database, retaining
+	// both old and new volumes. Refuse unknown capacity rather than assuming room.
+	if freeBytes(e.Journal.dir) < m.Bytes*2+256<<20 || dockerFreeBytes(ctx, e.Docker) < m.Bytes*4+256<<20 {
+		return backup.Manifest{}, restoreRefusal("insufficient restore capacity")
+	}
+	if _, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); !errdefs.IsNotFound(err) {
+		return backup.Manifest{}, restoreRefusal("restore target must be absent")
+	}
+	stage, err := os.MkdirTemp(e.Journal.dir, "restore-stage-")
+	if err != nil {
+		return backup.Manifest{}, err
+	}
 	defer os.RemoveAll(stage)
-	if _, err = e.restic(ctx, *in, stage, "restore", r.Snapshot, "--target", stage, "--verify"); err != nil {
-		return err
+	if _, err = e.restic(ctx, in, stage, "restore", snapshot, "--target", stage, "--verify"); err != nil {
+		return backup.Manifest{}, err
 	}
 	manifestPath := ""
 	err = filepath.WalkDir(stage, func(path string, d os.DirEntry, err error) error {
@@ -288,15 +310,15 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 		return nil
 	})
 	if err != nil || manifestPath == "" {
-		return errors.New("snapshot manifest unavailable")
+		return backup.Manifest{}, restoreRefusal("snapshot manifest unavailable")
 	}
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return err
+		return backup.Manifest{}, err
 	}
 	var stored backup.Manifest
-	if json.Unmarshal(raw, &stored) != nil || backup.Hash(stored) != original.ManifestHash {
-		return errors.New("manifest differs from uploaded record")
+	if json.Unmarshal(raw, &stored) != nil || backup.Hash(stored) != manifestHash {
+		return backup.Manifest{}, restoreRefusal("snapshot manifest differs from the one expected")
 	}
 	dir := filepath.Dir(manifestPath)
 	filename := "files.tar"
@@ -305,64 +327,68 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	}
 	checked := m
 	if err = checksumFile(filepath.Join(dir, filename), &checked); err != nil || checked.Bytes != m.Bytes || checked.SHA256 != m.SHA256 {
-		return errors.New("snapshot checksum mismatch")
+		return backup.Manifest{}, restoreRefusal("snapshot archive does not match its manifest")
 	}
-	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(r.TargetID), Driver: "local", Labels: restoreTargetLabels(in.Policy.Plan, r.TargetID, m)}); err != nil {
-		return err
+	if err = begin(); err != nil {
+		return backup.Manifest{}, err
 	}
-	if _, err = e.volumePath(ctx, in.Policy, r.TargetID); err != nil {
-		return err
+	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(target), Driver: "local", Labels: restoreTargetLabels(in.Policy.Plan, target, m)}); err != nil {
+		return backup.Manifest{}, err
+	}
+	if _, err = e.volumePath(ctx, in.Policy, target); err != nil {
+		return backup.Manifest{}, err
 	}
 	if m.Method == "postgres-logical" {
-		err = e.restorePostgres(ctx, in.Policy, r, dir, stored, in.Access.DatabasePassword)
+		err = e.restorePostgres(ctx, in.Policy, run, target, dir, stored, in.Access.DatabasePassword)
 	} else {
-		var name string
-		var cleanup func()
-		name, cleanup, err = e.dataContainer(ctx, in.Policy, r.TargetID, r.ID, false)
-		if err != nil {
-			return err
-		}
-		defer cleanup()
-		var f *os.File
-		f, err = os.Open(filepath.Join(dir, "files.tar"))
-		if err == nil {
-			defer f.Close()
-			err = e.dataTool(ctx, f, io.Discard, "exec", "-i", name, "tar", "-xpf", "-", "-C", "/data")
-		}
-		if err == nil {
-			verification, openErr := os.CreateTemp(stage, "verified-files-")
-			if openErr != nil {
-				return openErr
-			}
-			err = e.dataTool(ctx, nil, verification, "exec", name, "tar", "-cpf", "-", "-C", "/data", ".")
-			err = errors.Join(err, verification.Close())
-			if err != nil {
-				return err
-			}
-			expected, readErr := backup.ArchiveContents(filepath.Join(dir, "files.tar"))
-			if readErr != nil {
-				return readErr
-			}
-			actual, readErr := backup.ArchiveContents(verification.Name())
-			if readErr != nil {
-				return readErr
-			}
-			if actual != expected {
-				return errors.New("restored files or metadata differ from archive")
-			}
-		}
-
+		err = e.restoreFiles(ctx, in.Policy, run, target, dir, stage)
 	}
 	if err != nil || ctx.Err() != nil {
-		return errors.Join(errors.New("fresh restore failed"), err, ctx.Err())
+		return backup.Manifest{}, errors.Join(errors.New("fresh restore failed"), err, ctx.Err())
 	}
-	r.Manifest = &stored
-	r.ManifestHash = backup.Hash(stored)
-	r.Verified = true
+	return stored, nil
+}
+
+// restoreFiles extracts dir's files.tar into the target volume and compares what the volume then
+// holds, contents and metadata, with the archive.
+func (e *Engine) restoreFiles(ctx context.Context, p backup.Policy, run, target uuid.UUID, dir, stage string) error {
+	name, cleanup, err := e.dataContainer(ctx, p, target, run, false)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	f, err := os.Open(filepath.Join(dir, "files.tar"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err = e.dataTool(ctx, f, io.Discard, "exec", "-i", name, "tar", "-xpf", "-", "-C", "/data"); err != nil {
+		return err
+	}
+	verification, err := os.CreateTemp(stage, "verified-files-")
+	if err != nil {
+		return err
+	}
+	err = e.dataTool(ctx, nil, verification, "exec", name, "tar", "-cpf", "-", "-C", "/data", ".")
+	err = errors.Join(err, verification.Close())
+	if err != nil {
+		return err
+	}
+	expected, err := backup.ArchiveContents(filepath.Join(dir, "files.tar"))
+	if err != nil {
+		return err
+	}
+	actual, err := backup.ArchiveContents(verification.Name())
+	if err != nil {
+		return err
+	}
+	if actual != expected {
+		return errors.New("restored files or metadata differ from archive")
+	}
 	return nil
 }
 func quoteIdentifier(v string) string { return `"` + strings.ReplaceAll(v, `"`, `""`) + `"` }
-func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup.Run, dir string, m backup.Manifest, password string) error {
+func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, run, target uuid.UUID, dir string, m backup.Manifest, password string) error {
 	a, err := sourceApp(p)
 	if err != nil || a.Postgres == nil || (m.Image != domain.PostgresImage && m.Image != domain.Postgres17Image) || m.Database != a.Postgres.Database || m.Username != a.Postgres.Username {
 		return errors.New("unsupported restore recipe")
@@ -374,10 +400,10 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, r *backup
 	if m.Database == maintenance {
 		maintenance = "template1"
 	}
-	labels := visualLabels(p.Plan, r.TargetID)
+	labels := visualLabels(p.Plan, target)
 	labels[labelKind] = "backup-restore-v1"
-	labels["com.astilba.run"] = r.ID.String()
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-restore-" + r.ID.String(), Config: &container.Config{Image: m.Image, Env: []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(r.TargetID), Target: domain.PostgresMount(m.Image)}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
+	labels["com.astilba.run"] = run.String()
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-restore-" + run.String(), Config: &container.Config{Image: m.Image, Env: []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(target), Target: domain.PostgresMount(m.Image)}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
 	if err != nil {
 		return err
 	}
@@ -475,17 +501,17 @@ func (e *Engine) waitPostgresStartup(ctx context.Context, container, user, datab
 func (e *Engine) checkRestoreOwnership(ctx context.Context, p backup.Policy) error {
 	cfg, err := e.Journal.Config()
 	if err != nil || cfg.ServerID != p.ServerID || cfg.Role == "build" {
-		return errors.New("restore server mismatch")
+		return restoreRefusal("this server is not the one the restore names")
 	}
 	unit, err := e.Journal.unit(p.Plan.UnitID)
 	if err != nil || unit.Plan.Hash != p.Plan.Hash {
-		return errors.New("restore policy must match the applied deployment")
+		return restoreRefusal("this server does not run the deployment the restore names")
 	}
 	volume := p.ResourceID
 	if p.Method == "postgres-logical" {
 		app, err := sourceApp(p)
 		if err != nil || app.Postgres == nil {
-			return errors.New("unsupported database source")
+			return restoreRefusal("the deployment has no such database")
 		}
 		volume = app.Mounts[0].VolumeID
 		c, err := e.Docker.ContainerInspect(ctx, p.Plan.ContainerName(app.ID), client.ContainerInspectOptions{})
@@ -493,7 +519,7 @@ func (e *Engine) checkRestoreOwnership(ctx context.Context, p backup.Policy) err
 			return err
 		}
 		if err == nil && (!visualOwned(c.Container.Config.Labels, p.Plan) || c.Container.Config.Labels[labelResource] != app.ID.String() || c.Container.Config.Image != p.Plan.Images[app.ID.String()]) {
-			return errors.New("source container ownership changed")
+			return restoreRefusal("the deployment's database container is not the one it describes")
 		}
 	}
 	_, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(volume), client.VolumeInspectOptions{})
