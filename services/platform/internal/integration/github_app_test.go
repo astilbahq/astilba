@@ -287,7 +287,8 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 			t.Fatal("runner's token may expire before it can start the import", delivered.Access)
 		}
 	}
-	if metadata.Load()-before > 1 || minted.Load() != 1 {
+	// Admission checks with management's own token; the delivery mints the runner's.
+	if metadata.Load()-before > 1 || minted.Load() != 2 {
 		t.Fatalf("repeated active polls amplified GitHub calls: metadata=%d mints=%d", metadata.Load()-before, minted.Load())
 	}
 

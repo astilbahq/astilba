@@ -1,0 +1,118 @@
+package integration
+
+import (
+	"context"
+	"encoding/json/v2"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/google/uuid"
+)
+
+// revoke ends token at GitHub, as its holder can.
+func (h *heldGitHub) revoke(t *testing.T, token string) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), "DELETE", h.f.execution.Policy.GitHubFixture+"/installation/token", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 204 {
+		t.Fatal("revocation refused", res.StatusCode)
+	}
+}
+
+func (h *heldGitHub) accepts(token string) bool {
+	_, revoked := h.revokedTokens.Load(token)
+	return !revoked
+}
+
+func deliveredToken(t *testing.T, c *api.ExecutionCommand) string {
+	t.Helper()
+	var p pipeline.Command
+	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Access == nil || !strings.HasPrefix(p.Access.Clone.Password, "installation-read-canary-") {
+		t.Fatal("the build was delivered without a read token")
+	}
+	return p.Access.Clone.Password
+}
+
+// A runner, or code its build runs, can revoke the GitHub token it receives (PLAT-401). That
+// token is its own, so management's calls and the next runner's clone go on working. A token of
+// management's own that GitHub stops accepting is dropped, and the next call mints another.
+func TestARunnerRevokingItsGitHubTokenAffectsOnlyItself(t *testing.T) {
+	h := newHungBuild(t)
+	github := heldGitHubFor(t, h.f, h.b, h.ws)
+	config := h.config
+	config.ConnectionID = github.connect(t)
+	bump := func() {
+		// A new generation misses the five-second cache of the last validation, so management
+		// checks the repository again with its own token.
+		execSQL(t, h, "UPDATE github_app_connections SET generation=generation+1 WHERE connection_id=$1", config.ConnectionID)
+	}
+	first := h.deliver(t, config)
+	revoked := deliveredToken(t, first)
+	github.revoke(t, revoked)
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: first.Id, Generation: first.Generation, PlanHash: first.PlanHash, Sequence: 1, State: "cancelled", Steps: []api.ExecutionStep{}}, 204, nil)
+
+	bump()
+	second := h.deliver(t, config)
+	next := deliveredToken(t, second)
+	own, _ := github.repositoryToken.Load().(string)
+	if next == revoked || !github.accepts(next) || own == "" || own == revoked || own == next || !github.accepts(own) {
+		t.Fatal("a revoked runner token reached management or the next runner")
+	}
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: second.Id, Generation: second.Generation, PlanHash: second.PlanHash, Sequence: 1, State: "cancelled", Steps: []api.ExecutionStep{}}, 204, nil)
+
+	// The request that meets the rejected token says to try again, and the next one works.
+	github.revoke(t, own)
+	bump()
+	refused := h.b.call("POST", h.path+"/builds", map[string]any{"baseRevisionId": h.draft.Id, "applicationId": h.app, "requestKey": uuid.New(), "configuration": config}, 503, nil)
+	if !strings.Contains(string(refused), "Try again") {
+		t.Fatal("a rejected token was not reported as passing", string(refused))
+	}
+	minted := github.minted.Load()
+	bump()
+	h.createBuild(t, config)
+	if again, _ := github.repositoryToken.Load().(string); again == own || !github.accepts(again) || github.minted.Load() == minted {
+		t.Fatal("management kept a token GitHub rejected")
+	}
+}
+
+// Each delivery mints its runner's token, so many builds at once can meet GitHub's rate limits.
+// The delivery then says why it waits, asks GitHub no sooner than GitHub said to, and goes once
+// GitHub allows it.
+func TestARateLimitedDeliveryWaitsAndSaysWhy(t *testing.T) {
+	h := newHungBuild(t)
+	github := heldGitHubFor(t, h.f, h.b, h.ws)
+	config := h.config
+	config.ConnectionID = github.connect(t)
+	op := h.createBuild(t, config)
+	github.limitMints.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	command, _ := pollReleased(h.f.execution, ctx, h.identity)
+	cancel()
+	if command != nil || h.deliveryStarted(t, op.Id) {
+		t.Fatal("a build was delivered without its runner's token")
+	}
+	var state, note string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state,note FROM execution_operations WHERE id=$1", op.Id).Scan(&state, &note); err != nil {
+		t.Fatal(err)
+	}
+	if state != "dispatched" || !strings.Contains(note, "GitHub limited how fast") {
+		t.Fatalf("a rate-limited delivery did not wait and say why: %s %q", state, note)
+	}
+	github.limitMints.Store(false)
+	ctx, cancel = context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	command, err := pollReleased(h.f.execution, ctx, h.identity)
+	if err != nil || command == nil || command.Id != op.Id {
+		t.Fatal("the build was not delivered once GitHub allowed it", err)
+	}
+	deliveredToken(t, command)
+}

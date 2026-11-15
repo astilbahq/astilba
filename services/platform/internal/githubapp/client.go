@@ -53,6 +53,8 @@ type Client struct {
 	http               *http.Client
 	mu                 sync.Mutex
 	tokens             map[tokenKey]*cachedToken
+	// paused is when GitHub said the App may make requests again, after limiting them.
+	paused time.Time
 }
 
 func New(c Config, origin string, development bool) (*Client, error) {
@@ -144,6 +146,74 @@ func (e *APIError) Error() string { return fmt.Sprintf("GitHub returned HTTP %d"
 
 var errRevoked = errors.New("GitHub installation authority was removed")
 
+// RateLimited is GitHub refusing a request under its rate limits, until Until.
+type RateLimited struct{ Until time.Time }
+
+func (e *RateLimited) Error() string {
+	return "GitHub is limiting requests until " + e.Until.UTC().Format(time.RFC3339)
+}
+
+// Limited reports whether err is GitHub limiting requests, and until when.
+func Limited(err error) (time.Time, bool) {
+	var limited *RateLimited
+	if errors.As(err, &limited) {
+		return limited.Until, true
+	}
+	return time.Time{}, false
+}
+
+// rateLimit reads when GitHub allows requests again from a refusal under its rate limits,
+// following GitHub's guidance: retry-after when present, then the primary limit's reset, and
+// otherwise a minute. A 403 without those signals is a rate limit only if its body says so.
+func rateLimit(res *http.Response, now time.Time) (time.Time, bool) {
+	if res.StatusCode != http.StatusForbidden && res.StatusCode != http.StatusTooManyRequests {
+		return time.Time{}, false
+	}
+	until := now.Add(time.Minute)
+	if seconds, e := strconv.Atoi(res.Header.Get("Retry-After")); e == nil && seconds > 0 {
+		until = now.Add(time.Duration(seconds) * time.Second)
+	} else if reset, e := strconv.ParseInt(res.Header.Get("X-RateLimit-Reset"), 10, 64); e == nil && res.Header.Get("X-RateLimit-Remaining") == "0" {
+		until = time.Unix(reset, 0)
+	} else if res.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		if !strings.Contains(strings.ToLower(string(body)), "rate limit") {
+			return time.Time{}, false
+		}
+	}
+	// GitHub's limits reset within the hour, so a later time is a header to distrust.
+	if until.Before(now.Add(time.Second)) {
+		until = now.Add(time.Second)
+	}
+	if until.After(now.Add(time.Hour)) {
+		until = now.Add(time.Hour)
+	}
+	return until, true
+}
+
+// appRequest makes a request as the App itself. Once GitHub limits one, the others wait out the
+// same time without asking, since asking again while limited can get an App blocked.
+func (c *Client) appRequest(ctx context.Context, method, path string, body, out any) error {
+	c.mu.Lock()
+	paused := c.paused
+	c.mu.Unlock()
+	if time.Now().Before(paused) {
+		return &RateLimited{Until: paused}
+	}
+	jwt, e := c.jwt()
+	if e != nil {
+		return e
+	}
+	e = c.request(ctx, method, c.api, path, jwt, body, out)
+	if until, limited := Limited(e); limited {
+		c.mu.Lock()
+		if until.After(c.paused) {
+			c.paused = until
+		}
+		c.mu.Unlock()
+	}
+	return e
+}
+
 func Revoked(err error) bool { return errors.Is(err, errRevoked) }
 func (c *Client) request(ctx context.Context, method, origin, path, token string, body any, out any) error {
 	var reader io.Reader
@@ -174,6 +244,9 @@ func (c *Client) request(ctx context.Context, method, origin, path, token string
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		if until, limited := rateLimit(res, time.Now()); limited {
+			return &RateLimited{Until: until}
+		}
 		return &APIError{res.StatusCode}
 	}
 	if out == nil {
@@ -281,22 +354,18 @@ func (c *Client) UserRepository(ctx context.Context, token, name string) (Reposi
 	return out, e
 }
 func (c *Client) Authority(ctx context.Context, installation int64, repository string) error {
-	jwt, e := c.jwt()
-	if e != nil {
-		return e
-	}
 	var app struct {
 		ID       int64  `json:"id"`
 		ClientID string `json:"client_id"`
 	}
-	if e = c.request(ctx, "GET", c.api, "/app", jwt, nil, &app); e != nil {
+	if e := c.appRequest(ctx, "GET", "/app", nil, &app); e != nil {
 		return e
 	}
 	if app.ID != c.Config.ID || app.ClientID != c.Config.ClientID {
 		return errors.New("GitHub App identity changed")
 	}
 	var i Installation
-	if e = c.request(ctx, "GET", c.api, "/repos/"+repository+"/installation", jwt, nil, &i); e != nil {
+	if e := c.appRequest(ctx, "GET", "/repos/"+repository+"/installation", nil, &i); e != nil {
 		var api *APIError
 		if errors.As(e, &api) && api.Status == 404 {
 			return errRevoked
@@ -369,6 +438,10 @@ func (c *Client) Validate(ctx context.Context, installation, repository, generat
 		if err == nil {
 			var repo Repository
 			err = c.request(ctx, "GET", c.api, "/repos/"+name, token, nil, &repo)
+			if Unauthorized(err) {
+				c.Forget(token)
+				err = fmt.Errorf("%w: %w", ErrTokenRejected, err)
+			}
 			if err == nil && (repo.ID != repository || repo.FullName != name || repo.Private != private) {
 				err = errors.New("GitHub repository identity or visibility changed")
 			}
@@ -388,149 +461,6 @@ func (c *Client) Validate(ctx context.Context, installation, repository, generat
 	return err
 }
 
-type tokenKey struct {
-	Installation, Repository int64
-	Write                    bool
-	PullRequests             bool
-}
-type cachedToken struct {
-	err     error
-	token   string
-	expires time.Time
-	// minted is when this client received the token.
-	minted time.Time
-	ready  chan struct{}
-}
-
-// tokenReuse is the least time a token must have left to be used again.
-const tokenReuse = 35 * time.Minute
-
-// tokenFresh is how long a token stays the best GitHub would give: one minted again sooner
-// would last at most this much longer. Reusing it, while it has tokenReuse left, keeps a key
-// to one mint a minute when callers ask for longer than GitHub gives, as when management's
-// clock runs ahead of GitHub's.
-const tokenFresh = time.Minute
-
-func (c *Client) Mint(ctx context.Context, installation, repository int64, write bool) (string, error) {
-	token, _, err := c.mintCached(ctx, tokenKey{installation, repository, write, false}, time.Now().Add(tokenReuse))
-	return token, err
-}
-func (c *Client) MintPreview(ctx context.Context, installation, repository int64) (string, error) {
-	token, _, err := c.mintCached(ctx, tokenKey{installation, repository, false, true}, time.Now().Add(tokenReuse))
-	return token, err
-}
-
-// MintReadUntil is Mint for a read-only token that must stay valid until a given time, such as
-// one a runner may use only some time after it is sent. A cached token that expires sooner is
-// replaced by a fresh one, which is as long-lived as GitHub makes them, unless it was itself
-// minted within tokenFresh. It also returns when the token expires.
-func (c *Client) MintReadUntil(ctx context.Context, installation, repository int64, until time.Time) (string, time.Time, error) {
-	if least := time.Now().Add(tokenReuse); until.Before(least) {
-		until = least
-	}
-	return c.mintCached(ctx, tokenKey{installation, repository, false, false}, until)
-}
-
-// mintCached returns a token for key that is valid until at least until, from the cache when
-// it holds one, and otherwise freshly minted. A token minted within tokenFresh, and with
-// tokenReuse left, is used for a later until too: no fresh one could do much better.
-func (c *Client) mintCached(ctx context.Context, key tokenKey, until time.Time) (string, time.Time, error) {
-	c.mu.Lock()
-	if v := c.tokens[key]; v != nil {
-		if v.ready != nil {
-			ready := v.ready
-			c.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return "", time.Time{}, ctx.Err()
-			case <-ready:
-				return v.token, v.expires, v.err
-			}
-		}
-		if !v.expires.Before(until) || time.Since(v.minted) < tokenFresh && time.Until(v.expires) >= tokenReuse {
-			token, expires := v.token, v.expires
-			c.mu.Unlock()
-			return token, expires, nil
-		}
-		delete(c.tokens, key)
-	}
-	for k, v := range c.tokens {
-		if v.ready == nil && time.Until(v.expires) < tokenReuse {
-			delete(c.tokens, k)
-		}
-	}
-	if len(c.tokens) >= 512 {
-		for k, v := range c.tokens {
-			if v.ready == nil {
-				delete(c.tokens, k)
-				break
-			}
-		}
-	}
-	if len(c.tokens) >= 512 {
-		c.mu.Unlock()
-		return "", time.Time{}, errors.New("GitHub token requests are at capacity")
-	}
-	pending := &cachedToken{ready: make(chan struct{})}
-	c.tokens[key] = pending
-	c.mu.Unlock()
-	token, expires, err := c.mint(ctx, key.Installation, key.Repository, key.Write, key.PullRequests)
-	c.mu.Lock()
-	pending.err = err
-	ready := pending.ready
-	if err != nil {
-		delete(c.tokens, key)
-	} else {
-		pending.token = token
-		pending.expires = expires
-		pending.minted = time.Now()
-		pending.ready = nil
-	}
-	close(ready)
-	c.mu.Unlock()
-	return token, expires, err
-}
-func (c *Client) mint(ctx context.Context, installation, repository int64, write, requests bool) (string, time.Time, error) {
-	permissions := map[string]string{"contents": "read"}
-	if requests {
-		permissions["pull_requests"] = "read"
-	}
-	if write {
-		permissions["contents"] = "write"
-		permissions["pull_requests"] = "write"
-	}
-	jwt, e := c.jwt()
-	if e != nil {
-		return "", time.Time{}, e
-	}
-	var out struct {
-		Token        string            `json:"token"`
-		ExpiresAt    time.Time         `json:"expires_at"`
-		Permissions  map[string]string `json:"permissions"`
-		Repositories []Repository      `json:"repositories"`
-	}
-	e = c.request(ctx, "POST", c.api, fmt.Sprintf("/app/installations/%d/access_tokens", installation), jwt, map[string]any{"repository_ids": []int64{repository}, "permissions": permissions}, &out)
-	if e != nil {
-		return "", time.Time{}, e
-	}
-	if !validToken(out.Token) || time.Until(out.ExpiresAt) < 35*time.Minute || len(out.Repositories) != 1 || out.Repositories[0].ID != repository {
-		return "", time.Time{}, errors.New("GitHub token scope or lifetime was not confirmed")
-	}
-	for k, v := range out.Permissions {
-		if k == "metadata" && v == "read" {
-			continue
-		}
-		if permissions[k] != v {
-			return "", time.Time{}, errors.New("GitHub returned broader token permissions")
-		}
-	}
-	for k, v := range permissions {
-		if out.Permissions[k] != v {
-			return "", time.Time{}, errors.New("GitHub token permission is missing")
-		}
-	}
-	return out.Token, out.ExpiresAt, nil
-}
 func (c *Client) VerifyWebhook(headers http.Header, body []byte) error {
 	signature := headers.Get("X-Hub-Signature-256")
 	raw, e := hex.DecodeString(strings.TrimPrefix(signature, "sha256="))

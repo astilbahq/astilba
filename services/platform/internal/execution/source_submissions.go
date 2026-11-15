@@ -341,7 +341,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		}
 		return nil, fail("the names or contents of these files include a known runtime secret value. Nothing was written to the repository.")
 	}
-	current, _, err := git.connection(ctx, tx, c.Connection.ID)
+	current, app, err := git.connection(ctx, tx, c.Connection.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +369,7 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	if access.Value.API.Password == "" {
 		return nil, fail("the connection has no API credential, which submitting needs to create the branch and review.")
 	}
-	provider, err := pipeline.NewProvider(current, access.Value.API, s.Policy)
+	provider, err := s.newProvider(current, access.Value.API, app)
 	if err != nil {
 		return nil, fail("the connection's provider is not allowed by this installation's policy.")
 	}
