@@ -303,26 +303,29 @@ test("each package is projected alone, with its own overhead", () => {
   );
 });
 
-test("when one letter alone is past the target, reports the closest split", () => {
+test("when one letter alone is past the target, reports it and the fewest closest lanes", () => {
   const jobs = [1, 2, 3].map((run) =>
     lane(run, [
       ["TestAlpha", 100],
+      ["TestBravo", 100],
+      ["TestCharlie", 100],
       ["TestRecoveryOne", 300],
       ["TestRecoveryTwo", 300],
     ]),
   );
   const split = nameSplit(jobs, noFamily, 400);
   assert.equal(split.fits, false);
+  // Four lanes would come no closer than two.
   assert.deepEqual(
     split.lanes.map(({ lane, seconds }) => [lane, seconds]),
     [
-      ["a", 110],
-      ["b-to-z", 610],
+      ["a-to-c", 310],
+      ["d-to-z", 610],
     ],
   );
   assert.match(
     splitReport(split, 400),
-    /^No split by first letter keeps every package within 400s: `TestB` to `TestZ` alone is projected at 610s\./,
+    /^No split by first letter keeps every package within 400s: the `TestR` tests alone are projected at 610s\./,
   );
 });
 

@@ -123,14 +123,15 @@ const total = (values) => values.reduce((sum, value) => sum + value, 0);
 // that keep every package's projected time within the target. A projection adds the
 // medians of a range's tests in a package to that package's median time outside its
 // tests, such as its fixture's start. A name outside A to Z goes with the last range,
-// as the last name lane takes whatever the others leave. When no split fits, this
-// returns the closest, which gives each lettered range its own lane.
+// as the last name lane takes whatever the others leave. When no split fits, because a
+// letter alone is past the target, this returns the fewest lanes that come closest and
+// the slowest letter.
 export function nameSplit(jobs, isFamily, target = targetSeconds) {
   const samples = new Map();
   const overheads = new Map();
   const add = (map, key, value) =>
     map.set(key, [...(map.get(key) ?? []), value]);
-  for (const { times, tests = [] } of jobs) {
+  for (const { times, tests } of jobs) {
     for (const { name, seconds } of times) {
       const ran = tests.filter((test) => test.package === name);
       if (!ran.length || ran.some((test) => isFamily(test.name))) continue;
@@ -210,23 +211,27 @@ export function nameSplit(jobs, isFamily, target = targetSeconds) {
       return { lane, from: letters[from], to: letters[to], ...cost(from, to) };
     });
   };
+  let closest;
   for (let count = 1; count <= starts.length; count++) {
     const lanes = ranges(count);
-    if (lanes.every(({ seconds }) => seconds <= target))
-      return { fits: true, lanes };
-    if (count === starts.length) return { fits: false, lanes };
+    const seconds = Math.max(...lanes.map((lane) => lane.seconds));
+    if (seconds <= target) return { fits: true, lanes };
+    if (!closest || seconds < closest.seconds) closest = { seconds, lanes };
   }
+  const slowest = letters
+    .map((letter, index) => ({ letter, ...cost(index, index) }))
+    .reduce((a, b) => (b.seconds > a.seconds ? b : a));
+  return { fits: false, lanes: closest.lanes, slowest };
 }
 
 // The proposed split as Markdown, for the job summary and the issue.
 export function splitReport(split, target = targetSeconds) {
   if (!split) return "";
-  const { fits, lanes } = split;
-  const worst = lanes.reduce((a, b) => (b.seconds > a.seconds ? b : a));
+  const { fits, lanes, slowest } = split;
   return [
     fits
       ? `The fewest name lanes that keep every package within ${target}s, from the same runs' test times:`
-      : `No split by first letter keeps every package within ${target}s: \`Test${worst.from}\` to \`Test${worst.to}\` alone is projected at ${Math.round(worst.seconds)}s. Move a family of those tests to a lane of its own. The closest split:`,
+      : `No split by first letter keeps every package within ${target}s: the \`Test${slowest.letter}\` tests alone are projected at ${Math.round(slowest.seconds)}s. Move a family of them to a lane of its own. The fewest lanes that come closest:`,
     "",
     "| Lane | Names | Slowest package | Projected seconds |",
     "| --- | --- | --- | --- |",

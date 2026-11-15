@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { appLaneProblems } from "./app-lanes.mjs";
+import { linuxTests } from "./native-lanes.mjs";
 
 const integration = "services/platform/internal/integration";
 const agent = "services/platform/internal/agent";
@@ -220,4 +222,49 @@ test("a lane named for letters runs only names with those letters", () => {
     problems(lanes(lettered.replaceAll("o-to-z", "o"), "a-to-n, o")),
     /verify-app-go-o runs TestUnit, whose name is outside its letters/,
   );
+});
+
+test("the real lanes run any test name exactly once, in every package", () => {
+  // Names no family selects, starting with every letter and with what comes after Z.
+  const odd = ["Test", "Test_odd", "Test9", "Testlower"];
+  const names = [
+    ...[..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].map(
+      (letter) => `Test${letter}nyNewBehaviour`,
+    ),
+    ...odd,
+  ];
+  const real = {
+    makefile: readFileSync("Makefile", "utf8"),
+    workflow: readFileSync(".github/workflows/application.yml", "utf8"),
+    tests: [
+      ...linuxTests(process.cwd(), "amd64").filter(
+        ({ name }) => name !== "TestMain",
+      ),
+      ...names.flatMap((name) =>
+        [integration, agent, "services/platform/cmd/cli"].map((directory) => ({
+          name,
+          directory,
+        })),
+      ),
+    ],
+  };
+  assert.equal(appLaneProblems(real).join("\n"), "");
+  // s-to-z is the lane that runs a name outside A to Z: without it, nothing does.
+  const remainder = /\nverify-app-go-s-to-z:\n\t[^\n]*\n/.exec(
+    real.makefile,
+  )?.[0];
+  assert.ok(remainder);
+  const without = appLaneProblems({
+    ...real,
+    makefile: real.makefile.replace(remainder, "\n"),
+  }).join("\n");
+  for (const name of [...odd, "TestSnyNewBehaviour", "TestZnyNewBehaviour"])
+    assert.match(
+      without,
+      new RegExp(
+        `^${name} in services/platform/cmd/cli is selected by no`,
+        "m",
+      ),
+    );
+  assert.doesNotMatch(without, /TestRnyNewBehaviour in .* selected by no/);
 });
