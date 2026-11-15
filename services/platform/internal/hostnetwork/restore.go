@@ -160,3 +160,28 @@ func (h Host) routedPeers(ctx context.Context, m Manifest) (map[string]bool, err
 	}
 	return out, nil
 }
+
+// restrictionPath marks that a restriction saved the intent whose hash it holds, beside the
+// snapshot, which earlier agents read and would refuse with another member.
+func (h Host) restrictionPath(id uuid.UUID) string {
+	return filepath.Join(h.Dir, "network", id.String()+".restriction")
+}
+
+// markRestriction records whether a restriction saved m, so that a restore that finishes m, even
+// after one that failed, applies it as the restriction would. The caller holds the host lock.
+func (h Host) markRestriction(m Manifest, restriction bool) error {
+	path := h.restrictionPath(m.NetworkID)
+	if !restriction {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return atomicPrivate(path, []byte(Hash(m)))
+}
+
+// restrictionMarked reports whether a restriction saved m.
+func (h Host) restrictionMarked(m Manifest) bool {
+	raw, err := privateRead(h.restrictionPath(m.NetworkID))
+	return err == nil && string(raw) == Hash(m)
+}

@@ -458,6 +458,15 @@ func TestNativeManagedLinks(t *testing.T) {
 	if err = b.Apply(ctx, revoking, bb, true); err == nil {
 		t.Fatal("restriction fault did not occur")
 	}
+	// The first restore that tries to finish it fails too, and the next still finishes it.
+	failRestore := filepath.Join(root, "nft-restore")
+	script = fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = '-f' ] && [ ! -e %s ]; then touch %s; exit 1; fi\nexec %s \"$@\"\n", failRestore, failRestore, originalNFT)
+	if err = os.WriteFile(b.NFT, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.RestoreMissing(ctx, nil); err == nil {
+		t.Fatal("restore fault did not occur")
+	}
 	b.NFT = originalNFT
 	if err = b.RestoreMissing(ctx, nil); err != nil {
 		t.Fatal("the restore didn't finish a restriction over a container network", err)

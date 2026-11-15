@@ -55,9 +55,6 @@ type Snapshot struct {
 	Manifest       Manifest `json:"manifest"`
 	Bridges        []Bridge `json:"bridges"`
 	AppliedHash    string   `json:"appliedHash"`
-	// Restriction says a restriction saved this intent, which it applies without the route check
-	// that adding authority takes. A restore that finishes it on a live link does the same.
-	Restriction bool `json:"restriction,omitempty"`
 }
 
 // Host is this machine's managed networking, with its state under Dir. Keys, when set, seals the
@@ -298,13 +295,17 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict,
 	// authority must not wait on one that appeared since. Nor does a restore that finishes a
 	// restriction an earlier failure left half applied on a live link, or one that routes nothing
 	// the link doesn't route already. A restore that would add a route is checked afresh.
-	finishing := restoring && live && (old.Restriction && Hash(old.Manifest) == Hash(m) || h.routesAlready(ctx, m))
-	if !restrict && !finishing {
+	restriction := restrict || restoring && h.restrictionMarked(m)
+	holdsPrefix := restrict || restoring && live && (restriction || h.routesAlready(ctx, m))
+	if !holdsPrefix {
 		if err = h.inspectRoutes(ctx, m); err != nil {
 			return err
 		}
 	}
-	if err = h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, Restriction: restrict}); err != nil {
+	if err = h.markRestriction(m, restriction); err != nil {
+		return err
+	}
+	if err = h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges}); err != nil {
 		return err
 	}
 	// The owned filter is installed before any new peer or published port is enabled.
@@ -321,7 +322,7 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict,
 			}
 		}
 		if m.Disabled {
-			return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m), Restriction: restrict})
+			return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m)})
 		}
 		return nil
 	}
@@ -377,7 +378,7 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict,
 	if err != nil || strings.TrimSpace(string(actual)) != m.PublicKey {
 		return errors.New("managed network identity verification failed")
 	}
-	return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m), Restriction: restrict})
+	return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m)})
 }
 
 // inspectInterface refuses m's interface name when something else holds it, and reports whether
