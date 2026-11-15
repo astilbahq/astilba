@@ -20,9 +20,9 @@ ALTER TABLE servers ADD COLUMN revoked_at timestamptz;
 -- policy, like its status, keeps an archive to one record per policy however many snapshots it
 -- retains.
 ALTER TABLE backup_policies ADD COLUMN snapshot_receipts jsonb NOT NULL DEFAULT '{}';
-INSERT INTO schema_additive_migrations (version) VALUES (64);
+INSERT INTO schema_additive_migrations (version) VALUES (65);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 64;
+DELETE FROM schema_additive_migrations WHERE version = 65;
 ALTER TABLE backup_policies DROP COLUMN snapshot_receipts;
 ALTER TABLE servers DROP COLUMN revoked_at;
