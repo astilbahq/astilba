@@ -64,6 +64,7 @@ test("two-factor sign-in separates authenticator and recovery modes and preserve
   const { codes } = await (
     await post(page.request, "/api/v1/auth/mfa/confirm", {
       code: enrollmentCode,
+      current: { password },
     })
   ).json();
   await post(page.request, "/api/v1/auth/logout");

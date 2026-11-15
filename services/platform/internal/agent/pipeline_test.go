@@ -193,7 +193,10 @@ esac
 		}
 	}
 	engine := Engine{Journal: journal, Docker: docker, DockerCLI: filepath.Join(dir, "docker")}
-	result, buildErr := engine.buildPipeline(t.Context(), c, p)
+	// executePipeline bounds a pipeline's context, as here, before building.
+	ctx, stop := context.WithDeadline(t.Context(), c.Deadline)
+	defer stop()
+	result, buildErr := engine.buildPipeline(ctx, c, p)
 	if buildErr == nil {
 		t.Fatal("fixture build unexpectedly succeeded")
 	}
@@ -215,6 +218,93 @@ func TestDockerFirewallOff(t *testing.T) {
 	for raw, want := range map[string]bool{`{"iptables": false}`: true, `{"iptables": true}`: false, `{"log-driver": "local"}`: false, `not json`: false} {
 		if dockerFirewallOff([]byte(raw)) != want {
 			t.Errorf("%s: want %v", raw, want)
+		}
+	}
+}
+
+// A pipeline this host took up runs for its lifetime from then, however long it waited for the
+// host first, and no longer.
+func TestStartedPipelineRunsForItsLifetimeFromItsStart(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"no such container"}`))
+	}))
+	defer daemon.Close()
+	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	run := func(started *time.Time) Record {
+		t.Helper()
+		j, plan := testVisualJournal(t)
+		source := pipeline.Source{ConnectionID: uuid.New(), Branch: "main", RunnerID: uuid.New(), Entrypoints: []string{"compose.yaml"}, Paths: []string{"compose.yaml"}}
+		p := pipeline.Command{Action: "import", Connection: pipeline.Connection{ID: source.ConnectionID, Provider: "gitea", BaseURL: "https://git.example", Repository: "team/app", RepositoryID: 12}, Commit: strings.Repeat("a", 40), Branch: "main", RevisionID: uuid.New(), UnitID: plan.UnitID, Source: &source}
+		raw, _ := stablejson.Marshal(p)
+		message := jsontext.Value(raw)
+		// It waited behind other work on the host until after its deadline.
+		c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: plan.UnitID, Kind: "pipeline", Generation: 1, PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(-time.Minute)}
+		if _, err := j.Accept(c); err != nil {
+			t.Fatal(err)
+		}
+		if started != nil {
+			if err := j.Mutate(c.Id, func(r *Record) { r.StartedAt = started }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r, _ := j.Record(c.Id)
+		e := Engine{Docker: docker, Journal: j}
+		if err := e.executePipeline(context.Background(), c, r); err != nil {
+			t.Fatal(err)
+		}
+		r, _ = j.Record(c.Id)
+		return r
+	}
+	// It gets past its deadline to the host's own checks, here the storage it needs.
+	r := run(nil)
+	if r.Report.State != "failed" || !strings.Contains(r.Report.Note, "free host storage") || r.StartedAt == nil {
+		t.Fatalf("a pipeline taken up after waiting for the host was cut short by its deadline: %s %q", r.Report.State, r.Report.Note)
+	}
+	// One first taken up a lifetime ago, before an agent restart, does not start again.
+	long := time.Now().Add(-31 * time.Minute)
+	if r = run(&long); r.Report.State != "cancelled" {
+		t.Fatalf("a pipeline ran past its lifetime from its start: %s %q", r.Report.State, r.Report.Note)
+	}
+}
+
+// A fetch that fails once its minted clone token has expired says so rather than failing as Git
+// does, and one that fails while the token is valid doesn't blame it.
+func TestExpiredCloneTokenSaysSo(t *testing.T) {
+	journal, plan := testVisualJournal(t)
+	docker, err := client.New(client.WithHost("tcp://127.0.0.1:1"), client.WithAPIVersion("1.56"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\nd=\"$(dirname \"$0\")\"\ncase \"$*\" in\n *\" fetch \"*) echo fetch >> \"$d/calls\"; exit 1;;\n *) cat >/dev/null;;\nesac\n"
+	if err = os.WriteFile(cli, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := Engine{Journal: journal, Docker: docker, DockerCLI: cli}
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID}
+	clone := func(expires *time.Time) (bool, error) {
+		t.Helper()
+		_ = os.Remove(filepath.Join(dir, "calls"))
+		p := pipeline.Command{Connection: pipeline.Connection{Provider: "github", BaseURL: "https://api.github.com", Repository: "team/app"}, Commit: strings.Repeat("a", 40), Access: &pipeline.RunnerAccess{Clone: pipeline.Credential{Username: "x-access-token", Password: "token"}, CloneExpires: expires}}
+		err := e.clonePipeline(t.Context(), c, p)
+		_, statErr := os.Stat(filepath.Join(dir, "calls"))
+		return statErr == nil, err
+	}
+	past, later := time.Now().Add(-time.Second), time.Now().Add(time.Hour)
+	if fetched, err := clone(&past); err != errCloneExpired || !fetched {
+		t.Fatal("a fetch that failed after its token expired did not say so", err, fetched)
+	}
+	for _, expires := range []*time.Time{&later, nil} {
+		if fetched, err := clone(expires); err == nil || err == errCloneExpired || !fetched {
+			t.Fatal("a fetch failing with a valid token blamed its expiry", err, fetched)
 		}
 	}
 }

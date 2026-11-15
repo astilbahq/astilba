@@ -71,8 +71,9 @@ var version5Tables = func() []table {
 // ArchiveVersion is the format exports write, and the tables recovery bases carry
 // (RecoveryArchiveVersion). Version 7 added source_submissions; version 8 added each environment's
 // retirement and the PostgreSQL major each managed volume was initialised by; version 9 added
-// purges, retired secrets and erased secret values.
-const ArchiveVersion = 9
+// purges, retired secrets and erased secret values; version 11 added which preview requests
+// revoking their preview's host released. Version 10 is a recovery base.
+const ArchiveVersion = 11
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -105,7 +106,7 @@ var version8Tables = func() []table {
 
 // Version 9 carries each environment's purge, each secret's retirement and which secret versions
 // were erased. An erased version has no value to carry, and imports erased.
-var tables = func() []table {
+var version9Tables = func() []table {
 	out := append([]table{}, version8Tables...)
 	for i := range out {
 		switch out[i].Name {
@@ -115,6 +116,18 @@ var tables = func() []table {
 			out[i].Columns += ",retired_at"
 		case "secret_versions":
 			out[i].Columns += ",erased_at"
+		}
+	}
+	return out
+}()
+
+// Version 11 carries whether revoking its preview's host released a preview request, which its
+// note tells the owner while the request has a new preview elsewhere.
+var tables = func() []table {
+	out := append([]table{}, version9Tables...)
+	for i := range out {
+		if out[i].Name == "preview_requests" {
+			out[i].Columns += ",released_by_revocation"
 		}
 	}
 	return out

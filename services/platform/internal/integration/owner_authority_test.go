@@ -140,7 +140,7 @@ func TestIssuerCredentialChangeVoidsInvitationAndEnrollmentCode(t *testing.T) {
 	ws := scope.WorkspaceId
 	grants := issueOwnerGrants(t, f, owner, ws, path, "before-change@example.test")
 	var renewed api.Session
-	owner.call("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}, 200, &renewed)
+	owner.call("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": f.password}}, 200, &renewed)
 	owner.csrf = renewed.CsrfToken
 	grants.refused(t, f, path)
 	var invitations []api.Invitation

@@ -242,6 +242,8 @@ func (s *service) offline(tx pgx.Tx) {
 	_ = s.github.InstallURL()
 	_ = s.github.AuthorizeURL()
 	_ = s.github.VerifyWebhook()
+	s.github.Forget("token")
+	s.provider.OnRejected(func() {})
 }
 
 // A transaction scoped to a literal has gone by the time the call runs.
