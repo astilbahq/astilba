@@ -175,7 +175,11 @@ which the manifest records.
    ```
 
 5. **Choose the image.** The manifest's `sourceRevision` is the image that took the backup. A
-   newer image also works once migrated; an older one refuses to start. Run
+   newer image also works once migrated, unless it is more than one
+   [custody stage](hosting.md#key-custody) ahead of the backup: then restore with the release in
+   between first. Don't use an older one: some refuse to start, and one
+   from before [custody stage 2](hosting.md#workspace-keys) starts but cannot open values a later
+   release sealed. Run
    `astilba migrate` with the image you choose, which does nothing when the schema already
    matches.
 

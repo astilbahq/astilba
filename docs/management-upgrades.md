@@ -76,7 +76,8 @@ Upgrade management before the agents. These steps assume
    - you can sign in with your second factor;
    - every server shows as connected within a minute;
    - `custody status` lists no pending work once `serve` has created any missing
-     [workspace keys](hosting.md#workspace-keys), which it logs as it goes;
+     [workspace keys](hosting.md#workspace-keys), which it logs as it goes. Until then, saving a
+     value in a workspace without its key is refused as temporarily busy;
    - the log shows no errors: `docker compose logs --since 10m platform`.
 
 If any check fails, roll back now: the longer the new version runs, the more you lose.
@@ -91,8 +92,11 @@ there. A build queued by the newer version can carry a field the old version doe
 as the rootless builder's marker. The old version then refuses that runner's polls and the
 build's results, and can't end the build, so the runner gets no work until you upgrade again.
 Before rolling back, let queued builds finish, or cancel them and wait until each shows as
-ended: a build already sent to a runner ends only after that runner next polls. If the old image
-refuses to start, for whatever reason, restore instead:
+ended: a build already sent to a runner ends only after that runner next polls. A release before
+custody stage 2 cannot open values a release at stage 3 or later sealed, although it starts:
+from such a release, go back only to a stage 2 release or later, and restore to go further (see
+[workspace keys](hosting.md#workspace-keys)). If the old image refuses to start, for whatever
+reason, restore instead:
 
 1. Stop management.
 2. Before you replace the database, see whether the new version sent work to any server. This
