@@ -17,12 +17,18 @@ var (
 
 	// Statements are matched in upper case, as PostgreSQL reads keywords and names in any
 	// case. Each form is anchored at both ends, so anything it does not name is not additive.
-	marker       = regexp.MustCompile(`^INSERT INTO SCHEMA_ADDITIVE_MIGRATIONS ?\(VERSION\) VALUES ?\((\d+)\)$`)
-	createTable  = regexp.MustCompile(`^CREATE TABLE ([A-Z_][A-Z0-9_]*) ?\(`)
-	createIndex  = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [A-Z0-9_]+ ON ([A-Z_][A-Z0-9_]*) ?(.*)$`)
-	plainColumns = regexp.MustCompile(`^\((?:[A-Z_][A-Z0-9_]*(?: ASC| DESC)?(?:, ?|\)$))+$`)
-	// A column compared with string constants, which no row an older release writes can fail.
-	constantPredicate = regexp.MustCompile(`^[A-Z_][A-Z0-9_]* (?:NOT )?IN ?\('[^']*'(?:, ?'[^']*')*\)$`)
+	marker      = regexp.MustCompile(`^INSERT INTO SCHEMA_ADDITIVE_MIGRATIONS ?\(VERSION\) VALUES ?\((\d+)\)$`)
+	createTable = regexp.MustCompile(`^CREATE TABLE ([A-Z_][A-Z0-9_]*) ?\(`)
+	createIndex = regexp.MustCompile(`^CREATE (UNIQUE )?INDEX [A-Z0-9_]+ ON ([A-Z_][A-Z0-9_]*) ?(.*)$`)
+	// A column, or a field a column's JSON holds, named by constant keys: `->` and `->>` give null
+	// for anything else a row holds rather than fail.
+	field        = `[A-Z_][A-Z0-9_]*(?: ?->>? ?'[^']*')*`
+	element      = `(?:[A-Z_][A-Z0-9_]*|\(` + field + `\))`
+	plainColumns = regexp.MustCompile(`^\((?:` + element + `(?: ASC| DESC)?(?:, ?|\)$))+$`)
+	// Columns and fields compared with string constants, or columns required to be present, which
+	// no row an older release writes can fail.
+	term              = `(?:(?:\(` + field + `\)|` + field + `) ?(?:(?:NOT )?IN ?\('[^']*'(?:, ?'[^']*')*\)|(?:=|<>) ?'[^']*')|[A-Z_][A-Z0-9_]* IS NOT NULL)`
+	constantPredicate = regexp.MustCompile(`^` + term + `(?: AND ` + term + `)*$`)
 	createFunc        = regexp.MustCompile(`^CREATE FUNCTION [A-Z_][A-Z0-9_]* ?\(`)
 	createTrigger     = regexp.MustCompile(`^CREATE TRIGGER [A-Z0-9_]+ (?:BEFORE|AFTER) .*? ON ([A-Z_][A-Z0-9_]*) FOR EACH ROW EXECUTE FUNCTION [A-Z_][A-Z0-9_]* ?\(\)$`)
 	addColumn         = regexp.MustCompile(`^ALTER TABLE ([A-Z_][A-Z0-9_]*) ADD COLUMN [A-Z_][A-Z0-9_]* (.*)$`)
@@ -150,7 +156,7 @@ func additive(s string, created map[string]bool) string {
 		// one that cannot fail.
 		columns, predicate, partial := strings.Cut(m[3], " WHERE ")
 		if !plainColumns.MatchString(columns) || partial && !constantPredicate.MatchString(predicate) {
-			return "an index on an existing table may list only its columns, limited only by comparing a column with constants"
+			return "an index on an existing table may list only its columns and their JSON fields, limited only by comparing them with constants"
 		}
 		return ""
 	}
@@ -352,7 +358,15 @@ func TestAdditiveClaims(t *testing.T) {
 		{"index limited by constants", "CREATE INDEX i ON execution_operations(server_id, created_at) WHERE state NOT IN ('succeeded','failed','cancelled');", true},
 		{"index limited by one constant", "CREATE INDEX i ON execution_operations (server_id) WHERE kind IN ('network');", true},
 		{"constants and a function", "CREATE INDEX i ON execution_operations (server_id) WHERE state IN ('failed') AND f(kind);", false},
-		{"constant compared through an expression", "CREATE INDEX i ON servers (id) WHERE (labels->>'port') IN ('1');", false},
+		{"constant compared with a field", "CREATE INDEX i ON servers (id) WHERE (labels->>'port') IN ('1');", true},
+		{"field cast before the comparison", "CREATE INDEX i ON servers (id) WHERE (labels->>'port')::int = 1;", false},
+		{"field compared with a constant", "CREATE INDEX i ON execution_operations (server_id) WHERE kind = 'network' AND command->'network'->>'action' = 'configure';", true},
+		{"field compared with a column", "CREATE INDEX i ON execution_operations (server_id) WHERE command->>'kind' = kind;", false},
+		{"present column", "CREATE INDEX i ON execution_operations (parent_id) WHERE parent_id IS NOT NULL;", true},
+		{"either of two constants", "CREATE INDEX i ON execution_operations (server_id) WHERE kind = 'a' OR state = 'b';", false},
+		{"indexed field", "CREATE INDEX i ON execution_operations (server_id, (command->'network'->'manifest'->'generation'));", true},
+		{"indexed field through a function", "CREATE INDEX i ON execution_operations (server_id, (jsonb_array_length(command->'steps')));", false},
+		{"indexed field cast", "CREATE INDEX i ON execution_operations (((command->>'generation')::bigint));", false},
 		{"quote inside a constant", "CREATE INDEX i ON servers (id) WHERE name IN ('a'' OR f(name) OR ''');", false},
 		{"expression limited by constants", "CREATE INDEX i ON servers ((lower(name))) WHERE kind IN ('a');", false},
 		{"predicate without columns", "CREATE INDEX i ON servers WHERE kind IN ('a');", false},

@@ -39,7 +39,7 @@ SELECT identity FROM build_artifacts WHERE workspace_id = @workspace_id AND envi
 -- An automatic deployment has no active operation between its passes, and a build admitted in that gap
 -- would stack its image on a draft still waiting to deploy. The age limit keeps a job stuck in retries
 -- from stopping automatic work for the environment indefinitely; a run admitted after it blocks for review.
-SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.environment_id = @environment_id::uuid AND o.state NOT IN ('succeeded','failed','cancelled'))
+SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.environment_id = @environment_id::uuid AND o.state IN ('queued','dispatched','running','needs_attention'))
     OR EXISTS(SELECT 1 FROM pipeline_auto_deployments d JOIN pipeline_runs r ON r.workspace_id = d.workspace_id AND r.id = d.id
               WHERE d.workspace_id = @workspace_id AND d.environment_id = @environment_id::uuid AND d.state = 'pending' AND r.created_at > now() - interval '1 hour'))::boolean AS busy;
 
@@ -203,7 +203,7 @@ SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = @workspace_id AND
 
 -- name: EnvironmentOperationRunning :one
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND environment_id = @environment_id::uuid
-    AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled'))::boolean AS running;
+    AND parent_id IS NULL AND state IN ('queued','dispatched','running','needs_attention'))::boolean AS running;
 
 -- name: WorkspaceRunnerKnown :one
 -- Whether a server is one of the workspace's and not revoked, as a fallback runner saved with a

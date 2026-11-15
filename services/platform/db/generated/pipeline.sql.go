@@ -293,7 +293,7 @@ func (q *Queries) EndBranchBuildWaits(ctx context.Context, arg EndBranchBuildWai
 }
 
 const environmentHoldsAutomaticWork = `-- name: EnvironmentHoldsAutomaticWork :one
-SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state NOT IN ('succeeded','failed','cancelled'))
+SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = $1 AND o.environment_id = $2::uuid AND o.state IN ('queued','dispatched','running','needs_attention'))
     OR EXISTS(SELECT 1 FROM pipeline_auto_deployments d JOIN pipeline_runs r ON r.workspace_id = d.workspace_id AND r.id = d.id
               WHERE d.workspace_id = $1 AND d.environment_id = $2::uuid AND d.state = 'pending' AND r.created_at > now() - interval '1 hour'))::boolean AS busy
 `
@@ -315,7 +315,7 @@ func (q *Queries) EnvironmentHoldsAutomaticWork(ctx context.Context, arg Environ
 
 const environmentOperationRunning = `-- name: EnvironmentOperationRunning :one
 SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = $1 AND environment_id = $2::uuid
-    AND parent_id IS NULL AND state NOT IN ('succeeded','failed','cancelled'))::boolean AS running
+    AND parent_id IS NULL AND state IN ('queued','dispatched','running','needs_attention'))::boolean AS running
 `
 
 type EnvironmentOperationRunningParams struct {
