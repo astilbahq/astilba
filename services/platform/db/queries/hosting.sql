@@ -77,3 +77,7 @@ WHERE workspace_id=(SELECT h.workspace_id FROM hosted_subscriptions h
         AND h.notice_checked_at < @pass_started::timestamptz
     ORDER BY h.notice_checked_at,h.management_until LIMIT 1 FOR UPDATE SKIP LOCKED)
 RETURNING workspace_id;
+
+-- name: TakeObservationTicket :one
+-- Taken before Stripe is asked, so tickets order answers by the earliest moment each could describe.
+SELECT nextval('hosted_observation_tickets')::bigint;

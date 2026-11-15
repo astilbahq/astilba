@@ -72,49 +72,169 @@ type intent struct {
 	Completed bool
 }
 
+// passLimit bounds how often a checkout asks Stripe again because the answer it had was
+// overtaken. At the limit the caller gets domain.Conflict.
+const passLimit = 4
+
+// A question is what a pass under the workspace lock needs Stripe to answer. One field besides
+// the customer is set: the checkout intent to find among the customer's sessions, the checkout
+// session a webhook named, or the subscription a webhook named.
+type question struct {
+	customer, reference, session, subscription string
+}
+
+// An answer is Stripe's reply to a question, fetched with nothing held. checkout is nil when
+// no session carries the reference. subscription is set when one was asked for or the
+// checkout is complete.
+type answer struct {
+	question     question
+	checkout     *hosting.Checkout
+	subscription *observation
+}
+
+// An observation is what Stripe says of a subscription: everything applySubscription decides
+// from, so that a decision under the lock asks nothing. Ticket orders observations by when they
+// were asked for.
+type observation struct {
+	Ticket       int64
+	Subscription hosting.Subscription
+}
+
+// errSuperseded is an observation of the workspace's subscription older than the one it holds.
+// That one was asked for later, so it saw every change this one could have.
+var errSuperseded = errors.New("a later billing observation was applied")
+
+// asking is returned by a pass that needs Stripe's answer. Its transaction rolls back, so the
+// pass must have had no other effect.
+type asking struct{ question question }
+
+func (*asking) Error() string { return "billing provider answer needed" }
+
+// decide runs pass until it stops asking, asking Stripe each question with no transaction or
+// lock held. Every pass decides afresh under the workspace lock from what is stored then. A
+// pass cannot ask after it commits.
+func (s *Service) decide(ctx context.Context, pass func(seen *answer) error) error {
+	var seen *answer
+	for n := 1; ; n++ {
+		err := pass(seen)
+		var a *asking
+		if !errors.As(err, &a) {
+			return err
+		}
+		if n == passLimit {
+			return domain.Conflict
+		}
+		got, err := s.ask(ctx, a.question)
+		if err != nil {
+			return err
+		}
+		seen = &got
+	}
+}
+
+// answered returns the answer to q, or asks for it.
+func answered(seen *answer, q question) (*answer, error) {
+	if seen == nil || seen.question != q {
+		return nil, &asking{q}
+	}
+	return seen, nil
+}
+
+func (s *Service) ask(ctx context.Context, q question) (answer, error) {
+	a := answer{question: q}
+	// The ticket is taken before Stripe is asked anything, so it orders the answers by the
+	// earliest moment each could describe.
+	ticket, e := db.New(s.Store.Pool).TakeObservationTicket(ctx)
+	if e != nil {
+		return a, e
+	}
+	switch {
+	case q.reference != "":
+		found, e := s.Stripe.FindCheckout(ctx, q.customer, q.reference)
+		if e != nil {
+			return a, e
+		}
+		a.checkout = found
+	case q.session != "":
+		found, e := s.Stripe.GetCheckout(ctx, q.session)
+		if e != nil {
+			return a, e
+		}
+		a.checkout = &found
+	}
+	id, customer := q.subscription, q.customer
+	if a.checkout != nil && a.checkout.Status == "complete" {
+		id, customer = a.checkout.Subscription, a.checkout.Customer
+	}
+	if id != "" {
+		seen, e := s.observeSubscription(ctx, ticket, id, customer)
+		if e != nil {
+			return a, e
+		}
+		a.subscription = &seen
+	}
+	return a, nil
+}
+
+// observeSubscription asks Stripe about a subscription, with nothing held.
+func (s *Service) observeSubscription(ctx context.Context, ticket int64, id, customer string) (observation, error) {
+	sub, e := s.Stripe.Subscription(ctx, id, customer)
+	return observation{Ticket: ticket, Subscription: sub}, e
+}
+
 func (s *Service) Checkout(ctx context.Context, p store.Principal, ws uuid.UUID) (string, error) {
 	if !s.Store.Hosted || !s.Store.Hosting.BillingEnabled() {
 		return "", domain.Forbidden
 	}
 	var current intent
 	var customer *string
-	e := s.Store.InWorkspaceBilling(ctx, p, ws, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
-		var subscription *string
-		var status string
-		if e := tx.QueryRow(ctx, "SELECT customer_id,subscription_id,status FROM hosted_subscriptions WHERE workspace_id=$1", ws).Scan(&customer, &subscription, &status); e != nil {
-			return e
-		}
-		if subscription != nil && status != "canceled" && status != "incomplete_expired" {
-			return domain.Conflict
-		}
-		err := tx.QueryRow(ctx, "SELECT intent_id,expires_at,session_id,url,completed FROM hosted_checkouts WHERE workspace_id=$1", ws).Scan(&current.ID, &current.Expires, &current.Session, &current.URL, &current.Completed)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		if err == nil && !current.Completed && !s.Now().Before(current.Expires) && customer != nil {
-			old, e := s.Stripe.FindCheckout(ctx, *customer, current.ID.String())
-			if e != nil {
+	e := s.decide(ctx, func(seen *answer) error {
+		return s.Store.InWorkspaceBilling(ctx, p, ws, func(tx pgx.Tx, _ *db.Queries, _ store.Workspace) error {
+			current, customer = intent{}, nil
+			var subscription *string
+			var status string
+			if e := tx.QueryRow(ctx, "SELECT customer_id,subscription_id,status FROM hosted_subscriptions WHERE workspace_id=$1", ws).Scan(&customer, &subscription, &status); e != nil {
 				return e
 			}
-			if old != nil {
-				if old.Status == "complete" {
-					if e = s.applyCheckout(ctx, tx, ws, *old); e != nil {
-						return e
-					}
-					current.Completed = true
-					return nil
+			if subscription != nil && status != "canceled" && status != "incomplete_expired" {
+				return domain.Conflict
+			}
+			err := tx.QueryRow(ctx, "SELECT intent_id,expires_at,session_id,url,completed FROM hosted_checkouts WHERE workspace_id=$1", ws).Scan(&current.ID, &current.Expires, &current.Session, &current.URL, &current.Completed)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil && !current.Completed && !s.Now().Before(current.Expires) && customer != nil {
+				// A lost create response may have left a session for this intent at Stripe.
+				q := question{customer: *customer, reference: current.ID.String()}
+				a, e := answered(seen, q)
+				if e != nil {
+					return e
 				}
-				if old.Status != "expired" {
-					return domain.Conflict
+				if old := a.checkout; old != nil {
+					if old.Status == "complete" {
+						e = s.applyCheckout(ctx, tx, ws, *old, a.subscription)
+						if errors.Is(e, errSuperseded) {
+							// What was applied since may have completed this intent: decide again.
+							return &asking{q}
+						}
+						if e != nil {
+							return e
+						}
+						current.Completed = true
+						return nil
+					}
+					if old.Status != "expired" {
+						return domain.Conflict
+					}
 				}
 			}
-		}
-		if err != nil || current.Completed || !s.Now().Before(current.Expires) {
-			current = intent{ID: uuid.New(), Expires: s.Now().Truncate(time.Second).Add(time.Hour)}
-			_, e := tx.Exec(ctx, `INSERT INTO hosted_checkouts(workspace_id,intent_id,expires_at) VALUES($1,$2,$3) ON CONFLICT(workspace_id) DO UPDATE SET intent_id=$2,expires_at=$3,session_id=NULL,url='',completed=false`, ws, current.ID, current.Expires)
-			return e
-		}
-		return nil
+			if err != nil || current.Completed || !s.Now().Before(current.Expires) {
+				current = intent{ID: uuid.New(), Expires: s.Now().Truncate(time.Second).Add(time.Hour)}
+				_, e := tx.Exec(ctx, `INSERT INTO hosted_checkouts(workspace_id,intent_id,expires_at) VALUES($1,$2,$3) ON CONFLICT(workspace_id) DO UPDATE SET intent_id=$2,expires_at=$3,session_id=NULL,url='',completed=false`, ws, current.ID, current.Expires)
+				return e
+			}
+			return nil
+		})
 	})
 	if e != nil {
 		return "", e
@@ -161,19 +281,25 @@ func (s *Service) Checkout(ctx context.Context, p store.Principal, ws uuid.UUID)
 	})
 	return result.URL, e
 }
-func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID, id, customer string, allowNew bool) error {
-	sub, e := s.Stripe.Subscription(ctx, id, customer)
-	if e != nil {
-		return e
-	}
+
+// applySubscription stores what Stripe said of subscription id, under the workspace lock. It
+// decides only from seen and the stored row, and returns errSuperseded, writing nothing, when the
+// row holds an observation asked for later.
+func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID, id, customer string, seen observation, allowNew bool) error {
+	sub := seen.Subscription
 	var previous *time.Time
 	var known *string
 	var previousStatus string
-	if e = tx.QueryRow(ctx, "SELECT management_until,subscription_id,status FROM hosted_subscriptions WHERE workspace_id=$1", ws).Scan(&previous, &known, &previousStatus); e != nil {
+	var held int64
+	if e := tx.QueryRow(ctx, "SELECT management_until,subscription_id,status,observed_ticket FROM hosted_subscriptions WHERE workspace_id=$1", ws).Scan(&previous, &known, &previousStatus, &held); e != nil {
 		return e
 	}
 	if !allowNew && (known == nil || *known != id) {
 		return nil
+	}
+	// Tickets order observations of one subscription. Whether one may replace another is up to allowNew.
+	if known != nil && *known == id && seen.Ticket <= held {
+		return errSuperseded
 	}
 	if allowNew && known != nil && *known != id && previousStatus != "canceled" && previousStatus != "incomplete_expired" {
 		return domain.Conflict
@@ -188,20 +314,23 @@ func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 			until = &end
 		}
 	}
-	_, e = tx.Exec(ctx, `UPDATE hosted_subscriptions SET subscription_id=$2,status=$3,management_until=$4,updated_at=now() WHERE workspace_id=$1 AND customer_id=$5`, ws, id, sub.Status, until, customer)
+	_, e := tx.Exec(ctx, `UPDATE hosted_subscriptions SET subscription_id=$2,status=$3,management_until=$4,updated_at=now(),observed_ticket=$6 WHERE workspace_id=$1 AND customer_id=$5`, ws, id, sub.Status, until, customer, seen.Ticket)
 	return e
 }
-func (s *Service) applyCheckout(ctx context.Context, tx pgx.Tx, ws uuid.UUID, session hosting.Checkout) error {
+
+// applyCheckout completes the workspace's checkout intent from a session Stripe reported
+// complete, and seen, what Stripe said of the session's subscription.
+func (s *Service) applyCheckout(ctx context.Context, tx pgx.Tx, ws uuid.UUID, session hosting.Checkout, seen *observation) error {
 	var id uuid.UUID
 	var customer string
 	var stored *string
 	if e := tx.QueryRow(ctx, `SELECT c.intent_id,s.customer_id,c.session_id FROM hosted_checkouts c JOIN hosted_subscriptions s USING(workspace_id) WHERE c.workspace_id=$1`, ws).Scan(&id, &customer, &stored); e != nil {
 		return e
 	}
-	if session.Reference != id.String() || session.Customer != customer || session.Status != "complete" || (stored != nil && *stored != session.ID) {
+	if session.Reference != id.String() || session.Customer != customer || session.Status != "complete" || (stored != nil && *stored != session.ID) || seen == nil {
 		return domain.Conflict
 	}
-	if e := s.applySubscription(ctx, tx, ws, session.Subscription, customer, true); e != nil {
+	if e := s.applySubscription(ctx, tx, ws, session.Subscription, customer, *seen, true); e != nil {
 		return e
 	}
 	_, e := tx.Exec(ctx, `UPDATE hosted_checkouts SET completed=true,session_id=$2 WHERE workspace_id=$1`, ws, session.ID)
@@ -227,7 +356,8 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		return domain.Invalid("event")
 	}
 	var ws uuid.UUID
-	if event.Type == "checkout.session.completed" {
+	checkout := event.Type == "checkout.session.completed"
+	if checkout {
 		id, e := uuid.Parse(obj.Reference)
 		if e != nil {
 			return domain.Invalid("event")
@@ -248,29 +378,39 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 			return e
 		}
 	}
-	tx, done, e := s.Store.BeginWorkspaceWrite(ctx, ws)
-	if e != nil {
-		return e
-	}
-	defer done()
-	n, e := tx.Exec(ctx, "INSERT INTO hosted_billing_events(id,workspace_id) VALUES($1,$2) ON CONFLICT DO NOTHING", event.ID, ws)
-	if e != nil {
-		return e
-	}
-	if n.RowsAffected() == 0 {
-		return tx.Commit(ctx)
-	}
-	if event.Type == "checkout.session.completed" {
-		session, err := s.Stripe.GetCheckout(ctx, obj.ID)
-		if err != nil {
-			return err
+	return s.decide(ctx, func(seen *answer) error {
+		tx, done, e := s.Store.BeginWorkspaceWrite(ctx, ws)
+		if e != nil {
+			return e
 		}
-		e = s.applyCheckout(ctx, tx, ws, session)
-	} else {
-		e = s.applySubscription(ctx, tx, ws, obj.ID, obj.Customer, false)
-	}
-	if e != nil {
-		return e
-	}
-	return tx.Commit(ctx)
+		defer done()
+		// A delivery already applied commits nothing new and asks Stripe nothing.
+		n, e := tx.Exec(ctx, "INSERT INTO hosted_billing_events(id,workspace_id) VALUES($1,$2) ON CONFLICT DO NOTHING", event.ID, ws)
+		if e != nil {
+			return e
+		}
+		if n.RowsAffected() == 0 {
+			return tx.Commit(ctx)
+		}
+		q := question{customer: obj.Customer}
+		if checkout {
+			q.session = obj.ID
+		} else {
+			q.subscription = obj.ID
+		}
+		a, e := answered(seen, q)
+		if e != nil {
+			return e
+		}
+		if checkout {
+			e = s.applyCheckout(ctx, tx, ws, *a.checkout, a.subscription)
+		} else {
+			e = s.applySubscription(ctx, tx, ws, obj.ID, obj.Customer, *a.subscription, false)
+		}
+		// An observation asked for after this one has been applied, and saw at least as much.
+		if e != nil && !errors.Is(e, errSuperseded) {
+			return e
+		}
+		return tx.Commit(ctx)
+	})
 }
