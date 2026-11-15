@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"bytes"
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -19,17 +23,42 @@ const localStateVersion = 1
 // a restored earlier binary stops before acting rather than presenting a bearer the bind retired.
 const keyedStateVersion = 2
 
+// sealedStateVersion marks a journal whose keyring is sealed to this machine's key store. Agents
+// from before sealing refuse it before they act, and every agent that reads it holds keys.
+const sealedStateVersion = 3
+
+// StateVersion is the newest journal format this agent reads. describe reports it, and an agent
+// installs only a release that reads the format its journal is in.
+const StateVersion = sealedStateVersion
+
+// ErrSealedJournal says the journal's keyring is sealed to this machine and can't be opened now:
+// the key store is unavailable, or can't read what was sealed. Nothing in the journal changed.
+var ErrSealedJournal = errors.New("the agent journal's keyring is sealed to this machine, and it can't be opened now")
+
+// localStateKeys is keyring.json. Versions 1 and 2 hold the keyring in the clear; version 3 holds
+// it sealed by the key store.
 type localStateKeys struct {
-	Version int            `json:"agentStateVersion"`
-	Keyring jsontext.Value `json:"keyring"`
+	Version       int            `json:"agentStateVersion"`
+	Keyring       jsontext.Value `json:"keyring,omitempty"`
+	SealedKeyring []byte         `json:"sealedKeyring,omitempty"`
 }
 
 // The agent-local envelope deliberately cannot be parsed as a cryptobox keyring.
-// Previous agents reject it before initializing buckets, pruning or replaying.
-func (j *Journal) openLocalKeys(point func(string) error) error {
+// Previous agents reject it before initializing buckets, pruning or replaying. With open set, a new
+// keyring is sealed to the store it returns, if that works now, and one already sealed needs that
+// store. One already in the clear stays so: the agent service seals it when it rekeys, so that a
+// command run by hand never changes the format under an installed service.
+func (j *Journal) openLocalKeys(ctx context.Context, open func(context.Context) (KeyStore, error), point func(string) error) error {
+	j.stateMu.Lock()
+	defer j.stateMu.Unlock()
+	// A write cut short leaves its temporary file, which holds keys a later rekey replaces.
+	if err := removeLocalStateLeftovers(j.dir); err != nil {
+		return err
+	}
 	path := filepath.Join(j.dir, "keyring.json")
 	info, err := os.Lstat(path)
-	var raw []byte
+	var keys *cryptobox.Keyring
+	version, write, fresh := localStateVersion, true, false
 	if errors.Is(err, os.ErrNotExist) {
 		// An interrupted first open may leave only bbolt's empty file. Once
 		// any bucket exists, missing keys must never be replaced.
@@ -40,48 +69,148 @@ func (j *Journal) openLocalKeys(point func(string) error) error {
 		if !empty {
 			return errors.New("initialized agent journal is missing its keyring")
 		}
-		keys, err := cryptobox.New("host")
-		if err != nil {
+		if keys, err = cryptobox.New("host"); err != nil {
 			return err
 		}
-		j.keys = keys
-		raw, err = stablejson.Marshal(keys)
-		if err != nil {
-			return err
-		}
+		fresh = true
 	} else {
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 131072 {
 			return errors.New("agent keyring must be an existing private regular file")
 		}
-		raw, err = os.ReadFile(path)
+		raw, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
 		var envelope localStateKeys
 		if json.Unmarshal(raw, &envelope, json.RejectUnknownMembers(true)) == nil {
-			if envelope.Version != localStateVersion && envelope.Version != keyedStateVersion {
+			switch {
+			case (envelope.Version == localStateVersion || envelope.Version == keyedStateVersion) && len(envelope.Keyring) > 0 && envelope.SealedKeyring == nil:
+				if keys, err = cryptobox.Parse(envelope.Keyring); err != nil {
+					return err
+				}
+				version, write = envelope.Version, false
+			case envelope.Version == sealedStateVersion && len(envelope.SealedKeyring) > 0 && len(envelope.Keyring) == 0:
+				return j.openSealedKeys(ctx, open, envelope.SealedKeyring)
+			default:
 				return errors.New("unsupported agent local state version; use a compatible agent")
 			}
-			j.formatVersion.Store(int64(envelope.Version))
-			j.keys, err = cryptobox.Parse(envelope.Keyring)
-			if err != nil {
+		} else {
+			if keys, err = cryptobox.Parse(raw); err != nil {
+				return errors.New("invalid or unsupported agent local state envelope")
+			}
+			j.keys.Store(keys)
+			if err = j.legacyMigrationAllowed(); err != nil {
 				return err
 			}
-			return syncLocalStateDirectory(j.dir)
-		}
-		j.keys, err = cryptobox.Parse(raw)
-		if err != nil {
-			return errors.New("invalid or unsupported agent local state envelope")
-		}
-		if err = j.legacyMigrationAllowed(); err != nil {
-			return err
 		}
 	}
-	body, err := stablejson.Marshal(localStateKeys{Version: localStateVersion, Keyring: raw})
+	j.keys.Store(keys)
+	j.formatVersion.Store(int64(version))
+	j.sealing = open != nil
+	if j.sealing && fresh {
+		store, err := open(ctx)
+		if err == nil {
+			if err = j.sealWith(ctx, store, keys, point); err == nil || j.store != nil {
+				return err
+			}
+		}
+		slog.Warn("the agent journal's keyring stays unsealed until the key store can seal it", "error", err)
+	}
+	if !write {
+		return syncLocalStateDirectory(j.dir)
+	}
+	return j.writeKeys(ctx, keys, version, point)
+}
+
+// openSealedKeys unseals keyring.json with this machine's key store.
+func (j *Journal) openSealedKeys(ctx context.Context, open func(context.Context) (KeyStore, error), sealed []byte) error {
+	if open == nil {
+		return fmt.Errorf("%w: only the agent's own commands can open it", ErrSealedJournal)
+	}
+	store, keys, err := unsealKeys(ctx, open, sealed)
 	if err != nil {
 		return err
 	}
-	return writeLocalState(j.dir, path, body, point)
+	j.keys.Store(keys)
+	j.formatVersion.Store(sealedStateVersion)
+	j.sealing, j.store = true, store
+	return syncLocalStateDirectory(j.dir)
+}
+
+// unsealKeys opens a sealed keyring with the store open returns.
+func unsealKeys(ctx context.Context, open func(context.Context) (KeyStore, error), sealed []byte) (KeyStore, *cryptobox.Keyring, error) {
+	store, err := open(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: the key store is unavailable (%v). The agent service waits for it and tries again every minute", ErrSealedJournal, err)
+	}
+	plain, err := store.Unseal(ctx, journalCredentialName, sealed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: the key store can't read it (%v). It was sealed on another machine, or this host's TPM or systemd host key has changed. If that key is gone for good, the journal can't be opened again: revoke the server and enroll this host as a new server with a fresh state directory", ErrSealedJournal, err)
+	}
+	keys, err := cryptobox.Parse(plain)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, keys, nil
+}
+
+// SealedJournalNote says why the journal in dir can't be opened now, for preflight, or returns ""
+// when nothing seals it shut. It opens the keyring only to check, and keeps nothing.
+func SealedJournalNote(ctx context.Context, dir string, open func(context.Context) (KeyStore, error)) string {
+	raw, err := os.ReadFile(filepath.Join(dir, "keyring.json"))
+	if err != nil {
+		return ""
+	}
+	var envelope localStateKeys
+	if json.Unmarshal(raw, &envelope, json.RejectUnknownMembers(true)) != nil || envelope.Version != sealedStateVersion || len(envelope.SealedKeyring) == 0 {
+		return ""
+	}
+	if _, _, err = unsealKeys(ctx, open, envelope.SealedKeyring); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// sealWith seals keyring.json, holding keys, to store from now on. The caller holds stateMu. A
+// write that fails once the sealed file has replaced the old one leaves the journal sealed.
+func (j *Journal) sealWith(ctx context.Context, store KeyStore, keys *cryptobox.Keyring, point func(string) error) error {
+	j.store = store
+	err := j.writeKeys(ctx, keys, sealedStateVersion, point)
+	if err != nil && j.formatVersion.Load() != sealedStateVersion {
+		j.store = nil
+	}
+	return err
+}
+
+// writeKeys replaces keyring.json with keys: sealed by the journal's key store when it has one, or
+// else in the clear at version. The caller holds stateMu. Once the new file has replaced the old,
+// the journal is in its format, even if syncing the directory then fails.
+func (j *Journal) writeKeys(ctx context.Context, keys *cryptobox.Keyring, version int, point func(string) error) error {
+	raw, err := stablejson.Marshal(keys)
+	if err != nil {
+		return err
+	}
+	envelope := localStateKeys{Version: version, Keyring: raw}
+	if j.store != nil {
+		sealed, err := j.store.Seal(ctx, journalCredentialName, raw)
+		if err != nil {
+			return err
+		}
+		// Keys nothing can read would lose the journal, so they replace the file only once read back.
+		if back, err := j.store.Unseal(ctx, journalCredentialName, sealed); err != nil || !bytes.Equal(back, raw) {
+			return errors.New("the key store could not read back the journal keyring it sealed")
+		}
+		envelope = localStateKeys{Version: sealedStateVersion, SealedKeyring: sealed}
+	}
+	body, err := stablejson.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	renamed, err := writeLocalState(j.dir, filepath.Join(j.dir, "keyring.json"), body, point)
+	if renamed {
+		j.formatVersion.Store(int64(envelope.Version))
+	}
+	return err
 }
 
 // Migration keeps the update-admission boundary and does not change any command,
@@ -164,44 +293,66 @@ func (j *Journal) legacyMigrationAllowed() error {
 	})
 }
 
-func writeLocalState(dir, path string, body []byte, point func(string) error) error {
+// localStateLeftover prefixes the temporary file a keyring write renames into place.
+const localStateLeftover = ".agent-state-"
+
+// writeLocalState replaces path with body, and reports whether it got as far as replacing it.
+func writeLocalState(dir, path string, body []byte, point func(string) error) (bool, error) {
 	at := func(name string) error {
 		if point != nil {
 			return point(name)
 		}
 		return nil
 	}
-	f, err := os.CreateTemp(dir, ".agent-state-")
+	f, err := os.CreateTemp(dir, localStateLeftover)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer os.Remove(f.Name())
 	defer f.Close()
 	if _, err = f.Write(body); err != nil {
-		return err
+		return false, err
 	}
 	if err = at("local-state-written"); err != nil {
-		return err
+		return false, err
 	}
 	if err = f.Sync(); err != nil {
-		return err
+		return false, err
 	}
 	if err = f.Close(); err != nil {
-		return err
+		return false, err
 	}
 	if err = at("local-state-synced"); err != nil {
-		return err
+		return false, err
 	}
 	if err = os.Rename(f.Name(), path); err != nil {
-		return err
+		return false, err
 	}
 	if err = at("local-state-renamed"); err != nil {
-		return err
+		return true, err
 	}
 	if err = syncLocalStateDirectory(dir); err != nil {
+		return true, err
+	}
+	return true, at("local-state-directory-synced")
+}
+
+// removeLocalStateLeftovers removes what keyring writes cut short left behind. Only one process
+// opens the directory, so none of them is still being written.
+func removeLocalStateLeftovers(dir string) error {
+	leftovers, err := filepath.Glob(filepath.Join(dir, localStateLeftover+"*"))
+	if err != nil {
 		return err
 	}
-	return at("local-state-directory-synced")
+	for _, leftover := range leftovers {
+		if err = os.Remove(leftover); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if len(leftovers) > 0 {
+		return syncLocalStateDirectory(dir)
+	}
+	return nil
 }
 
 func syncLocalStateDirectory(dir string) error {
@@ -213,29 +364,42 @@ func syncLocalStateDirectory(dir string) error {
 	return parent.Sync()
 }
 
-// markKeyed raises the journal's format version once its agent holds a key. Callers hold the
-// token source's lock, or run before anything else starts, so only one writes the keyring.
+// markKeyed raises the journal's format version once its agent holds a key. A sealed journal is
+// keyed already: only agents with keys read it.
 func (j *Journal) markKeyed() error {
-	if j.formatVersion.Load() == keyedStateVersion {
+	j.stateMu.Lock()
+	defer j.stateMu.Unlock()
+	if j.formatVersion.Load() >= keyedStateVersion {
 		return nil
 	}
-	raw, err := stablejson.Marshal(j.keys)
-	if err != nil {
-		return err
-	}
-	body, err := stablejson.Marshal(localStateKeys{Version: keyedStateVersion, Keyring: raw})
-	if err != nil {
-		return err
-	}
-	if err = writeLocalState(j.dir, filepath.Join(j.dir, "keyring.json"), body, nil); err != nil {
-		return err
-	}
-	j.formatVersion.Store(keyedStateVersion)
-	return nil
+	return j.writeKeys(context.Background(), j.keys.Load(), keyedStateVersion, nil)
 }
 
 // HoldsKey reports whether this agent authenticates with a key, or once did: either way, an agent
 // from before keys can't run on this journal.
 func (j *Journal) HoldsKey(cfg Config) bool {
-	return cfg.Key != nil || cfg.BindKey != nil || cfg.PendingRotation != nil || j.formatVersion.Load() == keyedStateVersion
+	return cfg.Key != nil || cfg.BindKey != nil || cfg.PendingRotation != nil || j.formatVersion.Load() >= keyedStateVersion
+}
+
+// StateVersion is the format the journal is in.
+func (j *Journal) StateVersion() int { return int(j.formatVersion.Load()) }
+
+// InstallStateVersion is the format a release the agent service installs must read to run on this
+// journal. The service seals its journal's keyring as soon as it can, even while an update
+// installs. A command run with the service stopped never seals an existing keyring, so for it the
+// journal's own format is exact.
+func (j *Journal) InstallStateVersion() int {
+	j.stateMu.Lock()
+	defer j.stateMu.Unlock()
+	if j.sealing {
+		return sealedStateVersion
+	}
+	return j.StateVersion()
+}
+
+// KeyStore is the store the journal's keyring is sealed to, or nil while it isn't sealed.
+func (j *Journal) KeyStore() KeyStore {
+	j.stateMu.Lock()
+	defer j.stateMu.Unlock()
+	return j.store
 }

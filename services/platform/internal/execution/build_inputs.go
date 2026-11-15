@@ -27,13 +27,9 @@ type buildInputRejection struct {
 func (s *Service) BuildRejections(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.BuildRejection, error) {
 	out := []api.BuildRejection{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		current, err := currentApplications(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
-		}
-		current := make(map[uuid.UUID]bool, len(v.Spec.Applications))
-		for _, app := range v.Spec.Applications {
-			current[app.ID] = true
 		}
 		rows, err := db.New(tx).ListBuildRejections(ctx, db.ListBuildRejectionsParams{WorkspaceID: ws, EnvironmentID: env})
 		if err != nil {
@@ -42,6 +38,43 @@ func (s *Service) BuildRejections(ctx context.Context, p store.Principal, ws, pi
 		for _, row := range rows {
 			if current[row.ApplicationID] {
 				out = append(out, api.BuildRejection{ApplicationId: row.ApplicationID, Commit: row.RejectedCommit, Reason: api.BuildRejectionReason(row.RejectionReason), RejectedAt: row.RejectedAt})
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// currentApplications is the applications the environment's draft holds, which build notices are
+// shown for.
+func currentApplications(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID) (map[uuid.UUID]bool, error) {
+	v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+	if err != nil {
+		return nil, err
+	}
+	current := make(map[uuid.UUID]bool, len(v.Spec.Applications))
+	for _, app := range v.Spec.Applications {
+		current[app.ID] = true
+	}
+	return current, nil
+}
+
+// BuildWaits is the automatic builds of the environment's current applications that wait for
+// their runner.
+func (s *Service) BuildWaits(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]api.BuildWait, error) {
+	out := []api.BuildWait{}
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
+		current, err := currentApplications(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		rows, err := db.New(tx).ListBuildWaits(ctx, db.ListBuildWaitsParams{WorkspaceID: ws, EnvironmentID: env})
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if current[row.ApplicationID] {
+				out = append(out, api.BuildWait{ApplicationId: row.ApplicationID, Commit: row.WaitingCommit, Reason: api.BuildWaitReason(row.WaitingReason), RunnerId: row.WaitingRunnerID, Since: row.WaitingSince, Until: row.WaitingUntil})
 			}
 		}
 		return nil

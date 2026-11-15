@@ -207,6 +207,34 @@ test("finds release binaries by URL, with a version written there or in a consta
   );
 });
 
+test("reads a version spliced into a Go string, and stops on any release link it cannot read", () => {
+  const go = `const MiseVersion = "2026.10.14"\nurl := "${download('o/mise v" + MiseVersion + "/mise-linux')}"`;
+  assert.deepEqual(findReleases([{ path: "a.go", text: go }]), [
+    { repository: "o/mise", version: "v2026.10.14", paths: ["a.go"] },
+  ]);
+  // The agent fetches mise this way, so the gate and the report see the shipped binary.
+  assert.ok(
+    findReleases(tracked).some(
+      ({ repository, paths }) =>
+        repository === "jdx/mise" &&
+        paths.includes("services/platform/internal/pipeline/railpack.go"),
+    ),
+  );
+  const link = (rest) => `https://github.com/${"o/x"}/releases/${rest}`;
+  for (const text of [
+    link("download/jq-1.8.1/jq"),
+    link("download/v$version/x"),
+    link("download/v%s/x"),
+    link("latest/download/x"),
+  ])
+    assert.throws(
+      () => findReleases([{ path: "e.sh", text }]),
+      /cannot read the version of o\/x/,
+      text,
+    );
+  assert.deepEqual(findReleases([{ path: "f.sh", text: link("tag/v1.0.0") }]), []);
+});
+
 test("a newer release keeps the line: its shape and major, unless that is a year", () => {
   const tags = [
     "18.4-alpine3.23",

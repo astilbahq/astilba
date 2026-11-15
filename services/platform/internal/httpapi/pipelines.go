@@ -71,8 +71,19 @@ func (s *Server) BindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, 
 	var cfg pipeline.Source
 	raw, _ := stablejson.Marshal(b.Configuration)
 	_ = json.Unmarshal(raw, &cfg)
-	v, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg)
+	hash := ""
+	if b.SourceHash != nil {
+		hash = *b.SourceHash
+	}
+	v, bound, e := s.Execution.BindSource(r.Context(), *principal(r.Context()), ws, pid, env, b.BaseRevisionId, cfg, hash)
+	if e == nil {
+		w.Header().Set("Astilba-Source-Hash", bound)
+	}
 	s.executionResponse(w, r, 202, v, e)
+}
+func (s *Server) UnbindGitSource(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
+	e := s.Execution.UnbindSource(r.Context(), *principal(r.Context()), ws, pid, env)
+	s.executionResponse(w, r, 204, nil, e)
 }
 func (s *Server) RefreshGitSource(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
 	b, e := decode[api.RefreshGitSource](r)
@@ -98,6 +109,10 @@ func (s *Server) ListPipelineRuns(w http.ResponseWriter, r *http.Request, ws, pi
 }
 func (s *Server) ListBuildRejections(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
 	v, e := s.Execution.BuildRejections(r.Context(), *principal(r.Context()), ws, pid, env)
+	s.executionResponse(w, r, 200, v, e)
+}
+func (s *Server) ListBuildWaits(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {
+	v, e := s.Execution.BuildWaits(r.Context(), *principal(r.Context()), ws, pid, env)
 	s.executionResponse(w, r, 200, v, e)
 }
 func (s *Server) CreateBuild(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {

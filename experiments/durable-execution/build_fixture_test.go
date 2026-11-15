@@ -262,7 +262,10 @@ func startBuildWorker(t *testing.T, h *runtimeHarness, r *buildRegistry, pki bui
 	for file, data := range map[string][]byte{"ca.pem": pki.ca, "server.pem": pki.server, "server.key": pki.serverKey} {
 		buildWrite(t, filepath.Join(dir, file), data)
 	}
-	config := "[registry.\"" + r.address + "\"]\n  ca = [\"/fixture/ca.pem\"]\n"
+	// BuildKit reads Docker Hub images through the same public mirror as the fixture daemon, so
+	// FROM images do not use Docker Hub's anonymous rate limit. It checks each against its pinned
+	// digest, and reads Docker Hub itself when the mirror lacks one or fails.
+	config := "[registry.\"docker.io\"]\n  mirrors = [\"mirror.gcr.io\"]\n[registry.\"" + r.address + "\"]\n  ca = [\"/fixture/ca.pem\"]\n"
 	if remote {
 		config += "[grpc]\n  address = [\"tcp://0.0.0.0:1234\"]\n[grpc.tls]\n  cert = \"/fixture/server.pem\"\n  key = \"/fixture/server.key\"\n  ca = \"/fixture/ca.pem\"\n"
 	}

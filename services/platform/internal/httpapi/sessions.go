@@ -12,6 +12,7 @@ import (
 	"github.com/alexedwards/scs/v2"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -251,20 +252,17 @@ func (s *Server) browserSession(next http.Handler) http.Handler {
 	})
 }
 
-// rotate replaces the token after an account change on an authenticated session.
-// None of these changes proves a fresh credential: a recent session is enough, and
-// ConfirmMFA's code comes from a secret that session was just given. They therefore
-// keep the session's absolute deadline and recent authentication, and a session that
-// a logout has deleted stays deleted.
+// rotate replaces the token after a change to the account's password or two-factor
+// authentication. Each such change takes a current credential, as reauthentication does, so
+// recent authentication restarts; the session's absolute deadline stays, and a session that a
+// logout has ended stays ended.
 func (s *Server) rotate(ctx context.Context, a db.Account, mfa bool) error {
 	ctx.Value(sessionLoadKey{}).(*sessionLoad).replaceLive = true
 	deadline := s.Sessions.Deadline(ctx)
-	recent := s.Sessions.GetTime(ctx, "recent")
 	if err := s.establish(ctx, a, mfa); err != nil {
 		return err
 	}
 	s.Sessions.SetDeadline(ctx, deadline)
-	s.Sessions.Put(ctx, "recent", recent)
 	return nil
 }
 
@@ -301,23 +299,18 @@ func (s *Server) csrfToken(ctx context.Context) string {
 	return base64.RawURLEncoding.EncodeToString(derived[:])
 }
 
-// credentialRecent admits a change to the account's own credentials, which needs the shorter
-// recent window: whoever holds the session could otherwise keep the account after it.
-func (s *Server) credentialRecent(r *http.Request) error {
-	if p := principal(r.Context()); p == nil {
-		return domain.Unauthenticated
-	} else if !p.CredentialRecent() {
-		return domain.RecentRequired
-	}
-	return nil
+// credential is the current credential a request presents to confirm its holder's identity.
+func credential(c api.Credential) auth.Credential {
+	return auth.Credential{Password: value(c.Password), Code: value(c.Code)}
 }
+
 func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.Reauthenticate](r)
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.Reauthenticate(r.Context(), *principal(r.Context()), value(b.Password), value(b.Code))
+	a, e := s.Auth.Reauthenticate(r.Context(), *principal(r.Context()), credential(b))
 	if e == nil {
 		// Confirming credentials keeps open terminal sessions, unlike any other renewal. A
 		// recovery code changes the account's version, which ends them, so there is nothing

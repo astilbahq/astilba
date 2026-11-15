@@ -351,7 +351,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err := destination.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, destination.st, keysOf(source.st))
+		restoredKeys(t, destination.st, keysOf(source.st))
 		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Older management backup')`, ws); err != nil {
 			t.Fatal(err)
 		}
@@ -397,7 +397,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err := fork.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, fork.st, keysOf(source.st))
+		restoredKeys(t, fork.st, keysOf(source.st))
 		originalOwner, err := source.st.Queries.AccountByID(ctx, source.owner)
 		if err != nil {
 			t.Fatal(err)

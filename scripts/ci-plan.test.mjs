@@ -210,6 +210,14 @@ test("each suite runs only for paths that can affect it", async (t) => {
       ["native", "go", "browser", "durable", "git"],
     ],
     [
+      [".github/actions/docker-hub-mirror/mirror.sh"],
+      ["native", "go", "browser", "durable", "git"],
+    ],
+    [
+      ["scripts/docker-hub-mirror.mjs"],
+      ["native", "go", "browser", "durable", "git", "vulnerabilities"],
+    ],
+    [
       ["scripts/fetch-attempts.mjs"],
       [
         "native",

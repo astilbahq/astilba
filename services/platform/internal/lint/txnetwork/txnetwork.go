@@ -31,12 +31,16 @@ const (
 // brokerMethods are the Broker methods that record and give out keys, and storeKeyMethods the
 // Store methods that admit a caller in a transaction of their own and then do the same.
 var (
-	brokerMethods   = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true}
+	brokerMethods   = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true, "Create": true, "InitKeys": true}
 	storeKeyMethods = map[string]bool{"Admit": true, "BeginKeys": true}
 )
 
-// offlineClientMethods are the Client methods that only compute or check a value locally.
-var offlineClientMethods = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true}
+// offlineClientMethods are the Client methods that only compute or check a value locally, and
+// offlineProviderMethods the Provider methods that only set one.
+var (
+	offlineClientMethods   = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true, "Forget": true}
+	offlineProviderMethods = map[string]bool{"OnRejected": true}
+)
 
 type function struct {
 	signature *ast.FuncType
@@ -212,7 +216,7 @@ func networkMethod(callee types.Object) bool {
 	}
 	switch typeName(pointer.Elem()) {
 	case providerType:
-		return true
+		return !offlineProviderMethods[fn.Name()]
 	case clientType:
 		return !offlineClientMethods[fn.Name()]
 	case brokerType:

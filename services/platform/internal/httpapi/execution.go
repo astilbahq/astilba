@@ -53,6 +53,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Build-Network", "v1")
 		w.Header().Set("Astilba-Agent-Rootless-Builds", "v1")
 		w.Header().Set("Astilba-Agent-Railpack", "v1")
+		// v1 reads railpackInputs, the digest of the Railpack pins an agent runs.
+		w.Header().Set("Astilba-Agent-Railpack-Inputs", "v1")
 		w.Header().Set("Astilba-Agent-Safe-Releases", "v1")
 		w.Header().Set("Astilba-Agent-Service-Outputs", "v1")
 		w.Header().Set("Astilba-Agent-Previews", "v1")

@@ -152,18 +152,24 @@ func (s *Service) SuggestDomain(ctx context.Context, p store.Principal, ws, pid,
 		if v.Server != nil && *v.Server != id {
 			return domain.Conflict
 		}
-		out.Dns, e = s.domainConfiguration(ctx, tx, ws, id)
-		if e != nil {
-			return e
-		}
-		if out.Dns.State == "disabled" || out.Dns.State == "unconfigured" || out.Dns.State == "review_required" {
-			return domain.Invalid("server.domain")
-		}
-		out.Hostname = domain.ApplicationHostname(s.Store.ApplicationDomain, ws, env, app, id)
+		out.Hostname, out.Dns, e = s.generatedHostname(ctx, tx, ws, env, app, id)
 		out.ServerId = id
-		return nil
+		return e
 	})
 	return out, e
+}
+
+// generatedHostname is the generated application domain of the app on the server, which must
+// be the environment's server; the caller checks that. Its addresses must be in use.
+func (s *Service) generatedHostname(ctx context.Context, tx pgx.Tx, ws, env, app, server uuid.UUID) (string, api.ServerDomain, error) {
+	config, e := s.domainConfiguration(ctx, tx, ws, server)
+	if e != nil {
+		return "", config, e
+	}
+	if config.State == "disabled" || config.State == "unconfigured" || config.State == "review_required" {
+		return "", config, domain.Invalid("server.domain")
+	}
+	return domain.ApplicationHostname(s.Store.ApplicationDomain, ws, env, app, server), config, nil
 }
 func (s *Service) CheckDomain(ctx context.Context, p store.Principal, ws, id uuid.UUID, hostname string) (api.DomainCheck, error) {
 	out := api.DomainCheck{Hostname: hostname, Addresses: []string{}, State: "unverified", CheckedAt: time.Now().UTC(), Note: "DNS does not establish domain ownership, certificate readiness or application reachability. CDN/proxy addresses cannot be verified against this server."}
@@ -266,7 +272,7 @@ func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 	withdrawn := s.withdrawStalePublications(ctx, conn, a.Server)
 	var ws, installation uuid.UUID
 	var base, ipv4, ipv6 string
-	e = conn.QueryRow(ctx, `SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN dns_installation i WHERE d.server_id=$1 AND d.generation=$2 AND d.approved_controller=$3 AND s.controller_generation=$3 AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base=$4`, a.Server, a.Generation, a.Controller, s.Store.ApplicationDomain).Scan(&ws, &base, &ipv4, &ipv6, &installation)
+	e = conn.QueryRow(ctx, `SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i WHERE d.server_id=$1 AND d.generation=$2 AND d.approved_controller=$3 AND s.controller_generation=$3 AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base=$4`, a.Server, a.Generation, a.Controller, s.Store.ApplicationDomain).Scan(&ws, &base, &ipv4, &ipv6, &installation)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return withdrawn
 	}

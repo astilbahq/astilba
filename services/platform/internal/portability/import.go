@@ -29,21 +29,26 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > newest || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
-	// Only a recovery base carries a recovery section, from the version that added it.
-	if (archive.Recovery != nil) != (archive.Version >= RecoveryArchiveVersion) {
+	// Only a recovery base carries a recovery section, and only recovery reads one. Its tables are an
+	// export version's.
+	version, base := recoveryBaseTables[archive.Version]
+	if !base {
+		version = archive.Version
+	}
+	if (archive.Recovery != nil) != base || base && !recovery {
 		return archive, ErrArchive
 	}
-	if archive.Version == 1 {
+	if version == 1 {
 		if err := normalizeLegacyArchive(&archive); err != nil {
 			return archive, err
 		}
 	}
-	if archive.Version < 5 {
+	if version < 5 {
 		if err := normalizePreNetworkArchive(&archive); err != nil {
 			return archive, err
 		}
 	}
-	if archive.Version < 6 {
+	if version < 6 {
 		for _, row := range archive.Tables["environments"] {
 			if _, exists := row["runtime_operation_id"]; exists {
 				return archive, ErrArchive
@@ -61,13 +66,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		}
 	}
 	// Version 7 carries the submissions management makes. An older archive has only runners'.
-	if archive.Version < 7 {
+	if version < 7 {
 		if _, exists := archive.Tables["source_submissions"]; exists {
 			return archive, ErrArchive
 		}
 		archive.Tables["source_submissions"] = []Row{}
 	}
-	if archive.Version < 8 {
+	if version < 8 {
 		// An environment from before retirement is active, and nothing recorded which PostgreSQL
 		// major initialised a volume: its next deployment records it.
 		fields := map[string]map[string]any{
@@ -85,7 +90,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 		}
 	}
-	if archive.Version < 9 {
+	if version < 9 {
 		// Nothing was purged, retired or erased before version 9.
 		fields := map[string]map[string]any{
 			"environments":    {"purged_at": nil, "purged_by": nil, "purge_operation_id": nil, "purged_without_host": false},
@@ -101,6 +106,15 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 					setValue(row, field, value)
 				}
 			}
+		}
+	}
+	if version < 11 {
+		// Nothing recorded which requests revocation released. Their notes go without it.
+		for _, row := range archive.Tables["preview_requests"] {
+			if _, exists := row["released_by_revocation"]; exists {
+				return archive, ErrArchive
+			}
+			setValue(row, "released_by_revocation", false)
 		}
 	}
 	if len(archive.Tables) != len(tables) {
@@ -276,11 +290,12 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if e := s.admitImportTransaction(ctx, p, invitation); e != nil {
 		return out, e
 	}
-	keys, e := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: archive.Workspace, Purpose: secretbroker.Seal, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds, NewWorkspace: true})
+	created, e := s.Store.Broker.Create(ctx, secretbroker.Request{Workspace: archive.Workspace, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds})
 	if e != nil {
 		return out, e
 	}
-	defer func() { keys.Close(ctx, secretbroker.Done(failure)) }()
+	defer func() { created.Close(ctx, secretbroker.Done(failure)) }()
+	keys := created.Session()
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return out, e
@@ -308,11 +323,8 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if !p.Recent() {
 		return out, domain.RecentRequired
 	}
-	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: archive.Workspace, Name: archive.Name}); e != nil {
+	if e = store.CreateWorkspace(ctx, q, created, archive.Name, p.Account.ID); e != nil {
 		return out, store.Normalize(e)
-	}
-	if e = q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: archive.Workspace, AccountID: p.Account.ID, Role: "owner"}); e != nil {
-		return out, e
 	}
 	if e = q.SetMFAPolicy(ctx, db.SetMFAPolicyParams{ID: archive.Workspace, RequireMfa: archive.RequireMFA}); e != nil {
 		return out, e

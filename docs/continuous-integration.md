@@ -42,7 +42,7 @@ only when every changed path is known not to affect it:
 | Native hosts | Markdown under `docs/` other than `docs/hosting.md`, whose proxy configurations the native tests run, or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
-| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull action, canvas the root JavaScript manifests and lockfile, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
+| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull and Docker Hub mirror actions and `scripts/docker-hub-mirror.mjs`, canvas the root JavaScript manifests and lockfile, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
 | Vulnerability scan | not a Go file, `go.mod`, `go.sum`, `package.json`, root JavaScript manifest or lockfile, the pnpm install action or script, the Makefile, the allowlist, the pinned Public Suffix List, the scan's workflows, or a file under `scripts/` other than a `.test.mjs` file, since the scan's scripts import, read and run others |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
@@ -399,7 +399,8 @@ later needs no list:
   `runtime`, any other `CI`;
 - every `tool` directive in a tracked `go.mod`, with the requirement that provides it;
 - every GitHub release download in a tracked file, with the version in its URL or in a
-  constant of the same file. A version it cannot read stops the report.
+  constant of the same file. A release link it cannot read, such as `releases/latest`, stops
+  the report.
 
 For each image it reads the pinned manifest and checks its bytes against the digest. It
 pulls the `linux/amd64` and `linux/arm64` images, the platforms Astilba runs, by their
@@ -413,7 +414,8 @@ calendar version such as `mise-2026.10.14` can become any later date. A pin can 
 narrower track than its line: `.github/pinned-releases.json` names such an image or tool,
 with a pattern every release on its track matches and the reason, and only those releases
 count. nginx follows its stable releases, whose minor version is even, so a mainline
-release such as 1.31.8 is not an update to 1.30.6. A pin off its own track is reported as
+release such as 1.31.8 is not an update to 1.30.6. Railpack's builder and runtime images
+and its mise follow the release Railpack itself pins, so they move only with Railpack. A pin off its own track is reported as
 a check that failed, and `make check-ci` fails if a track names nothing pinned. Go tools are
 compared through the Go module proxy, and release binaries through GitHub's releases
 without drafts or pre-releases.
@@ -436,7 +438,18 @@ image. The run's summary lists every finding. An image of one static binary, suc
 
 The report does not apply the release-age gate, so a security release is heard of at
 once; the bump itself follows the `upgrade-dependencies` skill and the gate. Pins never
-change by themselves. Registry requests, pulls and scans repeat like
+change by themselves. An image or a release binary waits seven days, the Docker
+cooldown in `.github/dependabot.yml`, judged by when the pinned digest was pushed or the
+release was published, or by an asset's later replacement. A bump of either is held
+until then, and its pull request names the date. `node scripts/release-age.mjs origin/main`
+fails for any release binary a branch adds, or that a file it changes downloads, that is
+younger than that cooldown. No script
+checks an image's age: Docker Hub gives a push time only for a tag, not for each digest,
+so whoever bumps an image reads it from the registry's own record of the push: the tag's
+last push on Docker Hub, or the package version's creation on GitHub's container registry
+(`gh api /orgs/<owner>/packages/container/<name>/versions`). An image configuration's
+`created` time is set by whoever builds the image and can be backdated, so it counts only
+where the registry keeps no record of its own, and the pull request says so. Registry requests, pulls and scans repeat like
 [host downloads](#host-downloads) until one has failed for that long; the rest of the
 run then tries each a few times. A registry request ends within a minute, and no image
 check starts or runs past 90 minutes; the tool checks after them are bounded by their
@@ -601,6 +614,7 @@ one-sentence explanation:
 | `operationview` | An exported function in `internal/execution` that takes a `store.Principal` returns an `api.Operation`, or a slice of them, other than through `operationFor` or `operationsFor` called with its own principal, or a function elsewhere takes a principal and returns one. An operation's note can quote the environment's configuration, which those withhold from a credential without `environment:read`. | PLAT-285 |
 | `requestbody` | Code reads `(*http.Request).Body`, or calls a method that reads it as a form such as `FormValue`, outside `httpapi.decode`, other than to bound it with `http.MaxBytesReader` or in a webhook that checks a signature over the raw bytes. The body would skip decode's refusal of unknown members and its check for NUL, which PostgreSQL cannot store ([JSON encoding](json-encoding.md#text-postgresql-cannot-store)). | PLAT-312 |
 | `revisioninsert` | Code outside `internal/store` calls `(*db.Queries).InsertRevision`. `store.InsertRevision` refuses a specification over the size limit, measured as the table's check measures it, before the check can fail and abort the transaction. | PLAT-286 |
+| `workspaceinsert` | Code other than `store.CreateWorkspace` calls `(*db.Queries).InsertWorkspace`. The constructor stores the workspace's keys, made by `Broker.Create` before the transaction, with the workspace, so no new workspace is without them. | PLAT-245 |
 
 These catch the shapes the defects took, so a clean run does not rule a defect out.
 `dberror` looks only at `err != nil` conditions, alone or as `||` terms, on an error set in
@@ -761,11 +775,11 @@ A runner already has every other Ubuntu package the bootstrap installs. If this 
 
 | Fetch | From | Its own retry |
 | --- | --- | --- |
-| The three `FROM` images | Docker Hub | None for the metadata request: one reset stops the build |
+| The three `FROM` images | Docker Hub, through [its mirror](#docker-hub-mirror) | None for the metadata request: one reset stops the build |
 | pnpm, in `scripts/install-pnpm.mjs` | npm registry | At least four minutes; a hash failure stops the build |
 | `pnpm install --frozen-lockfile` | npm registry | About three and a half minutes |
 | Go modules, in `pnpm app:build` | `proxy.golang.org` | None: one reset stops `go` |
-| PostgreSQL, for the smoke test | Docker Hub | None for the manifest request: one reset stops the pull |
+| PostgreSQL, for the smoke test | Docker Hub, through [its mirror](#docker-hub-mirror) | None for the manifest request: one reset stops the pull |
 
 The script makes up to three attempts at the whole `docker build`, and repeats the
 PostgreSQL pull as in [Image pulls](#image-pulls) within a 5-minute limit. One loop around the build covers the fetches without a retry of their own,
@@ -807,6 +821,53 @@ Not covered: Canvas and Workshop name their image in `container:`, which the run
 with its own short retries before any step can run. Pulls made during a test, such as
 BuildKit's in `TestNativePipeline`, are not retried either. A pull that stalls with its
 peer alive uses up the job's limit, or 5 minutes in the smoke test.
+
+## Docker Hub mirror
+
+Docker Hub limits anonymous pulls by IP address, and GitHub's runners share their addresses.
+From 14 November 2026 it refused pinned pulls with `429 Too Many Requests` or a failed
+manifest request, which took pull requests out of the merge queue. So CI reads every Docker
+Hub image through `mirror.gcr.io`, Google's public Docker Hub mirror, which needs no account
+or secret:
+
+| Who pulls | Where the mirror is set |
+| --- | --- |
+| The runner's own Docker, in Go, Application, Application browsers, Git providers and the pin report | `.github/actions/docker-hub-mirror` adds it to `/etc/docker/daemon.json` and restarts Docker |
+| The native lanes' fixture daemon, `astilba-plat4-docker.service` | `experiments/durable-execution/host/bootstrap.sh` writes `/etc/astilba-plat4/daemon.json`, the only configuration that daemon reads |
+| BuildKit in `TestBuildArtifacts` | Its `buildkitd.toml` |
+
+Docker and BuildKit use a mirror only for Docker Hub images. Every image is pinned by digest,
+and both check what the mirror serves against it, so the mirror can't change an image. When
+the mirror lacks an image or fails, both read Docker Hub itself. On 15 November 2026 the
+mirror served every pinned Docker Hub digest, and these were checked on Docker 29.9.2 with the
+containerd store and on BuildKit 0.34.1:
+
+- With Docker Hub's addresses refused, pulls and a `FROM` build succeed through the mirror,
+  and the pulled image has the same name and `RepoDigests` as one pulled from Docker Hub.
+- With a mirror that answers 404, answers 429 or refuses connections, both read Docker Hub.
+
+The agent's own builder, in `TestNativePipeline` and the other build tests, still reads its
+`FROM` images from Docker Hub itself: it writes BuildKit's configuration without the daemon's
+mirrors. That is a few requests per lane.
+
+`.github/actions/pull-images` refuses a Docker Hub image when the daemon doesn't list
+`https://mirror.gcr.io/` as a mirror, so a new job that pulls without the mirror step fails
+at once. A pinned image the mirror doesn't yet hold is still read from Docker Hub, under its
+limit.
+
+Some checks need Docker Hub itself:
+
+- The pin report reads tags and digests from Docker Hub's own API, since a mirror can serve a
+  stale tag. Only its pulls for the vulnerability scan use the mirror.
+- `TestNativeBuildNetwork` reaches `https://registry-1.docker.io/v2/` as its public
+  destination. That request reads no image, so it doesn't count as a pull.
+
+No native test breaks the mirror on purpose: Docker and BuildKit would then read Docker Hub
+itself, which is what CI must not depend on, so their fallback was checked by hand as above.
+Apart from the agent's own builder, the native tests don't use Docker Hub's anonymous token
+exchange either when the mirror serves an image. Unit tests against fake registries cover both in the agent's own image reads:
+`TestPullReadsThroughAnAnonymousToken`, `TestPullFallsBackPastAMirrorLackingAnEntry` and
+`TestPullFallsBackPastAFailingMirror`, for a mirror that answers 429 or can't be reached.
 
 ## Comparing changes
 
