@@ -557,6 +557,33 @@ func (q *Queries) ListBuildWaits(ctx context.Context, arg ListBuildWaitsParams) 
 	return items, nil
 }
 
+const lockDeliveredPipeline = `-- name: LockDeliveredPipeline :one
+SELECT o.command, o.state, o.cancel_requested FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
+WHERE o.workspace_id = $1 AND o.id = $2 AND o.server_id = $3 AND o.kind = 'pipeline' AND (r.delivery_started IS NOT FALSE OR o.report_sequence > 0)
+FOR UPDATE OF o
+`
+
+type LockDeliveredPipelineParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type LockDeliveredPipelineRow struct {
+	Command         []byte `json:"command"`
+	State           string `json:"state"`
+	CancelRequested bool   `json:"cancel_requested"`
+}
+
+// A pipeline operation that may have been delivered to the server's runner, locked to decide
+// about it. One never delivered, or assigned to another server, has no row.
+func (q *Queries) LockDeliveredPipeline(ctx context.Context, arg LockDeliveredPipelineParams) (LockDeliveredPipelineRow, error) {
+	row := q.db.QueryRow(ctx, lockDeliveredPipeline, arg.WorkspaceID, arg.ID, arg.ServerID)
+	var i LockDeliveredPipelineRow
+	err := row.Scan(&i.Command, &i.State, &i.CancelRequested)
+	return i, err
+}
+
 const lockSourceSubmission = `-- name: LockSourceSubmission :one
 SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = $1 AND id = $2 FOR UPDATE
 `
@@ -631,6 +658,24 @@ type NoteSourceSubmissionParams struct {
 func (q *Queries) NoteSourceSubmission(ctx context.Context, arg NoteSourceSubmissionParams) error {
 	_, err := q.db.Exec(ctx, noteSourceSubmission, arg.Note, arg.WorkspaceID, arg.ID)
 	return err
+}
+
+const pipelineReportedStart = `-- name: PipelineReportedStart :one
+SELECT (steps @> jsonb_build_array(jsonb_build_object('name', $1::text)))::boolean AS started FROM execution_operations WHERE workspace_id = $2 AND id = $3
+`
+
+type PipelineReportedStartParams struct {
+	Step        string    `json:"step"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Whether management has a report that the pipeline's runner started it: its start step.
+func (q *Queries) PipelineReportedStart(ctx context.Context, arg PipelineReportedStartParams) (bool, error) {
+	row := q.db.QueryRow(ctx, pipelineReportedStart, arg.Step, arg.WorkspaceID, arg.ID)
+	var started bool
+	err := row.Scan(&started)
+	return started, err
 }
 
 const pipelineRunReason = `-- name: PipelineRunReason :one

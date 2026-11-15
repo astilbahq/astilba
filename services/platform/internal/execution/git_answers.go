@@ -340,25 +340,48 @@ func cloneRefusal(err error) (*domain.Error, bool) {
 // errCloneCanPush refuses a stored clone credential that the Git server would let push.
 var errCloneCanPush = &domain.Error{Code: "invalid_input", Message: "The connection's clone credential can push to the repository. Runners build code that may be hostile, so give the connection a read-only clone credential, such as a deploy token with only read_repository or a token with only read access to repository contents.", Fields: []string{"clone.canPush"}}
 
-// cloneAccess asks for the only credential a runner receives. A GitHub App's is minted with read
-// access to the one repository's contents. A stored one is first put to the Git server, which
-// answers whether it may push without anything being pushed, and is refused if it may.
-func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID) (gitAnswer[pipeline.Credential], error) {
-	access, err := g.access(ctx, tx, id, false)
-	if err != nil || access.Err != nil {
-		return gitAnswer[pipeline.Credential]{Err: access.Err, Setup: access.Setup, Connection: access.Connection}, err
-	}
+// runnerCloneMargin is how long a minted clone credential outlasts its pipeline's deadline, the
+// latest a runner may start it, for the runner to prepare and fetch the source.
+const runnerCloneMargin = 25 * time.Minute
+
+// cloneAccess asks for the only credential a runner receives, for a pipeline that may start
+// until deadline, or for none in particular when deadline is zero. A GitHub App's is minted with read access to the one repository's contents,
+// to last until runnerCloneMargin after the deadline. A stored one is first put to the Git
+// server, which answers whether it may push without anything being pushed, and is refused if
+// it may.
+func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID, deadline time.Time) (gitAnswer[pipeline.RunnerAccess], error) {
 	known, err := g.current(ctx, tx, id)
 	if err != nil {
-		return gitAnswer[pipeline.Credential]{}, err
+		return gitAnswer[pipeline.RunnerAccess]{}, err
 	}
-	answer := gitAnswer[pipeline.Credential]{Value: access.Value.Clone, Connection: known.state.connection}
-	if known.state.binding != nil {
-		return answer, nil
+	if known.state.binding != nil || known.state.unusable != nil {
+		// Without a deadline, as at admission, the question is only whether a credential can be
+		// had, which needs no particular expiry and is asked once however long the passes take.
+		question, until := "clone", time.Time{}
+		if !deadline.IsZero() {
+			until = deadline.Add(runnerCloneMargin)
+			question = fmt.Sprintf("clone/%d", until.Unix())
+		}
+		return askGit(ctx, tx, g, id, question, func(ctx context.Context, st gitState) gitAnswer[pipeline.RunnerAccess] {
+			b := st.binding
+			if err := g.service.GitHub.Validate(ctx, b.InstallationID, b.RepositoryID, b.Generation, st.connection.Repository, st.connection.Private); err != nil {
+				return gitAnswer[pipeline.RunnerAccess]{Err: err, Setup: true}
+			}
+			token, expires, err := g.service.GitHub.MintReadUntil(ctx, b.InstallationID, b.RepositoryID, until)
+			if err != nil {
+				return gitAnswer[pipeline.RunnerAccess]{Err: err, Setup: true}
+			}
+			return gitAnswer[pipeline.RunnerAccess]{Value: pipeline.RunnerAccess{Clone: pipeline.Credential{Username: "x-access-token", Password: token}, CloneExpires: &expires}}
+		})
 	}
+	access, err := g.access(ctx, tx, id, false)
+	if err != nil || access.Err != nil {
+		return gitAnswer[pipeline.RunnerAccess]{Err: access.Err, Setup: access.Setup, Connection: access.Connection}, err
+	}
+	answer := gitAnswer[pipeline.RunnerAccess]{Value: pipeline.RunnerAccess{Clone: access.Value.Clone}, Connection: known.state.connection}
 	// A runner fetches anonymously without a password, so nothing else of the credential is sent.
 	if access.Value.Clone.Password == "" {
-		answer.Value = pipeline.Credential{}
+		answer.Value = pipeline.RunnerAccess{}
 		return answer, nil
 	}
 	push, err := askGit(ctx, tx, g, id, "clone/push", func(ctx context.Context, st gitState) gitAnswer[bool] {
@@ -374,16 +397,16 @@ func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID) (
 		return gitAnswer[bool]{Value: can, Err: err}
 	})
 	if err != nil {
-		return gitAnswer[pipeline.Credential]{}, err
+		return gitAnswer[pipeline.RunnerAccess]{}, err
 	}
 	if errors.Is(push.Err, pipeline.ErrCredentialRejected) {
-		return gitAnswer[pipeline.Credential]{Err: errCloneRejected, Setup: true, Connection: answer.Connection}, nil
+		return gitAnswer[pipeline.RunnerAccess]{Err: errCloneRejected, Setup: true, Connection: answer.Connection}, nil
 	}
 	if push.Err != nil {
-		return gitAnswer[pipeline.Credential]{Err: push.Err, Setup: push.Setup, Connection: answer.Connection}, nil
+		return gitAnswer[pipeline.RunnerAccess]{Err: push.Err, Setup: push.Setup, Connection: answer.Connection}, nil
 	}
 	if push.Value {
-		return gitAnswer[pipeline.Credential]{Err: errCloneCanPush, Setup: true, Connection: answer.Connection}, nil
+		return gitAnswer[pipeline.RunnerAccess]{Err: errCloneCanPush, Setup: true, Connection: answer.Connection}, nil
 	}
 	return answer, nil
 }

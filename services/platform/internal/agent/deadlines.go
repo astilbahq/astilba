@@ -14,11 +14,11 @@ import (
 )
 
 // deadlineRule is what a command's admission deadline means for it. The deadline decides whether
-// a host may start something, never whether work it already holds can end. A backup command this
-// host started is bounded by its own lifetime from when it took it up (Record.workEnd), so time it
-// waited here for the host doesn't shorten it; pipeline commands still end at their deadline.
-// Management withholds a backup's access once its deadline passes, so a command that reaches a
-// host late, after the agent was silent, never starts there. Every command kind,
+// a host may start something, never whether work it already holds can end. A backup or pipeline
+// command this host started is bounded by its own lifetime from when it took it up
+// (Record.workEnd), so time it waited here for the host doesn't shorten it. Management withholds a
+// backup's access once its deadline passes, and cancels a pipeline it has no report of starting,
+// so a command that reaches a host late, after the agent was silent, never starts there. Every command kind,
 // network action and coordinated phase that reaches the deadline has a rule below, so adding one
 // means choosing one. Anything not listed keeps its deadline. Recovery opening and closing are
 // decided before the deadline, in Execute. See docs/cross-host-placement.md.

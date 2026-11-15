@@ -281,6 +281,11 @@ func TestGitHubOnboardingDelegationAndRecoveryBoundaries(t *testing.T) {
 		if strings.Contains(payload, "installation-read-canary") != (attempt == 0) || strings.Contains(payload, "user-proof-canary") || strings.Contains(payload, "installation-write-canary") {
 			t.Fatal("runner received wrong GitHub credential scope", attempt)
 		}
+		// The runner learns when its token expires, which is after it may still start the import.
+		var delivered pipeline.Command
+		if attempt == 0 && (json.Unmarshal(*poll.Command.Pipeline, &delivered) != nil || delivered.Access == nil || delivered.Access.CloneExpires == nil || delivered.Access.CloneExpires.Before(poll.Command.Deadline.Add(25*time.Minute))) {
+			t.Fatal("runner's token may expire before it can start the import", delivered.Access)
+		}
 	}
 	if metadata.Load()-before > 1 || minted.Load() != 1 {
 		t.Fatalf("repeated active polls amplified GitHub calls: metadata=%d mints=%d", metadata.Load()-before, minted.Load())

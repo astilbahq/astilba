@@ -397,17 +397,44 @@ type cachedToken struct {
 	err     error
 	token   string
 	expires time.Time
-	ready   chan struct{}
+	// minted is when this client received the token.
+	minted time.Time
+	ready  chan struct{}
 }
 
+// tokenReuse is the least time a token must have left to be used again.
+const tokenReuse = 35 * time.Minute
+
+// tokenFresh is how long a token stays the best GitHub would give: one minted again sooner
+// would last at most this much longer. Reusing it, while it has tokenReuse left, keeps a key
+// to one mint a minute when callers ask for longer than GitHub gives, as when management's
+// clock runs ahead of GitHub's.
+const tokenFresh = time.Minute
+
 func (c *Client) Mint(ctx context.Context, installation, repository int64, write bool) (string, error) {
-	return c.mintCached(ctx, installation, repository, write, false)
+	token, _, err := c.mintCached(ctx, tokenKey{installation, repository, write, false}, time.Now().Add(tokenReuse))
+	return token, err
 }
 func (c *Client) MintPreview(ctx context.Context, installation, repository int64) (string, error) {
-	return c.mintCached(ctx, installation, repository, false, true)
+	token, _, err := c.mintCached(ctx, tokenKey{installation, repository, false, true}, time.Now().Add(tokenReuse))
+	return token, err
 }
-func (c *Client) mintCached(ctx context.Context, installation, repository int64, write, requests bool) (string, error) {
-	key := tokenKey{installation, repository, write, requests}
+
+// MintReadUntil is Mint for a read-only token that must stay valid until a given time, such as
+// one a runner may use only some time after it is sent. A cached token that expires sooner is
+// replaced by a fresh one, which is as long-lived as GitHub makes them, unless it was itself
+// minted within tokenFresh. It also returns when the token expires.
+func (c *Client) MintReadUntil(ctx context.Context, installation, repository int64, until time.Time) (string, time.Time, error) {
+	if least := time.Now().Add(tokenReuse); until.Before(least) {
+		until = least
+	}
+	return c.mintCached(ctx, tokenKey{installation, repository, false, false}, until)
+}
+
+// mintCached returns a token for key that is valid until at least until, from the cache when
+// it holds one, and otherwise freshly minted. A token minted within tokenFresh, and with
+// tokenReuse left, is used for a later until too: no fresh one could do much better.
+func (c *Client) mintCached(ctx context.Context, key tokenKey, until time.Time) (string, time.Time, error) {
 	c.mu.Lock()
 	if v := c.tokens[key]; v != nil {
 		if v.ready != nil {
@@ -415,20 +442,20 @@ func (c *Client) mintCached(ctx context.Context, installation, repository int64,
 			c.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return "", time.Time{}, ctx.Err()
 			case <-ready:
-				return v.token, v.err
+				return v.token, v.expires, v.err
 			}
 		}
-		if time.Until(v.expires) >= 35*time.Minute {
-			token := v.token
+		if !v.expires.Before(until) || time.Since(v.minted) < tokenFresh && time.Until(v.expires) >= tokenReuse {
+			token, expires := v.token, v.expires
 			c.mu.Unlock()
-			return token, nil
+			return token, expires, nil
 		}
 		delete(c.tokens, key)
 	}
 	for k, v := range c.tokens {
-		if v.ready == nil && time.Until(v.expires) < 35*time.Minute {
+		if v.ready == nil && time.Until(v.expires) < tokenReuse {
 			delete(c.tokens, k)
 		}
 	}
@@ -442,12 +469,12 @@ func (c *Client) mintCached(ctx context.Context, installation, repository int64,
 	}
 	if len(c.tokens) >= 512 {
 		c.mu.Unlock()
-		return "", errors.New("GitHub token requests are at capacity")
+		return "", time.Time{}, errors.New("GitHub token requests are at capacity")
 	}
 	pending := &cachedToken{ready: make(chan struct{})}
 	c.tokens[key] = pending
 	c.mu.Unlock()
-	token, expires, err := c.mint(ctx, installation, repository, write, requests)
+	token, expires, err := c.mint(ctx, key.Installation, key.Repository, key.Write, key.PullRequests)
 	c.mu.Lock()
 	pending.err = err
 	ready := pending.ready
@@ -456,11 +483,12 @@ func (c *Client) mintCached(ctx context.Context, installation, repository int64,
 	} else {
 		pending.token = token
 		pending.expires = expires
+		pending.minted = time.Now()
 		pending.ready = nil
 	}
 	close(ready)
 	c.mu.Unlock()
-	return token, err
+	return token, expires, err
 }
 func (c *Client) mint(ctx context.Context, installation, repository int64, write, requests bool) (string, time.Time, error) {
 	permissions := map[string]string{"contents": "read"}

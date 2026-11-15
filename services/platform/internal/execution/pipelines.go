@@ -74,7 +74,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 		return out, domain.Invalid("pipeline")
 	}
 	hydrated := p
-	if err := s.populatePipeline(ctx, tx, git, ws, env, &hydrated); err != nil {
+	if err := s.populatePipeline(ctx, tx, git, ws, env, time.Time{}, &hydrated); err != nil {
 		return out, err
 	}
 	var count int
@@ -94,7 +94,7 @@ func (s *Service) insertPipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	}
 	id := uuid.New()
 	message := jsontext.Value(raw)
-	c := api.ExecutionCommand{Id: id, ServerId: server, EnvironmentId: env, ResourceId: p.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(pipelineLifetime(p))}
+	c := api.ExecutionCommand{Id: id, ServerId: server, EnvironmentId: env, ResourceId: p.UnitID, Generation: generation, Kind: "pipeline", Action: "inspect", PlanHash: p.Digest(), Pipeline: &message, Deadline: time.Now().Add(p.Lifetime())}
 	out, err = s.insert(ctx, tx, ws, key, nil, c)
 	if err != nil {
 		return out, err
@@ -529,11 +529,4 @@ func (s *Service) PipelineRuns(ctx context.Context, p store.Principal, ws, pid, 
 		return rows.Err()
 	})
 	return out, err
-}
-
-func pipelineLifetime(p pipeline.Command) time.Duration {
-	if p.IsBuild() && p.Build != nil {
-		return time.Duration(p.Build.Limits().Minutes) * time.Minute
-	}
-	return 30 * time.Minute
 }

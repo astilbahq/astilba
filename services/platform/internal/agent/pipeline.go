@@ -398,7 +398,15 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	if e.Docker == nil {
 		return e.finish(c.Id, "failed", "Docker is unavailable.")
 	}
-	ctx, stopCommand := e.commandContext(ctx, c, c.Deadline)
+	// Time the pipeline waited for this host, behind a backup say, doesn't shorten it: it runs
+	// for its lifetime from when it was first taken up. Management allows a started pipeline the
+	// same bound.
+	started, err := e.Journal.startWork(c.Id)
+	if err != nil {
+		return err
+	}
+	r.StartedAt = started
+	ctx, stopCommand := e.commandContext(ctx, c, r.workEnd(p.Lifetime()))
 	defer stopCommand()
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)
@@ -408,7 +416,7 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	if e.cancelled(c.Id) || ctx.Err() != nil {
 		return e.finishPipeline(c, "cancelled", "Build/source assignment was cancelled or expired.")
 	}
-	if err := e.checkpoint(c.Id, "runner"); err != nil {
+	if err := e.checkpoint(c.Id, pipeline.StartStep); err != nil {
 		return err
 	}
 	if err := e.pipelineContainer(ctx, c, p); err != nil {
@@ -421,7 +429,6 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 		return e.pipelineFailure(ctx, c, err)
 	}
 	var result pipeline.Result
-	var err error
 	switch p.Action {
 	case "import":
 		result, err = e.importPipeline(ctx, c, p)

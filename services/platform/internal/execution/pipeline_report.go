@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,19 +28,22 @@ import (
 //
 // With nil keys it makes only the decisions that need no values, for a command whose
 // credentials the agent already holds: nothing is opened and no provider is asked.
-func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (bool, error) {
+func (s *Service) hydratePipeline(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (deliver, carried bool, err error) {
 	if keys == nil {
-		return s.decidePipelineDelivery(ctx, nil, a, c)
+		deliver, err = s.decidePipelineDelivery(ctx, nil, a, c, &carried)
+		return deliver, carried, err
 	}
-	var deliver bool
-	err := s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
+	err = s.withGit(ctx, a.Workspace, runKeys{operate: keys, inspect: keys}, func(git *gitAnswers) error {
 		var err error
-		deliver, err = s.decidePipelineDelivery(ctx, git, a, c)
+		deliver, err = s.decidePipelineDelivery(ctx, git, a, c, &carried)
 		return err
 	})
-	return deliver, err
+	return deliver, carried, err
 }
-func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a Identity, c *api.ExecutionCommand) (bool, error) {
+
+// decidePipelineDelivery decides whether to deliver c, and sets carried once it has filled in
+// the values c carries.
+func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a Identity, c *api.ExecutionCommand, carried *bool) (bool, error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -75,18 +79,22 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if err != nil {
 		return false, err
 	}
-	// This command carries no credentials, so an agent whose clock lags must not start it.
-	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(c.Deadline)
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
 		return false, errors.New("invalid pipeline payload")
 	}
+	ws := a.Workspace
+	queries := db.New(tx)
+	end, _, err := pipelineEnd(ctx, queries, ws, *c, p)
+	if err != nil {
+		return false, err
+	}
+	// This command carries no credentials, so an agent whose clock lags must not start it.
+	c.CancelRequested = pollCancelled || cancelled || refused || time.Now().After(end)
 	var started *bool
 	if err = tx.QueryRow(ctx, "SELECT delivery_started FROM pipeline_runs WHERE id=$1", c.Id).Scan(&started); err != nil {
 		return false, err
 	}
-	ws := a.Workspace
-	queries := db.New(tx)
 	undelivered := started != nil && !*started && sequence == 0
 	if c.CancelRequested {
 		if !undelivered {
@@ -165,9 +173,10 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("runner no longer supports the frozen project cache assignment")
 		}
 	}
-	if git == nil {
-		// The runner holds this command's credentials: what follows only decides whether new
-		// ones may leave.
+	// The runner holds this command's credentials: what follows only decides whether new ones
+	// may leave. None leave after the deadline, by when a runner must have started the pipeline
+	// with those it holds, as a backup's access does not.
+	if git == nil || time.Now().After(c.Deadline) {
 		return true, nil
 	}
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
@@ -190,7 +199,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, errors.New("repository identity changed")
 		}
 	}
-	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, &p); err != nil {
+	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Deadline, &p); err != nil {
 		// A clone credential that can push, or that the Git server won't vouch for, is never sent,
 		// and refusing it at every poll would hold the runner queue, so the run ends here. A runner
 		// that may hold an earlier delivery is told to stop.
@@ -229,7 +238,23 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	// Commit before the hydrated command can leave management. A failed response
 	// is still a possible delivery and cannot later justify a terminal rejection.
 	c.Pipeline = rawMessage(raw)
-	return true, tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	*carried = true
+	return true, nil
+}
+
+// pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
+// management has heard its runner started it. The start must reach management by the deadline
+// (pipelineReport cancels one heard of later), so an agent whose clock lags can neither start a
+// pipeline late nor run one past this bound.
+func pipelineEnd(ctx context.Context, q *db.Queries, ws uuid.UUID, c api.ExecutionCommand, p pipeline.Command) (end time.Time, started bool, err error) {
+	started, err = q.PipelineReportedStart(ctx, db.PipelineReportedStartParams{Step: pipeline.StartStep, WorkspaceID: ws, ID: c.Id})
+	if err != nil || !started {
+		return c.Deadline, started, err
+	}
+	return c.Deadline.Add(p.Lifetime()), true, nil
 }
 func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) (bool, error) {
 	if err := s.commandAdmission(ctx, tx, ws, c); errors.Is(err, store.SubscriptionRequired) {
@@ -240,15 +265,18 @@ func (s *Service) deliveryRefused(ctx context.Context, tx pgx.Tx, ws uuid.UUID, 
 	allowed, err := s.previewCommandAllowed(ctx, tx, nil, ws, c)
 	return !allowed, err
 }
-func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, p *pipeline.Command) error {
-	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID)
+
+// populatePipeline fills in the values of a pipeline that may start until deadline. A zero
+// deadline only checks they can be had, for a copy that never leaves management.
+func (s *Service) populatePipeline(ctx context.Context, tx pgx.Tx, git *gitAnswers, ws, env uuid.UUID, deadline time.Time, p *pipeline.Command) error {
+	clone, err := git.cloneAccess(ctx, tx, p.Connection.ID, deadline)
 	if err != nil {
 		return err
 	}
 	if clone.Err != nil {
 		return clone.Err
 	}
-	p.Access = &pipeline.RunnerAccess{Clone: clone.Value}
+	p.Access = &clone.Value
 	if p.Build != nil {
 		p.BuildSecrets, err = s.buildInputs(ctx, tx, git, ws, env, *p.Build)
 		if err != nil {
@@ -320,10 +348,27 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	if err := tx.QueryRow(ctx, "SELECT workspace_id,cancel_requested FROM execution_operations WHERE id=$1", c.Id).Scan(&ws, &cancelled); err != nil {
 		return err
 	}
-	if r.State == "succeeded" && (cancelled || received.After(c.Deadline)) {
+	// What management had heard before this report decides the bound, so a start first reported
+	// after the deadline ends here.
+	end, started, err := pipelineEnd(ctx, db.New(tx), ws, c, p)
+	if err != nil {
+		return err
+	}
+	late := received.After(end)
+	if r.State == "succeeded" && (cancelled || late) {
 		r.State = "cancelled"
 		r.Note = "Result arrived after cancellation or expiry."
 		r.Pipeline = nil
+	}
+	// Once this report's start is stored, the bound would move past the deadline, so a start
+	// first heard of late stops the pipeline here. Any other late report needs nothing: the
+	// next poll stops it.
+	if late && !started && !cancelled && !Terminal(r.State) && slices.ContainsFunc(r.Steps, func(s api.ExecutionStep) bool { return s.Name == pipeline.StartStep }) {
+		const note = "Stopping: the runner's report that it started this pipeline arrived after the pipeline's deadline."
+		if err = db.New(tx).StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+			return err
+		}
+		r.Note = boundedNote(strings.TrimSpace(note + " " + r.Note))
 	}
 	// A runner that held a submission from before management made them can still report it. Its
 	// result was never checked against the provider, so it counts for nothing.
