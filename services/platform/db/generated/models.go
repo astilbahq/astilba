@@ -29,10 +29,11 @@ type Account struct {
 }
 
 type AccountSecurityEvent struct {
-	ID        uuid.UUID `json:"id"`
-	AccountID uuid.UUID `json:"account_id"`
-	Kind      string    `json:"kind"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uuid.UUID   `json:"id"`
+	AccountID uuid.UUID   `json:"account_id"`
+	Kind      string      `json:"kind"`
+	CreatedAt time.Time   `json:"created_at"`
+	Reason    pgtype.Text `json:"reason"`
 }
 
 type AgentCounterValue struct {
