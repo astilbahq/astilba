@@ -62,6 +62,8 @@ export function VisualEditor({
   dirty,
   onLayoutDirty,
   onSelectService,
+  revisionId,
+  load,
 }: {
   path: EnvironmentPath;
   spec: Spec;
@@ -70,6 +72,10 @@ export function VisualEditor({
   dirty: boolean;
   onLayoutDirty: (v: boolean) => void;
   onSelectService?: (name: string) => void;
+  // The saved draft the editor started from, and how to replace the editor's draft with a
+  // revision the server saved, such as one a catalog staging made.
+  revisionId?: string;
+  load?: (revision: Schema["Revision"]) => boolean;
 }) {
   const { theme } = useContext(ThemeContext);
   const { t } = useTranslation("environment");
@@ -530,12 +536,13 @@ export function VisualEditor({
           />
         )}
       </div>
-      {configure && (
+      {configure && revisionId && load && (
         <ServiceCatalog
           path={path}
-          spec={spec}
           secrets={secrets.data ?? []}
-          stage={stage}
+          revisionId={revisionId}
+          dirty={dirty}
+          load={load}
         />
       )}
       {configure && (

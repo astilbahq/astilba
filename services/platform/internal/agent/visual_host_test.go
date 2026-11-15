@@ -283,7 +283,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	})
 
 	databaseURL := url.URL{Scheme: "postgres", Host: "127.0.0.1:15432", Path: "/app", User: url.UserPassword("app", password), RawQuery: "sslmode=disable"}
-	t.Run("catalog", func(t *testing.T) { nativeCatalogJourney(t, f.engine, server, command) })
+	t.Run("catalog", func(t *testing.T) { nativeCatalogJourney(t, f.engine, server, command, f.requestClient) })
 	db, err := pgx.Connect(ctx, databaseURL.String())
 	if err != nil {
 		t.Fatal("TCP route did not connect to PostgreSQL")
