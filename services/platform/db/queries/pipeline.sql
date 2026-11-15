@@ -83,8 +83,8 @@ WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND 
 ORDER BY r.created_at DESC LIMIT 2;
 
 -- name: InsertSourceSubmission :one
-INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,configuration)
-VALUES(@id,@workspace_id,@environment_id,@revision_id,@request_key,@actor_id,@configuration) RETURNING created_at;
+INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,actor_auth_version,configuration)
+VALUES(@id,@workspace_id,@environment_id,@revision_id,@request_key,@actor_id,@actor_auth_version,@configuration) RETURNING created_at;
 
 -- name: SourceSubmissionByRequestKey :one
 SELECT id,environment_id,revision_id,state,note,result,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND request_key = @request_key;
@@ -97,6 +97,14 @@ ORDER BY created_at DESC,id DESC LIMIT 1;
 
 -- name: LockSourceSubmission :one
 SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+
+-- name: SourceSubmissionSubmitter :one
+-- Whether the member who submitted it may still have it sent, by the check every standing approval
+-- makes, at the role writing needs. Their role now, and whether a version was recorded, say why not.
+SELECT policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)::boolean AS holds,
+    COALESCE(m.role, '')::text AS role, (s.actor_auth_version IS NOT NULL)::boolean AS recorded
+FROM source_submissions s LEFT JOIN memberships m ON m.workspace_id = s.workspace_id AND m.account_id = s.actor_id
+WHERE s.workspace_id = @workspace_id AND s.id = @id;
 
 -- name: FinishSourceSubmission :exec
 UPDATE source_submissions SET state = @state, note = @note, result = sqlc.narg(result), finished_at = now()

@@ -567,3 +567,15 @@ func stayRecentlyAuthenticated(t *testing.T, f *fixture, b *browser, mfaSecret s
 		confirmedAt = time.Now()
 	}
 }
+
+// inviteMember has owner invite email to the workspace at prefix with role, and returns the
+// signed-in browser of the account that accepts, named after its role.
+func inviteMember(t *testing.T, f *fixture, owner *browser, prefix, email, role string) *browser {
+	t.Helper()
+	owner.call("POST", prefix+"/invitations", map[string]string{"email": email, "role": role}, 201, nil)
+	b := f.browser(t)
+	var accepted api.Session
+	b.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromLinkMail(t, f, "/invitation"), "name": role, "password": f.password}, 200, &accepted)
+	b.csrf = accepted.CsrfToken
+	return b
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
@@ -172,7 +173,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 			return domain.Invalid("source.draft")
 		}
 		id := uuid.New()
-		created, err := q.InsertSourceSubmission(ctx, db.InsertSourceSubmissionParams{ID: id, WorkspaceID: ws, EnvironmentID: env, RevisionID: base, RequestKey: key, ActorID: p.Account.ID, Configuration: raw})
+		created, err := q.InsertSourceSubmission(ctx, db.InsertSourceSubmissionParams{ID: id, WorkspaceID: ws, EnvironmentID: env, RevisionID: base, RequestKey: key, ActorID: p.Account.ID, ActorAuthVersion: pgtype.Int8{Int64: p.Account.AuthVersion, Valid: true}, Configuration: raw})
 		if err != nil {
 			return err
 		}
@@ -290,8 +291,9 @@ func submissionFailure(err error) (string, bool) {
 }
 
 // prepareSubmission makes every decision again under the workspace lock: the attempt is still
-// queued, the workspace may write, no runtime secret is in the files and the connection is the
-// one the draft was submitted through. It returns nil once the attempt is settled.
+// queued, its submitter and the workspace may still write, no runtime secret is in the files and
+// the connection is the one the draft was submitted through. It returns nil once the attempt is
+// settled.
 func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *river.Job[submissionArgs]) (*submissionWork, error) {
 	ws, id := job.Args.Workspace, job.Args.ID
 	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
@@ -331,6 +333,13 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	if state != "active" {
 		return nil, fail("the environment was retired. Restore it to propose its draft; a purged environment cannot be restored.")
+	}
+	// It is sent on its submitter's say-so, which may have ended while it waited.
+	if note, err := submitterRefusal(ctx, q, ws, id); err != nil || note != "" {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fail(note)
 	}
 	var c submissionConfiguration
 	if err = json.Unmarshal(row.Configuration, &c); err != nil {
@@ -404,6 +413,26 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	work := &submissionWork{provider: provider, submission: pipeline.Submission{ID: c.SubmissionID, Base: c.Commit, Branch: c.Branch, Files: c.Bundle.Files, Previous: c.Paths, At: c.SubmittedAt}}
 	return work, tx.Commit(ctx)
+}
+
+// submitterRefusal says why the member who submitted the attempt may no longer have it sent, or ""
+// while they still may: they are an owner or operator of the workspace, and their password,
+// two-factor settings and recovery codes are as they were when they submitted it. Membership
+// changes take the workspace lock, which the caller holds.
+func submitterRefusal(ctx context.Context, q *db.Queries, ws, id uuid.UUID) (string, error) {
+	s, err := q.SourceSubmissionSubmitter(ctx, db.SourceSubmissionSubmitterParams{WorkspaceID: ws, ID: id})
+	if err != nil || s.Holds {
+		return "", err
+	}
+	switch {
+	case s.Role == "":
+		return "the member who submitted it has left the workspace. An owner or operator can submit the draft again.", nil
+	case !domain.CanWrite(s.Role):
+		return "the member who submitted it is no longer an owner or operator. An owner or operator can submit the draft again.", nil
+	case !s.Recorded:
+		return "an earlier release of Astilba queued it without recording who may send it. Submit the draft again.", nil
+	}
+	return "the member who submitted it has changed their password or two-factor settings, or used a recovery code, since. They can submit the draft again.", nil
 }
 
 // submissionWait is how long a submission created at created waits for GitHub to allow requests

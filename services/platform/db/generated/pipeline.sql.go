@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const allBuildSecrets = `-- name: AllBuildSecrets :many
@@ -377,18 +378,19 @@ func (q *Queries) FinishUndeliveredPipeline(ctx context.Context, arg FinishUndel
 }
 
 const insertSourceSubmission = `-- name: InsertSourceSubmission :one
-INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,configuration)
-VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING created_at
+INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,actor_auth_version,configuration)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING created_at
 `
 
 type InsertSourceSubmissionParams struct {
-	ID            uuid.UUID `json:"id"`
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	RevisionID    uuid.UUID `json:"revision_id"`
-	RequestKey    uuid.UUID `json:"request_key"`
-	ActorID       uuid.UUID `json:"actor_id"`
-	Configuration []byte    `json:"configuration"`
+	ID               uuid.UUID   `json:"id"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	EnvironmentID    uuid.UUID   `json:"environment_id"`
+	RevisionID       uuid.UUID   `json:"revision_id"`
+	RequestKey       uuid.UUID   `json:"request_key"`
+	ActorID          uuid.UUID   `json:"actor_id"`
+	ActorAuthVersion pgtype.Int8 `json:"actor_auth_version"`
+	Configuration    []byte      `json:"configuration"`
 }
 
 func (q *Queries) InsertSourceSubmission(ctx context.Context, arg InsertSourceSubmissionParams) (time.Time, error) {
@@ -399,6 +401,7 @@ func (q *Queries) InsertSourceSubmission(ctx context.Context, arg InsertSourceSu
 		arg.RevisionID,
 		arg.RequestKey,
 		arg.ActorID,
+		arg.ActorAuthVersion,
 		arg.Configuration,
 	)
 	var created_at time.Time
@@ -930,6 +933,33 @@ func (q *Queries) SourceSubmissionByRequestKey(ctx context.Context, arg SourceSu
 		&i.Result,
 		&i.CreatedAt,
 	)
+	return i, err
+}
+
+const sourceSubmissionSubmitter = `-- name: SourceSubmissionSubmitter :one
+SELECT policy_approver_holds(s.workspace_id, s.actor_id, s.actor_auth_version, false)::boolean AS holds,
+    COALESCE(m.role, '')::text AS role, (s.actor_auth_version IS NOT NULL)::boolean AS recorded
+FROM source_submissions s LEFT JOIN memberships m ON m.workspace_id = s.workspace_id AND m.account_id = s.actor_id
+WHERE s.workspace_id = $1 AND s.id = $2
+`
+
+type SourceSubmissionSubmitterParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type SourceSubmissionSubmitterRow struct {
+	Holds    bool   `json:"holds"`
+	Role     string `json:"role"`
+	Recorded bool   `json:"recorded"`
+}
+
+// Whether the member who submitted it may still have it sent, by the check every standing approval
+// makes, at the role writing needs. Their role now, and whether a version was recorded, say why not.
+func (q *Queries) SourceSubmissionSubmitter(ctx context.Context, arg SourceSubmissionSubmitterParams) (SourceSubmissionSubmitterRow, error) {
+	row := q.db.QueryRow(ctx, sourceSubmissionSubmitter, arg.WorkspaceID, arg.ID)
+	var i SourceSubmissionSubmitterRow
+	err := row.Scan(&i.Holds, &i.Role, &i.Recorded)
 	return i, err
 }
 
