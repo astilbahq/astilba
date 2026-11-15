@@ -456,27 +456,13 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	return tx.Commit(ctx)
 }
 
-// recordSnapshotReceipts keeps a receipt for each snapshot a report lists as available, as
-// backup.Prunable does: one a succeeded run names that has not been pruned since. A snapshot keeps
-// the time management first received it for as long as reports go on listing it, whether by its
-// upload or by a restore that verified it after the upload left the history. Only an upload adds
-// one: a restore names a snapshot without making it, and one never reported stays on the manual
+// recordSnapshotReceipts keeps a receipt for each snapshot a report lists as available
+// (backup.Available). A snapshot keeps the time management first received it for as long as
+// reports go on listing it, whether by its upload or by a restore that verified it after the
+// upload left the history. Only an upload adds one, so one never reported stays on the manual
 // route.
 func recordSnapshotReceipts(ctx context.Context, q *db.Queries, a Identity, policy uuid.UUID, runs []backup.Run) error {
-	seen := map[string]bool{}
-	listed, uploaded := []string{}, []string{}
-	for _, r := range runs {
-		if r.State != "succeeded" || r.Pruned || r.Snapshot == "" {
-			continue
-		}
-		if !seen[r.Snapshot] {
-			seen[r.Snapshot] = true
-			listed = append(listed, r.Snapshot)
-		}
-		if r.TargetID == uuid.Nil {
-			uploaded = append(uploaded, r.Snapshot)
-		}
-	}
+	listed, uploaded := backup.Available(runs)
 	return q.RecordBackupSnapshotReceipts(ctx, db.RecordBackupSnapshotReceiptsParams{Listed: listed, Uploaded: uploaded, WorkspaceID: a.Workspace, PolicyID: policy})
 }
 
@@ -493,8 +479,8 @@ func (s *Service) BackupSnapshotReceipts(ctx context.Context, p store.Principal,
 		if err != nil {
 			return err
 		}
-		receipts, err := backup.ParseReceipts(raw)
-		if err != nil {
+		var receipts backup.Receipts
+		if err = json.Unmarshal(raw, &receipts); err != nil {
 			return err
 		}
 		for snapshot, at := range receipts {

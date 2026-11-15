@@ -78,7 +78,7 @@ A server reports its own times for the snapshots it uploads, and a host that was
 
 Revoking a server records when the revocation began, and the servers list shows it as `revokedAt`. Revoking it again keeps the first time, and renewing or transferring it clears the time. A revocation from before this release has no time. A revoked server's reports are refused, so its receipts stay as they were when it was revoked.
 
-Workspace exports and cross-host recovery carry both. Recovery keeps a receipt for each snapshot the newer of the two copies' reports lists, and when both copies have a time for it, the earlier one. Of two copies of a revocation it keeps the earlier time, and when one copy has no time, it shows the time as unknown.
+Workspace exports and cross-host recovery carry both. Recovery keeps a receipt for each snapshot the newer of the two copies' reports lists as available, at the earlier time of the copies that have one. Of two copies of a revocation it keeps the earlier time, and when one copy has no time, it shows the time as unknown.
 
 ## Restore and cutover
 

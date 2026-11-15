@@ -4,6 +4,8 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // MaxReportedRuns is the most runs a schedule report carries, so the most snapshots it lists.
@@ -25,4 +27,25 @@ func ParseReceipts(raw []byte) (Receipts, error) {
 		}
 	}
 	return out, nil
+}
+
+// Available lists, once each, the snapshots runs list as available, as Prunable counts them: each a
+// succeeded run names that hasn't been pruned since. Uploaded lists those an upload names, the
+// only runs that make a snapshot: a restore names one without making it.
+func Available(runs []Run) (available, uploaded []string) {
+	seen := map[string]bool{}
+	available, uploaded = []string{}, []string{}
+	for _, r := range runs {
+		if r.State != "succeeded" || r.Pruned || r.Snapshot == "" {
+			continue
+		}
+		if !seen[r.Snapshot] {
+			seen[r.Snapshot] = true
+			available = append(available, r.Snapshot)
+		}
+		if r.TargetID == uuid.Nil {
+			uploaded = append(uploaded, r.Snapshot)
+		}
+	}
+	return available, uploaded
 }

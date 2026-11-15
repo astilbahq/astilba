@@ -280,7 +280,7 @@ func TestWorkspaceImportKeepsRevocationTimesAndSnapshotReceipts(t *testing.T) {
 // the restore, has later times than management first recorded, or none. Recovery from a checkpoint
 // keeps the earlier of the two copies' times for each revocation, and shows a revocation whose start
 // one copy doesn't know as unknown. It keeps a receipt for each snapshot the newer report lists, at
-// the earlier of the two copies' times.
+// the earlier time of the copies that have one.
 func TestRecoveryKeepsTheEarliestReceiptsAndRevocationTimes(t *testing.T) {
 	var p *reportingPolicy
 	var later, unknown uuid.UUID

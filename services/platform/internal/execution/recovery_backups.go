@@ -36,32 +36,36 @@ func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, 
 	if err != nil {
 		return nil, err
 	}
+	kept := sa
 	if sb.Generation > sa.Generation || sb.Generation == sa.Generation && qb > qa {
-		out["status"], out["status_sequence"] = incoming["status"], incoming["status_sequence"]
-		err = recoveryReceipts(out, incoming, prior)
-	} else {
-		err = recoveryReceipts(out, prior, incoming)
+		out["status"], out["status_sequence"], kept = incoming["status"], incoming["status_sequence"], sb
 	}
-	return out, err
+	return out, recoveryReceipts(out, kept, prior, incoming)
 }
 
-// recoveryReceipts keeps a receipt for each snapshot the status out keeps lists, from the copy
-// that status came from, at the earlier of the two copies' times: each is a time management
-// received it, so the earlier bounds when it existed.
-func recoveryReceipts(out, kept, other portability.Row) error {
-	a, err := recoveryValue[backup.Receipts](kept, "snapshot_receipts")
+// recoveryReceipts keeps a receipt for each snapshot the status out keeps lists as available, at
+// the earlier time of the two copies that have one: each is a time management received it, so
+// the earlier bounds when it existed.
+func recoveryReceipts(out portability.Row, kept backup.Status, a, b portability.Row) error {
+	ra, err := recoveryValue[backup.Receipts](a, "snapshot_receipts")
 	if err != nil {
 		return err
 	}
-	b, err := recoveryValue[backup.Receipts](other, "snapshot_receipts")
+	rb, err := recoveryValue[backup.Receipts](b, "snapshot_receipts")
 	if err != nil {
 		return err
 	}
-	for snapshot, at := range a {
-		if earlier, ok := b[snapshot]; ok && earlier.Before(at) {
-			a[snapshot] = earlier
+	receipts := backup.Receipts{}
+	available, _ := backup.Available(kept.Runs)
+	for _, snapshot := range available {
+		at, ok := ra[snapshot]
+		if other, found := rb[snapshot]; found && (!ok || other.Before(at)) {
+			at, ok = other, true
+		}
+		if ok {
+			receipts[snapshot] = at
 		}
 	}
-	recoverySet(out, "snapshot_receipts", a)
+	recoverySet(out, "snapshot_receipts", receipts)
 	return nil
 }
