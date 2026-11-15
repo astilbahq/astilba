@@ -119,3 +119,17 @@ RETURNING postgres_major;
 
 -- name: OperationCommandByRequestKey :one
 SELECT command FROM execution_operations WHERE workspace_id = @workspace_id AND request_key = @request_key;
+
+-- name: RecordBackupSnapshotReceipts :exec
+-- A listed snapshot keeps the time management first received it, one an upload lists gets
+-- management's clock now, and one no longer listed loses its receipt.
+UPDATE backup_policies p SET snapshot_receipts = COALESCE((
+    SELECT jsonb_object_agg(s.snapshot, COALESCE(p.snapshot_receipts->s.snapshot, to_jsonb(clock_timestamp())))
+    FROM unnest(@listed::text[]) AS s(snapshot)
+    WHERE p.snapshot_receipts->s.snapshot IS NOT NULL OR s.snapshot = ANY(@uploaded::text[])
+), '{}')
+WHERE workspace_id = @workspace_id AND id = @policy_id;
+
+-- name: BackupSnapshotReceipts :one
+SELECT snapshot_receipts FROM backup_policies
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id;

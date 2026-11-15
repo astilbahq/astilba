@@ -9,6 +9,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -117,6 +118,21 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			setValue(row, "released_by_revocation", false)
 		}
 	}
+	if version < 13 {
+		// Nothing recorded when a revocation began or when a snapshot was first reported. A server
+		// revoked then shows no time, and its snapshots stay on the manual route (docs/backups.md).
+		fields := map[string]map[string]any{"servers": {"revoked_at": nil}, "backup_policies": {"snapshot_receipts": map[string]any{}}}
+		for table, values := range fields {
+			for _, row := range archive.Tables[table] {
+				for field, value := range values {
+					if _, exists := row[field]; exists {
+						return archive, ErrArchive
+					}
+					setValue(row, field, value)
+				}
+			}
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -152,6 +168,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			// one was not written by an export, and its insert would fail.
 			if _, found := domain.NULField(row, ""); found {
 				return archive, ErrArchive
+			}
+			if table.Name == "backup_policies" {
+				if _, e = backup.ParseReceipts(row["snapshot_receipts"]); e != nil {
+					return archive, ErrArchive
+				}
 			}
 			// A recovery checkpoint is management's own record and must stay restorable. Any
 			// other archive gets what an export would have written, so retention, which
@@ -494,63 +515,6 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		return out, store.Normalize(e)
 	}
 	return out, nil
-}
-
-func normalizeLegacyArchive(a *Archive) error {
-	if len(a.Tables) != len(legacyTables) {
-		return ErrArchive
-	}
-	for _, t := range legacyTables {
-		rows, ok := a.Tables[t.Name]
-		if !ok || rows == nil {
-			return ErrArchive
-		}
-		columns := strings.Split(t.Columns, ",")
-		for _, row := range rows {
-			if len(row) != len(columns) {
-				return ErrArchive
-			}
-			for _, column := range columns {
-				if _, ok := row[column]; !ok {
-					return ErrArchive
-				}
-			}
-			if t.Name == "environments" {
-				setValue(row, "purpose", "standard")
-			}
-			if t.Name == "servers" {
-				setValue(row, "preview_only", false)
-			}
-		}
-	}
-	a.Tables["preview_policies"] = []Row{}
-	a.Tables["preview_requests"] = []Row{}
-	a.Version = 2
-	return nil
-}
-
-func normalizePreNetworkArchive(a *Archive) error {
-	for _, table := range tables {
-		if strings.HasPrefix(table.Name, "network_") || table.Name == "workspace_networks" || strings.HasPrefix(table.Name, "cross_host_") || table.Name == "backup_cutovers" {
-			if _, ok := a.Tables[table.Name]; ok {
-				return ErrArchive
-			}
-			a.Tables[table.Name] = []Row{}
-		}
-	}
-	for _, row := range a.Tables["deployment_units"] {
-		if _, ok := row["primary_unit"]; ok {
-			return ErrArchive
-		}
-		setValue(row, "primary_unit", true)
-	}
-	for _, row := range a.Tables["execution_operations"] {
-		if _, ok := row["parent_id"]; ok {
-			return ErrArchive
-		}
-		setValue(row, "parent_id", nil)
-	}
-	return nil
 }
 
 // checkReleasedRoutes refuses an archive in which an environment whose server confirmed its
