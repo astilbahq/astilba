@@ -121,18 +121,15 @@ RETURNING postgres_major;
 SELECT command FROM execution_operations WHERE workspace_id = @workspace_id AND request_key = @request_key;
 
 -- name: RecordBackupSnapshotReceipts :exec
--- A snapshot already listed keeps the time management first received it.
-INSERT INTO backup_snapshot_receipts(workspace_id,environment_id,policy_id,snapshot,server_id,first_reported_at)
-SELECT p.workspace_id,p.environment_id,p.id,s.snapshot,@server_id::uuid,clock_timestamp()
-FROM backup_policies p CROSS JOIN unnest(@snapshots::text[]) AS s(snapshot)
-WHERE p.workspace_id = @workspace_id AND p.id = @policy_id
-ON CONFLICT (policy_id,snapshot) DO NOTHING;
+-- A listed snapshot keeps the time management first received it, one an upload lists gets
+-- management's clock now, and one no longer listed loses its receipt.
+UPDATE backup_policies p SET snapshot_receipts = COALESCE((
+    SELECT jsonb_object_agg(s.snapshot, COALESCE(p.snapshot_receipts->s.snapshot, to_jsonb(clock_timestamp())))
+    FROM unnest(@listed::text[]) AS s(snapshot)
+    WHERE p.snapshot_receipts->s.snapshot IS NOT NULL OR s.snapshot = ANY(@uploaded::text[])
+), '{}')
+WHERE workspace_id = @workspace_id AND id = @policy_id;
 
--- name: DropUnlistedBackupSnapshotReceipts :exec
-DELETE FROM backup_snapshot_receipts
-WHERE workspace_id = @workspace_id AND policy_id = @policy_id AND snapshot <> ALL(@snapshots::text[]);
-
--- name: ListBackupSnapshotReceipts :many
-SELECT snapshot,server_id,first_reported_at FROM backup_snapshot_receipts
-WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND policy_id = @policy_id
-ORDER BY first_reported_at DESC,snapshot LIMIT 256;
+-- name: BackupSnapshotReceipts :one
+SELECT snapshot_receipts FROM backup_policies
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id;

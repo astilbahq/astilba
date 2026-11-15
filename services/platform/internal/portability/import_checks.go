@@ -23,6 +23,7 @@ const maxImportedValue = 8 << 20
 var importedValueLimits = map[string]int{
 	"backup_policies.configuration":      2 << 20, // a plan of 1 MiB and its command
 	"backup_policies.status":             512 << 10,
+	"backup_policies.snapshot_receipts":  32 << 10, // 128 snapshots and times
 	"cross_host_operations.receipts":     2 << 20,
 	"cross_host_runtime.inventory":       2 << 20, // a plan of 1 MiB and an observation
 	"network_members.installed_manifest": 256 << 10,

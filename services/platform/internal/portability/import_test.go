@@ -3,6 +3,7 @@ package portability
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"maps"
 	"os"
 	"strings"
@@ -378,19 +379,20 @@ func TestArchiveRefusesAmbiguousNames(t *testing.T) {
 // withoutVersionThirteen makes a decoded archive look as one written before it recorded when
 // revocations began and when snapshots were first reported. It copies the rows it changes.
 func withoutVersionThirteen(a Archive) {
-	servers := []Row{}
-	for _, row := range a.Tables["servers"] {
-		row = maps.Clone(row)
-		delete(row, "revoked_at")
-		servers = append(servers, row)
+	for table, column := range map[string]string{"servers": "revoked_at", "backup_policies": "snapshot_receipts"} {
+		rows := []Row{}
+		for _, row := range a.Tables[table] {
+			row = maps.Clone(row)
+			delete(row, column)
+			rows = append(rows, row)
+		}
+		a.Tables[table] = rows
 	}
-	a.Tables["servers"] = servers
-	delete(a.Tables, "backup_snapshot_receipts")
 }
 
 // An archive carries when each server's revocation began and when management first received each
-// snapshot. One from before version 13 records neither and may not carry them, and a receipt must
-// name a policy and a server the archive holds.
+// snapshot. One from before version 13 records neither and may not carry them, and an archive's
+// receipts must be ones its policy's reports could have made.
 func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 	raw, err := os.ReadFile("testdata/workspace-v1.json")
 	if err != nil {
@@ -400,17 +402,26 @@ func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(a.Tables["servers"][0]["revoked_at"]) != "null" || len(a.Tables["backup_snapshot_receipts"]) != 0 {
-		t.Fatal("an archive from before version 13 was given a revocation time or a receipt")
-	}
 	server := a.Tables["servers"][0]
-	receipt := Row{"workspace_id": server["workspace_id"], "environment_id": jsontext.Value(`"` + uuid.NewString() + `"`), "policy_id": jsontext.Value(`"` + uuid.NewString() + `"`), "snapshot": jsontext.Value(`"` + strings.Repeat("a", 64) + `"`), "server_id": server["id"], "first_reported_at": jsontext.Value(`"2026-11-01T00:00:00Z"`)}
-	decode := func(version int, change func(Archive)) error {
+	if string(server["revoked_at"]) != "null" {
+		t.Fatal("an archive from before version 13 was given a revocation time")
+	}
+	receipts := func(entries int) jsontext.Value {
+		out := map[string]string{}
+		for i := range entries {
+			out[fmt.Sprintf("%064x", i)] = "2026-11-01T00:00:00Z"
+		}
+		raw, _ := stablejson.Marshal(out)
+		return raw
+	}
+	policy := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "workspace_id": server["workspace_id"], "environment_id": a.Tables["environments"][0]["id"], "server_id": server["id"], "configuration": jsontext.Value(`{}`), "encrypted_access": jsontext.Value(`null`), "status": jsontext.Value(`{}`), "status_sequence": jsontext.Value(`0`), "snapshot_receipts": receipts(2)}
+	decode := func(version int, change func(Archive)) (Archive, error) {
 		t.Helper()
 		older := a
 		older.Version, older.Tables = version, maps.Clone(a.Tables)
 		older.Tables["servers"] = []Row{maps.Clone(server)}
 		older.Tables["servers"][0]["revoked_at"] = jsontext.Value(`"2026-11-02T00:00:00Z"`)
+		older.Tables["backup_policies"] = []Row{maps.Clone(policy)}
 		if version < 13 {
 			withoutVersionThirteen(older)
 		}
@@ -419,25 +430,37 @@ func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = decodeArchive(raw)
-		return err
+		return decodeArchive(raw)
 	}
-	if err = decode(ArchiveVersion, func(Archive) {}); err != nil {
-		t.Fatal("the current version refused a revocation time", err)
+	got, err := decode(ArchiveVersion, func(Archive) {})
+	if err != nil || string(got.Tables["servers"][0]["revoked_at"]) != `"2026-11-02T00:00:00Z"` || string(got.Tables["backup_policies"][0]["snapshot_receipts"]) != string(receipts(2)) {
+		t.Fatal("the current version didn't carry a revocation time and receipts", err)
 	}
-	if decode(ArchiveVersion, func(a Archive) { delete(a.Tables, "backup_snapshot_receipts") }) == nil {
-		t.Fatal("the current version accepted an archive without receipts")
+	if got, err = decode(11, func(Archive) {}); err != nil || string(got.Tables["servers"][0]["revoked_at"]) != "null" || string(got.Tables["backup_policies"][0]["snapshot_receipts"]) != "{}" {
+		t.Fatal("version 11 wasn't read as recording neither", err)
 	}
-	if decode(ArchiveVersion, func(a Archive) { a.Tables["backup_snapshot_receipts"] = []Row{receipt} }) == nil {
-		t.Fatal("a receipt for a policy the archive doesn't hold was accepted")
+	set := func(table, column, value string) func(Archive) {
+		return func(a Archive) { a.Tables[table][0][column] = jsontext.Value(value) }
 	}
-	if err = decode(11, func(Archive) {}); err != nil {
-		t.Fatal("version 11 was refused", err)
-	}
-	if decode(11, func(a Archive) { a.Tables["backup_snapshot_receipts"] = []Row{} }) == nil {
-		t.Fatal("version 11 accepted a receipts table")
-	}
-	if decode(11, func(a Archive) { a.Tables["servers"][0]["revoked_at"] = jsontext.Value("null") }) == nil {
-		t.Fatal("version 11 accepted a revocation time")
+	for name, change := range map[string]func(Archive){
+		"a policy without receipts":         func(a Archive) { delete(a.Tables["backup_policies"][0], "snapshot_receipts") },
+		"null receipts":                     set("backup_policies", "snapshot_receipts", `null`),
+		"receipts that aren't a map":        set("backup_policies", "snapshot_receipts", `[]`),
+		"a receipt for no snapshot":         set("backup_policies", "snapshot_receipts", `{"latest":"2026-11-01T00:00:00Z"}`),
+		"a receipt without a time":          set("backup_policies", "snapshot_receipts", `{"`+strings.Repeat("a", 64)+`":"yesterday"}`),
+		"more receipts than reports list":   func(a Archive) { a.Tables["backup_policies"][0]["snapshot_receipts"] = receipts(129) },
+		"version 11 with a revocation time": nil,
+		"version 11 with receipts":          nil,
+	} {
+		version := ArchiveVersion
+		switch name {
+		case "version 11 with a revocation time":
+			version, change = 11, set("servers", "revoked_at", `null`)
+		case "version 11 with receipts":
+			version, change = 11, set("backup_policies", "snapshot_receipts", `{}`)
+		}
+		if _, err := decode(version, change); err == nil {
+			t.Error("an archive with", name, "was accepted")
+		}
 	}
 }

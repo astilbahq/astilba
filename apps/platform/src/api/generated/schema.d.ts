@@ -4670,11 +4670,9 @@ export interface components {
         BackupSnapshotReceipt: {
             snapshot: string;
             /**
-             * Format: uuid
-             * @description The server whose authenticated report first listed the snapshot.
+             * Format: date-time
+             * @description When management first received the snapshot from an upload the policy's server reported, by management's clock.
              */
-            serverId: string;
-            /** Format: date-time */
             firstReportedAt: string;
         };
         BackupStatus: {

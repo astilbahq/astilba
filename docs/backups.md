@@ -74,11 +74,11 @@ This resumes recorded file writers where their identity still matches, refuses a
 
 ## Snapshot receipts
 
-A server reports its own times for the snapshots it uploads, and a host that was compromised can backdate them. A snapshot's ID is the SHA-256 of its content, so management also records when it first received each one, by its own clock, along with the server whose report listed it. That time bounds when the snapshot's content existed, whatever the server claims. Management keeps a receipt while the policy's reports go on listing its snapshot as available. A snapshot pruned or left out of a report loses its receipt, and one reported again later gets a later time, so a server can make a snapshot look newer than it is but never older. Restores and failed runs record nothing. Owners and members read receipts through the policy's `receipts` endpoint.
+A server reports its own times for the snapshots it uploads, and a host that was compromised can backdate them. A snapshot's ID is the SHA-256 of its content, so management also records when an upload from the policy's server first reported each one, by management's own clock. That time bounds when the snapshot's content existed, whatever the server claims. Management keeps a receipt while the policy's reports go on listing its snapshot as available, including through a restore that verified it after the upload left the agent's run history. A snapshot pruned or left out of a report loses its receipt, and one reported again later gets a later time, so a server can make a snapshot look newer than it is but never older. A failed run records nothing, and neither does a restore of a snapshot no upload reported, which stays on the manual route. Owners and members read receipts through the policy's `receipts` endpoint.
 
 Revoking a server records when the revocation began, and the servers list shows it as `revokedAt`. Revoking it again keeps the first time, and renewing or transferring it clears the time. A revocation from before this release has no time. A revoked server's reports are refused, so its receipts stay as they were when it was revoked.
 
-Workspace exports and cross-host recovery carry both. When recovery finds two copies of a receipt or a revocation, it keeps the earlier time. When one copy of a revocation has no time, it shows the time as unknown.
+Workspace exports and cross-host recovery carry both. Recovery keeps a receipt for each snapshot the newer of the two copies' reports lists, and when both copies have a time for it, the earlier one. Of two copies of a revocation it keeps the earlier time, and when one copy has no time, it shows the time as unknown.
 
 ## Restore and cutover
 

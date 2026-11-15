@@ -9,6 +9,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -120,16 +121,17 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	if version < 13 {
 		// Nothing recorded when a revocation began or when a snapshot was first reported. A server
 		// revoked then shows no time, and its snapshots stay on the manual route (docs/backups.md).
-		for _, row := range archive.Tables["servers"] {
-			if _, exists := row["revoked_at"]; exists {
-				return archive, ErrArchive
+		fields := map[string]map[string]any{"servers": {"revoked_at": nil}, "backup_policies": {"snapshot_receipts": map[string]any{}}}
+		for table, values := range fields {
+			for _, row := range archive.Tables[table] {
+				for field, value := range values {
+					if _, exists := row[field]; exists {
+						return archive, ErrArchive
+					}
+					setValue(row, field, value)
+				}
 			}
-			setValue(row, "revoked_at", nil)
 		}
-		if _, exists := archive.Tables["backup_snapshot_receipts"]; exists {
-			return archive, ErrArchive
-		}
-		archive.Tables["backup_snapshot_receipts"] = []Row{}
 	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
@@ -166,6 +168,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			// one was not written by an export, and its insert would fail.
 			if _, found := domain.NULField(row, ""); found {
 				return archive, ErrArchive
+			}
+			if table.Name == "backup_policies" {
+				if _, e = backup.ParseReceipts(row["snapshot_receipts"]); e != nil {
+					return archive, ErrArchive
+				}
 			}
 			// A recovery checkpoint is management's own record and must stay restorable. Any
 			// other archive gets what an export would have written, so retention, which
@@ -221,8 +228,6 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		{"preview_requests", "build_id", "execution_operations"},
 		{"preview_requests", "operation_id", "execution_operations"},
 		{"preview_requests", "plan_id", "visual_requests"},
-		{"backup_snapshot_receipts", "policy_id", "backup_policies"},
-		{"backup_snapshot_receipts", "server_id", "servers"},
 	}
 	for _, ref := range refs {
 		ids := map[string]bool{}

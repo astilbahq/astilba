@@ -1,10 +1,13 @@
 package execution
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -397,7 +400,7 @@ func (s *Service) BackupStatus(ctx context.Context, p store.Principal, ws, pid, 
 	return out, err
 }
 func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64, status backup.Status) error {
-	if a.Role == "build" || sequence < 1 || sequence > 1<<53 || len(status.Runs) > 128 {
+	if a.Role == "build" || sequence < 1 || sequence > 1<<53 || len(status.Runs) > backup.MaxReportedRuns {
 		return domain.Invalid("scheduleReport")
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
@@ -453,23 +456,28 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	return tx.Commit(ctx)
 }
 
-// recordSnapshotReceipts keeps a receipt for each snapshot a report lists as available: one an
-// upload put there that has not been pruned since. A snapshot keeps the time management first
-// received it for as long as reports go on listing it. Restore runs name a snapshot without
-// making one, so they add nothing.
+// recordSnapshotReceipts keeps a receipt for each snapshot a report lists as available, as
+// backup.Prunable does: one a succeeded run names that has not been pruned since. A snapshot keeps
+// the time management first received it for as long as reports go on listing it, whether by its
+// upload or by a restore that verified it after the upload left the history. Only an upload adds
+// one: a restore names a snapshot without making it, and one never reported stays on the manual
+// route.
 func recordSnapshotReceipts(ctx context.Context, q *db.Queries, a Identity, policy uuid.UUID, runs []backup.Run) error {
-	listed := map[string]bool{}
-	snapshots := []string{}
+	seen := map[string]bool{}
+	listed, uploaded := []string{}, []string{}
 	for _, r := range runs {
-		if r.State == "succeeded" && r.Snapshot != "" && r.TargetID == uuid.Nil && !r.Pruned && !listed[r.Snapshot] {
-			listed[r.Snapshot] = true
-			snapshots = append(snapshots, r.Snapshot)
+		if r.State != "succeeded" || r.Pruned || r.Snapshot == "" {
+			continue
+		}
+		if !seen[r.Snapshot] {
+			seen[r.Snapshot] = true
+			listed = append(listed, r.Snapshot)
+		}
+		if r.TargetID == uuid.Nil {
+			uploaded = append(uploaded, r.Snapshot)
 		}
 	}
-	if err := q.DropUnlistedBackupSnapshotReceipts(ctx, db.DropUnlistedBackupSnapshotReceiptsParams{WorkspaceID: a.Workspace, PolicyID: policy, Snapshots: snapshots}); err != nil {
-		return err
-	}
-	return q.RecordBackupSnapshotReceipts(ctx, db.RecordBackupSnapshotReceiptsParams{ServerID: a.ID, Snapshots: snapshots, WorkspaceID: a.Workspace, PolicyID: policy})
+	return q.RecordBackupSnapshotReceipts(ctx, db.RecordBackupSnapshotReceiptsParams{Listed: listed, Uploaded: uploaded, WorkspaceID: a.Workspace, PolicyID: policy})
 }
 
 // BackupSnapshotReceipts lists when management first received each snapshot its policy's reports
@@ -481,16 +489,20 @@ func (s *Service) BackupSnapshotReceipts(ctx context.Context, p store.Principal,
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
-		if _, err := loadBackupPolicy(ctx, tx, ws, env, id); err != nil {
-			return err
-		}
-		rows, err := db.New(tx).ListBackupSnapshotReceipts(ctx, db.ListBackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, PolicyID: id})
+		raw, err := db.New(tx).BackupSnapshotReceipts(ctx, db.BackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
 		if err != nil {
 			return err
 		}
-		for _, r := range rows {
-			out = append(out, api.BackupSnapshotReceipt{Snapshot: r.Snapshot, ServerId: r.ServerID, FirstReportedAt: r.FirstReportedAt.UTC()})
+		receipts, err := backup.ParseReceipts(raw)
+		if err != nil {
+			return err
 		}
+		for snapshot, at := range receipts {
+			out = append(out, api.BackupSnapshotReceipt{Snapshot: snapshot, FirstReportedAt: at.UTC()})
+		}
+		slices.SortFunc(out, func(a, b api.BackupSnapshotReceipt) int {
+			return cmp.Or(b.FirstReportedAt.Compare(a.FirstReportedAt), strings.Compare(a.Snapshot, b.Snapshot))
+		})
 		return nil
 	})
 	return out, err

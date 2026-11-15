@@ -12,42 +12,17 @@
 -- stands for, which only widens what is shown as uploaded after it.
 ALTER TABLE servers ADD COLUMN revoked_at timestamptz;
 
--- One row for each snapshot its policy's reports list as available. first_reported_at is
--- management's clock when the snapshot was first reported, and server_id the server whose
--- authenticated report it came in. A host can take a snapshot out of its reports, which removes the
--- row, and report it again later, which records a later time: it can never make a snapshot look
--- older than management saw it. Only recovery moves a row, to an earlier time another copy of the
--- workspace recorded for it.
-CREATE TABLE backup_snapshot_receipts (
-    workspace_id uuid NOT NULL,
-    environment_id uuid NOT NULL,
-    policy_id uuid NOT NULL,
-    snapshot text NOT NULL CHECK (snapshot ~ '^[a-f0-9]{64}$'),
-    server_id uuid NOT NULL,
-    first_reported_at timestamptz NOT NULL,
-    PRIMARY KEY (policy_id, snapshot),
-    FOREIGN KEY (workspace_id, environment_id, policy_id) REFERENCES backup_policies(workspace_id, environment_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (workspace_id, server_id) REFERENCES servers(workspace_id, id) ON DELETE CASCADE
-);
-
--- +goose StatementBegin
-CREATE FUNCTION backup_snapshot_receipt_earlier() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    IF (NEW.workspace_id, NEW.environment_id, NEW.policy_id, NEW.snapshot) IS DISTINCT FROM (OLD.workspace_id, OLD.environment_id, OLD.policy_id, OLD.snapshot)
-        OR NEW.first_reported_at > OLD.first_reported_at
-        OR NEW.first_reported_at = OLD.first_reported_at AND NEW.server_id IS DISTINCT FROM OLD.server_id THEN
-        RAISE EXCEPTION 'a snapshot receipt only moves to an earlier time';
-    END IF;
-    RETURN NEW;
-END;
-$$;
--- +goose StatementEnd
-CREATE TRIGGER backup_snapshot_receipt_earlier BEFORE UPDATE ON backup_snapshot_receipts
-    FOR EACH ROW EXECUTE FUNCTION backup_snapshot_receipt_earlier();
+-- Each snapshot the policy's reports list as available, by ID, with management's clock when an
+-- upload first reported it: {"<snapshot>": "<time>"}. Only the policy's server reports for it. A
+-- host can take a snapshot out of its reports, which removes it, and report it again later, which
+-- records a later time: it can never make a snapshot look older than management saw it. Only
+-- recovery moves a time, to an earlier one another copy of the workspace recorded. One value per
+-- policy, like its status, keeps an archive to one record per policy however many snapshots it
+-- retains.
+ALTER TABLE backup_policies ADD COLUMN snapshot_receipts jsonb NOT NULL DEFAULT '{}';
 INSERT INTO schema_additive_migrations (version) VALUES (64);
 
 -- +goose Down
 DELETE FROM schema_additive_migrations WHERE version = 64;
-DROP TABLE backup_snapshot_receipts;
-DROP FUNCTION backup_snapshot_receipt_earlier();
+ALTER TABLE backup_policies DROP COLUMN snapshot_receipts;
 ALTER TABLE servers DROP COLUMN revoked_at;

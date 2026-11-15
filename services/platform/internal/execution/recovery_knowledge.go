@@ -105,8 +105,6 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					if err == nil {
 						err = recoveryRevocationTime(selected, prior, row)
 					}
-				case "backup_snapshot_receipts":
-					selected, err = recoveryReceiptKnowledge(prior, row)
 				case "environments":
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"execution_generation"})
 					if err == nil {

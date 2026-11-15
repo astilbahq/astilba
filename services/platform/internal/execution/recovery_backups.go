@@ -2,7 +2,6 @@ package execution
 
 import (
 	"maps"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -39,23 +38,30 @@ func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, 
 	}
 	if sb.Generation > sa.Generation || sb.Generation == sa.Generation && qb > qa {
 		out["status"], out["status_sequence"] = incoming["status"], incoming["status_sequence"]
+		err = recoveryReceipts(out, incoming, prior)
+	} else {
+		err = recoveryReceipts(out, prior, incoming)
 	}
-	return out, nil
+	return out, err
 }
 
-// recoveryReceiptKnowledge keeps the earlier of two copies' receipts for one snapshot: each is a
-// time management received it, so the earlier bounds when it existed.
-func recoveryReceiptKnowledge(prior, incoming portability.Row) (portability.Row, error) {
-	a, err := recoveryValue[time.Time](prior, "first_reported_at")
+// recoveryReceipts keeps a receipt for each snapshot the status out keeps lists, from the copy
+// that status came from, at the earlier of the two copies' times: each is a time management
+// received it, so the earlier bounds when it existed.
+func recoveryReceipts(out, kept, other portability.Row) error {
+	a, err := recoveryValue[backup.Receipts](kept, "snapshot_receipts")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	b, err := recoveryValue[time.Time](incoming, "first_reported_at")
+	b, err := recoveryValue[backup.Receipts](other, "snapshot_receipts")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if b.Before(a) {
-		return maps.Clone(incoming), nil
+	for snapshot, at := range a {
+		if earlier, ok := b[snapshot]; ok && earlier.Before(at) {
+			a[snapshot] = earlier
+		}
 	}
-	return maps.Clone(prior), nil
+	recoverySet(out, "snapshot_receipts", a)
+	return nil
 }

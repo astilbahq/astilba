@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"context"
 	"encoding/json/jsontext"
 	"strings"
 	"testing"
@@ -110,9 +109,10 @@ func (p *reportingPolicy) receipts(t *testing.T, b *browser) map[string]api.Back
 
 func snapshotID(c string) string { return strings.Repeat(c, 64) }
 
-// A server's report can backdate its snapshots as far as it likes. Management records when it first
-// received each one by its own clock, keeps that time while reports go on listing the snapshot, and
-// records nothing for a restore, a failure or a pruned snapshot. A snapshot taken out of a report
+// A server's report can backdate its snapshots as far as it likes. Management records when an upload
+// first listed each one by its own clock, keeps that time while reports go on listing the snapshot,
+// even by a restore that verified it after the upload left the agent's history, and records nothing
+// for a failure, a pruned snapshot or one only a restore names. A snapshot taken out of a report
 // loses its receipt, and one reported again later gets a later time, never an earlier one.
 func TestManagementRecordsWhenItFirstReceivedEachSnapshot(t *testing.T) {
 	f := setup(t)
@@ -138,9 +138,8 @@ func TestManagementRecordsWhenItFirstReceivedEachSnapshot(t *testing.T) {
 	}
 	received := got[first.Snapshot].FirstReportedAt
 	for _, snapshot := range []string{first.Snapshot, second.Snapshot} {
-		r := got[snapshot]
-		if r.ServerId != p.server || r.FirstReportedAt.Before(before.Add(-time.Second)) || r.FirstReportedAt.After(after.Add(time.Second)) {
-			t.Fatalf("the receipt for %s doesn't record its reporting server at management's time: %+v, reported between %s and %s", snapshot, r, before, after)
+		if r := got[snapshot]; r.FirstReportedAt.Before(before.Add(-time.Second)) || r.FirstReportedAt.After(after.Add(time.Second)) {
+			t.Fatalf("the receipt for %s doesn't record management's time: %+v, reported between %s and %s", snapshot, r, before, after)
 		}
 	}
 
@@ -166,16 +165,13 @@ func TestManagementRecordsWhenItFirstReceivedEachSnapshot(t *testing.T) {
 		t.Fatal("a snapshot listed again kept a time from before it was taken out", again, received)
 	}
 
-	// Only recovery moves a receipt, and only to an earlier time.
-	ctx := context.Background()
-	if _, err := f.st.Pool.Exec(ctx, `UPDATE backup_snapshot_receipts SET first_reported_at=first_reported_at+interval '1 day' WHERE policy_id=$1`, p.policy.ID); err == nil {
-		t.Fatal("a receipt moved to a later time")
-	}
-	if _, err := f.st.Pool.Exec(ctx, `UPDATE backup_snapshot_receipts SET server_id=$2 WHERE policy_id=$1`, p.policy.ID, uuid.New()); err == nil {
-		t.Fatal("a receipt changed its server without an earlier time")
-	}
-	if _, err := f.st.Pool.Exec(ctx, `UPDATE backup_snapshot_receipts SET first_reported_at=first_reported_at-interval '1 day' WHERE policy_id=$1`, p.policy.ID); err != nil {
-		t.Fatal("a receipt couldn't move to an earlier time", err)
+	// Once the agent's history keeps only a restore that verified a snapshot, the restore goes on
+	// listing it, and the snapshot keeps its time.
+	verified := first
+	verified.ID, verified.TargetID, verified.Verified = uuid.New(), uuid.New(), true
+	p.report(t, 204, verified, third)
+	if got = p.receipts(t, b); len(got) != 2 || !got[first.Snapshot].FirstReportedAt.Equal(received) {
+		t.Fatalf("a snapshot only a restore lists lost its receipt or its time: %v", got)
 	}
 
 	// Anyone in the workspace reads them, only through the policy's own environment.
@@ -254,7 +250,7 @@ func TestWorkspaceImportKeepsRevocationTimesAndSnapshotReceipts(t *testing.T) {
 	read := func(f *fixture) ([]byte, []byte) {
 		t.Helper()
 		var r, s []byte
-		if err := f.st.Pool.QueryRow(t.Context(), `SELECT jsonb_agg(to_jsonb(r) ORDER BY snapshot) FROM backup_snapshot_receipts r WHERE policy_id=$1`, p.policy.ID).Scan(&r); err != nil {
+		if err := f.st.Pool.QueryRow(t.Context(), `SELECT snapshot_receipts FROM backup_policies WHERE id=$1`, p.policy.ID).Scan(&r); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.st.Pool.QueryRow(t.Context(), `SELECT to_jsonb(revoked_at) FROM servers WHERE id=$1 AND revoked`, p.server).Scan(&s); err != nil {
@@ -282,8 +278,9 @@ func TestWorkspaceImportKeepsRevocationTimesAndSnapshotReceipts(t *testing.T) {
 
 // A database restored from before a revocation, or one whose hosts reported snapshots again after
 // the restore, has later times than management first recorded, or none. Recovery from a checkpoint
-// keeps the earlier of the two copies' times for each receipt and each revocation, keeps a
-// receipt either copy has, and shows a revocation whose start one copy doesn't know as unknown.
+// keeps the earlier of the two copies' times for each revocation, and shows a revocation whose start
+// one copy doesn't know as unknown. It keeps a receipt for each snapshot the newer report lists, at
+// the earlier of the two copies' times.
 func TestRecoveryKeepsTheEarliestReceiptsAndRevocationTimes(t *testing.T) {
 	var p *reportingPolicy
 	var later, unknown uuid.UUID
@@ -297,23 +294,19 @@ func TestRecoveryKeepsTheEarliestReceiptsAndRevocationTimes(t *testing.T) {
 			revokeServer(b, ws, server)
 		}
 	})
-	type times struct{ receipts, revocations map[string]*time.Time }
+	type times struct {
+		receipts    backup.Receipts
+		revocations map[string]*time.Time
+	}
 	read := func() times {
 		t.Helper()
-		out := times{map[string]*time.Time{}, map[string]*time.Time{}}
-		rows, err := r.f.st.Pool.Query(r.ctx, `SELECT snapshot,first_reported_at FROM backup_snapshot_receipts WHERE policy_id=$1`, p.policy.ID)
-		if err != nil {
+		out := times{revocations: map[string]*time.Time{}}
+		var raw []byte
+		if err := r.f.st.Pool.QueryRow(r.ctx, `SELECT snapshot_receipts FROM backup_policies WHERE id=$1`, p.policy.ID).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
-		for rows.Next() {
-			var snapshot string
-			var at time.Time
-			if err = rows.Scan(&snapshot, &at); err != nil {
-				t.Fatal(err)
-			}
-			out.receipts[snapshot] = &at
-		}
-		if err = rows.Err(); err != nil {
+		var err error
+		if out.receipts, err = backup.ParseReceipts(raw); err != nil {
 			t.Fatal(err)
 		}
 		for _, server := range []uuid.UUID{p.server, later, unknown} {
@@ -335,11 +328,17 @@ func TestRecoveryKeepsTheEarliestReceiptsAndRevocationTimes(t *testing.T) {
 			t.Fatal("the checkpoint has no revocation time")
 		}
 	}
+	if len(sealed.receipts) != 2 {
+		t.Fatal("the checkpoint doesn't have both receipts", sealed.receipts)
+	}
 
 	// The restored database: the policy's server not yet revoked, one server revoked later and one
-	// with no time; the first snapshot reported again after the restore, the second never, and a
-	// third only since.
-	third := snapshotID("c")
+	// with no time; and a newer report than the checkpoint's, which lists the first snapshot,
+	// reported again after the restore, and a third only since, but no longer the second.
+	third := p.upload(snapshotID("c"), time.Now())
+	since := time.Now().UTC().Truncate(time.Microsecond)
+	status, _ := stablejson.Marshal(backup.Status{Enabled: true, PolicyID: p.policy.ID, Generation: 1, Next: since.Add(time.Hour), Runs: []backup.Run{first, third}})
+	receipts, _ := stablejson.Marshal(backup.Receipts{first.Snapshot: sealed.receipts[first.Snapshot].Add(time.Hour), third.Snapshot: since})
 	for _, statement := range []struct {
 		sql  string
 		args []any
@@ -347,8 +346,7 @@ func TestRecoveryKeepsTheEarliestReceiptsAndRevocationTimes(t *testing.T) {
 		{`UPDATE servers SET revoked=false,revoked_at=NULL WHERE id=$1`, []any{p.server}},
 		{`UPDATE servers SET revoked_at=revoked_at+interval '1 hour' WHERE id=$1`, []any{later}},
 		{`UPDATE servers SET revoked_at=NULL WHERE id=$1`, []any{unknown}},
-		{`DELETE FROM backup_snapshot_receipts WHERE policy_id=$1`, []any{p.policy.ID}},
-		{`INSERT INTO backup_snapshot_receipts(workspace_id,environment_id,policy_id,snapshot,server_id,first_reported_at) VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '1 hour'),($1,$2,$3,$6,$5,clock_timestamp())`, []any{r.ws, p.policy.EnvironmentID, p.policy.ID, first.Snapshot, p.server, third}},
+		{`UPDATE backup_policies SET status=$2::jsonb,status_sequence=status_sequence+1,snapshot_receipts=$3::jsonb WHERE id=$1`, []any{p.policy.ID, string(status), string(receipts)}},
 	} {
 		if _, err := r.f.st.Pool.Exec(r.ctx, statement.sql, statement.args...); err != nil {
 			t.Fatal(statement.sql, err)
@@ -365,12 +363,13 @@ func TestRecoveryKeepsTheEarliestReceiptsAndRevocationTimes(t *testing.T) {
 	if at := got.revocations[unknown.String()]; at != nil {
 		t.Fatal("recovery gave a revocation whose start one copy doesn't know a time", at)
 	}
-	for _, snapshot := range []string{first.Snapshot, second.Snapshot} {
-		if at := got.receipts[snapshot]; at == nil || !at.Equal(*sealed.receipts[snapshot]) {
-			t.Fatal("recovery didn't keep the checkpoint's earlier receipt", snapshot, at, sealed.receipts[snapshot])
-		}
+	if at, ok := got.receipts[first.Snapshot]; !ok || !at.Equal(sealed.receipts[first.Snapshot]) {
+		t.Fatal("recovery didn't keep the checkpoint's earlier receipt", at, sealed.receipts[first.Snapshot])
 	}
-	if got.receipts[third] == nil || len(got.receipts) != 3 {
-		t.Fatal("recovery dropped a receipt only the restored database had", got.receipts)
+	if at, ok := got.receipts[third.Snapshot]; !ok || !at.Equal(since) {
+		t.Fatal("recovery didn't keep the receipt of a snapshot only the newer report lists", got.receipts)
+	}
+	if _, kept := got.receipts[second.Snapshot]; kept || len(got.receipts) != 2 {
+		t.Fatal("recovery kept a receipt the newer report no longer lists", got.receipts)
 	}
 }

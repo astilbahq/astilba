@@ -169,15 +169,7 @@ type BackupPolicy struct {
 	Status               []byte    `json:"status"`
 	StatusSequence       int64     `json:"status_sequence"`
 	CoordinatedCheckedAt time.Time `json:"coordinated_checked_at"`
-}
-
-type BackupSnapshotReceipt struct {
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
-	EnvironmentID   uuid.UUID `json:"environment_id"`
-	PolicyID        uuid.UUID `json:"policy_id"`
-	Snapshot        string    `json:"snapshot"`
-	ServerID        uuid.UUID `json:"server_id"`
-	FirstReportedAt time.Time `json:"first_reported_at"`
+	SnapshotReceipts     []byte    `json:"snapshot_receipts"`
 }
 
 type BuildArtifact struct {

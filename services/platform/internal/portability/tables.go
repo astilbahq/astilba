@@ -140,9 +140,12 @@ var version11Tables = func() []table {
 var tables = func() []table {
 	out := append([]table{}, version11Tables...)
 	for i := range out {
-		if out[i].Name == "servers" {
+		switch out[i].Name {
+		case "servers":
 			out[i].Columns += ",revoked_at"
+		case "backup_policies":
+			out[i].Columns += ",snapshot_receipts"
 		}
 	}
-	return append(out, table{Name: "backup_snapshot_receipts", Columns: "workspace_id,environment_id,policy_id,snapshot,server_id,first_reported_at"})
+	return out
 }()
