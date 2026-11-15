@@ -12,8 +12,8 @@
 -- clone the previous release makes records no stagings and keeps no link to its source, so its
 -- copy of a staged route is not checked; nothing could fill that in. Rows are never changed.
 ALTER TABLE catalog_stagings ADD COLUMN staged_routes jsonb;
-INSERT INTO schema_additive_migrations (version) VALUES (61);
+INSERT INTO schema_additive_migrations (version) VALUES (60);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 61;
+DELETE FROM schema_additive_migrations WHERE version = 60;
 ALTER TABLE catalog_stagings DROP COLUMN staged_routes;
