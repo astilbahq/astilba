@@ -13,6 +13,12 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { devAgent } from "./platform-dev-agent.mjs";
 import {
+  checkCustody,
+  openBao,
+  openBaoRun,
+  transitEnv,
+} from "./platform-dev-custody.mjs";
+import {
   agentOrigin,
   checkProfile,
   devHost,
@@ -34,6 +40,7 @@ const { values } = parseArgs({
   options: {
     port: { type: "string", default: "54182" },
     vm: { type: "string" },
+    custody: { type: "string", default: "file" },
     reset: { type: "boolean", default: false },
     wipe: { type: "boolean", default: false },
     watch: { type: "boolean", default: true },
@@ -41,11 +48,13 @@ const { values } = parseArgs({
   },
 });
 if (values.help) {
-  console.log(`pnpm dev [--port 54182] [--vm PROFILE] [--reset | --wipe] [--no-watch]
+  console.log(`pnpm dev [--port 54182] [--vm PROFILE [--custody file|openbao]] [--reset | --wipe] [--no-watch]
 Starts management and the dashboard locally. The API uses port - 1.
 --vm PROFILE also runs the database and an enrolled agent in that disposable Colima
   profile, creating it if needed; deployed routes answer on port - 2. Without it,
   PostgreSQL runs on PLAT_APP_DOCKER_HOST and there is no agent.
+--custody openbao keeps the stack's keys under OpenBao Transit keys, run in the VM, instead
+  of the keyring alone. A stack keeps the custody it was created with; --reset changes it.
 --reset deletes this checkout's local data (and the VM it created) before starting.
 --wipe deletes it and exits.
 Go changes rebuild and restart management and the agent unless --no-watch.
@@ -110,9 +119,9 @@ function saveState() {
   writeFileSync(`${stateFile}.tmp`, JSON.stringify(state), { mode: 0o600 });
   renameSync(`${stateFile}.tmp`, stateFile);
 }
-async function container(cleanup = false) {
+async function container(cleanup = false, suffix = "") {
   const id = await docker(
-    ["ps", "-aq", "--filter", `name=^/astilba-dev-${state.owner}$`],
+    ["ps", "-aq", "--filter", `name=^/astilba-dev-${state.owner}${suffix}$`],
     cleanup,
   );
   if (!id) return;
@@ -273,6 +282,7 @@ try {
     state = undefined;
   }
   if (!values.wipe) {
+    checkCustody({ custody: values.custody, stack, saved: state });
     if (!state) {
       state = {
         version: 1,
@@ -282,8 +292,11 @@ try {
         password: randomBytes(32).toString("hex"),
         initialized: false,
       };
-      saveState();
     }
+    // Until the stack first starts, its custody can still change.
+    state.custody = values.custody;
+    saveState();
+    const vault = values.custody === "openbao" && openBao({ directory });
     let arch;
     if (stack) {
       vm = devHost({ profile: state.profile, owner: state.owner, root, run });
@@ -352,6 +365,25 @@ try {
       ]);
       id = await container();
     } else await docker(["start", id]);
+    let vaultId;
+    if (vault) {
+      vaultId = await container(false, "-openbao");
+      if (!vaultId) {
+        if (state.initialized)
+          throw new Error(
+            "The stack's OpenBao, which holds its workspace keys, is missing; start over with --reset",
+          );
+        await docker(
+          openBaoRun({
+            name: `astilba-dev-${state.owner}-openbao`,
+            label,
+            owner: state.owner,
+            port: vmPorts.openbao,
+          }),
+        );
+        vaultId = await container(false, "-openbao");
+      } else await docker(["start", vaultId]);
+    }
     await waitFor(async () => {
       try {
         await docker([
@@ -394,6 +426,9 @@ try {
       });
       // Chosen while the proxy holds its port, so the two cannot coincide.
       const databasePort = await anyPort(fixedPorts);
+      const openBaoPort = vault
+        ? await anyPort([...fixedPorts, databasePort])
+        : undefined;
       serve(
         "ssh",
         vm.tunnel({
@@ -402,12 +437,46 @@ try {
           databasePort,
           ingressPort,
           proxyPort,
+          openBaoPort,
         }),
         process.env,
         { last: true },
       );
       await waitFor(() => tcpReady(databasePort), "VM tunnel");
       address = `127.0.0.1:${databasePort}`;
+      if (vault) {
+        const openBaoAddress = `http://127.0.0.1:${openBaoPort}`;
+        await waitFor(() => vault.ready(openBaoAddress), "OpenBao");
+        await vault.unseal(openBaoAddress);
+        // Applies the shipped policies again, so a change to them takes effect on restart.
+        await run(binary, [
+          "custody",
+          "init-transit",
+          "--dev",
+          "--address",
+          openBaoAddress,
+          "--token-file",
+          vault.tokenFile,
+          "--out",
+          vault.credentials,
+        ]);
+        Object.assign(
+          env,
+          transitEnv({
+            address: openBaoAddress,
+            credentials: vault.credentials,
+          }),
+        );
+        agentNote = `Keys are under OpenBao Transit; its audit log: docker --host ${host} logs -f ${vaultId}\nOperator commands such as custody rewrap sign in as the operator: ${Object.entries(
+          transitEnv({
+            address: openBaoAddress,
+            credentials: vault.credentials,
+            role: "operator",
+          }),
+        )
+          .map(([k, v]) => `${k}=${v}`)
+          .join(" ")}\n`;
+      }
     }
     env.ASTILBA_DATABASE_URL = `postgres://postgres:${state.password}@${address}/postgres?sslmode=disable`;
     await run(binary, ["migrate"], { env, inherit: true });
@@ -498,7 +567,7 @@ try {
       await vm.sudo(["systemctl", "enable", "astilba-agent"]);
       await vm.sudo(["systemctl", "restart", "astilba-agent"]);
       if (seeded) await seeded.awaitServer(state.server);
-      agentNote = seeded
+      agentNote += seeded
         ? `The agent in Colima profile ${state.profile} is online.`
         : `The agent in Colima profile ${state.profile} was restarted; check the Servers page for its status.`;
     }
@@ -523,6 +592,8 @@ try {
       if (state && host) {
         const id = await container(true);
         if (id) await docker(["stop", "--time", "5", id], true);
+        const vaultId = await container(true, "-openbao");
+        if (vaultId) await docker(["stop", "--time", "5", vaultId], true);
       }
       await lifecycle?.release();
     } catch (error) {

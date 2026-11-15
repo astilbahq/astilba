@@ -64,6 +64,14 @@ publish no container ports and their browser suites reserve ports from 15180, so
 nothing they start meets the stack's ports or another run's; see
 [parallel runs](continuous-integration.md#parallel-runs-on-one-machine).
 
+## Key custody with OpenBao
+
+`make dev PLAT_DEV_CUSTODY=openbao` (`pnpm dev --vm <profile> --custody openbao`) keeps the stack's workspace, installation and token keys under OpenBao Transit keys instead of the keyring alone, as [key custody with Transit](key-custody-transit.md) sets up a real installation. OpenBao 2.7 runs as a container in the VM, published only on the VM's loopback port 8200, and the tunnel carries it to a Mac loopback port.
+
+- It is a real server with file storage, not `bao server -dev`, which keeps everything in memory and would lose every key when the stack stops. The first start initialises it with one unseal key, and every start unseals it. The unseal key and root token stay in `.artifacts/dev-stack` (`openbao.json`, `openbao-root-token`), private like the keyring.
+- Each start runs `astilba custody init-transit --dev`, which applies the shipped policies, creates the keys if they are missing, and writes the serving and operator AppRole credentials to `.artifacts/dev-stack/openbao`. Management signs in as the serving role. **Ready** prints the variables an operator command, such as `custody rewrap`, needs to sign in as the operator, and the `docker logs` command that follows the audit log.
+- A stack keeps the custody it was first started with, because its database registers that key backend. Switching needs `--reset`.
+
 ## Stop and start over
 
 Ctrl-C stops the dashboard, management, the tunnel and the database, then stops the VM. Data, the enrolled agent and deployed workloads stay. When the VM starts again, services come back as they would after a host reboot: those with a Compose `restart` policy, like the seeded app's `unless-stopped`, start with Docker, and the others stay stopped until the next deployment.
@@ -80,6 +88,7 @@ A launcher holds `.artifacts/dev.lock` while it runs, shared with `pnpm dev`, be
 Mac (127.0.0.1 only)                         Colima VM (profile astilba-dev)
   Vite :54182 ── /api ──► management :54181    PostgreSQL 127.0.0.1:5432
   management ── database ── ssh -L ──────────►   (container on the VM's Docker)
+  management ── Transit ─── ssh -L ──────────► OpenBao 127.0.0.1:8200 (--custody openbao)
   browser ── :54180 ─────── ssh -L ──────────► the agent's ingress proxy :80
   TLS proxy ◄────────────── ssh -R ◄────────── agent ── https://localhost:9443
 ```
