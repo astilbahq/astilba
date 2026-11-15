@@ -243,7 +243,9 @@ const recoveryFloors = `, floors AS (SELECT env,max(generation) AS floor FROM ca
 // window starts later. A change counts from when it was recorded or, if later, when it ended,
 // since one recorded before the window and ended inside it is settled; each environment adds at
 // most the one it had when the window opened. A root counts from when it ended. Both are read
-// with the same margins.
+// with the same margins. Roots with an end time and roots without one are read apart, so each is
+// a range of execution_operations_settled: as one condition with OR, the planner reads every root
+// the workspace has ended.
 func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, limit int) (time.Time, error) {
 	if limit < 1 {
 		return time.Time{}, ErrArchive
@@ -252,9 +254,13 @@ func recoveryWindowStart(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start tim
 	// inline-sql: reads the base's transaction-local working set
 	err := tx.QueryRow(ctx, recoveryChanges+`, items AS (
 		SELECT GREATEST(effective,ended) AS effective FROM carried
-		UNION ALL SELECT COALESCE(o.ended_at+interval '1 day',o.created_at+interval '7 days') FROM execution_operations o
+		UNION ALL SELECT o.ended_at+interval '1 day' FROM execution_operations o
 		WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='crosshost' AND o.runtime_outcome IS NULL AND o.state IN ('succeeded','failed','cancelled')
-		AND (o.ended_at>=$2::timestamptz-interval '1 day' OR o.ended_at IS NULL AND o.created_at>=$2::timestamptz-interval '7 days')
+		AND o.ended_at>=$2::timestamptz-interval '1 day'
+		AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id)
+		UNION ALL SELECT o.created_at+interval '7 days' FROM execution_operations o
+		WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='crosshost' AND o.runtime_outcome IS NULL AND o.state IN ('succeeded','failed','cancelled')
+		AND o.ended_at IS NULL AND o.created_at>=$2::timestamptz-interval '7 days'
 		AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id)
 	) SELECT effective FROM items WHERE effective>=$2 ORDER BY effective DESC OFFSET $3 LIMIT 1`, ws, start, limit-1).Scan(&cut)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -383,18 +389,23 @@ func recoveryIdentities(ctx context.Context, tx pgx.Tx, ws uuid.UUID, ids []uuid
 }
 
 // recoverySettled reads the final state of roots and runtime changes that ended since start, less
-// the margin, and that the base carries neither as a row nor in its ledger.
+// the margin, and that the base carries neither as a row nor in its ledger. Those with an end time
+// and those without one are read apart, as recoveryWindowStart reads them.
 func recoverySettled(ctx context.Context, tx pgx.Tx, ws uuid.UUID, start time.Time, ledger []AppliedEntry) ([]SettledOperation, error) {
 	listed := []uuid.UUID{}
 	for _, e := range ledger {
 		listed = append(listed, e.Operation)
 	}
 	// inline-sql: reads the base's transaction-local working set
-	rows, err := tx.Query(ctx, `SELECT o.id,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,COALESCE(o.ended_at,o.created_at) FROM execution_operations o
+	rows, err := tx.Query(ctx, `SELECT o.id,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,o.ended_at FROM execution_operations o
 	WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND (o.kind='crosshost' OR o.runtime_outcome IS NOT NULL) AND o.state IN ('succeeded','failed','cancelled')
-	AND (o.ended_at>=$2 OR o.ended_at IS NULL AND o.created_at>=$3)
+	AND o.ended_at>=$2
 	AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id) AND NOT (o.id=ANY($4::uuid[]))
-	ORDER BY o.id`, ws, start.Add(-recoveryMargin), start.Add(-recoveryFallbackMargin), listed)
+	UNION ALL SELECT o.id,o.state,o.report_sequence,o.runtime_outcome,o.runtime_plan_id,o.created_at FROM execution_operations o
+	WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND (o.kind='crosshost' OR o.runtime_outcome IS NOT NULL) AND o.state IN ('succeeded','failed','cancelled')
+	AND o.ended_at IS NULL AND o.created_at>=$3
+	AND NOT EXISTS (SELECT 1 FROM archive_keep k WHERE k.kind='op' AND k.id=o.id) AND NOT (o.id=ANY($4::uuid[]))
+	ORDER BY 1`, ws, start.Add(-recoveryMargin), start.Add(-recoveryFallbackMargin), listed)
 	if err != nil {
 		return nil, err
 	}

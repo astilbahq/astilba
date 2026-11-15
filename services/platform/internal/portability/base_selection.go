@@ -43,6 +43,9 @@ const baseEnvironments = `INSERT INTO archive_keep(kind,id) SELECT 'env',e.id FR
 	OR EXISTS (SELECT 1 FROM preview_requests r WHERE r.workspace_id=$1 AND r.environment_id=e.id AND (r.state<>'deleted' OR r.updated_at>=$2))
 	OR EXISTS (SELECT 1 FROM execution_operations o WHERE o.workspace_id=$1 AND o.id=e.runtime_operation_id AND (o.runtime_outcome='applied' OR COALESCE(o.runtime_recorded_at,o.created_at)>=$2)))`
 
+// A standalone network removal is read as unfinished, ended inside the window, or ended without an
+// end time, each a range of an index: as one condition with OR, the planner reads every network
+// operation the workspace has.
 // inline-sql: seeds the base's transaction-local working set
 const baseSeeds = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,id FROM (
 	SELECT 'op' AS kind,o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.state IN ('queued','dispatched','running','needs_attention')
@@ -50,7 +53,11 @@ const baseSeeds = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,id FRO
 	UNION ALL SELECT 'op',n.id FROM (SELECT id FROM execution_operations WHERE workspace_id=$1 ORDER BY created_at DESC FETCH FIRST 100 ROWS WITH TIES) n
 	UNION ALL SELECT 'op',r.parent_id FROM cross_host_reservations r WHERE r.workspace_id=$1
 	UNION ALL SELECT 'op',o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='network' AND o.command->'network'->>'action'='restrict'
-		AND (o.state IN ('queued','dispatched','running','needs_attention') OR COALESCE(o.ended_at,o.created_at)>=$2)
+		AND o.state IN ('queued','dispatched','running','needs_attention')
+	UNION ALL SELECT 'op',o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='network' AND o.command->'network'->>'action'='restrict'
+		AND o.ended_at>=$2
+	UNION ALL SELECT 'op',o.id FROM execution_operations o WHERE o.workspace_id=$1 AND o.parent_id IS NULL AND o.kind='network' AND o.command->'network'->>'action'='restrict'
+		AND o.ended_at IS NULL AND o.created_at>=$2
 	UNION ALL SELECT 'submission',s.id FROM source_submissions s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1 AND (s.state='queued' OR COALESCE(s.finished_at,s.created_at)>=$2)
 	UNION ALL SELECT 'revision',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM specification_revisions s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=50
 	UNION ALL SELECT 'preview',r.id FROM preview_requests r WHERE r.workspace_id=$1 AND (r.state<>'deleted' OR r.updated_at>=$2)

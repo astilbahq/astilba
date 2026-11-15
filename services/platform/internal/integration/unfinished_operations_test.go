@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json/v2"
 	"go/ast"
-	"go/parser"
+	"go/constant"
 	"go/token"
-	"io/fs"
+	"go/types"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -17,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/tools/go/packages"
 )
 
 // operationStates is every state the operations table allows, read from its CHECK constraint.
@@ -66,16 +67,18 @@ func TestUnfinishedIndexHoldsExactlyTheStatesThatHaveNotEnded(t *testing.T) {
 // once read every operation, and past PostgreSQL's JIT threshold each poll spent hundreds of
 // milliseconds compiling. This takes every statement that reads operations from the code, as the
 // inline SQL check counts them, and sqlc's, so a new one is held to the same plan: no sequential
-// scan of operations, and a cost that doesn't rise with ended history. A statement assembled
-// from several literals at run time, such as a recovery base's capture, isn't seen here (PLAT-325).
+// scan of operations, and a cost that doesn't rise with ended history. A statement built from
+// constants is read whole; one assembled at run time from values that aren't constant, such as a
+// recovery base's capture, isn't seen here (PLAT-325).
 func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 	ctx := context.Background()
-	queries := operationQueries(t)
+	f := setup(t)
+	code := moduleStrings(t)
+	queries := operationQueries(code)
 	if len(queries) < 100 {
 		t.Fatalf("found only %d statements reading operations", len(queries))
 	}
 	t.Logf("%d statements read operations", len(queries))
-	f := setup(t)
 	// Each lists the states it reads, so each list is one of these exactly, and a state added to
 	// the table fails here until every query agrees. Excluding states would read history: the
 	// planner estimates NOT IN as if most rows matched.
@@ -151,25 +154,18 @@ func TestOperationQueriesDoNotReadHistory(t *testing.T) {
 	if err := f.st.Pool.QueryRow(ctx, `SELECT current_setting('jit_above_cost')::float8`).Scan(&threshold); err != nil {
 		t.Fatal(err)
 	}
-	// History as a long-lived environment on one host leaves it: deployments, coordinated roots
-	// with their children, network configure commands at each generation, backups and builds, in
-	// every ended state, each seen by the alert sweep. Generations count up as the host's and
-	// environment's do.
+	// History as a long-lived environment on one host leaves it: deployments that applied their
+	// runtime, coordinated roots with their children, network commands that configure each
+	// generation or, one in eight, remove the host, backups and builds, in every ended state. Each
+	// is seen by the alert sweep and ended a minute after it was created, as the operation times
+	// trigger records it. Generations count up as the host's and environment's do.
 	generation := 0
 	history := func(count int) {
 		t.Helper()
 		roots := count / 8
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at)
-SELECT gen_random_uuid(),$1,$2,$3,$4+i,gen_random_uuid(),'{}','crosshost',(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,true,now()-interval '1 day'-i*interval '1 second' FROM generate_series(1,$5::int) i`, ws, in.ServerId, env, generation, roots); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at)
-SELECT gen_random_uuid(),$1,$2,$3,root.id,$4+row_number() OVER (),gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',root.state,1,true,root.created_at
-FROM execution_operations root, generate_series(1,3) child WHERE root.workspace_id=$1 AND root.kind='crosshost' AND root.parent_id IS NULL AND root.generation>$5`, ws, in.ServerId, env, generation+roots, generation); err != nil {
-			t.Fatal(err)
-		}
 		// Deployments carry plans, as real ones do. The requests behind them would need a deployment
-		// of their own, so the seed writes the plans without them.
+		// of their own, so the seed writes the plans without them, and the times as the trigger
+		// would have.
 		seed, err := f.st.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -178,12 +174,26 @@ FROM execution_operations root, generate_series(1,3) child WHERE root.workspace_
 		if _, err := seed.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,visual_plan_id,created_at)
+		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,$4+i,gen_random_uuid(),'{}','crosshost',(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,true,at,at+interval '1 minute'
+FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-interval '1 day'-i*interval '1 second' AS at) t`, ws, in.ServerId, env, generation, roots); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,parent_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,root.id,$4+row_number() OVER (),gen_random_uuid(),'{"crosshost":{"phase":"prepare"}}','crosshost',root.state,1,true,root.created_at,root.ended_at
+FROM execution_operations root, generate_series(1,3) child WHERE root.workspace_id=$1 AND root.kind='crosshost' AND root.parent_id IS NULL AND root.generation>$5`, ws, in.ServerId, env, generation+roots, generation); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,visual_plan_id,runtime_outcome,runtime_plan_id,runtime_recorded_at,created_at,ended_at)
 SELECT gen_random_uuid(),$1,$2,CASE WHEN kind<>'network' THEN $3::uuid END,$4+i,gen_random_uuid(),
-    CASE kind WHEN 'network' THEN jsonb_build_object('network',jsonb_build_object('action','configure','membershipId',gen_random_uuid(),'manifest',jsonb_build_object('generation',$4+i)))
-        WHEN 'visual' THEN '{"visual":{"action":"deploy"}}' ELSE '{}' END,
-    kind,(ARRAY['succeeded','failed','cancelled'])[1+i%3],1,true,CASE WHEN kind='visual' THEN gen_random_uuid() END,now()-interval '1 day'-i*interval '1 second'
-FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','backup','pipeline'])[1+i%4] AS kind) k`, ws, in.ServerId, env, generation+4*roots, count-4*roots); err != nil {
+    CASE WHEN kind='network' AND i%32=0 THEN jsonb_build_object('network',jsonb_build_object('action','restrict','membershipId',gen_random_uuid()))
+        WHEN kind='network' THEN jsonb_build_object('network',jsonb_build_object('action','configure','membershipId',gen_random_uuid(),'manifest',jsonb_build_object('generation',$4+i)))
+        WHEN kind='visual' THEN '{"visual":{"action":"deploy"}}' ELSE '{}' END,
+    kind,state,1,true,CASE WHEN kind='visual' THEN plan END,
+    CASE WHEN applied THEN 'applied' END,CASE WHEN applied THEN plan END,CASE WHEN applied THEN at+interval '1 minute' END,at,at+interval '1 minute'
+FROM generate_series(1,$5::int) i,
+    LATERAL (SELECT (ARRAY['network','visual','backup','pipeline'])[1+i%4] AS kind,(ARRAY['succeeded','failed','cancelled'])[1+i%3] AS state,gen_random_uuid() AS plan,now()-interval '1 day'-i*interval '1 second' AS at) k,
+    LATERAL (SELECT kind='visual' AND state='succeeded' AS applied) a`, ws, in.ServerId, env, generation+4*roots, count-4*roots); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := seed.Exec(ctx, `INSERT INTO visual_plans(id,workspace_id,environment_id,plan) SELECT visual_plan_id,workspace_id,environment_id,'{}' FROM execution_operations WHERE workspace_id=$1 AND visual_plan_id IS NOT NULL AND generation>$2`, ws, generation); err != nil {
@@ -225,9 +235,20 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 		}
 		return ""
 	}
-	var uses func(node, string) bool
-	uses = func(n node, index string) bool {
-		return n.Index == index || slices.ContainsFunc(n.Plans, func(c node) bool { return uses(c, index) })
+	// How often a plan reads an index, and how often without key in its condition.
+	var reads func(n node, index, key string) (all, unkeyed int)
+	reads = func(n node, index, key string) (all, unkeyed int) {
+		if n.Index == index {
+			all++
+			if !strings.Contains(n.Cond, key) {
+				unkeyed++
+			}
+		}
+		for _, c := range n.Plans {
+			a, u := reads(c, index, key)
+			all, unkeyed = all+a, unkeyed+u
+		}
+		return all, unkeyed
 	}
 	// Statements in recovery and export read the temporary tables their transaction creates, so
 	// they are explained in one that has them too.
@@ -236,7 +257,7 @@ FROM generate_series(1,$5::int) i, LATERAL (SELECT (ARRAY['network','visual','ba
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	for _, create := range temporaryTables(t) {
+	for _, create := range temporaryTables(code) {
 		if _, err := tx.Exec(ctx, create); err != nil {
 			t.Fatalf("%s: %v", create, err)
 		}
@@ -288,18 +309,18 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 		t.Helper()
 		for _, q := range queries {
 			if p, ok := plan(q); ok {
-				costs[q.at] = append(costs[q.at], p.Cost)
-				if index := crossTenant(p); tenanted && index != "" && !slices.Contains(crossed, q.at) {
-					crossed = append(crossed, q.at)
+				costs[q.String()] = append(costs[q.String()], p.Cost)
+				if index := crossTenant(p); tenanted && index != "" && !slices.Contains(crossed, q.String()) {
+					crossed = append(crossed, q.String())
 					t.Errorf("%s reads all of %s, every tenant's unfinished work: narrow it by host or workspace so one tenant's stuck work can't slow another's", q, index)
 				}
 			}
 		}
 	}
 	measure()
-	for _, r := range append(slices.Clone(historyReaders), limitedReaders...) {
+	for _, r := range append(slices.Clone(historyReaders), boundedReaders...) {
 		if !slices.ContainsFunc(queries, func(q operationQuery) bool { return q.name == r.name && strings.Contains(q.sql, r.fragment) }) {
-			t.Errorf("%s %q is listed as reading history, but no statement reading operations matches it now", r.name, r.fragment)
+			t.Errorf("%s %q is listed in historyReaders or boundedReaders, but no statement reading operations matches it now: change the entry to match the statement, or remove it", r.name, r.fragment)
 		}
 	}
 	history(6667)
@@ -307,29 +328,32 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 	history(20000)
 	for _, q := range queries {
 		p, ok := plan(q)
-		if !ok || len(costs[q.at]) != 2 {
+		if !ok || len(costs[q.String()]) != 2 {
 			continue
 		}
 		// A plan that reads history adds three times as much cost for each tripling as it did for
 		// the last, and across both it rises by more than a step in its indexes' depth: a plan of
 		// index probes rises a little, in steps, as each index gains a level.
-		c := append(costs[q.at], p.Cost)
+		c := append(costs[q.String()], p.Cost)
 		grows := c[2]-c[1] > 2*(c[1]-c[0])+1 && c[2] > c[0]*1.05+10
 		excepted, isExcepted := historyReader(q, historyReaders)
-		bound, limited := historyReader(q, limitedReaders)
+		bound, bounded := historyReader(q, boundedReaders)
+		for _, r := range []historyReaderEntry{excepted, bound} {
+			if all, unkeyed := reads(p, r.index, r.key); r.index != "" && (all == 0 || unkeyed > 0) {
+				t.Errorf("%s no longer reads %s with %q in every condition, which bounds what it reads: give it that index and condition back, or bound it another way and change its entry", q, r.index, r.key)
+			}
+		}
 		switch {
 		case isExcepted && !scans(p) && p.Cost < threshold && !grows:
-			t.Errorf("%s no longer reads history; take it out of historyReaders", q)
+			t.Errorf("%s no longer reads history: take it out of historyReaders, or narrow its entry's fragment to the statements that still do", q)
 		case isExcepted:
 			t.Logf("%s reads history: %s", q, excepted.reason)
 		case scans(p):
 			t.Errorf("%s reads every operation with a sequential scan: narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q)
 		case p.Cost >= threshold:
 			t.Errorf("%s costs %.0f, past the JIT threshold of %.0f: narrow it with an index so every call doesn't compile", q, p.Cost, threshold)
-		case limited && !uses(p, bound.index):
-			t.Errorf("%s no longer reads through %s, which bounds it at its LIMIT: give it that index back, or another that keeps it bounded", q, bound.index)
-		case limited:
-			t.Logf("%s costs %.0f, %.0f, %.0f as it grows until %s", q, c[0], c[1], c[2], bound.reason)
+		case bounded:
+			t.Logf("%s costs %.0f, %.0f, %.0f, bounded as %s", q, c[0], c[1], c[2], bound.reason)
 		case grows:
 			t.Errorf("%s grows with ended history (cost %.0f, %.0f, %.0f as it triples twice): narrow it with an index or bound it with a LIMIT, or list it in historyReaders with a task if it must read history", q, c[0], c[1], c[2])
 		}
@@ -373,7 +397,7 @@ SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":
 	tenants(2000)
 	measure()
 	for _, q := range queries {
-		if c := costs[q.at]; len(c) == 2 && c[1] > c[0]*1.1+10 {
+		if c := costs[q.String()]; len(c) == 2 && c[1] > c[0]*1.1+10 {
 			if _, excepted := historyReader(q, historyReaders); !excepted {
 				t.Errorf("%s reads other workspaces' unfinished work (cost %.0f with a thousand tenants' stuck work, %.0f with three thousand): narrow it by workspace, environment, host or root so one tenant's stuck work can't slow another's", q, c[0], c[1])
 			}
@@ -382,23 +406,34 @@ SELECT gen_random_uuid(),ws,server,env,root,1+i,gen_random_uuid(),'{"crosshost":
 }
 
 // historyReaderEntry is a statement named by its sqlc name or file and function, with a fragment
-// of its SQL, why it is listed, and for one a LIMIT bounds, the index it reads in that order.
-type historyReaderEntry struct{ name, fragment, reason, index string }
+// of its SQL and why it is listed. One that is bounded names the index that bounds it and what
+// every condition the plan reads that index by holds.
+type historyReaderEntry struct{ name, fragment, reason, index, key string }
 
 // historyReaders are the statements known to read a workspace's ended history, and why they may.
+// One that reads part of its history by an index is still held to it.
 var historyReaders = []historyReaderEntry{
-	{"import.go/(*Service).Import", "alert_observed=true", "it marks what it imported, which the archive limit bounds, in the workspace it creates", ""},
-	{"ClearWorkspaceOperationJobs", "", "offline recovery forgets every operation's River job; PLAT-323 bounds it", ""},
-	{"StampOperationControllerGenerations", "", "offline recovery stamps every operation with its host's controller generation; PLAT-323 bounds it", ""},
-	{"RaiseServerUpdateGenerations", "", "offline recovery raises each host's generation past every command it ran; PLAT-323 bounds it", ""},
+	{"import.go/(*Service).Import", "alert_observed=true", "it marks what it imported, which the archive limit bounds, in the workspace it creates", "", ""},
+	{"ClearWorkspaceOperationJobs", "", "offline recovery forgets every operation's River job; PLAT-323 bounds it", "", ""},
+	{"StampOperationControllerGenerations", "", "offline recovery stamps every operation with its host's controller generation; PLAT-323 bounds it", "", ""},
+	{"RaiseServerUpdateGenerations", "", "offline recovery raises each host's generation past every command it ran; PLAT-323 bounds it", "", ""},
+	{"EnvironmentSecretVersionsInUse", "", "it reads every plan the environment has made to find those that can still be applied; PLAT-400 bounds it", "", ""},
+	{"recovery_history.go/recoveryLedger", "", "it reads every applied runtime change in the workspace to find each environment's floor; PLAT-352 bounds it", "", ""},
+	{"recovery_history.go/recoveryWindowStart", "", "it reads every applied runtime change in the workspace to find the window's items; PLAT-352 bounds it", "execution_operations_settled", "ended_at"},
 }
 
-// limitedReaders are statements whose estimate rises with history only until a LIMIT caps it,
-// because the planner can't tell how many rows match a command's JSON and guesses few. They are
-// still held to the JIT threshold, and to the index that returns rows in the LIMIT's order.
-var limitedReaders = []historyReaderEntry{
-	{"export_selection.go", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments", "execution_releases"},
-	{"releases.go/(*Service).ReleaseHistory", "LIMIT 20", "it reaches the environment's 20 newest deployments", "execution_releases"},
+// boundedReaders are statements whose estimate rises with history though they read only part of
+// it. A LIMIT caps some, whose estimate rises until it does because the planner can't tell how
+// many rows match a command's JSON and guesses few. A time window bounds others, whose start a
+// generic plan doesn't know, so it guesses the window holds a third of the rows. They are still
+// held to the JIT threshold, and to the index that bounds them: the one returning rows in the
+// LIMIT's order, or the one by end time, every read of which must hold the end time in its
+// condition. Each is listed whole, so its other branches are held only to the plan's other checks.
+var boundedReaders = []historyReaderEntry{
+	{"export_selection.go/exportSelection", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments", "execution_releases", ""},
+	{"releases.go/(*Service).ReleaseHistory", "LIMIT 20", "it reaches the environment's 20 newest deployments", "execution_releases", ""},
+	{"recovery_history.go/recoverySettled", "", "it reads the roots and runtime changes that ended inside the recovery window", "execution_operations_settled", "ended_at"},
+	{"base_selection.go/baseSelection", "'restrict'", "it reads the standalone network removals that ended inside the recovery window", "execution_network_restrictions", "ended_at"},
 }
 
 // historyReader is the entry listing a statement, if one does.
@@ -459,62 +494,90 @@ func operationStateLists(sql string, stateful []string) [][]string {
 }
 
 // operationQueries is every statement in the module's code, sqlc's generated ones included, that
-// reads operations.
-func operationQueries(t *testing.T) []operationQuery {
-	t.Helper()
+// reads operations, each once where it is and by the name it has there.
+func operationQueries(code []moduleString) []operationQuery {
 	found := []operationQuery{}
-	walkLiterals(t, func(at, owner, sql string) {
-		if !strings.Contains(sql, "execution_operations") {
-			return
+	seen := map[operationQuery]bool{}
+	for _, c := range code {
+		if !strings.Contains(c.value, "execution_operations") {
+			continue
 		}
-		if begins := statement.FindStringSubmatch(sql); begins != nil {
+		if begins := statement.FindStringSubmatch(c.value); begins != nil {
 			name := begins[1]
 			if name == "" {
-				name = owner
+				name = c.owner
 			}
-			found = append(found, operationQuery{at, name, sql})
+			if q := (operationQuery{c.at, name, c.value}); !seen[q] {
+				seen[q] = true
+				found = append(found, q)
+			}
 		}
-	})
+	}
 	return found
 }
 
 // temporaryTables is each temporary table a statement in the module's code creates.
-func temporaryTables(t *testing.T) []string {
-	t.Helper()
+func temporaryTables(code []moduleString) []string {
 	found := []string{}
-	walkLiterals(t, func(_, _, sql string) {
-		for _, s := range strings.Split(sql, ";") {
+	for _, c := range code {
+		for _, s := range strings.Split(c.value, ";") {
 			if temporaryTable.MatchString(s) && !slices.Contains(found, s) {
 				found = append(found, s)
 			}
 		}
-	})
+	}
 	return found
 }
 
-// walkLiterals calls each with every string literal in the module's code, sqlc's generated code
-// included, where it is and the function it is in.
-func walkLiterals(t *testing.T, each func(at, owner, literal string)) {
+// moduleString is a constant string in the module's code, where it is and the function it is in.
+type moduleString struct{ at, owner, value string }
+
+// moduleStrings is every constant string in the module's code, sqlc's generated code included. A
+// string built from constants, such as recoveryChanges+recoveryFloors+`SELECT …`, is taken whole
+// where it is used, so a fragment isn't taken alone; a constant used by name is placed where it is
+// declared, and one nothing uses is taken there too.
+func moduleStrings(t *testing.T) []moduleString {
 	t.Helper()
-	for _, root := range []string{"..", "../../db/generated"} {
-		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
+	found := []moduleString{}
+	config := &packages.Config{
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:  "../..",
+	}
+	loaded, err := packages.Load(config, "./internal/...", "./db/generated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	here, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packages.PrintErrors(loaded) > 0 {
+		t.Fatal("cannot type-check the module's code")
+	}
+	// A package sees what it imports through export data, so a constant is known across packages by
+	// its package and name.
+	used := map[string]bool{}
+	for _, pkg := range loaded {
+		for _, object := range pkg.TypesInfo.Uses {
+			if c, ok := object.(*types.Const); ok {
+				used[constKey(c)] = true
 			}
-			if d.IsDir() {
-				if d.Name() == "testdata" || path == "../integration" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			files := token.NewFileSet()
-			file, err := parser.ParseFile(files, path, nil, 0)
-			if err != nil {
-				return err
-			}
+		}
+	}
+	// Where a string is, relative to this test, as a failure prints it.
+	where := func(pos token.Pos) string {
+		position := loaded[0].Fset.Position(pos)
+		if relative, err := filepath.Rel(here, position.Filename); err == nil {
+			position.Filename = relative
+		}
+		return position.String()
+	}
+	for _, pkg := range loaded {
+		if strings.HasSuffix(pkg.PkgPath, "/internal/integration") {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			path := pkg.Fset.Position(file.Pos()).Filename
 			for _, decl := range file.Decls {
 				// A statement outside sqlc is named by its file and function, which stay put as
 				// lines move.
@@ -523,22 +586,62 @@ func walkLiterals(t *testing.T, each func(at, owner, literal string)) {
 					owner += "/" + funcName(fn)
 				}
 				ast.Inspect(decl, func(n ast.Node) bool {
-					literal, ok := n.(*ast.BasicLit)
-					if !ok || literal.Kind != token.STRING {
-						return true
-					}
-					if value, err := strconv.Unquote(literal.Value); err == nil {
-						each(files.Position(literal.Pos()).String(), owner, value)
+					switch n := n.(type) {
+					case *ast.ValueSpec:
+						if _, ok := pkg.TypesInfo.Defs[n.Names[0]].(*types.Const); !ok {
+							return true
+						}
+						for _, name := range n.Names {
+							if object, ok := pkg.TypesInfo.Defs[name].(*types.Const); ok && !used[constKey(object)] && object.Val().Kind() == constant.String {
+								found = append(found, moduleString{where(name.Pos()), owner, constant.StringVal(object.Val())})
+							}
+						}
+						// A constant's value is passed where it is used.
+						return false
+					case ast.Expr:
+						value := pkg.TypesInfo.Types[n].Value
+						if value == nil || value.Kind() != constant.String {
+							return true
+						}
+						at := n.Pos()
+						if object := namedConst(pkg.TypesInfo, n); object != nil {
+							at = object.Pos()
+						}
+						found = append(found, moduleString{where(at), owner, constant.StringVal(value)})
+						return false
 					}
 					return true
 				})
 			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
 	}
+	return found
+}
+
+// constKey names a constant across packages: a package's by its path and name, and a function's
+// by where it is declared, which only its own package uses.
+func constKey(c *types.Const) string {
+	if c.Pkg() == nil {
+		return c.Name()
+	}
+	if c.Parent() == c.Pkg().Scope() {
+		return c.Pkg().Path() + "." + c.Name()
+	}
+	return c.Pkg().Path() + "." + c.Name() + "@" + strconv.Itoa(int(c.Pos()))
+}
+
+// namedConst is the constant an expression names, if it is only that name.
+func namedConst(info *types.Info, e ast.Expr) types.Object {
+	e = ast.Unparen(e)
+	if selector, ok := e.(*ast.SelectorExpr); ok {
+		e = selector.Sel
+	}
+	if ident, ok := e.(*ast.Ident); ok {
+		if object, ok := info.Uses[ident].(*types.Const); ok {
+			return object
+		}
+	}
+	return nil
 }
 
 // funcName is a function's name, with its receiver's type for a method.
