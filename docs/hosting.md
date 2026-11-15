@@ -110,8 +110,9 @@ remove the trigger.
 
 `custody status` lists a command that recorded a start and no finish, unless a run of it that
 started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
-has moved through key custody changes. `astilba migrate` refuses a release more than one stage
-ahead of the installation, so a release that starts a stage says so in its notes.
+has moved through key custody changes. `astilba migrate`, and every other command, refuses a
+release more than one stage ahead of the installation, so a release that starts a stage says so
+in its notes.
 
 #### Workspace keys
 
@@ -121,23 +122,33 @@ Each key is random and is stored only wrapped: once for each purpose it serves, 
 or delivering, under the backend's key for that purpose's class. A key check value stored beside
 it shows whether a wrapping opens to the right key before any value is opened with it.
 
-This release (custody stage 2) creates the keys, and opens values sealed under them. It still
-seals new values, and issues tokens, under the keyring. The release after it seals under the keys,
-so going back from that release to this one needs no restore.
+By custody stage 2 every key exists, and values sealed under them open; a new installation makes
+its keys when it first starts. This release (custody
+stage 3) seals every new value under its workspace's key, or a second factor under the installation
+key, and issues tokens under a token key. Going back to the stage 2 release is a redeploy: it opens
+everything this one seals. Going back to an earlier release needs the backup taken before the
+upgrade, since an earlier release cannot open these values, so never run one beside this one.
+`migrate`, `serve` and every other command refuse this release on an installation that hasn't
+completed stage 2: run the stage 2 release until `custody status` shows stage 2 first.
 
 - **New workspaces** get their key in the transaction that creates them.
-- **Existing workspaces** get theirs from `serve`, in the background, which also creates the
+- **Existing workspaces** without a key, such as one created by an earlier release after a
+  rollback, get theirs from `serve`, in the background, which also creates any missing
   installation and token keys. Its log shows progress, and so does `custody status`; `custody
-  init-keys` does the same work in the foreground. Once every key exists the custody stage becomes
-  2, which the next release's `migrate` needs.
-- **Rewrap** wraps every key again, and leaves values sealed under them as they are. If you go
-  back to the previous release after this one has created keys, don't remove a key from the
-  keyring until you've returned to this release and run `custody rewrap`: the previous release
-  doesn't rewrap workspace keys.
+  init-keys` does the same work in the foreground. Until a workspace has its key, saving a value
+  in it is refused as temporarily busy, and the refusal starts the job at once; everything else
+  works, and other workspaces save as usual. The job's log and `custody status` show how many
+  workspaces have keys.
+- **Saving a value** holds the key it is sealed under until the value is stored, so the key stays
+  the one new values are sealed under in the meantime.
+- **Recovery** moves each value it restores onto the workspace's current key, keeping the value
+  itself.
+- **Rewrap** wraps every key again, and leaves values sealed under them as they are.
 - **Deleting a workspace** deletes its keys, so nothing sealed under them opens again.
 - **Token keys** stay in each instance's memory. Instances look for new ones every minute, and
-  record which they hold, so a new token key is used for tokens only once every instance holds
-  it.
+  record which they hold. Tokens are issued under a token key only once every instance seen in the
+  last five minutes holds it, and under the keyring until then. An instance that starts loads
+  every token key before it serves.
 
 Database triggers let a key's state move only forward, keep the seal wrapping only for the key
 new values are sealed under, and refuse to delete a key except with its workspace. As with key
@@ -859,7 +870,11 @@ Restore with the matching application version, or a newer one after `astilba mig
 into a clean database and private keyring mount. Cross-host recovery reads the checkpoints the
 hosts hold, so run it with the release that sealed the newest of them or a newer one, even when
 the backup is older. Restore the backup, migrate to that release, then recover. An older release
-refuses those checkpoints. Keep the restored management process stopped while fencing every
+refuses those checkpoints. Recovery starts from the workspaces the backup holds and opens their
+checkpoints with each workspace's own key, which only management's database keeps. A workspace
+created after the backup can't be recovered from its hosts' capsules, so take a backup after
+creating a workspace; recovery refuses such a workspace, and one whose key the backup lacks, and
+says which. Keep the restored management process stopped while fencing every
 restored server:
 
 ```sh

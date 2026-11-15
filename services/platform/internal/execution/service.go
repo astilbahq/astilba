@@ -99,10 +99,16 @@ func New(st *store.Store) (*Service, error) {
 	s.Queue = q
 	return s, err
 }
-func (s *Service) Start(ctx context.Context) error { return s.Queue.Start(ctx) }
-func (s *Service) Stop(ctx context.Context) error  { return s.Queue.Stop(ctx) }
-func hash(s string) []byte                         { h := sha256.Sum256([]byte(s)); return h[:] }
-func Hash(v any) string                            { return stablejson.Hash(v) }
+func (s *Service) Start(ctx context.Context) error {
+	if err := s.Queue.Start(ctx); err != nil {
+		return err
+	}
+	go s.wakeCustodyKeys(ctx, s.Store.Broker.KeysWanted())
+	return nil
+}
+func (s *Service) Stop(ctx context.Context) error { return s.Queue.Stop(ctx) }
+func hash(s string) []byte                        { h := sha256.Sum256([]byte(s)); return h[:] }
+func Hash(v any) string                           { return stablejson.Hash(v) }
 func Terminal(s api.ExecutionState) bool {
 	return s == "succeeded" || s == "failed" || s == "cancelled"
 }

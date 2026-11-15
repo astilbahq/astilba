@@ -16,6 +16,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -109,11 +110,13 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e = destination.st.Pool.QueryRow(context.Background(), "SELECT encrypted_value,author_id FROM secret_versions WHERE id=$1", secret.Id).Scan(&importedCipher, &author); e != nil {
 		t.Fatal(e)
 	}
-	recovered, e := keysOf(destination.st).Open(importedCipher, secretIdentity(ws, secret.Id))
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}
+	recovered, e := inspectValue(t, destination.st, destination.owner, ws, item, importedCipher)
 	if e != nil || string(recovered) != "portable-secret-canary" || author != destination.owner {
 		t.Fatalf("secret or author was not transferred: %v", e)
 	}
-	if _, e = keysOf(f.st).Open(importedCipher, secretIdentity(ws, secret.Id)); e == nil {
+	// The import sealed it under the destination's own key for the workspace, not the source's.
+	if _, e = inspectValue(t, f.st, f.owner, ws, item, importedCipher); e == nil {
 		t.Fatal("import retained source wrapping keys")
 	}
 	var status string
@@ -385,7 +388,7 @@ func TestOfflineRecoveryMergePreservesImmutableHistory(t *testing.T) {
 		if err = store.RequireOffline(ctx, tx); err != nil {
 			return err
 		}
-		if err = portability.MergeRecovery(ctx, tx, a, owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, destination.st, a.Workspace), a, owner); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)

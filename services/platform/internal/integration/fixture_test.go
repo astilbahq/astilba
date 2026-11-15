@@ -280,6 +280,51 @@ func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 	useKeys(t, st, keys)
 }
 
+// restoredWorkspace makes destination stand in for a restored backup of source that holds the
+// workspace ws: it takes source's installation ID and keyring, which key wrappings are bound to,
+// and gets the workspace, named name, with source's keys for it.
+func restoredWorkspace(t *testing.T, source, destination *store.Store, ws uuid.UUID, name string) {
+	t.Helper()
+	ctx := context.Background()
+	installation, err := db.New(source.Pool).InstallationID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = destination.Pool.Exec(ctx, `UPDATE installation SET id=$1`, installation); err != nil {
+		t.Fatal(err)
+	}
+	restoredKeys(t, destination, keysOf(source))
+	if _, err = destination.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,$2)`, ws, name); err != nil {
+		t.Fatal(err)
+	}
+	var generation int64
+	var kcv []byte
+	if err := source.Pool.QueryRow(ctx, `SELECT generation,kcv FROM workspace_keys WHERE workspace_id=$1 AND state='active'`, ws).Scan(&generation, &kcv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.Pool.Exec(ctx, `INSERT INTO workspace_keys(workspace_id,generation,state,kcv) VALUES($1,$2,'active',$3)`, ws, generation, kcv); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := source.Pool.Query(ctx, `SELECT purpose,backend_id,wrapped FROM workspace_key_wrappings WHERE workspace_id=$1 AND generation=$2`, ws, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var purpose, backend string
+		var wrapped []byte
+		if err = rows.Scan(&purpose, &backend, &wrapped); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = destination.Pool.Exec(ctx, `INSERT INTO workspace_key_wrappings(workspace_id,generation,purpose,backend_id,wrapped) VALUES($1,$2,$3,$4,$5)`, ws, generation, purpose, backend, wrapped); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // secretIdentity is the identity a secret version's value is sealed under, for tests that open
 // it with the keyring directly.
 func secretIdentity(workspace, id uuid.UUID) string {
@@ -293,6 +338,17 @@ var storeKeys sync.Map
 func keysOf(st *store.Store) *cryptobox.Keyring {
 	keys, _ := storeKeys.Load(st)
 	return keys.(*cryptobox.Keyring)
+}
+
+// recoverKeys is a recover session for a merge a test runs itself, closed when the test ends.
+func recoverKeys(t testing.TB, st *store.Store, ws uuid.UUID) *secretbroker.Session {
+	t.Helper()
+	keys, err := st.Broker.Begin(context.Background(), secretbroker.Request{Workspace: ws, Purpose: secretbroker.Recover, Principal: secretbroker.Operator("test-merge"), Kinds: secretbroker.RecoveryKinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { keys.Close(context.Background(), secretbroker.Used) })
+	return keys
 }
 
 func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
@@ -358,6 +414,11 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	sender, e := mailer.New(mailer.Config{Address: address, From: "Astilba <accounts@example.test>", Mode: "plain", Development: true})
 	if e != nil {
 		t.Fatal(e)
+	}
+	// The installation's keys exist before the server starts, as they do once the release before
+	// has run: its token keys are then loaded at start and issue tokens straight away.
+	if more, e := st.Broker.InitKeys(ctx, func() bool { return true }); e != nil || more {
+		t.Fatal(more, e)
 	}
 	tokens, e := st.Broker.Tokens(ctx)
 	if e != nil {
