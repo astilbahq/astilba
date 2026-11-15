@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -188,10 +189,13 @@ type auditEntry struct {
 		Path string            `json:"path"`
 		Data map[string]string `json:"data"`
 	} `json:"request"`
+	Response struct {
+		Data map[string]any `json:"data"`
+	} `json:"response"`
 }
 
-// audit reads every request the server's audit device recorded.
-func (o *devOpenBao) audit() []auditEntry {
+// audit reads every entry of one type, "request" or "response", the server's audit device wrote.
+func (o *devOpenBao) audit(kind string) []auditEntry {
 	o.t.Helper()
 	logs := dockerOutput(o.t, "logs", o.container)
 	var out []auditEntry
@@ -199,7 +203,7 @@ func (o *devOpenBao) audit() []auditEntry {
 	lines.Buffer(make([]byte, 1<<20), 1<<20)
 	for lines.Scan() {
 		var e auditEntry
-		if !bytes.HasPrefix(lines.Bytes(), []byte(`{"time"`)) || json.Unmarshal(lines.Bytes(), &e) != nil || e.Type != "request" {
+		if !bytes.HasPrefix(lines.Bytes(), []byte(`{"time"`)) || json.Unmarshal(lines.Bytes(), &e) != nil || e.Type != kind {
 			continue
 		}
 		out = append(out, e)
@@ -277,10 +281,10 @@ func TestOpenBaoPolicies(t *testing.T) {
 	for _, class := range custody.Classes {
 		_, servingErr := serving.Unwrap(ctx, class, wrapped[class], c)
 		_, operatorErr := operator.Unwrap(ctx, class, wrapped[class], c)
-		if custody.ServingDecrypts(class) != (servingErr == nil) || !custody.ServingDecrypts(class) && !errors.Is(servingErr, custody.ErrDenied) {
+		if custody.MayUnwrap(serving, class, false) != (servingErr == nil) || !custody.MayUnwrap(serving, class, false) && !errors.Is(servingErr, custody.ErrDenied) {
 			t.Errorf("serving unwraps under %s: %v", class, servingErr)
 		}
-		if custody.OperatorDecrypts(class) != (operatorErr == nil) || !custody.OperatorDecrypts(class) && !errors.Is(operatorErr, custody.ErrDenied) {
+		if custody.MayUnwrap(operator, class, true) != (operatorErr == nil) || !custody.MayUnwrap(operator, class, true) && !errors.Is(operatorErr, custody.ErrDenied) {
 			t.Errorf("the operator unwraps under %s: %v", class, operatorErr)
 		}
 		// The operator moves wrappings onto a rotated key without unwrapping them.
@@ -337,6 +341,23 @@ func TestOpenBaoPolicies(t *testing.T) {
 	if err = serving.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The audit log shows each request's context in clear, and nothing else: no mount lists a
+	// key's plaintext among the request or response fields it leaves unhashed.
+	if status, tune := o.api("GET", "sys/mounts/astilba-transit/tune", o.root, nil); status != 200 || fmt.Sprint(tune["audit_non_hmac_request_keys"]) != "[context]" || tune["audit_non_hmac_response_keys"] != nil {
+		t.Errorf("the Transit mount's audit settings: %d %v", status, tune)
+	}
+	status, mounts := o.api("GET", "sys/mounts", o.root, nil)
+	if status != 200 || len(mounts) == 0 {
+		t.Fatalf("mounts: %d", status)
+	}
+	for path, mount := range mounts {
+		config, _ := mount.(map[string]any)["config"].(map[string]any)
+		for _, setting := range []string{"audit_non_hmac_request_keys", "audit_non_hmac_response_keys"} {
+			if keys, _ := config[setting].([]any); slices.Contains(keys, any("plaintext")) {
+				t.Errorf("%s leaves plaintext unhashed in its %s", path, setting)
+			}
+		}
+	}
 }
 
 // The broker, on Transit: every unwrap is in the key service's audit log with its context in
@@ -381,7 +402,7 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 	}
 	want := custody.Context{Installation: installation, Scope: custody.ScopeInstallation, Generation: 1, Purpose: "authenticate"}
 	var found bool
-	for _, e := range o.audit() {
+	for _, e := range o.audit("request") {
 		if e.Request.Path == "astilba-transit/encrypt/astilba-installation" && strings.HasPrefix(e.Request.Data["plaintext"], "hmac-sha256:") == false {
 			t.Fatalf("a key was written to the audit log: %s", e.Request.Path)
 		}
@@ -399,6 +420,19 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("request %s is not in the audit log", requests[0])
+	}
+	decrypts := 0
+	for _, e := range o.audit("response") {
+		if !strings.HasPrefix(e.Request.Path, "astilba-transit/decrypt/") {
+			continue
+		}
+		decrypts++
+		if plaintext, _ := e.Response.Data["plaintext"].(string); !strings.HasPrefix(plaintext, "hmac-sha256:") {
+			t.Fatalf("a decrypt's response wrote the key to the audit log: %s", e.Request.Path)
+		}
+	}
+	if decrypts == 0 {
+		t.Fatal("no decrypt response in the audit log")
 	}
 	created := false
 	events, err := db.New(pool).InstallationKeyEvents(ctx, 100)
@@ -440,7 +474,7 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 	s.Close(ctx, secretbroker.Used)
 	// The operator unwrapped only under rotate, and rewrapped everything else in place.
 	rewraps := 0
-	for _, e := range o.audit() {
+	for _, e := range o.audit("request") {
 		if !slices.Contains(e.Auth.Policies, "astilba-operator") {
 			continue
 		}
@@ -454,6 +488,79 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 	// Four canaries, and the installation and token keys' wrappings: 3 and 2 purposes.
 	if rewraps != len(custody.Classes)+len(custody.Purposes(custody.ScopeInstallation))+len(custody.Purposes(custody.ScopeToken)) {
 		t.Errorf("%d rewraps", rewraps)
+	}
+}
+
+// Each start checks every canary its identity may open on Transit: serving's three classes, and
+// the operator's rotate. A canary that does not open refuses the start, and so does an operator's
+// command given the serving identity's credentials, which the key service refuses.
+func TestOpenBaoStartChecksWhatEachIdentityMayOpen(t *testing.T) {
+	o := startOpenBao(t)
+	ctx := t.Context()
+	pool := freshDatabase(t)
+	serving, err := custody.WithKeyring(o.transit("astilba-serving"), testKeyring(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator, err := custody.WithKeyring(o.transit("astilba-operator"), testKeyring(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func(b custody.Legacy, asOperator bool) error {
+		return secretbroker.New(db.New(pool), b, nil).Install(ctx, pool, uuid.Nil, asOperator)
+	}
+	if err = start(serving, false); err != nil {
+		t.Fatal(err)
+	}
+	if err = start(operator, true); err != nil {
+		t.Fatal(err)
+	}
+	refused := func(name, cause string, class custody.Class) {
+		t.Helper()
+		events, err := db.New(pool).InstallationKeyEvents(ctx, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range events {
+			if e.Kind != "start-refused" {
+				continue
+			}
+			var details map[string]string
+			if err = json.Unmarshal(e.Details, &details); err != nil || details["cause"] != cause || details["class"] != string(class) {
+				t.Fatalf("%s: the refusal recorded %v %v", name, details, err)
+			}
+			return
+		}
+		t.Fatalf("%s: no refusal recorded", name)
+	}
+	if err = start(serving, true); !errors.Is(err, secretbroker.ErrBackendRefused) || !errors.Is(err, custody.ErrDenied) {
+		t.Fatalf("an operator's command with serving's credentials: %v", err)
+	}
+	refused("serving's credentials", "backend-refused", custody.ClassRotate)
+	// One class's canary replaced by another's no longer opens.
+	for _, class := range custody.Classes {
+		other := custody.ClassServe
+		if class == other {
+			other = custody.ClassExport
+		}
+		var original []byte
+		if err = pool.QueryRow(ctx, `SELECT wrapped FROM installation_key_canaries WHERE class=$1`, string(class)).Scan(&original); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = pool.Exec(ctx, `UPDATE installation_key_canaries SET wrapped=(SELECT wrapped FROM installation_key_canaries WHERE class=$2) WHERE class=$1`, string(class), string(other)); err != nil {
+			t.Fatal(err)
+		}
+		b, asOperator := serving, false
+		if !custody.MayUnwrap(serving, class, false) {
+			b, asOperator = operator, true
+		}
+		if err = start(b, asOperator); !errors.Is(err, secretbroker.ErrCanaryMismatch) {
+			t.Fatalf("the %s canary does not open: %v", class, err)
+		}
+		refused(string(class), "canary", class)
+		if _, err = pool.Exec(ctx, `UPDATE installation_key_canaries SET wrapped=$2 WHERE class=$1`, string(class), original); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

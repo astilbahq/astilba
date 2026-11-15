@@ -79,6 +79,49 @@ func TestFirstStartRegistersBackendAndCanaries(t *testing.T) {
 	}
 }
 
+// Each start checks every canary it may open, and refuses on one that does not: serving every
+// class but rotate, and an operator's command, with the keyring, every class.
+func TestStartChecksEveryCanaryItMayOpen(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	start := func(operator bool) error {
+		backend, err := custody.NewFile(keysOf(f.st))
+		if err != nil {
+			return err
+		}
+		return secretbroker.New(db.New(f.st.Pool), backend, nil).Install(ctx, f.st.Pool, uuid.Nil, operator)
+	}
+	for _, class := range custody.Classes {
+		other := custody.ClassServe
+		if class == other {
+			other = custody.ClassExport
+		}
+		var original []byte
+		if err := f.st.Pool.QueryRow(ctx, `SELECT wrapped FROM installation_key_canaries WHERE class=$1`, string(class)).Scan(&original); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.st.Pool.Exec(ctx, `UPDATE installation_key_canaries SET wrapped=(SELECT wrapped FROM installation_key_canaries WHERE class=$2) WHERE class=$1`, string(class), string(other)); err != nil {
+			t.Fatal(err)
+		}
+		serving := start(false)
+		if custody.ServingDecrypts(class) != errors.Is(serving, secretbroker.ErrCanaryMismatch) || !custody.ServingDecrypts(class) && serving != nil {
+			t.Errorf("serving whose %s canary does not open: %v", class, serving)
+		}
+		if operator := start(true); !errors.Is(operator, secretbroker.ErrCanaryMismatch) {
+			t.Errorf("an operator's command whose %s canary does not open: %v", class, operator)
+		}
+		if _, err := f.st.Pool.Exec(ctx, `UPDATE installation_key_canaries SET wrapped=$2 WHERE class=$1`, string(class), original); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := start(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := start(true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Start-up refuses another installation's ID, another keyring, a database copied under another
 // installation ID, and a backend that is retiring, and records each refusal.
 func TestStartRefusesWhatIsNotTheInstallations(t *testing.T) {

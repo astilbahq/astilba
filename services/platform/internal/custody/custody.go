@@ -34,9 +34,25 @@ var Classes = []Class{ClassServe, ClassExport, ClassRotate, ClassInstallation}
 // may only wrap: only an operator unwraps there.
 func ServingDecrypts(class Class) bool { return class != ClassRotate }
 
-// OperatorDecrypts reports whether an operator's command may unwrap under a class. It wraps under
-// every class, but unwraps only what is wrapped for its own purpose, under rotate.
-func OperatorDecrypts(class Class) bool { return class == ClassRotate }
+// OperatorScoped is a backend whose own policy lets an operator's command unwrap under only some
+// classes, as a key service's does. The operator then moves wrappings with the backend's native
+// rewrap (Rewrapper), so it never holds the keys it may not unwrap.
+type OperatorScoped interface {
+	OperatorUnwraps(class Class) bool
+}
+
+// MayUnwrap reports whether serving, or an operator's command, may unwrap under a class with b.
+// Serving never unwraps under rotate. An operator unwraps under every class, unless b's policy
+// narrows that.
+func MayUnwrap(b Backend, class Class, operator bool) bool {
+	if !operator {
+		return ServingDecrypts(class)
+	}
+	if s, ok := inner(b).(OperatorScoped); ok {
+		return s.OperatorUnwraps(class)
+	}
+	return true
+}
 
 type Scope string
 
@@ -159,6 +175,14 @@ type withKeyring struct {
 
 func (w withKeyring) Keyring() *cryptobox.Keyring { return w.ring }
 
+// inner is the backend WithKeyring paired with a keyring, or b itself.
+func inner(b Backend) Backend {
+	if w, ok := b.(withKeyring); ok {
+		return w.Backend
+	}
+	return b
+}
+
 // File is the self-hosted backend: the keyring file named by ASTILBA_KEYRING. Every class
 // uses its active key, as there is only one.
 type File struct {
@@ -221,18 +245,17 @@ func RewrapCanary(ctx context.Context, b Backend, class Class, installation uuid
 
 // Rewrapper is a backend that wraps a wrapping again inside the key service, so the key never
 // leaves it. An operator who may not unwrap under a class can then still move its wrappings onto
-// the class's newest key.
+// the class's newest key. It moves a wrapping only between versions of the class's one key, under
+// the same context: Transit's rewrap cannot change key, and is given one context.
 type Rewrapper interface {
 	Rewrap(ctx context.Context, class Class, blob []byte, c Context) (wrapped []byte, requestID string, err error)
 }
 
-// Rewrap wraps a wrapped key again under the class's current key, for the same context.
+// Rewrap wraps a wrapped key again under the class's current key, for the same context. A rewrap
+// never changes class or context: a new key generation is a new key, made and wrapped afresh.
+// A Rewrapper's refusal is returned as it is, never retried by unwrapping and wrapping.
 func Rewrap(ctx context.Context, b Backend, class Class, blob []byte, c Context) ([]byte, error) {
-	inner := b
-	if w, ok := b.(withKeyring); ok {
-		inner = w.Backend
-	}
-	if r, ok := inner.(Rewrapper); ok {
+	if r, ok := inner(b).(Rewrapper); ok {
 		wrapped, _, err := r.Rewrap(ctx, class, blob, c)
 		return wrapped, err
 	}

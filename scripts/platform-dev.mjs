@@ -16,7 +16,6 @@ import {
   checkCustody,
   openBao,
   openBaoRun,
-  transitEnv,
 } from "./platform-dev-custody.mjs";
 import {
   agentOrigin,
@@ -445,37 +444,12 @@ try {
       await waitFor(() => tcpReady(databasePort), "VM tunnel");
       address = `127.0.0.1:${databasePort}`;
       if (vault) {
-        const openBaoAddress = `http://127.0.0.1:${openBaoPort}`;
-        await waitFor(() => vault.ready(openBaoAddress), "OpenBao");
-        await vault.unseal(openBaoAddress);
-        // Applies the shipped policies again, so a change to them takes effect on restart.
-        await run(binary, [
-          "custody",
-          "init-transit",
-          "--dev",
-          "--address",
-          openBaoAddress,
-          "--token-file",
-          vault.tokenFile,
-          "--out",
-          vault.credentials,
-        ]);
-        Object.assign(
-          env,
-          transitEnv({
-            address: openBaoAddress,
-            credentials: vault.credentials,
-          }),
-        );
-        agentNote = `Keys are under OpenBao Transit; its audit log: docker --host ${host} logs -f ${vaultId}\nOperator commands such as custody rewrap sign in as the operator: ${Object.entries(
-          transitEnv({
-            address: openBaoAddress,
-            credentials: vault.credentials,
-            role: "operator",
-          }),
-        )
-          .map(([k, v]) => `${k}=${v}`)
-          .join(" ")}\n`;
+        const custody = await vault.start(`http://127.0.0.1:${openBaoPort}`, {
+          waitFor,
+          initTransit: (args) => run(binary, ["custody", "init-transit", ...args]),
+        });
+        Object.assign(env, custody.env);
+        agentNote = `Keys are under OpenBao Transit; its audit log: docker --host ${host} logs -f ${vaultId}\nOperator commands such as custody rewrap sign in as the operator: ${custody.operator}\n`;
       }
     }
     env.ASTILBA_DATABASE_URL = `postgres://postgres:${state.password}@${address}/postgres?sslmode=disable`;

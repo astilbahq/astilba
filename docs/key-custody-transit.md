@@ -153,7 +153,9 @@ At every start, before it uses a key, management:
   backed up in plaintext, can be deleted, or isn't derived, and records the refusal in the
   installation's key history;
 - opens the canary of each class it may unwrap under: serve, export and installation for
-  serving, and rotate for the operator.
+  serving, and rotate for the operator. It refuses to start if one doesn't open, and records
+  why. An operator command given the serving identity's credentials is refused here, before it
+  touches a key.
 
 Each call has a 2-second deadline. A call that times out, gets a 5xx answer or is rate limited is
 tried once more. A refused token is replaced by a new sign-in once. Management renews its token
@@ -170,7 +172,9 @@ one backend to another is supported.
 1. Rotate the key: `bao write -f astilba-transit/keys/astilba-serve/rotate`. New wrappings use
    the new version at once, and old ones still open.
 2. Run `astilba custody rewrap --operator <name>` with the operator's credentials. It moves
-   every wrapping onto the newest version inside the key service, without unwrapping it.
+   every wrapping onto the newest version of the same key inside the key service (Transit's
+   `rewrap`), with the same context, without unwrapping it. If the key service refuses a
+   rewrap, the command stops; it never unwraps and wraps instead.
 3. Once `custody status` shows nothing pending, raise `min_decryption_version` so the old
    version no longer decrypts:
    `bao write astilba-transit/keys/astilba-serve/config min_decryption_version=2`.

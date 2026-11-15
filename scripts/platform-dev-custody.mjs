@@ -11,19 +11,21 @@ export const openBaoImage =
   "openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f";
 
 // A real server, not `bao server -dev`: dev mode keeps everything in memory, and the stack keeps
-// its data across restarts. Storage is the container's volume. Plain HTTP on the container's
-// port, which the VM publishes only on its loopback and the stack's tunnel carries to the Mac's.
-// The audit device writes to standard output, so `docker logs` shows it; OpenBao creates audit
-// devices only from configuration.
-export const openBaoConfig = `storage "file" {
-  path = "/openbao/file"
+// its data across restarts. Storage is one Raft node in the container's own filesystem, which
+// stays with the container across stops; OpenBao 2 has no other persistent storage that needs no
+// database. Plain HTTP on the container's port, which the VM publishes only on its loopback and the
+// stack's tunnel carries to the Mac's. The audit device writes to standard output, so `docker logs`
+// shows it; OpenBao creates audit devices only from configuration.
+export const openBaoConfig = `storage "raft" {
+  path    = "/openbao/file"
+  node_id = "astilba-dev"
 }
 listener "tcp" {
   address     = "0.0.0.0:8200"
   tls_disable = true
 }
-disable_mlock = true
-api_addr      = "http://127.0.0.1:8200"
+api_addr     = "http://127.0.0.1:8200"
+cluster_addr = "http://127.0.0.1:8201"
 audit "file" "stdout" {
   options = {
     file_path = "stdout"
@@ -99,6 +101,42 @@ export function openBao({ directory, fetch = globalThis.fetch }) {
       } catch {
         return false;
       }
+    },
+    // active reports whether the server is unsealed and its Raft node leads, so it serves
+    // requests: sys/health answers 200 only then.
+    async active(address) {
+      try {
+        await call(address, "GET", "sys/health");
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    // start readies the stack's OpenBao at address once the tunnel carries it: unsealed, its
+    // Raft node leading, and set up by `custody init-transit --dev`, which applies the shipped
+    // policies again, so a change to them takes effect on restart. It returns what management
+    // needs to sign in as serving, and the variables an operator's command needs.
+    async start(address, { waitFor, initTransit }) {
+      await waitFor(() => this.ready(address), "OpenBao");
+      await this.unseal(address);
+      await waitFor(() => this.active(address), "OpenBao's storage");
+      const credentials = this.credentials;
+      await initTransit([
+        "--dev",
+        "--address",
+        address,
+        "--token-file",
+        tokenFile,
+        "--out",
+        credentials,
+      ]);
+      const operator = transitEnv({ address, credentials, role: "operator" });
+      return {
+        env: transitEnv({ address, credentials }),
+        operator: Object.entries(operator)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(" "),
+      };
     },
     async unseal(address) {
       const status = await call(address, "GET", "sys/seal-status");

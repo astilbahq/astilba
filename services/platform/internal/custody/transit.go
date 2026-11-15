@@ -229,6 +229,10 @@ func (t *Transit) Unwrap(ctx context.Context, class Class, blob []byte, c Contex
 	return Result{Key: key, ProviderRequestID: id}, nil
 }
 
+// OperatorUnwraps is the shipped operator policy: the operator decrypts only with the rotate
+// key, and rewraps every other class's wrappings inside the key service.
+func (t *Transit) OperatorUnwraps(class Class) bool { return class == ClassRotate }
+
 // Rewrap wraps a wrapping again under the newest version of the class's key, inside the key
 // service: the key never leaves it, so a principal that may not unwrap under the class can still
 // move its wrappings onto a rotated key.

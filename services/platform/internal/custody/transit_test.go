@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
@@ -421,5 +422,59 @@ func TestRewrapUsesTheKeyServiceRewrap(t *testing.T) {
 	}
 	if f.count("/"+DefaultTransitMount+"/decrypt/astilba-serve") != 0 {
 		t.Fatal("rewrap unwrapped")
+	}
+}
+
+// A refused native rewrap is the answer: it is never retried by unwrapping and wrapping, also when
+// the backend is paired with a keyring.
+func TestRewrapNeverFallsBackToUnwrapping(t *testing.T) {
+	f, s := newFakeTransit(t)
+	tr := newTestTransit(t, s.URL)
+	blob, _, err := tr.Wrap(t.Context(), ClassServe, []byte("k"), testContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring, err := cryptobox.New("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paired, err := WithKeyring(tr, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.set("/"+DefaultTransitMount+"/rewrap/astilba-serve", status(http.StatusForbidden, "permission denied"))
+	if _, err = Rewrap(t.Context(), paired, ClassServe, blob, testContext); !errors.Is(err, ErrDenied) {
+		t.Fatalf("%v", err)
+	}
+	if f.count("/"+DefaultTransitMount+"/decrypt/astilba-serve") != 0 || f.count("/"+DefaultTransitMount+"/encrypt/astilba-serve") != 1 {
+		t.Fatal("a refused rewrap fell back to unwrapping")
+	}
+}
+
+// Transit's operator unwraps only under rotate, as its shipped policy allows; with the keyring,
+// an operator unwraps under every class. Serving never unwraps under rotate.
+func TestMayUnwrap(t *testing.T) {
+	_, s := newFakeTransit(t)
+	ring, err := cryptobox.New("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paired, err := WithKeyring(newTestTransit(t, s.URL), ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := NewFile(ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range Classes {
+		if MayUnwrap(paired, class, true) != (class == ClassRotate) || !MayUnwrap(file, class, true) {
+			t.Errorf("the operator under %s", class)
+		}
+		for _, b := range []Backend{paired, file} {
+			if MayUnwrap(b, class, false) != (class != ClassRotate) {
+				t.Errorf("serving under %s with %s", class, b.ID())
+			}
+		}
 	}
 }

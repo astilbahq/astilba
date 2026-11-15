@@ -92,14 +92,19 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 		}
 		for _, c := range canaries {
 			class := custody.Class(c.Class)
-			// Each checks the canaries of the classes it may unwrap under, which a key service's
-			// policy enforces.
-			if operator && !custody.OperatorDecrypts(class) || !operator && !custody.ServingDecrypts(class) {
+			// Each start checks every class it may unwrap under: serving all but rotate, and the
+			// operator every class, or only rotate where a key service's policy allows no more.
+			if !custody.MayUnwrap(b.backend, class, operator) {
 				continue
 			}
 			if err = custody.CheckCanary(ctx, b.backend, class, id, c.Wrapped); err != nil {
-				if errors.Is(err, custody.ErrInvalid) || errors.Is(err, custody.ErrDenied) {
+				switch {
+				case errors.Is(err, custody.ErrInvalid):
 					return nil, refuse(ErrCanaryMismatch, map[string]string{"class": c.Class})
+				// The key service would not let this identity unwrap, as with the serving
+				// identity's credentials given to an operator's command.
+				case errors.Is(err, custody.ErrDenied):
+					return nil, fmt.Errorf("%w: %w", refuse(ErrBackendRefused, map[string]string{"class": c.Class, "reason": err.Error()}), err)
 				}
 				return nil, err
 			}
