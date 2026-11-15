@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"sync"
@@ -158,6 +159,10 @@ func capture(ctx context.Context, in []byte, name string, args ...string) ([]byt
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
+		// A call that ran out of time says nothing about the value: the store isn't working.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: systemd-creds didn't answer in time", hostnetwork.ErrKeyStoreUnavailable)
+		}
 		return nil, errors.New("systemd-creds could not seal or unseal the value")
 	}
 	return out.Bytes(), nil

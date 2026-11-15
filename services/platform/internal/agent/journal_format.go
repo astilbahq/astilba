@@ -145,6 +145,7 @@ func (j *Journal) openSealedKeys(ctx context.Context, open func(context.Context)
 	j.keys.Store(keys)
 	j.formatVersion.Store(int64(version))
 	j.sealing, j.store = true, store
+	j.publishNetworkKeyStore()
 	return syncLocalStateDirectory(j.dir)
 }
 
@@ -221,6 +222,7 @@ func (j *Journal) writeKeys(ctx context.Context, keys *cryptobox.Keyring, versio
 	renamed, err := writeLocalState(j.dir, filepath.Join(j.dir, "keyring.json"), body, point)
 	if renamed {
 		j.formatVersion.Store(int64(envelope.Version))
+		j.publishNetworkKeyStore()
 	}
 	return err
 }
@@ -418,12 +420,23 @@ func (j *Journal) KeyStore() KeyStore {
 }
 
 // networkKeyStore is the store this host's private-link keys are sealed to. It is nil until the
-// journal is in the format that tells earlier agents they can't read those keys.
+// journal is in the format that tells earlier agents they can't read those keys. It never waits on
+// stateMu, which a rekey holds while it calls the key store: removing access must never wait on it.
 func (j *Journal) networkKeyStore() hostnetwork.Sealer {
-	j.stateMu.Lock()
-	defer j.stateMu.Unlock()
-	if j.store == nil || j.formatVersion.Load() < networkSealedStateVersion {
-		return nil
+	if ref := j.networkStore.Load(); ref != nil {
+		return ref.KeyStore
 	}
-	return j.store
+	return nil
+}
+
+// keyStoreRef holds a key store for an atomic pointer.
+type keyStoreRef struct{ KeyStore }
+
+// publishNetworkKeyStore makes the journal's store the network key store once the journal is in the
+// format that lets private-link keys be sealed. From then on the journal is sealed for good, so the
+// store never changes. The caller holds stateMu.
+func (j *Journal) publishNetworkKeyStore() {
+	if j.store != nil && j.formatVersion.Load() >= networkSealedStateVersion && j.networkStore.Load() == nil {
+		j.networkStore.Store(&keyStoreRef{j.store})
+	}
 }

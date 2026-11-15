@@ -83,6 +83,8 @@ type Journal struct {
 	// is that store once it has, and from then on. Both are guarded by stateMu.
 	sealing bool
 	store   KeyStore
+	// networkStore is store once private-link keys may be sealed to it, read without stateMu.
+	networkStore atomic.Pointer[keyStoreRef]
 	// rekeyedAt is the transaction that last re-sealed every record.
 	rekeyedAt      atomic.Uint64
 	startupUpdates map[uuid.UUID]bool

@@ -244,16 +244,14 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 	if f.public != m.PublicKey {
 		return errors.New("managed network public key does not match local identity")
 	}
-	// A link that is up holds its key already, so applying it again never waits on the key store.
-	// Otherwise the key is opened before anything changes. Removing authority never waits on it
-	// either: without a key, a restriction still takes effect in the saved intent and the firewall,
-	// and the link stays down until its key opens.
+	// A link that is up holds its key already, so applying it again never needs the key store.
+	// Removing authority never does either: without the live key, a restriction or a removal takes
+	// effect in the saved intent and the firewall, and the link stays down until it is restored
+	// with its key. Anything else opens the key before it changes anything.
 	key := h.liveKey(ctx, m)
-	if key == nil {
-		var keyErr error
-		key, keyErr = h.openKeyFile(ctx, m.MembershipID, f)
-		if keyErr != nil && !(restrict && (errors.Is(keyErr, ErrKeyStoreUnavailable) || errors.Is(keyErr, ErrSealedKey))) {
-			return keyErr
+	if key == nil && !restrict && !m.Disabled {
+		if key, err = h.openKeyFile(ctx, m.MembershipID, f); err != nil {
+			return err
 		}
 	}
 	if key != nil && publicKeyOf(key) != m.PublicKey {
@@ -304,15 +302,18 @@ func (h Host) apply(ctx context.Context, m Manifest, bridges []Bridge, restrict 
 		return err
 	}
 	if key == nil {
-		// A link without a key it can use carries nothing: any interface of this network goes
-		// down. The saved intent has no applied hash, so the link comes back as m once its key
-		// opens, as the agent service restores it.
+		// A link without its key carries nothing: any interface of this network goes down. A
+		// removal is then done. A restriction's saved intent has no applied hash, so the link comes
+		// back as m once it is restored with its key.
 		if _, err = h.run(ctx, "ip", nil, "link", "show", "dev", m.Interface()); err == nil {
-			_, err = h.run(ctx, "ip", nil, "link", "set", "dev", m.Interface(), "down")
-		} else {
-			err = nil
+			if _, err = h.run(ctx, "ip", nil, "link", "set", "dev", m.Interface(), "down"); err != nil {
+				return err
+			}
 		}
-		return err
+		if m.Disabled {
+			return h.save(Snapshot{InterfaceGroup: group, Manifest: m, Bridges: bridges, AppliedHash: Hash(m)})
+		}
+		return nil
 	}
 	if _, err = h.run(ctx, "ip", nil, "link", "show", "dev", m.Interface()); err != nil {
 		if _, err = h.run(ctx, "ip", nil, "link", "add", "dev", m.Interface(), "group", strconv.FormatUint(uint64(group), 10), "type", "wireguard"); err != nil {

@@ -38,13 +38,26 @@ func (h Host) RestoreMissing(ctx context.Context) error {
 }
 
 func (h Host) restore(ctx context.Context, missing bool) error {
+	snapshots, failures := h.held(ctx, missing)
+	for _, s := range snapshots {
+		if err := h.apply(ctx, s.Manifest, s.Bridges, false); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// held lists the snapshots of the networks this host holds, or with missing only those whose links
+// aren't in place, and every snapshot it couldn't read.
+func (h Host) held(ctx context.Context, missing bool) ([]Snapshot, []error) {
 	entries, err := os.ReadDir(filepath.Join(h.Dir, "network"))
 	if os.IsNotExist(err) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, []error{err}
 	}
+	var out []Snapshot
 	var failures []error
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
@@ -56,14 +69,29 @@ func (h Host) restore(ctx context.Context, missing bool) error {
 			continue
 		}
 		s, e := h.Snapshot(id)
-		if e == nil && missing && s.AppliedHash == Hash(s.Manifest) && h.holds(ctx, s.Manifest) {
-			continue
-		}
-		if e == nil {
-			e = h.apply(ctx, s.Manifest, s.Bridges, false)
-		}
 		if e != nil {
 			failures = append(failures, e)
+			continue
+		}
+		// A removal that was applied is in place whatever the interface holds: it carries nothing.
+		if missing && s.AppliedHash == Hash(s.Manifest) && (s.Manifest.Disabled || h.holds(ctx, s.Manifest)) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, failures
+}
+
+// OpenMissingKeys opens the keys of the links RestoreMissing would put back, without taking the
+// host lock or changing anything, so that RestoreMissing can then replay it from a Prepared store.
+func (h Host) OpenMissingKeys(ctx context.Context) error {
+	snapshots, failures := h.held(ctx, true)
+	for _, s := range snapshots {
+		if s.Manifest.Disabled || h.liveKey(ctx, s.Manifest) != nil {
+			continue
+		}
+		if _, err := h.privateKey(ctx, s.Manifest.MembershipID); err != nil {
+			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)

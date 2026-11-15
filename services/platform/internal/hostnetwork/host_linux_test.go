@@ -359,10 +359,11 @@ func TestNativeManagedLinks(t *testing.T) {
 	if err = b.Apply(ctx, next, bb, false); !errors.Is(err, ErrGenerationConflict) {
 		t.Fatal("the older controller's manifest was accepted after the newer one", err)
 	}
-	// Removing authority never waits on the key store. With no live link holding the key and a
-	// store that can't open it, a restriction still takes effect: the reduced intent and firewall
-	// are in place and the link stays down. It comes back, reduced, once the key opens.
-	in("a", "ip", "link", "delete", ma.Interface())
+	// Removing authority never calls the key store. With a link that doesn't hold its key, a
+	// restriction still takes effect: the reduced intent and firewall are in place and the link
+	// goes down. It comes back, reduced, once restored with its key, whose opening is done before
+	// the restore takes the host lock.
+	in("a", "sh", "-c", "wg genkey | wg set "+ma.Interface()+" private-key /dev/stdin")
 	prior, err := a.Snapshot(ma.NetworkID)
 	if err != nil {
 		t.Fatal(err)
@@ -370,18 +371,28 @@ func TestNativeManagedLinks(t *testing.T) {
 	reduced := prior.Manifest
 	reduced.Generation++
 	reduced.Exports = nil
-	broken.Keys = unsealable{}
-	if err = broken.Apply(ctx, reduced, prior.Bridges, true); err != nil {
-		t.Fatal("a restriction waited on the key store", err)
+	store := &counting{machine: a.Keys.(machine)}
+	restricting := a
+	restricting.Keys = store
+	if err = restricting.Apply(ctx, reduced, prior.Bridges, true); err != nil || store.calls != 0 {
+		t.Fatal("a restriction called the key store", err, store.calls)
 	}
 	if held, err := a.Snapshot(ma.NetworkID); err != nil || Hash(held.Manifest) != Hash(reduced) || held.AppliedHash == Hash(reduced) {
 		t.Fatal("a restriction without its key didn't hold the reduced intent for the link to come back to", err)
 	}
-	if exec.Command("ip", "netns", "exec", ns["a"], "ip", "link", "show", "dev", ma.Interface()).Run() == nil {
-		t.Fatal("a link without its key came up")
+	if out := in("a", "ip", "link", "show", "dev", ma.Interface()); strings.Contains(string(out), ",UP") {
+		t.Fatalf("a link without its key stayed up: %s", out)
 	}
-	if err = a.RestoreMissing(ctx); err != nil {
-		t.Fatal("the restricted link didn't come back once its key opened", err)
+	prepared := Prepare(store)
+	restoring := a
+	restoring.Keys = prepared
+	if err = restoring.OpenMissingKeys(ctx); err != nil || store.calls == 0 {
+		t.Fatal("the restore didn't open the missing link's key ahead of time", err)
+	}
+	prepared.Replay()
+	before := store.calls
+	if err = restoring.RestoreMissing(ctx); err != nil || store.calls != before {
+		t.Fatal("the restore called the key store under the host lock, or failed", err, store.calls-before)
 	}
 	if held, err := a.Snapshot(ma.NetworkID); err != nil || held.AppliedHash != Hash(reduced) || !a.holds(ctx, reduced) {
 		t.Fatal("the link came back without its reduced intent", err)

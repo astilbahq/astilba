@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -145,9 +146,13 @@ func (h Host) openKeyFile(ctx context.Context, id uuid.UUID, f keyFile) (*ecdh.P
 	return key, nil
 }
 
-// unsealFailure says why a sealed key didn't open. The store is checked with a value of its own:
-// if that works, the store is fine and this key isn't one it can open.
+// unsealFailure says why a sealed key didn't open. A store that says it isn't working is believed.
+// Otherwise the store is checked with a value of its own: if that works, the store is fine and
+// this key isn't one it can open.
 func (h Host) unsealFailure(ctx context.Context, cause error) error {
+	if errors.Is(cause, ErrKeyStoreUnavailable) {
+		return cause
+	}
 	probe := []byte("astilba private-link key store probe")
 	if sealed, err := h.Keys.Seal(ctx, probeName, probe); err == nil {
 		if back, err := h.Keys.Unseal(ctx, probeName, sealed); err == nil && bytes.Equal(back, probe) {
@@ -157,26 +162,121 @@ func (h Host) unsealFailure(ctx context.Context, cause error) error {
 	return fmt.Errorf("%w: %w", ErrKeyStoreUnavailable, cause)
 }
 
-// writeKey replaces membership id's key file with key. It seals the key with the host's key store
-// when it has one, and reads the sealed key back before it replaces anything. Without a store it
-// writes the key in the clear.
+// writeKey replaces membership id's key file with key: sealed with the host's key store when it has
+// one, or else in the clear.
 func (h Host) writeKey(ctx context.Context, id uuid.UUID, key *ecdh.PrivateKey) error {
 	body := []byte(base64.StdEncoding.EncodeToString(key.Bytes()))
 	if h.Keys != nil {
-		sealed, err := h.Keys.Seal(ctx, keyName(id), key.Bytes())
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrKeyStoreUnavailable, err)
-		}
-		// A key nothing can read would cut this host off its private network, so it replaces the
-		// file only once read back.
-		if back, err := h.Keys.Unseal(ctx, keyName(id), sealed); err != nil || !bytes.Equal(back, key.Bytes()) {
-			return fmt.Errorf("%w: it could not read back the private-link key it sealed", ErrKeyStoreUnavailable)
-		}
-		if body, err = stablejson.Marshal(sealedKey{Version: SealedKeyVersion, PublicKey: publicKeyOf(key), SealedKey: sealed}); err != nil {
+		var err error
+		if body, err = h.sealKey(ctx, id, key); err != nil {
 			return err
 		}
 	}
 	return atomicPrivate(h.identityPath(id), body)
+}
+
+// sealKey is the key file that holds key sealed with the host's key store. The sealed key is read
+// back first: a key nothing can read would cut this host off its private network.
+func (h Host) sealKey(ctx context.Context, id uuid.UUID, key *ecdh.PrivateKey) ([]byte, error) {
+	sealed, err := h.Keys.Seal(ctx, keyName(id), key.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrKeyStoreUnavailable, err)
+	}
+	if back, err := h.Keys.Unseal(ctx, keyName(id), sealed); err != nil || !bytes.Equal(back, key.Bytes()) {
+		return nil, fmt.Errorf("%w: it could not read back the private-link key it sealed", ErrKeyStoreUnavailable)
+	}
+	return stablejson.Marshal(sealedKey{Version: SealedKeyVersion, PublicKey: publicKeyOf(key), SealedKey: sealed})
+}
+
+// Prepared is a key store that does its work ahead of time, before any lock is taken, so that work
+// done later under a lock replays it rather than call the store. Once Replay is called, it answers
+// only what it did before, and refuses anything else as not working.
+type Prepared struct {
+	store  Sealer
+	mu     sync.Mutex
+	replay bool
+	sealed map[string][]byte
+	opened map[string][]byte
+}
+
+// errNotPrepared says a key store call wasn't made ahead of time, so it isn't made now.
+var errNotPrepared = fmt.Errorf("%w: it wasn't used ahead of time", ErrKeyStoreUnavailable)
+
+// Prepare is a Prepared store that does its work with store.
+func Prepare(store Sealer) *Prepared {
+	return &Prepared{store: store, sealed: map[string][]byte{}, opened: map[string][]byte{}}
+}
+
+// Replay makes p answer only what it did before.
+func (p *Prepared) Replay() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.replay = true
+}
+
+func (p *Prepared) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	at := name + "\x00" + string(plain)
+	p.mu.Lock()
+	if v, ok := p.sealed[at]; ok || p.replay {
+		p.mu.Unlock()
+		if !ok {
+			return nil, errNotPrepared
+		}
+		return v, nil
+	}
+	p.mu.Unlock()
+	sealed, err := p.store.Seal(ctx, name, plain)
+	if err == nil {
+		p.mu.Lock()
+		p.sealed[at] = sealed
+		p.mu.Unlock()
+	}
+	return sealed, err
+}
+
+func (p *Prepared) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	at := name + "\x00" + string(sealed)
+	p.mu.Lock()
+	if v, ok := p.opened[at]; ok || p.replay {
+		p.mu.Unlock()
+		if !ok {
+			return nil, errNotPrepared
+		}
+		return v, nil
+	}
+	p.mu.Unlock()
+	plain, err := p.store.Unseal(ctx, name, sealed)
+	if err == nil {
+		p.mu.Lock()
+		p.opened[at] = plain
+		p.mu.Unlock()
+	}
+	return plain, err
+}
+
+// PrepareSealKeys seals, with the host's key store, the keys SealKeys would seal, without taking
+// the host lock or writing anything, so that SealKeys can then replay it from a Prepared store.
+func (h Host) PrepareSealKeys(ctx context.Context) error {
+	entries, err := os.ReadDir(filepath.Join(h.Dir, "network"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, entry := range entries {
+		id, err := uuid.Parse(strings.TrimSuffix(entry.Name(), ".key"))
+		if !strings.HasSuffix(entry.Name(), ".key") || err != nil || id.String()+".key" != entry.Name() {
+			continue
+		}
+		if f, err := h.readKeyFile(id); err == nil && f.clear != nil {
+			if _, err = h.sealKey(ctx, id, f.clear); err != nil {
+				failures = append(failures, err)
+			}
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // liveKey is the private key m's interface holds, when it is the key m names, or else nil.

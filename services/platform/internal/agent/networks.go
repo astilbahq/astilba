@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -77,12 +78,20 @@ func (e *Engine) managedNetworking() managedHost {
 // The agent has checked that its key store works, so the key is to blame.
 const sealedNetworkKeyNote = "This server's key store works but can't open its sealed private-link key: the key came from another machine, or this host's TPM or systemd host key changed. Nothing changed and no new key was made. Remove the server from private networks and add it back to give it a new key."
 
-// errWaitingForKeyStore says the key store wasn't working when a network command last tried it, so
-// it isn't tried again yet.
-var errWaitingForKeyStore = errors.New("the key store wasn't working a moment ago, so it isn't tried again yet")
+// errWaitingForKeyStore says the key store wasn't working when the agent last tried it, so it isn't
+// tried again yet.
+var errWaitingForKeyStore = fmt.Errorf("%w: it wasn't working a moment ago, so it isn't tried again yet", hostnetwork.ErrKeyStoreUnavailable)
 
-// waitForKeyStore makes network commands leave the key store alone for a minute, and logs why. It
-// returns err, so the command runs again.
+// noteKeyStore makes the agent leave the key store alone for a minute when err says it isn't
+// working.
+func (e *Engine) noteKeyStore(err error) {
+	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		_ = e.waitForKeyStore(err)
+	}
+}
+
+// waitForKeyStore makes the agent leave the key store alone for a minute, and logs why. It returns
+// err, so a command runs again.
 func (e *Engine) waitForKeyStore(err error) error {
 	if !errors.Is(err, errWaitingForKeyStore) {
 		until := time.Now().Add(keyStoreRetry)

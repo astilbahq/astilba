@@ -22,14 +22,28 @@ func (e *Engine) betweenCommands(ctx context.Context, step func(context.Context)
 	return step(ctx)
 }
 
-// sealNetworkKeys seals the private-link keys this host holds in the clear to store.
+// sealNetworkKeys seals the private-link keys this host holds in the clear to store. The keys are
+// sealed first, with the engine free, so that no command, a restriction least of all, waits on the
+// key store meanwhile. Sealing between commands only writes what was sealed.
 func (e *Engine) sealNetworkKeys(ctx context.Context, store hostnetwork.Sealer) error {
-	return e.betweenCommands(ctx, hostnetwork.Host{Dir: e.Journal.dir, Keys: store}.SealKeys)
+	prepared := hostnetwork.Prepare(waitingKeyStore{e, store})
+	host := hostnetwork.Host{Dir: e.Journal.dir, Keys: prepared}
+	e.noteKeyStore(host.PrepareSealKeys(ctx))
+	prepared.Replay()
+	return e.betweenCommands(ctx, host.SealKeys)
 }
 
-// restorePrivateLinks puts back the private links this host holds that aren't in place.
+// restorePrivateLinks puts back the private links this host holds that aren't in place. Their keys
+// are opened first, with the engine free, so that no command waits on the key store meanwhile.
 func (e *Engine) restorePrivateLinks(ctx context.Context) error {
-	return e.betweenCommands(ctx, e.networkHost().RestoreMissing)
+	host := e.networkHost()
+	if host.Keys != nil {
+		prepared := hostnetwork.Prepare(host.Keys)
+		host.Keys = prepared
+		e.noteKeyStore(host.OpenMissingKeys(ctx))
+		prepared.Replay()
+	}
+	return e.betweenCommands(ctx, host.RestoreMissing)
 }
 
 // untilDone runs step between commands until it succeeds once, once ready says it can. A step that
@@ -59,10 +73,16 @@ func (c *Client) untilDone(ctx context.Context, what string, ready func() bool, 
 
 // keepPrivateLinksRestored puts back the private links that aren't in place, each minute: those the
 // boot restore couldn't, as when the key store wasn't working yet that early, and those a
-// restriction took down because it couldn't open their key.
+// restriction took down without their key. One link that can't be restored doesn't hold back the
+// others. A failure is logged at most once an hour.
 func (c *Client) keepPrivateLinksRestored(ctx context.Context) {
+	var logged time.Time
 	for {
-		c.untilDone(ctx, "restore its private links", func() bool { return true }, c.Engine.restorePrivateLinks)
+		err := c.Engine.restorePrivateLinks(ctx)
+		if err != nil && !errors.Is(err, errEngineBusy) && ctx.Err() == nil && time.Since(logged) >= journalRekeyInterval {
+			logged = time.Now()
+			slog.Warn("the agent could not restore some private links; it tries again each minute", "error", err)
+		}
 		if !wait(ctx, journalRekeyCheck) {
 			return
 		}

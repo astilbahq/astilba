@@ -332,3 +332,87 @@ func TestUntilDoneRetriesUntilTheStepSucceeds(t *testing.T) {
 		t.Fatal("a failed step was tried again before the interval")
 	}
 }
+
+// engineCheckingStore is a key store that records each call made while the engine is held.
+type engineCheckingStore struct {
+	KeyStore
+	e        *Engine
+	underMu  int
+	unlocked int
+}
+
+func (s *engineCheckingStore) note() {
+	if s.e.mu.TryLock() {
+		s.e.mu.Unlock()
+		s.unlocked++
+		return
+	}
+	s.underMu++
+}
+
+func (s *engineCheckingStore) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	s.note()
+	return s.KeyStore.Seal(ctx, name, plain)
+}
+
+func (s *engineCheckingStore) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	s.note()
+	return s.KeyStore.Unseal(ctx, name, sealed)
+}
+
+// Sealing keys held in the clear calls the key store only with the engine free, so no command,
+// a restriction least of all, waits on the store behind it.
+func TestSealingNeverHoldsTheEngineWhileCallingTheKeyStore(t *testing.T) {
+	ctx := context.Background()
+	dir := privateDir(t)
+	j, err := OpenSealed(ctx, dir, storeOpener(InsecureKeyStore()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	member := uuid.New()
+	if _, err = (hostnetwork.Host{Dir: dir}).Identity(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Journal: j}
+	store := &engineCheckingStore{KeyStore: j.KeyStore(), e: e}
+	if err = e.sealNetworkKeys(ctx, store); err != nil || !sealedKeyFile(networkKeyFile(t, dir, member)) {
+		t.Fatal("the key wasn't sealed", err)
+	}
+	if store.underMu != 0 || store.unlocked == 0 {
+		t.Fatalf("the key store was called %d times with the engine held", store.underMu)
+	}
+}
+
+// Removing access never waits on the journal's state lock, which a rekey holds while it calls the
+// key store.
+func TestNetworkKeyStoreDoesNotWaitForARekey(t *testing.T) {
+	ctx := context.Background()
+	j, err := OpenSealed(ctx, privateDir(t), storeOpener(InsecureKeyStore()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	j.stateMu.Lock()
+	defer j.stateMu.Unlock()
+	got := make(chan hostnetwork.Sealer, 1)
+	go func() { got <- j.networkKeyStore() }()
+	select {
+	case store := <-got:
+		if store == nil {
+			t.Fatal("a sealed journal gave no network key store")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the network key store waited for the journal's state lock")
+	}
+}
+
+// A key store call that runs out of time says the store isn't working, rather than that the value
+// is bad, which would blame a key that is fine.
+func TestKeyStoreTimeoutIsUnavailable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := capture(ctx, nil, "sleep", "5"); !errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		t.Fatal("a call that timed out wasn't reported as the store not working", err)
+	}
+}

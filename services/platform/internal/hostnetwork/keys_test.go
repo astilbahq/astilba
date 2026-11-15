@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -373,5 +374,63 @@ func TestKeyInTheClearNeedsNoKeyStore(t *testing.T) {
 	store := &counting{machine: newMachine(t)}
 	if _, err := (Host{Dir: dir, Keys: store}).privateKey(ctx, member); err != nil || store.calls != 0 {
 		t.Fatal("a key held in the clear needed the key store", err)
+	}
+}
+
+// A Prepared store replays what it did before Replay, without calling the store, and refuses
+// anything else as not working.
+func TestPreparedStoreReplaysOnlyWhatItDid(t *testing.T) {
+	ctx := context.Background()
+	store := &counting{machine: newMachine(t)}
+	dir := t.TempDir()
+	member := uuid.New()
+	if _, err := (Host{Dir: dir, Keys: store}).Identity(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	prepared := Prepare(store)
+	h := Host{Dir: dir, Keys: prepared}
+	if _, err := h.privateKey(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	prepared.Replay()
+	store.calls = 0
+	if _, err := h.privateKey(ctx, member); err != nil || store.calls != 0 {
+		t.Fatal("a prepared key wasn't replayed without the store", err, store.calls)
+	}
+	other := uuid.New()
+	if _, err := (Host{Dir: dir, Keys: store}).Identity(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	store.calls = 0
+	if _, err := h.privateKey(ctx, other); !errors.Is(err, ErrKeyStoreUnavailable) || store.calls != 0 {
+		t.Fatal("a key that wasn't prepared was opened, or blamed on the key", err, store.calls)
+	}
+}
+
+// failing is a key store that says it isn't working, and counts the calls made to it.
+type failing struct{ calls int }
+
+func (f *failing) Seal(context.Context, string, []byte) ([]byte, error) {
+	f.calls++
+	return nil, fmt.Errorf("%w: timed out", ErrKeyStoreUnavailable)
+}
+
+func (f *failing) Unseal(context.Context, string, []byte) ([]byte, error) {
+	f.calls++
+	return nil, fmt.Errorf("%w: timed out", ErrKeyStoreUnavailable)
+}
+
+// A store that says it isn't working is believed, rather than probed again: a probe that works a
+// moment later would blame the key.
+func TestAStoreThatIsNotWorkingIsNotProbed(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	member := uuid.New()
+	if _, err := (Host{Dir: dir, Keys: newMachine(t)}).Identity(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	store := &failing{}
+	if _, err := (Host{Dir: dir, Keys: store}).privateKey(ctx, member); !errors.Is(err, ErrKeyStoreUnavailable) || store.calls != 1 {
+		t.Fatal("a store that isn't working was probed or the key blamed", err, store.calls)
 	}
 }
