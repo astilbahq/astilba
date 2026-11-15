@@ -248,10 +248,12 @@ func TestSweepWithdrawsALateNameWhoseJobWasLost(t *testing.T) {
 	if _, e := f.st.Pool.Exec(t.Context(), "INSERT INTO dns_late_publications(server_id,base,zone,generation,due_at) VALUES($1,$2,$3,1,now())", s.id, f.st.ApplicationDomain, f.execution.DNS.Zone); e != nil {
 		t.Fatal(e)
 	}
-	if e := f.execution.SweepDomains(t.Context()); e != nil {
-		t.Fatal(e)
-	}
+	// The sweep runs every minute. A sweep can find the revocation's own job still running, with
+	// the arguments it would queue, and leave the name for the next.
 	eventually(t, "the late name is withdrawn", func() bool {
+		if e := f.execution.SweepDomains(t.Context()); e != nil {
+			t.Fatal(e)
+		}
 		var late int
 		if e := f.st.Pool.QueryRow(t.Context(), "SELECT count(*) FROM dns_late_publications WHERE server_id=$1", s.id).Scan(&late); e != nil {
 			t.Fatal(e)
