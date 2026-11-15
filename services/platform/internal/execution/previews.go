@@ -245,8 +245,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 	return out, err
 }
 func (s *Service) previewOwnerAuthority(ctx context.Context, tx pgx.Tx, p previewPolicy) error {
-	var valid bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts a JOIN memberships m ON m.account_id=a.id JOIN servers s ON s.workspace_id=m.workspace_id WHERE a.id=$1 AND a.auth_version=$2 AND m.workspace_id=$3 AND m.role='owner' AND s.id=$4 AND s.controller_generation=$5 AND s.preview_only AND s.role='combined' AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false))`, p.Actor, p.AuthVersion, p.Workspace, p.Server, p.Controller).Scan(&valid)
+	valid, err := db.New(tx).PreviewApproverHolds(ctx, db.PreviewApproverHoldsParams{WorkspaceID: p.Workspace, ActorID: p.Actor, AuthVersion: p.AuthVersion, ServerID: p.Server, ControllerGeneration: p.Controller})
 	if err != nil {
 		return err
 	}
