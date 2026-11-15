@@ -167,16 +167,7 @@ func (s *Service) StageCatalogEntry(ctx context.Context, p store.Principal, ws, 
 		if err != nil {
 			return err
 		}
-		// Planning checks the route again while it keeps this allowlist.
-		params := db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: staging, RecipeID: recipe.ID, RecipeVersion: recipe.Version, RevisionID: out.ID, Services: encoded, AuthorID: p.Account.ID}
-		for _, r := range staged.Specification.Routes {
-			for _, saved := range spec.Routes {
-				if saved.ID == r.ID {
-					params.RouteID, params.RouteAllowCidrs = &saved.ID, saved.AllowCIDRs
-				}
-			}
-		}
-		return q.InsertCatalogStaging(ctx, params)
+		return q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: staging, RecipeID: recipe.ID, RecipeVersion: recipe.Version, RevisionID: out.ID, Services: encoded, AuthorID: p.Account.ID})
 	})
 	return out, err
 }

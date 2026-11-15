@@ -172,4 +172,33 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	if _, status = plan(fresh, silent, 201); status.HostReview {
 		t.Fatal("an edited allowlist still needed review")
 	}
+	resolve(fresh, silentToken, status)
+
+	// A clone starts its services empty, so its first account is new: its copy of a staged
+	// route is checked as the original is, and it keeps the staging's backup recommendations.
+	original := environment("Original")
+	if code, raw = stage(original, "kaneo", "Original", "10.0.0.0/8"); code != 201 {
+		t.Fatal("staging without a server", code, string(raw))
+	}
+	var clone api.Environment
+	b.call("POST", original+"/clone", api.CloneEnvironment{Name: "Copy"}, 201, &clone)
+	cloned := prefix + "/projects/" + project.Id.String() + "/environments/" + clone.Id.String()
+	raw, _ = plan(cloned, reporting, 400)
+	refusesNaming(raw, "10.0.0.0/8", "10.252.0.0/14")
+	var stagings []api.CatalogStaging
+	b.call("GET", cloned+"/catalog-stagings", nil, 200, &stagings)
+	if len(stagings) != 1 || stagings[0].RecipeId != "kaneo" {
+		t.Fatal("the clone did not keep its staging", stagings)
+	}
+
+	// A staging management can't read leaves the routes it created unknown, so planning asks
+	// for review rather than passing them.
+	if _, err := f.st.Pool.Exec(t.Context(), `UPDATE catalog_stagings SET services='{"unknown":"not an identity"}' WHERE workspace_id=$1 AND environment_id=$2`, ws, clone.Id); err != nil {
+		t.Fatal(err)
+	}
+	_, status = plan(cloned, silent, 201)
+	status = resolve(cloned, silentToken, status)
+	if !status.HostReview || !slices.Contains(status.Plan.Effects, deployment.UnresolvedStagingEffect) {
+		t.Fatal("an unreadable staging did not need review", status.HostReview, status.Plan.Effects)
+	}
 }

@@ -13,21 +13,19 @@ import (
 )
 
 const insertCatalogStaging = `-- name: InsertCatalogStaging :exec
-INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id,route_id,route_allow_cidrs)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 `
 
 type InsertCatalogStagingParams struct {
-	WorkspaceID     uuid.UUID  `json:"workspace_id"`
-	EnvironmentID   uuid.UUID  `json:"environment_id"`
-	ID              uuid.UUID  `json:"id"`
-	RecipeID        string     `json:"recipe_id"`
-	RecipeVersion   string     `json:"recipe_version"`
-	RevisionID      uuid.UUID  `json:"revision_id"`
-	Services        []byte     `json:"services"`
-	AuthorID        uuid.UUID  `json:"author_id"`
-	RouteID         *uuid.UUID `json:"route_id"`
-	RouteAllowCidrs []string   `json:"route_allow_cidrs"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	RecipeID      string    `json:"recipe_id"`
+	RecipeVersion string    `json:"recipe_version"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	Services      []byte    `json:"services"`
+	AuthorID      uuid.UUID `json:"author_id"`
 }
 
 func (q *Queries) InsertCatalogStaging(ctx context.Context, arg InsertCatalogStagingParams) error {
@@ -40,39 +38,39 @@ func (q *Queries) InsertCatalogStaging(ctx context.Context, arg InsertCatalogSta
 		arg.RevisionID,
 		arg.Services,
 		arg.AuthorID,
-		arg.RouteID,
-		arg.RouteAllowCidrs,
 	)
 	return err
 }
 
-const listCatalogStagedRoutes = `-- name: ListCatalogStagedRoutes :many
-SELECT route_id::uuid AS route_id, route_allow_cidrs::text[] AS route_allow_cidrs FROM catalog_stagings
-WHERE workspace_id = $1 AND environment_id = $2 AND route_id IS NOT NULL
+const listCatalogStagedRevisions = `-- name: ListCatalogStagedRevisions :many
+SELECT s.services, r.specification FROM catalog_stagings s
+LEFT JOIN specification_revisions r ON r.workspace_id = s.workspace_id AND r.environment_id = s.environment_id AND r.id = s.revision_id
+WHERE s.workspace_id = $1 AND s.environment_id = $2 AND NOT (s.recipe_id = ANY($3::text[]))
 `
 
-type ListCatalogStagedRoutesParams struct {
+type ListCatalogStagedRevisionsParams struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
+	Routeless     []string  `json:"routeless"`
 }
 
-type ListCatalogStagedRoutesRow struct {
-	RouteID         uuid.UUID `json:"route_id"`
-	RouteAllowCidrs []string  `json:"route_allow_cidrs"`
+type ListCatalogStagedRevisionsRow struct {
+	Services      []byte `json:"services"`
+	Specification []byte `json:"specification"`
 }
 
-// The routes catalog stagings created in the environment, with the allowlist each was staged
-// with. A route ID is new at each staging, so a route has at most one row.
-func (q *Queries) ListCatalogStagedRoutes(ctx context.Context, arg ListCatalogStagedRoutesParams) ([]ListCatalogStagedRoutesRow, error) {
-	rows, err := q.db.Query(ctx, listCatalogStagedRoutes, arg.WorkspaceID, arg.EnvironmentID)
+// Every staging in the environment, but those of entries known to have no route, with the
+// specification it saved, from which planning works out the routes it created.
+func (q *Queries) ListCatalogStagedRevisions(ctx context.Context, arg ListCatalogStagedRevisionsParams) ([]ListCatalogStagedRevisionsRow, error) {
+	rows, err := q.db.Query(ctx, listCatalogStagedRevisions, arg.WorkspaceID, arg.EnvironmentID, arg.Routeless)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListCatalogStagedRoutesRow{}
+	items := []ListCatalogStagedRevisionsRow{}
 	for rows.Next() {
-		var i ListCatalogStagedRoutesRow
-		if err := rows.Scan(&i.RouteID, &i.RouteAllowCidrs); err != nil {
+		var i ListCatalogStagedRevisionsRow
+		if err := rows.Scan(&i.Services, &i.Specification); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -122,6 +120,44 @@ func (q *Queries) ListCatalogStagings(ctx context.Context, arg ListCatalogStagin
 			&i.Services,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCatalogStagingsForClone = `-- name: ListCatalogStagingsForClone :many
+SELECT recipe_id,recipe_version,services FROM catalog_stagings
+WHERE workspace_id = $1 AND environment_id = $2
+ORDER BY created_at, id
+`
+
+type ListCatalogStagingsForCloneParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+type ListCatalogStagingsForCloneRow struct {
+	RecipeID      string `json:"recipe_id"`
+	RecipeVersion string `json:"recipe_version"`
+	Services      []byte `json:"services"`
+}
+
+// Every staging in the environment, for a clone to record under its own identities.
+func (q *Queries) ListCatalogStagingsForClone(ctx context.Context, arg ListCatalogStagingsForCloneParams) ([]ListCatalogStagingsForCloneRow, error) {
+	rows, err := q.db.Query(ctx, listCatalogStagingsForClone, arg.WorkspaceID, arg.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCatalogStagingsForCloneRow{}
+	for rows.Next() {
+		var i ListCatalogStagingsForCloneRow
+		if err := rows.Scan(&i.RecipeID, &i.RecipeVersion, &i.Services); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -210,17 +210,15 @@ type BuildTarget struct {
 }
 
 type CatalogStaging struct {
-	WorkspaceID     uuid.UUID  `json:"workspace_id"`
-	EnvironmentID   uuid.UUID  `json:"environment_id"`
-	ID              uuid.UUID  `json:"id"`
-	RecipeID        string     `json:"recipe_id"`
-	RecipeVersion   string     `json:"recipe_version"`
-	RevisionID      uuid.UUID  `json:"revision_id"`
-	Services        []byte     `json:"services"`
-	AuthorID        uuid.UUID  `json:"author_id"`
-	CreatedAt       time.Time  `json:"created_at"`
-	RouteID         *uuid.UUID `json:"route_id"`
-	RouteAllowCidrs []string   `json:"route_allow_cidrs"`
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	RecipeID      string    `json:"recipe_id"`
+	RecipeVersion string    `json:"recipe_version"`
+	RevisionID    uuid.UUID `json:"revision_id"`
+	Services      []byte    `json:"services"`
+	AuthorID      uuid.UUID `json:"author_id"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type CrossHostApproval struct {

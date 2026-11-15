@@ -1,6 +1,6 @@
 -- name: InsertCatalogStaging :exec
-INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id,route_id,route_allow_cidrs)
-VALUES(@workspace_id,@environment_id,@id,@recipe_id,@recipe_version,@revision_id,@services,@author_id,@route_id,@route_allow_cidrs);
+INSERT INTO catalog_stagings(workspace_id,environment_id,id,recipe_id,recipe_version,revision_id,services,author_id)
+VALUES(@workspace_id,@environment_id,@id,@recipe_id,@recipe_version,@revision_id,@services,@author_id);
 
 -- name: ListCatalogStagings :many
 -- The newest hundred. An older row's services are still in the environment only if a hundred
@@ -9,8 +9,15 @@ SELECT id,recipe_id,recipe_version,revision_id,services,created_at FROM catalog_
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id
 ORDER BY created_at DESC, id LIMIT 100;
 
--- name: ListCatalogStagedRoutes :many
--- The routes catalog stagings created in the environment, with the allowlist each was staged
--- with. A route ID is new at each staging, so a route has at most one row.
-SELECT route_id::uuid AS route_id, route_allow_cidrs::text[] AS route_allow_cidrs FROM catalog_stagings
-WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND route_id IS NOT NULL;
+-- name: ListCatalogStagedRevisions :many
+-- Every staging in the environment, but those of entries known to have no route, with the
+-- specification it saved, from which planning works out the routes it created.
+SELECT s.services, r.specification FROM catalog_stagings s
+LEFT JOIN specification_revisions r ON r.workspace_id = s.workspace_id AND r.environment_id = s.environment_id AND r.id = s.revision_id
+WHERE s.workspace_id = @workspace_id AND s.environment_id = @environment_id AND NOT (s.recipe_id = ANY(@routeless::text[]));
+
+-- name: ListCatalogStagingsForClone :many
+-- Every staging in the environment, for a clone to record under its own identities.
+SELECT recipe_id,recipe_version,services FROM catalog_stagings
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id
+ORDER BY created_at, id;

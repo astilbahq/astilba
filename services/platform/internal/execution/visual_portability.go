@@ -201,6 +201,9 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		if _, err = store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: rev, AuthorID: p.Account.ID, Specification: canonical, ContentHash: hash[:]}); err != nil {
 			return err
 		}
+		if err = cloneCatalogStagings(ctx, q, p, ws, source, env, rev, ids); err != nil {
+			return err
+		}
 		if _, err = tx.Exec(ctx, "INSERT INTO deployment_units(workspace_id,id,environment_id) VALUES($1,$2,$3)", ws, unit, env); err != nil {
 			return err
 		}
@@ -288,4 +291,39 @@ func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid
 		return rows.Err()
 	})
 	return out, err
+}
+
+// cloneCatalogStagings records each catalog staging of the source again for the clone, under the
+// clone's service identities and against its first revision. Planning then checks the clone's
+// copy of a staged route's allowlist as it checks the source's, since the clone's services start
+// empty and its first account is new, and the backups page recommends the same presets. A
+// staging none of whose services the clone has is left out; one that can't be read is copied as
+// it is, so planning still asks for review.
+func cloneCatalogStagings(ctx context.Context, q *db.Queries, p store.Principal, ws, source, env, rev uuid.UUID, ids map[uuid.UUID]uuid.UUID) error {
+	rows, err := q.ListCatalogStagingsForClone(ctx, db.ListCatalogStagingsForCloneParams{WorkspaceID: ws, EnvironmentID: source})
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		encoded := row.Services
+		var services map[string]uuid.UUID
+		if json.Unmarshal(row.Services, &services) == nil {
+			cloned := map[string]uuid.UUID{}
+			for placeholder, id := range services {
+				if next, ok := ids[id]; ok {
+					cloned[placeholder] = next
+				}
+			}
+			if len(cloned) == 0 {
+				continue
+			}
+			if encoded, err = stablejson.Marshal(cloned); err != nil {
+				return err
+			}
+		}
+		if err = q.InsertCatalogStaging(ctx, db.InsertCatalogStagingParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), RecipeID: row.RecipeID, RecipeVersion: row.RecipeVersion, RevisionID: rev, Services: encoded, AuthorID: p.Account.ID}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
