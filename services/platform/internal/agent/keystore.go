@@ -4,21 +4,75 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 )
 
-// KeyStore seals the agent's private keys, outstanding enrollment codes and the journal's keyring
-// to this machine, so that a copy of the state directory alone can't authenticate as the agent or
-// read its journal. Each value is sealed under a name, and unsealing it under another name fails,
-// so one sealed value can't stand in for another.
+// KeyStore seals the agent's private keys, outstanding enrollment codes, the journal's keyring and
+// the host's private-link keys to this machine. So a copy of the state directory alone can't
+// authenticate as the agent, read its journal or join its private network. Each value is sealed
+// under a name, and unsealing it under another name fails, so one sealed value can't stand in for
+// another.
 type KeyStore interface {
 	Seal(ctx context.Context, name string, plain []byte) ([]byte, error)
 	Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error)
 	Protection() api.AgentCapabilitiesKeyProtection
+}
+
+// A KeyStore seals the host's private-link keys too.
+var _ hostnetwork.Sealer = KeyStore(nil)
+
+// OnDemandKeyStore opens the store that open returns the first time it seals or unseals a value,
+// and keeps it once it opens. A command that finds nothing sealed never waits on the store or
+// fails for it. A store that doesn't open isn't tried again: the boot restore it serves would
+// otherwise wait on it once for every sealed key, and the agent service restores what it can't.
+func OnDemandKeyStore(open func(context.Context) (KeyStore, error)) hostnetwork.Sealer {
+	return &onDemandStore{open: open}
+}
+
+type onDemandStore struct {
+	open   func(context.Context) (KeyStore, error)
+	mu     sync.Mutex
+	store  KeyStore
+	failed error
+}
+
+func (s *onDemandStore) opened(ctx context.Context) (KeyStore, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil && s.failed == nil {
+		store, err := s.open(ctx)
+		if err != nil {
+			s.failed = fmt.Errorf("%w: %w", hostnetwork.ErrKeyStoreUnavailable, err)
+		}
+		s.store = store
+	}
+	if s.failed != nil {
+		return nil, s.failed
+	}
+	return s.store, nil
+}
+
+func (s *onDemandStore) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	store, err := s.opened(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.Seal(ctx, name, plain)
+}
+
+func (s *onDemandStore) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	store, err := s.opened(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.Unseal(ctx, name, sealed)
 }
 
 // errKeyStoreSetup says sealing needs a one-time setup the running service can't do itself.
@@ -60,6 +114,9 @@ func probe(ctx context.Context, store KeyStore) error {
 		return err
 	}
 	read, err := store.Unseal(ctx, credentialName, sealed)
+	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		return err
+	}
 	if err != nil || !bytes.Equal(read, plain) {
 		return errors.New("systemd-creds could not read back what it sealed")
 	}
@@ -110,6 +167,10 @@ func capture(ctx context.Context, in []byte, name string, args ...string) ([]byt
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
+		// A call that ran out of time says nothing about the value: the store isn't working.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: systemd-creds didn't answer in time", hostnetwork.ErrKeyStoreUnavailable)
+		}
 		return nil, errors.New("systemd-creds could not seal or unseal the value")
 	}
 	return out.Bytes(), nil

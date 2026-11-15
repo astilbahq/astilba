@@ -76,7 +76,7 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 						t.Fatal(err)
 					}
 					membership := uuid.New()
-					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(membership)
+					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(context.Background(), membership)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -96,7 +96,7 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 					}
 				}
 				if tc.identified {
-					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(uuid.New())
+					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(context.Background(), uuid.New())
 					if err != nil {
 						t.Fatal(err)
 					}
