@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -65,6 +66,8 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		}()}); err != nil {
 			return err
 		}
+		// The source's routes as they stand, before they take the clone's identities.
+		routes := slices.Clone(v.Spec.Routes)
 		ids := map[uuid.UUID]uuid.UUID{}
 		for _, a := range v.Spec.Applications {
 			ids[a.ID] = uuid.New()
@@ -201,7 +204,7 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 		if _, err = store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: rev, AuthorID: p.Account.ID, Specification: canonical, ContentHash: hash[:]}); err != nil {
 			return err
 		}
-		if err = cloneCatalogStagings(ctx, q, p, ws, source, env, rev, ids); err != nil {
+		if err = cloneCatalogStagings(ctx, q, p, ws, source, env, rev, ids, routes); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(ctx, "INSERT INTO deployment_units(workspace_id,id,environment_id) VALUES($1,$2,$3)", ws, unit, env); err != nil {
@@ -297,12 +300,24 @@ func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid
 // clone's service identities and against its first revision. Planning then checks the clone's
 // copy of a staged route's allowlist as it checks the source's, since the clone's services start
 // empty and its first account is new, and the backups page recommends the same presets. A
-// staging none of whose services the clone has is left out; one that can't be read is copied as
-// it is, so planning still asks for review.
-func cloneCatalogStagings(ctx context.Context, q *db.Queries, p store.Principal, ws, source, env, rev uuid.UUID, ids map[uuid.UUID]uuid.UUID) error {
+// service keeps its staging only while every route to it in the source is still staged: one
+// whose route the owner has since edited, or that has gained a route of its own, routes as the
+// owner chose. A staging none of whose services the clone keeps is left out; one that can't be
+// read is copied as it is, so planning still asks for review.
+func cloneCatalogStagings(ctx context.Context, q *db.Queries, p store.Principal, ws, source, env, rev uuid.UUID, ids map[uuid.UUID]uuid.UUID, routes []domain.Route) error {
 	rows, err := q.ListCatalogStagingsForClone(ctx, db.ListCatalogStagingsForCloneParams{WorkspaceID: ws, EnvironmentID: source})
+	if err != nil || len(rows) == 0 {
+		return err
+	}
+	staged, _, err := stagedRoutes(ctx, q, ws, source)
 	if err != nil {
 		return err
+	}
+	ordinary := map[uuid.UUID]bool{}
+	for _, r := range routes {
+		if allow, ok := staged[r.ID]; !ok || !slices.Equal(allow, r.AllowCIDRs) {
+			ordinary[r.TargetID] = true
+		}
 	}
 	for _, row := range rows {
 		encoded := row.Services
@@ -310,7 +325,7 @@ func cloneCatalogStagings(ctx context.Context, q *db.Queries, p store.Principal,
 		if json.Unmarshal(row.Services, &services) == nil {
 			cloned := map[string]uuid.UUID{}
 			for placeholder, id := range services {
-				if next, ok := ids[id]; ok {
+				if next, ok := ids[id]; ok && !ordinary[id] {
 					cloned[placeholder] = next
 				}
 			}

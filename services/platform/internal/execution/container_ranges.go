@@ -8,7 +8,6 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/catalog"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
@@ -57,17 +56,13 @@ func containerRangesOf(ctx context.Context, q *db.Queries, ws, server uuid.UUID)
 // stagedRoutes works out the routes catalog stagings created in the environment, each with the
 // allowlist it was staged with: the routes in the specification a staging saved that target a
 // service it created. Those services were new then, so nothing else could route to them in that
-// revision. A clone records its source's stagings against its own first revision, so routes to
-// a staged service the source added later count there too. Unresolved is whether a staging
+// revision. A clone records its source's stagings against its own first revision, keeping only
+// services whose routes were all still staged, see cloneCatalogStagings. Unresolved is whether a staging
 // could not be read, in which case which routes it created is unknown.
 func stagedRoutes(ctx context.Context, q *db.Queries, ws, env uuid.UUID) (staged map[uuid.UUID][]string, unresolved bool, err error) {
-	routeless := []string{}
-	for _, r := range catalog.Recipes() {
-		if r.Route == nil {
-			routeless = append(routeless, r.ID)
-		}
-	}
-	rows, err := q.ListCatalogStagedRevisions(ctx, db.ListCatalogStagedRevisionsParams{WorkspaceID: ws, EnvironmentID: env, Routeless: routeless})
+	// Every staging is read, whatever its entry: what an entry creates can change between
+	// releases, and the saved revision is what this one staged.
+	rows, err := q.ListCatalogStagedRevisions(ctx, db.ListCatalogStagedRevisionsParams{WorkspaceID: ws, EnvironmentID: env})
 	if err != nil {
 		return nil, false, err
 	}

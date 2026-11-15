@@ -201,4 +201,22 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	if !status.HostReview || !slices.Contains(status.Plan.Effects, deployment.UnresolvedStagingEffect) {
 		t.Fatal("an unreadable staging did not need review", status.HostReview, status.Plan.Effects)
 	}
+
+	// Once the owner has opened the route, as they do after creating the administrator, a clone
+	// routes as the owner chose: its open route is no staged allowlist to refuse or review.
+	current = draft(original)
+	if spec, _, err = domain.ParseSpec(current.Specification); err != nil {
+		t.Fatal(err)
+	}
+	spec.Routes[0].AllowCIDRs = []string{}
+	b.call("PUT", original+"/draft", map[string]any{"baseRevisionId": current.Id, "specification": spec}, 200, nil)
+	b.call("POST", original+"/clone", api.CloneEnvironment{Name: "Opened copy"}, 201, &clone)
+	opened := prefix + "/projects/" + project.Id.String() + "/environments/" + clone.Id.String()
+	if _, status = plan(opened, silent, 201); status.HostReview {
+		t.Fatal("a clone of an opened route still treated it as staged")
+	}
+	b.call("GET", opened+"/catalog-stagings", nil, 200, &stagings)
+	if len(stagings) != 1 {
+		t.Fatal("the clone lost the staging's other services", stagings)
+	}
 }

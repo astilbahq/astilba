@@ -45,13 +45,12 @@ func (q *Queries) InsertCatalogStaging(ctx context.Context, arg InsertCatalogSta
 const listCatalogStagedRevisions = `-- name: ListCatalogStagedRevisions :many
 SELECT s.services, r.specification FROM catalog_stagings s
 LEFT JOIN specification_revisions r ON r.workspace_id = s.workspace_id AND r.environment_id = s.environment_id AND r.id = s.revision_id
-WHERE s.workspace_id = $1 AND s.environment_id = $2 AND NOT (s.recipe_id = ANY($3::text[]))
+WHERE s.workspace_id = $1 AND s.environment_id = $2
 `
 
 type ListCatalogStagedRevisionsParams struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
-	Routeless     []string  `json:"routeless"`
 }
 
 type ListCatalogStagedRevisionsRow struct {
@@ -59,10 +58,11 @@ type ListCatalogStagedRevisionsRow struct {
 	Specification []byte `json:"specification"`
 }
 
-// Every staging in the environment, but those of entries known to have no route, with the
-// specification it saved, from which planning works out the routes it created.
+// Every staging in the environment with the specification it saved, from which planning works
+// out the routes it created. The revision always exists while the staging does; the outer join
+// keeps a staging whose revision can't be found, which planning then reviews.
 func (q *Queries) ListCatalogStagedRevisions(ctx context.Context, arg ListCatalogStagedRevisionsParams) ([]ListCatalogStagedRevisionsRow, error) {
-	rows, err := q.db.Query(ctx, listCatalogStagedRevisions, arg.WorkspaceID, arg.EnvironmentID, arg.Routeless)
+	rows, err := q.db.Query(ctx, listCatalogStagedRevisions, arg.WorkspaceID, arg.EnvironmentID)
 	if err != nil {
 		return nil, err
 	}

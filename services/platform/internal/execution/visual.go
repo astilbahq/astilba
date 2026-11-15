@@ -144,7 +144,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if err != nil {
 			return err
 		}
-		// A standing policy approves host changes, not an allowlist nobody could check.
+		// A standing policy approves host changes, not an allowlist nobody could check. Previews
+		// hold no stagings today, as preview environments and their templates can't be staged
+		// into; this keeps a preview from deploying one unchecked if that changes.
 		if len(allowlistReview) > 0 && hostApproved {
 			return &domain.Error{Code: "invalid_input", Message: "A staged route's client allowlist could not be checked against the ranges this server's containers send traffic from, so the plan needs an owner's review, which a standing policy does not give.", Fields: []string{"routes.allowCidrs"}}
 		}
