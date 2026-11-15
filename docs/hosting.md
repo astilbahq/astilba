@@ -185,6 +185,9 @@ docker compose run --rm --no-deps platform custody convert --operator "$(whoami)
 - It records custody stage 4 once no value is sealed under the keyring and every instance seen in
   the last five minutes runs a stage 4 release or later. For that last check it holds the tables
   that store values against writes, briefly, so none can be stored in between.
+- Rolling back after it, to a release from stage 3 on, needs no restore: that release opens
+  converted values. A release that compares recovery rows by their stored bytes, as stage 3's
+  first releases do, refuses a checkpoint taken before the conversion.
 - An instance of a release before stage 3 that starts afterwards can still store a value under
   the keyring. `custody status` names such values; run `custody convert` again to move them. A
   later release that stops reading the keyring checks again first.

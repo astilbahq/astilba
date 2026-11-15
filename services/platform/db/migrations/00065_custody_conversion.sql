@@ -15,9 +15,9 @@ CREATE FUNCTION custody_value_converted(value bytea) RETURNS boolean LANGUAGE sq
     SELECT substring(value FROM 1 FOR 13) = '\x7b2276657273696f6e223a322c'::bytea
 $$;
 -- +goose StatementEnd
-INSERT INTO schema_additive_migrations (version) VALUES (62);
+INSERT INTO schema_additive_migrations (version) VALUES (65);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 62;
+DELETE FROM schema_additive_migrations WHERE version = 65;
 DROP FUNCTION custody_value_converted(bytea);
 ALTER TABLE custody_instances DROP COLUMN stage;

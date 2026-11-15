@@ -10,6 +10,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
+	"github.com/astilbahq/astilba/services/platform/internal/recoveryrows"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -42,8 +43,9 @@ type Conversion struct {
 
 // Convert moves every stored value sealed under the installation keyring onto its holder's key:
 // a workspace value onto its workspace key, a second factor onto the installation key. It keeps each
-// value's data, so its content digest still matches the recovery data that holds it, and it never
-// touches recovery checkpoints, which hosts hold bound by digest. It runs for an operator, as one
+// value's data, so recovery data captured before still matches it by content: before moving a
+// workspace's values it moves recovery's records of the rows it restored to their content form. It
+// never touches recovery checkpoints, which hosts hold bound by digest. It runs for an operator, as one
 // recorded run, and is safe to run again or beside `serve`: each holder is taken under the lock
 // creating its key takes, and a value written while it runs is kept. Once nothing remains under the
 // keyring and no running instance seals under it, it records custody stage 4. Like Begin, it must
@@ -134,6 +136,13 @@ func (b *Broker) convertHolder(ctx context.Context, c *Conversion, holder uuid.U
 		}
 	}()
 	c.Holders++
+	if holder != uuid.Nil {
+		// Recovery's record of the rows it restored must name them by content before their
+		// values move, or a checkpoint they came from stops merging.
+		if err = rekeyRestoredRows(ctx, conn, holder); err != nil {
+			return err
+		}
+	}
 	kinds := slices.DeleteFunc(slices.Clone(workspaceKinds), func(k Kind) bool { return k == RecoveryCheckpoint })
 	if holder == uuid.Nil {
 		kinds = slices.Clone(installationKinds)
@@ -187,6 +196,20 @@ func (b *Broker) convertHolder(ctx context.Context, c *Conversion, holder uuid.U
 			return nil
 		}
 	}
+}
+
+// rekeyRestoredRows moves a workspace's records of restored rows to their content form, in its own
+// transaction on the connection holding the workspace's lock.
+func rekeyRestoredRows(ctx context.Context, conn pgxConn, ws uuid.UUID) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = recoveryrows.Rekey(ctx, tx, ws); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // convertCursor is where a holder's conversion has got to: the last value it read, by kind and ID.

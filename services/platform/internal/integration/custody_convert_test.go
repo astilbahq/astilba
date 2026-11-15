@@ -11,7 +11,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
-	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/recoveryrows"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 )
@@ -175,19 +175,9 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	if pending := strings.Join(status.Pending(), "\n"); !strings.Contains(pending, "10 values are still sealed under the installation keyring") {
 		t.Fatalf("pending %q", pending)
 	}
-	tx, err := f.st.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := portability.CaptureRecovery(ctx, tx, ws)
-	tx.Rollback(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := portability.DecodeRecovery(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := capturedBase(t, f, ws)
+	restored := capturedBase(t, f, ws)
+	restoredID := restoredAs(t, f, ws, restored)
 	c := convert(t, f)
 	if c.Values != int64(len(seeds)) || c.Raced != 0 || len(c.Skipped) != 0 || remaining(c) != 0 || c.Stage != 4 || c.Waiting != "" {
 		t.Fatalf("conversion %+v", c)
@@ -230,13 +220,17 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	if err = f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM secret_access WHERE workspace_id=$1 AND purpose='rotate' AND operator_ref=$2 AND reason='convert'`, ws, c.Run.String()).Scan(&records); err != nil || records != 1 {
 		t.Fatal(records, err)
 	}
-	// Recovery data from before still merges: its immutable rows compare by content.
-	if tx, err = f.st.Pool.Begin(ctx); err != nil {
-		t.Fatal(err)
+	// Recovery data from before still merges: its immutable rows compare by content, and the
+	// record of a row a recovery restored was moved to its content form before the row's key moved.
+	var attributed string
+	if err = f.st.Pool.QueryRow(ctx, `SELECT attributed_hash FROM cross_host_recovery_rows WHERE workspace_id=$1 AND table_name='secret_versions'`, ws).Scan(&attributed); err != nil || attributed != recoveryrows.ContentHash("secret_versions", storedRow(t, f, "secret_versions", restoredID)) {
+		t.Fatal("the restored row's record was not moved to its content form", err)
 	}
-	defer tx.Rollback(ctx)
-	if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, f.st, ws), base, f.owner); err != nil {
+	if err = mergeBase(t, f, ws, base); err != nil {
 		t.Fatal("a recovery base captured before converting:", err)
+	}
+	if err = mergeBase(t, f, ws, restored); err != nil {
+		t.Fatal("a recovery base a restored row came from:", err)
 	}
 	again := convert(t, f)
 	if again.Values != 0 || again.Stage != 4 || remaining(again) != 0 {
