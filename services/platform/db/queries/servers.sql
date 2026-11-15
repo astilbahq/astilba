@@ -233,3 +233,10 @@ UPDATE servers SET build_egress=$3 WHERE workspace_id=$1 AND id=$2 AND NOT revok
 UPDATE servers SET enrollment_hash=NULL,enrollment_expires=NULL,enrollment_issuer_id=NULL,enrollment_issuer_auth_version=NULL
 WHERE workspace_id = @workspace_id AND enrollment_issuer_id = @issuer_id::uuid AND enrollment_hash IS NOT NULL
 RETURNING id;
+
+-- name: GetServerContainerRanges :one
+-- What the server's agent last reported about the ranges its containers send traffic from:
+-- whether it reports them at all, and the ranges, absent when it could not read them.
+SELECT COALESCE((capabilities->>'containerRanges')::boolean, false)::boolean AS supported,
+       (preflight->'containerRanges')::jsonb AS ranges
+FROM servers WHERE workspace_id = @workspace_id AND id = @id;

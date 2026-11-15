@@ -219,6 +219,7 @@ type CatalogStaging struct {
 	Services      []byte    `json:"services"`
 	AuthorID      uuid.UUID `json:"author_id"`
 	CreatedAt     time.Time `json:"created_at"`
+	StagedRoutes  []byte    `json:"staged_routes"`
 }
 
 type CrossHostApproval struct {
