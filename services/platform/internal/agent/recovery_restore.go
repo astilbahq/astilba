@@ -65,7 +65,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 		case effects && runCtx.Err() != nil:
 			return e.settleRecovery(c.Id, p, v.RunID, "The restore was cancelled or reached its time limit.")
 		case effects && errors.As(err, new(clusterRefusal)):
-			return e.settleRecovery(c.Id, p, v.RunID, "The restored database was refused: it holds what a backup can't ("+clusterReason(err)+").")
+			return e.settleRecovery(c.Id, p, v.RunID, "The restored database was refused: it holds what a backup can't ("+clusterReason(err)+"), so the server it was backed up from may have been compromised. Nothing uses the restored volume. Discard it and restore an earlier snapshot.")
 		case effects:
 			return e.settleRecovery(c.Id, p, v.RunID, "The restore failed while restoring or verifying its data.")
 		case ctx.Err() != nil:

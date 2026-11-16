@@ -458,7 +458,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		case timedOut:
 			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
 		case errors.As(err, new(clusterRefusal)):
-			r.Note = "Fresh restore refused: the restored database holds what a backup can't (" + clusterReason(err) + "). Nothing uses its target volume."
+			r.Note = "Fresh restore refused: the restored database holds what a backup can't (" + clusterReason(err) + "), so the database may have been compromised. Nothing uses its target volume. Inspect the database before relying on its backups."
 		case errors.Is(err, errUnsupportedPostgresImage):
 			r.Note = "The database's PostgreSQL image is no longer one Astilba supports, so it was not dumped. Redeploy the database on a supported image, then refresh the policy."
 		default:

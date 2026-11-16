@@ -391,6 +391,9 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	}
 	m.Image = domain.PostgresImage
 	cleared, err := e.restorePostgres(ctx, policy, a, p.ID, p.TargetVolumeID, dir, m, s.Command.Installation.Access.DatabasePassword)
+	if errors.As(err, new(clusterRefusal)) {
+		return fmt.Errorf("the PostgreSQL 18 restore holds what a backup can't (%s), so the database may have been compromised. The old database is unchanged: return to it and inspect it", clusterReason(err))
+	}
 	if err != nil {
 		return err
 	}
