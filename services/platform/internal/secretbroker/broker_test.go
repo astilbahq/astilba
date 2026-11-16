@@ -487,3 +487,58 @@ func TestNoKeyOutlivesItsSession(t *testing.T) {
 		t.Fatal("a session refused before unwrapping was recorded")
 	}
 }
+
+// namingBackend names each unwrap as a key service does, and can refuse them.
+type namingBackend struct {
+	custody.Legacy
+	n      atomic.Int32
+	refuse error
+}
+
+func (c *namingBackend) Unwrap(ctx context.Context, class custody.Class, blob []byte, k custody.Context) (custody.Result, error) {
+	id := "request-" + string(rune('a'+c.n.Add(1)-1))
+	if c.refuse != nil {
+		return custody.Result{ProviderRequestID: id}, c.refuse
+	}
+	r, err := c.Legacy.Unwrap(ctx, class, blob, k)
+	r.ProviderRequestID = id
+	return r, err
+}
+
+// A session's outcome names the key service's request for each unwrap it made, so the record can
+// be matched with the provider's own audit log, also when the unwrap was refused.
+func TestOutcomesNameTheProvidersRequests(t *testing.T) {
+	b, q, owner, _, _ := setup(t)
+	naming := &namingBackend{Legacy: b.backend}
+	b.backend = naming
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	withWorkspaceKey(t, b, q, ws)
+	ctx := context.Background()
+	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close(ctx, Used)
+	naming.refuse = custody.ErrDenied
+	if _, err = b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}}); !errors.Is(err, custody.ErrDenied) {
+		t.Fatal(err)
+	}
+	// A session that unwraps nothing names nothing.
+	s, err = b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close(ctx, Used)
+	want := []string{`["request-a"]`, `["request-b"]`, `[]`}
+	if len(q.outcomes) != len(want) {
+		t.Fatalf("%d outcomes", len(q.outcomes))
+	}
+	for i, o := range q.outcomes {
+		if string(o.ProviderRequestIds) != want[i] {
+			t.Errorf("outcome %d (%s): %s, want %s", i, o.Outcome, o.ProviderRequestIds, want[i])
+		}
+	}
+	if q.outcomes[1].Outcome != string(Failed) {
+		t.Fatalf("a refused unwrap ended %s", q.outcomes[1].Outcome)
+	}
+}

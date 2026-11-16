@@ -59,6 +59,13 @@ running; it is not an external uptime service.
   page shows owners and operators the checkpoint's time and its window. Its resource is the
   workspace. A later checkpoint whose window is at least 35 days establishes recovery. See
   [the recovery window](cross-host-placement.md#the-recovery-window).
+- **DNS records may resolve to addresses Astilba no longer controls:** on a self-hosted
+  installation, records of the workspace's servers that nothing in the database backs are held
+  for the operator, because the zone comparison would have removed too many records at once. Its
+  resource is the workspace. The operator reviews them with `astilba dns withdrawals`. Confirming
+  the hold, or the held records falling back under the threshold, establishes recovery. The hosted
+  service doesn't raise it, because its owners can't confirm. See
+  [records the database has lost](hosting.md#records-the-database-has-lost).
 - **Operation problem:** a deployment, image build or backup operation failed or
   needs attention. One record is created per operation, including when a
   needs-attention operation later fails. This is a historical event, not a claim
