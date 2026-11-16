@@ -134,8 +134,9 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 		if err != nil {
 			return err
 		}
+		// Their environment's key may be one this pass made, which only its transaction holds.
 		return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
-			return git.keys.inspect.open(item, cipher)
+			return git.keys.inspect.openIn(ctx, q, item, cipher)
 		}))
 	}
 	key := secretCheckKey(env, texts, chosen)

@@ -76,6 +76,9 @@ type environmentKey struct {
 	wrapped, kcv        []byte
 	destroyed           bool
 	opened              []byte
+	// provisional is a key the session took from a transaction after it began, which may yet roll
+	// back and leave another key stored for the environment.
+	provisional bool
 }
 
 // wrappedKeys reads the generations a request's session holds, and their wrappings for its

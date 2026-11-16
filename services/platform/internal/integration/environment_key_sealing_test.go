@@ -626,3 +626,80 @@ func TestTheGateIsReadWhenTheValueIsSealed(t *testing.T) {
 		t.Fatalf("sealed as %+v after the instance had gone %v", header, err)
 	}
 }
+
+// A session that made an environment's first key in a transaction that rolled back seals its next
+// value under the key the next transaction stores, never under the one that was not.
+func TestASealAfterARolledBackKeyUsesTheStoredKey(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Rolled back"}, 201, &env)
+	items := []secretbroker.Item{{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}, {Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}}
+	keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	first, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = keys.Seal(ctx, db.New(first), items[0], []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err = first.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Rollback(ctx)
+	sealed, err := keys.Seal(ctx, db.New(second), items[1], []byte("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = second.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := inspectValue(t, f.st, f.owner, x.ws, items[1], sealed); err != nil || string(value) != "second" {
+		t.Fatal("sealed under a key that was never stored", string(value), err)
+	}
+}
+
+// A value stored under an environment key its own transaction made opens in that transaction,
+// for a session that began before the key existed, and not outside it.
+func TestAValueUnderAKeyMadeInTheTransactionOpensInIt(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Same transaction"}, 201, &env)
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}
+	inspect, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Inspect, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inspect.Close(ctx, secretbroker.Used)
+	keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	sealed, err := keys.Seal(ctx, db.New(tx), item, []byte("made here"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := inspect.OpenIn(ctx, db.New(tx), item, sealed); err != nil || string(value) != "made here" {
+		t.Fatal(string(value), err)
+	}
+	if _, err = inspectValue(t, f.st, f.owner, x.ws, item, sealed); !errors.Is(err, secretbroker.ErrKeysChanged) {
+		t.Fatal("opened outside the transaction that made its key", err)
+	}
+}

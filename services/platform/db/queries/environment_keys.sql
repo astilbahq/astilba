@@ -71,3 +71,9 @@ LOCK TABLE secret_versions IN ROW EXCLUSIVE MODE;
 -- unscoped: whether any environment value is stored outside its environment's key.
 SELECT EXISTS (SELECT 1 FROM secret_versions WHERE encrypted_value IS NOT NULL
     AND substring(encrypted_value FROM 1 FOR 35) IS DISTINCT FROM '\x7b2276657273696f6e223a322c2273636f7065223a22656e7669726f6e6d656e74222c'::bytea)::boolean;
+
+-- name: EnvironmentKeyForOpening :one
+-- An environment's key at generation, as the reading transaction sees it, which may be one it
+-- made and has not committed.
+SELECT state, workspace_generation, wrapped, kcv FROM environment_keys
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND generation = @generation;

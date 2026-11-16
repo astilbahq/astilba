@@ -1,6 +1,7 @@
 package secretbroker
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -146,9 +147,76 @@ func (s *Session) Open(item Item, ciphertext []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		return cryptobox.OpenUnder(key, ciphertext, identity)
+		plain, err := cryptobox.OpenUnder(key, ciphertext, identity)
+		ref := environmentRef{header.Holder, header.Generation}
+		if k := s.environments[ref]; errors.Is(err, cryptobox.ErrKey) && k.provisional {
+			// The transaction the key came from rolled back, and another was stored: a new session
+			// reads it.
+			clear(k.opened)
+			delete(s.environments, ref)
+			s.stale = true
+			return nil, ErrKeysChanged
+		}
+		return plain, err
 	}
 	return openV2(s.keys, item, header, ciphertext, identity)
+}
+
+// EnvironmentKeyReader reads an environment's key in a transaction.
+type EnvironmentKeyReader interface {
+	EnvironmentKeyForOpening(ctx context.Context, arg db.EnvironmentKeyForOpeningParams) (db.EnvironmentKeyForOpeningRow, error)
+}
+
+// OpenIn is Open for a value that q, a transaction, may have stored under an environment key it
+// made itself, which no session holds until the transaction commits.
+func (s *Session) OpenIn(ctx context.Context, q EnvironmentKeyReader, item Item, ciphertext []byte) ([]byte, error) {
+	if header, err := cryptobox.ReadHeader(ciphertext); err == nil && header.Version == 2 && header.Scope == cryptobox.ScopeEnvironment && item.Kind.environmental() {
+		if err = s.holdEnvironmentKey(ctx, q, environmentRef{header.Holder, header.Generation}); err != nil {
+			return nil, err
+		}
+	}
+	return s.Open(item, ciphertext)
+}
+
+// holdEnvironmentKey has the session hold an environment's key as q reads it, unless it already
+// holds the key from when it began. A key q does not have is left for Open to answer.
+func (s *Session) holdEnvironmentKey(ctx context.Context, q EnvironmentKeyReader, ref environmentRef) error {
+	s.mu.Lock()
+	k := s.environments[ref]
+	s.mu.Unlock()
+	if k != nil && !k.provisional {
+		return nil
+	}
+	row, err := q.EnvironmentKeyForOpening(ctx, db.EnvironmentKeyForOpeningParams{WorkspaceID: s.request.Workspace, EnvironmentID: ref.environment, Generation: ref.generation})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keys == nil {
+		return ErrNeedKeys
+	}
+	s.holdProvisional(ref, &environmentKey{workspaceGeneration: row.WorkspaceGeneration, wrapped: row.Wrapped, kcv: row.Kcv, destroyed: row.State == "destroyed"})
+	return nil
+}
+
+// holdProvisional has the session hold k, a key read in a transaction since it began, in place of
+// any other it took the same way. The caller holds s.mu.
+func (s *Session) holdProvisional(ref environmentRef, k *environmentKey) {
+	if held := s.environments[ref]; held != nil {
+		if !held.provisional || bytes.Equal(held.wrapped, k.wrapped) && held.destroyed == k.destroyed {
+			return
+		}
+		clear(held.opened)
+	}
+	k.provisional = true
+	if s.environments == nil {
+		s.environments = map[environmentRef]*environmentKey{}
+	}
+	s.environments[ref] = k
 }
 
 func (s *Session) sealedHere(ciphertext []byte) bool {
@@ -340,16 +408,10 @@ func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environmen
 		return nil, 0, ErrNeedKeys
 	}
 	ref2 := environmentRef{environment, row.Generation}
-	k := s.environments[ref2]
-	if k == nil {
-		// Made since the session began: it holds it from now on.
-		k = &environmentKey{workspaceGeneration: row.WorkspaceGeneration, wrapped: row.Wrapped, kcv: row.Kcv}
-		if s.environments == nil {
-			s.environments = map[environmentRef]*environmentKey{}
-		}
-		s.environments[ref2] = k
-	}
-	key, err := s.openEnvironmentKey(ref2, k)
+	// A key made since the session began is held as this transaction stores it, never as an
+	// earlier transaction that rolled back made it.
+	s.holdProvisional(ref2, &environmentKey{workspaceGeneration: row.WorkspaceGeneration, wrapped: row.Wrapped, kcv: row.Kcv})
+	key, err := s.openEnvironmentKey(ref2, s.environments[ref2])
 	return key, row.Generation, err
 }
 

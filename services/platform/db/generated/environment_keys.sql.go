@@ -78,6 +78,38 @@ func (q *Queries) EndedEnvironmentKeys(ctx context.Context, workspaceID uuid.UUI
 	return items, nil
 }
 
+const environmentKeyForOpening = `-- name: EnvironmentKeyForOpening :one
+SELECT state, workspace_generation, wrapped, kcv FROM environment_keys
+WHERE workspace_id = $1 AND environment_id = $2 AND generation = $3
+`
+
+type EnvironmentKeyForOpeningParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Generation    int64     `json:"generation"`
+}
+
+type EnvironmentKeyForOpeningRow struct {
+	State               string `json:"state"`
+	WorkspaceGeneration int64  `json:"workspace_generation"`
+	Wrapped             []byte `json:"wrapped"`
+	Kcv                 []byte `json:"kcv"`
+}
+
+// An environment's key at generation, as the reading transaction sees it, which may be one it
+// made and has not committed.
+func (q *Queries) EnvironmentKeyForOpening(ctx context.Context, arg EnvironmentKeyForOpeningParams) (EnvironmentKeyForOpeningRow, error) {
+	row := q.db.QueryRow(ctx, environmentKeyForOpening, arg.WorkspaceID, arg.EnvironmentID, arg.Generation)
+	var i EnvironmentKeyForOpeningRow
+	err := row.Scan(
+		&i.State,
+		&i.WorkspaceGeneration,
+		&i.Wrapped,
+		&i.Kcv,
+	)
+	return i, err
+}
+
 const environmentKeyForSealing = `-- name: EnvironmentKeyForSealing :one
 SELECT generation, workspace_generation, wrapped, kcv FROM environment_keys
 WHERE workspace_id = $1 AND environment_id = $2 AND state = 'active'
