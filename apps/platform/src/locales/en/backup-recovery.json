@@ -51,10 +51,10 @@
     "discardDescription": "This deletes volume {{volume}}, which the restore created on the environment's current server. It can't be undone, and the restore can't be cut over afterwards.",
     "discardConfirm": "Discard volume",
     "discarding": "Discarding…",
-    "discardQueued": "Discard queued. The volume is removed once the server confirms it.",
     "cancel": "Cancel",
     "discardPending": "Discarding the volume. It is deleted once the server confirms.",
-    "discardFailed": "The volume wasn't discarded: {{note}}"
+    "discardFailed": "Volume {{volume}} wasn't discarded: {{note}}",
+    "discardAttention": "The discard needs attention: {{note}}"
   },
   "exposed": {
     "policy": "A revoked server was given this destination's storage keys. It can still delete or overwrite these backups until you revoke the keys at your storage provider. For backups it can't reach, add a destination with new keys and create a policy on it.",

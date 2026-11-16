@@ -298,6 +298,23 @@ export const RevokedServerBackups: Story = {
         checked: false,
       }),
     ).toHaveLength(2);
+    // A confirmed discard hides the restore's actions; its running status takes their focus.
+    const [discard] = await canvas.findAllByRole("button", {
+      name: "Discard restored volume",
+    });
+    await userEvent.click(discard);
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(
+      await body.findByRole("button", { name: "Discard volume" }),
+    );
+    await waitFor(() =>
+      expect(canvasElement.ownerDocument.activeElement).toHaveTextContent(
+        "Discarding the volume.",
+      ),
+    );
+    await expect(
+      canvas.queryByRole("button", { name: "Prepare cutover draft" }),
+    ).not.toBeInTheDocument();
   },
 };
 export const Settings: Story = {

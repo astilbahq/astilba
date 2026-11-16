@@ -130,10 +130,17 @@ const recovery = (
       ? { manifest: manifest(snapshot, "2026-03-01T02:30:00Z", 48_200_000) }
       : null,
   targetDeleted: false,
+  discard: null,
 });
 
 export function revokedServerBackupHandlers() {
   const policyPath = `${environmentRoot}/backup-policies/:policyId`;
+  // A discard stays running, so the row shows it pending, as after a reload.
+  const discards = new Map<string, Schema["BackupRecoveryRecord"]["discard"]>();
+  const withDiscard = (r: Schema["BackupRecoveryRecord"]) => ({
+    ...r,
+    discard: discards.get(r.id) ?? null,
+  });
   return [
     http.get("/api/v1/workspaces/:workspaceId/servers", () =>
       HttpResponse.json([
@@ -185,23 +192,45 @@ export function revokedServerBackupHandlers() {
         { snapshot: older, firstReportedAt: "2026-02-28T02:31:10Z" },
       ] satisfies Schema["BackupSnapshotReceipt"][]),
     ),
+    http.delete(`${policyPath}/recoveries/:recoveryId/target`, ({ params }) => {
+      const operation = {
+        id: "00000000-0000-4000-8000-00000000c0e1",
+        serverId: replacement,
+        environmentId: environment,
+        generation: 9,
+        state: "queued",
+        kind: "visual",
+        cancelRequested: false,
+        note: "",
+        steps: [],
+        createdAt: "2026-03-02T11:00:00Z",
+      } satisfies Schema["Operation"];
+      discards.set(String(params.recoveryId), {
+        operationId: operation.id,
+        state: "running",
+        note: "",
+      });
+      return HttpResponse.json(operation, { status: 201 });
+    }),
     http.get(`${policyPath}/recoveries`, () =>
-      HttpResponse.json([
-        recovery(
-          "00000000-0000-4000-8000-00000000b0b1",
-          newer,
-          "2026-03-01T02:31:04Z",
-          "succeeded",
-          "Snapshot restored into a new volume and matched against its manifest.",
-        ),
-        recovery(
-          "00000000-0000-4000-8000-00000000b0b2",
-          older,
-          "2026-02-28T02:31:10Z",
-          "failed",
-          "The restore failed while restoring or verifying its data.",
-        ),
-      ] satisfies Schema["BackupRecoveryRecord"][]),
+      HttpResponse.json(
+        [
+          recovery(
+            "00000000-0000-4000-8000-00000000b0b1",
+            newer,
+            "2026-03-01T02:31:04Z",
+            "succeeded",
+            "Snapshot restored into a new volume and matched against its manifest.",
+          ),
+          recovery(
+            "00000000-0000-4000-8000-00000000b0b2",
+            older,
+            "2026-02-28T02:31:10Z",
+            "failed",
+            "The restore failed while restoring or verifying its data.",
+          ),
+        ].map(withDiscard) satisfies Schema["BackupRecoveryRecord"][],
+      ),
     ),
   ];
 }

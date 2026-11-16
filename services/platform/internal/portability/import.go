@@ -140,6 +140,15 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		}
 		archive.Tables["backup_recoveries"] = []Row{}
 	}
+	// Version 17 carries each restore's latest discard. None was recorded before it.
+	if version < 17 {
+		for _, row := range archive.Tables["backup_recoveries"] {
+			if _, exists := row["discard_operation_id"]; exists {
+				return archive, ErrArchive
+			}
+			setValue(row, "discard_operation_id", nil)
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -213,6 +222,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		{"environments", "purge_operation_id", "execution_operations"},
 		{"backup_cutovers", "source_plan_id", "visual_requests"},
 		{"backup_recoveries", "operation_id", "execution_operations"},
+		{"backup_recoveries", "discard_operation_id", "execution_operations"},
 		{"backup_recoveries", "plan_id", "visual_requests"},
 		{"backup_recoveries", "source_server_id", "servers"},
 		{"backup_recoveries", "server_id", "servers"},

@@ -145,6 +145,7 @@ const archiveClosure = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,i
 	UNION ALL SELECT 'request',c.source_plan_id FROM backup_cutovers c JOIN archive_keep k ON k.kind='env' AND k.id=c.environment_id WHERE c.workspace_id=$1
 	UNION ALL SELECT 'request',r.plan_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='recovery' AND k.id=r.id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'op',r.operation_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='recovery' AND k.id=r.id WHERE r.workspace_id=$1
+	UNION ALL SELECT 'op',r.discard_operation_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='recovery' AND k.id=r.id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'recovery',r.id FROM backup_recoveries r JOIN archive_keep k ON k.kind='op' AND k.id=r.operation_id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'request',n.plan_id FROM network_endpoints n JOIN archive_keep k ON k.kind='endpoint' AND k.id=n.id WHERE n.workspace_id=$1
 	UNION ALL SELECT 'request',r.plan_id FROM preview_requests r JOIN archive_keep k ON k.kind='preview' AND k.id=r.id WHERE r.workspace_id=$1

@@ -2,9 +2,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useContext, useState } from "react";
 import { backupDestinationsOptions } from "../api/backups";
 import { client, result, type Schema } from "../api/client";
+import { projectsOptions } from "../api/projects";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
+import { Link } from "../components/link";
 import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
@@ -59,10 +61,18 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
         }),
       ),
   });
-  // An exposure alert names a destination, so its name and policies come from the destinations.
+  // An exposure alert names a destination, so its name and policies come from the destinations,
+  // and each policy's project from the projects.
+  const exposure = !!inbox.data?.alerts.some(
+    (a) => a.kind === "backup_exposure",
+  );
   const destinations = useQuery({
     ...backupDestinationsOptions(workspace.id),
-    enabled: !!inbox.data?.alerts.some((a) => a.kind === "backup_exposure"),
+    enabled: exposure,
+  });
+  const projects = useQuery({
+    ...projectsOptions(workspace.id),
+    enabled: exposure,
   });
   return (
     <>
@@ -88,7 +98,9 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
           Missing observations do not mean recovery. Resolved and event history
           is retained for 30 days, up to 1,000 entries per workspace.
         </p>
-        <ErrorNotice error={inbox.error ?? action.error} />
+        <ErrorNotice
+          error={inbox.error ?? action.error ?? destinations.error}
+        />
         {inbox.isPending ? (
           <p role="status">Loading alerts…</p>
         ) : !inbox.data?.alerts.length ? (
@@ -118,9 +130,13 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                 </p>
                 {alert.kind === "backup_exposure" && (
                   <ExposedDestination
+                    workspaceId={workspace.id}
+                    firing={alert.state === "firing"}
+                    loading={destinations.isPending}
                     destination={destinations.data?.find(
                       (d) => d.id === alert.resourceId,
                     )}
+                    projects={projects.data}
                   />
                 )}
                 <p>
@@ -342,30 +358,54 @@ function SettingsForm({
   );
 }
 
-// The destination an exposure alert names, and the policies using its keys. The revoked server can
-// delete or overwrite their backups until the keys are revoked at the storage provider.
+// The destination an exposure alert names, and the policies using its keys. While the alert fires,
+// the revoked server can delete or overwrite their backups until the keys are revoked at the
+// storage provider.
 function ExposedDestination({
+  workspaceId,
+  firing,
+  loading,
   destination,
+  projects,
 }: {
+  workspaceId: string;
+  firing: boolean;
+  loading: boolean;
   destination?: Schema["BackupDestination"];
+  projects?: Schema["Project"][];
 }) {
+  if (loading) return <p>Loading the destination…</p>;
   if (!destination) return null;
   return (
     <>
       <p>
-        Destination: {destination.name}. A revoked server can delete or
-        overwrite its backups until you revoke its keys at your storage
-        provider. Add a destination with new keys for backups it can't reach.
+        Destination: {destination.name}.
+        {firing &&
+          " A revoked server can delete or overwrite its backups until you revoke its keys at your storage provider. Add a destination with new keys for backups it can't reach."}
       </p>
       {!!destination.policies.length && (
         <>
           <p>Policies using it:</p>
           <ul>
-            {destination.policies.map((policy) => (
-              <li key={policy.id}>
-                {policy.name} ({policy.environmentName})
-              </li>
-            ))}
+            {destination.policies.map((policy) => {
+              const project = projects?.find((p) => p.id === policy.projectId);
+              return (
+                <li key={policy.id}>
+                  <Link
+                    to="/"
+                    search={{
+                      workspace: workspaceId,
+                      project: policy.projectId,
+                      environment: policy.environmentId,
+                    }}
+                  >
+                    {policy.name}
+                  </Link>{" "}
+                  ({project ? `${project.name}, ` : ""}
+                  {policy.environmentName})
+                </li>
+              );
+            })}
           </ul>
         </>
       )}

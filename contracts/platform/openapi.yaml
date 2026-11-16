@@ -9561,6 +9561,42 @@
         - region
         - exposed
         - policies
+    BackupInstallationDestination:
+      type: object
+      additionalProperties: false
+      description: A destination's configuration as a server receives it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        kind:
+          type: string
+          enum:
+            - filesystem
+            - s3
+        root:
+          type: string
+          maxLength: 512
+        endpoint:
+          type: string
+          maxLength: 512
+        bucket:
+          type: string
+          maxLength: 63
+        region:
+          type: string
+          maxLength: 80
+      required:
+        - id
+        - name
+        - kind
+        - root
+        - endpoint
+        - bucket
+        - region
     BackupDestinationPolicy:
       type: object
       additionalProperties: false
@@ -9980,7 +10016,7 @@
         policy:
           $ref: '#/components/schemas/BackupPolicy'
         destination:
-          $ref: '#/components/schemas/BackupDestination'
+          $ref: '#/components/schemas/BackupInstallationDestination'
         access:
           $ref: '#/components/schemas/BackupAccess'
         repositoryId:
@@ -10137,7 +10173,23 @@
         targetDeleted:
           type: boolean
           description: Whether the server deleted the restore's volume once it was discarded.
-      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored, targetDeleted]
+        discard:
+          type: object
+          nullable: true
+          description: >-
+            The latest discard of the restore's volume. While it is active the volume can't be cut
+            over to or discarded again. A succeeded one deleted it, as targetDeleted shows.
+          properties:
+            operationId:
+              type: string
+              format: uuid
+            state:
+              $ref: '#/components/schemas/ExecutionState'
+            note:
+              type: string
+          required: [operationId, state, note]
+          additionalProperties: false
+      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored, targetDeleted, discard]
     BackupCommandRequest:
       type: object
       additionalProperties: false

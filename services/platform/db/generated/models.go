@@ -173,19 +173,20 @@ type BackupPolicy struct {
 }
 
 type BackupRecovery struct {
-	ID              uuid.UUID `json:"id"`
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
-	EnvironmentID   uuid.UUID `json:"environment_id"`
-	PolicyID        uuid.UUID `json:"policy_id"`
-	OperationID     uuid.UUID `json:"operation_id"`
-	SourceServerID  uuid.UUID `json:"source_server_id"`
-	ServerID        uuid.UUID `json:"server_id"`
-	PlanID          uuid.UUID `json:"plan_id"`
-	Snapshot        string    `json:"snapshot"`
-	FirstReportedAt time.Time `json:"first_reported_at"`
-	TargetVolumeID  uuid.UUID `json:"target_volume_id"`
-	CreatedAt       time.Time `json:"created_at"`
-	Result          []byte    `json:"result"`
+	ID                 uuid.UUID  `json:"id"`
+	WorkspaceID        uuid.UUID  `json:"workspace_id"`
+	EnvironmentID      uuid.UUID  `json:"environment_id"`
+	PolicyID           uuid.UUID  `json:"policy_id"`
+	OperationID        uuid.UUID  `json:"operation_id"`
+	SourceServerID     uuid.UUID  `json:"source_server_id"`
+	ServerID           uuid.UUID  `json:"server_id"`
+	PlanID             uuid.UUID  `json:"plan_id"`
+	Snapshot           string     `json:"snapshot"`
+	FirstReportedAt    time.Time  `json:"first_reported_at"`
+	TargetVolumeID     uuid.UUID  `json:"target_volume_id"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Result             []byte     `json:"result"`
+	DiscardOperationID *uuid.UUID `json:"discard_operation_id"`
 }
 
 type BuildArtifact struct {

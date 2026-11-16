@@ -4605,6 +4605,18 @@ export interface components {
             /** @description The backup policies using this destination. */
             policies: components["schemas"]["BackupDestinationPolicy"][];
         };
+        /** @description A destination's configuration as a server receives it. */
+        BackupInstallationDestination: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            kind: "filesystem" | "s3";
+            root: string;
+            endpoint: string;
+            bucket: string;
+            region: string;
+        };
         BackupDestinationPolicy: {
             /** Format: uuid */
             id: string;
@@ -4759,7 +4771,7 @@ export interface components {
         };
         BackupInstallation: {
             policy: components["schemas"]["BackupPolicy"];
-            destination: components["schemas"]["BackupDestination"];
+            destination: components["schemas"]["BackupInstallationDestination"];
             access: components["schemas"]["BackupAccess"];
             repositoryId: string;
             /** Format: date-time */
@@ -4841,6 +4853,13 @@ export interface components {
             } | null;
             /** @description Whether the server deleted the restore's volume once it was discarded. */
             targetDeleted: boolean;
+            /** @description The latest discard of the restore's volume. While it is active the volume can't be cut over to or discarded again. A succeeded one deleted it, as targetDeleted shows. */
+            discard: {
+                /** Format: uuid */
+                operationId: string;
+                state: components["schemas"]["ExecutionState"];
+                note: string;
+            } | null;
         };
         BackupCommandRequest: {
             /** @enum {string} */

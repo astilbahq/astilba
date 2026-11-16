@@ -260,8 +260,9 @@ func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatus
 }
 
 const backupRecovery = `-- name: BackupRecovery :one
-SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state
+SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state,d.state AS discard_state
 FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+LEFT JOIN execution_operations d ON d.workspace_id = r.workspace_id AND d.id = r.discard_operation_id
 WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3 AND r.id = $4
 `
 
@@ -273,16 +274,19 @@ type BackupRecoveryParams struct {
 }
 
 type BackupRecoveryRow struct {
-	ServerID       uuid.UUID `json:"server_id"`
-	PlanID         uuid.UUID `json:"plan_id"`
-	Snapshot       string    `json:"snapshot"`
-	TargetVolumeID uuid.UUID `json:"target_volume_id"`
-	Result         []byte    `json:"result"`
-	State          string    `json:"state"`
+	ServerID       uuid.UUID   `json:"server_id"`
+	PlanID         uuid.UUID   `json:"plan_id"`
+	Snapshot       string      `json:"snapshot"`
+	TargetVolumeID uuid.UUID   `json:"target_volume_id"`
+	Result         []byte      `json:"result"`
+	State          string      `json:"state"`
+	DiscardState   pgtype.Text `json:"discard_state"`
 }
 
-// One restore of a policy's snapshot onto another server, with its operation's state. A restore's
-// result is written once, when its operation ends.
+// One restore of a policy's snapshot onto another server, with its operation's state and its latest
+// discard's. A cutover and a discard of its volume are decided one at a time under the workspace
+// write lock; locking this row too would deadlock a discard against the restore's own report, which
+// locks the server first. A restore's result is written once, when its operation ends.
 func (q *Queries) BackupRecovery(ctx context.Context, arg BackupRecoveryParams) (BackupRecoveryRow, error) {
 	row := q.db.QueryRow(ctx, backupRecovery,
 		arg.WorkspaceID,
@@ -298,6 +302,7 @@ func (q *Queries) BackupRecovery(ctx context.Context, arg BackupRecoveryParams) 
 		&i.TargetVolumeID,
 		&i.Result,
 		&i.State,
+		&i.DiscardState,
 	)
 	return i, err
 }
@@ -657,8 +662,10 @@ func (q *Queries) ListBackupPolicies(ctx context.Context, arg ListBackupPolicies
 }
 
 const listBackupRecoveries = `-- name: ListBackupRecoveries :many
-SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note,coalesce(v.deleted,false)::boolean AS target_deleted
+SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note,coalesce(v.deleted,false)::boolean AS target_deleted,
+ r.discard_operation_id,d.state AS discard_state,d.note AS discard_note
 FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+LEFT JOIN execution_operations d ON d.workspace_id = r.workspace_id AND d.id = r.discard_operation_id
 LEFT JOIN managed_volumes v ON v.workspace_id = r.workspace_id AND v.environment_id = r.environment_id AND v.id = r.target_volume_id
 WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3
 ORDER BY r.created_at DESC, r.id LIMIT 100
@@ -671,19 +678,22 @@ type ListBackupRecoveriesParams struct {
 }
 
 type ListBackupRecoveriesRow struct {
-	ID              uuid.UUID `json:"id"`
-	OperationID     uuid.UUID `json:"operation_id"`
-	SourceServerID  uuid.UUID `json:"source_server_id"`
-	ServerID        uuid.UUID `json:"server_id"`
-	PlanID          uuid.UUID `json:"plan_id"`
-	Snapshot        string    `json:"snapshot"`
-	FirstReportedAt time.Time `json:"first_reported_at"`
-	TargetVolumeID  uuid.UUID `json:"target_volume_id"`
-	CreatedAt       time.Time `json:"created_at"`
-	Result          []byte    `json:"result"`
-	State           string    `json:"state"`
-	Note            string    `json:"note"`
-	TargetDeleted   bool      `json:"target_deleted"`
+	ID                 uuid.UUID   `json:"id"`
+	OperationID        uuid.UUID   `json:"operation_id"`
+	SourceServerID     uuid.UUID   `json:"source_server_id"`
+	ServerID           uuid.UUID   `json:"server_id"`
+	PlanID             uuid.UUID   `json:"plan_id"`
+	Snapshot           string      `json:"snapshot"`
+	FirstReportedAt    time.Time   `json:"first_reported_at"`
+	TargetVolumeID     uuid.UUID   `json:"target_volume_id"`
+	CreatedAt          time.Time   `json:"created_at"`
+	Result             []byte      `json:"result"`
+	State              string      `json:"state"`
+	Note               string      `json:"note"`
+	TargetDeleted      bool        `json:"target_deleted"`
+	DiscardOperationID *uuid.UUID  `json:"discard_operation_id"`
+	DiscardState       pgtype.Text `json:"discard_state"`
+	DiscardNote        pgtype.Text `json:"discard_note"`
 }
 
 func (q *Queries) ListBackupRecoveries(ctx context.Context, arg ListBackupRecoveriesParams) ([]ListBackupRecoveriesRow, error) {
@@ -709,6 +719,9 @@ func (q *Queries) ListBackupRecoveries(ctx context.Context, arg ListBackupRecove
 			&i.State,
 			&i.Note,
 			&i.TargetDeleted,
+			&i.DiscardOperationID,
+			&i.DiscardState,
+			&i.DiscardNote,
 		); err != nil {
 			return nil, err
 		}
@@ -978,6 +991,28 @@ type SaveBackupPolicyStatusParams struct {
 
 func (q *Queries) SaveBackupPolicyStatus(ctx context.Context, arg SaveBackupPolicyStatusParams) error {
 	_, err := q.db.Exec(ctx, saveBackupPolicyStatus, arg.Status, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const setBackupRecoveryDiscard = `-- name: SetBackupRecoveryDiscard :exec
+UPDATE backup_recoveries SET discard_operation_id = $1
+WHERE workspace_id = $2 AND environment_id = $3 AND id = $4
+`
+
+type SetBackupRecoveryDiscardParams struct {
+	DiscardOperationID *uuid.UUID `json:"discard_operation_id"`
+	WorkspaceID        uuid.UUID  `json:"workspace_id"`
+	EnvironmentID      uuid.UUID  `json:"environment_id"`
+	ID                 uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) SetBackupRecoveryDiscard(ctx context.Context, arg SetBackupRecoveryDiscardParams) error {
+	_, err := q.db.Exec(ctx, setBackupRecoveryDiscard,
+		arg.DiscardOperationID,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ID,
+	)
 	return err
 }
 

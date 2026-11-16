@@ -339,6 +339,8 @@ export function Backups({
           policy={policy}
           server={servers.data?.find((v) => v.id === policy.serverId)}
           exposed={
+            // A container job is never given a destination's keys.
+            policy.method !== "container-job" &&
             !!destinations.data?.find((d) => d.id === policy.destinationId)
               ?.exposed
           }

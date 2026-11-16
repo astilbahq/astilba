@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { backupPolicyPath as policyRoot } from "../api/backups";
 import { client, result, type Schema } from "../api/client";
@@ -22,8 +22,6 @@ import * as r from "./backup-recovery.styles";
 import type { EnvironmentPath } from "./visual-editor";
 
 const recoveryRoot = `${policyRoot}/recoveries/{recoveryId}` as const;
-const environmentRoot =
-  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
 
 type Recovery = Schema["BackupRecoveryRecord"];
 const ended: readonly Recovery["state"][] = [
@@ -117,7 +115,13 @@ export function RevokedServerRecovery({
     queryFn: () =>
       result(client.GET(`${policyRoot}/recoveries`, { params: { path: p } })),
     refetchInterval: (query) =>
-      query.state.data?.some((v) => !ended.includes(v.state)) ? 5000 : false,
+      query.state.data?.some(
+        (v) =>
+          !ended.includes(v.state) ||
+          (!!v.discard && !ended.includes(v.discard.state)),
+      )
+        ? 5000
+        : false,
   });
   // A retried request reuses its key, so it can't start a second restore.
   const attempts = useRef(new Map<string, string>());
@@ -285,30 +289,31 @@ function RecoveryItem({
   const queries = useQueryClient();
   const action = useAction({ recentAuth: true });
   const p = { ...path, policyId, recoveryId: recovery.id };
-  // A discard deletes the volume once its server confirms: until the operation ends, the volume is
-  // neither offered for a cutover nor discarded again.
-  const [discard, setDiscard] = useState<string>();
-  const discarding = useQuery({
-    queryKey: ["operation", path, discard],
-    enabled: !!discard,
-    queryFn: async ({ signal }) => {
-      const next = await result(
-        client.GET(`${environmentRoot}/operations/{operationId}`, {
-          params: { path: { ...path, operationId: discard ?? "" } },
-          signal,
-        }),
-      );
-      if (ended.includes(next.state))
-        await queries.invalidateQueries({
-          queryKey: ["backup-recoveries", { ...path, policyId }],
-        });
-      return next;
-    },
-    refetchInterval: ({ state: { data } }) =>
-      data && ended.includes(data.state) ? false : 5000,
-  });
-  const pending =
-    !!discard && !(discarding.data && ended.includes(discarding.data.state));
+  // A discard holds the volume while it runs, and a succeeded one deleted it: neither a cutover
+  // nor another discard is offered then, as the server refuses both.
+  const discard = recovery.discard;
+  const pending = !!discard && !ended.includes(discard.state);
+  const failed =
+    !!discard &&
+    ended.includes(discard.state) &&
+    discard.state !== "succeeded" &&
+    !recovery.targetDeleted;
+  const held = pending || recovery.targetDeleted;
+  // Once a discard is confirmed its button goes, so focus moves to the volume's status, which
+  // announces each change to the discard itself.
+  const volume = useRef<HTMLParagraphElement>(null);
+  const focusVolume = useRef(false);
+  useEffect(() => {
+    if (held && focusVolume.current) {
+      focusVolume.current = false;
+      volume.current?.focus();
+    }
+  }, [held]);
+  // A refusal means the server's view moved on, as when another owner started a discard.
+  const refresh = () =>
+    queries.invalidateQueries({
+      queryKey: ["backup-recoveries", { ...path, policyId }],
+    });
   const succeeded = recovery.state === "succeeded" && !recovery.targetDeleted;
   return (
     <li className={s.stack}>
@@ -322,30 +327,24 @@ function RecoveryItem({
         })}
       </p>
       {recovery.note && <p>{recovery.note}</p>}
-      {recovery.targetDeleted ? (
-        <p className={s.muted}>{t(($) => $.restores.discarded)}</p>
-      ) : (
-        recovery.state === "succeeded" && (
-          <p className={s.muted}>
-            {t(($) => $.restores.target, { volume: recovery.targetId })}
-          </p>
-        )
+      {(held || failed || recovery.state === "succeeded") && (
+        <p ref={volume} tabIndex={-1} role="status" className={s.muted}>
+          {recovery.targetDeleted
+            ? t(($) => $.restores.discarded)
+            : pending
+              ? discard.state === "needs_attention"
+                ? t(($) => $.restores.discardAttention, { note: discard.note })
+                : t(($) => $.restores.discardPending)
+              : failed
+                ? t(($) => $.restores.discardFailed, {
+                    volume: recovery.targetId,
+                    note: discard.note,
+                  })
+                : t(($) => $.restores.target, { volume: recovery.targetId })}
+        </p>
       )}
-      <ErrorNotice error={action.error ?? discarding.error} />
-      {pending && (
-        <p className={s.muted}>{t(($) => $.restores.discardPending)}</p>
-      )}
-      {!recovery.targetDeleted &&
-        discarding.data &&
-        discarding.data.state !== "succeeded" &&
-        ended.includes(discarding.data.state) && (
-          <p className={s.muted}>
-            {t(($) => $.restores.discardFailed, {
-              note: discarding.data.note,
-            })}
-          </p>
-        )}
-      {owner && succeeded && !pending && (
+      <ErrorNotice error={action.error} />
+      {owner && succeeded && !held && (
         <>
           <p>{t(($) => $.restores.cutoverHint)}</p>
           {dirty && (
@@ -353,48 +352,50 @@ function RecoveryItem({
           )}
         </>
       )}
-      {owner &&
-        !recovery.targetDeleted &&
-        !pending &&
-        ended.includes(recovery.state) && (
-          <div className={s.row}>
-            {succeeded && (
-              <Button
-                type="button"
-                variant="primary"
-                disabled={action.isPending || dirty}
-                onClick={() =>
-                  action.run(async () => {
-                    // Cleared first, so the same outcome twice is announced twice.
-                    announce("");
-                    const next = await result(
-                      client.POST(`${recoveryRoot}/cutover`, {
-                        params: { path: p },
-                        body: { baseRevisionId: revision.id },
-                      }),
-                    );
-                    await publishDraft(queries, path, next, revision.id);
-                    announce(
-                      load(next)
-                        ? t(($) => $.restores.cutoverSaved)
-                        : t(($) => $.restores.cutoverConflict),
-                    );
-                  })
-                }
-              >
-                {action.isPending
-                  ? t(($) => $.restores.preparing)
-                  : t(($) => $.restores.prepareCutover)}
-              </Button>
-            )}
-            <DiscardTarget
-              path={p}
-              recovery={recovery}
-              announce={announce}
-              queued={setDiscard}
-            />
-          </div>
-        )}
+      {owner && !held && ended.includes(recovery.state) && (
+        <div className={s.row}>
+          {succeeded && (
+            <Button
+              type="button"
+              variant="primary"
+              disabled={action.isPending || dirty}
+              onClick={() =>
+                action.run(async () => {
+                  // Cleared first, so the same outcome twice is announced twice.
+                  announce("");
+                  const next = await result(
+                    client.POST(`${recoveryRoot}/cutover`, {
+                      params: { path: p },
+                      body: { baseRevisionId: revision.id },
+                    }),
+                  ).catch(async (error: unknown) => {
+                    await refresh();
+                    throw error;
+                  });
+                  await publishDraft(queries, path, next, revision.id);
+                  announce(
+                    load(next)
+                      ? t(($) => $.restores.cutoverSaved)
+                      : t(($) => $.restores.cutoverConflict),
+                  );
+                })
+              }
+            >
+              {action.isPending
+                ? t(($) => $.restores.preparing)
+                : t(($) => $.restores.prepareCutover)}
+            </Button>
+          )}
+          <DiscardTarget
+            path={p}
+            recovery={recovery}
+            refresh={async (queued) => {
+              focusVolume.current = queued;
+              await refresh();
+            }}
+          />
+        </div>
+      )}
     </li>
   );
 }
@@ -402,13 +403,12 @@ function RecoveryItem({
 function DiscardTarget({
   path,
   recovery,
-  announce,
-  queued,
+  refresh,
 }: {
   path: EnvironmentPath & { policyId: string; recoveryId: string };
   recovery: Recovery;
-  announce: (message: string) => void;
-  queued: (operationId: string) => void;
+  /** Reloads the restores, once queued moving focus to the volume's status. */
+  refresh: (queued: boolean) => Promise<void>;
 }) {
   const { t } = useTranslation("backup-recovery");
   const action = useAction({ recentAuth: true });
@@ -454,15 +454,16 @@ function DiscardTarget({
               disabled={action.isPending}
               onClick={(event) =>
                 action.run(async () => {
-                  announce("");
-                  const operation = await result(
+                  await result(
                     client.DELETE(`${recoveryRoot}/target`, {
                       params: { path },
                     }),
-                  );
+                  ).catch(async (error: unknown) => {
+                    await refresh(false);
+                    throw error;
+                  });
                   setOpen(false);
-                  queued(operation.id);
-                  announce(t(($) => $.restores.discardQueued));
+                  await refresh(true);
                 }, trigger.current ?? event.currentTarget)
               }
             >

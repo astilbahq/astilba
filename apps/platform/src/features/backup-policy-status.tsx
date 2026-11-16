@@ -44,8 +44,10 @@ export function PolicyStatus({
 }) {
   // A revoked server's policy is frozen: what is left is restoring its snapshots elsewhere.
   const revoked = server?.status === "revoked";
-  // Until its server is known, nothing says the policy can still be managed.
+  // Until its server is known, nothing says the policy can still be managed, or that what it
+  // reported about its runs can be shown as fact.
   const manage = owner && !!server && !revoked;
+  const reported = !!server && !revoked;
   const action = useAction(),
     queries = useQueryClient(),
     p = { ...path, policyId: policy.id };
@@ -92,12 +94,12 @@ export function PolicyStatus({
           ? "Missed runs skipped; no overlap."
           : "Missed runs coalesced; no overlap."}
       </p>
-      <p hidden={revoked}>
+      <p hidden={!reported}>
         {status.data?.generation === policy.generation
           ? `Installed generation ${status.data.generation}. ${status.data.enabled ? `Next run: ${nextRunDescription(status.data.next, policy.schedule)}` : "Local schedule disabled. After a rollback or local recovery, save and install a new generation to enable the configured schedule."}`
           : "Current policy is not installed."}
       </p>
-      <p hidden={revoked}>
+      <p hidden={!reported}>
         Last successful snapshot:{" "}
         {last ? (
           <>
@@ -251,7 +253,7 @@ export function PolicyStatus({
         />
       )}
       {revoked && !!runs.length && <RevokedServerHistory />}
-      <ol>
+      <ol hidden={!server}>
         {runs.map((r) => (
           <li key={r.id}>
             <p>
