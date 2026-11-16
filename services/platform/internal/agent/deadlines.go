@@ -59,6 +59,7 @@ var commandKinds = map[api.ExecutionCommandKind]deadlineRule{
 	"upgrade":   ownDeadline,
 	"network":   startsWork, // by action, below
 	"crosshost": startsWork, // by phase, below
+	"restore":   startsWork,
 }
 
 // visualActions is every action executeVisual runs.

@@ -288,6 +288,9 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.Kind == "backup" || c.Kind == "schedule" {
 		return e.executeBackup(ctx, c, r)
 	}
+	if c.Kind == "restore" {
+		return e.executeRecovery(ctx, c, r)
+	}
 	if c.Kind == "pipeline" {
 		return e.executePipeline(ctx, c, r)
 	}
