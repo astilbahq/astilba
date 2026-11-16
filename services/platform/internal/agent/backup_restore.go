@@ -170,7 +170,7 @@ func (e *Engine) restoreArchive(ctx context.Context, in backup.Installation, run
 	if _, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); !errdefs.IsNotFound(err) {
 		return nil, restoreRefusal("restore target must be absent")
 	}
-	stage, err := os.MkdirTemp(e.Journal.dir, "restore-stage-")
+	stage, err := e.Journal.scratchDir(scratchRestoreStage)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +398,7 @@ func (e *Engine) restoreServer(ctx context.Context, p backup.Policy, run, target
 // with dir's archive, all definitions and data, including database settings, owners, grants and
 // sequence contents.
 func (e *Engine) verifyRestoredDump(ctx context.Context, a domain.Application, id, dir string, m backup.Manifest) error {
-	verify, err := os.CreateTemp(e.Journal.dir, "restore-verification-")
+	verify, err := e.Journal.scratchFile(scratchRestoreVerification)
 	if err != nil {
 		return err
 	}

@@ -160,6 +160,15 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		}
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
 	}
+	// An install or a check of a repository reads the command's own repository access, which a
+	// retried command gave up while it waited for attention. Every repository has a password, so
+	// one without it waits for it. Scheduled backups and restores use the installed schedule's
+	// access, and a disable or a container job's install none.
+	if (b.Action == "install" || b.Action == "check") && b.Installation.Policy.Method != "container-job" {
+		if wait, err := e.awaitValues(c, r, b.Installation.Access.Password != ""); wait || err != nil {
+			return err
+		}
+	}
 	parent := ctx
 	started, err := e.Journal.startWork(c.Id)
 	if err != nil {

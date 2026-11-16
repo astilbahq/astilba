@@ -93,6 +93,11 @@ func TestNativeInterruptedBackupInstallRunsAgain(t *testing.T) {
 				if err = w.journal.Retry(install.Id); err != nil {
 					t.Fatal(err)
 				}
+				// It gave up its repository access while it needed attention, so the retry waits
+				// for management to release it again, which the next delivery brings.
+				if report := w.deliver(install); report.State != "running" || report.Note != valuesWantedNote {
+					t.Fatalf("a retried install that gave up its access did not wait for it: %s: %s", report.State, report.Note)
+				}
 			}
 			if err = os.Remove(stopping); err != nil {
 				t.Fatal(err)
