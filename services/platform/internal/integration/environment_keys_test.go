@@ -27,7 +27,7 @@ import (
 func environmentKey(t *testing.T, f *fixture, ws, env uuid.UUID) []byte {
 	t.Helper()
 	var existing []byte
-	if err := f.st.Pool.QueryRow(context.Background(), `SELECT wrapped FROM environment_keys WHERE environment_id=$1 AND state='active'`, env).Scan(&existing); err == nil {
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT wrapped FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2 AND state='active'`, ws, env).Scan(&existing); err == nil {
 		key, err := cryptobox.OpenEnvironmentKey(workspaceKey(t, f, ws, 1), existing, ws, env, 1, 1)
 		if err != nil {
 			t.Fatal(err)
@@ -374,8 +374,8 @@ func sealedHeader(t *testing.T, f *fixture, ws, version uuid.UUID) (cryptobox.He
 }
 
 // An environment's first secret makes its key, inside the transaction that stores the value and
-// recorded in the key history; its values are sealed under it and open. Writers making the key at
-// once end up with one.
+// recorded in the key history; its values are sealed under it and open. Secrets saved at once
+// through the API end up under one key.
 func TestNewValuesAreSealedUnderTheirEnvironmentKey(t *testing.T) {
 	x := newRetirementFixture(t)
 	f := x.f
@@ -477,9 +477,6 @@ func TestValuesStayUnderTheWorkspaceKeyBesideOlderInstances(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
-		t.Fatal(err)
-	}
 	var env api.Environment
 	x.owner.call("POST", x.prefix, map[string]string{"name": "Mixed fleet"}, 201, &env)
 	var secret api.SecretVersion
@@ -515,7 +512,11 @@ func TestPurgeWaitsForAWriterAndRefusesLaterOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Rollback(ctx)
-	if _, err = keys.Seal(ctx, db.New(writer), item, []byte("late")); err != nil {
+	late, err := keys.Seal(ctx, db.New(writer), item, []byte("late"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.New(writer).InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: x.ws, SecretID: first.SecretId, ID: item.ID, EncryptedValue: late, AuthorID: f.owner}); err != nil {
 		t.Fatal(err)
 	}
 	purged := make(chan api.Environment, 1)
@@ -542,6 +543,9 @@ func TestPurgeWaitsForAWriterAndRefusesLaterOnes(t *testing.T) {
 	if n := x.count("SELECT count(*) FROM environment_keys WHERE environment_id=$1 AND state='active'", env.Id); n != 0 {
 		t.Fatal("a purged environment has a key")
 	}
+	if n := x.count("SELECT count(*) FROM secret_versions WHERE id=$1 AND erased_at IS NULL", item.ID); n != 0 {
+		t.Fatal("the purge kept the writer's value")
+	}
 }
 
 // Values saved beside an instance of an earlier release stay under their workspace's key, and
@@ -558,9 +562,6 @@ func TestConvertMovesEnvironmentValuesOntoTheirKeys(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, older); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
-		t.Fatal(err)
-	}
 	var env api.Environment
 	x.owner.call("POST", x.prefix, map[string]string{"name": "Moved later"}, 201, &env)
 	var secret api.SecretVersion
@@ -574,9 +575,6 @@ func TestConvertMovesEnvironmentValuesOntoTheirKeys(t *testing.T) {
 		t.Fatalf("conversion beside an older instance %+v", c)
 	}
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
 		t.Fatal(err)
 	}
 	// The command runs in its own process, which loads no token keys.

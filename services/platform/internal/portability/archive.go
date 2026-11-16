@@ -98,15 +98,12 @@ func credential(table string, row Row, environments secretEnvironments) (string,
 		return "", secretbroker.Item{}, ErrArchive
 	}
 	item := secretbroker.Item{Kind: kind, ID: id}
-	if environments != nil {
-		switch table {
-		case "secret_versions":
-			var secret uuid.UUID
-			if json.Unmarshal(row["secret_id"], &secret) != nil || environments[secret] == uuid.Nil {
-				return "", secretbroker.Item{}, ErrArchive
-			}
-			item.Environment = environments[secret]
+	if environments != nil && table == "secret_versions" {
+		var secret uuid.UUID
+		if json.Unmarshal(row["secret_id"], &secret) != nil || environments[secret] == uuid.Nil {
+			return "", secretbroker.Item{}, ErrArchive
 		}
+		item.Environment = environments[secret]
 	}
 	return field, item, nil
 }
