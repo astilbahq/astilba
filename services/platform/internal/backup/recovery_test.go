@@ -79,6 +79,10 @@ func TestRecoveryAdmitsOnlyThePolicysManifest(t *testing.T) {
 	if err := r.Admits(m); err != nil {
 		t.Fatal(err)
 	}
+	m.Extensions = []string{"hstore", "plpgsql"}
+	if err := r.Admits(m); err != nil {
+		t.Fatal("a manifest with the recipe's extensions was refused: ", err)
+	}
 	for name, change := range map[string]func(*Manifest){
 		"another policy":      func(m *Manifest) { m.PolicyID = uuid.New() },
 		"another environment": func(m *Manifest) { m.EnvironmentID = uuid.New() },
@@ -91,6 +95,7 @@ func TestRecoveryAdmitsOnlyThePolicysManifest(t *testing.T) {
 		"no digest":           func(m *Manifest) { m.SHA256 = "" },
 		"no roles":            func(m *Manifest) { m.Roles = nil },
 		"no extensions":       func(m *Manifest) { m.Extensions = nil },
+		"another extension":   func(m *Manifest) { m.Extensions = []string{"plpgsql", "adminpack"} },
 		"too many roles": func(m *Manifest) {
 			m.Roles = make([]Role, 101)
 			for i := range m.Roles {

@@ -233,6 +233,23 @@ var workersStarted sync.Map
 // as a new keyring takes a restart.
 func keysSettled(t *testing.T, st *store.Store) {
 	t.Helper()
+	startJobSettled(t, st, "platform_custody_keys_v1")
+}
+
+// lengthsSettled waits, for a store whose workers run, until the job that measures secret lengths
+// has made its pass at start; it runs again only after six hours. A test that clears a version's
+// lengths to see what planning does with one waits first, or the pass may measure the version
+// between the clearing and the plan.
+func lengthsSettled(t *testing.T, st *store.Store) {
+	t.Helper()
+	startJobSettled(t, st, "platform_secret_lengths_v1")
+}
+
+// startJobSettled waits until the workers' start-up run of a periodic job has completed, or the
+// workers have stopped. The workers enqueue that run once their client is elected leader, which
+// takes a few seconds after the fixture starts, so a test cannot assume it has not happened yet.
+func startJobSettled(t *testing.T, st *store.Store, kind string) {
+	t.Helper()
 	workers, ok := workersStarted.Load(st)
 	if !ok {
 		return
@@ -240,7 +257,7 @@ func keysSettled(t *testing.T, st *store.Store) {
 	stopped := workers.(*execution.Service).Queue.Stopped()
 	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		var done bool
-		if err := st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_custody_keys_v1' AND state='completed')`).Scan(&done); err != nil {
+		if err := st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind=$1 AND state='completed')`, kind).Scan(&done); err != nil {
 			t.Fatal(err)
 		}
 		select {
@@ -254,8 +271,8 @@ func keysSettled(t *testing.T, st *store.Store) {
 		}
 	}
 	var jobs string
-	_ = st.Pool.QueryRow(context.Background(), `SELECT coalesce(string_agg(state::text || ' attempt ' || attempt || ' ' || coalesce(errors::text, ''), '; '), 'none') FROM river_job WHERE kind='platform_custody_keys_v1'`).Scan(&jobs)
-	t.Fatalf("the key job the workers run at start did not finish: %s", jobs)
+	_ = st.Pool.QueryRow(context.Background(), `SELECT coalesce(string_agg(state::text || ' attempt ' || attempt || ' ' || coalesce(errors::text, ''), '; '), 'none') FROM river_job WHERE kind=$1`, kind).Scan(&jobs)
+	t.Fatalf("the %s job the workers run at start did not finish: %s", kind, jobs)
 }
 
 // useKeys gives a store a keyring, as configuring another keyring and restarting does: the

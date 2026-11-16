@@ -61,6 +61,10 @@ func (keyNotInBackup) Unwrap() error { return cryptobox.ErrKey }
 // offline, where nothing makes keys, so the operator makes them before recovering again.
 var ErrKeyMissing = errors.New("the workspace has no key yet: run `astilba custody init-keys`, then recover again")
 
+// ErrKeyDestroyed is a value sealed under an environment's key that purging the environment, or
+// ending its preview, destroyed. Nothing opens it again: callers treat it as erased.
+var ErrKeyDestroyed = errors.New("the environment's key was destroyed when the environment was purged or its preview ended, so its value is erased")
+
 // ErrKeyPending is a holder still waiting for its first key, which the key job is making. How far
 // that job has got across the installation is for operators, in its log and custody status.
 var ErrKeyPending = &domain.Error{Code: "temporarily_busy", Message: "The key for saving this is being created. Try again shortly."}
@@ -102,6 +106,7 @@ type Queries interface {
 	AbandonSecretAccess(ctx context.Context, olderThanSeconds float64) (int64, error)
 	WorkspaceKeyWrappings(ctx context.Context, arg db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error)
 	InstallationKeyWrappings(ctx context.Context, arg db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error)
+	EnvironmentKeys(ctx context.Context, workspaceID uuid.UUID) ([]db.EnvironmentKeysRow, error)
 }
 
 type Broker struct {
@@ -178,7 +183,7 @@ func (b *Broker) begin(ctx context.Context, r Request, rule rule) (*Session, err
 		b.outcome(ctx, id, Failed, requests)
 		return nil, err
 	}
-	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: keys, sealing: sealing, keyless: held.keyless, requests: requests}
+	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: keys, sealing: sealing, keyless: held.keyless, environments: held.environments, requests: requests}
 	b.log.Info("secret access", "access", id, "workspace", r.Workspace, "purpose", r.Purpose, "principal", r.Principal.Kind, "items", len(r.Items), "kinds", len(r.Kinds), "backend", b.backend.ID())
 	return s, nil
 }

@@ -21,7 +21,7 @@ const revokedPreviewNote = "Released because its preview host was revoked. That 
 // releaseRevokedPreviews frees the slots of previews on a revoked reserved host. Their removal can
 // never be confirmed, so waiting would hold the slots and the policy's host for good. Management's
 // copies of their secrets have no further use: a request that comes back gets a new environment.
-func releaseRevokedPreviews(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) error {
+func (s *Service) releaseRevokedPreviews(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID) error {
 	q := db.New(tx)
 	if err := q.WithdrawRevokedHostPreviewApprovals(ctx, db.WithdrawRevokedHostPreviewApprovalsParams{Note: revokedPolicyNote, WorkspaceID: ws, ServerID: server}); err != nil {
 		return err
@@ -35,6 +35,9 @@ func releaseRevokedPreviews(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID
 			return err
 		}
 		if err = q.DeleteEnvironmentSecrets(ctx, db.DeleteEnvironmentSecretsParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
+			return err
+		}
+		if err = s.Store.Broker.DestroyEnvironmentKeys(ctx, q, ws, env, "preview released by host revocation"); err != nil {
 			return err
 		}
 	}

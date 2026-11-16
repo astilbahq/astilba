@@ -222,6 +222,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = q.DeleteEndedPreviewSecrets(ctx, in.WorkspaceID); err != nil {
 		return out, err
 	}
+	if err = s.Store.Broker.DestroyEndedEnvironmentKeys(ctx, q, in.WorkspaceID); err != nil {
+		return out, err
+	}
 	if err = portability.StoreRecoveredHistory(ctx, tx, in.WorkspaceID, source.History); err != nil {
 		return out, err
 	}
