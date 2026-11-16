@@ -17,13 +17,14 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/google/uuid"
+	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
 )
 
 // canaryAccess is repository access as management releases it for one command.
 var canaryAccess = backup.Access{Password: releaseCanary, AccessKey: "key-id", SecretKey: releaseCanary}
 
-// PLAT-448. A backup or schedule command waiting for attention keeps no repository access, however
+// PLAT-448. A backup, schedule or restore command waiting for attention keeps no repository access, however
 // it came to wait, and still matches its own delivery. Other kinds keep their values until PLAT-457.
 func TestParkedBackupsKeepNoRepositoryAccess(t *testing.T) {
 	j, plan := testVisualJournal(t)
@@ -233,6 +234,65 @@ func TestRetriedCheckWaitsForItsAccess(t *testing.T) {
 	}
 	if r, err = e.Journal.Record(install.Id); err != nil || r.Report.State != "cancelled" || r.Report.Note != valuesExpiredNote {
 		t.Fatal("a retried install past its deadline was not cancelled:", r.Report.State, r.Report.Note, err)
+	}
+}
+
+// A retried restore that gave up its access waits for it, and runs with it once a delivery brings
+// it back, even from a copy of the command read before then. This restore then stops at its missing
+// restic, which it reaches only past the wait.
+func TestRetriedRestoreWaitsForItsAccess(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	if err := j.saveUnit(unitState{Plan: plan, Expected: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"absent"}`))
+	}))
+	defer daemon.Close()
+	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	e := &Engine{Journal: j, Docker: docker, ResticCLI: filepath.Join(t.TempDir(), "restic")}
+	restore, v := recoveryCommand(t, plan, nil)
+	held := func() bool {
+		return bytes.Contains(sealedRecord(t, j, restore.Id), []byte(v.Installation.Access.Password))
+	}
+	if _, err = j.Accept(restore); err != nil {
+		t.Fatal(err)
+	}
+	if err = j.Mutate(restore.Id, func(r *Record) { settleReport(r, "needs_attention", "Inspect it.") }); err != nil {
+		t.Fatal(err)
+	}
+	if held() {
+		t.Fatal("a parked restore kept its access")
+	}
+	if err = j.Retry(restore.Id); err != nil {
+		t.Fatal(err)
+	}
+	r, err := j.Record(restore.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err = e.Execute(ctx, r.Command); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = j.Record(restore.Id); err != nil || r.Report.State != "running" || !r.ValuesWanted || r.Report.Note != valuesWantedNote || r.StartedAt != nil {
+		t.Fatal("a retried restore ran without its access, or did not say it waits for it:", r.Report.State, r.ValuesWanted, r.Report.Note, err)
+	}
+	read := r.Command
+	if r, err = j.Accept(restore); err != nil || !held() || r.ValuesWanted {
+		t.Fatal("the delivery that brings the access back was not taken", err)
+	}
+	if err = e.Execute(ctx, read); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = j.Record(restore.Id); err != nil || r.Report.State != "failed" || !strings.Contains(r.Report.Note, "needs restic "+backup.ResticVersion) {
+		t.Fatal("a retried restore with its access back did not run:", r.Report.State, r.Report.Note, err)
 	}
 }
 

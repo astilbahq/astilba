@@ -147,15 +147,16 @@ func (r Record) finished() bool {
 }
 
 // parkedValues are the kinds whose released values a record gives up while it waits for
-// attention: the repository access of a backup or schedule command.
+// attention: the repository access of a backup, schedule or restore command.
 //
-// Nothing that settles such a record reads that access. A run is settled by its run state, and a
-// scheduled backup or restore runs with the access its installed schedule holds. Only an install or
-// a check of a repository reads the command's own, and one retried without it asks for it again
-// (awaitValues). An earlier agent restored onto this journal retries one without it, and fails at
+// Nothing that settles such a record reads that access. A run is settled by its run state, a
+// scheduled backup or restore runs with the access its installed schedule holds, and a restore
+// stopped after it began changing this server is settled by its containers. Only an install or a
+// check of a repository, or a restore before it begins, reads the command's own, and one retried
+// without it asks for it again (awaitValues). An earlier agent restored onto this journal retries one without it, and fails at
 // the repository's password check before any effect. Kinds whose executors would act without their
 // values, such as a deployment without its secrets, are not listed.
-var parkedValues = map[api.ExecutionCommandKind]bool{"backup": true, "schedule": true}
+var parkedValues = map[api.ExecutionCommandKind]bool{"backup": true, "schedule": true, "restore": true}
 
 // parked reports whether a record waits for attention: an operator's retry, resolve-run, or a
 // coordinated rejection.
