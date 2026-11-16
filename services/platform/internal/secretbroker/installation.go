@@ -292,6 +292,9 @@ type Status struct {
 	Unfinished []db.UnfinishedCustodyRunsRow
 	// Keys is how far creating workspace, installation and token keys has got.
 	Keys db.KeyProgressRow
+	// Legacy is, for each kind with stored values, how many there are and how many of them are
+	// still sealed under the installation keyring.
+	Legacy []db.LegacyValueCountsRow
 }
 
 // Status reads the installation's custody and checks every canary, changing nothing.
@@ -327,6 +330,9 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 	if s.Keys, err = q.KeyProgress(ctx); err != nil {
 		return s, err
 	}
+	if s.Legacy, err = q.LegacyValueCounts(ctx); err != nil {
+		return s, err
+	}
 	s.Unfinished, err = q.UnfinishedCustodyRuns(ctx)
 	return s, err
 }
@@ -357,6 +363,18 @@ func (s Status) Pending() []string {
 	}
 	if missing := s.Keys.Workspaces - s.Keys.WithKeys; missing > 0 || !s.Keys.Installation || !s.Keys.Token {
 		out = append(out, fmt.Sprintf("%d of %d workspaces have keys, installation key %s, token key %s: `serve` creates the rest in the background, or run `astilba custody init-keys`", s.Keys.WithKeys, s.Keys.Workspaces, present(s.Keys.Installation), present(s.Keys.Token)))
+	}
+	var legacy int64
+	for _, c := range s.Legacy {
+		legacy += c.Remaining
+	}
+	switch {
+	case legacy > 0 && s.Stage >= convertStage:
+		out = append(out, fmt.Sprintf("%d values are sealed under the installation keyring although they were converted: an instance running an older release stored them. Upgrade it, then run `astilba custody convert` again", legacy))
+	case legacy > 0:
+		out = append(out, fmt.Sprintf("%d values are still sealed under the installation keyring: run `astilba custody convert`", legacy))
+	case s.Stage == convertStage-1:
+		out = append(out, "every value is sealed under a workspace or installation key: run `astilba custody convert` to record it")
 	}
 	for _, run := range s.Unfinished {
 		out = append(out, fmt.Sprintf("%s run %s at %s has no finish, and no run since has succeeded: it stopped part way or is running now", run.Kind, run.RunID, run.At.UTC().Format(time.RFC3339)))

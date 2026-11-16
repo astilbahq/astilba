@@ -253,7 +253,7 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		tokens, e := st.Broker.Tokens(ctx)
+		tokens, e := st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 		if e != nil {
 			return e
 		}

@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceCustodyStage = `-- name: AdvanceCustodyStage :execrows
@@ -293,17 +294,20 @@ func (q *Queries) PruneCustodyInstances(ctx context.Context) error {
 }
 
 const recordCustodyInstance = `-- name: RecordCustodyInstance :exec
-INSERT INTO custody_instances(instance_id,token_generations) VALUES($1,$2)
-ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, seen_at = now()
+INSERT INTO custody_instances(instance_id,token_generations,stage) VALUES($1,$2,$3)
+ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, stage = EXCLUDED.stage, seen_at = now()
 `
 
 type RecordCustodyInstanceParams struct {
-	InstanceID       uuid.UUID `json:"instance_id"`
-	TokenGenerations []int64   `json:"token_generations"`
+	InstanceID       uuid.UUID   `json:"instance_id"`
+	TokenGenerations []int64     `json:"token_generations"`
+	Stage            pgtype.Int4 `json:"stage"`
 }
 
+// An instance reports the token key generations it holds, and the custody stage its release
+// completes.
 func (q *Queries) RecordCustodyInstance(ctx context.Context, arg RecordCustodyInstanceParams) error {
-	_, err := q.db.Exec(ctx, recordCustodyInstance, arg.InstanceID, arg.TokenGenerations)
+	_, err := q.db.Exec(ctx, recordCustodyInstance, arg.InstanceID, arg.TokenGenerations, arg.Stage)
 	return err
 }
 
