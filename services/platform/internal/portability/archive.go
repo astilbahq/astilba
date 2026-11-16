@@ -145,6 +145,27 @@ func transformCredential(table string, row Row, environments secretEnvironments,
 	return nil
 }
 
+// exportCredential opens a row's value for an export. A value whose environment's key was
+// destroyed, by purging the environment or ending its preview, is exported erased: a secret version
+// without its value, and a backup policy with no access, which the policy, disabled in its purged
+// environment, never uses.
+func exportCredential(table string, row Row, keys *secretbroker.Session) error {
+	err := transformCredential(table, row, nil, keys.Open)
+	if !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+		return err
+	}
+	switch table {
+	case "secret_versions":
+		setValue(row, "encrypted_value", nil)
+		setValue(row, "erased_at", time.Now().UTC())
+		return nil
+	case "backup_policies":
+		setValue(row, "encrypted_access", `\x`+hex.EncodeToString([]byte("{}")))
+		return nil
+	}
+	return err
+}
+
 // AdmitExport refuses what Export would refuse before reading the workspace: an account that
 // may not export it, or a workspace with a reservation. A request is refused this way before it
 // waits for the archive turn, and Export checks again once it has the turn.
@@ -188,7 +209,7 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 				if err := omitExportLogs(table.Name, row); err != nil {
 					return err
 				}
-				if err := transformCredential(table.Name, row, nil, keys.Open); err != nil {
+				if err := exportCredential(table.Name, row, keys); err != nil {
 					return err
 				}
 			}

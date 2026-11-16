@@ -174,7 +174,7 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending := strings.Join(status.Pending(), "\n"); !strings.Contains(pending, "10 values are still sealed under the installation keyring") {
+	if pending := strings.Join(status.Pending(), "\n"); !strings.Contains(pending, "10 values are sealed under the installation keyring although they were converted") {
 		t.Fatalf("pending %q", pending)
 	}
 	base := capturedBase(t, f, ws)
@@ -483,7 +483,7 @@ func TestConvertGivesUpWhileWritersHoldTheTables(t *testing.T) {
 		t.Fatalf("conversion beside a writer %+v %v", c, err)
 	}
 	var stage int32
-	if err = f.st.Pool.QueryRow(ctx, `SELECT stage FROM custody_stage`).Scan(&stage); err != nil || stage != 3 {
+	if err = f.st.Pool.QueryRow(ctx, `SELECT stage FROM custody_stage`).Scan(&stage); err != nil || stage != 5 {
 		t.Fatal("stage", stage, err)
 	}
 	if err = writer.Rollback(ctx); err != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json/v2"
 	"errors"
 	"slices"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
+	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
@@ -478,6 +481,125 @@ func TestPurgeWaitsForAWriterAndRefusesLaterOnes(t *testing.T) {
 	}
 	if n := x.count("SELECT count(*) FROM environment_keys WHERE environment_id=$1 AND state='active'", env.Id); n != 0 {
 		t.Fatal("a purged environment has a key")
+	}
+}
+
+// A workspace still exports after one of its environments is purged with a backup policy whose
+// credential is sealed under the environment's key: the policy is exported with no access, as an
+// erased value, since the key that sealed it is gone.
+func TestExportAfterPurgeWritesDestroyedValuesErased(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Backed up"}, 201, &env)
+	server, policy := uuid.New(), uuid.New()
+	sealed, err := cryptobox.SealUnderEnvironment(environmentKey(t, f, x.ws, env.Id), env.Id, 1, []byte(`{"password":"policy-canary"}`), pipeline.EncryptionIdentity(x.ws, policy, "backup-policy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.st.Pool.Exec(ctx, `INSERT INTO servers(id,workspace_id,name,role) VALUES($1,$2,'Backups','deployment')`, server, x.ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.st.Pool.Exec(ctx, `INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access,status) VALUES($1,$2,$3,$4,'{}',$5,'{}')`, policy, x.ws, env.Id, server, sealed); err != nil {
+		t.Fatal(err)
+	}
+	account, err := f.st.Queries.AccountByID(ctx, f.owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportAccess := func() string {
+		t.Helper()
+		const passphrase = "environment-keys-export-passphrase"
+		encrypted, err := (&portability.Service{Store: f.st}).Export(ctx, browserPrincipal(t, f.st, account, false), x.ws, passphrase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := portability.Open(ctx, passphrase, encrypted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var exported portability.Archive
+		if err = json.Unmarshal(raw, &exported); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range exported.Tables["backup_policies"] {
+			var id uuid.UUID
+			var access string
+			if json.Unmarshal(row["id"], &id) == nil && id == policy && json.Unmarshal(row["encrypted_access"], &access) == nil {
+				plain, err := hex.DecodeString(strings.TrimPrefix(access, `\x`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(plain)
+			}
+		}
+		t.Fatal("the policy was not exported")
+		return ""
+	}
+	if access := exportAccess(); !strings.Contains(access, "policy-canary") {
+		t.Fatalf("exported access %q before the purge", access)
+	}
+	x.lifecycle(x.owner, x.prefix+"/"+env.Id.String(), "retire", "Backed up", 201)
+	x.purge(x.owner, x.prefix+"/"+env.Id.String(), "Backed up", []uuid.UUID{}, 201)
+	if access := exportAccess(); access != "{}" {
+		t.Fatalf("exported access %q after the purge", access)
+	}
+}
+
+// Values saved beside an instance of an earlier release stay under their workspace's key, and
+// converting waits for that instance; once it has gone, converting moves them onto their
+// environment's key and records custody stage 6.
+func TestConvertMovesEnvironmentValuesOntoTheirKeys(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_stage SET stage=5`); err != nil {
+		t.Fatal(err)
+	}
+	older := uuid.New()
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, older); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
+		t.Fatal(err)
+	}
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Moved later"}, 201, &env)
+	var secret api.SecretVersion
+	x.owner.call("POST", x.prefix+"/"+env.Id.String()+"/secrets", map[string]string{"name": "TOKEN", "value": "moved-canary"}, 201, &secret)
+	header, before := sealedHeader(t, f, x.ws, secret.Id)
+	if header.Scope != cryptobox.ScopeWorkspace {
+		t.Fatalf("stored as %+v beside an older instance", header)
+	}
+	c := convert(t, f)
+	if c.Stage != 5 || !strings.Contains(c.Waiting, "stay under their workspace's key") {
+		t.Fatalf("conversion beside an older instance %+v", c)
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
+		t.Fatal(err)
+	}
+	if c = convert(t, f); c.Values == 0 || c.Stage != 6 || c.Waiting != "" {
+		t.Fatalf("conversion once it had gone %+v", c)
+	}
+	header, after := sealedHeader(t, f, x.ws, secret.Id)
+	if header.Scope != cryptobox.ScopeEnvironment || header.Holder != env.Id {
+		t.Fatalf("converted to %+v", header)
+	}
+	var data struct {
+		Data []byte `json:"data"`
+	}
+	var moved struct {
+		Data []byte `json:"data"`
+	}
+	if json.Unmarshal(before, &data) != nil || json.Unmarshal(after, &moved) != nil || string(data.Data) != string(moved.Data) {
+		t.Fatal("converting changed the value's data")
+	}
+	if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}, after); err != nil || string(value) != "moved-canary" {
+		t.Fatal(string(value), err)
 	}
 }
 
