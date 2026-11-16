@@ -570,9 +570,7 @@ func TestCuttingOverToARestoredVolume(t *testing.T) {
 	// The volume the server runs is kept, even once the draft no longer mounts it.
 	g.b.call("GET", l.e.path+"/draft", nil, 200, &revision)
 	g.b.call("PUT", l.e.path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": draft.Specification}, 200, &revision)
-	if got := g.discard(l, record.Id); got.status != http.StatusConflict {
-		t.Fatalf("a discard of the volume the server runs = %d %s", got.status, got.body)
-	}
+	refused(t, "a discard of the volume the server runs", g.discard(l, record.Id), "volume.inUse")
 }
 
 // An ended restore's volume can be deleted, unless the draft mounts it, and once deleted it can't
@@ -606,9 +604,7 @@ func TestDiscardingARestoredVolume(t *testing.T) {
 		t.Fatal("a restore's volume was recorded as deleted before it was discarded")
 	}
 	discarded(failed.Id)
-	if got := g.discard(l, failed.Id); got.status != http.StatusConflict {
-		t.Fatalf("a second discard = %d %s", got.status, got.body)
-	}
+	refused(t, "a second discard", g.discard(l, failed.Id), "volume.deleted")
 	g.mu.Lock()
 	delete(g.failing, "restore/"+l.b.id.String())
 	g.mu.Unlock()
@@ -639,9 +635,7 @@ func TestDiscardingARestoredVolume(t *testing.T) {
 	if got.status != http.StatusOK || json.Unmarshal(got.body, &revision) != nil {
 		t.Fatalf("cutover = %d %s", got.status, got.body)
 	}
-	if got := g.discard(l, running.Id); got.status != http.StatusConflict {
-		t.Fatalf("a discard of a volume the draft mounts = %d %s", got.status, got.body)
-	}
+	refused(t, "a discard of a volume the draft mounts", g.discard(l, running.Id), "volume.inUse")
 	g.b.call("PUT", l.e.path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": before.Specification}, 200, &revision)
 	discarded(running.Id)
 	if got := g.cutover(l, running.Id, revision.Id); got.status != http.StatusConflict {

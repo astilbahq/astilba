@@ -334,7 +334,6 @@ export default interface Resources {
       "discardDescription": "This deletes volume {{volume}}, which the restore created on the environment's current server. It can't be undone, and the restore can't be cut over afterwards.",
       "discardFailed": "Volume {{volume}} wasn't discarded: {{note}}",
       "discardPending": "Discarding the volume. It is deleted once the server confirms.",
-      "discardRefused": "The volume can't be discarded now: another discard is running, it was already deleted, or a draft or deployment uses it.",
       "discardTitle": "Discard the restored volume?",
       "discarded": "Its volume was discarded.",
       "discarding": "Discarding…",
@@ -342,6 +341,12 @@ export default interface Resources {
       "loadFailed": "Restores couldn't be loaded.",
       "prepareCutover": "Prepare cutover draft",
       "preparing": "Preparing…",
+      "refused": {
+        "discardActive": "This volume is already being discarded.",
+        "restoreServer": "The environment no longer runs on the server this restore was made on, so its volume can't be discarded.",
+        "volumeDeleted": "This volume is already deleted.",
+        "volumeInUse": "The draft, the deployed plan or a database upgrade still uses this volume."
+      },
       "state": {
         "cancelled": "cancelled",
         "dispatched": "sent to the server",

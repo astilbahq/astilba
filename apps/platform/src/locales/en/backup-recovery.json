@@ -54,7 +54,12 @@
     "cancel": "Cancel",
     "discardPending": "Discarding the volume. It is deleted once the server confirms.",
     "discardFailed": "Volume {{volume}} wasn't discarded: {{note}}",
-    "discardRefused": "The volume can't be discarded now: another discard is running, it was already deleted, or a draft or deployment uses it.",
+    "refused": {
+      "discardActive": "This volume is already being discarded.",
+      "volumeDeleted": "This volume is already deleted.",
+      "volumeInUse": "The draft, the deployed plan or a database upgrade still uses this volume.",
+      "restoreServer": "The environment no longer runs on the server this restore was made on, so its volume can't be discarded."
+    },
     "discardAttention": "The discard needs attention: {{note}}"
   },
   "exposed": {

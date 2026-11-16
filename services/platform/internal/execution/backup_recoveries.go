@@ -258,7 +258,10 @@ func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal,
 		if err != nil {
 			return err
 		}
-		if row.State != string(api.ExecutionStateSucceeded) || discardActive(row.DiscardState) {
+		if discardActive(row.DiscardState) {
+			return domain.DiscardActive
+		}
+		if row.State != string(api.ExecutionStateSucceeded) {
 			return domain.Conflict
 		}
 		result, err := backup.ParseRecoveryResult(row.Result, id, env, row.Snapshot, row.TargetVolumeID)
@@ -310,12 +313,15 @@ func (s *Service) DiscardRecoveryTarget(ctx context.Context, p store.Principal, 
 		// A restore that hasn't ended holds the environment's one active operation, so the
 		// deletion can't be issued until it does. A draft or plan that mounts the volume refuses it
 		// in observeVisual: a prepared plan applies only from the draft's revision.
-		if v.Server == nil || *v.Server != row.ServerID || discardActive(row.DiscardState) {
-			return domain.Conflict
+		if v.Server == nil || *v.Server != row.ServerID {
+			return domain.RestoreServerMoved
+		}
+		if discardActive(row.DiscardState) {
+			return domain.DiscardActive
 		}
 		_, err = db.New(tx).ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: v.Unit, ID: row.TargetVolumeID})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Conflict
+			return domain.VolumeDeleted
 		}
 		if err != nil {
 			return err

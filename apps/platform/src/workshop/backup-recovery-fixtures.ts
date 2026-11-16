@@ -136,12 +136,21 @@ const recovery = (
 // A discard stays running, so the row shows it pending, as after a reload. Stories share
 // handlers, so each story starts with none.
 const discards = new Map<string, Schema["BackupRecoveryRecord"]["discard"]>();
+let reloadsToFail = 0;
 export function resetRevokedServerBackups() {
   discards.clear();
+  reloadsToFail = 0;
 }
 
-/** With `refuseDiscard`, another owner's discard starts first, so the owner's own is refused. */
-export function revokedServerBackupHandlers({ refuseDiscard = false } = {}) {
+/**
+ * With `refuseDiscard`, another owner's discard starts first, so the owner's own is refused.
+ * With `failReload`, the reload after an accepted discard fails, and by the next one the
+ * discard has already failed.
+ */
+export function revokedServerBackupHandlers({
+  refuseDiscard = false,
+  failReload = false,
+} = {}) {
   const policyPath = `${environmentRoot}/backup-policies/:policyId`;
   const withDiscard = (r: Schema["BackupRecoveryRecord"]) => ({
     ...r,
@@ -211,24 +220,42 @@ export function revokedServerBackupHandlers({ refuseDiscard = false } = {}) {
         steps: [],
         createdAt: "2026-03-02T11:00:00Z",
       } satisfies Schema["Operation"];
-      discards.set(String(params.recoveryId), {
-        operationId: operation.id,
-        state: "running",
-        note: "",
-      });
+      discards.set(
+        String(params.recoveryId),
+        failReload
+          ? {
+              operationId: operation.id,
+              state: "failed",
+              note: "The server couldn't delete the volume.",
+            }
+          : { operationId: operation.id, state: "running", note: "" },
+      );
+      if (failReload) reloadsToFail = 1;
       if (refuseDiscard)
         return HttpResponse.json(
           {
             code: "conflict",
             message: "Server text the dashboard does not show.",
             requestId: "workshop",
+            fields: ["discard.active"],
           } satisfies Schema["Error"],
           { status: 409 },
         );
       return HttpResponse.json(operation, { status: 201 });
     }),
-    http.get(`${policyPath}/recoveries`, () =>
-      HttpResponse.json(
+    http.get(`${policyPath}/recoveries`, () => {
+      if (reloadsToFail > 0) {
+        reloadsToFail--;
+        return HttpResponse.json(
+          {
+            code: "unavailable",
+            message: "Server text the dashboard does not show.",
+            requestId: "workshop",
+          } satisfies Schema["Error"],
+          { status: 503 },
+        );
+      }
+      return HttpResponse.json(
         [
           recovery(
             "00000000-0000-4000-8000-00000000b0b1",
@@ -245,7 +272,7 @@ export function revokedServerBackupHandlers({ refuseDiscard = false } = {}) {
             "The restore failed while restoring or verifying its data.",
           ),
         ].map(withDiscard) satisfies Schema["BackupRecoveryRecord"][],
-      ),
-    ),
+      );
+    }),
   ];
 }

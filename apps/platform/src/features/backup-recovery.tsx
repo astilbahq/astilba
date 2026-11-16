@@ -326,11 +326,40 @@ function RecoveryItem({
     focused.current = false;
   }, [actions]);
   // A refusal means the server's view moved on, as when another owner started a discard.
-  const refresh = () =>
-    queries.invalidateQueries({
-      queryKey: ["backup-recoveries", { ...path, policyId }],
-    });
+  const key = ["backup-recoveries", { ...path, policyId }];
+  const refresh = () => queries.invalidateQueries({ queryKey: key });
+  // An accepted discard is shown at once, so the restore holds its volume even if the reload
+  // fails, and the list polls; the next load replaces it with what the server recorded.
+  const discarded = (operation: Schema["Operation"]) =>
+    queries.setQueryData<Recovery[]>(key, (rows) =>
+      rows?.map((row) =>
+        row.id === recovery.id
+          ? {
+              ...row,
+              discard: {
+                operationId: operation.id,
+                state: operation.state,
+                note: operation.note,
+              },
+            }
+          : row,
+      ),
+    );
   const succeeded = recovery.state === "succeeded" && !recovery.targetDeleted;
+  const status = !(held || failed || recovery.state === "succeeded")
+    ? null
+    : recovery.targetDeleted
+      ? t(($) => $.restores.discarded)
+      : pending
+        ? discard.state === "needs_attention"
+          ? t(($) => $.restores.discardAttention, { note: discard.note })
+          : t(($) => $.restores.discardPending)
+        : failed
+          ? t(($) => $.restores.discardFailed, {
+              volume: recovery.targetId,
+              note: discard.note,
+            })
+          : t(($) => $.restores.target, { volume: recovery.targetId });
   return (
     <li className={s.stack}>
       <p>
@@ -345,20 +374,7 @@ function RecoveryItem({
       {recovery.note && <p>{recovery.note}</p>}
       {/* Always mounted, so a status that appears is announced like one that changes. */}
       <p ref={volume} tabIndex={-1} role="status" className={s.muted}>
-        {!(held || failed || recovery.state === "succeeded")
-          ? null
-          : recovery.targetDeleted
-            ? t(($) => $.restores.discarded)
-            : pending
-              ? discard.state === "needs_attention"
-                ? t(($) => $.restores.discardAttention, { note: discard.note })
-                : t(($) => $.restores.discardPending)
-              : failed
-                ? t(($) => $.restores.discardFailed, {
-                    volume: recovery.targetId,
-                    note: discard.note,
-                  })
-                : t(($) => $.restores.target, { volume: recovery.targetId })}
+        {status}
       </p>
       <ErrorNotice error={action.error} />
       {owner && succeeded && !held && (
@@ -410,6 +426,8 @@ function RecoveryItem({
             recovery={recovery}
             busy={action.isPending}
             held={held}
+            status={status}
+            discarded={discarded}
             open={discarding}
             setOpen={(open) => {
               // Closing returns focus to the actions, even when they go in the same commit.
@@ -424,11 +442,26 @@ function RecoveryItem({
   );
 }
 
+// The stable fields the server names a discard's refusal with (docs/backups.md).
+const refusals: Partial<
+  Record<
+    string,
+    "discardActive" | "volumeDeleted" | "volumeInUse" | "restoreServer"
+  >
+> = {
+  "discard.active": "discardActive",
+  "volume.deleted": "volumeDeleted",
+  "volume.inUse": "volumeInUse",
+  "restore.server": "restoreServer",
+};
+
 function DiscardTarget({
   path,
   recovery,
   busy,
   held,
+  status,
+  discarded,
   open,
   setOpen,
   refresh,
@@ -439,6 +472,9 @@ function DiscardTarget({
   busy: boolean;
   /** Another discard holds the volume, or it is gone, so the server refuses another. */
   held: boolean;
+  /** Says why, while the volume is held. */
+  status: string | null;
+  discarded: (operation: Schema["Operation"]) => void;
   /** Owned by the restore, which keeps an open dialog while the volume becomes held. */
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -447,6 +483,13 @@ function DiscardTarget({
   const { t } = useTranslation("backup-recovery");
   const action = useAction({ recentAuth: true });
   const trigger = useRef<HTMLButtonElement>(null);
+  // Refusals the server names are explained here; any other keeps the server's message.
+  const refusal =
+    action.error instanceof ApiError && action.error.detail.code === "conflict"
+      ? action.error.detail.fields
+          ?.map((field) => refusals[field])
+          .find((key) => key !== undefined)
+      : undefined;
   return (
     <>
       <Button
@@ -476,14 +519,13 @@ function DiscardTarget({
               volume: recovery.targetId,
             })}
           </AlertDialogDescription>
+          {/* Always mounted, so a hold that arrives while the dialog is open is announced. */}
+          <p role="status" className={s.muted}>
+            {held && !action.error ? status : null}
+          </p>
           <ErrorNotice
             error={action.error}
-            message={
-              action.error instanceof ApiError &&
-              action.error.detail.code === "conflict"
-                ? t(($) => $.restores.discardRefused)
-                : undefined
-            }
+            message={refusal && t(($) => $.restores.refused[refusal])}
           />
           <AlertDialogActions>
             <AlertDialogClose
@@ -501,7 +543,7 @@ function DiscardTarget({
               disabled={action.isPending || held}
               onClick={(event) =>
                 action.run(async () => {
-                  await result(
+                  const operation = await result(
                     client.DELETE(`${recoveryRoot}/target`, {
                       params: { path },
                     }),
@@ -509,6 +551,7 @@ function DiscardTarget({
                     await refresh();
                     throw error;
                   });
+                  discarded(operation);
                   // Closed once the restore shows the discard, so neither control is offered
                   // while it starts.
                   await refresh();

@@ -3,6 +3,7 @@ package integration
 import (
 	"encoding/json/v2"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -25,6 +26,15 @@ func (g *revokedGroup) discardOf(t *testing.T, l lostFiles, id uuid.UUID) (uuid.
 	}
 	t.Fatal("the restore isn't listed")
 	return uuid.Nil, ""
+}
+
+// refused fails unless got is a conflict naming field, the stable reason a refusal gives.
+func refused(t *testing.T, what string, got reply, field string) {
+	t.Helper()
+	var e api.Error
+	if got.status != http.StatusConflict || json.Unmarshal(got.body, &e) != nil || e.Fields == nil || !slices.Contains(*e.Fields, field) {
+		t.Fatalf("%s = %d %s, want a conflict on %s", what, got.status, got.body, field)
+	}
 }
 
 // A restore's volume is either cut over to or discarded. While a discard is active the volume
@@ -52,12 +62,8 @@ func TestACutoverAndADiscardExcludeEachOther(t *testing.T) {
 		t.Fatalf("the restore records discard %s (%s), not the active %s", recorded, state, op.Id)
 	}
 	draft := g.draft(t, l)
-	if got := g.cutover(l, record.Id, draft.Id); got.status != http.StatusConflict {
-		t.Fatalf("a cutover during a discard = %d %s", got.status, got.body)
-	}
-	if got := g.discard(l, record.Id); got.status != http.StatusConflict {
-		t.Fatalf("a second discard during a discard = %d %s", got.status, got.body)
-	}
+	refused(t, "a cutover during a discard", g.cutover(l, record.Id, draft.Id), "discard.active")
+	refused(t, "a second discard during a discard", g.discard(l, record.Id), "discard.active")
 	g.mu.Lock()
 	g.failing["visual-delete-volume/"+l.b.id.String()] = true
 	g.mu.Unlock()
@@ -90,9 +96,7 @@ func TestACutoverAndADiscardExcludeEachOther(t *testing.T) {
 	if state := g.finished(t, plan.OperationID); state != "succeeded" {
 		t.Fatalf("plan ended %s", state)
 	}
-	if got := g.discard(l, record.Id); got.status != http.StatusConflict {
-		t.Fatalf("a discard of a volume a draft and plan mount = %d %s", got.status, got.body)
-	}
+	refused(t, "a discard of a volume a draft and plan mount", g.discard(l, record.Id), "volume.inUse")
 	g.b.call("PUT", l.e.path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": draft.Specification}, 200, &revision)
 	if got := <-g.b.send("POST", l.e.path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}); got.status != http.StatusConflict {
 		t.Fatalf("applying a plan the draft moved on from = %d %s", got.status, got.body)

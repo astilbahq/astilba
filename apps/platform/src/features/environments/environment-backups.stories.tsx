@@ -89,9 +89,9 @@ export const RefusedDiscard: Story = {
   ),
   play: async ({ canvasElement }) => {
     const { canvas, dialog } = await discardFirstRestore(canvasElement);
-    // The refusal reads from the catalogue, and the dialog offers no second attempt.
+    // The refusal the server names reads from the catalogue, and the dialog offers no second attempt.
     await expect(await dialog.findByRole("alert")).toHaveTextContent(
-      "The volume can't be discarded now",
+      "This volume is already being discarded.",
     );
     await waitFor(() =>
       expect(
@@ -108,5 +108,34 @@ export const RefusedDiscard: Story = {
     await expect(
       canvas.queryByRole("button", { name: "Prepare cutover draft" }),
     ).not.toBeInTheDocument();
+  },
+};
+
+// The reload after an accepted discard fails: the restore still shows the discard and holds its
+// volume, and the next load, by when the discard has failed, replaces it with the server's record.
+export const DiscardOutlivesAFailedReload: Story = {
+  parameters: scenario(
+    session,
+    ...revokedServerBackupHandlers({ failReload: true }),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const { canvas } = await discardFirstRestore(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(/^Discarding the volume\./)).toHaveFocus(),
+    );
+    await expect(
+      canvas.queryByRole("button", { name: "Prepare cutover draft" }),
+    ).not.toBeInTheDocument();
+    await expect(
+      await canvas.findByText(
+        /wasn't discarded: The server couldn't delete the volume\./,
+        undefined,
+        { timeout: 8000 },
+      ),
+    ).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "Prepare cutover draft" }),
+    ).toBeVisible();
   },
 };
