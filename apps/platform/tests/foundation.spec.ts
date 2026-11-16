@@ -17,6 +17,8 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   page,
   browser,
 }, info) => {
+  // Repeats of this journey share one database, so each needs a project of its own.
+  const project = `Website ${info.project.name}${info.repeatEachIndex ? ` ${info.repeatEachIndex + 1}` : ""}`;
   await page.emulateMedia({ colorScheme: "light" });
   await login(page);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
@@ -31,15 +33,11 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await expect(
     page.getByLabel("Project name", { exact: true }),
   ).toHaveAccessibleDescription("Enter a project name.");
-  await page
-    .getByLabel("Project name", { exact: true })
-    .fill(`Website ${info.project.name}`);
+  await page.getByLabel("Project name", { exact: true }).fill(project);
   await page
     .getByRole("button", { name: "Create project", exact: true })
     .click();
-  await page
-    .getByRole("link", { name: `Website ${info.project.name} Open project` })
-    .click();
+  await page.getByRole("link", { name: `${project} Open project` }).click();
   await page
     .getByRole("link", { name: "New environment", exact: true })
     .click();

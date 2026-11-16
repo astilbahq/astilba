@@ -53,6 +53,11 @@ export const tabsRecipe = defineSlotRecipe({
     panel: {
       minInlineSize: "0",
       paddingBlockStart: "7",
+      // Base UI keeps the previous panel in the page until the next animation frame, for an exit
+      // animation these panels don't have. Until then the new panel sits below it, and when it
+      // goes the content moves under the pointer: WebKit doesn't anchor the scroll position, so
+      // a press can land on one element and its release on another. Leave as the tab changes.
+      "&[data-ending-style]": { display: "none" },
       _focusVisible: {
         outline: "2px solid token(colors.control.interactiveBorder)",
         outlineOffset: "2px",
