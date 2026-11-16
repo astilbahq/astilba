@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -510,7 +511,7 @@ func TestConvertWaitsForOlderInstances(t *testing.T) {
 	}
 	// An instance of this release reports the stage it completes.
 	var reported int
-	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM custody_instances WHERE stage=4`).Scan(&reported); err != nil || reported == 0 {
+	if err := f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM custody_instances WHERE stage=$1`, dbmigrate.CustodyStage).Scan(&reported); err != nil || reported == 0 {
 		t.Fatal(reported, err)
 	}
 }

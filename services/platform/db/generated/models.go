@@ -435,6 +435,18 @@ type Environment struct {
 	PurgedWithoutHost     bool       `json:"purged_without_host"`
 }
 
+type EnvironmentKey struct {
+	WorkspaceID         uuid.UUID  `json:"workspace_id"`
+	EnvironmentID       uuid.UUID  `json:"environment_id"`
+	Generation          int64      `json:"generation"`
+	State               string     `json:"state"`
+	WorkspaceGeneration int64      `json:"workspace_generation"`
+	Wrapped             []byte     `json:"wrapped"`
+	Kcv                 []byte     `json:"kcv"`
+	CreatedAt           time.Time  `json:"created_at"`
+	DestroyedAt         *time.Time `json:"destroyed_at"`
+}
+
 type EnvironmentLayout struct {
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
 	EnvironmentID uuid.UUID `json:"environment_id"`
