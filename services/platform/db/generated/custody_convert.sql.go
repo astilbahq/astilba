@@ -280,11 +280,13 @@ func (q *Queries) HoldSealedValueTables(ctx context.Context) error {
 
 const instancesBelowStage = `-- name: InstancesBelowStage :one
 SELECT count(*)::bigint FROM custody_instances
-WHERE seen_at > now() - interval '5 minutes' AND (stage IS NULL OR stage < $1::integer)
+WHERE seen_at > statement_timestamp() - interval '5 minutes' AND (stage IS NULL OR stage < $1::integer)
 `
 
-// unscoped: instances seen in the last five minutes whose release completes a stage before
-// @stage, or reports none, as a release from before instances reported it does.
+// unscoped: instances seen in the five minutes before this statement whose release completes a
+// stage before @stage, or reports none, as a release from before instances reported it does.
+// Measured from the statement, not the transaction's start, so a writer that waited for converting
+// to record a stage reads the instances as converting did.
 func (q *Queries) InstancesBelowStage(ctx context.Context, stage int32) (int64, error) {
 	row := q.db.QueryRow(ctx, instancesBelowStage, stage)
 	var column_1 int64

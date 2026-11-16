@@ -91,10 +91,12 @@ LOCK TABLE secret_versions, git_connections, github_app_authorizations, registri
     backup_destinations, backup_policies, alert_settings, accounts IN SHARE MODE;
 
 -- name: InstancesBelowStage :one
--- unscoped: instances seen in the last five minutes whose release completes a stage before
--- @stage, or reports none, as a release from before instances reported it does.
+-- unscoped: instances seen in the five minutes before this statement whose release completes a
+-- stage before @stage, or reports none, as a release from before instances reported it does.
+-- Measured from the statement, not the transaction's start, so a writer that waited for converting
+-- to record a stage reads the instances as converting did.
 SELECT count(*)::bigint FROM custody_instances
-WHERE seen_at > now() - interval '5 minutes' AND (stage IS NULL OR stage < @stage::integer);
+WHERE seen_at > statement_timestamp() - interval '5 minutes' AND (stage IS NULL OR stage < @stage::integer);
 
 -- name: LimitLockWait :exec
 -- Bounds how long the transaction waits for any lock, so a command refuses rather than queueing

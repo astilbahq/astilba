@@ -954,3 +954,37 @@ func TestConvertCountsAValueStoredWhileItRecordsTheStage(t *testing.T) {
 		t.Fatalf("recorded beside a value under its workspace's key: %+v", c)
 	}
 }
+
+// A writer reads whether to seal under environment keys when it seals, not when its transaction
+// began: an instance of an earlier release that has gone by then, as converting may already have
+// found when it recorded stage 6, no longer keeps the value under its workspace's key.
+func TestTheGateIsReadWhenTheValueIsSealed(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Late gate"}, 201, &env)
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage,seen_at) VALUES($1,4,now()-interval '298 seconds')`, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	// The transaction began while the instance was seen less than five minutes ago.
+	time.Sleep(3 * time.Second)
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}
+	keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	sealed, err := keys.Seal(ctx, db.New(writer), item, []byte("late"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header, err := cryptobox.ReadHeader(sealed); err != nil || header.Scope != cryptobox.ScopeEnvironment {
+		t.Fatalf("sealed as %+v after the instance had gone %v", header, err)
+	}
+}
