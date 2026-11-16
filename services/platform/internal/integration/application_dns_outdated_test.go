@@ -185,6 +185,34 @@ func TestZoneSweepEndsARestoredApprovalTheZoneHasMovedPast(t *testing.T) {
 	expectZone(t, n.z, before)
 }
 
+func TestOutdatedRecordsStayWhileTheirApprovalCannotBeEnded(t *testing.T) {
+	n := restoreOverNewerZone(t)
+	ctx := context.Background()
+	// The database refuses to end the approval, as when its transaction fails.
+	refuse := `CREATE FUNCTION refuse_review() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.state='review_required' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW; END$$;
+		CREATE TRIGGER refuse_review BEFORE UPDATE ON server_domains FOR EACH ROW EXECUTE FUNCTION refuse_review()`
+	if _, e := n.restored.st.Pool.Exec(ctx, refuse); e != nil {
+		t.Fatal(e)
+	}
+	before := n.z.snapshot()
+	if e := n.restored.execution.SweepZone(ctx); e == nil {
+		t.Fatal("the sweep did not report the approval it failed to end")
+	}
+	// Deleting the newer records while the approval is current would leave its job nothing to judge
+	// it by, so they stay, and nothing is audited.
+	expectZone(t, n.z, before)
+	var audited int
+	if e := n.restored.st.Pool.QueryRow(ctx, "SELECT count(*) FROM dns_record_removals WHERE server_id=$1", n.moved.id).Scan(&audited); e != nil || audited != 0 {
+		t.Fatal("deletions were audited while the approval was current", audited, e)
+	}
+	if _, e := n.restored.st.Pool.Exec(ctx, "DROP TRIGGER refuse_review ON server_domains"); e != nil {
+		t.Fatal(e)
+	}
+	runDNSJobs(t, n.restored)
+	expectNoWrites(t, n.z)
+	endedAsOutdated(t, n.restored, n.moved)
+}
+
 func TestDNSJobRefusesARestoredApprovalBeforeTheZoneSweepRuns(t *testing.T) {
 	n := restoreOverNewerZone(t)
 	runDNSJobs(t, n.restored)
@@ -254,11 +282,145 @@ func TestApprovalChangesAreNotMistakenForANewerZone(t *testing.T) {
 	runDNSJobs(t, f)
 	expectNoWrites(t, z)
 	endedAsOutdated(t, f, s)
+	// Approving again starts afresh: the missing record isn't held against the new approval.
+	reconfigure(t, s, approvedLater)
+	s.waitState(t, "applied")
+	if !zoneShows(z, s, approvedLater...) {
+		t.Fatal("the re-approved addresses were not published", z.snapshot())
+	}
 }
 
-func TestOutdatedWithdrawalsCountTowardsTheHold(t *testing.T) {
+func TestAFailedJobKeepsTheRecordsItLastObserved(t *testing.T) {
 	n := restoreOverNewerZone(t)
 	ctx := context.Background()
+	// The provider fails the restored management's first jobs before they see the zone.
+	n.z.mu.Lock()
+	n.z.failLookups = true
+	n.z.mu.Unlock()
+	if _, e := n.restored.st.Pool.Exec(ctx, "UPDATE server_domains SET observed_at=NULL"); e != nil {
+		t.Fatal(e)
+	}
+	if e := n.restored.execution.SweepDomains(ctx); e != nil {
+		t.Fatal(e)
+	}
+	eventually(t, "the revoked server's job fails", func() bool {
+		var state string
+		if e := n.restored.st.Pool.QueryRow(ctx, "SELECT state FROM server_domains WHERE server_id=$1", n.revoked.id).Scan(&state); e != nil {
+			t.Fatal(e)
+		}
+		return state == "failed"
+	})
+	n.z.mu.Lock()
+	n.z.failLookups = false
+	n.z.mu.Unlock()
+	// The next job still finds the record the last one before the restore observed gone.
+	runDNSJobs(t, n.restored)
+	expectNoWrites(t, n.z)
+	endedAsOutdated(t, n.restored, n.revoked)
+}
+
+func TestRecordsObservedBeforeTheZoneWasRecordedStillCount(t *testing.T) {
+	n := restoreOverNewerZone(t)
+	// As in a backup taken before the zone was recorded with the records it names.
+	if _, e := n.restored.st.Pool.Exec(context.Background(), "UPDATE server_domains SET observed_zone=''"); e != nil {
+		t.Fatal(e)
+	}
+	runDNSJobs(t, n.restored)
+	expectNoWrites(t, n.z)
+	endedAsOutdated(t, n.restored, n.revoked)
+}
+
+func TestRecordsObservedUnderAnotherBaseAreNotHeldAgainstANewApproval(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.st.ApplicationDomain = "apps.example.test"
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	dnsJobsDone(t, f)
+	// The server's records under the old base are gone by the time the base changes, so their
+	// withdrawal audits nothing.
+	z.mu.Lock()
+	for id, r := range z.records {
+		if r["comment"] == s.marker {
+			delete(z.records, id)
+		}
+	}
+	z.mu.Unlock()
+	if e := f.execution.Stop(ctx); e != nil {
+		t.Fatal(e)
+	}
+	f.st.ApplicationDomain = "apps2.example.test"
+	if e := f.execution.Start(ctx); e != nil {
+		t.Fatal(e)
+	}
+	// An owner approves the server's addresses under the new base, which publishes them there.
+	reconfigure(t, s, approvedLater)
+	dnsJobsDone(t, f)
+	var state string
+	if e := f.st.Pool.QueryRow(ctx, "SELECT state FROM server_domains WHERE server_id=$1", s.id).Scan(&state); e != nil || state != "applied" {
+		t.Fatal("the approval under the new base was not applied", state, e)
+	}
+	if z.marked(s.nameUnder("apps2.example.test"), s.marker) != 2 {
+		t.Fatal("the approval under the new base was not published", z.snapshot())
+	}
+}
+
+func TestInactiveManagementJudgesRecordsBeforeRemovingThem(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.st.ApplicationDomain = zoneBase
+	var ws uuid.UUID
+	if e := f.st.Pool.QueryRow(ctx, "SELECT id FROM workspaces LIMIT 1").Scan(&ws); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := f.st.Pool.Exec(ctx, "INSERT INTO hosted_subscriptions(workspace_id,status,management_until,server_limit) VALUES($1,'granted',now()+interval '1 hour',100)", ws); e != nil {
+		t.Fatal(e)
+	}
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	dnsJobsDone(t, f)
+	restart := func(until string) {
+		t.Helper()
+		if e := f.execution.Stop(ctx); e != nil {
+			t.Fatal(e)
+		}
+		f.st.Hosted = true
+		if _, e := f.st.Pool.Exec(ctx, "UPDATE hosted_subscriptions SET management_until=now()+$2::interval WHERE workspace_id=$1", ws, until); e != nil {
+			t.Fatal(e)
+		}
+		if e := f.execution.Start(ctx); e != nil {
+			t.Fatal(e)
+		}
+		if e := f.execution.SweepDomains(ctx); e != nil {
+			t.Fatal(e)
+		}
+	}
+	// A record of the server's is deleted outside this database, then its management lapses. The
+	// removal must not explain the deleted record away, or resuming would publish the approval again.
+	z.mu.Lock()
+	for id, r := range z.records {
+		if r["comment"] == s.marker && r["type"] == "AAAA" {
+			delete(z.records, id)
+		}
+	}
+	z.mu.Unlock()
+	restart("-1 second")
+	eventually(t, "the lapsed workspace's records are removed", func() bool { return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0 })
+	endedAsOutdated(t, f, s)
+	z.mu.Lock()
+	z.writes = nil
+	z.mu.Unlock()
+	restart("1 hour")
+	runDNSJobs(t, f)
+	expectNoWrites(t, z)
+	endedAsOutdated(t, f, s)
+}
+
+// heldOutdated restores over a newer zone holding enough other unbacked records that the sweep
+// holds the moved server's outdated records back with them, and returns the hold.
+func heldOutdated(t *testing.T) (newerZone, zoneHold) {
+	t.Helper()
+	n := restoreOverNewerZone(t)
 	// With the moved server's two records, these make more than ten, and all of the zone's.
 	installation := installationOf(t, n.restored)
 	for range 9 {
@@ -274,6 +436,13 @@ func TestOutdatedWithdrawalsCountTowardsTheHold(t *testing.T) {
 	if len(holds) != 1 || holds[0].records != 11 {
 		t.Fatalf("holds %+v", holds)
 	}
+	return n, holds[0]
+}
+
+func TestOutdatedWithdrawalsCountTowardsTheHold(t *testing.T) {
+	n, hold := heldOutdated(t)
+	ctx := context.Background()
+	holds := []zoneHold{hold}
 	if e := execution.ConfirmZoneHold(ctx, n.restored.st.Pool, holds[0].id, 11, "operator", "restored from a backup"); e != nil {
 		t.Fatal(e)
 	}
@@ -284,5 +453,20 @@ func TestOutdatedWithdrawalsCountTowardsTheHold(t *testing.T) {
 	var held int
 	if e := n.restored.st.Pool.QueryRow(ctx, "SELECT count(*) FROM dns_record_removals WHERE server_id=$1 AND hold_id=$2", n.moved.id, holds[0].id).Scan(&held); e != nil || held != 2 {
 		t.Fatal("the outdated withdrawals were not made under the confirmed hold", held, e)
+	}
+}
+
+func TestARecordApprovedAgainWhileHeldIsNotWithdrawn(t *testing.T) {
+	n, hold := heldOutdated(t)
+	// The owner approves the server's current addresses before the operator confirms the hold.
+	moved := n.signedIn(t, n.moved)
+	reconfigure(t, moved, approvedLater)
+	moved.waitState(t, "applied")
+	if e := execution.ConfirmZoneHold(context.Background(), n.restored.st.Pool, hold.id, 11, "operator", "restored from a backup"); e != nil {
+		t.Fatal(e)
+	}
+	sweepZone(t, n.restored)
+	if !zoneShows(n.z, n.moved, approvedLater...) || outdatedRemovals(t, n.restored, n.moved) != 0 {
+		t.Fatal("records the owner approved again were withdrawn", n.z.snapshot())
 	}
 }

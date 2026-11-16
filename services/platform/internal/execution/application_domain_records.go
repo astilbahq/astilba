@@ -235,15 +235,51 @@ func (s *Service) withdrawStalePublications(ctx context.Context, lease dnsLease)
 			continue
 		}
 		name := dnsName(p.Base, lease.server)
-		providerErr := s.DNS.Remove(ctx, name, dnsMarker(installation, lease.server), s.auditDeletion(ctx, p.WorkspaceID, lease.server, name, reason))
-		failures = append(failures, providerErr, s.recordWithdrawal(ctx, lease, p, name, reason, providerErr == nil))
+		ended, providerErr := s.removePublication(ctx, lease, p, name, dnsMarker(installation, lease.server), reason)
+		note := withdrawnNotes[reason]
+		if ended {
+			// The approval's own note says why it ended; nothing is published again on resuming.
+			note = ""
+		}
+		failures = append(failures, providerErr, s.recordWithdrawal(ctx, lease, p, name, note, providerErr == nil))
 	}
 	return errors.Join(failures...)
 }
 
+// removePublication removes the server's records at a name it may no longer hold. A workspace
+// whose hosted management is inactive keeps its approval, which is published again when management
+// resumes, so the records are first judged against it as a job judges them before publishing: the
+// deletions audited here would otherwise explain away the zone's evidence that it is newer than the
+// approval. When they show that, the approval ends before anything is deleted, and ended says so.
+func (s *Service) removePublication(ctx context.Context, lease dnsLease, p db.ListDNSPublicationsRow, name, marker, reason string) (ended bool, e error) {
+	audit := s.auditDeletion(ctx, p.WorkspaceID, lease.server, name, reason)
+	if reason != withdrawInactive {
+		return false, s.DNS.Remove(ctx, name, marker, nil, audit)
+	}
+	current, e := db.New(s.Store.Pool).CurrentDNSApproval(ctx, db.CurrentDNSApprovalParams{ServerID: lease.server, Base: p.Base})
+	if errors.Is(e, pgx.ErrNoRows) {
+		return false, s.DNS.Remove(ctx, name, marker, nil, audit)
+	}
+	if e != nil {
+		return false, e
+	}
+	judge, e := s.approvalJudge(ctx, storedApproval{current.Ipv4, current.Ipv6, current.ApprovedAt}, current.Records, current.ObservedZone)
+	if e != nil {
+		return false, e
+	}
+	if e = s.DNS.Remove(ctx, name, marker, judge, audit); !errors.Is(e, errApprovalOutdated) {
+		return false, e
+	}
+	if e = s.endOutdatedApproval(ctx, lease, domainArgs{Server: lease.server, Generation: current.Generation, Controller: current.ApprovedController.Int64}); e != nil {
+		return false, e
+	}
+	return true, s.DNS.Remove(ctx, name, marker, nil, audit)
+}
+
 // recordWithdrawal forgets the publication once nothing of ours is left at the name, and
-// confirms the deletions audited for it. A failed attempt keeps the row, so the sweep retries it.
-func (s *Service) recordWithdrawal(ctx context.Context, lease dnsLease, p db.ListDNSPublicationsRow, name, reason string, complete bool) error {
+// confirms the deletions audited for it, leaving note on the server's domain profile when there is
+// one. A failed attempt keeps the row, so the sweep retries it.
+func (s *Service) recordWithdrawal(ctx context.Context, lease dnsLease, p db.ListDNSPublicationsRow, name, note string, complete bool) error {
 	key := db.CheckDNSPublicationParams{ServerID: lease.server, Base: p.Base, Zone: p.Zone}
 	return s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
@@ -256,7 +292,7 @@ func (s *Service) recordWithdrawal(ctx context.Context, lease dnsLease, p db.Lis
 		if e := q.DeleteDNSPublication(ctx, db.DeleteDNSPublicationParams(key)); e != nil {
 			return e
 		}
-		if note := withdrawnNotes[reason]; note != "" {
+		if note != "" {
 			return q.NoteWithdrawnServerDomain(ctx, db.NoteWithdrawnServerDomainParams{Note: note, ServerID: lease.server, Base: p.Base})
 		}
 		return nil

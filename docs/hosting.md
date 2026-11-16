@@ -801,7 +801,10 @@ comment and name. Then, for each name:
 A DNS job checks the same before it publishes, and also ends the approval when a record it last
 saw is gone without the database having deleted it, such as after a restore from a backup taken
 before the server was revoked. The comparison can't check that, because a listing can miss a
-record.
+record. Removal because a hosted workspace's management is inactive checks the same first, since
+the approval is published again when management resumes. The records a job last saw are forgotten
+when the approval ends this way or its base changes, and kept when the provider fails, so a
+failed job never hides a missing record.
 
 The margin of two and a half minutes covers a job's request that lands late, and the database
 host's clock running up to a minute behind Cloudflare's. Keep the database host's clock
@@ -836,7 +839,7 @@ astilba dns confirm-withdrawals --hold HOLD_ID --count N --operator NAME --note 
 addresses, and the exact command to confirm it. `--count` must match the number of records the
 hold holds. If the comparison has since found a record the hold doesn't hold, the hold is
 replaced, and the command asks you to look again. The next comparison, within five minutes,
-removes the confirmed records that are still unbacked. Records found later are judged afresh. A
+removes the confirmed records it still finds should go. Records found later are judged afresh. A
 confirmed hold closes once all its records are removed. Otherwise the confirmation lapses after a
 day. A hold whose records fall back under the threshold, because some were backed
 again or deleted by hand, closes on its own and the rest are removed as usual.

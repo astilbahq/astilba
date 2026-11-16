@@ -110,7 +110,7 @@ func (s *Service) SweepZone(ctx context.Context) error {
 			}
 		}
 		switch {
-		case b.Recorded || len(rest) == 0:
+		case b.Recorded:
 		case approved:
 			failures = append(failures, s.adoptZoneName(ctx, n, b))
 		default:
@@ -375,7 +375,9 @@ func (s *Service) withdrawZoneRecords(ctx context.Context, installation uuid.UUI
 					listed = append(listed, r.Marked)
 				}
 			case withdrawOutdated:
-				if b.Known == known && outdatedBy(b, r) {
+				// Only once the approval has ended: deleting the records while it is current would
+				// leave its job nothing to judge it by, and it would publish the older addresses.
+				if b.Known == known && !b.Approved && outdatedBy(b, r) {
 					listed = append(listed, r.Marked)
 				}
 			}
@@ -466,9 +468,9 @@ func ZoneHolds(ctx context.Context, pool *pgxpool.Pool, sample int32) ([]ZoneHol
 }
 
 // ConfirmZoneHold records the operator's confirmation of a hold, which lets the next zone sweep
-// withdraw the records it holds that are still unbacked then. The operator names how many records
-// it holds, so they confirm what they reviewed. Taken under the zone's sweep lock, it never
-// confirms a hold a sweep is superseding.
+// withdraw the records it holds that it still finds should go then. The operator names how many
+// records it holds, so they confirm what they reviewed. Taken under the zone's sweep lock, it
+// never confirms a hold a sweep is superseding.
 func ConfirmZoneHold(ctx context.Context, pool *pgxpool.Pool, hold uuid.UUID, records int32, operator, note string) error {
 	if strings.TrimSpace(operator) == "" || strings.TrimSpace(note) == "" {
 		return errors.New("name who confirms with --operator and why with --note; both are kept with the hold")
@@ -498,6 +500,6 @@ func ConfirmZoneHold(ctx context.Context, pool *pgxpool.Pool, hold uuid.UUID, re
 	if e = tx.Commit(ctx); e != nil {
 		return e
 	}
-	slog.Info("the installation operator confirmed a held DNS withdrawal; the next zone sweep withdraws its records that are still unbacked", "hold", hold, "records", records, "operator", operator)
+	slog.Info("the installation operator confirmed a held DNS withdrawal; the next zone sweep withdraws its records that it still finds should go", "hold", hold, "records", records, "operator", operator)
 	return nil
 }

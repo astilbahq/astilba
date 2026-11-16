@@ -149,7 +149,7 @@ func TestRemoveDeletesOnlyMarkedAddressRecords(t *testing.T) {
 		record{ID: id('6'), Type: "A", Name: "*.s2.apps.example.test", Content: "198.51.100.4", Comment: marker},
 	)
 	var told []Removed
-	if e := c.Remove(context.Background(), name, marker, func(r Removed) error { told = append(told, r); return nil }); e != nil {
+	if e := c.Remove(context.Background(), name, marker, nil, func(r Removed) error { told = append(told, r); return nil }); e != nil {
 		t.Fatal(e)
 	}
 	if len(told) != 2 || len(z.records) != 4 {
@@ -168,10 +168,10 @@ func TestRemoveRetriesAfterAFailedOrLostDeletion(t *testing.T) {
 		z.failDelete, z.lose = 1, lose
 		var told int
 		deleting := func(Removed) error { told++; return nil }
-		if e := c.Remove(context.Background(), name, marker, deleting); !errors.Is(e, ErrProvider) {
+		if e := c.Remove(context.Background(), name, marker, nil, deleting); !errors.Is(e, ErrProvider) {
 			t.Fatal("a failed deletion was reported as done", e)
 		}
-		if e := c.Remove(context.Background(), name, marker, deleting); e != nil {
+		if e := c.Remove(context.Background(), name, marker, nil, deleting); e != nil {
 			t.Fatal(e)
 		}
 		// A lost answer is not deleted again: the retry lists the record as gone.
@@ -191,13 +191,13 @@ func boolCount(b bool) int {
 func TestRemoveRefusesAnswersForOtherNamesAndStopsWhenNotAudited(t *testing.T) {
 	z, c := fixture(t)
 	z.listed = []record{{ID: id('1'), Type: "A", Name: "*.s2.apps.example.test", Content: "198.51.100.1", Comment: marker}}
-	if e := c.Remove(context.Background(), name, marker, func(Removed) error { return nil }); !errors.Is(e, ErrProvider) || len(z.deletes) != 0 {
+	if e := c.Remove(context.Background(), name, marker, nil, func(Removed) error { return nil }); !errors.Is(e, ErrProvider) || len(z.deletes) != 0 {
 		t.Fatal("acted on a listing for another name", e, z.deletes)
 	}
 	z.listed = nil
 	z.records[id('2')] = record{ID: id('2'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker}
 	refused := errors.New("audit unavailable")
-	if e := c.Remove(context.Background(), name, marker, func(Removed) error { return refused }); !errors.Is(e, refused) || len(z.deletes) != 0 {
+	if e := c.Remove(context.Background(), name, marker, nil, func(Removed) error { return refused }); !errors.Is(e, refused) || len(z.deletes) != 0 {
 		t.Fatal("deleted a record the audit did not record", e, z.deletes)
 	}
 }
@@ -283,6 +283,24 @@ func TestReconcileShowsTheJudgeOurRecordsBeforeSendingAnything(t *testing.T) {
 	}
 }
 
+func TestRemoveShowsTheJudgeOurRecordsBeforeDeletingAnything(t *testing.T) {
+	z, c := fixture(t,
+		record{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker},
+		record{ID: id('2'), Type: "A", Name: name, Content: "198.51.100.2", Comment: "someone else"},
+	)
+	refused := errors.New("outdated")
+	var shown []Listed
+	if e := c.Remove(context.Background(), name, marker, func(present []Listed) error { shown = present; return refused }, func(Removed) error { return nil }); !errors.Is(e, refused) {
+		t.Fatal("the judge's refusal was not returned", e)
+	}
+	if len(z.deletes) != 0 || len(shown) != 1 || shown[0] != (Listed{id('1'), "A", "198.51.100.1", listedAt}) {
+		t.Fatal("deleted before the judge agreed, or showed it", shown, z.deletes)
+	}
+	if e := c.Remove(context.Background(), name, marker, func([]Listed) error { return nil }, func(Removed) error { return nil }); e != nil || len(z.deletes) != 1 {
+		t.Fatal("an accepted removal did not delete", e, z.deletes)
+	}
+}
+
 func TestRecordsWithoutAModificationTimeAreRefused(t *testing.T) {
 	z, c := fixture(t)
 	// Added after the fixture would have stamped it.
@@ -299,7 +317,7 @@ func TestRecordsWithoutAModificationTimeAreRefused(t *testing.T) {
 func TestTooManyRequestsHoldsEveryLaterRequest(t *testing.T) {
 	z, c := fixture(t, record{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker})
 	z.limited, z.retryAfter = 1, "1"
-	if e := c.Remove(context.Background(), name, marker, func(Removed) error { return nil }); !errors.Is(e, ErrProvider) || errors.Is(e, ErrUnanswered) {
+	if e := c.Remove(context.Background(), name, marker, nil, func(Removed) error { return nil }); !errors.Is(e, ErrProvider) || errors.Is(e, ErrUnanswered) {
 		t.Fatal("a 429 was not reported as a request the provider refused", e)
 	}
 	if _, e := c.ListMarked(context.Background(), "astilba:installation:"); e != nil {

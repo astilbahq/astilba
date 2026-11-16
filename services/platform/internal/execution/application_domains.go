@@ -124,8 +124,12 @@ func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, 
 		if s.DNS != nil {
 			state = "pending"
 		}
+		// The records the last job observed name the server's records under the base they were
+		// observed at, so they are forgotten when the base changes: under the new one, the old
+		// records' absence says nothing about the zone.
 		var generation int64
-		e = tx.QueryRow(ctx, `INSERT INTO server_domains(server_id,workspace_id,base,ipv4,ipv6,approved_controller,state,approved_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp()) ON CONFLICT(server_id) DO UPDATE SET base=$3,ipv4=$4,ipv6=$5,generation=server_domains.generation+1,approved_controller=$6,state=$7,observed_at=NULL,note='',approved_at=clock_timestamp() RETURNING generation`, id, ws, current.Base, ipv4, ipv6, controller, state).Scan(&generation)
+		e = tx.QueryRow(ctx, `INSERT INTO server_domains(server_id,workspace_id,base,ipv4,ipv6,approved_controller,state,approved_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp()) ON CONFLICT(server_id) DO UPDATE SET base=$3,ipv4=$4,ipv6=$5,generation=server_domains.generation+1,approved_controller=$6,state=$7,observed_at=NULL,note='',approved_at=clock_timestamp(),
+			records=CASE WHEN server_domains.base=$3 THEN server_domains.records ELSE '{}' END,observed_zone=CASE WHEN server_domains.base=$3 THEN server_domains.observed_zone ELSE '' END RETURNING generation`, id, ws, current.Base, ipv4, ipv6, controller, state).Scan(&generation)
 		if e != nil {
 			return e
 		}
@@ -327,7 +331,7 @@ func (s *Service) claimPublication(ctx context.Context, lease dnsLease, a domain
 // approval instead.
 func (s *Service) publish(ctx context.Context, lease dnsLease, a domainArgs, target *db.DNSPublicationTargetRow) error {
 	name := dnsName(target.Base, a.Server)
-	judge, e := s.approvalJudge(ctx, target)
+	judge, e := s.approvalJudge(ctx, storedApproval{target.Ipv4, target.Ipv6, target.ApprovedAt}, target.Records, target.ObservedZone)
 	if e != nil {
 		return e
 	}
@@ -350,7 +354,7 @@ func (s *Service) publish(ctx context.Context, lease dnsLease, a domainArgs, tar
 				return e
 			}
 		}
-		return q.ObserveServerDomain(ctx, db.ObserveServerDomainParams{State: state, Note: note, Records: raw, Zone: s.DNS.Zone, ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}})
+		return q.ObserveServerDomain(ctx, db.ObserveServerDomainParams{State: state, Note: note, Observed: providerErr == nil, Records: raw, Zone: s.DNS.Zone, ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}})
 	})
 	return errors.Join(providerErr, e)
 }

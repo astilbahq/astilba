@@ -7,7 +7,8 @@
 -- When an owner approved the addresses, by the database's clock. NULL for an approval given before
 -- this was recorded, which counts as older than any record.
 ALTER TABLE server_domains ADD COLUMN approved_at timestamptz;
--- The zone the records were observed in, which names their IDs.
+-- The zone the records were observed in, which names their IDs. '' for records observed before
+-- this was recorded, which are taken to be in the configured zone, as a publication's '' zone is.
 ALTER TABLE server_domains ADD COLUMN observed_zone text NOT NULL DEFAULT '';
 
 -- A record the zone holds at an approved name, changed after the approval and to something else,

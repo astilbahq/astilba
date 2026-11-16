@@ -28,7 +28,7 @@ import (
 // clock, which wrote the approval's time, against the provider's.
 const outdatedMargin = dnsLeaseTerm + time.Minute
 
-const outdatedApprovalNote = "Astilba stopped publishing this server's DNS records: they were changed or removed in DNS after these addresses were approved, which happens when management is restored from an older backup. The approved addresses may no longer be the server's. Until an owner checks the server's addresses and approves them again, its generated names don't resolve."
+const outdatedApprovalNote = "Astilba stopped publishing this server's DNS records: they were changed or removed in DNS after these addresses were approved, which happens when management is restored from an older backup, so the approved addresses may no longer be the server's. Astilba withdraws the records that changed, and publishes nothing for the server until an owner checks its addresses and approves them again."
 
 var errApprovalOutdated = errors.New("the DNS zone shows the server's records changed after its address approval")
 
@@ -55,7 +55,7 @@ func (a storedApproval) outdates(kind, content string, modified time.Time) bool 
 // lost reports whether a record the last job observed at the name, for an address the approval
 // still holds, is gone with nothing of ours of its type in its place, though this database never
 // deleted it. Something removed it after this database last looked. observed is empty when the
-// records were observed in another zone, or before the zone was recorded.
+// records were observed in another zone.
 func (a storedApproval) lost(observed map[string]string, audited map[string]bool, present []applicationdns.Listed) bool {
 	for _, kind := range []string{"A", "AAAA"} {
 		id := observed[kind]
@@ -73,14 +73,15 @@ func (a storedApproval) lost(observed map[string]string, audited map[string]bool
 	return false
 }
 
-// approvalJudge judges the provider's records at the claimed name against the approval the job
-// publishes. It reads, on the pool, which of the records the last job observed this database
-// has deleted, before the provider is asked anything.
-func (s *Service) approvalJudge(ctx context.Context, target *db.DNSPublicationTargetRow) (applicationdns.Judge, error) {
-	approval := storedApproval{target.Ipv4, target.Ipv6, target.ApprovedAt}
+// approvalJudge judges the provider's records at the approval's name against it, given the
+// records the last job observed there and the zone it observed them in. Records observed before
+// the zone was recorded are taken to be in the configured zone, as publications are. It reads, on
+// the pool, which of the observed records this database has deleted, before the provider is asked
+// anything.
+func (s *Service) approvalJudge(ctx context.Context, approval storedApproval, records []byte, zone string) (applicationdns.Judge, error) {
 	observed := map[string]string{}
-	if target.ObservedZone == s.DNS.Zone {
-		if e := json.Unmarshal(target.Records, &observed); e != nil {
+	if zone == s.DNS.Zone || zone == "" {
+		if e := json.Unmarshal(records, &observed); e != nil {
 			return nil, e
 		}
 	}

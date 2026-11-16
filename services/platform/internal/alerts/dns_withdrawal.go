@@ -12,7 +12,7 @@ import (
 const heldTitle = "DNS records may resolve to addresses Astilba no longer controls: the operator must review them with `astilba dns withdrawals`"
 
 // dnsWithdrawalHeld raises dns_withdrawal_held, for the workspace itself, while records of its
-// servers that nothing backs are held for the installation operator's confirmation, because the
+// servers that the zone sweep would withdraw are held for the installation operator's confirmation, because the
 // zone sweep would have withdrawn too many records at once. Only on a self-hosted installation,
 // whose owners are its operators: on the hosted service owners can't confirm, and the management
 // log tells its operator. Confirmation, or the records coming back under the threshold, resolves it.

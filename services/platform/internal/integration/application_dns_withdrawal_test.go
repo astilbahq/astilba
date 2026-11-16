@@ -39,6 +39,8 @@ type dnsZone struct {
 	writes []map[string]any
 	// ahead moves the provider's clock, which stamps each record it changes, ahead of the database's.
 	ahead time.Duration
+	// failLookups answers every lookup of a name with an error.
+	failLookups bool
 }
 
 // modifiedOn is the provider's time now, as it stamps a record it changes.
@@ -88,6 +90,10 @@ func (z *dnsZone) serve(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		query := r.URL.Query()
+		if z.failLookups && query.Has("name") {
+			w.WriteHeader(502)
+			return
+		}
 		list := []map[string]any{}
 		for _, v := range z.records {
 			comment, _ := v["comment"].(string)

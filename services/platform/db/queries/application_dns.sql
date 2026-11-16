@@ -116,14 +116,27 @@ SELECT record_id FROM dns_record_removals WHERE zone = @zone AND record_id = ANY
 -- name: EndOutdatedServerDomain :execrows
 -- unscoped: a DNS job or the zone sweep names the server, holding its DNS lock. Ends an approval
 -- the provider's zone shows is older than its records, as long as it is the approval that was
--- judged, so an owner approves the addresses again.
-UPDATE server_domains SET approved_controller=NULL,generation=generation+1,state='review_required',note = @note,observed_at=NULL
+-- judged, so an owner approves the addresses again. The records the last job observed are the
+-- evidence the approval was ended on, so they are forgotten with it: the next approval is judged
+-- by what its own jobs observe.
+UPDATE server_domains SET approved_controller=NULL,generation=generation+1,state='review_required',note = @note,observed_at=NULL,
+    records='{}',observed_zone=''
 WHERE server_id = @server_id AND generation = @generation AND approved_controller = @controller;
 
 -- name: ObserveServerDomain :exec
--- unscoped: a DNS job names the server. Ignored once the profile has moved on.
-UPDATE server_domains SET state = @state,note = @note,observed_at=clock_timestamp(),records = @records,observed_zone = @zone
+-- unscoped: a DNS job names the server. Ignored once the profile has moved on. A job the provider
+-- failed observed nothing, so the records the last job observed are kept: the next job judges the
+-- zone against them.
+UPDATE server_domains SET state = @state,note = @note,observed_at=clock_timestamp(),
+    records=CASE WHEN @observed::boolean THEN @records::jsonb ELSE records END,
+    observed_zone=CASE WHEN @observed::boolean THEN @zone::text ELSE observed_zone END
 WHERE server_id = @server_id AND generation = @generation AND approved_controller = @controller;
+
+-- name: CurrentDNSApproval :one
+-- unscoped: a DNS job names the server. The server's address approval for the base while it is
+-- current, which records there are judged against before management_inactive withdraws them.
+SELECT d.generation,d.approved_controller,d.ipv4,d.ipv6,d.approved_at,d.records,d.observed_zone FROM server_domains d JOIN servers s ON s.id=d.server_id
+WHERE d.server_id = @server_id AND d.base = @base AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer;
 
 -- name: RecordLateDNSPublication :exec
 -- unscoped: a DNS job names the server. Written before anything is queued, so a job's arguments

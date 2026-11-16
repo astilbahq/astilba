@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,9 +206,25 @@ type Listed struct {
 	ModifiedOn        time.Time
 }
 
-// Judge is shown this installation's address records at a name before Reconcile changes anything
-// there. An error from it stops Reconcile, with nothing sent, and is returned as it is.
+// Judge is shown this installation's address records at a name before Reconcile or Remove changes
+// anything there. An error from it stops them, with nothing sent, and is returned as it is.
 type Judge func([]Listed) error
+
+// judged shows judge our address records, when there is a judge. The provider always says when it
+// changed a record; without that, nothing can be judged.
+func judged(judge Judge, ours []record) error {
+	if judge == nil {
+		return nil
+	}
+	present := make([]Listed, 0, len(ours))
+	for _, r := range ours {
+		if r.ModifiedOn.IsZero() {
+			return ErrProvider
+		}
+		present = append(present, Listed{r.ID, r.Type, r.Content, r.ModifiedOn})
+	}
+	return judge(present)
+}
 
 // Reconcile only changes exact-name A/AAAA records bearing this installation's
 // marker. Listing first also recovers a successful mutation whose response was lost. judge sees
@@ -230,17 +247,13 @@ func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 str
 		}
 		existing[r.Type] = r
 	}
-	present := []Listed{}
+	ours := []record{}
 	for _, kind := range []string{"A", "AAAA"} {
 		if r := existing[kind]; r.ID != "" {
-			// The provider always says when it changed a record; without that, nothing can be judged.
-			if r.ModifiedOn.IsZero() {
-				return nil, ErrProvider
-			}
-			present = append(present, Listed{r.ID, r.Type, r.Content, r.ModifiedOn})
+			ours = append(ours, r)
 		}
 	}
-	if e := judge(present); e != nil {
+	if e := judged(judge, ours); e != nil {
 		return nil, e
 	}
 	out := map[string]string{}
@@ -290,9 +303,10 @@ func (c *Cloudflare) delete(ctx context.Context, r record, deleting Deleting) er
 // and leaves every other record at that name alone. It never matches by name alone:
 // a record someone else created, or another installation's, survives. Run again after
 // a failure, it lists afresh, so a deletion whose response was lost is not repeated.
-// It returns nil only once none of the installation's records are left at the name.
-func (c *Cloudflare) Remove(ctx context.Context, name, marker string, deleting Deleting) error {
-	_, e := c.remove(ctx, name, marker, func(record) bool { return true }, deleting)
+// It returns nil only once none of the installation's records are left at the name. A judge, when
+// given, sees them first, as Reconcile's does.
+func (c *Cloudflare) Remove(ctx context.Context, name, marker string, judge Judge, deleting Deleting) error {
+	_, e := c.remove(ctx, name, marker, judge, func(record) bool { return true }, deleting)
 	return e
 }
 
@@ -306,24 +320,25 @@ func (c *Cloudflare) RemoveListed(ctx context.Context, name, marker string, list
 	for _, r := range listed {
 		seen[r.ID] = r.ModifiedOn
 	}
-	return c.remove(ctx, name, marker, func(r record) bool {
+	return c.remove(ctx, name, marker, nil, func(r record) bool {
 		at, ok := seen[r.ID]
 		return ok && !at.IsZero() && at.Equal(r.ModifiedOn)
 	}, deleting)
 }
 
-// remove deletes our address records at name that chosen picks, and returns the IDs of the ones
-// it left.
-func (c *Cloudflare) remove(ctx context.Context, name, marker string, chosen func(record) bool, deleting Deleting) ([]string, error) {
+// remove deletes our address records at name that chosen picks, once judge has seen them all, and
+// returns the IDs of the ones it left.
+func (c *Cloudflare) remove(ctx context.Context, name, marker string, judge Judge, chosen func(record) bool, deleting Deleting) ([]string, error) {
 	records, e := c.list(ctx, name)
 	if e != nil {
 		return nil, e
 	}
+	ours := slices.DeleteFunc(records, func(r record) bool { return r.Type != "A" && r.Type != "AAAA" || r.Comment != marker })
+	if e := judged(judge, ours); e != nil {
+		return nil, e
+	}
 	left := []string{}
-	for _, r := range records {
-		if r.Type != "A" && r.Type != "AAAA" || r.Comment != marker {
-			continue
-		}
+	for _, r := range ours {
 		if !chosen(r) {
 			left = append(left, r.ID)
 			continue

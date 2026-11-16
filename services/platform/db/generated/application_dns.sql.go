@@ -260,6 +260,43 @@ func (q *Queries) CountStrandedDNSPublications(ctx context.Context, arg CountStr
 	return count, err
 }
 
+const currentDNSApproval = `-- name: CurrentDNSApproval :one
+SELECT d.generation,d.approved_controller,d.ipv4,d.ipv6,d.approved_at,d.records,d.observed_zone FROM server_domains d JOIN servers s ON s.id=d.server_id
+WHERE d.server_id = $1 AND d.base = $2 AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer
+`
+
+type CurrentDNSApprovalParams struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Base     string    `json:"base"`
+}
+
+type CurrentDNSApprovalRow struct {
+	Generation         int64       `json:"generation"`
+	ApprovedController pgtype.Int8 `json:"approved_controller"`
+	Ipv4               string      `json:"ipv4"`
+	Ipv6               string      `json:"ipv6"`
+	ApprovedAt         *time.Time  `json:"approved_at"`
+	Records            []byte      `json:"records"`
+	ObservedZone       string      `json:"observed_zone"`
+}
+
+// unscoped: a DNS job names the server. The server's address approval for the base while it is
+// current, which records there are judged against before management_inactive withdraws them.
+func (q *Queries) CurrentDNSApproval(ctx context.Context, arg CurrentDNSApprovalParams) (CurrentDNSApprovalRow, error) {
+	row := q.db.QueryRow(ctx, currentDNSApproval, arg.ServerID, arg.Base)
+	var i CurrentDNSApprovalRow
+	err := row.Scan(
+		&i.Generation,
+		&i.ApprovedController,
+		&i.Ipv4,
+		&i.Ipv6,
+		&i.ApprovedAt,
+		&i.Records,
+		&i.ObservedZone,
+	)
+	return i, err
+}
+
 const currentDNSJob = `-- name: CurrentDNSJob :one
 SELECT COALESCE(max(generation),0)::bigint AS generation,COALESCE(max(approved_controller),0)::bigint AS controller
 FROM server_domains WHERE server_id = $1
@@ -459,7 +496,8 @@ func (q *Queries) DeleteDNSPublication(ctx context.Context, arg DeleteDNSPublica
 }
 
 const endOutdatedServerDomain = `-- name: EndOutdatedServerDomain :execrows
-UPDATE server_domains SET approved_controller=NULL,generation=generation+1,state='review_required',note = $1,observed_at=NULL
+UPDATE server_domains SET approved_controller=NULL,generation=generation+1,state='review_required',note = $1,observed_at=NULL,
+    records='{}',observed_zone=''
 WHERE server_id = $2 AND generation = $3 AND approved_controller = $4
 `
 
@@ -472,7 +510,9 @@ type EndOutdatedServerDomainParams struct {
 
 // unscoped: a DNS job or the zone sweep names the server, holding its DNS lock. Ends an approval
 // the provider's zone shows is older than its records, as long as it is the approval that was
-// judged, so an owner approves the addresses again.
+// judged, so an owner approves the addresses again. The records the last job observed are the
+// evidence the approval was ended on, so they are forgotten with it: the next approval is judged
+// by what its own jobs observe.
 func (q *Queries) EndOutdatedServerDomain(ctx context.Context, arg EndOutdatedServerDomainParams) (int64, error) {
 	result, err := q.db.Exec(ctx, endOutdatedServerDomain,
 		arg.Note,
@@ -734,13 +774,16 @@ func (q *Queries) NoteWithdrawnServerDomain(ctx context.Context, arg NoteWithdra
 }
 
 const observeServerDomain = `-- name: ObserveServerDomain :exec
-UPDATE server_domains SET state = $1,note = $2,observed_at=clock_timestamp(),records = $3,observed_zone = $4
-WHERE server_id = $5 AND generation = $6 AND approved_controller = $7
+UPDATE server_domains SET state = $1,note = $2,observed_at=clock_timestamp(),
+    records=CASE WHEN $3::boolean THEN $4::jsonb ELSE records END,
+    observed_zone=CASE WHEN $3::boolean THEN $5::text ELSE observed_zone END
+WHERE server_id = $6 AND generation = $7 AND approved_controller = $8
 `
 
 type ObserveServerDomainParams struct {
 	State      string      `json:"state"`
 	Note       string      `json:"note"`
+	Observed   bool        `json:"observed"`
 	Records    []byte      `json:"records"`
 	Zone       string      `json:"zone"`
 	ServerID   uuid.UUID   `json:"server_id"`
@@ -748,11 +791,14 @@ type ObserveServerDomainParams struct {
 	Controller pgtype.Int8 `json:"controller"`
 }
 
-// unscoped: a DNS job names the server. Ignored once the profile has moved on.
+// unscoped: a DNS job names the server. Ignored once the profile has moved on. A job the provider
+// failed observed nothing, so the records the last job observed are kept: the next job judges the
+// zone against them.
 func (q *Queries) ObserveServerDomain(ctx context.Context, arg ObserveServerDomainParams) error {
 	_, err := q.db.Exec(ctx, observeServerDomain,
 		arg.State,
 		arg.Note,
+		arg.Observed,
 		arg.Records,
 		arg.Zone,
 		arg.ServerID,
