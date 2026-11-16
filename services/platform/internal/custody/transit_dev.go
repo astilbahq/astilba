@@ -55,18 +55,23 @@ func ProvisionTransitDev(ctx context.Context, address, tokenFile, dir string) (m
 	if !loopback(server.base.Hostname()) {
 		return nil, errors.New("init-transit --dev sets up only a local OpenBao dev server, on a loopback address")
 	}
-	rootToken, err := readCredential(tokenFile)
+	token, err := readCredential(tokenFile)
 	if err != nil {
 		return nil, err
 	}
+	rootToken := string(token)
+	clear(token)
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	var seal transitStatus
 	if _, _, err = server.send(ctx, "/sys/seal-status", "", nil, &seal, false); err != nil {
 		return nil, fmt.Errorf("/sys/seal-status: %w", err)
 	}
+	if seal.ClusterName == "" {
+		return nil, errors.New("init-transit --dev needs the local stack's OpenBao unsealed, which names its cluster")
+	}
 	if seal.ClusterName != TransitDevCluster {
-		return nil, fmt.Errorf("init-transit --dev sets up only the local stack's OpenBao, whose cluster is named %s; this one is named %q", TransitDevCluster, seal.ClusterName)
+		return nil, fmt.Errorf("init-transit --dev sets up only the local stack's OpenBao, whose cluster is named %s; this one is named %q. A local stack started before its OpenBao was named so needs --reset", TransitDevCluster, seal.ClusterName)
 	}
 	call := func(path string, body any, out any) error {
 		_, _, err := server.send(ctx, path, rootToken, body, out, false)

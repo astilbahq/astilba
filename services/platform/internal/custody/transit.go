@@ -181,8 +181,9 @@ func loopback(host string) bool {
 
 func (t *Transit) ID() string { return "transit:primary" }
 
-// transitData is an encrypt, decrypt or rewrap answer. A key travels as bytes, which the JSON
-// codec reads and writes as base64, so no copy of it is left in a string that cannot be cleared.
+// transitData is an encrypt, decrypt or rewrap answer. A key is read as bytes, which the JSON codec
+// decodes from base64, so management leaves no copy of it in a string that cannot be cleared. The
+// HTTP and TLS layers' own connection buffers are outside its reach, as they are for every client.
 type transitData struct {
 	Ciphertext string `json:"ciphertext"`
 	Plaintext  []byte `json:"plaintext"`
@@ -200,8 +201,15 @@ func (t *Transit) Wrap(ctx context.Context, class Class, key []byte, c Context) 
 	if err := transitClass(class); err != nil {
 		return nil, "", err
 	}
+	encoded := base64.StdEncoding.AppendEncode(make([]byte, 0, base64.StdEncoding.EncodedLen(len(key))), key)
+	body, err := privateJSON(member{"plaintext", encoded}, member{"context", []byte(transitContext(c))})
+	clear(encoded)
+	if err != nil {
+		return nil, "", err
+	}
+	defer clear(body)
 	var out transitData
-	id, err := t.call(ctx, "/"+t.config.Mount+"/encrypt/"+TransitKey(class), map[string]any{"plaintext": key, "context": transitContext(c)}, &out, false)
+	id, err := t.call(ctx, "/"+t.config.Mount+"/encrypt/"+TransitKey(class), body, &out, false)
 	if err != nil {
 		return nil, id, err
 	}
@@ -284,8 +292,8 @@ func (t *Transit) Check(ctx context.Context) error {
 // transitContext is what each key is derived from. It is not secret, and the audit device shows it.
 func transitContext(c Context) string { return base64.StdEncoding.EncodeToString([]byte(c.String())) }
 
-// call makes one request, giving it a deadline and, after an unavailable or throttled answer, one
-// more attempt. A refused token is replaced by a new sign-in once.
+// call makes one request and, after an unavailable or throttled answer, one more attempt. Each
+// request to the server in an attempt has its own deadline.
 func (t *Transit) call(ctx context.Context, path string, body any, out any, unwrapping bool) (string, error) {
 	id, err := t.attempt(ctx, path, body, out, unwrapping)
 	if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrThrottled) {
@@ -307,10 +315,20 @@ func (t *Transit) attempt(ctx context.Context, path string, body any, out any, u
 		return "", err
 	}
 	id, status, err := t.sendWithin(ctx, path, token, body, out, unwrapping)
-	// A 403 is the policy's refusal, or a token the server no longer accepts. A token that still
-	// looks itself up is accepted, so the refusal is the policy's: signing in again would change
-	// nothing, and would leave another token behind.
-	if status != http.StatusForbidden || t.accepted(ctx, token) {
+	if status != http.StatusForbidden {
+		return id, err
+	}
+	// A 403 is the policy's refusal, or a token the server no longer accepts. Only a token the
+	// server refuses to look up is replaced: signing in again for the policy's refusal would change
+	// nothing, and would leave another token behind. A lookup the server could not answer says
+	// neither, so the call is tried again as for any outage.
+	switch lookup, lookupErr := t.lookup(ctx, token); {
+	case lookupErr == nil:
+		return id, err
+	case lookup != http.StatusForbidden:
+		if errors.Is(lookupErr, ErrUnavailable) || errors.Is(lookupErr, ErrThrottled) {
+			return id, lookupErr
+		}
 		return id, err
 	}
 	if token, err = t.replaceToken(ctx, token); err != nil {
@@ -325,6 +343,43 @@ func (t *Transit) sendWithin(ctx context.Context, path, token string, body any, 
 	ctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 	return t.send(ctx, path, token, body, out, unwrapping)
+}
+
+// privateBody is a request body holding a key or a credential, in a buffer its maker owns and
+// clears once the call is over. json.Marshal would leave a copy in the pooled buffer it encodes in.
+// The HTTP and TLS layers still copy the body into their connection buffers, which no client clears.
+type privateBody []byte
+
+// member is one of a privateBody's string members.
+type member struct {
+	name  string
+	value []byte
+}
+
+// privateJSON builds a JSON object of string members in one buffer, sized up front so appending
+// never leaves a copy behind in one it outgrew. A value that is not valid UTF-8 is refused rather
+// than sent altered.
+func privateJSON(members ...member) (privateBody, error) {
+	size := 2
+	for _, m := range members {
+		// Escaping takes at most six bytes for one.
+		size += 6*len(m.name) + 6*len(m.value) + 6
+	}
+	out := make([]byte, 0, size)
+	out = append(out, '{')
+	for i, m := range members {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		var err error
+		out, _ = jsontext.AppendQuote(out, m.name)
+		out = append(out, ':')
+		if out, err = jsontext.AppendQuote(out, m.value); err != nil {
+			clear(out)
+			return nil, fmt.Errorf("%s is not valid UTF-8", m.name)
+		}
+	}
+	return append(out, '}'), nil
 }
 
 // maxResponse bounds what is read from the server.
@@ -353,13 +408,15 @@ type transitAuth struct {
 func (t transitServer) send(ctx context.Context, path, token string, body any, out any, unwrapping bool) (string, int, error) {
 	method := http.MethodGet
 	var reader io.Reader
-	var raw []byte
-	if body != nil {
-		var err error
-		if raw, err = json.Marshal(body); err != nil {
+	switch b := body.(type) {
+	case nil:
+	case privateBody:
+		method, reader = http.MethodPost, bytes.NewReader(b)
+	default:
+		raw, err := json.Marshal(body)
+		if err != nil {
 			return "", 0, err
 		}
-		defer clear(raw)
 		method, reader = http.MethodPost, bytes.NewReader(raw)
 	}
 	u := *t.base

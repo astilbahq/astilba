@@ -1,20 +1,20 @@
 package custody
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
-// accepted reports whether the server still accepts token, by having it look itself up, which
-// every token may do unless its policies say otherwise. One it cannot ask about is not accepted.
-func (t *Transit) accepted(ctx context.Context, token string) bool {
-	_, _, err := t.sendWithin(ctx, "/auth/token/lookup-self", token, nil, nil, false)
-	return err == nil
+// lookup asks the server whether it still accepts token, by having it look itself up, which every
+// token may do unless its policies say otherwise. It returns the HTTP status and the error.
+func (t *Transit) lookup(ctx context.Context, token string) (int, error) {
+	_, status, err := t.sendWithin(ctx, "/auth/token/lookup-self", token, nil, nil, false)
+	return status, err
 }
 
 // currentToken returns a token to use, renewing or replacing it first when it is due. While the
@@ -27,6 +27,10 @@ func (t *Transit) currentToken(ctx context.Context) (string, error) {
 	if token != "" && t.now().Before(refresh) {
 		return token, nil
 	}
+	// A call that waits for another's sign-in spends its wait from this deadline, so when that one
+	// fails, the calls queued behind it fail soon after rather than each signing in in turn.
+	ctx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
 	valid := token != "" && t.now().Before(expires)
 	if !valid {
 		t.signIn.Lock()
@@ -40,8 +44,6 @@ func (t *Transit) currentToken(ctx context.Context) (string, error) {
 	if token != "" && t.now().Before(refresh) {
 		return token, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, t.timeout)
-	defer cancel()
 	valid = token != "" && t.now().Before(expires)
 	if valid && renewable && t.renew(ctx, token) {
 		t.mu.Lock()
@@ -68,6 +70,7 @@ const refreshRetry = 15 * time.Second
 
 // replaceToken signs in again after refused was refused, unless another call already has.
 func (t *Transit) replaceToken(ctx context.Context, refused string) (string, error) {
+	// As in currentToken, the wait for another call's sign-in counts against the deadline.
 	ctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 	t.signIn.Lock()
@@ -101,25 +104,32 @@ func (t *Transit) renew(ctx context.Context, token string) bool {
 // login signs in with the configured method, reading its credentials afresh. The caller holds
 // signIn.
 func (t *Transit) login(ctx context.Context) (string, error) {
-	var body map[string]string
+	var body privateBody
+	var err error
 	switch t.config.Auth.Method {
 	case "approle":
-		role, err := readCredential(t.config.Auth.RoleIDFile)
-		if err != nil {
+		var role, secret []byte
+		if role, err = readCredential(t.config.Auth.RoleIDFile); err != nil {
 			return "", err
 		}
-		secret, err := readCredential(t.config.Auth.SecretIDFile)
-		if err != nil {
+		defer clear(role)
+		if secret, err = readCredential(t.config.Auth.SecretIDFile); err != nil {
 			return "", err
 		}
-		body = map[string]string{"role_id": role, "secret_id": secret}
+		defer clear(secret)
+		body, err = privateJSON(member{"role_id", role}, member{"secret_id", secret})
 	case "jwt":
-		jwt, err := readCredential(t.config.Auth.JWTFile)
-		if err != nil {
+		var jwt []byte
+		if jwt, err = readCredential(t.config.Auth.JWTFile); err != nil {
 			return "", err
 		}
-		body = map[string]string{"role": t.config.Auth.Role, "jwt": jwt}
+		defer clear(jwt)
+		body, err = privateJSON(member{"role", []byte(t.config.Auth.Role)}, member{"jwt", jwt})
 	}
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrDenied, err)
+	}
+	defer clear(body)
 	var auth *transitAuth
 	_, status, err := t.send(ctx, "/auth/"+t.config.Auth.Mount+"/login", "", body, &auth, false)
 	if err != nil {
@@ -150,20 +160,20 @@ func (t *Transit) keep(token string, auth *transitAuth) {
 	t.refresh, t.expires = now.Add(lease*2/3), now.Add(lease)
 }
 
-// readCredential reads a sign-in credential from a private file.
-func readCredential(path string) (string, error) {
+// readCredential reads a sign-in credential from a private file. The caller clears it.
+func readCredential(path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 16384 {
-		return "", fmt.Errorf("%w: %s must be a private regular file (mode 0600)", ErrDenied, path)
+		return nil, fmt.Errorf("%w: %s must be a private regular file (mode 0600)", ErrDenied, path)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("%w: cannot read %s", ErrDenied, path)
+		return nil, fmt.Errorf("%w: cannot read %s", ErrDenied, path)
 	}
-	value := strings.TrimSpace(string(raw))
-	clear(raw)
-	if value == "" {
-		return "", fmt.Errorf("%w: %s is empty", ErrDenied, path)
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 {
+		clear(raw)
+		return nil, fmt.Errorf("%w: %s is empty", ErrDenied, path)
 	}
 	return value, nil
 }

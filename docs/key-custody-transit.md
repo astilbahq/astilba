@@ -167,9 +167,12 @@ At every start, before it uses a key, management:
   why. An operator command given the serving identity's credentials is refused here, before it
   touches a key.
 
-Each call has a 2-second deadline. A call that times out, gets a 5xx answer or is rate limited is
-tried once more. A refused token is replaced by a new sign-in once. Management renews its token
-two thirds of the way through its lease.
+Each request to the key service has a 2-second deadline, and so does renewing or replacing
+management's token. A call that times out, gets a 5xx answer or is rate limited is tried once
+more. A refused request is the policy's answer while management's token still works; otherwise
+the token is replaced by a new sign-in once. Management renews its token two thirds of the way
+through its lease, and if the key service cannot renew or replace it, goes on with it until it
+expires, trying again every 15 seconds.
 
 ## Which installations can use it
 
@@ -209,5 +212,6 @@ backups](management-backups.md#the-keyring)).
 `pnpm dev --vm PROFILE --custody openbao` runs OpenBao in the local stack's VM and sets it up the
 same way, with `astilba custody init-transit --dev`. See
 [local development](local-development.md#key-custody-with-openbao). `init-transit` works only
-with `--dev` and a loopback address: it uses the dev server's root token, which a real key
-service never gives management.
+with `--dev`, a loopback address, and an unsealed server whose cluster is named `astilba-dev`, as
+the local stack's is: it uses the dev server's root token, which a real key service never gives
+management.
