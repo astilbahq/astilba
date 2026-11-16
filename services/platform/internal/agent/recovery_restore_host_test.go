@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -158,11 +159,11 @@ func forgeSnapshot(t *testing.T, e *Engine, in backup.Installation, files map[st
 
 // PLAT-163. A replacement server restores the PostgreSQL and file snapshots a lost server uploaded
 // to S3, through the restore command, though its journal never held their policies: the source
-// policy bound to the replacement and its current plan, the repository's access, and the time
-// management first received the snapshot are all it is given. Only the snapshot decides what is
-// restored, and a snapshot that wasn't written for the policy, whose archive differs from its
-// manifest, that claims to be newer than its receipt, or whose repository was altered is refused
-// before anything is created. A restore stopped after its first effect is settled by removing what
+// policy bound to the replacement and its current plan, and the repository's access, are all it
+// is given. Only the snapshot decides what is restored, and a snapshot that wasn't written for the
+// policy, whose archive differs from its manifest, or whose repository was altered is refused
+// before anything is created. The containers that restore it are isolated from the network, the
+// host and the agent. A restore stopped after its first effect is settled by removing what
 // it started, and the restore's released access isn't kept once its outcome is acknowledged.
 func TestNativeRecoveryRestore(t *testing.T) {
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
@@ -229,7 +230,6 @@ func TestNativeRecoveryRestore(t *testing.T) {
 	database := upload(policy("Database", "postgres-logical", dbID), s3.destination, s3Access("database-repository-canary"), s3.restic)
 	files := upload(policy("Files", backup.QuiescedFiles, filesVolume), s3.destination, s3Access("files-repository-canary"), s3.restic)
 	local := upload(policy("Local files", backup.QuiescedFiles, filesVolume), backup.Destination{Name: "Local", Kind: "filesystem", Root: root}, backup.Access{Password: "local-repository-canary"}, "/opt/astilba-platform-tools/restic")
-	received := time.Now().UTC()
 	lost.remove(t)
 
 	// The replacement: the same deployment applied on a new server, with an empty database.
@@ -243,11 +243,11 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		}
 	}
 	generation := int64(0)
-	restore := func(u uploaded, snapshot string, at time.Time, target uuid.UUID, change func(*backup.Recovery)) (api.ExecutionCommand, Record) {
+	restore := func(u uploaded, snapshot string, target uuid.UUID, change func(*backup.Recovery)) (api.ExecutionCommand, Record) {
 		t.Helper()
 		view := u.in
 		view.Policy.ServerID, view.Policy.Plan = replacement.plan.ServerID, replacement.plan
-		v := backup.Recovery{Installation: view, RunID: uuid.New(), Snapshot: snapshot, TargetID: target, ReceivedAt: at}
+		v := backup.Recovery{Installation: view, RunID: uuid.New(), Snapshot: snapshot, TargetID: target}
 		if change != nil {
 			change(&v)
 		}
@@ -283,9 +283,54 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		return out
 	}
 
+	// While a restore's own container runs, it has no network, no capabilities but those restoring
+	// needs, no privileges to gain and no devices, and nothing of the host or the agent mounted but
+	// its target volume. The archive reaches it only through standard input.
+	isolated := func(t *testing.T, target uuid.UUID, user string, caps ...string) *bool {
+		t.Helper()
+		seen := false
+		e.Point = func(point string) {
+			if point != "restore-container" {
+				return
+			}
+			r, err := e.Journal.Record(currentRestore(t, e))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			var v backup.Recovery
+			_ = json.Unmarshal(*r.Command.Backup, &v)
+			list, err := docker.ContainerList(context.Background(), client.ContainerListOptions{Filters: runContainers(replacement.plan.ServerID, v.RunID)})
+			if err != nil || len(list.Items) != 1 {
+				t.Errorf("the restore runs %d containers: %v", len(list.Items), err)
+				return
+			}
+			got, err := docker.ContainerInspect(context.Background(), list.Items[0].ID, client.ContainerInspectOptions{})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			h, mounts := got.Container.HostConfig, got.Container.Mounts
+			added := []string{}
+			for _, c := range h.CapAdd {
+				added = append(added, strings.TrimPrefix(c, "CAP_"))
+			}
+			if h.NetworkMode != "none" || h.Privileged || len(h.Devices)+len(h.DeviceRequests)+len(h.DeviceCgroupRules) != 0 || !slices.Equal([]string(h.CapDrop), []string{"ALL"}) || !slices.Equal(added, caps) || !slices.Contains(h.SecurityOpt, "no-new-privileges") || h.PidMode.IsHost() || h.IpcMode.IsHost() || h.UsernsMode.IsHost() || got.Container.Config.User != user || len(mounts) != 1 || mounts[0].Type != mount.TypeVolume || mounts[0].Name != deployment.VolumeName(target) {
+				t.Errorf("the restore's container is not isolated: %+v %+v %q", h, mounts, got.Container.Config.User)
+			}
+			seen = true
+		}
+		return &seen
+	}
+
 	t.Run("database", func(t *testing.T) {
 		target := uuid.New()
-		c, r := restore(database, database.snapshot, received, target, nil)
+		inspected := isolated(t, target, "postgres")
+		c, r := restore(database, database.snapshot, target, nil)
+		e.Point = nil
+		if !*inspected {
+			t.Fatal("the restore's container was not inspected")
+		}
 		got := result(t, r)
 		if got.Snapshot != database.snapshot || got.TargetID != target || got.Manifest.SHA256 != database.manifest.SHA256 || got.Manifest.RunID != database.manifest.RunID {
 			t.Fatalf("restore reported another snapshot: %+v", got)
@@ -325,7 +370,13 @@ func TestNativeRecoveryRestore(t *testing.T) {
 
 	t.Run("files", func(t *testing.T) {
 		target := uuid.New()
-		_, r := restore(files, files.snapshot, received, target, nil)
+		// Restoring files' owners and modes needs these, all in Docker's default set.
+		inspected := isolated(t, target, "", "CHOWN", "DAC_OVERRIDE", "FOWNER")
+		_, r := restore(files, files.snapshot, target, nil)
+		e.Point = nil
+		if !*inspected {
+			t.Fatal("the restore's container was not inspected")
+		}
 		if got := result(t, r); got.Snapshot != files.snapshot || got.Manifest.SHA256 != files.manifest.SHA256 {
 			t.Fatalf("restore reported another snapshot: %+v", got)
 		}
@@ -355,7 +406,6 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		name, note string
 		files      map[string][]byte
 		links      map[string]string
-		receivedAt time.Time
 		change     func(*backup.Recovery)
 	}{
 		{name: "manifest_for_another_resource", note: "snapshot was not written for this policy", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) { m.ResourceID = filesVolume }), "data.dump": archive}},
@@ -371,7 +421,6 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		// The access opens the repository, but the policy names another destination.
 		{name: "another_destination", note: "Check the destination's access", change: func(v *backup.Recovery) { v.Installation.Destination.ID = uuid.New() }},
 		{name: "a_target_the_deployment_declares", note: "restore target must be a new volume", change: func(v *backup.Recovery) { v.TargetID = filesVolume }},
-		{name: "newer_than_its_receipt", note: "snapshot claims to be newer than its first report", receivedAt: genuine.CreatedAt.Add(-backup.RecoveryClockAllowance - time.Minute)},
 		{name: "another_deployment", note: "this server does not run the deployment the restore names", change: func(v *backup.Recovery) {
 			p := replacement.plan
 			p.RevisionID = uuid.New()
@@ -379,15 +428,12 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		}},
 	} {
 		t.Run(refusal.name, func(t *testing.T) {
-			snapshot, at := database.snapshot, received
+			snapshot := database.snapshot
 			if refusal.files != nil {
 				snapshot = forgeSnapshot(t, e, database.in, refusal.files, refusal.links)
 			}
-			if !refusal.receivedAt.IsZero() {
-				at = refusal.receivedAt
-			}
 			target := uuid.New()
-			_, r := restore(database, snapshot, at, target, refusal.change)
+			_, r := restore(database, snapshot, target, refusal.change)
 			if r.Report.State != "failed" || !strings.Contains(r.Report.Note, refusal.note) || r.Report.Restore != nil {
 				t.Fatalf("ended %s: %s", r.Report.State, r.Report.Note)
 			}
@@ -415,7 +461,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 			t.Fatal("no pack altered: ", err)
 		}
 		target := uuid.New()
-		_, r := restore(local, local.snapshot, received, target, nil)
+		_, r := restore(local, local.snapshot, target, nil)
 		if r.Report.State != "failed" || r.Report.Restore != nil {
 			t.Fatalf("an altered repository was restored: %s %s", r.Report.State, r.Report.Note)
 		}
@@ -453,7 +499,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		}
 		view := files.in
 		view.Policy.ServerID, view.Policy.Plan = replacement.plan.ServerID, replacement.plan
-		v := backup.Recovery{Installation: view, RunID: uuid.New(), Snapshot: files.snapshot, TargetID: target, ReceivedAt: received}
+		v := backup.Recovery{Installation: view, RunID: uuid.New(), Snapshot: files.snapshot, TargetID: target}
 		raw, _ := stablejson.Marshal(v)
 		value := jsontext.Value(raw)
 		generation++
@@ -506,7 +552,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 				t.Error(err)
 			}
 		}
-		_, r := restore(files, files.snapshot, received, target, nil)
+		_, r := restore(files, files.snapshot, target, nil)
 		e.Point = nil
 		if r.Report.State != "failed" || !strings.Contains(r.Report.Note, "failed while restoring or verifying its data") || !strings.Contains(r.Report.Note, "Nothing it started is still running") || r.Report.Restore != nil {
 			t.Fatalf("ended %s: %s", r.Report.State, r.Report.Note)

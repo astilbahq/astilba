@@ -21,7 +21,7 @@ import (
 func recoveryCommand(t *testing.T, plan deployment.Plan, change func(*backup.Recovery)) (api.ExecutionCommand, backup.Recovery) {
 	t.Helper()
 	policy := backup.Policy{ID: uuid.New(), Name: "Files", WorkspaceID: uuid.New(), EnvironmentID: plan.EnvironmentID, ServerID: plan.ServerID, DestinationID: uuid.New(), ResourceID: uuid.New(), Generation: 1, Method: backup.QuiescedFiles, Schedule: backup.Schedule{Timezone: "UTC"}, Retain: 1, Plan: plan}
-	v := backup.Recovery{Installation: backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "S3", Kind: "s3", Endpoint: "https://s3.example.test", Bucket: "backups"}, Access: backup.Access{AccessKey: "key", SecretKey: "secret", Password: "repository-password"}}, RunID: uuid.New(), Snapshot: strings.Repeat("a", 64), TargetID: uuid.New(), ReceivedAt: time.Now().UTC()}
+	v := backup.Recovery{Installation: backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "S3", Kind: "s3", Endpoint: "https://s3.example.test", Bucket: "backups"}, Access: backup.Access{AccessKey: "key", SecretKey: "secret", Password: "repository-password"}}, RunID: uuid.New(), Snapshot: strings.Repeat("a", 64), TargetID: uuid.New()}
 	if change != nil {
 		change(&v)
 	}

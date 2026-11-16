@@ -64,7 +64,7 @@ func releasedCommand(t *testing.T, plan deployment.Plan, kind api.ExecutionComma
 		p := backup.Command{Action: "backup", RunID: uuid.NewSHA1(id, []byte("run")), Installation: backup.Installation{Policy: backup.Policy{ID: uuid.NewSHA1(id, []byte("policy")), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID}, Access: access}}
 		body, c.PlanHash = p, p.Digest()
 	case "restore":
-		p := backup.Recovery{RunID: uuid.NewSHA1(id, []byte("run")), Snapshot: strings.Repeat("c", 64), TargetID: uuid.NewSHA1(id, []byte("target")), ReceivedAt: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC), Installation: backup.Installation{Policy: backup.Policy{ID: uuid.NewSHA1(id, []byte("policy")), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID}, Access: access}}
+		p := backup.Recovery{RunID: uuid.NewSHA1(id, []byte("run")), Snapshot: strings.Repeat("c", 64), TargetID: uuid.NewSHA1(id, []byte("target")), Installation: backup.Installation{Policy: backup.Policy{ID: uuid.NewSHA1(id, []byte("policy")), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID}, Access: access}}
 		body, c.PlanHash = p, p.Digest()
 	case "upgrade":
 		p := upgrade.Command{Action: "prepare", Plan: upgrade.Plan{ID: plan.UnitID, Source: plan}, Installation: backup.Installation{Access: access}, Secrets: secrets}

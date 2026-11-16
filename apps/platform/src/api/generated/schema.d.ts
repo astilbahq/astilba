@@ -4712,7 +4712,7 @@ export interface components {
             /** Format: uuid */
             targetId: string;
         };
-        /** @description Restores a snapshot from a backup policy's repository onto a server other than the policy's own. The installation is the source policy bound to the receiving server and the plan applied there now. receivedAt is when management first received a report of the snapshot. */
+        /** @description Restores a snapshot from a backup policy's repository onto a server other than the policy's own. The installation is the source policy bound to the receiving server and the plan applied there now. */
         BackupRecovery: {
             installation: components["schemas"]["BackupInstallation"];
             /** Format: uuid */
@@ -4720,8 +4720,6 @@ export interface components {
             snapshot: string;
             /** Format: uuid */
             targetId: string;
-            /** Format: date-time */
-            receivedAt: string;
         };
         /** @description The snapshot a succeeded restore command restored into its target volume, and the manifest it verified the restored data against. */
         BackupRecoveryResult: {

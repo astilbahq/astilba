@@ -18,15 +18,7 @@ type Recovery struct {
 	RunID        uuid.UUID    `json:"runId"`
 	Snapshot     string       `json:"snapshot"`
 	TargetID     uuid.UUID    `json:"targetId"`
-	// ReceivedAt is when management first received a report of the snapshot, on its own clock.
-	ReceivedAt time.Time `json:"receivedAt"`
 }
-
-// RecoveryClockAllowance is how far a manifest's creation time, on the writing server's clock, may
-// be later than management's first receipt of its snapshot. An honest writer starts the manifest
-// before the upload that reports it; the allowance covers that server's clock running fast, which
-// can no longer be corrected once the server is lost.
-const RecoveryClockAllowance = 15 * time.Minute
 
 // MaxManifestBytes bounds the manifest a recovery reads out of a snapshot before trusting it.
 const MaxManifestBytes = 65536
@@ -40,7 +32,7 @@ func (r Recovery) Digest() string {
 
 func (r Recovery) Validate() error {
 	p := r.Installation.Policy
-	if p.Validate() != nil || p.Method == "container-job" || r.RunID == uuid.Nil || r.TargetID == uuid.Nil || !SnapshotID(r.Snapshot) || r.ReceivedAt.IsZero() {
+	if p.Validate() != nil || p.Method == "container-job" || r.RunID == uuid.Nil || r.TargetID == uuid.Nil || !SnapshotID(r.Snapshot) {
 		return errors.New("invalid recovery restore")
 	}
 	return nil
@@ -69,9 +61,6 @@ func (r Recovery) Admits(m Manifest) error {
 	}
 	if !bounded {
 		return errors.New("snapshot manifest is outside its recipe's bounds")
-	}
-	if m.CreatedAt.IsZero() || m.CreatedAt.After(r.ReceivedAt.Add(RecoveryClockAllowance)) {
-		return errors.New("snapshot claims to be newer than its first report")
 	}
 	return nil
 }

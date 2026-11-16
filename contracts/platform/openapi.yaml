@@ -9802,8 +9802,7 @@
       description: >-
         Restores a snapshot from a backup policy's repository onto a server other than the
         policy's own. The installation is the source policy bound to the receiving server and the
-        plan applied there now. receivedAt is when management first received a report of the
-        snapshot.
+        plan applied there now.
       properties:
         installation:
           $ref: '#/components/schemas/BackupInstallation'
@@ -9816,10 +9815,7 @@
         targetId:
           type: string
           format: uuid
-        receivedAt:
-          type: string
-          format: date-time
-      required: [installation, runId, snapshot, targetId, receivedAt]
+      required: [installation, runId, snapshot, targetId]
       x-go-type: jsontext.Value
       x-go-type-import: {path: encoding/json/jsontext}
     BackupRecoveryResult:

@@ -19,9 +19,8 @@ func recoveryFixture(t *testing.T) (Recovery, Manifest) {
 	if err := policy.Validate(); err != nil {
 		t.Fatal("fixture policy: ", err)
 	}
-	received := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	r := Recovery{Installation: Installation{Policy: policy, Destination: Destination{ID: policy.DestinationID, Name: "S3", Kind: "s3", Endpoint: "https://s3.example.test", Bucket: "backups", Region: "auto"}, Access: Access{AccessKey: "key", SecretKey: "secret", Password: "repository-password"}}, RunID: uuid.New(), Snapshot: strings.Repeat("a", 64), TargetID: uuid.New(), ReceivedAt: received}
-	m := Manifest{Recipe: Recipe, PolicyID: policy.ID, RunID: uuid.New(), EnvironmentID: policy.EnvironmentID, ResourceID: app, Method: policy.Method, Image: image, Database: "app", Username: "app", CreatedAt: received.Add(-time.Minute), Roles: []Role{}, Extensions: []string{}, SHA256: strings.Repeat("b", 64), Bytes: 4096}
+	r := Recovery{Installation: Installation{Policy: policy, Destination: Destination{ID: policy.DestinationID, Name: "S3", Kind: "s3", Endpoint: "https://s3.example.test", Bucket: "backups", Region: "auto"}, Access: Access{AccessKey: "key", SecretKey: "secret", Password: "repository-password"}}, RunID: uuid.New(), Snapshot: strings.Repeat("a", 64), TargetID: uuid.New()}
+	m := Manifest{Recipe: Recipe, PolicyID: policy.ID, RunID: uuid.New(), EnvironmentID: policy.EnvironmentID, ResourceID: app, Method: policy.Method, Image: image, Database: "app", Username: "app", CreatedAt: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC), Roles: []Role{}, Extensions: []string{}, SHA256: strings.Repeat("b", 64), Bytes: 4096}
 	return r, m
 }
 
@@ -43,7 +42,6 @@ func TestRecoveryDigestCoversWhatIsRestoredAndNotAccess(t *testing.T) {
 		"snapshot":    func(r *Recovery) { r.Snapshot = strings.Repeat("d", 64) },
 		"target":      func(r *Recovery) { r.TargetID = uuid.New() },
 		"run":         func(r *Recovery) { r.RunID = uuid.New() },
-		"receipt":     func(r *Recovery) { r.ReceivedAt = r.ReceivedAt.Add(time.Second) },
 		"destination": func(r *Recovery) { r.Installation.Destination.Bucket = "other" },
 		"policy":      func(r *Recovery) { r.Installation.Policy.ResourceID = uuid.New() },
 	} {
@@ -60,7 +58,6 @@ func TestRecoveryRefusesAnIncompleteRestore(t *testing.T) {
 		"no run":      func(r *Recovery) { r.RunID = uuid.Nil },
 		"no target":   func(r *Recovery) { r.TargetID = uuid.Nil },
 		"no snapshot": func(r *Recovery) { r.Snapshot = "" },
-		"no receipt":  func(r *Recovery) { r.ReceivedAt = time.Time{} },
 		"a container job": func(r *Recovery) {
 			r.Installation.Policy.Method = "container-job"
 			r.Installation.Policy.Command = []string{"true"}
@@ -75,17 +72,12 @@ func TestRecoveryRefusesAnIncompleteRestore(t *testing.T) {
 	}
 }
 
-// A manifest read out of the snapshot must have been written for the policy, describe a usable
-// archive, and not claim to be newer than management's first receipt of its snapshot.
+// A manifest read out of the snapshot must have been written for the policy and describe a usable
+// archive.
 func TestRecoveryAdmitsOnlyThePolicysManifest(t *testing.T) {
 	r, m := recoveryFixture(t)
 	if err := r.Admits(m); err != nil {
 		t.Fatal(err)
-	}
-	late := m
-	late.CreatedAt = r.ReceivedAt.Add(RecoveryClockAllowance)
-	if err := r.Admits(late); err != nil {
-		t.Fatal("a fast clock within the allowance was refused: ", err)
 	}
 	for name, change := range map[string]func(*Manifest){
 		"another policy":      func(m *Manifest) { m.PolicyID = uuid.New() },
@@ -97,8 +89,6 @@ func TestRecoveryAdmitsOnlyThePolicysManifest(t *testing.T) {
 		"no bytes":            func(m *Manifest) { m.Bytes = 0 },
 		"too many bytes":      func(m *Manifest) { m.Bytes = 1<<40 + 1 },
 		"no digest":           func(m *Manifest) { m.SHA256 = "" },
-		"no creation time":    func(m *Manifest) { m.CreatedAt = time.Time{} },
-		"newer than received": func(m *Manifest) { m.CreatedAt = r.ReceivedAt.Add(RecoveryClockAllowance + time.Second) },
 		"no roles":            func(m *Manifest) { m.Roles = nil },
 		"no extensions":       func(m *Manifest) { m.Extensions = nil },
 		"too many roles": func(m *Manifest) {
