@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json/v2"
 	"errors"
 	"io"
@@ -22,10 +23,14 @@ import (
 
 // A restored cluster ran SQL from its dump as the deployment's superuser, so before anything may
 // start the deployment's database on it, the restore holds it to what a dump of one database can
-// legitimately leave: the restore refuses anything more, and puts back the settings files the
-// pinned image wrote when it created the cluster. It never repairs what it finds. Its files are
-// checked while no server runs, and its catalogs by a server started after that check, so neither
-// sees what a server the dump ran in kept in memory rather than on disk.
+// legitimately leave, as far as it can tell: it refuses anything more, and puts back the settings
+// files the pinned image wrote when it created the cluster. It never repairs what it finds. Its
+// files are checked while no server runs, and its catalogs by a server started after that check,
+// so neither sees what a server the dump ran in kept in memory rather than on disk.
+//
+// The catalog check is best-effort. A superuser can rewrite the catalogs it reads, and the
+// dump's own code, such as triggers, runs as the deployment's superuser once deployed, so no check
+// here makes a dump from a compromised server safe to use.
 
 // clusterRefusal is something a restored cluster holds that a dump of one database can't leave.
 type clusterRefusal string
@@ -55,164 +60,175 @@ func postgresDataDirectory(image string) (absolute, relative string, err error) 
 	return "", "", errUnsupportedPostgresImage
 }
 
-// clusterSettings reads the settings files of a cluster the pinned image has just created, before
-// any SQL from a dump runs in it.
-func (e *Engine) clusterSettings(ctx context.Context, id, image string) (map[string][]byte, error) {
-	dir, _, err := postgresDataDirectory(image)
+// clusterBaseline is what a cluster the pinned image has just created holds, with the manifest's
+// roles, before any SQL from a dump runs in it.
+type clusterBaseline struct {
+	// files are its settings files: what the deployment's database would have had if it had
+	// created the cluster itself.
+	files map[string][]byte
+	// roles is its roles and their memberships, which a dump of one database never changes.
+	roles [][][]string
+	// contexts is who may choose each setting the server knows, with plpgsql's, the language
+	// every database has.
+	contexts map[string]string
+}
+
+// clusterRoles are the catalogs that hold a cluster's roles, with their passwords, and memberships.
+var clusterRoles = []string{"pg_authid", "pg_auth_members"}
+
+// baseline reads a cluster the pinned image has just created, running in container id.
+func (e *Engine) baseline(ctx context.Context, id string, m backup.Manifest) (clusterBaseline, error) {
+	dir, _, err := postgresDataDirectory(m.Image)
 	if err != nil {
-		return nil, err
+		return clusterBaseline{}, err
 	}
-	out := map[string][]byte{}
+	b := clusterBaseline{files: map[string][]byte{}}
 	for _, name := range clusterSettingsFiles {
-		if out[name], err = e.dataOutput(ctx, pgClient{container: id}, "cat", dir+"/"+name); err != nil {
-			return nil, err
+		if b.files[name], err = e.dataOutput(ctx, pgClient{container: id}, "cat", dir+"/"+name); err != nil {
+			return clusterBaseline{}, err
 		}
 	}
-	return out, nil
+	for _, table := range clusterRoles {
+		rows, err := e.catalog(ctx, id, m, m.Database, table)
+		if err != nil {
+			return clusterBaseline{}, err
+		}
+		b.roles = append(b.roles, rows)
+	}
+	// inline-sql: reads the fresh cluster the restore created, not the platform database.
+	raw, err := e.dataOutput(ctx, pgClient{container: id}, "psql", "-XAqt", "-v", "ON_ERROR_STOP=1", "-U", m.Username, "-d", m.Database, "-c", "LOAD 'plpgsql'; SELECT pg_catalog.json_object_agg(name, context) FROM pg_catalog.pg_settings")
+	if err != nil {
+		return clusterBaseline{}, err
+	}
+	if json.Unmarshal(bytes.TrimSpace(raw), &b.contexts) != nil {
+		return clusterBaseline{}, errors.New("cluster settings are unreadable")
+	}
+	return b, nil
 }
 
-// restoredCluster is what checkRestoredCluster reads from a restored cluster's shared catalogs.
-type restoredCluster struct {
-	Roles []struct {
-		Name  string `json:"name"`
-		Login bool   `json:"login"`
-		Super bool   `json:"super"`
-		Other bool   `json:"other"`
-	} `json:"roles"`
-	Memberships int      `json:"memberships"`
-	Databases   []string `json:"databases"`
-	Connectable []string `json:"connectable"`
-	Settings    []struct {
-		Database string `json:"database"`
-		Name     string `json:"name"`
-		Context  string `json:"context"`
-	} `json:"settings"`
-	Subscriptions int      `json:"subscriptions"`
-	Slots         int      `json:"slots"`
-	Prepared      int      `json:"prepared"`
-	Tablespaces   []string `json:"tablespaces"`
+// catalog reads the rows of a catalog table, and of only the columns named after it, in order.
+// COPY reads the table itself, so no rule the dump wrote can stand in for it.
+func (e *Engine) catalog(ctx context.Context, id string, m backup.Manifest, database, table string) ([][]string, error) {
+	// A database's settings, which its dump carries, can be larger than other helpers' output.
+	out := &boundedOutput{limit: 4 << 20, stopOnLimit: true}
+	if err := e.containerExec(ctx, pgClient{container: id}, out, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", m.Username, "-d", database, "-c", "SET search_path = pg_catalog, pg_temp; COPY "+table+" TO STDOUT (FORMAT csv)"); err != nil {
+		return nil, err
+	}
+	rows, err := csv.NewReader(&out.b).ReadAll()
+	if err != nil {
+		return nil, errors.New("restored cluster is unreadable")
+	}
+	slices.SortFunc(rows, slices.Compare[[]string])
+	return rows, nil
 }
-
-// restoredDatabase is what checkRestoredCluster reads from each database a client can connect to.
-type restoredDatabase struct {
-	EventTriggers int      `json:"eventTriggers"`
-	Extensions    []string `json:"extensions"`
-	Native        int      `json:"native"`
-}
-
-// Each check runs with the catalog first on its search path, so nothing the dump created can
-// stand in for a catalog object.
-const (
-	restoredClusterSQL = `SET search_path = pg_catalog, pg_temp;
-SELECT json_build_object(
- 'roles', (SELECT coalesce(json_agg(json_build_object('name', rolname, 'login', rolcanlogin, 'super', rolsuper, 'other', rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolconnlimit <> -1 OR rolvaliduntil IS NOT NULL) ORDER BY rolname), '[]') FROM pg_authid WHERE rolname !~ '^pg_'),
- 'memberships', (SELECT count(*) FROM pg_auth_members m JOIN pg_authid r ON r.oid = m.roleid JOIN pg_authid u ON u.oid = m.member WHERE r.rolname !~ '^pg_' OR u.rolname !~ '^pg_'),
- 'databases', (SELECT coalesce(json_agg(datname ORDER BY datname), '[]') FROM pg_database),
- 'connectable', (SELECT coalesce(json_agg(datname ORDER BY datname), '[]') FROM pg_database WHERE datallowconn),
- 'settings', (SELECT coalesce(json_agg(json_build_object('database', coalesce(d.datname, ''), 'name', split_part(c.v, '=', 1), 'context', coalesce(g.context, ''))), '[]') FROM pg_db_role_setting s LEFT JOIN pg_database d ON d.oid = s.setdatabase CROSS JOIN LATERAL unnest(s.setconfig) c(v) LEFT JOIN pg_settings g ON g.name = split_part(c.v, '=', 1)),
- 'subscriptions', (SELECT count(*) FROM pg_subscription),
- 'slots', (SELECT count(*) FROM pg_replication_slots),
- 'prepared', (SELECT count(*) FROM pg_prepared_xacts),
- 'tablespaces', (SELECT coalesce(json_agg(spcname ORDER BY spcname), '[]') FROM pg_tablespace))`
-	restoredDatabaseSQL = `SET search_path = pg_catalog, pg_temp;
-SELECT json_build_object(
- 'eventTriggers', (SELECT count(*) FROM pg_event_trigger),
- 'extensions', (SELECT coalesce(json_agg(extname ORDER BY extname), '[]') FROM pg_extension),
- 'native', (SELECT count(*) FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang WHERE l.lanname IN ('c', 'internal') AND p.pronamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')))`
-)
 
 // checkRestoredCluster refuses a restored cluster, running in container id with event triggers
-// off for its clients, that holds anything a dump of m's database can't leave in the cluster the
-// restore created for it: roles, settings, databases and cluster objects beyond the manifest's,
-// and in any database a client can reach, event triggers, extensions beyond the manifest's, or
-// native functions no extension owns.
-func (e *Engine) checkRestoredCluster(ctx context.Context, id string, m backup.Manifest) error {
-	query := func(database, sql string, v any) error {
-		raw, err := e.dataOutput(ctx, pgClient{container: id}, "psql", "-XAqt", "-v", "ON_ERROR_STOP=1", "-U", m.Username, "-d", database, "-c", sql)
+// off for its clients, that holds what a dump of m's database can't leave in the cluster b was
+// read from: a changed role or membership, another database, a setting outside the database or
+// one only an administrator may choose, or a subscription. Tablespaces, replication slots and
+// prepared transactions keep files a cluster's check refuses.
+func (e *Engine) checkRestoredCluster(ctx context.Context, id string, m backup.Manifest, b clusterBaseline) error {
+	for i, table := range clusterRoles {
+		rows, err := e.catalog(ctx, id, m, m.Database, table)
 		if err != nil {
 			return err
 		}
-		if json.Unmarshal(bytes.TrimSpace(raw), v) != nil {
-			return errors.New("restored cluster is unreadable")
+		if !slices.EqualFunc(rows, b.roles[i], slices.Equal) {
+			return clusterRefusal("a role or membership the restore didn't create")
 		}
-		return nil
 	}
-	var c restoredCluster
-	if err := query(m.Database, restoredClusterSQL, &c); err != nil {
+	databases, err := e.catalog(ctx, id, m, m.Database, "pg_database (datname, oid)")
+	if err != nil {
 		return err
 	}
-	roles := map[string]bool{}
-	for _, r := range m.Roles {
-		roles[r.Name] = true
+	names := []string{"postgres", "template0", "template1"}
+	if !slices.Contains(names, m.Database) {
+		names = append(names, m.Database)
+		slices.Sort(names)
 	}
-	for _, r := range c.Roles {
-		switch {
-		case r.Name == m.Username:
-			if !r.Login || !r.Super {
-				return clusterRefusal("a changed deployment role")
-			}
-		case !roles[r.Name]:
-			return clusterRefusal("a role the backup doesn't hold")
-		case r.Login || r.Super || r.Other:
-			return clusterRefusal("a role with attributes the backup doesn't give it")
-		default:
-			delete(roles, r.Name)
+	oid := ""
+	for i, d := range databases {
+		if i >= len(names) || d[0] != names[i] {
+			return clusterRefusal("a database the backup doesn't hold")
+		}
+		if d[0] == m.Database {
+			oid = d[1]
 		}
 	}
-	if len(roles) > 0 {
-		return clusterRefusal("too few roles")
-	}
-	if c.Memberships != 0 {
-		return clusterRefusal("a role membership")
-	}
-	databases := []string{"postgres", "template0", "template1"}
-	connectable := []string{"postgres", "template1"}
-	if !slices.Contains(databases, m.Database) {
-		databases = append(databases, m.Database)
-		connectable = append(connectable, m.Database)
-	}
-	slices.Sort(databases)
-	slices.Sort(connectable)
-	if !slices.Equal(c.Databases, databases) || !slices.Equal(c.Connectable, connectable) {
+	if len(databases) != len(names) {
 		return clusterRefusal("a database the backup doesn't hold")
 	}
-	for _, s := range c.Settings {
+	settings, err := e.catalog(ctx, id, m, m.Database, "pg_db_role_setting (setdatabase, setconfig)")
+	if err != nil {
+		return err
+	}
+	for _, s := range settings {
 		// Settings in the database, its own or a role's, are part of its dump, but only those any
 		// client may set: one that loads code or reaches past the database is the cluster's to
-		// choose.
-		if s.Database != m.Database || s.Context != "user" && (s.Context != "" || !strings.Contains(s.Name, ".")) {
+		// choose. A name the server doesn't know is a custom setting only with a dot in it.
+		set, ok := settingNames(s[1])
+		if !ok || s[0] != oid || slices.ContainsFunc(set, func(name string) bool {
+			c, known := b.contexts[name]
+			return c != "user" && (known || !strings.Contains(name, "."))
+		}) {
 			return clusterRefusal("a setting only an administrator may choose")
 		}
 	}
-	if c.Subscriptions != 0 || c.Slots != 0 || c.Prepared != 0 || !slices.Equal(c.Tablespaces, []string{"pg_default", "pg_global"}) {
-		return clusterRefusal("a subscription, replication slot, prepared transaction or tablespace")
+	subscriptions, err := e.catalog(ctx, id, m, m.Database, "pg_subscription (oid)")
+	if err != nil {
+		return err
 	}
-	for _, database := range connectable {
-		var d restoredDatabase
-		if err := query(database, restoredDatabaseSQL, &d); err != nil {
-			return err
-		}
-		allowed := []string{"plpgsql"}
-		if database == m.Database {
-			allowed = m.Extensions
-		}
-		switch {
-		case d.EventTriggers != 0:
-			return clusterRefusal("an event trigger")
-		case slices.ContainsFunc(d.Extensions, func(x string) bool { return !slices.Contains(allowed, x) }):
-			return clusterRefusal("an extension the backup doesn't hold")
-		case d.Native != 0:
-			return clusterRefusal("a native function no extension provides")
-		}
+	if len(subscriptions) != 0 {
+		return clusterRefusal("a subscription")
 	}
 	return nil
 }
 
-// resetClusterPassword gives the deployment's role its password again, which a dump may have
-// changed. The password reaches psql only on its standard input.
-func (e *Engine) resetClusterPassword(ctx context.Context, id string, m backup.Manifest, password string) error {
-	sql := "SET search_path = pg_catalog, pg_temp;\nALTER ROLE " + quoteIdentifier(m.Username) + " PASSWORD '" + strings.ReplaceAll(password, "'", "''") + "';\n"
-	return e.dataTool(ctx, strings.NewReader(sql), io.Discard, "exec", "-i", id, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", m.Username, "-d", m.Database, "-f", "-")
+// settingNames reads the setting names from a name=value text array as PostgreSQL writes it.
+func settingNames(literal string) ([]string, bool) {
+	inner, open := strings.CutPrefix(literal, "{")
+	inner, closed := strings.CutSuffix(inner, "}")
+	if !open || !closed || inner == "" {
+		return nil, false
+	}
+	var names []string
+	for len(inner) > 0 {
+		var element strings.Builder
+		if inner[0] == '"' {
+			i := 1
+			for ; i < len(inner) && inner[i] != '"'; i++ {
+				if inner[i] == '\\' {
+					i++
+				}
+				if i < len(inner) {
+					element.WriteByte(inner[i])
+				}
+			}
+			if i >= len(inner) {
+				return nil, false
+			}
+			inner = inner[i+1:]
+		} else {
+			i := strings.IndexByte(inner, ',')
+			if i < 0 {
+				i = len(inner)
+			}
+			element.WriteString(inner[:i])
+			inner = inner[i:]
+		}
+		name, _, ok := strings.Cut(element.String(), "=")
+		if !ok {
+			return nil, false
+		}
+		names = append(names, name)
+		if inner, ok = strings.CutPrefix(inner, ","); ok && inner == "" {
+			return nil, false
+		}
+		if !ok && inner != "" {
+			return nil, false
+		}
+	}
+	return names, true
 }
 
 var (
@@ -232,19 +248,21 @@ var clusterDirectories = map[string]func(string) bool{
 	"global": func(n string) bool {
 		return relationFile.MatchString(n) || n == "pg_control" || n == "pg_filenode.map" || n == "pg_internal.init"
 	},
-	"pg_commit_ts":          segmentFile.MatchString,
-	"pg_dynshmem":           nil,
-	"pg_logical":            func(n string) bool { return n == "replorigin_checkpoint" },
-	"pg_logical/mappings":   nil,
-	"pg_logical/snapshots":  nil,
-	"pg_multixact":          nil,
-	"pg_multixact/members":  segmentFile.MatchString,
-	"pg_multixact/offsets":  segmentFile.MatchString,
-	"pg_notify":             segmentFile.MatchString,
-	"pg_replslot":           nil,
-	"pg_serial":             segmentFile.MatchString,
-	"pg_snapshots":          nil,
-	"pg_stat":               func(n string) bool { return n == "pgstat.stat" },
+	"pg_commit_ts":         segmentFile.MatchString,
+	"pg_dynshmem":          nil,
+	"pg_logical":           func(n string) bool { return n == "replorigin_checkpoint" },
+	"pg_logical/mappings":  nil,
+	"pg_logical/snapshots": nil,
+	"pg_multixact":         nil,
+	"pg_multixact/members": segmentFile.MatchString,
+	"pg_multixact/offsets": segmentFile.MatchString,
+	"pg_notify":            segmentFile.MatchString,
+	"pg_replslot":          nil,
+	"pg_serial":            segmentFile.MatchString,
+	"pg_snapshots":         nil,
+	"pg_stat":              func(n string) bool { return n == "pgstat.stat" },
+	// A server keeps the directory its temporary files went in, but not the files.
+	"base/pgsql_tmp":        nil,
 	"pg_stat_tmp":           nil,
 	"pg_subtrans":           segmentFile.MatchString,
 	"pg_tblspc":             nil,
@@ -291,12 +309,13 @@ type clusterListing struct {
 	accept  func(path string) bool
 	left    int
 	partial []byte
-	refused bool
+	refusal error
 }
 
 func (l *clusterListing) Write(p []byte) (int, error) {
 	if l.left -= len(p); l.left < 0 {
-		return 0, clusterRefusal("more files than a cluster holds")
+		l.refusal = clusterRefusal("more files than a cluster holds")
+		return 0, l.refusal
 	}
 	l.partial = append(l.partial, p...)
 	for {
@@ -307,8 +326,8 @@ func (l *clusterListing) Write(p []byte) (int, error) {
 		path := strings.TrimPrefix(string(l.partial[:i]), "./")
 		l.partial = l.partial[i+1:]
 		if !l.accept(path) {
-			l.refused = true
-			return 0, clusterRefusal("a file a cluster doesn't hold")
+			l.refusal = clusterRefusal("a file a cluster doesn't hold")
+			return 0, l.refusal
 		}
 	}
 }
@@ -354,8 +373,8 @@ func (e *Engine) resetClusterFiles(ctx context.Context, p backup.Policy, run, ta
 	} {
 		listing := &clusterListing{accept: check.accept, left: 64 << 20}
 		err = e.containerExec(ctx, helper, listing, append(append([]string{"find", ".", "-mindepth", "1"}, check.find...), "-print0")...)
-		if listing.refused || listing.left < 0 {
-			return clusterRefusal("a file a cluster doesn't hold")
+		if listing.refusal != nil {
+			return listing.refusal
 		}
 		if err != nil {
 			return err

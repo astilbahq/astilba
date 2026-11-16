@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -20,7 +21,7 @@ func TestRestoredClusterHoldsOnlyAClustersFiles(t *testing.T) {
 			}
 			return data + "/" + path
 		}
-		directories := []string{"base", "base/1", "base/16384", "global", "pg_commit_ts", "pg_dynshmem", "pg_logical", "pg_logical/mappings", "pg_logical/snapshots", "pg_multixact", "pg_multixact/members", "pg_multixact/offsets", "pg_notify", "pg_replslot", "pg_serial", "pg_snapshots", "pg_stat", "pg_stat_tmp", "pg_subtrans", "pg_tblspc", "pg_twophase", "pg_wal", "pg_wal/archive_status", "pg_wal/summaries", "pg_xact"}
+		directories := []string{"base", "base/1", "base/16384", "base/pgsql_tmp", "global", "pg_commit_ts", "pg_dynshmem", "pg_logical", "pg_logical/mappings", "pg_logical/snapshots", "pg_multixact", "pg_multixact/members", "pg_multixact/offsets", "pg_notify", "pg_replslot", "pg_serial", "pg_snapshots", "pg_stat", "pg_stat_tmp", "pg_subtrans", "pg_tblspc", "pg_twophase", "pg_wal", "pg_wal/archive_status", "pg_wal/summaries", "pg_xact"}
 		files := []string{"PG_VERSION", "postmaster.opts", "postgresql.conf", "postgresql.auto.conf", "pg_hba.conf", "pg_ident.conf", "base/1/PG_VERSION", "base/1/pg_filenode.map", "base/16384/pg_internal.init", "base/16384/16385", "base/16384/16385_fsm", "base/16384/16385_vm", "base/16384/16385_init", "base/16384/16385.1", "global/1260", "global/pg_control", "global/pg_filenode.map", "global/pg_internal.init", "pg_xact/0000", "pg_subtrans/0000", "pg_multixact/members/0000", "pg_multixact/offsets/0000", "pg_logical/replorigin_checkpoint", "pg_stat/pgstat.stat", "pg_wal/000000010000000000000001"}
 		for _, path := range directories {
 			if !clusterEntry(data, in(path), true) {
@@ -35,12 +36,12 @@ func TestRestoredClusterHoldsOnlyAClustersFiles(t *testing.T) {
 		if data != "" && (!clusterEntry(data, "18", true) || clusterEntry(data, "18/other", true) || clusterEntry(data, "17", true)) {
 			t.Errorf("%s: the path to the cluster is not all that sits beside it", image)
 		}
-		for _, path := range []string{"postmaster.pid", "standby.signal", "recovery.signal", "backup_label", "tablespace_map", "evil.so", "base/16384/evil.so", "base/16384/16385.so", "base/x/16385", "global/evil", "pg_tblspc/16400", "pg_replslot/slot", "pg_twophase/00000300", "pg_wal/000000010000000000000001.partial", "pg_wal/00000002.history", "pg_wal/archive_status/000000010000000000000001.ready", "pg_stat_tmp/global.stat", "pg_logical/snapshots/0-1.snap", "pg_dynshmem/mmap.1", "conf.d/evil.conf"} {
+		for _, path := range []string{"postmaster.pid", "standby.signal", "recovery.signal", "backup_label", "tablespace_map", "evil.so", "base/16384/evil.so", "base/16384/16385.so", "base/x/16385", "base/pgsql_tmp/pgsql_tmp1.0", "global/evil", "pg_tblspc/16400", "pg_replslot/slot", "pg_twophase/00000300", "pg_wal/000000010000000000000001.partial", "pg_wal/00000002.history", "pg_wal/archive_status/000000010000000000000001.ready", "pg_stat_tmp/global.stat", "pg_logical/snapshots/0-1.snap", "pg_dynshmem/mmap.1", "conf.d/evil.conf"} {
 			if clusterEntry(data, in(path), false) {
 				t.Errorf("%s: file %s accepted", image, in(path))
 			}
 		}
-		for _, path := range []string{"conf.d", "base/16384/sub", "pg_tblspc/16400", "pg_wal/other", "base/x"} {
+		for _, path := range []string{"conf.d", "base/16384/sub", "base/pgsql_tmp/sub", "pg_tblspc/16400", "pg_wal/other", "base/x"} {
 			if clusterEntry(data, in(path), true) {
 				t.Errorf("%s: directory %s accepted", image, in(path))
 			}
@@ -60,11 +61,30 @@ func TestRestoredClusterListingStopsAtAFileAClusterDoesNotHold(t *testing.T) {
 	if _, err := l.Write([]byte("385\x00")); err != nil || len(l.partial) != 0 {
 		t.Fatal("a path split across writes was refused: ", err)
 	}
-	if _, err := l.Write([]byte("./evil.so\x00")); err == nil || !l.refused {
+	if _, err := l.Write([]byte("./evil.so\x00")); err == nil || clusterReason(l.refusal) != "a file a cluster doesn't hold" {
 		t.Fatal("a file a cluster doesn't hold was accepted")
 	}
 	small := &clusterListing{accept: func(string) bool { return true }, left: 4}
-	if _, err := small.Write([]byte("./PG_VERSION\x00")); err == nil {
+	if _, err := small.Write([]byte("./PG_VERSION\x00")); err == nil || clusterReason(small.refusal) != "more files than a cluster holds" {
 		t.Fatal("a listing longer than its limit was accepted")
+	}
+}
+
+// Setting names are read from an array as PostgreSQL writes it, and anything else is refused.
+func TestSettingNamesReadsAnArrayAsPostgreSQLWritesIt(t *testing.T) {
+	for literal, want := range map[string][]string{
+		`{work_mem=16MB}`:                        {"work_mem"},
+		`{"search_path=\"a, b\"",work_mem=16MB}`: {"search_path", "work_mem"},
+		`{"app.note=x\\y"}`:                      {"app.note"},
+	} {
+		got, ok := settingNames(literal)
+		if !ok || !slices.Equal(got, want) {
+			t.Errorf("%s: %q %v", literal, got, ok)
+		}
+	}
+	for _, literal := range []string{"", "{}", "work_mem=1", "{work_mem=1", "{work_mem}", "{work_mem=1,}", `{"work_mem=1}`, `{"work_mem=1"x}`, "{a=1,,b=2}"} {
+		if got, ok := settingNames(literal); ok {
+			t.Errorf("%s was read as %q", literal, got)
+		}
 	}
 }

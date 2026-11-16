@@ -581,10 +581,13 @@ func (s *Service) observeVisual(ctx context.Context, tx pgx.Tx, ws, env uuid.UUI
 		if err := tx.QueryRow(ctx, "SELECT true FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3 AND id=$4 AND NOT deleted", ws, env, v.Unit, *volume).Scan(&ok); err != nil {
 			return api.Operation{}, err
 		}
-		for _, a := range v.Spec.Applications {
-			for _, m := range a.Mounts {
-				if m.VolumeID == *volume {
-					return api.Operation{}, domain.Conflict
+		// Neither the draft nor the plan the server runs may mount it.
+		for _, spec := range []domain.Specification{v.Spec, plan.Specification} {
+			for _, a := range spec.Applications {
+				for _, m := range a.Mounts {
+					if m.VolumeID == *volume {
+						return api.Operation{}, domain.Conflict
+					}
 				}
 			}
 		}

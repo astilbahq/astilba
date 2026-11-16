@@ -17,9 +17,9 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// A dump's SQL runs as the restoring superuser. Whatever it leaves in the cluster beyond what a
-// dump of one database holds is refused before anything uses the cluster, and what it changes in
-// the cluster's settings files and the deployment role's password is put back.
+// A dump's SQL runs as the restoring superuser. What it leaves in the cluster beyond what a dump of
+// one database holds is refused before anything uses the cluster, as far as the checks can see,
+// and what it changes in the cluster's settings files is put back.
 func TestNativeRestoreHoldsTheClusterToItsDump(t *testing.T) {
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
 		t.Skip("requires disposable native Linux host")
@@ -75,10 +75,15 @@ func TestNativeRestoreHoldsTheClusterToItsDump(t *testing.T) {
 		for _, statement := range attack {
 			body += "EXECUTE $a$" + statement + "$a$;\n"
 		}
-		// The check constraint is evaluated for each row the restore loads, as the restoring
-		// role; the row is inserted before the function attacks.
+		// The primary key is built again with too little memory, so the restore leaves the
+		// directory a server's temporary files go in. The check constraint is evaluated for each
+		// row the restore loads, as the restoring role; the row is inserted before the function
+		// attacks.
 		if _, err := e.pgQuery(ctx, pgClient{container: db}, a, `CREATE ROLE reader NOLOGIN;
 ALTER ROLE reader IN DATABASE `+quoteIdentifier(c.database)+` SET work_mem = '16MB';
+ALTER DATABASE `+quoteIdentifier(c.database)+` SET maintenance_work_mem = '1MB';
+CREATE TABLE public.spilled AS SELECT generate_series(1, 100000) AS value;
+ALTER TABLE public.spilled ADD PRIMARY KEY (value);
 CREATE FUNCTION public.armed() RETURNS boolean LANGUAGE sql AS 'SELECT true';
 CREATE TABLE public.records(value text CHECK (public.armed()));
 INSERT INTO public.records VALUES ('restored');
@@ -106,17 +111,27 @@ END$f$;`); err != nil {
 		})
 	}
 
+	const role, setting = "a role or membership the restore didn't create", "a setting only an administrator may choose"
 	for _, c := range []struct {
 		name, reason string
 		attack       []string
 	}{
-		{"a superuser", "a role the backup doesn't hold", []string{"CREATE ROLE intruder LOGIN SUPERUSER PASSWORD 'intruder'"}},
-		{"a role given attributes", "a role with attributes the backup doesn't give it", []string{"ALTER ROLE reader LOGIN"}},
-		{"a role's own settings", "a setting only an administrator may choose", []string{"ALTER ROLE app SET search_path = public"}},
-		{"a database setting that loads code", "a setting only an administrator may choose", []string{"ALTER DATABASE app SET session_preload_libraries = 'auto_explain'"}},
-		{"an event trigger", "an event trigger", []string{"CREATE FUNCTION public.on_ddl() RETURNS event_trigger LANGUAGE plpgsql AS 'BEGIN END'", "CREATE EVENT TRIGGER on_ddl ON ddl_command_start EXECUTE FUNCTION public.on_ddl()"}},
-		{"an extension", "an extension the backup doesn't hold", []string{"CREATE EXTENSION pg_trgm SCHEMA public"}},
-		{"a native function", "a native function no extension provides", []string{"CREATE FUNCTION public.native(integer) RETURNS integer LANGUAGE internal STRICT AS 'int4inc'"}},
+		{"a superuser", role, []string{"CREATE ROLE intruder LOGIN SUPERUSER PASSWORD 'intruder'"}},
+		{"a role given attributes", role, []string{"ALTER ROLE reader LOGIN"}},
+		{"a role renamed among the predefined roles", role, []string{"CREATE ROLE intruder LOGIN SUPERUSER PASSWORD 'intruder'", "UPDATE pg_catalog.pg_authid SET rolname = 'pg_backdoor' WHERE rolname = 'intruder'"}},
+		{"a predefined role given attributes", role, []string{"UPDATE pg_catalog.pg_authid SET rolcanlogin = true, rolsuper = true WHERE rolname = 'pg_monitor'"}},
+		{"a predefined role given a membership", role, []string{"GRANT pg_execute_server_program TO pg_monitor"}},
+		{"a changed password", role, []string{"ALTER ROLE app PASSWORD 'intruder'"}},
+		{"a role's own settings", setting, []string{"ALTER ROLE app SET search_path = public"}},
+		{"a database setting that loads code", setting, []string{"ALTER DATABASE app SET session_preload_libraries = 'auto_explain'"}},
+		{"a language setting only an administrator may choose", setting, []string{"ALTER DATABASE app SET plpgsql.variable_conflict = use_column"}},
+		// The server's settings view is made to call every setting one any client may choose.
+		{"a setting the dump says any client may choose", setting, []string{
+			"ALTER DATABASE app SET session_replication_role = replica",
+			"CREATE VIEW public.settings AS SELECT name, setting, unit, category, short_desc, extra_desc, 'user'::text AS context, vartype, source, min_val, max_val, enumvals, boot_val, reset_val, sourcefile, sourceline, pending_restart FROM pg_catalog.pg_show_all_settings()",
+			"UPDATE pg_catalog.pg_rewrite SET ev_action = (SELECT ev_action FROM pg_catalog.pg_rewrite WHERE ev_class = 'public.settings'::pg_catalog.regclass) WHERE ev_class = 'pg_catalog.pg_settings'::pg_catalog.regclass",
+		}},
+		{"a subscription", "a subscription", []string{"CREATE SUBSCRIPTION intruder CONNECTION 'host=192.0.2.1' PUBLICATION intruder WITH (connect = false)"}},
 		{"a file in the cluster", "a file a cluster doesn't hold", []string{"COPY (SELECT 'loaded') TO '" + data + "/intruder.so'"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -127,9 +142,8 @@ END$f$;`); err != nil {
 		})
 	}
 
-	t.Run("settings files and the deployment's password are put back", func(t *testing.T) {
+	t.Run("settings files are put back", func(t *testing.T) {
 		target, err := restore(t, current,
-			"ALTER ROLE app PASSWORD 'intruder'",
 			"COPY (SELECT 'archive_mode = on' || chr(10) || 'archive_command = ''cat %p''') TO '"+data+"/postgresql.auto.conf'",
 			"COPY (SELECT 'host all all all trust') TO '"+data+"/pg_hba.conf'",
 		)
@@ -147,7 +161,7 @@ END$f$;`); err != nil {
 			_, err := e.dataOutput(ctx, pgClient{container: db, env: []string{"PGPASSWORD=" + password}}, "sh", "-c", `psql -XAtw -h "$(hostname -i)" -U app -d app -c 'SELECT 1'`)
 			return err == nil
 		}
-		if !connects(password) || connects("intruder") || connects("") {
+		if !connects(password) || connects("") {
 			t.Fatal("the restored cluster does not hold its clients to the deployment's password")
 		}
 	})

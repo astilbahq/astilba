@@ -567,6 +567,12 @@ func TestCuttingOverToARestoredVolume(t *testing.T) {
 	if got := g.cutover(l, record.Id, revision.Id); got.status != http.StatusConflict {
 		t.Fatalf("a second cutover = %d %s", got.status, got.body)
 	}
+	// The volume the server runs is kept, even once the draft no longer mounts it.
+	g.b.call("GET", l.e.path+"/draft", nil, 200, &revision)
+	g.b.call("PUT", l.e.path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": draft.Specification}, 200, &revision)
+	if got := g.discard(l, record.Id); got.status != http.StatusConflict {
+		t.Fatalf("a discard of the volume the server runs = %d %s", got.status, got.body)
+	}
 }
 
 // An ended restore's volume can be deleted, unless the draft mounts it, and once deleted it can't

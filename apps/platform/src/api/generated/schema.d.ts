@@ -2056,7 +2056,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** @description Deletes the volume an ended restore created, on the server it ran on, unless the deployment's draft mounts it. A discarded volume can't be cut over. */
+        /** @description Deletes the volume an ended restore created, on the server it ran on, unless the deployment's draft or the plan the server runs mounts it. A discarded volume can't be cut over. */
         delete: operations["DiscardRecoveryTarget"];
         options?: never;
         head?: never;
@@ -4819,7 +4819,7 @@ export interface components {
             createdAt: string;
             state: components["schemas"]["ExecutionState"];
             note: string;
-            /** @description Once the restore succeeded, the manifest read out of the snapshot that the restored data matches. The data came from a server that may have been compromised. A restored database held nothing beyond what a dump of one database can leave, and its settings files and the deployment's password were reset, before the restore succeeded. */
+            /** @description Once the restore succeeded, the manifest read out of the snapshot that the restored data matches. The data came from a server that may have been compromised. A restored database's settings files were reset and its cluster checked on a best-effort basis before the restore succeeded, which doesn't make it safe to use. */
             restored: {
                 manifest: components["schemas"]["BackupManifest"];
             } | null;

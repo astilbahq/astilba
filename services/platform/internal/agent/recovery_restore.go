@@ -86,7 +86,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	return e.Journal.Mutate(c.Id, func(record *Record) {
 		result := jsontext.Value(raw)
 		record.Report.Restore = &result
-		settleReport(record, "succeeded", "Snapshot restored into a new volume and verified against its manifest, with a restored database's settings reset to this server's. Nothing uses the volume until a reviewed cutover.")
+		settleReport(record, "succeeded", "Snapshot restored into a new volume and matched against its manifest. A restored database's settings files were reset to this server's and its cluster checked on a best-effort basis, which doesn't make a database from a compromised server safe to use. Nothing uses the volume until a reviewed cutover.")
 	})
 }
 

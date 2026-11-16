@@ -291,13 +291,8 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 	if m.Database == maintenance {
 		maintenance = "template1"
 	}
-	var settings map[string][]byte
+	var b clusterBaseline
 	if err := e.restoreServer(ctx, p, run, target, m, "astilba-restore-", []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, nil, func(id string) (err error) {
-		// Read before the dump runs anything, these are the settings the deployment's database
-		// would have had if it had created the cluster itself.
-		if settings, err = e.clusterSettings(ctx, id, m.Image); err != nil {
-			return err
-		}
 		for _, role := range m.Roles {
 			if role.Name == m.Username || len(role.Name) > 63 || strings.ContainsRune(role.Name, 0) {
 				return errors.New("invalid role")
@@ -305,6 +300,10 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 			if _, err = e.pgQuery(ctx, pgClient{container: id}, a, "CREATE ROLE "+quoteIdentifier(role.Name)+" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
 				return err
 			}
+		}
+		// Read before the dump runs anything.
+		if b, err = e.baseline(ctx, id, m); err != nil {
+			return err
 		}
 		file, err := os.Open(filepath.Join(dir, "data.dump"))
 		if err != nil {
@@ -317,21 +316,23 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 	}); err != nil {
 		return err
 	}
-	if err := e.resetClusterFiles(ctx, p, run, target, m.Image, settings); err != nil {
+	if err := e.resetClusterFiles(ctx, p, run, target, m.Image, b.files); err != nil {
 		return err
 	}
 	// A server that has just started reads the cluster as the deployment's database will, not
 	// through what the dump's server kept in memory. No client of it runs event triggers, and
 	// autovacuum, which can run the dump's functions, stays off.
-	return e.restoreServer(ctx, p, run, target, m, "astilba-verify-", []string{"PGOPTIONS=-c event_triggers=off"}, []string{"postgres", "-c", "autovacuum=off"}, func(id string) error {
-		if err := e.checkRestoredCluster(ctx, id, m); err != nil {
+	if err := e.restoreServer(ctx, p, run, target, m, "astilba-verify-", []string{"PGOPTIONS=-c event_triggers=off"}, []string{"postgres", "-c", "autovacuum=off"}, func(id string) error {
+		if err := e.checkRestoredCluster(ctx, id, m, b); err != nil {
 			return err
 		}
-		if err := e.verifyRestoredDump(ctx, a, id, dir, m); err != nil {
-			return err
-		}
-		return e.resetClusterPassword(ctx, id, m, password)
-	})
+		return e.verifyRestoredDump(ctx, a, id, dir, m)
+	}); err != nil {
+		return err
+	}
+	// The dump's code can still have run while that server did, so its files are checked and
+	// reset again.
+	return e.resetClusterFiles(ctx, p, run, target, m.Image, b.files)
 }
 
 // restoreServer runs the pinned image's server on target in its own container, isolated as

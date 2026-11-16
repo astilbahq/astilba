@@ -439,7 +439,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		r.Note = "Container job finished; exit result recorded."
 	}
 	if r.Verified {
-		r.Note = "Fresh restore verified. Existing services and data remain in use until a separate reviewed deployment."
+		r.Note = "Fresh restore matched its manifest, and a restored database's cluster was checked on a best-effort basis. Existing services and data remain in use until a separate reviewed deployment."
 	}
 	// A run that failed before its first effect changed nothing, whatever the method.
 	effects := s.BeforeEffects != r.ID
