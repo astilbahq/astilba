@@ -65,6 +65,19 @@ func (s *Server) RunBackupCommand(w http.ResponseWriter, r *http.Request, ws, pi
 	v, e := s.Execution.BackupCommand(r.Context(), *principal(r.Context()), ws, pid, env, id, b)
 	s.executionResponse(w, r, 202, v, e)
 }
+func (s *Server) ListBackupRecoveries(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
+	v, e := s.Execution.BackupRecoveries(r.Context(), *principal(r.Context()), ws, pid, env, id)
+	s.executionResponse(w, r, 200, v, e)
+}
+func (s *Server) StartBackupRecovery(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
+	b, e := decode[api.BackupRecoveryRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.StartBackupRecovery(r.Context(), *principal(r.Context()), ws, pid, env, id, b)
+	s.executionResponse(w, r, 202, v, e)
+}
 func (s *Server) PrepareBackupCutover(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
 	b, e := decode[api.BackupCutoverRequest](r)
 	if e != nil {

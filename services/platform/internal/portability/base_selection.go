@@ -19,7 +19,9 @@ import (
 //     unfinished or ended inside the window, and the newest 100 operations;
 //   - submissions and preview requests unfinished or changed inside the window, and pending automatic
 //     deployments;
-//   - the newest 100 audit events, and each carried environment's newest 50 revisions;
+//   - the newest 100 audit events, each carried environment's newest 50 revisions, and each
+//     backup policy's newest 100 restores onto another server, with the restore of each carried
+//     operation;
 //   - every version of each carried secret;
 //   - the build artifacts those configurations use (archivePinnedArtifacts);
 //   - everything those rows name, as an export closes over it, which includes each environment's
@@ -62,5 +64,6 @@ const baseSeeds = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,id FRO
 	UNION ALL SELECT 'revision',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM specification_revisions s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=50
 	UNION ALL SELECT 'preview',r.id FROM preview_requests r WHERE r.workspace_id=$1 AND (r.state<>'deleted' OR r.updated_at>=$2)
 	UNION ALL SELECT 'run',d.id FROM pipeline_auto_deployments d WHERE d.workspace_id=$1 AND d.state='pending'
+	UNION ALL SELECT 'recovery',x.id FROM (SELECT r.id,row_number() OVER (PARTITION BY r.policy_id ORDER BY r.created_at DESC,r.id) n FROM backup_recoveries r JOIN archive_keep k ON k.kind='env' AND k.id=r.environment_id WHERE r.workspace_id=$1) x WHERE x.n<=100
 	UNION ALL SELECT 'audit',a.id FROM (SELECT id FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100) a
 ) seed ON CONFLICT DO NOTHING`

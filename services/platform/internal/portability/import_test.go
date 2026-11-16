@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
@@ -379,6 +380,7 @@ func TestArchiveRefusesAmbiguousNames(t *testing.T) {
 // withoutVersionThirteen makes a decoded archive look as one written before it recorded when
 // revocations began and when snapshots were first reported. It copies the rows it changes.
 func withoutVersionThirteen(a Archive) {
+	withoutVersionFifteen(a)
 	for table, column := range map[string]string{"servers": "revoked_at", "backup_policies": "snapshot_receipts"} {
 		rows := []Row{}
 		for _, row := range a.Tables[table] {
@@ -461,6 +463,79 @@ func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 		}
 		if _, err := decode(version, change); err == nil {
 			t.Error("an archive with", name, "was accepted")
+		}
+	}
+}
+
+// withoutVersionFifteen makes a decoded archive look as one written before it carried restores onto
+// another server.
+func withoutVersionFifteen(a Archive) {
+	delete(a.Tables, "backup_recoveries")
+}
+
+// An archive from before version 15 made no restore onto another server, and may not carry one.
+func TestVersionThirteenArchivesCarryNoRecoveries(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version = 13
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("a version 13 archive carried restores onto another server")
+	}
+	withoutVersionFifteen(a)
+	raw, _ = stablejson.Marshal(a)
+	got, err := decodeArchive(raw)
+	if err != nil || got.Tables["backup_recoveries"] == nil || len(got.Tables["backup_recoveries"]) != 0 {
+		t.Fatal("a version 13 archive wasn't read as making no restores: ", err)
+	}
+}
+
+// An imported restore result must be one its own restore could have recorded, or listing the
+// policy's restores would fail on it.
+func TestImportedRestoreResultsMatchTheirRestore(t *testing.T) {
+	policy, environment, target, snapshot := uuid.New(), uuid.New(), uuid.New(), strings.Repeat("e", 64)
+	row := func(change func(*backup.RecoveryResult)) Row {
+		r := backup.RecoveryResult{Snapshot: snapshot, TargetID: target, Manifest: backup.Manifest{Recipe: backup.Recipe, PolicyID: policy, RunID: uuid.New(), EnvironmentID: environment, ResourceID: uuid.New(), Method: backup.QuiescedFiles, Bytes: 4096, SHA256: strings.Repeat("d", 64), Roles: []backup.Role{}, Extensions: []string{}}}
+		result, _ := stablejson.Marshal(r)
+		if change != nil {
+			change(&r)
+			result, _ = stablejson.Marshal(r)
+		}
+		quoted := func(v string) jsontext.Value { return jsontext.Value(`"` + v + `"`) }
+		return Row{"policy_id": quoted(policy.String()), "environment_id": quoted(environment.String()), "target_volume_id": quoted(target.String()), "snapshot": quoted(snapshot), "result": result}
+	}
+	if err := checkRecoveryResult(row(nil)); err != nil {
+		t.Fatal("a restore's own result was refused:", err)
+	}
+	unrecorded := row(nil)
+	unrecorded["result"] = jsontext.Value(`null`)
+	if err := checkRecoveryResult(unrecorded); err != nil {
+		t.Fatal("a restore without a result was refused:", err)
+	}
+	for name, change := range map[string]func(*backup.RecoveryResult){
+		"another snapshot":         func(r *backup.RecoveryResult) { r.Snapshot = strings.Repeat("f", 64) },
+		"another target":           func(r *backup.RecoveryResult) { r.TargetID = uuid.New() },
+		"another policy":           func(r *backup.RecoveryResult) { r.Manifest.PolicyID = uuid.New() },
+		"another environment":      func(r *backup.RecoveryResult) { r.Manifest.EnvironmentID = uuid.New() },
+		"another recipe":           func(r *backup.RecoveryResult) { r.Manifest.Recipe = backup.Recipe + 1 },
+		"no archive digest":        func(r *backup.RecoveryResult) { r.Manifest.SHA256 = "" },
+		"a manifest without roles": func(r *backup.RecoveryResult) { r.Manifest.Roles = nil },
+	} {
+		if checkRecoveryResult(row(change)) == nil {
+			t.Error("a result with", name, "was accepted")
+		}
+	}
+	for _, value := range []string{`[]`, `5`, `{"manifest":1}`, `{"manifest":{"bytes":"x"}}`} {
+		r := row(nil)
+		r["result"] = jsontext.Value(value)
+		if checkRecoveryResult(r) == nil {
+			t.Error("a result of", value, "was accepted")
 		}
 	}
 }
