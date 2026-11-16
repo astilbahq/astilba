@@ -125,6 +125,8 @@ END$f$;`); err != nil {
 		{"a role's own settings", setting, []string{"ALTER ROLE app SET search_path = public"}},
 		{"a database setting that loads code", setting, []string{"ALTER DATABASE app SET session_preload_libraries = 'auto_explain'"}},
 		{"a language setting only an administrator may choose", setting, []string{"ALTER DATABASE app SET plpgsql.variable_conflict = use_column"}},
+		// A source that never loaded the language keeps the name as it was written.
+		{"a language setting written in capitals", setting, []string{"UPDATE pg_catalog.pg_db_role_setting SET setconfig = setconfig || '{PLPGSQL.VARIABLE_CONFLICT=use_column}'::text[] WHERE setdatabase = (SELECT oid FROM pg_catalog.pg_database WHERE datname = 'app') AND setrole = 0"}},
 		// The server's settings view is made to call every setting one any client may choose.
 		{"a setting the dump says any client may choose", setting, []string{
 			"ALTER DATABASE app SET session_replication_role = replica",

@@ -88,3 +88,12 @@ func TestSettingNamesReadsAnArrayAsPostgreSQLWritesIt(t *testing.T) {
 		}
 	}
 }
+
+// A setting is matched as the server matches it, in any case of ASCII letters only.
+func TestSettingNameMatchesAsTheServerDoes(t *testing.T) {
+	for name, want := range map[string]string{"PLPGSQL.Variable_Conflict": "plpgsql.variable_conflict", "work_mem": "work_mem", "\u212Aey": "\u212Aey"} {
+		if got := settingName(name); got != want {
+			t.Errorf("%q: %q", name, got)
+		}
+	}
+}

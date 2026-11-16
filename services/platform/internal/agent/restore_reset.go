@@ -168,7 +168,7 @@ func (e *Engine) checkRestoredCluster(ctx context.Context, id string, m backup.M
 		// choose. A name the server doesn't know is a custom setting only with a dot in it.
 		set, ok := settingNames(s[1])
 		if !ok || s[0] != oid || slices.ContainsFunc(set, func(name string) bool {
-			c, known := b.contexts[name]
+			c, known := b.contexts[settingName(name)]
 			return c != "user" && (known || !strings.Contains(name, "."))
 		}) {
 			return clusterRefusal("a setting only an administrator may choose")
@@ -182,6 +182,17 @@ func (e *Engine) checkRestoredCluster(ctx context.Context, id string, m backup.M
 		return clusterRefusal("a subscription")
 	}
 	return nil
+}
+
+// settingName is name as the server matches it to a setting: ASCII letters in any case.
+func settingName(name string) string {
+	out := []byte(name)
+	for i, c := range out {
+		if 'A' <= c && c <= 'Z' {
+			out[i] = c + 'a' - 'A'
+		}
+	}
+	return string(out)
 }
 
 // settingNames reads the setting names from a name=value text array as PostgreSQL writes it.
