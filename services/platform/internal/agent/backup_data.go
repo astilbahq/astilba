@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -258,8 +261,14 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 	if m.Recipe != backup.Recipe || m.PolicyID != in.Policy.ID || m.ResourceID != in.Policy.ResourceID || m.Method != in.Policy.Method || m.Bytes <= 0 || m.Bytes > 1<<40 || !backup.SnapshotID(m.SHA256) {
 		return errors.New("invalid backup manifest")
 	}
-	stored, err := e.restoreArchive(ctx, *in, r.ID, r.TargetID, r.Snapshot, m, original.ManifestHash, func() error { return nil })
+	stored, archive, err := e.snapshotManifest(ctx, *in, r.Snapshot)
 	if err != nil {
+		return err
+	}
+	if backup.Hash(stored) != original.ManifestHash {
+		return errors.New("snapshot manifest differs from the uploaded record")
+	}
+	if err = e.restoreArchive(ctx, *in, r.ID, r.TargetID, r.Snapshot, archive, stored, func() error { return nil }); err != nil {
 		return err
 	}
 	r.Manifest = &stored
@@ -273,80 +282,153 @@ type restoreRefusal string
 
 func (r restoreRefusal) Error() string { return string(r) }
 
-// restoreArchive restores snapshot into the absent volume target, and returns the manifest it found
-// in the snapshot. m is the manifest the caller expects, and manifestHash its hash in full: the
-// snapshot must hold exactly one manifest with that hash, and an archive matching m's size and
-// digest. begin is called once these checks pass, just before the volume is created, which is the
-// restore's first effect outside the journal and its staging directory. The restored data is read
-// back and compared with the archive before it returns.
-func (e *Engine) restoreArchive(ctx context.Context, in backup.Installation, run, target uuid.UUID, snapshot string, m backup.Manifest, manifestHash string, begin func() error) (backup.Manifest, error) {
+// archiveName is the file a backup of method writes its data to, beside its manifest.
+func archiveName(method string) string {
+	if method == "postgres-logical" {
+		return "data.dump"
+	}
+	return "files.tar"
+}
+
+// snapshotManifest reads the one manifest a snapshot holds and finds the archive file beside it,
+// without restoring anything. A snapshot's content is decided by whoever wrote it, so nothing else
+// in it is read.
+func (e *Engine) snapshotManifest(ctx context.Context, in backup.Installation, snapshot string) (backup.Manifest, string, error) {
+	out, err := e.restic(ctx, in, e.Journal.dir, "ls", snapshot)
+	if err != nil {
+		return backup.Manifest{}, "", err
+	}
+	dec := jsontext.NewDecoder(bytes.NewReader(out))
+	manifest, archives := "", map[string]string{}
+	for {
+		var node struct {
+			StructType string `json:"struct_type"`
+			Type       string `json:"type"`
+			Name       string `json:"name"`
+			Path       string `json:"path"`
+			Size       int64  `json:"size"`
+		}
+		err := json.UnmarshalDecode(dec, &node)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return backup.Manifest{}, "", restoreRefusal("snapshot listing is unreadable")
+		}
+		if node.StructType != "node" {
+			continue
+		}
+		if node.Name == archiveName(in.Policy.Method) {
+			archives[node.Path] = node.Type
+		}
+		if node.Name != "manifest.json" {
+			continue
+		}
+		if manifest != "" || node.Type != "file" || node.Size <= 0 || node.Size > backup.MaxManifestBytes {
+			return backup.Manifest{}, "", restoreRefusal("snapshot must hold exactly one manifest")
+		}
+		manifest = node.Path
+	}
+	if manifest == "" {
+		return backup.Manifest{}, "", restoreRefusal("snapshot holds no manifest")
+	}
+	archive := path.Join(path.Dir(manifest), archiveName(in.Policy.Method))
+	if archives[archive] != "file" {
+		return backup.Manifest{}, "", restoreRefusal("snapshot has no archive file beside its manifest")
+	}
+	raw, err := e.restic(ctx, in, e.Journal.dir, "dump", snapshot, manifest)
+	if err != nil {
+		return backup.Manifest{}, "", err
+	}
+	var m backup.Manifest
+	if len(raw) > backup.MaxManifestBytes || json.Unmarshal(raw, &m) != nil {
+		return backup.Manifest{}, "", restoreRefusal("snapshot manifest is unreadable")
+	}
+	return m, archive, nil
+}
+
+// restoreArchive restores the archive file at path archive in snapshot, which m describes, into the
+// absent volume target. Only that file is downloaded, and no more of it than m says it holds. begin
+// is called once it matches m, just before the volume is created, which is the restore's first
+// effect outside the journal and its staging directory. The restored data is read back and compared
+// with the archive before it returns.
+func (e *Engine) restoreArchive(ctx context.Context, in backup.Installation, run, target uuid.UUID, snapshot, archive string, m backup.Manifest, begin func() error) error {
 	// Reserve headroom for the downloaded archive and expanded database, retaining
 	// both old and new volumes. Refuse unknown capacity rather than assuming room.
 	if freeBytes(e.Journal.dir) < m.Bytes*2+256<<20 || dockerFreeBytes(ctx, e.Docker) < m.Bytes*4+256<<20 {
-		return backup.Manifest{}, restoreRefusal("insufficient restore capacity")
+		return restoreRefusal("insufficient restore capacity")
+	}
+	var database domain.Application
+	if m.Method == "postgres-logical" {
+		a, err := postgresRecipe(in.Policy, m)
+		if err != nil {
+			return restoreRefusal("the snapshot's database is not the one this deployment runs")
+		}
+		database = a
+	}
+	// A volume the deployment declares would be adopted by it, unreviewed, if a restore created it.
+	if slices.ContainsFunc(in.Policy.Plan.Specification.Volumes, func(v domain.Volume) bool { return v.ID == target }) {
+		return restoreRefusal("restore target must be a new volume")
 	}
 	if _, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); !errdefs.IsNotFound(err) {
-		return backup.Manifest{}, restoreRefusal("restore target must be absent")
+		return restoreRefusal("restore target must be absent")
 	}
 	stage, err := os.MkdirTemp(e.Journal.dir, "restore-stage-")
 	if err != nil {
-		return backup.Manifest{}, err
+		return err
 	}
 	defer os.RemoveAll(stage)
-	if _, err = e.restic(ctx, in, stage, "restore", snapshot, "--target", stage, "--verify"); err != nil {
-		return backup.Manifest{}, err
-	}
-	manifestPath := ""
-	err = filepath.WalkDir(stage, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Name() == "manifest.json" {
-			if manifestPath != "" {
-				return errors.New("ambiguous snapshot")
-			}
-			manifestPath = path
-		}
-		return nil
-	})
-	if err != nil || manifestPath == "" {
-		return backup.Manifest{}, restoreRefusal("snapshot manifest unavailable")
-	}
-	raw, err := os.ReadFile(manifestPath)
+	file := filepath.Join(stage, archiveName(m.Method))
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return backup.Manifest{}, err
+		return err
 	}
-	var stored backup.Manifest
-	if json.Unmarshal(raw, &stored) != nil || backup.Hash(stored) != manifestHash {
-		return backup.Manifest{}, restoreRefusal("snapshot manifest differs from the one expected")
+	capped := &cappedWriter{w: f, left: m.Bytes}
+	err = errors.Join(e.resticTo(ctx, in, stage, capped, "dump", snapshot, archive), f.Close())
+	if capped.over {
+		return restoreRefusal("snapshot archive is larger than its manifest says")
 	}
-	dir := filepath.Dir(manifestPath)
-	filename := "files.tar"
-	if m.Method == "postgres-logical" {
-		filename = "data.dump"
+	if err != nil {
+		return err
 	}
 	checked := m
-	if err = checksumFile(filepath.Join(dir, filename), &checked); err != nil || checked.Bytes != m.Bytes || checked.SHA256 != m.SHA256 {
-		return backup.Manifest{}, restoreRefusal("snapshot archive does not match its manifest")
+	if err = checksumFile(file, &checked); err != nil || checked.Bytes != m.Bytes || checked.SHA256 != m.SHA256 {
+		return restoreRefusal("snapshot archive does not match its manifest")
 	}
 	if err = begin(); err != nil {
-		return backup.Manifest{}, err
+		return err
 	}
 	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(target), Driver: "local", Labels: restoreTargetLabels(in.Policy.Plan, target, m)}); err != nil {
-		return backup.Manifest{}, err
+		return err
 	}
 	if _, err = e.volumePath(ctx, in.Policy, target); err != nil {
-		return backup.Manifest{}, err
+		return err
 	}
 	if m.Method == "postgres-logical" {
-		err = e.restorePostgres(ctx, in.Policy, run, target, dir, stored, in.Access.DatabasePassword)
+		err = e.restorePostgres(ctx, in.Policy, database, run, target, stage, m, in.Access.DatabasePassword)
 	} else {
-		err = e.restoreFiles(ctx, in.Policy, run, target, dir, stage)
+		err = e.restoreFiles(ctx, in.Policy, run, target, stage, stage)
 	}
 	if err != nil || ctx.Err() != nil {
-		return backup.Manifest{}, errors.Join(errors.New("fresh restore failed"), err, ctx.Err())
+		return errors.Join(errors.New("fresh restore failed"), err, ctx.Err())
 	}
-	return stored, nil
+	return nil
+}
+
+// cappedWriter writes to w until it has been offered more than left bytes, then fails.
+type cappedWriter struct {
+	w    io.Writer
+	left int64
+	over bool
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > c.left {
+		c.over = true
+		return 0, errors.New("more data than expected")
+	}
+	c.left -= int64(len(p))
+	return c.w.Write(p)
 }
 
 // restoreFiles extracts dir's files.tar into the target volume and compares what the volume then
@@ -388,11 +470,20 @@ func (e *Engine) restoreFiles(ctx context.Context, p backup.Policy, run, target 
 	return nil
 }
 func quoteIdentifier(v string) string { return `"` + strings.ReplaceAll(v, `"`, `""`) + `"` }
-func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, run, target uuid.UUID, dir string, m backup.Manifest, password string) error {
+
+// postgresRecipe is the policy's database application, if m's archive can be restored for it: made
+// with one of the pinned images, and holding the database and owner the deployment names.
+func postgresRecipe(p backup.Policy, m backup.Manifest) (domain.Application, error) {
 	a, err := sourceApp(p)
 	if err != nil || a.Postgres == nil || (m.Image != domain.PostgresImage && m.Image != domain.Postgres17Image) || m.Database != a.Postgres.Database || m.Username != a.Postgres.Username {
-		return errors.New("unsupported restore recipe")
+		return domain.Application{}, errors.New("unsupported restore recipe")
 	}
+	return a, nil
+}
+
+// restorePostgres restores dir's data.dump, which m describes, into a fresh cluster on the target
+// volume for a, the application postgresRecipe found for it.
+func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.Application, run, target uuid.UUID, dir string, m backup.Manifest, password string) error {
 	if password == "" {
 		return errors.New("database initialization credential unavailable")
 	}

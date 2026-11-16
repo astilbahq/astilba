@@ -115,9 +115,9 @@ func (h recoveryHost) remove(t *testing.T) {
 	}
 }
 
-// forgeSnapshot writes files into a policy's repository as a new snapshot, as anyone holding the
-// repository's keys can.
-func forgeSnapshot(t *testing.T, e *Engine, in backup.Installation, files map[string][]byte) string {
+// forgeSnapshot writes files, and symbolic links to the targets links names, into a policy's
+// repository as a new snapshot, as anyone holding the repository's keys can.
+func forgeSnapshot(t *testing.T, e *Engine, in backup.Installation, files map[string][]byte, links map[string]string) string {
 	t.Helper()
 	stage := t.TempDir()
 	for name, data := range files {
@@ -125,6 +125,11 @@ func forgeSnapshot(t *testing.T, e *Engine, in backup.Installation, files map[st
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(stage, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(stage, name)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -349,13 +354,23 @@ func TestNativeRecoveryRestore(t *testing.T) {
 	for _, refusal := range []struct {
 		name, note string
 		files      map[string][]byte
+		links      map[string]string
 		receivedAt time.Time
 		change     func(*backup.Recovery)
 	}{
 		{name: "manifest_for_another_resource", note: "snapshot was not written for this policy", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) { m.ResourceID = filesVolume }), "data.dump": archive}},
 		{name: "manifest_for_another_policy", note: "snapshot was not written for this policy", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) { m.PolicyID = files.in.Policy.ID }), "data.dump": archive}},
 		{name: "archive_unlike_its_manifest", note: "snapshot archive does not match its manifest", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) {}), "data.dump": archive}},
+		// A large declared footprint fails before anything is downloaded or created.
+		{name: "more_than_this_server_can_hold", note: "insufficient restore capacity", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) { m.Bytes = 1 << 39 }), "data.dump": archive}},
+		{name: "archive_larger_than_its_manifest", note: "snapshot archive is larger than its manifest says", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) { m.Bytes = 4 }), "data.dump": archive}},
+		// Restored as a link, it would be read without end.
+		{name: "archive_that_is_a_link", note: "snapshot has no archive file beside its manifest", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) {})}, links: map[string]string{"data.dump": "/dev/zero"}},
+		{name: "a_database_this_deployment_does_not_run", note: "the snapshot's database is not the one this deployment runs", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) { m.Database = "other" }), "data.dump": archive}},
 		{name: "two_manifests", note: "snapshot must hold exactly one manifest", files: map[string][]byte{"manifest.json": manifest(func(m *backup.Manifest) {}), "copy/manifest.json": manifest(func(m *backup.Manifest) {}), "data.dump": archive}},
+		// The access opens the repository, but the policy names another destination.
+		{name: "another_destination", note: "Check the destination's access", change: func(v *backup.Recovery) { v.Installation.Destination.ID = uuid.New() }},
+		{name: "a_target_the_deployment_declares", note: "restore target must be a new volume", change: func(v *backup.Recovery) { v.TargetID = filesVolume }},
 		{name: "newer_than_its_receipt", note: "snapshot claims to be newer than its first report", receivedAt: genuine.CreatedAt.Add(-backup.RecoveryClockAllowance - time.Minute)},
 		{name: "another_deployment", note: "this server does not run the deployment the restore names", change: func(v *backup.Recovery) {
 			p := replacement.plan
@@ -366,7 +381,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		t.Run(refusal.name, func(t *testing.T) {
 			snapshot, at := database.snapshot, received
 			if refusal.files != nil {
-				snapshot = forgeSnapshot(t, e, database.in, refusal.files)
+				snapshot = forgeSnapshot(t, e, database.in, refusal.files, refusal.links)
 			}
 			if !refusal.receivedAt.IsZero() {
 				at = refusal.receivedAt
@@ -460,6 +475,48 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		}
 		if _, err = docker.ContainerInspect(ctx, left, client.ContainerInspectOptions{}); err == nil {
 			t.Fatal("the stopped restore's container was left")
+		}
+		if err = e.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("failed_after_its_first_effect", func(t *testing.T) {
+		target, run := uuid.New(), uuid.Nil
+		t.Cleanup(func() {
+			_, _ = docker.VolumeRemove(context.Background(), deployment.VolumeName(target), client.VolumeRemoveOptions{Force: true})
+		})
+		e.Point = func(point string) {
+			if point != recoveryEffect {
+				return
+			}
+			// A container holding the name the restore's own data container needs makes the restore
+			// fail once its volume exists. It carries the run's label, as the restore's would.
+			r, err := e.Journal.Record(currentRestore(t, e))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			var v backup.Recovery
+			_ = json.Unmarshal(*r.Command.Backup, &v)
+			run = v.RunID
+			labels := visualLabels(replacement.plan, target)
+			labels["com.astilba.run"] = run.String()
+			if _, err = docker.ContainerCreate(context.Background(), client.ContainerCreateOptions{Name: "astilba-data-" + v.RunID.String(), Config: &container.Config{Image: execution.TestImage, Cmd: []string{"sleep", "3600"}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none"}}); err != nil {
+				t.Error(err)
+			}
+		}
+		_, r := restore(files, files.snapshot, received, target, nil)
+		e.Point = nil
+		if r.Report.State != "failed" || !strings.Contains(r.Report.Note, "failed while restoring or verifying its data") || !strings.Contains(r.Report.Note, "Nothing it started is still running") || r.Report.Restore != nil {
+			t.Fatalf("ended %s: %s", r.Report.State, r.Report.Note)
+		}
+		if _, err := docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil {
+			t.Fatal("the restore failed before its first effect: ", err)
+		}
+		list, err := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: runContainers(replacement.plan.ServerID, run)})
+		if err != nil || len(list.Items) != 0 {
+			t.Fatal("the failed restore left its run's containers: ", err)
 		}
 	})
 }

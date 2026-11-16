@@ -203,7 +203,7 @@ func (e *Engine) ResolveScheduledRun(ctx context.Context, policy, run uuid.UUID)
 			})
 		}
 	}
-	return e.resolveRecoveryRun(ctx, policy, run)
+	return e.settleRunCommands(policy, run)
 }
 
 const resolvedRunNote = "Local operator resolved the command's interrupted run after inspection; no success was inferred."
@@ -224,6 +224,12 @@ func (e *Engine) resolveRecoveryRun(ctx context.Context, policy, run uuid.UUID) 
 			return errors.New("run still has an active container; inspect and stop it before resolving")
 		}
 	}
+	return e.settleRunCommands(policy, run)
+}
+
+// settleRunCommands fails the commands of a run with no schedule entry awaiting inspection, once
+// nothing the run started is still running.
+func (e *Engine) settleRunCommands(policy, run uuid.UUID) error {
 	return e.Journal.db.Update(func(tx *bolt.Tx) error {
 		settled, err := e.Journal.failRunCommands(tx, policy, run, resolvedRunNote)
 		if err == nil && settled == 0 {

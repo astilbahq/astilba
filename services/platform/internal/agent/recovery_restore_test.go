@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,29 +30,6 @@ func recoveryCommand(t *testing.T, plan deployment.Plan, change func(*backup.Rec
 	return api.ExecutionCommand{Id: uuid.New(), ServerId: plan.ServerID, EnvironmentId: plan.EnvironmentID, ResourceId: policy.ID, Kind: "restore", Action: "inspect", Generation: 1, PlanHash: v.Digest(), Backup: &value, Deadline: time.Now().Add(time.Hour)}, v
 }
 
-// An agent from before the restore kind refuses it before any effect, but the refusal is an error
-// its command loop retries, not an outcome: the command stays running and unacknowledged, and holds
-// the host's schedules. So management issues the kind only to an agent that advertises
-// recoveryRestore.
-func TestAnAgentWithoutTheRestoreKindRefusesItBeforeAnyEffect(t *testing.T) {
-	j, plan := testVisualJournal(t)
-	rule := commandKinds["restore"]
-	delete(commandKinds, "restore")
-	t.Cleanup(func() { commandKinds["restore"] = rule })
-	c, _ := recoveryCommand(t, plan, nil)
-	if _, err := j.Accept(c); err != nil {
-		t.Fatal(err)
-	}
-	e := &Engine{Journal: j}
-	if err := e.Execute(context.Background(), c); err == nil || err.Error() != "unsupported command" {
-		t.Fatal("an older agent ran the restore kind: ", err)
-	}
-	r, err := j.Record(c.Id)
-	if err != nil || r.Report.State != "running" || r.Checkpoint != "accepted" || len(r.Report.Steps) != 0 || r.StartedAt != nil {
-		t.Fatalf("an older agent began the restore: %+v %v", r, err)
-	}
-}
-
 func TestRestoreRefusesACommandThatDoesNotIdentifyItsPolicy(t *testing.T) {
 	j, plan := testVisualJournal(t)
 	e := &Engine{Journal: j}
@@ -76,29 +54,20 @@ func TestRestoreRefusesACommandThatDoesNotIdentifyItsPolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c, _ := recoveryCommand(t, plan, func(v *backup.Recovery) { v.TargetID = v.Installation.Policy.ResourceID })
-	c.Generation = generation + 1
-	if err := e.Execute(context.Background(), c); err != nil {
-		t.Fatal(err)
-	}
-	if r, err := j.Record(c.Id); err != nil || r.Report.State != "failed" {
-		t.Fatal("a restore into the live volume was accepted: ", err)
-	}
 }
 
-// A restore left to inspect has no schedule on this host. resolve-run settles its command once
-// nothing labelled with its run is running, and only for its own policy and run.
+// A restore stopped after its first effect, whose containers can't be confirmed gone, is left to
+// inspect without the repository's access, which nothing uses again. It has no schedule on this
+// host: resolve-run settles its command once nothing labelled with its run is running, and only
+// for its own policy and run.
 func TestResolveRunSettlesARestoreLeftToInspect(t *testing.T) {
 	j, plan := testVisualJournal(t)
-	running := false
+	state := "exited"
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/containers/json") {
-			if running {
-				_, _ = w.Write([]byte(`[{"Id":"left","Names":["/left"],"State":"running"}]`))
-				return
-			}
-			_, _ = w.Write([]byte(`[]`))
+			// A container that removal never takes away.
+			_, _ = w.Write([]byte(`[{"Id":"left","Names":["/left"],"State":"` + state + `"}]`))
 			return
 		}
 		w.WriteHeader(404)
@@ -115,8 +84,20 @@ func TestResolveRunSettlesARestoreLeftToInspect(t *testing.T) {
 	if _, err = j.Accept(c); err != nil {
 		t.Fatal(err)
 	}
-	if err = j.Mutate(c.Id, func(r *Record) { settleReport(r, "needs_attention", "left to inspect") }); err != nil {
+	if err = e.checkpoint(c.Id, recoveryEffect); err != nil {
 		t.Fatal(err)
+	}
+	// The agent starts again.
+	if err = e.Execute(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	r, err := j.Record(c.Id)
+	if err != nil || r.Report.State != "needs_attention" || !strings.Contains(r.Report.Note, "container left could not be removed") {
+		t.Fatalf("ended %s: %s %v", r.Report.State, r.Report.Note, err)
+	}
+	var kept backup.Recovery
+	if err = json.Unmarshal(*r.Command.Backup, &kept); err != nil || kept.Installation.Access != (backup.Access{}) || kept.Digest() != c.PlanHash {
+		t.Fatal("the restore left to inspect kept its access: ", err)
 	}
 	policy := v.Installation.Policy.ID
 	if err = e.ResolveScheduledRun(context.Background(), policy, uuid.New()); err == nil {
@@ -125,15 +106,15 @@ func TestResolveRunSettlesARestoreLeftToInspect(t *testing.T) {
 	if err = e.ResolveScheduledRun(context.Background(), uuid.New(), v.RunID); err == nil {
 		t.Fatal("another policy's run was resolved")
 	}
-	running = true
+	state = "running"
 	if err = e.ResolveScheduledRun(context.Background(), policy, v.RunID); err == nil {
 		t.Fatal("a run with a running container was resolved")
 	}
-	running = false
+	state = "exited"
 	if err = e.ResolveScheduledRun(context.Background(), policy, v.RunID); err != nil {
 		t.Fatal(err)
 	}
-	r, err := j.Record(c.Id)
+	r, err = j.Record(c.Id)
 	if err != nil || r.Report.State != "failed" || r.Report.Note != resolvedRunNote {
 		t.Fatalf("ended %s: %s %v", r.Report.State, r.Report.Note, err)
 	}

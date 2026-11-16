@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"io"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -38,7 +36,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	}
 	p := v.Installation.Policy
 	if r.Checkpoint == recoveryEffect {
-		return e.settleRecovery(c.Id, p, v.RunID, "The agent stopped during this restore.")
+		return e.settleRecovery(c.Id, p, v.RunID, "The restore stopped after it began changing this server.")
 	}
 	if e.cancelled(c.Id) || time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "Cancelled before the restore changed anything.")
@@ -114,68 +112,27 @@ func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin f
 	if err := e.prepareRepository(ctx, &in, false); err != nil {
 		return backup.Manifest{}, err
 	}
-	m, err := e.snapshotManifest(ctx, in, v.Snapshot)
+	m, archive, err := e.snapshotManifest(ctx, in, v.Snapshot)
 	if err != nil {
 		return backup.Manifest{}, err
 	}
 	if err = v.Admits(m); err != nil {
 		return backup.Manifest{}, restoreRefusal(err.Error())
 	}
-	return e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, m, backup.Hash(m), begin)
-}
-
-// snapshotManifest reads the one manifest a snapshot holds, without restoring the rest of it.
-func (e *Engine) snapshotManifest(ctx context.Context, in backup.Installation, snapshot string) (backup.Manifest, error) {
-	out, err := e.restic(ctx, in, e.Journal.dir, "ls", snapshot)
-	if err != nil {
-		return backup.Manifest{}, err
-	}
-	dec := jsontext.NewDecoder(bytes.NewReader(out))
-	path := ""
-	for {
-		var node struct {
-			StructType string `json:"struct_type"`
-			Type       string `json:"type"`
-			Name       string `json:"name"`
-			Path       string `json:"path"`
-			Size       int64  `json:"size"`
-		}
-		err := json.UnmarshalDecode(dec, &node)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return backup.Manifest{}, restoreRefusal("snapshot listing is unreadable")
-		}
-		if node.StructType != "node" || node.Name != "manifest.json" {
-			continue
-		}
-		if path != "" || node.Type != "file" || node.Size <= 0 || node.Size > backup.MaxManifestBytes {
-			return backup.Manifest{}, restoreRefusal("snapshot must hold exactly one manifest")
-		}
-		path = node.Path
-	}
-	if path == "" {
-		return backup.Manifest{}, restoreRefusal("snapshot holds no manifest")
-	}
-	raw, err := e.restic(ctx, in, e.Journal.dir, "dump", snapshot, path)
-	if err != nil {
-		return backup.Manifest{}, err
-	}
-	var m backup.Manifest
-	if len(raw) > backup.MaxManifestBytes || json.Unmarshal(raw, &m) != nil {
-		return backup.Manifest{}, restoreRefusal("snapshot manifest is unreadable")
-	}
-	return m, nil
+	return m, e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
 }
 
 // settleRecovery ends a restore that may have created its volume or containers. Once nothing it
 // started can still be running it has failed, whatever its volume holds: nothing uses that volume,
 // and only a succeeded restore's can be cut over to. Otherwise it is left to inspect, and holds
-// this host until resolve-run settles it.
+// this host until resolve-run or retry settles it. Neither uses the repository's access, so the
+// record no longer keeps it.
 func (e *Engine) settleRecovery(id uuid.UUID, p backup.Policy, run uuid.UUID, cause string) error {
 	if left := e.removeRunContainers(p, run); left != "" {
-		return e.finish(id, "needs_attention", cause+" Its cleanup could not be confirmed: "+left+". Inspect containers labelled com.astilba.run="+run.String()+", then run resolve-run for this policy and run.")
+		return e.Journal.Mutate(id, func(r *Record) {
+			settleReport(r, "needs_attention", cause+" Its cleanup could not be confirmed: "+left+". Inspect containers labelled com.astilba.run="+run.String()+", then run resolve-run for this policy and run.")
+			redactCommand(&r.Command)
+		})
 	}
 	return e.finish(id, "failed", cause+" Nothing it started is still running. Its target volume may hold partial data; nothing uses it.")
 }

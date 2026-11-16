@@ -40,7 +40,7 @@ func (r Recovery) Digest() string {
 
 func (r Recovery) Validate() error {
 	p := r.Installation.Policy
-	if p.Validate() != nil || p.Method == "container-job" || r.Installation.Destination.ID != p.DestinationID || r.RunID == uuid.Nil || r.TargetID == uuid.Nil || r.TargetID == p.ResourceID || !SnapshotID(r.Snapshot) || r.ReceivedAt.IsZero() {
+	if p.Validate() != nil || p.Method == "container-job" || r.RunID == uuid.Nil || r.TargetID == uuid.Nil || !SnapshotID(r.Snapshot) || r.ReceivedAt.IsZero() {
 		return errors.New("invalid recovery restore")
 	}
 	return nil

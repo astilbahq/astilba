@@ -390,7 +390,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	m.Image = domain.PostgresImage
-	if err = e.restorePostgres(ctx, policy, p.ID, p.TargetVolumeID, dir, m, s.Command.Installation.Access.DatabasePassword); err != nil {
+	if err = e.restorePostgres(ctx, policy, a, p.ID, p.TargetVolumeID, dir, m, s.Command.Installation.Access.DatabasePassword); err != nil {
 		return err
 	}
 	e.point("upgrade-restore-effect")

@@ -57,16 +57,14 @@ func TestRecoveryDigestCoversWhatIsRestoredAndNotAccess(t *testing.T) {
 
 func TestRecoveryRefusesAnIncompleteRestore(t *testing.T) {
 	for name, change := range map[string]func(*Recovery){
-		"no run":          func(r *Recovery) { r.RunID = uuid.Nil },
-		"no target":       func(r *Recovery) { r.TargetID = uuid.Nil },
-		"the live volume": func(r *Recovery) { r.TargetID = r.Installation.Policy.ResourceID },
-		"no snapshot":     func(r *Recovery) { r.Snapshot = "" },
-		"no receipt":      func(r *Recovery) { r.ReceivedAt = time.Time{} },
+		"no run":      func(r *Recovery) { r.RunID = uuid.Nil },
+		"no target":   func(r *Recovery) { r.TargetID = uuid.Nil },
+		"no snapshot": func(r *Recovery) { r.Snapshot = "" },
+		"no receipt":  func(r *Recovery) { r.ReceivedAt = time.Time{} },
 		"a container job": func(r *Recovery) {
 			r.Installation.Policy.Method = "container-job"
 			r.Installation.Policy.Command = []string{"true"}
 		},
-		"another destination":      func(r *Recovery) { r.Installation.Destination.ID = uuid.New() },
 		"a plan for another place": func(r *Recovery) { r.Installation.Policy.ServerID = uuid.New() },
 	} {
 		r, _ := recoveryFixture(t)
