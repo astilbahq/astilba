@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -267,5 +268,41 @@ func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool) err
 			recoverySet(row, "state", api.ExecutionState("cancelled"))
 		}
 	}
+	return nil
+}
+
+// recoveryRevocationTime gives a server revoked in either copy the time its revocation began. When
+// both copies have it revoked, the earlier time counts, and none when either has no time, which
+// shows the owner it is unknown rather than a later time than the truth.
+func recoveryRevocationTime(out, a, b portability.Row) error {
+	revoked, err := recoveryValue[bool](out, "revoked")
+	if err != nil || !revoked {
+		recoverySet(out, "revoked_at", nil)
+		return err
+	}
+	var times []*time.Time
+	for _, row := range []portability.Row{a, b} {
+		if r, err := recoveryValue[bool](row, "revoked"); err != nil {
+			return err
+		} else if !r {
+			continue
+		}
+		at, err := recoveryValue[*time.Time](row, "revoked_at")
+		if err != nil {
+			return err
+		}
+		times = append(times, at)
+	}
+	var earliest *time.Time
+	for _, at := range times {
+		if at == nil {
+			recoverySet(out, "revoked_at", nil)
+			return nil
+		}
+		if earliest == nil || at.Before(*earliest) {
+			earliest = at
+		}
+	}
+	recoverySet(out, "revoked_at", earliest)
 	return nil
 }

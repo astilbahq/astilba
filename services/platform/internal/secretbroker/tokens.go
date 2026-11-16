@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // TokenKind is a self-issued token sealed under the resident token key. Only the kinds below
@@ -44,7 +45,10 @@ type Tokens struct {
 	broker   *Broker
 	ring     *cryptobox.Keyring
 	instance uuid.UUID
-	wake     chan struct{}
+	// stage is the custody stage this instance's release completes, which it reports with the
+	// generations it holds.
+	stage int32
+	wake  chan struct{}
 
 	mu   sync.RWMutex
 	keys map[int64][]byte
@@ -56,10 +60,10 @@ type Tokens struct {
 	issuing int64
 }
 
-// Tokens records the resident keys, then loads them. Like Begin, it must not run inside a
-// transaction.
-func (b *Broker) Tokens(ctx context.Context) (*Tokens, error) {
-	t := &Tokens{broker: b, ring: b.backend.Keyring(), instance: uuid.New(), wake: make(chan struct{}, 1), keys: map[int64][]byte{}, failed: map[int64]bool{}}
+// Tokens records the resident keys, then loads them. stage is the custody stage the running
+// release completes. Like Begin, it must not run inside a transaction.
+func (b *Broker) Tokens(ctx context.Context, stage int32) (*Tokens, error) {
+	t := &Tokens{broker: b, ring: b.backend.Keyring(), instance: uuid.New(), stage: stage, wake: make(chan struct{}, 1), keys: map[int64][]byte{}, failed: map[int64]bool{}}
 	id := uuid.New()
 	if err := b.record(ctx, id, Request{Purpose: Token, Principal: System("token-keys")}, []int64{0}); err != nil {
 		return nil, err
@@ -124,7 +128,7 @@ func (t *Tokens) load(ctx context.Context) error {
 	}
 	t.mu.Unlock()
 	slices.Sort(generations)
-	if err = q.RecordCustodyInstance(ctx, db.RecordCustodyInstanceParams{InstanceID: t.instance, TokenGenerations: append([]int64{}, generations...)}); err != nil {
+	if err = q.RecordCustodyInstance(ctx, db.RecordCustodyInstanceParams{InstanceID: t.instance, TokenGenerations: append([]int64{}, generations...), Stage: pgtype.Int4{Int32: t.stage, Valid: true}}); err != nil {
 		return errors.Join(append(failures, err)...)
 	}
 	// Issuing moves to a generation only once every instance running holds it, this one included,

@@ -75,13 +75,112 @@ type stripeFixture struct {
 	customer     string
 	sessions     map[string]hosting.Checkout
 	keys         map[string]bool
-	until        time.Time
+	periodEnd    time.Time
+	endedAt      *time.Time
 	status       string
+	invoices     []fixtureInvoice // oldest first
 	loseResponse bool
 	workspace    string
+	lookups      int
+	// While gate is set, a request held matches answers as Stripe stood when it arrived, but
+	// only once the gate closes, after saying so on entered.
+	held    func(*http.Request) bool
+	once    bool
+	gate    chan struct{}
+	entered chan struct{}
+}
+
+// A fixtureInvoice is one invoice of sub_fixture with one line for its period.
+type fixtureInvoice struct {
+	status     string
+	price      string
+	start, end time.Time
+	proration  bool
+}
+
+// newStripeFixture is Stripe holding customer cus_fixture whose sub_fixture, once a checkout
+// completes, is active with its current period, ending in an hour, paid.
+func newStripeFixture(t *testing.T) *stripeFixture {
+	return paidUntilFixture(t, time.Now().Add(time.Hour))
+}
+
+// paidUntilFixture is newStripeFixture with the paid period ending at end.
+func paidUntilFixture(t *testing.T, end time.Time) *stripeFixture {
+	end = end.Truncate(time.Second)
+	s := &stripeFixture{t: t, customer: "cus_fixture", sessions: map[string]hosting.Checkout{}, keys: map[string]bool{}, status: "active"}
+	s.startPeriod(end.Add(-30*24*time.Hour), end, "paid")
+	return s
+}
+
+// startPeriod begins a subscription period and its invoice in the given state, as Stripe does
+// at renewal before charging it.
+func (s *stripeFixture) startPeriod(start, end time.Time, invoice string) {
+	s.periodEnd = end
+	s.invoices = append(s.invoices, fixtureInvoice{status: invoice, price: "price_monthly", start: start, end: end})
+}
+
+// renew begins the next period with its invoice in the given state.
+func (s *stripeFixture) renew(invoice string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startPeriod(s.periodEnd, s.periodEnd.Add(30*24*time.Hour), invoice)
+}
+
+// settle sets the subscription's status and its latest invoice's.
+func (s *stripeFixture) settle(status, invoice string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = status
+	s.invoices[len(s.invoices)-1].status = invoice
+}
+
+// cancel ends the subscription at.
+func (s *stripeFixture) cancel(at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = "canceled"
+	ended := at.Truncate(time.Second)
+	s.endedAt = &ended
+}
+
+func (s *stripeFixture) paidInvoices(r *http.Request) any {
+	q := r.URL.Query()
+	if q.Get("customer") != s.customer || q.Get("subscription") != "sub_fixture" || q.Get("status") != "paid" || q.Get("limit") != "10" {
+		s.t.Errorf("unexpected invoice listing %s", r.URL.RawQuery)
+	}
+	list := []any{}
+	for i := len(s.invoices) - 1; i >= 0 && len(list) < 10; i-- {
+		v := s.invoices[i]
+		if v.status != "paid" {
+			continue
+		}
+		line := map[string]any{"period": map[string]any{"start": v.start.Unix(), "end": v.end.Unix()}, "pricing": map[string]any{"price_details": map[string]any{"price": v.price}}, "parent": map[string]any{"type": "subscription_item_details", "subscription_item_details": map[string]any{"subscription": "sub_fixture", "subscription_item": "si_fixture", "proration": v.proration}}}
+		list = append(list, map[string]any{"id": fmt.Sprintf("in_fixture%d", i), "customer": s.customer, "status": v.status, "parent": map[string]any{"type": "subscription_details", "subscription_details": map[string]any{"subscription": "sub_fixture"}}, "lines": map[string]any{"data": []any{line}, "has_more": false}})
+	}
+	return map[string]any{"data": list, "has_more": false}
 }
 
 func (s *stripeFixture) RoundTrip(r *http.Request) (*http.Response, error) {
+	response, err := s.answer(r)
+	s.mu.Lock()
+	gate, entered := s.gate, s.entered
+	held := gate != nil && s.held(r)
+	if held && s.once {
+		s.gate = nil
+	}
+	s.mu.Unlock()
+	if held {
+		entered <- struct{}{}
+		select {
+		case <-gate:
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	}
+	return response, err
+}
+
+func (s *stripeFixture) answer(r *http.Request) (*http.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r.URL.Host != "api.stripe.com" || r.Header.Get("Stripe-Version") != hosting.StripeVersion {
@@ -135,7 +234,14 @@ func (s *stripeFixture) RoundTrip(r *http.Request) (*http.Response, error) {
 			body = v
 		}
 	case r.URL.Path == "/v1/subscriptions/sub_fixture":
-		body = map[string]any{"id": "sub_fixture", "customer": s.customer, "status": s.status, "items": map[string]any{"data": []any{map[string]any{"quantity": 1, "current_period_end": s.until.Unix(), "price": map[string]any{"id": "price_monthly", "recurring": map[string]any{"interval": "month", "interval_count": 1}}}}}}
+		s.lookups++
+		var ended any
+		if s.endedAt != nil {
+			ended = s.endedAt.Unix()
+		}
+		body = map[string]any{"id": "sub_fixture", "customer": s.customer, "status": s.status, "ended_at": ended, "items": map[string]any{"data": []any{map[string]any{"id": "si_fixture", "quantity": 1, "current_period_end": s.periodEnd.Unix(), "price": map[string]any{"id": "price_monthly", "recurring": map[string]any{"interval": "month", "interval_count": 1}}}}}}
+	case r.Method == "GET" && r.URL.Path == "/v1/invoices":
+		body = s.paidInvoices(r)
 	default:
 		s.t.Errorf("unexpected Stripe call %s %s", r.Method, r.URL.Path)
 		return nil, fmt.Errorf("unexpected call")
@@ -166,7 +272,7 @@ func signedEvent(t *testing.T, kind, id string, object any) ([]byte, string) {
 func TestHostedBillingSerializesCheckoutAndFencesExpiredWork(t *testing.T) {
 	f, p, ws := hostedFixture(t)
 	ctx := context.Background()
-	stripe := &stripeFixture{t: t, customer: "cus_fixture", sessions: map[string]hosting.Checkout{}, keys: map[string]bool{}, until: time.Now().Add(time.Hour), status: "active"}
+	stripe := newStripeFixture(t)
 	stripe.workspace = ws.String()
 	svc := &billing.Service{Store: f.st, Stripe: hosting.Stripe{Key: "fixture", Price: "price_monthly", HTTP: &http.Client{Transport: stripe}}, Origin: "https://panel.example.test", Now: time.Now}
 	f.apiServer.Billing = svc
@@ -215,9 +321,7 @@ func TestHostedBillingSerializesCheckoutAndFencesExpiredWork(t *testing.T) {
 	if _, e = f.execution.CreateServer(ctx, p, ws, api.CreateServer{Name: "Excess", Role: "build"}); e == nil {
 		t.Fatal("server allowance bypassed")
 	}
-	stripe.mu.Lock()
-	stripe.until = time.Now().Add(-time.Minute)
-	stripe.mu.Unlock()
+	stripe.cancel(time.Now().Add(-time.Minute))
 	raw, sig = signedEvent(t, "customer.subscription.updated", "evt_expire", map[string]any{"id": "sub_fixture", "customer": stripe.customer})
 	if e = svc.Webhook(ctx, raw, sig); e != nil {
 		t.Fatal(e)
@@ -253,7 +357,8 @@ func TestHostedBillingSerializesCheckoutAndFencesExpiredWork(t *testing.T) {
 func TestHostedCheckoutReconcilesLostCompletedResponse(t *testing.T) {
 	f, p, ws := hostedFixture(t)
 	ctx := context.Background()
-	stripe := &stripeFixture{t: t, customer: "cus_fixture", sessions: map[string]hosting.Checkout{}, keys: map[string]bool{}, until: time.Now().Add(time.Hour), status: "active", loseResponse: true}
+	stripe := newStripeFixture(t)
+	stripe.loseResponse = true
 	svc := &billing.Service{Store: f.st, Stripe: hosting.Stripe{Key: "fixture", Price: "price_monthly", HTTP: &http.Client{Transport: stripe}}, Origin: "https://panel.example.test", Now: time.Now}
 	if _, e := svc.Checkout(ctx, p, ws); e == nil {
 		t.Fatal("expected lost response")

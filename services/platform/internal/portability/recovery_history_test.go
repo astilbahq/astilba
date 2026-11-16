@@ -91,9 +91,12 @@ func TestRecoverySectionIsCheckedAgainstItsBase(t *testing.T) {
 		version  int
 		released bool
 		valid    bool
-	}{{RecoveryArchiveVersion, true, true}, {RecoveryArchiveVersion, false, false}, {10, false, true}, {10, true, false}} {
+	}{{RecoveryArchiveVersion, true, true}, {RecoveryArchiveVersion, false, false}, {12, true, true}, {10, false, true}, {10, true, false}} {
 		older := base
 		older.Version, older.Recovery, older.Tables = c.version, valid(), maps.Clone(base.Tables)
+		if c.version < RecoveryArchiveVersion {
+			withoutVersionThirteen(older)
+		}
 		older.Tables["preview_requests"] = request(c.released)
 		if err := decode(older, true); (err == nil) != c.valid {
 			t.Errorf("a version %d base with the field %v: %v", c.version, c.released, err)

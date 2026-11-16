@@ -169,6 +169,7 @@ type BackupPolicy struct {
 	Status               []byte    `json:"status"`
 	StatusSequence       int64     `json:"status_sequence"`
 	CoordinatedCheckedAt time.Time `json:"coordinated_checked_at"`
+	SnapshotReceipts     []byte    `json:"snapshot_receipts"`
 }
 
 type BuildArtifact struct {
@@ -310,10 +311,11 @@ type CustodyBackendsVersion struct {
 }
 
 type CustodyInstance struct {
-	InstanceID       uuid.UUID `json:"instance_id"`
-	TokenGenerations []int64   `json:"token_generations"`
-	StartedAt        time.Time `json:"started_at"`
-	SeenAt           time.Time `json:"seen_at"`
+	InstanceID       uuid.UUID   `json:"instance_id"`
+	TokenGenerations []int64     `json:"token_generations"`
+	StartedAt        time.Time   `json:"started_at"`
+	SeenAt           time.Time   `json:"seen_at"`
+	Stage            pgtype.Int4 `json:"stage"`
 }
 
 type CustodyStage struct {
@@ -329,6 +331,14 @@ type DeploymentUnit struct {
 	Runtime       string     `json:"runtime"`
 	ServerID      *uuid.UUID `json:"server_id"`
 	PrimaryUnit   bool       `json:"primary_unit"`
+}
+
+type DnsLatePublication struct {
+	ServerID   uuid.UUID `json:"server_id"`
+	Base       string    `json:"base"`
+	Zone       string    `json:"zone"`
+	Generation int64     `json:"generation"`
+	DueAt      time.Time `json:"due_at"`
 }
 
 type DnsPublication struct {
@@ -549,6 +559,7 @@ type HostedSubscription struct {
 	NotifiedUntil   *time.Time  `json:"notified_until"`
 	UpdatedAt       time.Time   `json:"updated_at"`
 	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
+	ObservedTicket  int64       `json:"observed_ticket"`
 }
 
 type Installation struct {
@@ -954,6 +965,13 @@ type Server struct {
 	IdentityHistoryUntil        *time.Time  `json:"identity_history_until"`
 	EnrollmentIssuerID          *uuid.UUID  `json:"enrollment_issuer_id"`
 	EnrollmentIssuerAuthVersion pgtype.Int8 `json:"enrollment_issuer_auth_version"`
+	RevokedAt                   *time.Time  `json:"revoked_at"`
+}
+
+type ServerDnsLease struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	Holder    uuid.UUID `json:"holder"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type ServerDomain struct {

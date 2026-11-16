@@ -87,8 +87,10 @@ SELECT (SELECT count(*) FROM workspaces)::bigint AS workspaces,
 UPDATE custody_stage SET stage = stage + 1, advanced_at = now() WHERE stage = @completed;
 
 -- name: RecordCustodyInstance :exec
-INSERT INTO custody_instances(instance_id,token_generations) VALUES(@instance_id,@token_generations)
-ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, seen_at = now();
+-- An instance reports the token key generations it holds, and the custody stage its release
+-- completes.
+INSERT INTO custody_instances(instance_id,token_generations,stage) VALUES(@instance_id,@token_generations,@stage)
+ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, stage = EXCLUDED.stage, seen_at = now();
 
 -- name: TokenIssuingGeneration :one
 -- The newest token key generation that may seal and that every instance seen in the last five

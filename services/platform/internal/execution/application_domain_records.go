@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
@@ -11,7 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 )
 
 // Why a publication is withdrawn. These are the reasons dns_record_removals accepts.
@@ -59,17 +60,141 @@ func (s *Service) withdrawRevokedDomain(ctx context.Context, tx pgx.Tx, ws, serv
 	return s.enqueueDomain(ctx, tx, domainArgs{Server: server, Generation: generation})
 }
 
+// River ends a DNS job's context after dnsWork, which it starts before the job takes its lease.
+// The lease lasts dnsLateMargin longer, so a request the job gave up on, whose lease it then
+// keeps, lands before the next job looks. A job paused for longer than the lease can still send
+// a request late; recheckAfterLostLease deals with what it may have changed. dnsWrite bounds the
+// writes a job makes after asking, which outlive its deadline.
+const (
+	dnsWork       = time.Minute
+	dnsLateMargin = 30 * time.Second
+	dnsLeaseTerm  = dnsWork + dnsLateMargin
+	dnsWrite      = 10 * time.Second
+)
+
+// dnsLease is one DNS job's hold on a server. Only its holder asks the provider about the
+// server's names, and every write the job makes after asking checks it still holds the lease.
+type dnsLease struct{ server, holder uuid.UUID }
+
+var errDNSLeaseLost = errors.New("the server's DNS lease ran out and another job took it")
+
+// takeDNSLease takes the server's lease if it is free or has run out.
+func (s *Service) takeDNSLease(ctx context.Context, server uuid.UUID) (dnsLease, bool, error) {
+	lease := dnsLease{server: server, holder: uuid.New()}
+	n, e := db.New(s.Store.Pool).TakeDNSLease(ctx, db.TakeDNSLeaseParams{ServerID: server, Holder: lease.holder, Seconds: dnsLeaseTerm.Seconds()})
+	return lease, n == 1, e
+}
+
+// releaseDNSLease frees the lease for the next job. Should that fail, the lease runs out.
+func (s *Service) releaseDNSLease(lease dnsLease) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if e := db.New(s.Store.Pool).ReleaseDNSLease(ctx, db.ReleaseDNSLeaseParams{ServerID: lease.server, Holder: lease.holder}); e != nil {
+		slog.Warn("releasing a server's DNS lease failed; it runs out on its own", "server", lease.server, "error", e)
+	}
+}
+
+// underDNSLease runs fn in a transaction that holds the server's DNS lock and then its lease,
+// for a write made after the provider was asked. Revocation, recovery and configuration take
+// the same lock first, so the job's writes and theirs never wait on each other's rows. A job
+// whose lease was taken over writes nothing, and one taking it over waits until this commits.
+// fn gets a context of its own: a job's lease is only taken over after the job's deadline has
+// passed, and the job must still find that out and record what the provider did.
+func (s *Service) underDNSLease(ctx context.Context, lease dnsLease, fn func(context.Context, pgx.Tx) error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dnsWrite)
+	defer cancel()
+	tx, e := s.Store.Pool.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	if e = store.LockServerDNS(ctx, tx, lease.server); e != nil {
+		return e
+	}
+	held, e := db.New(tx).HoldDNSLease(ctx, db.HoldDNSLeaseParams{ServerID: lease.server, Holder: lease.holder})
+	if e != nil {
+		return e
+	}
+	if held != 1 {
+		return errDNSLeaseLost
+	}
+	if e = fn(ctx, tx); e != nil {
+		return e
+	}
+	return tx.Commit(ctx)
+}
+
+// recheckAfterLostLease runs once a job finds its lease was taken over after it asked the
+// provider. A paused job's request can reach the provider after the next job has looked, so the
+// provider may hold records the database doesn't know of, or lack ones it does. The name this
+// job may have published is written down to be recorded as a publication by the next job to
+// hold the lease, once due, and a job for the server as it is now is queued for then. The sweep
+// finds the name too, should that job be lost. When this job's request got no answer, the name
+// is due only after the margin a kept lease would have given it.
+func (s *Service) recheckAfterLostLease(ctx context.Context, a domainArgs, published *db.DNSPublicationTargetRow, unanswered bool) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dnsWrite)
+	defer cancel()
+	var delay time.Duration
+	if unanswered {
+		delay = dnsLateMargin
+	}
+	tx, e := s.Store.Pool.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(tx)
+	if published != nil {
+		if e = q.RecordLateDNSPublication(ctx, db.RecordLateDNSPublicationParams{Base: published.Base, Zone: s.DNS.Zone, Generation: a.Generation, Delay: delay.Seconds(), ServerID: a.Server}); e != nil {
+			return e
+		}
+	}
+	if e = s.enqueueAfterLease(ctx, tx, a.Server, delay); e != nil {
+		return e
+	}
+	return tx.Commit(ctx)
+}
+
+// adoptLatePublications records each due name a job may have published after losing its lease
+// as a publication, and queues a job for the server as it is now: the late request may have
+// put back addresses the owner has since replaced.
+func (s *Service) adoptLatePublications(ctx context.Context, lease dnsLease) error {
+	return s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
+		adopted, e := db.New(tx).AdoptLateDNSPublications(ctx, lease.server)
+		if e != nil || adopted == 0 {
+			return e
+		}
+		return s.enqueueAfterLease(ctx, tx, lease.server, 0)
+	})
+}
+
+// enqueueAfterLease queues a job for the server as it is now. It isn't unique: a job with the
+// same arguments may be running, holding the lease, and have looked at the provider too early.
+// This one starts after it.
+func (s *Service) enqueueAfterLease(ctx context.Context, tx pgx.Tx, server uuid.UUID, delay time.Duration) error {
+	job, e := db.New(tx).CurrentDNSJob(ctx, server)
+	if e != nil {
+		return e
+	}
+	opts := &river.InsertOpts{MaxAttempts: 10}
+	if delay > 0 {
+		opts.ScheduledAt = time.Now().Add(delay)
+	}
+	_, e = s.Queue.InsertTx(ctx, tx, domainArgs{Server: server, Generation: job.Generation, Controller: job.Controller}, opts)
+	return e
+}
+
 // withdrawReason says why a publication must go, or "" while it may stay. A server that's
 // fenced for recovery keeps its records until an owner reviews them: it is still the
 // workspace's server, and its approval only blocks changes.
-func (s *Service) withdrawReason(ctx context.Context, conn *pgxpool.Conn, p db.ListDNSPublicationsRow) (string, error) {
+func (s *Service) withdrawReason(ctx context.Context, p db.ListDNSPublicationsRow) (string, error) {
 	if p.Revoked {
 		return withdrawRevoked, nil
 	}
 	if p.Base != s.Store.ApplicationDomain {
 		return withdrawBaseChanged, nil
 	}
-	tx, e := conn.Begin(ctx)
+	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return "", e
 	}
@@ -82,11 +207,11 @@ func (s *Service) withdrawReason(ctx context.Context, conn *pgxpool.Conn, p db.L
 }
 
 // withdrawStalePublications removes the server's records from every name it may no longer
-// hold. The caller holds the server's DNS lock and has nothing else open. A row in a zone
-// this installation no longer has credentials for is stranded and left for the operator.
-func (s *Service) withdrawStalePublications(ctx context.Context, conn *pgxpool.Conn, server uuid.UUID) error {
-	q := db.New(conn)
-	publications, e := q.ListDNSPublications(ctx, server)
+// hold. The caller holds the server's DNS lease and nothing else. A row in a zone this
+// installation no longer has credentials for is stranded and left for the operator.
+func (s *Service) withdrawStalePublications(ctx context.Context, lease dnsLease) error {
+	q := db.New(s.Store.Pool)
+	publications, e := q.ListDNSPublications(ctx, lease.server)
 	if e != nil || len(publications) == 0 {
 		return e
 	}
@@ -99,7 +224,7 @@ func (s *Service) withdrawStalePublications(ctx context.Context, conn *pgxpool.C
 		if p.Zone != "" && p.Zone != s.DNS.Zone {
 			continue
 		}
-		reason, e := s.withdrawReason(ctx, conn, p)
+		reason, e := s.withdrawReason(ctx, p)
 		if e != nil {
 			failures = append(failures, e)
 			continue
@@ -107,62 +232,58 @@ func (s *Service) withdrawStalePublications(ctx context.Context, conn *pgxpool.C
 		if reason == "" {
 			continue
 		}
-		name := dnsName(p.Base, server)
-		providerErr := s.DNS.Remove(ctx, name, dnsMarker(installation, server), s.auditDeletion(ctx, conn, p.WorkspaceID, server, name, reason))
-		failures = append(failures, providerErr, s.recordWithdrawal(ctx, conn, server, p, name, reason, providerErr == nil))
+		name := dnsName(p.Base, lease.server)
+		providerErr := s.DNS.Remove(ctx, name, dnsMarker(installation, lease.server), s.auditDeletion(ctx, p.WorkspaceID, lease.server, name, reason))
+		failures = append(failures, providerErr, s.recordWithdrawal(ctx, lease, p, name, reason, providerErr == nil))
 	}
 	return errors.Join(failures...)
 }
 
 // recordWithdrawal forgets the publication once nothing of ours is left at the name, and
 // confirms the deletions audited for it. A failed attempt keeps the row, so the sweep retries it.
-func (s *Service) recordWithdrawal(ctx context.Context, conn *pgxpool.Conn, server uuid.UUID, p db.ListDNSPublicationsRow, name, reason string, complete bool) error {
-	key := db.CheckDNSPublicationParams{ServerID: server, Base: p.Base, Zone: p.Zone}
-	if !complete {
-		return db.New(conn).CheckDNSPublication(ctx, key)
-	}
-	tx, e := conn.Begin(ctx)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback(ctx)
-	q := db.New(tx)
-	if e = q.ConfirmDNSRecordRemovals(ctx, db.ConfirmDNSRecordRemovalsParams{ServerID: server, Name: name, Zone: s.DNS.Zone, Kept: []string{}}); e != nil {
-		return e
-	}
-	if e = q.DeleteDNSPublication(ctx, db.DeleteDNSPublicationParams(key)); e != nil {
-		return e
-	}
-	if note := withdrawnNotes[reason]; note != "" {
-		if e = q.NoteWithdrawnServerDomain(ctx, db.NoteWithdrawnServerDomainParams{Note: note, ServerID: server, Base: p.Base}); e != nil {
+func (s *Service) recordWithdrawal(ctx context.Context, lease dnsLease, p db.ListDNSPublicationsRow, name, reason string, complete bool) error {
+	key := db.CheckDNSPublicationParams{ServerID: lease.server, Base: p.Base, Zone: p.Zone}
+	return s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
+		q := db.New(tx)
+		if !complete {
+			return q.CheckDNSPublication(ctx, key)
+		}
+		if e := q.ConfirmDNSRecordRemovals(ctx, db.ConfirmDNSRecordRemovalsParams{ServerID: lease.server, Name: name, Zone: s.DNS.Zone, Kept: []string{}}); e != nil {
 			return e
 		}
-	}
-	return tx.Commit(ctx)
+		if e := q.DeleteDNSPublication(ctx, db.DeleteDNSPublicationParams(key)); e != nil {
+			return e
+		}
+		if note := withdrawnNotes[reason]; note != "" {
+			return q.NoteWithdrawnServerDomain(ctx, db.NoteWithdrawnServerDomainParams{Note: note, ServerID: lease.server, Base: p.Base})
+		}
+		return nil
+	})
 }
 
 // auditDeletion records each deletion before it's sent, so the audit holds even when the
-// provider's answer is lost. Nothing is held open while the provider is called.
-func (s *Service) auditDeletion(ctx context.Context, conn *pgxpool.Conn, ws, server uuid.UUID, name, reason string) applicationdns.Deleting {
+// provider's answer is lost. Each record is its own statement on the pool: nothing is held
+// while the provider is called.
+func (s *Service) auditDeletion(ctx context.Context, ws, server uuid.UUID, name, reason string) applicationdns.Deleting {
 	return func(r applicationdns.Removed) error {
 		slog.Info("removing an application DNS record", "server", server, "record", r.ID, "type", r.Type, "reason", reason)
-		return db.New(conn).InsertDNSRecordRemoval(ctx, db.InsertDNSRecordRemovalParams{WorkspaceID: ws, ServerID: server, Name: name, Zone: s.DNS.Zone, RecordID: r.ID, RecordType: r.Type, Content: r.Content, Reason: reason})
+		return db.New(s.Store.Pool).InsertDNSRecordRemoval(ctx, db.InsertDNSRecordRemovalParams{WorkspaceID: ws, ServerID: server, Name: name, Zone: s.DNS.Zone, RecordID: r.ID, RecordType: r.Type, Content: r.Content, Reason: reason})
 	}
 }
 
 // confirmDeletions confirms the audited deletions at a name the provider was just reconciled
 // for, except the records it still publishes there.
-func (s *Service) confirmDeletions(ctx context.Context, conn *pgxpool.Conn, server uuid.UUID, name string, records map[string]string) error {
+func (s *Service) confirmDeletions(ctx context.Context, q *db.Queries, server uuid.UUID, name string, records map[string]string) error {
 	kept := []string{}
 	for _, id := range records {
 		kept = append(kept, id)
 	}
-	return db.New(conn).ConfirmDNSRecordRemovals(ctx, db.ConfirmDNSRecordRemovalsParams{ServerID: server, Name: name, Zone: s.DNS.Zone, Kept: kept})
+	return q.ConfirmDNSRecordRemovals(ctx, db.ConfirmDNSRecordRemovalsParams{ServerID: server, Name: name, Zone: s.DNS.Zone, Kept: kept})
 }
 
 // recordPublication commits the name before the provider is asked to create anything there.
-func (s *Service) recordPublication(ctx context.Context, conn *pgxpool.Conn, ws, server uuid.UUID, base string) error {
-	return db.New(conn).RecordDNSPublication(ctx, db.RecordDNSPublicationParams{ServerID: server, WorkspaceID: ws, Base: base, Zone: s.DNS.Zone})
+func (s *Service) recordPublication(ctx context.Context, q *db.Queries, ws, server uuid.UUID, base string) error {
+	return q.RecordDNSPublication(ctx, db.RecordDNSPublicationParams{ServerID: server, WorkspaceID: ws, Base: base, Zone: s.DNS.Zone})
 }
 
 // enqueueStalePublications is the sweep's half of withdrawal: it finds every server holding a

@@ -391,7 +391,7 @@ func TestCancelledBeginEndsItsRecord(t *testing.T) {
 
 func TestTokensRecordOnceAndStayApart(t *testing.T) {
 	b, q, _, _, _ := setup(t)
-	tokens, err := b.Tokens(context.Background())
+	tokens, err := b.Tokens(context.Background(), convertStage)
 	if err != nil {
 		t.Fatal(err)
 	}

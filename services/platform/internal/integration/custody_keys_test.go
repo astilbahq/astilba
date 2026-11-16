@@ -184,9 +184,11 @@ func TestInitKeysIsResumableAndRunsOnce(t *testing.T) {
 	if created := keyEvents(t, f, "key-created"); len(created) != 1+len(older)+2 {
 		t.Fatalf("%d key events", len(created))
 	}
-	// Once every key exists the installation has completed stage 2, and with this release, which
-	// seals under them, stage 3.
-	if stage, err := db.New(f.st.Pool).CustodyStage(ctx); err != nil || stage != dbmigrate.CustodyStage {
+	// Once every key exists the installation has completed stage 2, and stage 3, since every
+	// release from it seals new values under those keys. Creating keys goes no further: stage 4
+	// says no stored value is still under the keyring and no older instance runs, which only
+	// `custody convert` checks, with the tables held, and records for an operator.
+	if stage, err := db.New(f.st.Pool).CustodyStage(ctx); err != nil || stage != 3 {
 		t.Fatal(stage, err)
 	}
 	var stages []string
@@ -435,7 +437,7 @@ func TestTokenKeysLoadAsTheyAppear(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	initKeys(t, f.st.Broker)
-	tokens, err := f.st.Broker.Tokens(ctx)
+	tokens, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 	if err != nil {
 		t.Fatal(err)
 	}

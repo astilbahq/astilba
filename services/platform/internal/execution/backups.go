@@ -1,10 +1,13 @@
 package execution
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -397,7 +400,7 @@ func (s *Service) BackupStatus(ctx context.Context, p store.Principal, ws, pid, 
 	return out, err
 }
 func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64, status backup.Status) error {
-	if a.Role == "build" || sequence < 1 || sequence > 1<<53 || len(status.Runs) > 128 {
+	if a.Role == "build" || sequence < 1 || sequence > 1<<53 || len(status.Runs) > backup.MaxReportedRuns {
 		return domain.Invalid("scheduleReport")
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
@@ -447,7 +450,48 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	if err = db.New(tx).SaveBackupPolicyReport(ctx, db.SaveBackupPolicyReportParams{Status: raw, StatusSequence: sequence, WorkspaceID: a.Workspace, ID: p.ID}); err != nil {
 		return err
 	}
+	if err = recordSnapshotReceipts(ctx, db.New(tx), a, p.ID, status.Runs); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// recordSnapshotReceipts keeps a receipt for each snapshot a report lists as available
+// (backup.Available). A snapshot keeps the time management first received it for as long as
+// reports go on listing it, whether by its upload or by a restore that verified it after the
+// upload left the history. Only an upload adds one, so one never reported stays on the manual
+// route.
+func recordSnapshotReceipts(ctx context.Context, q *db.Queries, a Identity, policy uuid.UUID, runs []backup.Run) error {
+	listed, uploaded := backup.Available(runs)
+	return q.RecordBackupSnapshotReceipts(ctx, db.RecordBackupSnapshotReceiptsParams{Listed: listed, Uploaded: uploaded, WorkspaceID: a.Workspace, PolicyID: policy})
+}
+
+// BackupSnapshotReceipts lists when management first received each snapshot its policy's reports
+// list as available, by its own clock, newest first. Unlike the times a server reports, a host
+// can't backdate these.
+func (s *Service) BackupSnapshotReceipts(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) ([]api.BackupSnapshotReceipt, error) {
+	out := []api.BackupSnapshotReceipt{}
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
+		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+			return err
+		}
+		raw, err := db.New(tx).BackupSnapshotReceipts(ctx, db.BackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+		if err != nil {
+			return err
+		}
+		var receipts backup.Receipts
+		if err = json.Unmarshal(raw, &receipts); err != nil {
+			return err
+		}
+		for snapshot, at := range receipts {
+			out = append(out, api.BackupSnapshotReceipt{Snapshot: snapshot, FirstReportedAt: at.UTC()})
+		}
+		slices.SortFunc(out, func(a, b api.BackupSnapshotReceipt) int {
+			return cmp.Or(b.FirstReportedAt.Compare(a.FirstReportedAt), strings.Compare(a.Snapshot, b.Snapshot))
+		})
+		return nil
+	})
+	return out, err
 }
 
 func requireGeneralSchedule(ctx context.Context, q db.DBTX, ws, server uuid.UUID, p backup.Policy) error {
