@@ -167,7 +167,9 @@ type Fence interface {
 	EnvironmentKeyForSealing(ctx context.Context, arg db.EnvironmentKeyForSealingParams) (db.EnvironmentKeyForSealingRow, error)
 	EnvironmentSealingRefused(ctx context.Context, arg db.EnvironmentSealingRefusedParams) (bool, error)
 	InsertEnvironmentKey(ctx context.Context, arg db.InsertEnvironmentKeyParams) (int64, error)
+	LockEnvironmentKeyCreation(ctx context.Context, name string) error
 	keyEventWriter
+	instanceCounter
 	WorkspaceHasKeys(ctx context.Context, workspaceID uuid.UUID) (bool, error)
 	InstallationScopeHasKeys(ctx context.Context, scope string) (bool, error)
 }
@@ -191,7 +193,13 @@ func (s *Session) Seal(ctx context.Context, q Fence, item Item, plaintext []byte
 	if err != nil {
 		return nil, err
 	}
-	if item.Kind.environmental() && s.broker.SealsUnderEnvironments() {
+	toEnvironment := false
+	if item.Kind.environmental() {
+		if toEnvironment, err = sealsUnderEnvironments(ctx, q); err != nil {
+			return nil, err
+		}
+	}
+	if toEnvironment {
 		key, generation, err := s.environmentSealingKey(ctx, q, item.Environment, ref)
 		if err != nil {
 			return nil, err
@@ -240,7 +248,12 @@ func (s *Session) Rehome(ctx context.Context, q Fence, item Item, ciphertext []b
 	// instance opens values under one.
 	var environmentKey []byte
 	var environmentGeneration int64
-	toEnvironment := item.Kind.environmental() && item.Environment != uuid.Nil && s.broker.SealsUnderEnvironments()
+	toEnvironment := false
+	if item.Kind.environmental() && item.Environment != uuid.Nil {
+		if toEnvironment, err = sealsUnderEnvironments(ctx, q); err != nil {
+			return nil, err
+		}
+	}
 	if toEnvironment {
 		if environmentKey, environmentGeneration, err = s.environmentSealingKey(ctx, q, item.Environment, ref); err != nil {
 			return nil, err
@@ -277,6 +290,13 @@ func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environmen
 	ws := s.request.Workspace
 	row, err := q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Writers making the first key take turns: the second finds the first's.
+		if err = q.LockEnvironmentKeyCreation(ctx, "environment:"+ws.String()+":"+environment.String()); err != nil {
+			return nil, 0, err
+		}
+		row, err = q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
 		var refused bool
 		refused, err = q.EnvironmentSealingRefused(ctx, db.EnvironmentSealingRefusedParams{WorkspaceID: ws, EnvironmentID: environment})
 		switch {
@@ -301,16 +321,17 @@ func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environmen
 	if s.keys == nil {
 		return nil, 0, ErrNeedKeys
 	}
-	k := s.environments[environmentRef{environment, row.Generation}]
-	if k == nil || k.destroyed {
+	ref2 := environmentRef{environment, row.Generation}
+	k := s.environments[ref2]
+	if k == nil {
 		// Made since the session began: it holds it from now on.
 		k = &environmentKey{workspaceGeneration: row.WorkspaceGeneration, wrapped: row.Wrapped, kcv: row.Kcv}
 		if s.environments == nil {
 			s.environments = map[environmentRef]*environmentKey{}
 		}
-		s.environments[environmentRef{environment, row.Generation}] = k
+		s.environments[ref2] = k
 	}
-	key, err := s.environmentKeyFor(Item{Kind: SecretVersion}, cryptobox.Header{Scope: cryptobox.ScopeEnvironment, Holder: environment, Generation: row.Generation})
+	key, err := s.openEnvironmentKey(ref2, k)
 	return key, row.Generation, err
 }
 

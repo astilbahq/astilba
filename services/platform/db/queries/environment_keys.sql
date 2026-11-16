@@ -46,3 +46,15 @@ FROM environments e WHERE e.workspace_id = @workspace_id AND e.id = @environment
 INSERT INTO environment_keys(workspace_id, environment_id, generation, state, workspace_generation, wrapped, kcv)
 VALUES (@workspace_id, @environment_id, @generation, 'active', @workspace_generation, @wrapped, @kcv)
 ON CONFLICT (environment_id, generation) DO NOTHING;
+
+-- name: LockEnvironmentKeyCreation :exec
+-- Holds the making of an environment's first key, named "environment:<workspace>:<environment>",
+-- until the transaction ends, so writers making it at once take turns, and the second finds the
+-- first's.
+SELECT pg_advisory_xact_lock(hashtextextended(@name::text, 4281642306));
+
+-- name: LockEnvironmentKeys :exec
+-- Holds an environment's keys against writers until the transaction ends, before a purge locks
+-- the environment's values: a writer holds the key, then its value, so the purge takes them in the
+-- same order.
+SELECT 1 FROM environment_keys WHERE workspace_id = @workspace_id AND environment_id = @environment_id FOR UPDATE;

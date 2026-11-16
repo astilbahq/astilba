@@ -331,31 +331,32 @@ func TestReadingEnvironmentKeysCompletesStageFive(t *testing.T) {
 
 // Values are sealed under environment keys only while every instance seen lately opens them: an
 // instance of a release before stage 5 holds sealing back until it has not been seen for five
-// minutes. Each instance finds out as it loads its token keys.
+// minutes. Each writer asks in its own transaction.
 func TestEnvironmentSealingWaitsForOlderInstances(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	reload := func() bool {
+	sealable := func() bool {
 		t.Helper()
-		if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
+		ok, err := f.st.Broker.SealsUnderEnvironments(ctx)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return f.st.Broker.SealsUnderEnvironments()
+		return ok
 	}
-	if !reload() {
+	if !sealable() {
 		t.Fatal("an installation running only this release does not seal under environment keys")
 	}
 	older := uuid.New()
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, older); err != nil {
 		t.Fatal(err)
 	}
-	if reload() {
+	if sealable() {
 		t.Fatal("sealed under environment keys beside an instance that cannot open them")
 	}
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
 		t.Fatal(err)
 	}
-	if !reload() {
+	if !sealable() {
 		t.Fatal("an instance gone for five minutes still holds sealing back")
 	}
 }
@@ -404,6 +405,67 @@ func TestNewValuesAreSealedUnderTheirEnvironmentKey(t *testing.T) {
 		}
 		if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.Id}, sealed); err != nil || string(value) != "concurrent-canary" {
 			t.Fatal(string(value), err)
+		}
+	}
+}
+
+// Writers making an environment's first key at once, each in its own transaction, take turns: one
+// makes it, and the other seals under it.
+func TestWritersMakingTheFirstKeyAtOnceShareIt(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Raced key"}, 201, &env)
+	items := []secretbroker.Item{{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}, {Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}}
+	sealed := make([][]byte, len(items))
+	errs := make([]error, len(items))
+	first, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Rollback(ctx)
+	keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	if sealed[0], err = keys.Seal(ctx, db.New(first), items[0], []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	// The second writer waits for the first's key until it commits, then finds it.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		second, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			errs[1] = err
+			return
+		}
+		defer second.Rollback(ctx)
+		if sealed[1], errs[1] = keys.Seal(ctx, db.New(second), items[1], []byte("second")); errs[1] == nil {
+			errs[1] = second.Commit(ctx)
+		}
+	}()
+	select {
+	case <-done:
+		t.Fatal("the second writer did not wait for the first's key", errs[1])
+	case <-time.After(time.Second):
+	}
+	if err = first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if errs[1] != nil {
+		t.Fatal(errs[1])
+	}
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE environment_id=$1", env.Id); n != 1 {
+		t.Fatalf("%d keys for one environment", n)
+	}
+	for i, blob := range sealed {
+		header, err := cryptobox.ReadHeader(blob)
+		if err != nil || header.Holder != env.Id || header.Generation != 1 {
+			t.Fatalf("value %d sealed as %+v %v", i, header, err)
 		}
 	}
 }
@@ -582,8 +644,17 @@ func TestConvertMovesEnvironmentValuesOntoTheirKeys(t *testing.T) {
 	if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
 		t.Fatal(err)
 	}
-	if c = convert(t, f); c.Values == 0 || c.Stage != 6 || c.Waiting != "" {
-		t.Fatalf("conversion once it had gone %+v", c)
+	// The command runs in its own process, which loads no token keys.
+	backend, err := custody.NewFile(keysOf(f.st))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := secretbroker.New(db.New(f.st.Pool), backend, nil)
+	if err = command.Install(ctx, f.st.Pool, uuid.Nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if c, err = command.Convert(ctx, "operator@example.test", "stage 6"); err != nil || c.Values == 0 || c.Stage != 6 || c.Waiting != "" {
+		t.Fatalf("conversion once it had gone %+v %v", c, err)
 	}
 	header, after := sealedHeader(t, f, x.ws, secret.Id)
 	if header.Scope != cryptobox.ScopeEnvironment || header.Holder != env.Id {
@@ -639,18 +710,12 @@ func TestStageSixCorrectsItselfAfterARoundTrip(t *testing.T) {
 	if stage() != 6 || !everyCopy() {
 		t.Fatal("a new installation does not start with every copy reached")
 	}
-	// An instance of the stage 5 release runs again, and stores a value under the workspace key.
-	older := uuid.New()
-	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,5)`, older); err != nil {
-		t.Fatal(err)
-	}
 	var secret api.SecretVersion
 	x.owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "round-trip-canary"}, 201, &secret)
-	workspaceSealed, err := cryptobox.SealUnder(workspaceKey(t, f, x.ws, 1), cryptobox.ScopeWorkspace, 1, []byte("round-trip-canary"), secretIdentity(x.ws, secret.Id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.st.Pool.Exec(ctx, `UPDATE secret_versions SET encrypted_value=$2 WHERE id=$1`, secret.Id, workspaceSealed); err != nil {
+	// An instance of the stage 5 release runs again: that alone takes stage 6 back, before it has
+	// stored anything.
+	older := uuid.New()
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,5)`, older); err != nil {
 		t.Fatal(err)
 	}
 	reload()
@@ -658,8 +723,16 @@ func TestStageSixCorrectsItselfAfterARoundTrip(t *testing.T) {
 		t.Fatal("stage 6 stayed recorded beside a stage 5 instance")
 	}
 	reverted := keyEvents(t, f, "stage-reverted")
-	if len(reverted) != 1 || details(t, reverted[0])["stage"] != "5" {
+	if len(reverted) != 1 || details(t, reverted[0])["stage"] != "5" || reverted[0].Reason.String != "an instance of a release before stage 6 ran since it was recorded" {
 		t.Fatalf("reverted events %+v", reverted)
+	}
+	// It stores a value under the workspace key, as that release does.
+	workspaceSealed, err := cryptobox.SealUnder(workspaceKey(t, f, x.ws, 1), cryptobox.ScopeWorkspace, 1, []byte("round-trip-canary"), secretIdentity(x.ws, secret.Id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE secret_versions SET encrypted_value=$2 WHERE id=$1`, secret.Id, workspaceSealed); err != nil {
+		t.Fatal(err)
 	}
 	// Once it has gone, converting moves the value and records stage 6 again.
 	if _, err = f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
@@ -683,6 +756,9 @@ func TestStageSixCorrectsItselfAfterARoundTrip(t *testing.T) {
 	reload()
 	if stage() != 5 || everyCopy() {
 		t.Fatal("an instance starting beside a value under a workspace key kept stage 6")
+	}
+	if reverted = keyEvents(t, f, "stage-reverted"); len(reverted) != 2 || reverted[1].Reason.String != "1 environment values are under their workspace's key" {
+		t.Fatalf("reverted events %+v", reverted)
 	}
 }
 

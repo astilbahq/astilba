@@ -126,6 +126,11 @@ func (Fence) EnvironmentSealingRefused(context.Context, db.EnvironmentSealingRef
 func (Fence) InsertEnvironmentKey(context.Context, db.InsertEnvironmentKeyParams) (int64, error) {
 	return 0, errors.New("brokertest makes no environment keys")
 }
+
+// InstancesBelowStage reports an older instance, so values are sealed under the workspace key:
+// brokertest makes no environment keys.
+func (Fence) InstancesBelowStage(context.Context, int32) (int64, error) { return 1, nil }
+func (Fence) LockEnvironmentKeyCreation(context.Context, string) error  { return nil }
 func (Fence) InsertInstallationKeyEvent(context.Context, db.InsertInstallationKeyEventParams) error {
 	return nil
 }

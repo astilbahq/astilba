@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -120,17 +119,29 @@ type Broker struct {
 	installation uuid.UUID
 	pool         Pool
 	keysWanted   chan struct{}
-	// environmentsSealable is whether every instance seen lately opens values sealed under
-	// environment keys, so a value may be sealed under one. The instance's token key loop keeps
-	// it current; until it first runs, values are sealed under their workspace's key.
-	environmentsSealable atomic.Bool
 }
 
-// SealsUnderEnvironments reports whether this instance last found every instance seen in the last
-// five minutes running a release that opens values sealed under environment keys. Until then an
-// environment's values are sealed under its workspace's key, which every release opens, and
-// converting moves them once none is left.
-func (b *Broker) SealsUnderEnvironments() bool { return b.environmentsSealable.Load() }
+// instanceCounter counts instances seen lately by the stage their release completes.
+type instanceCounter interface {
+	InstancesBelowStage(ctx context.Context, stage int32) (int64, error)
+}
+
+// sealsUnderEnvironments reports whether every instance seen in the last five minutes runs a
+// release that opens values sealed under environment keys, read in q, so a value may be sealed
+// under one. Until then an environment's values are sealed under its workspace's key, which every
+// release opens, and converting moves them once none is left.
+func sealsUnderEnvironments(ctx context.Context, q instanceCounter) (bool, error) {
+	older, err := q.InstancesBelowStage(ctx, readEnvironmentsStage)
+	return older == 0, err
+}
+
+// SealsUnderEnvironments is sealsUnderEnvironments for the installation as it is now.
+func (b *Broker) SealsUnderEnvironments(ctx context.Context) (bool, error) {
+	if b.pool == nil {
+		return false, errors.New("custody is not installed")
+	}
+	return sealsUnderEnvironments(ctx, db.New(b.pool))
+}
 
 // New takes queries that do not run in a caller's transaction: each record commits on its own.
 func New(q Queries, backend custody.Legacy, log *slog.Logger) *Broker {

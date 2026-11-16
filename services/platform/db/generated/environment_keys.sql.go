@@ -205,6 +205,35 @@ func (q *Queries) InsertEnvironmentKey(ctx context.Context, arg InsertEnvironmen
 	return result.RowsAffected(), nil
 }
 
+const lockEnvironmentKeyCreation = `-- name: LockEnvironmentKeyCreation :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 4281642306))
+`
+
+// Holds the making of an environment's first key, named "environment:<workspace>:<environment>",
+// until the transaction ends, so writers making it at once take turns, and the second finds the
+// first's.
+func (q *Queries) LockEnvironmentKeyCreation(ctx context.Context, name string) error {
+	_, err := q.db.Exec(ctx, lockEnvironmentKeyCreation, name)
+	return err
+}
+
+const lockEnvironmentKeys = `-- name: LockEnvironmentKeys :exec
+SELECT 1 FROM environment_keys WHERE workspace_id = $1 AND environment_id = $2 FOR UPDATE
+`
+
+type LockEnvironmentKeysParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// Holds an environment's keys against writers until the transaction ends, before a purge locks
+// the environment's values: a writer holds the key, then its value, so the purge takes them in the
+// same order.
+func (q *Queries) LockEnvironmentKeys(ctx context.Context, arg LockEnvironmentKeysParams) error {
+	_, err := q.db.Exec(ctx, lockEnvironmentKeys, arg.WorkspaceID, arg.EnvironmentID)
+	return err
+}
+
 const shareEnvironmentKey = `-- name: ShareEnvironmentKey :one
 SELECT generation FROM environment_keys
 WHERE workspace_id = $1 AND environment_id = $2 AND generation = $3 AND state = 'active'

@@ -519,14 +519,21 @@ func (s *Session) environmentKeyFor(item Item, header cryptobox.Header) ([]byte,
 		return nil, ErrKeysChanged
 	case k.destroyed:
 		return nil, ErrKeyDestroyed
-	case k.opened != nil:
+	}
+	return s.openEnvironmentKey(environmentRef{header.Holder, header.Generation}, k)
+}
+
+// openEnvironmentKey opens a key the session holds, once, with the workspace key generation it is
+// wrapped under. The caller holds s.mu.
+func (s *Session) openEnvironmentKey(ref environmentRef, k *environmentKey) ([]byte, error) {
+	if k.opened != nil {
 		return k.opened, nil
 	}
 	workspaceKey, ok := s.keys[keyRef{custody.ScopeWorkspace, k.workspaceGeneration}]
 	if !ok {
 		return nil, cryptobox.ErrKey
 	}
-	opened, err := cryptobox.OpenEnvironmentKey(workspaceKey, k.wrapped, s.request.Workspace, header.Holder, header.Generation, k.workspaceGeneration)
+	opened, err := cryptobox.OpenEnvironmentKey(workspaceKey, k.wrapped, s.request.Workspace, ref.environment, ref.generation, k.workspaceGeneration)
 	if err != nil {
 		return nil, err
 	}

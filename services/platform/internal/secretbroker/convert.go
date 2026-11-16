@@ -114,6 +114,10 @@ func (b *Broker) convert(ctx context.Context, c *Conversion) error {
 	if c.Counts, err = q.LegacyValueCounts(ctx); err != nil {
 		return err
 	}
+	sealable, err := sealsUnderEnvironments(ctx, q)
+	if err != nil {
+		return err
+	}
 	var remaining, outside int64
 	for _, r := range c.Counts {
 		remaining += r.Remaining
@@ -124,7 +128,7 @@ func (b *Broker) convert(ctx context.Context, c *Conversion) error {
 		c.Waiting = fmt.Sprintf("%d holders were not converted", len(c.Skipped))
 	case remaining > 0:
 		c.Waiting = fmt.Sprintf("%d values are still sealed under the installation keyring: run this again", remaining)
-	case outside > 0 && !b.SealsUnderEnvironments():
+	case outside > 0 && !sealable:
 		c.Waiting = fmt.Sprintf("%d environment values stay under their workspace's key while an instance of a release before stage 5 runs: run this again five minutes after the last one stopped", outside)
 	case outside > 0:
 		c.Waiting = fmt.Sprintf("%d environment values are not yet under their environment's key: run this again", outside)
@@ -149,7 +153,12 @@ func (b *Broker) convertHolder(ctx context.Context, c *Conversion, holder uuid.U
 		// Most workspaces have nothing under the keyring: look before locking it or opening its
 		// keys. One with nothing yet that gains a value is left for the next run, as the counts
 		// afterwards say.
-		values, _, _, err := legacyValues(ctx, db.New(b.pool), holder, convertCursor{}, b.SealsUnderEnvironments())
+		q := db.New(b.pool)
+		sealable, err := sealsUnderEnvironments(ctx, q)
+		if err != nil {
+			return err
+		}
+		values, _, _, err := legacyValues(ctx, q, holder, convertCursor{}, sealable)
 		if err != nil || len(values) == 0 {
 			return err
 		}
@@ -278,7 +287,11 @@ func (b *Broker) convertBatch(ctx context.Context, conn pgxConn, run uuid.UUID, 
 	if err = q.LockBootstrap(ctx); err != nil {
 		return out, err
 	}
-	values, next, full, err := legacyValues(ctx, q, holder, *cursor, b.SealsUnderEnvironments())
+	sealable, err := sealsUnderEnvironments(ctx, q)
+	if err != nil {
+		return out, err
+	}
+	values, next, full, err := legacyValues(ctx, q, holder, *cursor, sealable)
 	if err != nil {
 		return out, err
 	}
@@ -288,6 +301,11 @@ func (b *Broker) convertBatch(ctx context.Context, conn pgxConn, run uuid.UUID, 
 			continue
 		}
 		converted, err := session.Rehome(ctx, q, v.item, v.sealed)
+		if errors.Is(err, ErrKeyDestroyed) {
+			// Its environment was purged since it was read: the purge erased it.
+			out.raced++
+			continue
+		}
 		if err != nil {
 			return convertResult{}, convertFailed(v.item, holder, err)
 		}

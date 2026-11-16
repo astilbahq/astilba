@@ -73,6 +73,11 @@ func (s *Service) purge(ctx context.Context, tx pgx.Tx, p store.Principal, ws, p
 	if err != nil {
 		return err
 	}
+	// A writer holds the environment's key and then its value; the purge takes them in that order
+	// too, so the two wait for each other rather than deadlock.
+	if err = q.LockEnvironmentKeys(ctx, db.LockEnvironmentKeysParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
+		return err
+	}
 	if e.Name != confirmName {
 		return domain.Invalid("confirmName")
 	}

@@ -505,7 +505,8 @@ func TestConvertWaitsForOlderInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := convert(t, f)
-	if remaining(c) != 0 || c.Stage != 5 || !strings.Contains(c.Waiting, "1 instances seen in the last five minutes") {
+	// Beside it, environment values go no further than their workspace's key.
+	if remaining(c) != 0 || c.Stage != 5 || !strings.Contains(c.Waiting, "while an instance of a release before stage 5 runs") {
 		t.Fatalf("conversion %+v", c)
 	}
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {

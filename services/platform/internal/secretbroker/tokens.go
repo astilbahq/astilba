@@ -148,13 +148,6 @@ func (t *Tokens) load(ctx context.Context) error {
 	if err = q.RecordCustodyInstance(ctx, db.RecordCustodyInstanceParams{InstanceID: t.instance, TokenGenerations: append([]int64{}, generations...), Stage: pgtype.Int4{Int32: t.stage, Valid: true}}); err != nil {
 		return errors.Join(append(failures, err)...)
 	}
-	// Values are sealed under environment keys only while every instance running opens them: an
-	// instance of an earlier release, seen in the last five minutes, holds them back.
-	older, err := q.InstancesBelowStage(ctx, readEnvironmentsStage)
-	t.broker.environmentsSealable.Store(err == nil && older == 0)
-	if err != nil {
-		return errors.Join(append(failures, err)...)
-	}
 	if err = t.broker.correctEnvironmentsStage(ctx, false); err != nil {
 		return errors.Join(append(failures, err)...)
 	}
