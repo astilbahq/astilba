@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"slices"
 	"strings"
@@ -311,5 +312,59 @@ func TestReadingEnvironmentKeysCompletesStageFive(t *testing.T) {
 	events := keyEvents(t, f, "stage-completed")
 	if !slices.Equal([]string{details(t, events[len(events)-1])["stage"]}, []string{"5"}) || len(events) != before+1 {
 		t.Fatal("stage 5 was not recorded once")
+	}
+}
+
+// An environment's ID is unique within its workspace only, and importing keeps it, so an import
+// can bring an environment with another workspace's environment ID, by accident or on purpose.
+// Each workspace keeps its own key for it, and destroying one leaves the other as it was.
+func TestEnvironmentKeysAreTheirWorkspaces(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Shared ID"}, 201, &env)
+	environmentKey(t, f, x.ws, env.Id)
+	// Another workspace with an environment of the same ID, as an import makes it.
+	other := insertWorkspace(t, f, "Imported")
+	initKeys(t, f.st.Broker)
+	q := db.New(f.st.Pool)
+	project, err := q.InsertProject(ctx, db.InsertProjectParams{WorkspaceID: other, ID: uuid.New(), Name: "Imported"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec []byte
+	if err = f.st.Pool.QueryRow(ctx, `SELECT r.specification FROM specification_revisions r JOIN environments e ON e.workspace_id=r.workspace_id AND e.draft_revision_id=r.id WHERE e.workspace_id=$1 AND e.id=$2`, x.ws, env.Id).Scan(&spec); err != nil {
+		t.Fatal(err)
+	}
+	made, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer made.Rollback(ctx)
+	revision, hash := uuid.New(), sha256.Sum256(spec)
+	if _, err = db.New(made).InsertEnvironment(ctx, db.InsertEnvironmentParams{WorkspaceID: other, ProjectID: project.ID, ID: env.Id, Name: "Shared ID", DraftRevisionID: revision}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.New(made).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: other, EnvironmentID: env.Id, ID: revision, AuthorID: f.owner, Specification: spec, ContentHash: hash[:]}); err != nil {
+		t.Fatal(err)
+	}
+	if err = made.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The other workspace's environment gets a key of its own.
+	environmentKey(t, f, other, env.Id)
+	if n := x.count("SELECT count(DISTINCT workspace_id) FROM environment_keys WHERE environment_id=$1 AND state='active'", env.Id); n != 2 {
+		t.Fatalf("%d workspaces hold a key for the shared environment ID", n)
+	}
+	// Purging the other workspace's environment destroys its key only.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE environments SET state='purged', retired_at=now(), retired_by=$3, purged_at=now(), purged_by=$3, purged_without_host=true WHERE workspace_id=$1 AND id=$2`, other, env.Id, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.st.Broker.DestroyEnvironmentKeys(ctx, q, other, env.Id, "environment purged"); err != nil {
+		t.Fatal(err)
+	}
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2 AND state='active'", x.ws, env.Id); n != 1 {
+		t.Fatal("purging the other workspace's environment touched the original's key")
 	}
 }
