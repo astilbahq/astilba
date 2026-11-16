@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -228,11 +229,13 @@ func (e *Engine) dataContainer(ctx context.Context, p backup.Policy, volume, run
 	return created.ID, cleanup, nil
 }
 func (e *Engine) postgresManifest(ctx context.Context, db pgClient, a domain.Application, image string, m *backup.Manifest) error {
-	versionNumber, dataDirectory := "180004", "/var/lib/postgresql/18/docker"
+	dataDirectory, _, err := postgresDataDirectory(image)
+	if err != nil {
+		return err
+	}
+	versionNumber := "180004"
 	if image == domain.Postgres17Image {
-		versionNumber, dataDirectory = "170010", "/var/lib/postgresql/data"
-	} else if image != domain.PostgresImage {
-		return errUnsupportedPostgresImage
+		versionNumber = "170010"
 	}
 	version, err := e.pgQuery(ctx, db, a, "SHOW server_version_num")
 	if err != nil || strings.TrimSpace(string(version)) != versionNumber {
@@ -270,7 +273,7 @@ func (e *Engine) postgresManifest(ctx context.Context, db pgClient, a domain.App
 		return errors.New("extension query failed")
 	}
 	for _, ext := range m.Extensions {
-		if ext != "plpgsql" && ext != "hstore" {
+		if !slices.Contains(backup.Extensions, ext) {
 			return errors.New("unsupported extension")
 		}
 	}

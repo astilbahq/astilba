@@ -3,6 +3,7 @@ package backup
 import (
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,7 +85,7 @@ func (m Manifest) recipeBounded() error {
 		bounded = bounded && r.Name != "" && len(r.Name) <= 63
 	}
 	for _, x := range m.Extensions {
-		bounded = bounded && x != "" && len(x) <= 100
+		bounded = bounded && slices.Contains(Extensions, x)
 	}
 	if !bounded {
 		return errors.New("snapshot manifest is outside its recipe's bounds")

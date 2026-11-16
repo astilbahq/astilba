@@ -164,7 +164,15 @@ UPDATE execution_operations SET state = @state, note = @note::text || CASE WHEN 
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ListBackupRecoveries :many
-SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note
+SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note,coalesce(v.deleted,false)::boolean AS target_deleted
 FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+LEFT JOIN managed_volumes v ON v.workspace_id = r.workspace_id AND v.environment_id = r.environment_id AND v.id = r.target_volume_id
 WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.policy_id = @policy_id
 ORDER BY r.created_at DESC, r.id LIMIT 100;
+
+-- name: BackupRecovery :one
+-- One restore of a policy's snapshot onto another server, with its operation's state. A restore's
+-- result is written once, when its operation ends.
+SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.policy_id = @policy_id AND r.id = @id;
