@@ -66,6 +66,12 @@ running; it is not an external uptime service.
   the hold, or the held records falling back under the threshold, establishes recovery. The hosted
   service doesn't raise it, because its owners can't confirm. See
   [records the database has lost](hosting.md#records-the-database-has-lost).
+- **A revoked server holds a backup destination's storage keys:** an S3 backup destination is
+  [exposed](backups.md#destination-setup), because a revoked server was given its keys. Its
+  resource is the destination, and the Alerts page names it and the policies using it: one alert
+  covers every policy on the destination. It recovers once each such server is renewed. Revoking
+  the keys at the provider doesn't establish recovery, since Astilba can't see it; move backups to
+  a destination with new keys.
 - **Operation problem:** a deployment, image build or backup operation failed or
   needs attention. One record is created per operation, including when a
   needs-attention operation later fails. This is a historical event, not a claim

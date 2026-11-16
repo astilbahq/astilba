@@ -9542,9 +9542,15 @@
         exposed:
           type: boolean
           description: >-
-            Whether a backup policy using this destination is bound to a revoked server, which was
-            given its storage keys and can delete or overwrite any backup they reach until they are
-            revoked at the provider. A new policy on it needs an acknowledgement.
+            Whether a revoked server holds this S3 destination's storage keys: the server a policy
+            using it is bound to, or one a restore of such a policy was recorded for. It can delete
+            or overwrite any backup they reach until they are revoked at the provider. A new policy
+            on it needs an acknowledgement, and a backup_exposure alert fires for it.
+        policies:
+          type: array
+          maxItems: 100
+          description: The backup policies using this destination.
+          items: {$ref: '#/components/schemas/BackupDestinationPolicy'}
       required:
         - id
         - name
@@ -9554,6 +9560,17 @@
         - bucket
         - region
         - exposed
+        - policies
+    BackupDestinationPolicy:
+      type: object
+      additionalProperties: false
+      required: [id, name, projectId, environmentId, environmentName]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        projectId: {type: string, format: uuid}
+        environmentId: {type: string, format: uuid}
+        environmentName: {type: string}
     BackupAccess:
       type: object
       additionalProperties: false
@@ -10499,7 +10516,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held, backup_exposure]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}

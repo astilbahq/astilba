@@ -4600,8 +4600,20 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
-            /** @description Whether a backup policy using this destination is bound to a revoked server, which was given its storage keys and can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement. */
+            /** @description Whether a revoked server holds this S3 destination's storage keys: the server a policy using it is bound to, or one a restore of such a policy was recorded for. It can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement, and a backup_exposure alert fires for it. */
             exposed: boolean;
+            /** @description The backup policies using this destination. */
+            policies: components["schemas"]["BackupDestinationPolicy"][];
+        };
+        BackupDestinationPolicy: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            projectId: string;
+            /** Format: uuid */
+            environmentId: string;
+            environmentName: string;
         };
         BackupAccess: {
             databasePassword?: string;
@@ -5045,7 +5057,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held" | "backup_exposure";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */

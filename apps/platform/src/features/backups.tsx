@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import {
+  backupDestinationsOptions,
   backupDestinationsPath,
   backupPoliciesPath,
   nilID,
 } from "../api/backups";
-import { client, result, type Schema } from "../api/client";
+import { ApiError, client, result, type Schema } from "../api/client";
 import { serversOptions } from "../api/servers";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
@@ -43,11 +44,7 @@ export function Backups({
     queries = useQueryClient();
   const [method, setMethod] =
     useState<Schema["BackupPolicyRequest"]["method"]>("postgres-logical");
-  const destinations = useQuery({
-    queryKey: ["backup-destinations", path.workspaceId],
-    queryFn: () =>
-      result(client.GET(backupDestinationsPath, { params: { path } })),
-  });
+  const destinations = useQuery(backupDestinationsOptions(path.workspaceId));
   const policies = useQuery({
     queryKey: ["backup-policies", path],
     queryFn: () => result(client.GET(backupPoliciesPath, { params: { path } })),
@@ -66,7 +63,9 @@ export function Backups({
         the host execution lock with deployments; runs never overlap.
       </p>
       <ErrorNotice
-        error={action.error ?? destinations.error ?? policies.error}
+        error={
+          action.error ?? destinations.error ?? policies.error ?? servers.error
+        }
       />
       {owner && (
         <>
@@ -189,7 +188,19 @@ export function Backups({
                           : undefined,
                       },
                     }),
-                  );
+                  ).catch(async (error: unknown) => {
+                    // A destination exposed since the list loaded is refused until it is
+                    // acknowledged, so the list is refreshed to offer the acknowledgement.
+                    if (
+                      error instanceof ApiError &&
+                      error.detail.fields?.includes("destination.exposed")
+                    )
+                      await queries.invalidateQueries({
+                        queryKey: backupDestinationsOptions(path.workspaceId)
+                          .queryKey,
+                      });
+                    throw error;
+                  });
                   form.reset();
                   setDestination("");
                   setPreset(undefined);

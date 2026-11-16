@@ -11,6 +11,7 @@ import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 import {
   ExposedDestinationNotice,
+  RevokedServerHistory,
   RevokedServerRecovery,
 } from "./backup-recovery";
 import {
@@ -43,7 +44,8 @@ export function PolicyStatus({
 }) {
   // A revoked server's policy is frozen: what is left is restoring its snapshots elsewhere.
   const revoked = server?.status === "revoked";
-  const manage = owner && !revoked;
+  // Until its server is known, nothing says the policy can still be managed.
+  const manage = owner && !!server && !revoked;
   const action = useAction(),
     queries = useQueryClient(),
     p = { ...path, policyId: policy.id };
@@ -95,7 +97,7 @@ export function PolicyStatus({
           ? `Installed generation ${status.data.generation}. ${status.data.enabled ? `Next run: ${nextRunDescription(status.data.next, policy.schedule)}` : "Local schedule disabled. After a rollback or local recovery, save and install a new generation to enable the configured schedule."}`
           : "Current policy is not installed."}
       </p>
-      <p>
+      <p hidden={revoked}>
         Last successful snapshot:{" "}
         {last ? (
           <>
@@ -248,6 +250,7 @@ export function PolicyStatus({
           load={load}
         />
       )}
+      {revoked && !!runs.length && <RevokedServerHistory />}
       <ol>
         {runs.map((r) => (
           <li key={r.id}>

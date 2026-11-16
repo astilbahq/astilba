@@ -126,6 +126,51 @@ func (q *Queries) BackupDestinationExists(ctx context.Context, arg BackupDestina
 	return exists, err
 }
 
+const backupDestinationPolicies = `-- name: BackupDestinationPolicies :many
+SELECT (p.configuration->>'destinationId')::uuid AS destination_id, p.id, (p.configuration->>'name')::text AS name,
+    e.project_id, e.id AS environment_id, e.name AS environment_name
+FROM backup_policies p JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id
+WHERE p.workspace_id = $1 AND p.configuration->>'method' <> 'container-job'
+ORDER BY e.name, p.configuration->>'name', p.id
+`
+
+type BackupDestinationPoliciesRow struct {
+	DestinationID   uuid.UUID `json:"destination_id"`
+	ID              uuid.UUID `json:"id"`
+	Name            string    `json:"name"`
+	ProjectID       uuid.UUID `json:"project_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	EnvironmentName string    `json:"environment_name"`
+}
+
+// The policies using a workspace's destinations, with their environments. A container job uses none.
+func (q *Queries) BackupDestinationPolicies(ctx context.Context, workspaceID uuid.UUID) ([]BackupDestinationPoliciesRow, error) {
+	rows, err := q.db.Query(ctx, backupDestinationPolicies, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BackupDestinationPoliciesRow{}
+	for rows.Next() {
+		var i BackupDestinationPoliciesRow
+		if err := rows.Scan(
+			&i.DestinationID,
+			&i.ID,
+			&i.Name,
+			&i.ProjectID,
+			&i.EnvironmentID,
+			&i.EnvironmentName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const backupPolicyAccess = `-- name: BackupPolicyAccess :one
 SELECT encrypted_access,configuration FROM backup_policies
 WHERE workspace_id = $1 AND environment_id = $2 AND server_id = $3 AND id = $4
@@ -417,13 +462,18 @@ func (q *Queries) DisableEnvironmentBackupPolicies(ctx context.Context, arg Disa
 }
 
 const exposedBackupDestinations = `-- name: ExposedBackupDestinations :many
-SELECT DISTINCT (p.configuration->>'destinationId')::uuid AS destination_id
-FROM backup_policies p JOIN servers s ON s.workspace_id = p.workspace_id AND s.id = p.server_id
-WHERE p.workspace_id = $1 AND s.revoked
+SELECT DISTINCT d.id
+FROM backup_destinations d
+JOIN backup_policies p ON p.workspace_id = d.workspace_id AND p.configuration->>'destinationId' = d.id::text
+    AND p.configuration->>'method' <> 'container-job'
+JOIN servers s ON s.workspace_id = p.workspace_id AND s.revoked AND (s.id = p.server_id OR EXISTS(
+    SELECT 1 FROM backup_recoveries r WHERE r.workspace_id = p.workspace_id AND r.policy_id = p.id AND r.server_id = s.id))
+WHERE d.workspace_id = $1 AND d.configuration->>'kind' = 's3'
 `
 
-// A destination is exposed while a policy using it is bound to a revoked server: that server was
-// given the destination's storage keys.
+// A destination is exposed while a revoked server holds its storage keys: the server a policy using
+// it is bound to, or one a restore of such a policy was recorded for, whether or not the restore
+// was released to it. Only an S3 destination has keys, and a container job is never given them.
 func (q *Queries) ExposedBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, exposedBackupDestinations, workspaceID)
 	if err != nil {
@@ -432,11 +482,11 @@ func (q *Queries) ExposedBackupDestinations(ctx context.Context, workspaceID uui
 	defer rows.Close()
 	items := []uuid.UUID{}
 	for rows.Next() {
-		var destination_id uuid.UUID
-		if err := rows.Scan(&destination_id); err != nil {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		items = append(items, destination_id)
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

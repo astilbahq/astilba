@@ -22,6 +22,8 @@ import * as r from "./backup-recovery.styles";
 import type { EnvironmentPath } from "./visual-editor";
 
 const recoveryRoot = `${policyRoot}/recoveries/{recoveryId}` as const;
+const environmentRoot =
+  "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}" as const;
 
 type Recovery = Schema["BackupRecoveryRecord"];
 const ended: readonly Recovery["state"][] = [
@@ -105,6 +107,8 @@ export function RevokedServerRecovery({
     new Date(value).toLocaleString(i18n.resolvedLanguage);
   const receipts = useQuery({
     queryKey: ["backup-receipts", p],
+    // Only owners choose a snapshot.
+    enabled: owner,
     queryFn: () =>
       result(client.GET(`${policyRoot}/receipts`, { params: { path: p } })),
   });
@@ -149,8 +153,9 @@ export function RevokedServerRecovery({
           <Form
             action={action}
             label={t(($) => $.picker.legend)}
-            onSubmit={(d) =>
+            onSubmit={(d, form) =>
               action.run(async () => {
+                setMessage("");
                 const snapshot = text(d, "snapshot");
                 const requestKey =
                   attempts.current.get(snapshot) ?? crypto.randomUUID();
@@ -162,6 +167,8 @@ export function RevokedServerRecovery({
                   }),
                 );
                 attempts.current.delete(snapshot);
+                // Each restore is acknowledged afresh.
+                form.reset();
                 setMessage(t(($) => $.picker.started));
                 await queries.invalidateQueries({
                   queryKey: ["backup-recoveries", p],
@@ -181,14 +188,14 @@ export function RevokedServerRecovery({
                     <Radio name="snapshot" value={receipt.snapshot} required />
                     <span className={r.choiceText}>
                       <span>
-                        {t(($) => $.picker.recorded, {
-                          date: date(receipt.firstReportedAt),
-                        })}
                         {before && before > 0
-                          ? ` · ${t(($) => $.picker.beforeRevocation, {
+                          ? t(($) => $.picker.recordedBefore, {
+                              date: date(receipt.firstReportedAt),
                               duration: duration(before, i18n.resolvedLanguage),
-                            })}`
-                          : ""}
+                            })
+                          : t(($) => $.picker.recorded, {
+                              date: date(receipt.firstReportedAt),
+                            })}
                       </span>
                       <span className={r.identifier}>{receipt.snapshot}</span>
                       {run && (
@@ -219,10 +226,9 @@ export function RevokedServerRecovery({
               <Checkbox name="acknowledged" required />
               {t(($) => $.picker.acknowledge)}
             </Label>
+            <ErrorNotice error={action.error} />
             <BusyButton busy={action.isPending}>
-              {action.isPending
-                ? t(($) => $.picker.restoring)
-                : t(($) => $.picker.restore)}
+              {t(($) => $.picker.restore)}
             </BusyButton>
           </Form>
         ))}
@@ -239,7 +245,8 @@ export function RevokedServerRecovery({
             {recoveries.data.map((recovery) => (
               <RecoveryItem
                 key={recovery.id}
-                path={p}
+                path={path}
+                policyId={policy.id}
                 recovery={recovery}
                 revision={revision}
                 owner={owner}
@@ -257,6 +264,7 @@ export function RevokedServerRecovery({
 
 function RecoveryItem({
   path,
+  policyId,
   recovery,
   revision,
   owner,
@@ -264,7 +272,8 @@ function RecoveryItem({
   load,
   announce,
 }: {
-  path: EnvironmentPath & { policyId: string };
+  path: EnvironmentPath;
+  policyId: string;
   recovery: Recovery;
   revision: Schema["Revision"];
   owner: boolean;
@@ -275,7 +284,31 @@ function RecoveryItem({
   const { t, i18n } = useTranslation("backup-recovery");
   const queries = useQueryClient();
   const action = useAction({ recentAuth: true });
-  const p = { ...path, recoveryId: recovery.id };
+  const p = { ...path, policyId, recoveryId: recovery.id };
+  // A discard deletes the volume once its server confirms: until the operation ends, the volume is
+  // neither offered for a cutover nor discarded again.
+  const [discard, setDiscard] = useState<string>();
+  const discarding = useQuery({
+    queryKey: ["operation", path, discard],
+    enabled: !!discard,
+    queryFn: async ({ signal }) => {
+      const next = await result(
+        client.GET(`${environmentRoot}/operations/{operationId}`, {
+          params: { path: { ...path, operationId: discard ?? "" } },
+          signal,
+        }),
+      );
+      if (ended.includes(next.state))
+        await queries.invalidateQueries({
+          queryKey: ["backup-recoveries", { ...path, policyId }],
+        });
+      return next;
+    },
+    refetchInterval: ({ state: { data } }) =>
+      data && ended.includes(data.state) ? false : 5000,
+  });
+  const pending =
+    !!discard && !(discarding.data && ended.includes(discarding.data.state));
   const succeeded = recovery.state === "succeeded" && !recovery.targetDeleted;
   return (
     <li className={s.stack}>
@@ -286,9 +319,9 @@ function RecoveryItem({
             i18n.resolvedLanguage,
           ),
           state: t(($) => $.restores.state[stateKeys[recovery.state]]),
-        })}{" "}
-        {recovery.note}
+        })}
       </p>
+      {recovery.note && <p>{recovery.note}</p>}
       {recovery.targetDeleted ? (
         <p className={s.muted}>{t(($) => $.restores.discarded)}</p>
       ) : (
@@ -298,8 +331,21 @@ function RecoveryItem({
           </p>
         )
       )}
-      <ErrorNotice error={action.error} />
-      {owner && succeeded && (
+      <ErrorNotice error={action.error ?? discarding.error} />
+      {pending && (
+        <p className={s.muted}>{t(($) => $.restores.discardPending)}</p>
+      )}
+      {!recovery.targetDeleted &&
+        discarding.data &&
+        discarding.data.state !== "succeeded" &&
+        ended.includes(discarding.data.state) && (
+          <p className={s.muted}>
+            {t(($) => $.restores.discardFailed, {
+              note: discarding.data.note,
+            })}
+          </p>
+        )}
+      {owner && succeeded && !pending && (
         <>
           <p>{t(($) => $.restores.cutoverHint)}</p>
           {dirty && (
@@ -307,38 +353,48 @@ function RecoveryItem({
           )}
         </>
       )}
-      {owner && !recovery.targetDeleted && ended.includes(recovery.state) && (
-        <div className={s.row}>
-          {succeeded && (
-            <Button
-              type="button"
-              variant="primary"
-              disabled={action.isPending || dirty}
-              onClick={() =>
-                action.run(async () => {
-                  const next = await result(
-                    client.POST(`${recoveryRoot}/cutover`, {
-                      params: { path: p },
-                      body: { baseRevisionId: revision.id },
-                    }),
-                  );
-                  await publishDraft(queries, path, next, revision.id);
-                  announce(
-                    load(next)
-                      ? t(($) => $.restores.cutoverSaved)
-                      : t(($) => $.restores.cutoverConflict),
-                  );
-                })
-              }
-            >
-              {action.isPending
-                ? t(($) => $.restores.preparing)
-                : t(($) => $.restores.prepareCutover)}
-            </Button>
-          )}
-          <DiscardTarget path={p} recovery={recovery} announce={announce} />
-        </div>
-      )}
+      {owner &&
+        !recovery.targetDeleted &&
+        !pending &&
+        ended.includes(recovery.state) && (
+          <div className={s.row}>
+            {succeeded && (
+              <Button
+                type="button"
+                variant="primary"
+                disabled={action.isPending || dirty}
+                onClick={() =>
+                  action.run(async () => {
+                    // Cleared first, so the same outcome twice is announced twice.
+                    announce("");
+                    const next = await result(
+                      client.POST(`${recoveryRoot}/cutover`, {
+                        params: { path: p },
+                        body: { baseRevisionId: revision.id },
+                      }),
+                    );
+                    await publishDraft(queries, path, next, revision.id);
+                    announce(
+                      load(next)
+                        ? t(($) => $.restores.cutoverSaved)
+                        : t(($) => $.restores.cutoverConflict),
+                    );
+                  })
+                }
+              >
+                {action.isPending
+                  ? t(($) => $.restores.preparing)
+                  : t(($) => $.restores.prepareCutover)}
+              </Button>
+            )}
+            <DiscardTarget
+              path={p}
+              recovery={recovery}
+              announce={announce}
+              queued={setDiscard}
+            />
+          </div>
+        )}
     </li>
   );
 }
@@ -347,13 +403,14 @@ function DiscardTarget({
   path,
   recovery,
   announce,
+  queued,
 }: {
   path: EnvironmentPath & { policyId: string; recoveryId: string };
   recovery: Recovery;
   announce: (message: string) => void;
+  queued: (operationId: string) => void;
 }) {
   const { t } = useTranslation("backup-recovery");
-  const queries = useQueryClient();
   const action = useAction({ recentAuth: true });
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -397,16 +454,15 @@ function DiscardTarget({
               disabled={action.isPending}
               onClick={(event) =>
                 action.run(async () => {
-                  await result(
+                  announce("");
+                  const operation = await result(
                     client.DELETE(`${recoveryRoot}/target`, {
                       params: { path },
                     }),
                   );
                   setOpen(false);
+                  queued(operation.id);
                   announce(t(($) => $.restores.discardQueued));
-                  await queries.invalidateQueries({
-                    queryKey: ["backup-recoveries"],
-                  });
                 }, trigger.current ?? event.currentTarget)
               }
             >
@@ -419,6 +475,12 @@ function DiscardTarget({
       </AlertDialogRoot>
     </>
   );
+}
+
+/** Labels a revoked server's own report of its runs, which nothing has checked. */
+export function RevokedServerHistory() {
+  const { t } = useTranslation("backup-recovery");
+  return <p className={s.muted}>{t(($) => $.revoked.history)}</p>;
 }
 
 /** A persistent warning on a policy whose destination's keys a revoked server was given. */

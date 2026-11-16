@@ -33,12 +33,22 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 		if err != nil {
 			return err
 		}
+		policies, err := db.New(tx).BackupDestinationPolicies(ctx, ws)
+		if err != nil {
+			return err
+		}
 		for _, raw := range rows {
 			var v backup.Destination
 			if err = json.Unmarshal(raw, &v); err != nil {
 				return err
 			}
-			out = append(out, destinationView(v, slices.Contains(exposed, v.ID)))
+			view := destinationView(v, slices.Contains(exposed, v.ID))
+			for _, p := range policies {
+				if p.DestinationID == v.ID {
+					view.Policies = append(view.Policies, api.BackupDestinationPolicy{Id: p.ID, Name: p.Name, ProjectId: p.ProjectID, EnvironmentId: p.EnvironmentID, EnvironmentName: p.EnvironmentName})
+				}
+			}
+			out = append(out, view)
 		}
 		return nil
 	})
@@ -47,7 +57,7 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 
 // destinationView is d as the API shows it.
 func destinationView(d backup.Destination, exposed bool) api.BackupDestination {
-	return api.BackupDestination{Id: d.ID, Name: d.Name, Kind: api.BackupDestinationKind(d.Kind), Root: d.Root, Endpoint: d.Endpoint, Bucket: d.Bucket, Region: d.Region, Exposed: exposed}
+	return api.BackupDestination{Id: d.ID, Name: d.Name, Kind: api.BackupDestinationKind(d.Kind), Root: d.Root, Endpoint: d.Endpoint, Bucket: d.Bucket, Region: d.Region, Exposed: exposed, Policies: []api.BackupDestinationPolicy{}}
 }
 func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access) (api.BackupDestination, error) {
 	d.ID = uuid.New()

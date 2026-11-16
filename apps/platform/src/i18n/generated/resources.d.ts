@@ -311,15 +311,14 @@ export default interface Resources {
     },
     "picker": {
       "acknowledge": "I understand that a snapshot this server uploaded could contain altered data that the restore's checks can't detect.",
-      "beforeRevocation": "{{duration}} before the revocation",
       "claimed": "The server says this backup started on {{date}}.",
       "legend": "Snapshot to restore",
       "loadFailed": "Snapshots couldn't be loaded.",
       "loading": "Loading snapshots…",
       "none": "Astilba recorded no snapshot from this server that is still available. A snapshot the server never reported can only be restored by hand, as the backups guide describes.",
       "recorded": "Recorded by Astilba on {{date}}",
+      "recordedBefore": "Recorded by Astilba on {{date}}, {{duration}} before the revocation",
       "restore": "Restore into a new volume",
-      "restoring": "Starting restore…",
       "started": "Restore started. Nothing uses the new volume until you prepare and deploy a cutover.",
       "unverified": "{{size}}, {{method}}, {{image}}. Unverified until restored."
     },
@@ -332,6 +331,8 @@ export default interface Resources {
       "discard": "Discard restored volume",
       "discardConfirm": "Discard volume",
       "discardDescription": "This deletes volume {{volume}}, which the restore created on the environment's current server. It can't be undone, and the restore can't be cut over afterwards.",
+      "discardFailed": "The volume wasn't discarded: {{note}}",
+      "discardPending": "Discarding the volume. It is deleted once the server confirms.",
       "discardQueued": "Discard queued. The volume is removed once the server confirms it.",
       "discardTitle": "Discard the restored volume?",
       "discarded": "Its volume was discarded.",
@@ -355,6 +356,7 @@ export default interface Resources {
     },
     "revoked": {
       "frozen": "Nothing backs up to or prunes this policy's repository any more. For ongoing backups, create a policy on the environment's current server: it gets a new repository with its own key.",
+      "history": "The runs below are as the revoked server reported them, including whether a restore was verified. Nothing has checked them.",
       "since": "{{server}} was revoked on {{date}}. If it was compromised before then, snapshots it uploaded after that could contain altered data. Choose one recorded before you think the compromise began. A restore is checked, but the checks can't tell a tampered snapshot from a genuine one.",
       "sinceUnknown": "{{server}} is revoked, and when its revocation began wasn't recorded. If it was compromised, snapshots it uploaded could contain altered data. Choose one recorded before you think the compromise began. A restore is checked, but the checks can't tell a tampered snapshot from a genuine one.",
       "title": "Restore from a revoked server",

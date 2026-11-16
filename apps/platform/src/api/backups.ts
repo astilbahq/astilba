@@ -1,3 +1,6 @@
+import { queryOptions } from "@tanstack/react-query";
+import { client, result } from "./client";
+
 export const backupDestinationsPath =
   "/api/v1/workspaces/{workspaceId}/backup-destinations" as const;
 export const backupPoliciesPath =
@@ -5,3 +8,14 @@ export const backupPoliciesPath =
 export const backupPolicyPath = `${backupPoliciesPath}/{policyId}` as const;
 // The API's "none" for a policy's destination or a run's target.
 export const nilID = "00000000-0000-0000-0000-000000000000";
+
+export const backupDestinationsOptions = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["backup-destinations", workspaceId],
+    queryFn: () =>
+      result(
+        client.GET(backupDestinationsPath, {
+          params: { path: { workspaceId } },
+        }),
+      ),
+  });

@@ -291,13 +291,13 @@ export const RevokedServerBackups: Story = {
         name: "Restore from a revoked server",
       }),
     ).toBeVisible();
+    // Every receipt is offered, and none is chosen for the owner.
     await expect(
-      await canvas.findByRole(
-        "radio",
-        { name: /Recorded by Astilba/, checked: false },
-        {},
-      ),
-    ).toBeDefined();
+      await canvas.findAllByRole("radio", {
+        name: /Recorded by Astilba/,
+        checked: false,
+      }),
+    ).toHaveLength(2);
   },
 };
 export const Settings: Story = {

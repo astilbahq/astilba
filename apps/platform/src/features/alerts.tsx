@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useContext, useState } from "react";
+import { backupDestinationsOptions } from "../api/backups";
 import { client, result, type Schema } from "../api/client";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
@@ -24,6 +25,7 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   recovery_window: "Cross-host recovery window is shorter than 35 days",
   dns_withdrawal_held:
     "DNS records may resolve to addresses Astilba no longer controls: the operator must review them with `astilba dns withdrawals`",
+  backup_exposure: "A revoked server holds a backup destination's storage keys",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);
@@ -56,6 +58,11 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
           params: { path, query: { view, before } },
         }),
       ),
+  });
+  // An exposure alert names a destination, so its name and policies come from the destinations.
+  const destinations = useQuery({
+    ...backupDestinationsOptions(workspace.id),
+    enabled: !!inbox.data?.alerts.some((a) => a.kind === "backup_exposure"),
   });
   return (
     <>
@@ -109,6 +116,13 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                 <p>
                   Resource: <code>{alert.resourceId}</code>
                 </p>
+                {alert.kind === "backup_exposure" && (
+                  <ExposedDestination
+                    destination={destinations.data?.find(
+                      (d) => d.id === alert.resourceId,
+                    )}
+                  />
+                )}
                 <p>
                   Observed{" "}
                   <time dateTime={alert.openedAt}>
@@ -325,5 +339,36 @@ function SettingsForm({
         Save notification delivery
       </BusyButton>
     </Form>
+  );
+}
+
+// The destination an exposure alert names, and the policies using its keys. The revoked server can
+// delete or overwrite their backups until the keys are revoked at the storage provider.
+function ExposedDestination({
+  destination,
+}: {
+  destination?: Schema["BackupDestination"];
+}) {
+  if (!destination) return null;
+  return (
+    <>
+      <p>
+        Destination: {destination.name}. A revoked server can delete or
+        overwrite its backups until you revoke its keys at your storage
+        provider. Add a destination with new keys for backups it can't reach.
+      </p>
+      {!!destination.policies.length && (
+        <>
+          <p>Policies using it:</p>
+          <ul>
+            {destination.policies.map((policy) => (
+              <li key={policy.id}>
+                {policy.name} ({policy.environmentName})
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </>
   );
 }

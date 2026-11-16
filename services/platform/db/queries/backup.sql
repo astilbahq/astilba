@@ -178,8 +178,21 @@ FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.works
 WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.policy_id = @policy_id AND r.id = @id;
 
 -- name: ExposedBackupDestinations :many
--- A destination is exposed while a policy using it is bound to a revoked server: that server was
--- given the destination's storage keys.
-SELECT DISTINCT (p.configuration->>'destinationId')::uuid AS destination_id
-FROM backup_policies p JOIN servers s ON s.workspace_id = p.workspace_id AND s.id = p.server_id
-WHERE p.workspace_id = @workspace_id AND s.revoked;
+-- A destination is exposed while a revoked server holds its storage keys: the server a policy using
+-- it is bound to, or one a restore of such a policy was recorded for, whether or not the restore
+-- was released to it. Only an S3 destination has keys, and a container job is never given them.
+SELECT DISTINCT d.id
+FROM backup_destinations d
+JOIN backup_policies p ON p.workspace_id = d.workspace_id AND p.configuration->>'destinationId' = d.id::text
+    AND p.configuration->>'method' <> 'container-job'
+JOIN servers s ON s.workspace_id = p.workspace_id AND s.revoked AND (s.id = p.server_id OR EXISTS(
+    SELECT 1 FROM backup_recoveries r WHERE r.workspace_id = p.workspace_id AND r.policy_id = p.id AND r.server_id = s.id))
+WHERE d.workspace_id = @workspace_id AND d.configuration->>'kind' = 's3';
+
+-- name: BackupDestinationPolicies :many
+-- The policies using a workspace's destinations, with their environments. A container job uses none.
+SELECT (p.configuration->>'destinationId')::uuid AS destination_id, p.id, (p.configuration->>'name')::text AS name,
+    e.project_id, e.id AS environment_id, e.name AS environment_name
+FROM backup_policies p JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id
+WHERE p.workspace_id = @workspace_id AND p.configuration->>'method' <> 'container-job'
+ORDER BY e.name, p.configuration->>'name', p.id;

@@ -152,6 +152,15 @@ export function revokedServerBackupHandlers() {
           bucket: "backups",
           region: "eu-west-1",
           exposed: true,
+          policies: [
+            {
+              id: policyId,
+              name: policy.name,
+              projectId: "00000000-0000-4000-8000-000000000a0a",
+              environmentId: environment,
+              environmentName: "Production",
+            },
+          ],
         },
       ] satisfies Schema["BackupDestination"][]),
     ),
