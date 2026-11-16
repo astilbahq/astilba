@@ -204,6 +204,12 @@ func (s *Session) Seal(ctx context.Context, q Fence, item Item, plaintext []byte
 		if err != nil {
 			return nil, err
 		}
+		// Close clears keys in place, so sealing holds the lock while it uses one.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.keys == nil {
+			return nil, ErrNeedKeys
+		}
 		return cryptobox.SealUnderEnvironment(key, item.Environment, generation, plaintext, identity)
 	}
 	s.mu.Lock()
