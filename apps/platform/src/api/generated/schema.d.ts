@@ -4600,6 +4600,8 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
+            /** @description Whether a backup policy using this destination is bound to a revoked server, which was given its storage keys and can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement. */
+            exposed: boolean;
         };
         BackupAccess: {
             databasePassword?: string;
@@ -4644,6 +4646,8 @@ export interface components {
             password: string;
             /** Format: int64 */
             baseGeneration: number;
+            /** @description Required as true to create a policy on an exposed destination: the owner understands that a revoked server can still delete or overwrite its backups until its storage keys are revoked at the provider. */
+            exposureAcknowledged?: boolean;
         };
         BackupPolicy: {
             /** @description Writer-stopping schedule is executed by management across all placement units. */

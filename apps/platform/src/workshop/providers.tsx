@@ -13,6 +13,7 @@ import { pseudolocalize } from "../i18n/pseudo";
 import account from "../locales/en/account.json";
 import app from "../locales/en/app.json";
 import auth from "../locales/en/auth.json";
+import backupRecovery from "../locales/en/backup-recovery.json";
 import common from "../locales/en/common.json";
 import environment from "../locales/en/environment.json";
 import projects from "../locales/en/projects.json";
@@ -57,6 +58,7 @@ export async function createWorkshopState(session: Session = guest) {
     troubleshooting,
     "secret-access": secretAccess,
     workspace,
+    "backup-recovery": backupRecovery,
   });
   for (const code of ["en-XA", "en-XB"]) {
     for (const [namespace, messages] of Object.entries(pseudo)) {

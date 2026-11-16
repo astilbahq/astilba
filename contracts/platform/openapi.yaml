@@ -9539,6 +9539,12 @@
         region:
           type: string
           maxLength: 80
+        exposed:
+          type: boolean
+          description: >-
+            Whether a backup policy using this destination is bound to a revoked server, which was
+            given its storage keys and can delete or overwrite any backup they reach until they are
+            revoked at the provider. A new policy on it needs an acknowledgement.
       required:
         - id
         - name
@@ -9547,6 +9553,7 @@
         - endpoint
         - bucket
         - region
+        - exposed
     BackupAccess:
       type: object
       additionalProperties: false
@@ -9680,6 +9687,12 @@
         baseGeneration:
           type: integer
           format: int64
+        exposureAcknowledged:
+          type: boolean
+          description: >-
+            Required as true to create a policy on an exposed destination: the owner understands
+            that a revoked server can still delete or overwrite its backups until its storage keys
+            are revoked at the provider.
       required:
         - name
         - resourceId

@@ -176,3 +176,10 @@ ORDER BY r.created_at DESC, r.id LIMIT 100;
 SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state
 FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
 WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.policy_id = @policy_id AND r.id = @id;
+
+-- name: ExposedBackupDestinations :many
+-- A destination is exposed while a policy using it is bound to a revoked server: that server was
+-- given the destination's storage keys.
+SELECT DISTINCT (p.configuration->>'destinationId')::uuid AS destination_id
+FROM backup_policies p JOIN servers s ON s.workspace_id = p.workspace_id AND s.id = p.server_id
+WHERE p.workspace_id = @workspace_id AND s.revoked;

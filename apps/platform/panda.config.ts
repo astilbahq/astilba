@@ -13,6 +13,7 @@ import { linkRecipe } from "./theme/recipes/link";
 import { menuRecipe } from "./theme/recipes/menu";
 import { otpInputRecipe } from "./theme/recipes/otp-input";
 import { passwordInputRecipe } from "./theme/recipes/password-input";
+import { radioRecipe } from "./theme/recipes/radio";
 import { selectRecipe } from "./theme/recipes/select";
 import { tabsRecipe } from "./theme/recipes/tabs";
 import { textareaRecipe } from "./theme/recipes/textarea";
@@ -39,6 +40,7 @@ export default defineConfig({
         select: selectRecipe,
         textarea: textareaRecipe,
         checkbox: checkboxRecipe,
+        radio: radioRecipe,
         link: linkRecipe,
       },
       slotRecipes: {

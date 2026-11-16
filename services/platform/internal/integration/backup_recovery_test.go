@@ -648,3 +648,51 @@ func TestDiscardingARestoredVolume(t *testing.T) {
 		t.Fatalf("a cutover to a discarded volume = %d %s", got.status, got.body)
 	}
 }
+
+// A destination is exposed while a policy using it is bound to a revoked server, which was given
+// its storage keys. A new policy on it needs an acknowledgement, which is recorded.
+func TestAnExposedDestinationNeedsAnAcknowledgement(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	l := g.lostFiles(t)
+	exposed := func() map[uuid.UUID]bool {
+		var list []api.BackupDestination
+		g.b.call("GET", g.base+"/backup-destinations", nil, 200, &list)
+		out := map[uuid.UUID]bool{}
+		for _, d := range list {
+			out[d.Id] = d.Exposed
+		}
+		return out
+	}
+	var unused api.BackupDestination
+	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Unused", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "unused-fixture", "region": "test-1", "access": map[string]string{"accessKey": "unused-key", "secretKey": "unused-secret", "password": ""}}, 201, &unused)
+	if unused.Exposed || slices.ContainsFunc([]bool{exposed()[l.policy.DestinationID], exposed()[l.local.DestinationID]}, func(v bool) bool { return v }) {
+		t.Fatal("a destination was exposed before its server was revoked")
+	}
+	g.revoke(t, l.gone)
+	g.applied(t, &l.e, g.replace(&l.e, l.b.id, l.volume))
+	now := exposed()
+	if !now[l.policy.DestinationID] || !now[l.local.DestinationID] || now[unused.Id] {
+		t.Fatalf("exposed destinations = %v", now)
+	}
+
+	password := "replacement-repository-password"
+	request := api.BackupPolicyRequest{Name: "Files again", ResourceId: l.volume, DestinationId: l.policy.DestinationID, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: 3, Minute: 0, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
+	wantRefusedField(t, <-g.b.send("POST", l.e.path+"/backup-policies", request), "destination.exposed")
+	no := false
+	request.ExposureAcknowledged = &no
+	wantRefusedField(t, <-g.b.send("POST", l.e.path+"/backup-policies", request), "destination.exposed")
+	yes := true
+	request.ExposureAcknowledged = &yes
+	var created backup.Policy
+	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &created)
+	var audited int
+	if err := g.f.st.Pool.QueryRow(g.ctx, "SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action='backup.destination.exposure.acknowledge' AND resource_id=$2", g.ws, l.policy.DestinationID).Scan(&audited); err != nil || audited != 1 {
+		t.Fatalf("the acknowledgement was audited %d times: %v", audited, err)
+	}
+	// A destination nothing revoked used needs none, and a new policy doesn't expose it.
+	request.Name, request.DestinationId, request.ExposureAcknowledged = "Files elsewhere", unused.Id, nil
+	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &created)
+	if exposed()[unused.Id] {
+		t.Fatal("a policy on a server in use exposed its destination")
+	}
+}

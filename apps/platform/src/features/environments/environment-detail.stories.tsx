@@ -11,6 +11,7 @@ import {
   environmentsPath,
   projectHandlers,
 } from "../../workshop/app-preview";
+import { revokedServerBackupHandlers } from "../../workshop/backup-recovery-fixtures";
 import {
   draftPath,
   composeRevision,
@@ -270,6 +271,33 @@ export const Deployments: Story = {
     await expect(
       await canvas.findByRole("heading", { name: "Review and deploy" }),
     ).toBeVisible();
+  },
+};
+// A policy whose server was revoked offers its recorded snapshots for a restore onto the
+// replacement, and its destination is marked as exposed.
+export const RevokedServerBackups: Story = {
+  parameters: scenario(
+    session,
+    ...revokedServerBackupHandlers(),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("tab", { name: "Deployments" }),
+    );
+    await expect(
+      await canvas.findByRole("region", {
+        name: "Restore from a revoked server",
+      }),
+    ).toBeVisible();
+    await expect(
+      await canvas.findByRole(
+        "radio",
+        { name: /Recorded by Astilba/, checked: false },
+        {},
+      ),
+    ).toBeDefined();
   },
 };
 export const Settings: Story = {

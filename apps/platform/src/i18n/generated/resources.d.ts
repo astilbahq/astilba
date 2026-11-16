@@ -299,6 +299,68 @@ export default interface Resources {
       "workspaceTooLong": "Use {{count}} character or fewer for the workspace name." | "Use {{count}} characters or fewer for the workspace name."
     }
   },
+  "backup-recovery": {
+    "exposed": {
+      "acknowledge": "I understand that the revoked server can delete or overwrite this policy's backups until its keys are revoked at the provider.",
+      "policy": "A revoked server was given this destination's storage keys. It can still delete or overwrite these backups until you revoke the keys at your storage provider. For backups it can't reach, add a destination with new keys and create a policy on it.",
+      "warning": "A revoked server was given this destination's storage keys. It can still delete or overwrite anything written here until you revoke them at your storage provider."
+    },
+    "method": {
+      "postgresLogical": "PostgreSQL logical backup",
+      "quiescedFiles": "file volume"
+    },
+    "picker": {
+      "acknowledge": "I understand that a snapshot this server uploaded could contain altered data that the restore's checks can't detect.",
+      "beforeRevocation": "{{duration}} before the revocation",
+      "claimed": "The server says this backup started on {{date}}.",
+      "legend": "Snapshot to restore",
+      "loadFailed": "Snapshots couldn't be loaded.",
+      "loading": "Loading snapshots…",
+      "none": "Astilba recorded no snapshot from this server that is still available. A snapshot the server never reported can only be restored by hand, as the backups guide describes.",
+      "recorded": "Recorded by Astilba on {{date}}",
+      "restore": "Restore into a new volume",
+      "restoring": "Starting restore…",
+      "started": "Restore started. Nothing uses the new volume until you prepare and deploy a cutover.",
+      "unverified": "{{size}}, {{method}}, {{image}}. Unverified until restored."
+    },
+    "restores": {
+      "cancel": "Cancel",
+      "cutoverConflict": "Cutover saved. Your newer edits were kept; resolve the revision conflict before you deploy.",
+      "cutoverDirty": "Save or discard your configuration changes before you prepare a cutover.",
+      "cutoverHint": "A cutover switches the deployment to this snapshot's data. Writes made since the snapshot aren't included. Review the downtime before you apply the deployment.",
+      "cutoverSaved": "Cutover saved as a draft. Prepare and review a deployment plan to switch storage.",
+      "discard": "Discard restored volume",
+      "discardConfirm": "Discard volume",
+      "discardDescription": "This deletes volume {{volume}}, which the restore created on the environment's current server. It can't be undone, and the restore can't be cut over afterwards.",
+      "discardQueued": "Discard queued. The volume is removed once the server confirms it.",
+      "discardTitle": "Discard the restored volume?",
+      "discarded": "Its volume was discarded.",
+      "discarding": "Discarding…",
+      "item": "Snapshot {{snapshot}}, recorded on {{date}}: {{state}}.",
+      "loadFailed": "Restores couldn't be loaded.",
+      "prepareCutover": "Prepare cutover draft",
+      "preparing": "Preparing…",
+      "state": {
+        "cancelled": "cancelled",
+        "dispatched": "sent to the server",
+        "failed": "failed",
+        "needsAttention": "needs attention",
+        "queued": "queued",
+        "running": "running",
+        "succeeded": "restored",
+        "waitingForAgent": "waiting for the server"
+      },
+      "target": "Restored into volume {{volume}}.",
+      "title": "Restores"
+    },
+    "revoked": {
+      "frozen": "Nothing backs up to or prunes this policy's repository any more. For ongoing backups, create a policy on the environment's current server: it gets a new repository with its own key.",
+      "since": "{{server}} was revoked on {{date}}. If it was compromised before then, snapshots it uploaded after that could contain altered data. Choose one recorded before you think the compromise began. A restore is checked, but the checks can't tell a tampered snapshot from a genuine one.",
+      "sinceUnknown": "{{server}} is revoked, and when its revocation began wasn't recorded. If it was compromised, snapshots it uploaded could contain altered data. Choose one recorded before you think the compromise began. A restore is checked, but the checks can't tell a tampered snapshot from a genuine one.",
+      "title": "Restore from a revoked server",
+      "unknownServer": "This policy's server"
+    }
+  },
   "common": {
     "appearance": {
       "dark": "Dark",

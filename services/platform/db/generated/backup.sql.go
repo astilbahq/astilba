@@ -416,6 +416,34 @@ func (q *Queries) DisableEnvironmentBackupPolicies(ctx context.Context, arg Disa
 	return err
 }
 
+const exposedBackupDestinations = `-- name: ExposedBackupDestinations :many
+SELECT DISTINCT (p.configuration->>'destinationId')::uuid AS destination_id
+FROM backup_policies p JOIN servers s ON s.workspace_id = p.workspace_id AND s.id = p.server_id
+WHERE p.workspace_id = $1 AND s.revoked
+`
+
+// A destination is exposed while a policy using it is bound to a revoked server: that server was
+// given the destination's storage keys.
+func (q *Queries) ExposedBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, exposedBackupDestinations, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var destination_id uuid.UUID
+		if err := rows.Scan(&destination_id); err != nil {
+			return nil, err
+		}
+		items = append(items, destination_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const finishUndeliveredRecovery = `-- name: FinishUndeliveredRecovery :exec
 UPDATE execution_operations SET state = $1, note = $2::text || CASE WHEN note <> '' THEN ' ' || note ELSE '' END
 WHERE workspace_id = $3 AND id = $4
