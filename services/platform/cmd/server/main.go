@@ -361,8 +361,8 @@ func run() error {
 				switch {
 				case err == nil || ctx.Err() != nil:
 				case errors.Is(err, applicationdns.ErrZoneTooLarge):
-					// Lasting: records nothing backs stay in the zone until the operator acts.
-					slog.Error("application DNS zone sweep refused a zone too large to compare; records Astilba no longer backs are not withdrawn. See docs/hosting.md#records-the-database-has-lost", "error", err)
+					// Lasting: records the sweep would withdraw stay in the zone until the operator acts.
+					slog.Error("application DNS zone sweep refused a zone too large to compare; records Astilba no longer backs, or newer than their server's approval, are not withdrawn. See docs/hosting.md#records-the-database-has-lost", "error", err)
 				default:
 					slog.Warn("application DNS zone sweep failed", "error", err)
 				}

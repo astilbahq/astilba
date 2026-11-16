@@ -195,7 +195,11 @@ which the manifest records.
 
 7. **Start and check.** Start `astilba serve`, sign in with your second factor, and check that
    the workspaces, servers and recent history are what you expect. A second factor that works
-   shows the keyring matches. Then delete the decrypted files.
+   shows the keyring matches. Then delete the decrypted files. With automatic DNS, a server
+   whose addresses changed after the backup shows its DNS as needing review, and its generated
+   names stop resolving: management doesn't publish the backup's older addresses again. Ask
+   its owners to check the addresses and approve them again
+   ([why](server-onboarding.md#when-an-approval-is-older-than-dns)).
 
 Anything written after the backup is lost, because there is no point-in-time recovery: the
 backup interval is how much you can lose.
@@ -214,7 +218,8 @@ must not be able to use them. Give it an environment file of its own that holds 
 database password, keyring path, origin and image, with no SMTP, DNS provider or GitHub App
 settings. A drill given the DNS settings would act on the live zone as the installation it was
 restored from: at startup it [removes every record](hosting.md#records-the-database-has-lost)
-the backup doesn't know, which includes everything the real installation published after it. Put it and its database only on a Docker network created with `internal: true`,
+the backup doesn't know, which includes everything the real installation published after it,
+and the records of every server whose addresses changed after it. Put it and its database only on a Docker network created with `internal: true`,
 which has no route off the host, and publish no ports. With PostgreSQL as a Compose service
 called `database`, an override does this:
 

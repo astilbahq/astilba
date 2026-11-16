@@ -68,6 +68,37 @@ func (q *Queries) AdoptZonePublication(ctx context.Context, arg AdoptZonePublica
 	return result.RowsAffected(), nil
 }
 
+const auditedDNSRecordRemovals = `-- name: AuditedDNSRecordRemovals :many
+SELECT record_id FROM dns_record_removals WHERE zone = $1 AND record_id = ANY($2::text[])
+`
+
+type AuditedDNSRecordRemovalsParams struct {
+	Zone      string   `json:"zone"`
+	RecordIds []string `json:"record_ids"`
+}
+
+// unscoped: a DNS job names the records. Which of these records in the zone this database has
+// audited a deletion of, and so knows why they are gone.
+func (q *Queries) AuditedDNSRecordRemovals(ctx context.Context, arg AuditedDNSRecordRemovalsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, auditedDNSRecordRemovals, arg.Zone, arg.RecordIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var record_id string
+		if err := rows.Scan(&record_id); err != nil {
+			return nil, err
+		}
+		items = append(items, record_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const awaitingDNSWithdrawalHold = `-- name: AwaitingDNSWithdrawalHold :one
 SELECT id FROM dns_withdrawal_holds WHERE zone = $1 AND closed_at IS NULL AND confirmed_at IS NULL
 `
@@ -126,8 +157,12 @@ func (q *Queries) CloseWithdrawnDNSWithdrawalHolds(ctx context.Context, zone str
 }
 
 const confirmDNSRecordRemovals = `-- name: ConfirmDNSRecordRemovals :exec
-UPDATE dns_record_removals SET confirmed_at=clock_timestamp()
-WHERE server_id = $1 AND name = $2 AND zone = $3 AND confirmed_at IS NULL AND NOT (record_id = ANY($4::text[]))
+WITH unsent AS (
+    DELETE FROM dns_record_removals u
+    WHERE u.server_id = $1 AND u.name = $2 AND u.zone = $3 AND u.confirmed_at IS NULL AND u.record_id = ANY($4::text[])
+)
+UPDATE dns_record_removals r SET confirmed_at=clock_timestamp()
+WHERE r.server_id = $1 AND r.name = $2 AND r.zone = $3 AND r.confirmed_at IS NULL AND NOT (r.record_id = ANY($4::text[]))
 `
 
 type ConfirmDNSRecordRemovalsParams struct {
@@ -138,7 +173,9 @@ type ConfirmDNSRecordRemovalsParams struct {
 }
 
 // unscoped: a DNS job names the server. Called once the provider lists none of these records
-// except those kept, which are still published.
+// except those kept, which are still published. An attempt to delete a kept record never took
+// effect, so its row is dropped: a DNS job takes an audited deletion to explain why a record it
+// observed is gone, and this one would explain away the record's later loss.
 func (q *Queries) ConfirmDNSRecordRemovals(ctx context.Context, arg ConfirmDNSRecordRemovalsParams) error {
 	_, err := q.db.Exec(ctx, confirmDNSRecordRemovals,
 		arg.ServerID,
@@ -229,6 +266,43 @@ func (q *Queries) CountStrandedDNSPublications(ctx context.Context, arg CountStr
 	return count, err
 }
 
+const currentDNSApproval = `-- name: CurrentDNSApproval :one
+SELECT d.generation,d.approved_controller,d.ipv4,d.ipv6,d.approved_at,d.records,d.observed_zone FROM server_domains d JOIN servers s ON s.id=d.server_id
+WHERE d.server_id = $1 AND d.base = $2 AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer
+`
+
+type CurrentDNSApprovalParams struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Base     string    `json:"base"`
+}
+
+type CurrentDNSApprovalRow struct {
+	Generation         int64       `json:"generation"`
+	ApprovedController pgtype.Int8 `json:"approved_controller"`
+	Ipv4               string      `json:"ipv4"`
+	Ipv6               string      `json:"ipv6"`
+	ApprovedAt         *time.Time  `json:"approved_at"`
+	Records            []byte      `json:"records"`
+	ObservedZone       string      `json:"observed_zone"`
+}
+
+// unscoped: a DNS job names the server. The server's address approval for the base while it is
+// current, which records there are judged against before management_inactive withdraws them.
+func (q *Queries) CurrentDNSApproval(ctx context.Context, arg CurrentDNSApprovalParams) (CurrentDNSApprovalRow, error) {
+	row := q.db.QueryRow(ctx, currentDNSApproval, arg.ServerID, arg.Base)
+	var i CurrentDNSApprovalRow
+	err := row.Scan(
+		&i.Generation,
+		&i.ApprovedController,
+		&i.Ipv4,
+		&i.Ipv6,
+		&i.ApprovedAt,
+		&i.Records,
+		&i.ObservedZone,
+	)
+	return i, err
+}
+
 const currentDNSJob = `-- name: CurrentDNSJob :one
 SELECT COALESCE(max(generation),0)::bigint AS generation,COALESCE(max(approved_controller),0)::bigint AS controller
 FROM server_domains WHERE server_id = $1
@@ -249,7 +323,7 @@ func (q *Queries) CurrentDNSJob(ctx context.Context, serverID uuid.UUID) (Curren
 }
 
 const dNSPublicationTarget = `-- name: DNSPublicationTarget :one
-SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id AS installation_id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i
+SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,d.approved_at,d.records,d.observed_zone,i.id AS installation_id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i
 WHERE d.server_id = $1 AND d.generation = $2 AND d.approved_controller = $3 AND s.controller_generation = $3
     AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base = $4
 `
@@ -262,15 +336,20 @@ type DNSPublicationTargetParams struct {
 }
 
 type DNSPublicationTargetRow struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	Base           string    `json:"base"`
-	Ipv4           string    `json:"ipv4"`
-	Ipv6           string    `json:"ipv6"`
-	InstallationID uuid.UUID `json:"installation_id"`
+	WorkspaceID    uuid.UUID  `json:"workspace_id"`
+	Base           string     `json:"base"`
+	Ipv4           string     `json:"ipv4"`
+	Ipv6           string     `json:"ipv6"`
+	ApprovedAt     *time.Time `json:"approved_at"`
+	Records        []byte     `json:"records"`
+	ObservedZone   string     `json:"observed_zone"`
+	InstallationID uuid.UUID  `json:"installation_id"`
 }
 
 // unscoped: a DNS job names the server. The addresses a job may publish: the generation it was
 // queued for, still approved under the server's current controller, in the configured base.
+// With them, when they were approved and the records the last job observed, and in which zone,
+// which the job judges the provider's records against.
 func (q *Queries) DNSPublicationTarget(ctx context.Context, arg DNSPublicationTargetParams) (DNSPublicationTargetRow, error) {
 	row := q.db.QueryRow(ctx, dNSPublicationTarget,
 		arg.ServerID,
@@ -284,6 +363,9 @@ func (q *Queries) DNSPublicationTarget(ctx context.Context, arg DNSPublicationTa
 		&i.Base,
 		&i.Ipv4,
 		&i.Ipv6,
+		&i.ApprovedAt,
+		&i.Records,
+		&i.ObservedZone,
 		&i.InstallationID,
 	)
 	return i, err
@@ -419,6 +501,37 @@ func (q *Queries) DeleteDNSPublication(ctx context.Context, arg DeleteDNSPublica
 	return err
 }
 
+const endOutdatedServerDomain = `-- name: EndOutdatedServerDomain :execrows
+UPDATE server_domains SET approved_controller=NULL,generation=generation+1,state='review_required',note = $1,observed_at=NULL,
+    records='{}',observed_zone=''
+WHERE server_id = $2 AND generation = $3 AND approved_controller = $4
+`
+
+type EndOutdatedServerDomainParams struct {
+	Note       string      `json:"note"`
+	ServerID   uuid.UUID   `json:"server_id"`
+	Generation int64       `json:"generation"`
+	Controller pgtype.Int8 `json:"controller"`
+}
+
+// unscoped: a DNS job or the zone sweep names the server, holding its DNS lock. Ends an approval
+// the provider's zone shows is older than its records, as long as it is the approval that was
+// judged, so an owner approves the addresses again. The records the last job observed are the
+// evidence the approval was ended on, so they are forgotten with it: the next approval is judged
+// by what its own jobs observe.
+func (q *Queries) EndOutdatedServerDomain(ctx context.Context, arg EndOutdatedServerDomainParams) (int64, error) {
+	result, err := q.db.Exec(ctx, endOutdatedServerDomain,
+		arg.Note,
+		arg.ServerID,
+		arg.Generation,
+		arg.Controller,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const holdDNSLease = `-- name: HoldDNSLease :execrows
 SELECT 1 FROM server_dns_leases WHERE server_id = $1 AND holder = $2 FOR UPDATE
 `
@@ -482,38 +595,41 @@ type InsertDNSWithdrawalHoldRecordsParams struct {
 	Content     string     `json:"content"`
 }
 
-const insertUnbackedDNSRecordRemoval = `-- name: InsertUnbackedDNSRecordRemoval :execrows
+const insertZoneDNSRecordRemoval = `-- name: InsertZoneDNSRecordRemoval :execrows
 INSERT INTO dns_record_removals(workspace_id,server_id,name,zone,record_id,record_type,content,reason,hold_id)
-SELECT s.workspace_id,$1,$2,$3,$4,$5,$6,'unbacked',$7::uuid
+SELECT s.workspace_id,$1,$2,$3,$4,$5,$6,$7,$8::uuid
 FROM (SELECT 1) one LEFT JOIN servers s ON s.id = $1
-WHERE (s.id IS NOT NULL) = $8::boolean
+WHERE (s.id IS NOT NULL) = $9::boolean
 ON CONFLICT(zone,record_id) DO UPDATE SET content=EXCLUDED.content,reason=EXCLUDED.reason,requested_at=EXCLUDED.requested_at,hold_id=EXCLUDED.hold_id
 WHERE dns_record_removals.confirmed_at IS NULL
 `
 
-type InsertUnbackedDNSRecordRemovalParams struct {
+type InsertZoneDNSRecordRemovalParams struct {
 	ServerID   uuid.UUID  `json:"server_id"`
 	Name       string     `json:"name"`
 	Zone       string     `json:"zone"`
 	RecordID   string     `json:"record_id"`
 	RecordType string     `json:"record_type"`
 	Content    string     `json:"content"`
+	Reason     string     `json:"reason"`
 	HoldID     *uuid.UUID `json:"hold_id"`
 	Known      bool       `json:"known"`
 }
 
 // unscoped: the zone sweep names the server. Written before the deletion is sent, for a record
-// nothing backs. The workspace is the server's, or none for a server this database has never
-// heard of; the row is written only while the server is as known or unknown as the sweep found
-// it, so a deletion is never sent for a server whose state the sweep didn't judge.
-func (q *Queries) InsertUnbackedDNSRecordRemoval(ctx context.Context, arg InsertUnbackedDNSRecordRemovalParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertUnbackedDNSRecordRemoval,
+// nothing backs, or one changed after its server's approval. The workspace is the server's, or
+// none for a server this database has never heard of; the row is written only while the server is
+// as known or unknown as the sweep found it, so a deletion is never sent for a server whose state
+// the sweep didn't judge.
+func (q *Queries) InsertZoneDNSRecordRemoval(ctx context.Context, arg InsertZoneDNSRecordRemovalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertZoneDNSRecordRemoval,
 		arg.ServerID,
 		arg.Name,
 		arg.Zone,
 		arg.RecordID,
 		arg.RecordType,
 		arg.Content,
+		arg.Reason,
 		arg.HoldID,
 		arg.Known,
 	)
@@ -646,43 +762,61 @@ func (q *Queries) MarkRevokedServersDNSPublications(ctx context.Context) error {
 }
 
 const noteWithdrawnServerDomain = `-- name: NoteWithdrawnServerDomain :exec
-UPDATE server_domains SET records='{}',observed_at=NULL,note = $1,
-    state=CASE WHEN state IN ('manual','review_required') THEN state ELSE 'pending' END
-WHERE server_id = $2 AND base = $3
+UPDATE server_domains d SET records='{}',observed_zone='',observed_at=NULL,
+    note=CASE WHEN NOT $1::boolean OR EXISTS(SELECT 1 FROM servers s WHERE s.id=d.server_id
+        AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer) THEN $2::text ELSE d.note END,
+    state=CASE WHEN d.state IN ('manual','review_required') THEN d.state ELSE 'pending' END
+WHERE d.server_id = $3 AND d.base = $4
 `
 
 type NoteWithdrawnServerDomainParams struct {
-	Note     string    `json:"note"`
-	ServerID uuid.UUID `json:"server_id"`
-	Base     string    `json:"base"`
+	WhileApproved bool      `json:"while_approved"`
+	Note          string    `json:"note"`
+	ServerID      uuid.UUID `json:"server_id"`
+	Base          string    `json:"base"`
 }
 
-// unscoped: a DNS job names the server, which establishes the workspace.
+// unscoped: a DNS job names the server, which establishes the workspace. A note that promises the
+// records back once management resumes is left only while the approval is current, which is what
+// is published again then; an ended approval keeps the note that says why it ended.
 func (q *Queries) NoteWithdrawnServerDomain(ctx context.Context, arg NoteWithdrawnServerDomainParams) error {
-	_, err := q.db.Exec(ctx, noteWithdrawnServerDomain, arg.Note, arg.ServerID, arg.Base)
+	_, err := q.db.Exec(ctx, noteWithdrawnServerDomain,
+		arg.WhileApproved,
+		arg.Note,
+		arg.ServerID,
+		arg.Base,
+	)
 	return err
 }
 
 const observeServerDomain = `-- name: ObserveServerDomain :exec
-UPDATE server_domains SET state = $1,note = $2,observed_at=clock_timestamp(),records = $3
-WHERE server_id = $4 AND generation = $5 AND approved_controller = $6
+UPDATE server_domains SET state = $1,note = $2,observed_at=clock_timestamp(),
+    records=CASE WHEN $3::boolean THEN $4::jsonb ELSE records END,
+    observed_zone=CASE WHEN $3::boolean THEN $5::text ELSE observed_zone END
+WHERE server_id = $6 AND generation = $7 AND approved_controller = $8
 `
 
 type ObserveServerDomainParams struct {
 	State      string      `json:"state"`
 	Note       string      `json:"note"`
+	Observed   bool        `json:"observed"`
 	Records    []byte      `json:"records"`
+	Zone       string      `json:"zone"`
 	ServerID   uuid.UUID   `json:"server_id"`
 	Generation int64       `json:"generation"`
 	Controller pgtype.Int8 `json:"controller"`
 }
 
-// unscoped: a DNS job names the server. Ignored once the profile has moved on.
+// unscoped: a DNS job names the server. Ignored once the profile has moved on. A job the provider
+// failed observed nothing, so the records the last job observed are kept: the next job judges the
+// zone against them.
 func (q *Queries) ObserveServerDomain(ctx context.Context, arg ObserveServerDomainParams) error {
 	_, err := q.db.Exec(ctx, observeServerDomain,
 		arg.State,
 		arg.Note,
+		arg.Observed,
 		arg.Records,
+		arg.Zone,
 		arg.ServerID,
 		arg.Generation,
 		arg.Controller,
@@ -923,7 +1057,10 @@ SELECT f.server_id::uuid AS server_id,f.base::text AS base,(s.id IS NOT NULL)::b
     (EXISTS(SELECT 1 FROM dns_publications p WHERE p.server_id=f.server_id AND p.base=f.base AND p.zone IN ('',given.zone))
         OR EXISTS(SELECT 1 FROM dns_late_publications l WHERE l.server_id=f.server_id AND l.base=f.base AND l.zone=given.zone))::boolean AS recorded,
     COALESCE(d.base=f.base AND f.base=given.configured AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer,false)::boolean AS approved,
-    COALESCE(d.generation,0)::bigint AS generation,COALESCE(d.approved_controller,0)::bigint AS controller
+    COALESCE(d.generation,0)::bigint AS generation,COALESCE(d.approved_controller,0)::bigint AS controller,
+    -- The server's last approval, when it was for this base, which records there are judged against.
+    COALESCE(d.base=f.base AND NOT s.revoked,false)::boolean AS approval_here,
+    COALESCE(d.ipv4,'')::text AS ipv4,COALESCE(d.ipv6,'')::text AS ipv6,d.approved_at
 FROM f CROSS JOIN given
 LEFT JOIN servers s ON s.id=f.server_id
 LEFT JOIN server_domains d ON d.server_id=f.server_id
@@ -938,14 +1075,18 @@ type ZoneRecordBackingParams struct {
 }
 
 type ZoneRecordBackingRow struct {
-	ServerID    uuid.UUID  `json:"server_id"`
-	Base        string     `json:"base"`
-	Known       bool       `json:"known"`
-	WorkspaceID *uuid.UUID `json:"workspace_id"`
-	Recorded    bool       `json:"recorded"`
-	Approved    bool       `json:"approved"`
-	Generation  int64      `json:"generation"`
-	Controller  int64      `json:"controller"`
+	ServerID     uuid.UUID  `json:"server_id"`
+	Base         string     `json:"base"`
+	Known        bool       `json:"known"`
+	WorkspaceID  *uuid.UUID `json:"workspace_id"`
+	Recorded     bool       `json:"recorded"`
+	Approved     bool       `json:"approved"`
+	Generation   int64      `json:"generation"`
+	Controller   int64      `json:"controller"`
+	ApprovalHere bool       `json:"approval_here"`
+	Ipv4         string     `json:"ipv4"`
+	Ipv6         string     `json:"ipv6"`
+	ApprovedAt   *time.Time `json:"approved_at"`
 }
 
 // unscoped: the zone sweep serves every workspace. For each server and base the provider's zone
@@ -975,6 +1116,10 @@ func (q *Queries) ZoneRecordBacking(ctx context.Context, arg ZoneRecordBackingPa
 			&i.Approved,
 			&i.Generation,
 			&i.Controller,
+			&i.ApprovalHere,
+			&i.Ipv4,
+			&i.Ipv6,
+			&i.ApprovedAt,
 		); err != nil {
 			return nil, err
 		}
