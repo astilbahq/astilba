@@ -17,21 +17,30 @@ import (
 )
 
 func (e *Engine) restic(ctx context.Context, in backup.Installation, dir string, args ...string) ([]byte, error) {
+	out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
+	if err := e.resticTo(ctx, in, dir, out, args...); err != nil {
+		return nil, err
+	}
+	return out.b.Bytes(), nil
+}
+
+// resticTo runs restic against the installation's repository, writing its standard output to out.
+func (e *Engine) resticTo(ctx context.Context, in backup.Installation, dir string, out io.Writer, args ...string) error {
 	cli := e.ResticCLI
 	if cli == "" {
 		cli = "restic"
 	}
 	version, err := exec.CommandContext(ctx, cli, "version").Output()
 	if err != nil || !strings.HasPrefix(string(version), "restic "+backup.ResticVersion+" ") {
-		return nil, errors.New("supported restic version required")
+		return errors.New("supported restic version required")
 	}
 	secret, err := os.MkdirTemp(e.Journal.dir, "restic-access-")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer os.RemoveAll(secret)
 	if err = os.WriteFile(filepath.Join(secret, "password"), []byte(in.Access.Password), 0600); err != nil {
-		return nil, err
+		return err
 	}
 	repo := ""
 	if in.Destination.Kind == "filesystem" {
@@ -42,13 +51,12 @@ func (e *Engine) restic(ctx context.Context, in backup.Installation, dir string,
 	cmd := exec.CommandContext(ctx, cli, append([]string{"--no-cache", "--json"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + secret, "RESTIC_REPOSITORY=" + repo, "RESTIC_PASSWORD_FILE=" + filepath.Join(secret, "password"), "AWS_ACCESS_KEY_ID=" + in.Access.AccessKey, "AWS_SECRET_ACCESS_KEY=" + in.Access.SecretKey, "AWS_DEFAULT_REGION=" + in.Destination.Region, "TMPDIR=" + secret}
-	out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
 	cmd.Stdout = out
 	cmd.Stderr = io.Discard
 	if err = cmd.Run(); err != nil {
-		return nil, errors.New("repository command failed")
+		return errors.New("repository command failed")
 	}
-	return out.b.Bytes(), nil
+	return nil
 }
 func (e *Engine) repositoryOwnership(in backup.Installation, create bool) error {
 	if backup.ValidateDestination(in.Destination, in.Access) != nil || in.Destination.ID != in.Policy.DestinationID || len(in.Access.Password) < 16 {

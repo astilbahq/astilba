@@ -33,6 +33,7 @@ func (c *Client) hearFeatures(h http.Header) {
 	c.retirement.Store(h.Get("Astilba-Agent-Retirement") == "v1")
 	c.purge.Store(h.Get("Astilba-Agent-Purge") == "v1")
 	c.schedules.Store(h.Get("Astilba-Agent-Schedules") == "v1")
+	c.recoveryRestore.Store(h.Get("Astilba-Agent-Recovery-Restore") == "v1")
 	c.replicas.Store(h.Get("Astilba-Agent-Replicas") == "v1")
 	c.crossHost.Store(h.Get("Astilba-Agent-Cross-Host") == "v1")
 	c.maintenanceContinuation.Store(h.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
@@ -135,6 +136,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.schedules.Load() {
 		v.Schedules = nil
+	}
+	if !c.recoveryRestore.Load() {
+		v.RecoveryRestore = nil
 	}
 	if !c.previews.Load() {
 		v.Previews = nil
