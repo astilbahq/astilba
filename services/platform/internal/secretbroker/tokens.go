@@ -62,17 +62,30 @@ type Tokens struct {
 
 // Tokens records the resident keys, then loads them. stage is the custody stage the running
 // release completes. Like Begin, it must not run inside a transaction.
+//
+// The access record's ID is the instance's: the installation's key history records under it each
+// token key generation the instance loads, for its whole life, with the key service's ID for each
+// unwrap. Those events are where the requests are recorded, so the record's outcome names none.
 func (b *Broker) Tokens(ctx context.Context, stage int32) (*Tokens, error) {
 	t := &Tokens{broker: b, ring: b.backend.Keyring(), instance: uuid.New(), stage: stage, wake: make(chan struct{}, 1), keys: map[int64][]byte{}, failed: map[int64]bool{}}
-	id := uuid.New()
-	if err := b.record(ctx, id, Request{Purpose: Token, Principal: System("token-keys")}, []int64{0}); err != nil {
+	if err := b.record(ctx, t.instance, Request{Purpose: Token, Principal: System("token-keys")}, []int64{0}); err != nil {
 		return nil, err
 	}
-	// The keys are now resident for this process's life, which is the record's whole story.
-	if err := b.outcome(ctx, id, Released, nil); err != nil {
-		return nil, err
+	err := t.load(ctx)
+	if err == nil {
+		// The keys are now resident for this process's life, which is the rest of the record's
+		// story.
+		err = b.outcome(ctx, t.instance, Released, nil)
+	} else if recordErr := b.outcome(ctx, t.instance, Failed, nil); recordErr != nil {
+		err = errors.Join(err, recordErr)
 	}
-	if err := t.load(ctx); err != nil {
+	if err != nil {
+		t.mu.Lock()
+		for _, key := range t.keys {
+			clear(key)
+		}
+		t.keys = nil
+		t.mu.Unlock()
 		return nil, err
 	}
 	return t, nil
@@ -147,7 +160,9 @@ func (t *Tokens) load(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-// unwrap records a token key generation's loading, then unwraps it and checks it.
+// unwrap records a token key generation's loading, then unwraps it and checks it, then records
+// how that went with the key service's ID for the request, also when it failed. A key whose
+// opening cannot be recorded is let go of, and tried again at the next load.
 func (t *Tokens) unwrap(ctx context.Context, q *db.Queries, row db.InstallationKeyWrappingsRow) ([]byte, error) {
 	b := t.broker
 	if row.Wrapped == nil {
@@ -158,12 +173,25 @@ func (t *Tokens) unwrap(ctx context.Context, q *db.Queries, row db.InstallationK
 	}
 	class, _ := custody.ClassFor(custody.ScopeToken, "token")
 	opened, err := b.backend.Unwrap(ctx, class, row.Wrapped, custody.Context{Installation: b.installation, Scope: custody.ScopeToken, Generation: row.Generation, Purpose: "token"})
+	if err == nil && !custody.CheckKey(opened.Key, row.Kcv) {
+		clear(opened.Key)
+		err = ErrKeyCheck
+	}
+	result := keyEvent{run: t.instance, kind: "token-key-opened", scope: custody.ScopeInstallation, generation: row.Generation, details: map[string]string{"key": string(custody.ScopeToken)}}
+	if err != nil {
+		result.kind, result.details["reason"] = "token-key-not-opened", err.Error()
+	}
+	if opened.ProviderRequestID != "" {
+		result.details["provider_requests"] = opened.ProviderRequestID
+	}
+	if recordErr := b.event(ctx, q, result); recordErr != nil {
+		if err == nil {
+			clear(opened.Key)
+		}
+		return nil, errors.Join(err, recordErr)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if !custody.CheckKey(opened.Key, row.Kcv) {
-		clear(opened.Key)
-		return nil, ErrKeyCheck
 	}
 	return opened.Key, nil
 }

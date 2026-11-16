@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -109,9 +110,12 @@ func Conformance(t *testing.T, b custody.Backend, o Options) {
 	t.Run("rewrap keeps the key and the context", func(t *testing.T) {
 		for _, class := range custody.Classes {
 			blob := wrap(class, base)
-			rewrapped, err := custody.Rewrap(ctx, b, class, blob, base)
+			rewrapped, ids, err := custody.Rewrap(ctx, b, class, blob, base)
 			if err != nil {
 				t.Fatalf("rewrap under %s: %v", class, err)
+			}
+			if o.RequestIDs && (len(ids) == 0 || slices.Contains(ids, "")) {
+				t.Fatalf("rewrap under %s returned provider request IDs %q", class, ids)
 			}
 			got, err := b.Unwrap(ctx, class, rewrapped, base)
 			if err != nil || !bytes.Equal(got.Key, key) {

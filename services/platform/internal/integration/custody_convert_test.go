@@ -169,7 +169,7 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	for _, s := range seeds {
 		data[s.item.Kind] = envelopeData(t, s.stored(t, f))
 	}
-	status, err := f.st.Broker.Status(ctx, f.st.Pool, uuid.Nil)
+	status, err := f.st.Broker.Status(ctx, f.st.Pool, uuid.Nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestConversionCheckCatchesLaterLegacyValues(t *testing.T) {
 	tx.Rollback(ctx)
 	// An older release, started after the stage was recorded, stores a value under the keyring.
 	asLegacy(t, f, ws, "after-stage-4")
-	status, err := f.st.Broker.Status(ctx, f.st.Pool, uuid.Nil)
+	status, err := f.st.Broker.Status(ctx, f.st.Pool, uuid.Nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

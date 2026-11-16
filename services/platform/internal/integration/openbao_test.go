@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
@@ -291,10 +292,10 @@ func TestOpenBaoPolicies(t *testing.T) {
 			t.Errorf("the operator unwraps under %s: %v", class, operatorErr)
 		}
 		// The operator moves wrappings onto a rotated key without unwrapping them.
-		if _, err = custody.Rewrap(ctx, operator, class, wrapped[class], c); err != nil {
+		if _, _, err = custody.Rewrap(ctx, operator, class, wrapped[class], c); err != nil {
 			t.Errorf("the operator rewraps under %s: %v", class, err)
 		}
-		if _, err = custody.Rewrap(ctx, serving, class, wrapped[class], c); !errors.Is(err, custody.ErrDenied) {
+		if _, _, err = custody.Rewrap(ctx, serving, class, wrapped[class], c); !errors.Is(err, custody.ErrDenied) {
 			t.Errorf("serving rewraps under %s: %v", class, err)
 		}
 	}
@@ -470,6 +471,11 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 	if err = st.Rewrap(ctx, "on-call", "PLAT-247 test"); err != nil {
 		t.Fatal(err)
 	}
+	// Converting values onto workspace keys is the operator's too, and opens their keys under
+	// rotate alone.
+	if conversion, err := ob.Convert(ctx, "on-call", "PLAT-247 test"); err != nil || conversion.Waiting != "" {
+		t.Fatalf("convert: %+v %v", conversion, err)
+	}
 	// What the operator rewrapped still opens for serving.
 	if err = secretbroker.New(db.New(pool), serving, nil).Install(ctx, pool, uuid.Nil, false); err != nil {
 		t.Fatal(err)
@@ -479,8 +485,9 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close(ctx, secretbroker.Used)
-	// The operator unwrapped only under rotate, and rewrapped everything else in place.
-	rewraps := 0
+	// The operator unwrapped only under rotate, and rewrapped everything else in place. The
+	// rotation's outcome, before the conversion's, names each rewrap's request.
+	var rewraps []string
 	for _, e := range o.audit("request") {
 		if !slices.Contains(e.Auth.Policies, "astilba-operator") {
 			continue
@@ -489,12 +496,44 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 			t.Errorf("the operator unwrapped %s", e.Request.Path)
 		}
 		if strings.HasPrefix(e.Request.Path, "astilba-transit/rewrap/") {
-			rewraps++
+			rewraps = append(rewraps, e.Request.ID)
 		}
 	}
 	// Four canaries, and the installation and token keys' wrappings: 3 and 2 purposes.
-	if rewraps != len(custody.Classes)+len(custody.Purposes(custody.ScopeInstallation))+len(custody.Purposes(custody.ScopeToken)) {
-		t.Errorf("%d rewraps", rewraps)
+	if len(rewraps) != len(custody.Classes)+len(custody.Purposes(custody.ScopeInstallation))+len(custody.Purposes(custody.ScopeToken)) {
+		t.Errorf("%d rewraps", len(rewraps))
+	}
+	if err = pool.QueryRow(ctx, `SELECT o.provider_request_ids FROM secret_access a JOIN secret_access_outcomes o ON o.access_id = a.id WHERE a.purpose='rotate' AND a.principal_kind='operator' ORDER BY a.at LIMIT 1`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(raw, &requests); err != nil || !slices.Equal(slices.Sorted(slices.Values(requests)), slices.Sorted(slices.Values(rewraps))) {
+		t.Fatalf("the rotation names %q, the audit log %q: %v", requests, rewraps, err)
+	}
+
+	// An instance's token key unwraps are each named on the event after it, as in the audit log.
+	tokens, err := b.Tokens(ctx, dbmigrate.CustodyStage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events, err = db.New(pool).InstallationKeyEvents(ctx, 1000); err != nil {
+		t.Fatal(err)
+	}
+	var opened []string
+	for _, e := range events {
+		var details map[string]string
+		if e.Kind == "token-key-opened" && e.RunID == tokens.Instance() && json.Unmarshal(e.Details, &details) == nil {
+			opened = append(opened, details["provider_requests"])
+		}
+	}
+	if len(opened) != 1 {
+		t.Fatalf("token keys opened: %q", opened)
+	}
+	found = false
+	for _, e := range o.audit("request") {
+		found = found || e.Request.ID == opened[0] && e.Request.Path == "astilba-transit/decrypt/astilba-installation"
+	}
+	if !found {
+		t.Fatalf("token key request %q is not in the audit log", opened[0])
 	}
 }
 

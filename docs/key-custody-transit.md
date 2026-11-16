@@ -5,9 +5,11 @@ By default, management keeps every workspace key wrapped under the keyring file
 token keys are wrapped instead by [OpenBao](https://openbao.org) or HashiCorp Vault Transit keys
 that never leave the key service. Each unwrap is then a request to the key service, which
 records it in its own audit log, outside management. The log shows the installation, workspace,
-key generation and purpose of each request. Management stores the key service's request ID with
+key generation and purpose of each request. Management stores the key service's request IDs with
 each [secret access record](hosting.md#operational-bounds-and-retention), so the two can be
-matched.
+matched: a session's unwraps, and a `custody rewrap`'s rewraps, on its outcome. Token keys stay
+loaded while an instance runs, so the request for each is in `custody history` instead, on the
+`token-key-opened` or `token-key-not-opened` event that follows its `token-key-loaded`.
 
 OpenBao is the reference implementation: the tests and the local stack run OpenBao 2.7. Vault
 uses the same API.

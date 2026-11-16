@@ -238,8 +238,8 @@ func CheckCanary(ctx context.Context, b Backend, class Class, installation uuid.
 	return err
 }
 
-// RewrapCanary wraps a canary's key again under the class's current key.
-func RewrapCanary(ctx context.Context, b Backend, class Class, installation uuid.UUID, blob []byte) ([]byte, error) {
+// RewrapCanary wraps a canary's key again under the class's current key, as Rewrap does.
+func RewrapCanary(ctx context.Context, b Backend, class Class, installation uuid.UUID, blob []byte) ([]byte, []string, error) {
 	return Rewrap(ctx, b, class, blob, canaryContext(installation))
 }
 
@@ -253,17 +253,28 @@ type Rewrapper interface {
 
 // Rewrap wraps a wrapped key again under the class's current key, for the same context. A rewrap
 // never changes class or context: a new key generation is a new key, made and wrapped afresh.
-// A Rewrapper's refusal is returned as it is, never retried by unwrapping and wrapping.
-func Rewrap(ctx context.Context, b Backend, class Class, blob []byte, c Context) ([]byte, error) {
+// A Rewrapper's refusal is returned as it is, never retried by unwrapping and wrapping. It also
+// returns the key service's IDs for the requests it made, including one that failed: one for a
+// Rewrapper, an unwrap's and a wrap's otherwise, and none for a backend that names none.
+func Rewrap(ctx context.Context, b Backend, class Class, blob []byte, c Context) ([]byte, []string, error) {
 	if r, ok := inner(b).(Rewrapper); ok {
-		wrapped, _, err := r.Rewrap(ctx, class, blob, c)
-		return wrapped, err
+		wrapped, id, err := r.Rewrap(ctx, class, blob, c)
+		return wrapped, requestIDs(nil, id), err
 	}
 	opened, err := b.Unwrap(ctx, class, blob, c)
+	requests := requestIDs(nil, opened.ProviderRequestID)
 	if err != nil {
-		return nil, err
+		return nil, requests, err
 	}
-	wrapped, _, err := b.Wrap(ctx, class, opened.Key, c)
+	wrapped, id, err := b.Wrap(ctx, class, opened.Key, c)
 	clear(opened.Key)
-	return wrapped, err
+	return wrapped, requestIDs(requests, id), err
+}
+
+// requestIDs adds a key service's request ID to ids, unless the backend named none.
+func requestIDs(ids []string, id string) []string {
+	if id == "" {
+		return ids
+	}
+	return append(ids, id)
 }

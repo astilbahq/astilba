@@ -418,9 +418,13 @@ func TestRewrapUsesTheKeyServiceRewrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.set("/"+DefaultTransitMount+"/decrypt/astilba-serve", status(http.StatusForbidden, "permission denied"))
-	rewrapped, err := Rewrap(t.Context(), tr, ClassServe, blob, testContext)
+	rewrapped, requests, err := Rewrap(t.Context(), tr, ClassServe, blob, testContext)
 	if err != nil || !bytes.HasPrefix(rewrapped, []byte("vault:v2:")) {
 		t.Fatalf("%q %v", rewrapped, err)
+	}
+	// The one request it made is named, so the broker can record it.
+	if len(requests) != 1 || uuid.Validate(requests[0]) != nil {
+		t.Fatalf("requests %q", requests)
 	}
 	if f.count("/"+DefaultTransitMount+"/decrypt/astilba-serve") != 0 {
 		t.Fatal("rewrap unwrapped")
@@ -445,7 +449,7 @@ func TestRewrapNeverFallsBackToUnwrapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.set("/"+DefaultTransitMount+"/rewrap/astilba-serve", status(http.StatusForbidden, "permission denied"))
-	if _, err = Rewrap(t.Context(), paired, ClassServe, blob, testContext); !errors.Is(err, ErrDenied) {
+	if _, _, err = Rewrap(t.Context(), paired, ClassServe, blob, testContext); !errors.Is(err, ErrDenied) {
 		t.Fatalf("%v", err)
 	}
 	if f.count("/"+DefaultTransitMount+"/decrypt/astilba-serve") != 0 || f.count("/"+DefaultTransitMount+"/encrypt/astilba-serve") != 1 {
