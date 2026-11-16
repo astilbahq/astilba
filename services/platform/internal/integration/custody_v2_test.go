@@ -425,7 +425,7 @@ func TestRecoveryNamesABackupOlderThanTheWorkspace(t *testing.T) {
 		t.Fatalf("recovering a workspace the backup lacks: %v", err)
 	}
 	// A capsule sealed under the key the backup lacks.
-	item := secretbroker.Item{Kind: secretbroker.BuildSecret, ID: uuid.New()}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New()}
 	sealed, err := cryptobox.SealUnder(make([]byte, 32), cryptobox.ScopeWorkspace, 1, []byte("v"), secretIdentity(keyless, item.ID))
 	if err != nil {
 		t.Fatal(err)
