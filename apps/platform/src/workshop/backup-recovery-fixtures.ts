@@ -133,10 +133,15 @@ const recovery = (
   discard: null,
 });
 
+// A discard stays running, so the row shows it pending, as after a reload. Stories share
+// handlers, so each story starts with none.
+const discards = new Map<string, Schema["BackupRecoveryRecord"]["discard"]>();
+export function resetRevokedServerBackups() {
+  discards.clear();
+}
+
 export function revokedServerBackupHandlers() {
   const policyPath = `${environmentRoot}/backup-policies/:policyId`;
-  // A discard stays running, so the row shows it pending, as after a reload.
-  const discards = new Map<string, Schema["BackupRecoveryRecord"]["discard"]>();
   const withDiscard = (r: Schema["BackupRecoveryRecord"]) => ({
     ...r,
     discard: discards.get(r.id) ?? null,

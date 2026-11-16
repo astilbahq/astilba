@@ -299,15 +299,14 @@ function RecoveryItem({
     discard.state !== "succeeded" &&
     !recovery.targetDeleted;
   const held = pending || recovery.targetDeleted;
-  // Once a discard is confirmed its button goes, so focus moves to the volume's status, which
-  // announces each change to the discard itself.
+  // The actions go once the volume is held, after this owner's discard, a refusal or another
+  // owner's discard. If focus was in this restore, its dialog included, and fell to the page with
+  // them, it moves to the volume's status, which announces each change to the discard itself.
   const volume = useRef<HTMLParagraphElement>(null);
-  const focusVolume = useRef(false);
+  const focused = useRef(false);
   useEffect(() => {
-    if (held && focusVolume.current) {
-      focusVolume.current = false;
+    if (held && focused.current && document.activeElement === document.body)
       volume.current?.focus();
-    }
   }, [held]);
   // A refusal means the server's view moved on, as when another owner started a discard.
   const refresh = () =>
@@ -316,7 +315,15 @@ function RecoveryItem({
     });
   const succeeded = recovery.state === "succeeded" && !recovery.targetDeleted;
   return (
-    <li className={s.stack}>
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Tracks focus, the portalled dialog's included; it takes no input.
+    <li
+      className={s.stack}
+      onFocus={() => (focused.current = true)}
+      // A removed control blurs to nothing, which still counts as in this restore.
+      onBlur={(event) => {
+        if (event.relatedTarget) focused.current = false;
+      }}
+    >
       <p>
         {t(($) => $.restores.item, {
           snapshot: recovery.snapshot.slice(0, 12),
@@ -327,9 +334,11 @@ function RecoveryItem({
         })}
       </p>
       {recovery.note && <p>{recovery.note}</p>}
-      {(held || failed || recovery.state === "succeeded") && (
-        <p ref={volume} tabIndex={-1} role="status" className={s.muted}>
-          {recovery.targetDeleted
+      {/* Always mounted, so a status that appears is announced like one that changes. */}
+      <p ref={volume} tabIndex={-1} role="status" className={s.muted}>
+        {!(held || failed || recovery.state === "succeeded")
+          ? null
+          : recovery.targetDeleted
             ? t(($) => $.restores.discarded)
             : pending
               ? discard.state === "needs_attention"
@@ -341,8 +350,7 @@ function RecoveryItem({
                     note: discard.note,
                   })
                 : t(($) => $.restores.target, { volume: recovery.targetId })}
-        </p>
-      )}
+      </p>
       <ErrorNotice error={action.error} />
       {owner && succeeded && !held && (
         <>
@@ -389,10 +397,8 @@ function RecoveryItem({
           <DiscardTarget
             path={p}
             recovery={recovery}
-            refresh={async (queued) => {
-              focusVolume.current = queued;
-              await refresh();
-            }}
+            action={action}
+            refresh={refresh}
           />
         </div>
       )}
@@ -403,15 +409,16 @@ function RecoveryItem({
 function DiscardTarget({
   path,
   recovery,
+  action,
   refresh,
 }: {
   path: EnvironmentPath & { policyId: string; recoveryId: string };
   recovery: Recovery;
-  /** Reloads the restores, once queued moving focus to the volume's status. */
-  refresh: (queued: boolean) => Promise<void>;
+  /** The restore's own action, so a refusal stays shown if the refetch takes this away. */
+  action: ReturnType<typeof useAction>;
+  refresh: () => Promise<void>;
 }) {
   const { t } = useTranslation("backup-recovery");
-  const action = useAction({ recentAuth: true });
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   return (
@@ -420,7 +427,10 @@ function DiscardTarget({
         ref={trigger}
         type="button"
         variant="danger"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          action.reset();
+          setOpen(true);
+        }}
       >
         {t(($) => $.restores.discard)}
       </Button>
@@ -459,11 +469,11 @@ function DiscardTarget({
                       params: { path },
                     }),
                   ).catch(async (error: unknown) => {
-                    await refresh(false);
+                    await refresh();
                     throw error;
                   });
                   setOpen(false);
-                  await refresh(true);
+                  await refresh();
                 }, trigger.current ?? event.currentTarget)
               }
             >

@@ -11,7 +11,10 @@ import {
   environmentsPath,
   projectHandlers,
 } from "../../workshop/app-preview";
-import { revokedServerBackupHandlers } from "../../workshop/backup-recovery-fixtures";
+import {
+  resetRevokedServerBackups,
+  revokedServerBackupHandlers,
+} from "../../workshop/backup-recovery-fixtures";
 import {
   draftPath,
   composeRevision,
@@ -276,6 +279,7 @@ export const Deployments: Story = {
 // A policy whose server was revoked offers its recorded snapshots for a restore onto the
 // replacement, and its destination is marked as exposed.
 export const RevokedServerBackups: Story = {
+  beforeEach: resetRevokedServerBackups,
   parameters: scenario(
     session,
     ...revokedServerBackupHandlers(),
@@ -308,9 +312,7 @@ export const RevokedServerBackups: Story = {
       await body.findByRole("button", { name: "Discard volume" }),
     );
     await waitFor(() =>
-      expect(canvasElement.ownerDocument.activeElement).toHaveTextContent(
-        "Discarding the volume.",
-      ),
+      expect(canvas.getByText(/^Discarding the volume\./)).toHaveFocus(),
     );
     await expect(
       canvas.queryByRole("button", { name: "Prepare cutover draft" }),
