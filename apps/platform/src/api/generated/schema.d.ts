@@ -1994,6 +1994,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description When management first received each snapshot the policy's reports list as available, by its own clock, newest first. A server's reported times are its own claims; these are not. */
+        get: operations["ListBackupSnapshotReceipts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover": {
         parameters: {
             query?: never;
@@ -2952,6 +2969,11 @@ export interface components {
             /** @description Immutable reservation for preview workloads. */
             previewOnly?: boolean;
             transferRequired?: boolean;
+            /**
+             * Format: date-time
+             * @description When the revocation in force began, by management's clock. Absent while the server isn't revoked, and for a revocation from before this was recorded.
+             */
+            revokedAt?: string;
             /** Format: uuid */
             id: string;
             name: string;
@@ -4648,6 +4670,14 @@ export interface components {
             manifest: components["schemas"]["BackupManifest"] | null;
             /** Format: uuid */
             targetId: string;
+        };
+        BackupSnapshotReceipt: {
+            snapshot: string;
+            /**
+             * Format: date-time
+             * @description When management first received the snapshot from an upload the policy's server reported, by management's clock.
+             */
+            firstReportedAt: string;
         };
         BackupStatus: {
             enabled: boolean;
@@ -10014,6 +10044,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BackupStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ListBackupSnapshotReceipts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSnapshotReceipt"][];
                 };
             };
             /** @description Error */
