@@ -89,7 +89,15 @@ export const RefusedDiscard: Story = {
   ),
   play: async ({ canvasElement }) => {
     const { canvas, dialog } = await discardFirstRestore(canvasElement);
-    await expect(await dialog.findByRole("alert")).toBeVisible();
+    // The refusal reads from the catalogue, and the dialog offers no second attempt.
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      "The volume can't be discarded now",
+    );
+    await waitFor(() =>
+      expect(
+        dialog.getByRole("button", { name: "Discard volume" }),
+      ).toHaveAttribute("aria-disabled", "true"),
+    );
     await expect(
       canvas.getByText(/^Discarding the volume\./),
     ).toBeInTheDocument();

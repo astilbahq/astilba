@@ -54,6 +54,7 @@
     "cancel": "Cancel",
     "discardPending": "Discarding the volume. It is deleted once the server confirms.",
     "discardFailed": "Volume {{volume}} wasn't discarded: {{note}}",
+    "discardRefused": "The volume can't be discarded now: another discard is running, it was already deleted, or a draft or deployment uses it.",
     "discardAttention": "The discard needs attention: {{note}}"
   },
   "exposed": {

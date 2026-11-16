@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { backupPolicyPath as policyRoot } from "../api/backups";
-import { client, result, type Schema } from "../api/client";
+import { ApiError, client, result, type Schema } from "../api/client";
 import { publishDraft } from "../api/environment";
 import {
   AlertDialogActions,
@@ -299,8 +299,7 @@ function RecoveryItem({
     discard.state !== "succeeded" &&
     !recovery.targetDeleted;
   const held = pending || recovery.targetDeleted;
-  // The actions go once the volume is held, after this owner's discard or cutover or another
-  // owner's discard, but an open discard dialog keeps them until it closes, so a refusal shows in
+  // The actions go once the volume is held, after this owner's or another owner's discard, but an open discard dialog keeps them until it closes, so a refusal shows in
   // it. If focus was in the actions when they went, it moves to the volume's status, which
   // announces each change to the discard itself. Focus is followed from the actions' own element,
   // as a removed control blurs to nothing.
@@ -410,6 +409,7 @@ function RecoveryItem({
             path={p}
             recovery={recovery}
             busy={action.isPending}
+            held={held}
             open={discarding}
             setOpen={(open) => {
               // Closing returns focus to the actions, even when they go in the same commit.
@@ -428,6 +428,7 @@ function DiscardTarget({
   path,
   recovery,
   busy,
+  held,
   open,
   setOpen,
   refresh,
@@ -436,6 +437,8 @@ function DiscardTarget({
   recovery: Recovery;
   /** A cutover is running, so a discard waits for it. */
   busy: boolean;
+  /** Another discard holds the volume, or it is gone, so the server refuses another. */
+  held: boolean;
   /** Owned by the restore, which keeps an open dialog while the volume becomes held. */
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -473,7 +476,15 @@ function DiscardTarget({
               volume: recovery.targetId,
             })}
           </AlertDialogDescription>
-          <ErrorNotice error={action.error} />
+          <ErrorNotice
+            error={action.error}
+            message={
+              action.error instanceof ApiError &&
+              action.error.detail.code === "conflict"
+                ? t(($) => $.restores.discardRefused)
+                : undefined
+            }
+          />
           <AlertDialogActions>
             <AlertDialogClose
               render={
@@ -487,7 +498,7 @@ function DiscardTarget({
               variant="danger"
               // Keeps focus while busy, so a refusal is read beside it.
               focusableWhenDisabled
-              disabled={action.isPending}
+              disabled={action.isPending || held}
               onClick={(event) =>
                 action.run(async () => {
                   await result(
@@ -498,8 +509,10 @@ function DiscardTarget({
                     await refresh();
                     throw error;
                   });
-                  setOpen(false);
+                  // Closed once the restore shows the discard, so neither control is offered
+                  // while it starts.
                   await refresh();
+                  setOpen(false);
                 }, trigger.current ?? event.currentTarget)
               }
             >
