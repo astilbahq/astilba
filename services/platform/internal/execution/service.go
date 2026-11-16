@@ -169,6 +169,11 @@ func serverView(row db.ListServersRow) (api.Server, error) {
 	switch {
 	case row.Revoked:
 		v.Status = "revoked"
+		// A release without the column can leave a time behind on a server it renews.
+		if row.RevokedAt != nil {
+			at := row.RevokedAt.UTC()
+			v.RevokedAt = &at
+		}
 	case v.LastSeen == nil:
 		v.Status = "pending"
 	case time.Since(*v.LastSeen) > OfflineAfter:
