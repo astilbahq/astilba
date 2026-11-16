@@ -476,6 +476,8 @@ func TestAnEndedApprovalKeepsItsNoteWhenManagementLapses(t *testing.T) {
 	endedAsOutdated(t, f, s)
 }
 
+// heldOutdated restores over a newer zone holding enough other unbacked records that the sweep
+// holds the moved server's outdated records back with them, and returns the hold.
 func heldOutdated(t *testing.T) (newerZone, zoneHold) {
 	t.Helper()
 	n := restoreOverNewerZone(t)

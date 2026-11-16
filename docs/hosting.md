@@ -801,8 +801,8 @@ comment and name. Then, for each name:
 A DNS job checks the same before it publishes, and also ends the approval when a record it last
 saw is gone without the database having deleted it, such as after a restore from a backup taken
 before the server was revoked. That needs the backup to hold the record the job last saw: one
-taken between an approval and its first publication, or while hosted management was inactive,
-holds none. The comparison can't check it, because a listing can miss a record. Removal because a hosted workspace's management is inactive checks the same first, since
+taken before the server's records were first published, or published again after its approval
+ended or its base changed, or while hosted management was inactive, holds none. The comparison can't check it, because a listing can miss a record. Removal because a hosted workspace's management is inactive checks the same first, since
 the approval is published again when management resumes. The records a job last saw are forgotten
 when the approval ends this way or its base changes, and kept when the provider fails, so a
 failed job never hides a missing record.
