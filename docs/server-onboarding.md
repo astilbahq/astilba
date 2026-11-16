@@ -52,6 +52,8 @@ A record that points at an address nobody vouches for any more is a takeover ris
 
 A server fenced by management recovery keeps its records until an owner reviews it. It is still the workspace's server, and its records are only frozen.
 
+The database can also lose track of records it made: a restore from an older backup forgets everything after it, and a crash or a request that lands late can leave a record behind. Every five minutes, and at startup, management lists the zone's records carrying this installation's ownership comment and removes those nothing in the database backs. See [hosting](hosting.md#records-the-database-has-lost).
+
 Before Astilba asks the provider to create anything, it records the name in the database. Removal lists that exact name and deletes only A/AAAA records carrying this installation's and server's ownership comment. Records anyone else created at the name, including another installation's, are left alone. Each deletion is written to an audit table before it is sent and confirmed once the provider lists the record as gone. A failed or interrupted removal keeps its database row, and is retried within about a minute until it succeeds, including after a restart.
 
 With manual DNS, Astilba creates nothing and so removes nothing: delete the server's A/AAAA records yourself when you revoke it.

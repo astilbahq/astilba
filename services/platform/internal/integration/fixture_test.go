@@ -48,6 +48,10 @@ const postgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb9
 
 var databaseURL string
 
+// testDatabase runs a command in the test database's container, as a restore test takes and
+// restores a backup there with PostgreSQL's own tools.
+var testDatabase func(args ...string) ([]byte, error)
+
 // A test's database copies this one, because migrating and checking a new database for
 // each of hundreds of fixtures costs minutes of a lane's time budget. A copy matches what
 // running the migrations again would give once setupStore replaces any value they make up.
@@ -142,6 +146,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	databaseURL = "postgres://postgres:" + password + "@" + forward.Addr() + "/postgres?sslmode=disable"
+	testDatabase = func(args ...string) ([]byte, error) {
+		return run(append([]string{"exec", name}, args...)...)
+	}
 	pool, e := pgxpool.New(context.Background(), databaseURL)
 	if e != nil {
 		cleanup()
@@ -371,15 +378,7 @@ func freshDatabase(t *testing.T) *pgxpool.Pool {
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
-	poolConfig, e := store.PoolConfig(databaseDSN(name))
-	if e != nil {
-		t.Fatal(e)
-	}
-	pool, e := pgxpool.NewWithConfig(ctx, poolConfig)
-	if e != nil {
-		t.Fatal(e)
-	}
-	t.Cleanup(pool.Close)
+	pool := openDatabase(t, name)
 	// The one value a migration makes up. Each installation has its own.
 	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)
@@ -387,17 +386,43 @@ func freshDatabase(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// openDatabase is a pool on the database name, configured as management configures its own.
+func openDatabase(t *testing.T, name string) *pgxpool.Pool {
+	t.Helper()
+	poolConfig, e := store.PoolConfig(databaseDSN(name))
+	if e != nil {
+		t.Fatal(e)
+	}
+	pool, e := pgxpool.NewWithConfig(context.Background(), poolConfig)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	t.Helper()
+	keys, _ := cryptobox.New("test")
+	return setupFixture(t, freshDatabase(t), bootstrap, hosted, keys)
+}
+
+// setupDatabase is a fixture serving the existing database name, such as one restored from a
+// backup, with the keyring of the installation it belongs to.
+func setupDatabase(t *testing.T, name string, bootstrap, hosted bool, keys *cryptobox.Keyring) *fixture {
+	t.Helper()
+	return setupFixture(t, openDatabase(t, name), bootstrap, hosted, keys)
+}
+
+func setupFixture(t *testing.T, pool *pgxpool.Pool, bootstrap, hosted bool, keys *cryptobox.Keyring) *fixture {
+	t.Helper()
 	ctx := context.Background()
-	pool := freshDatabase(t)
 	// Every coordinated phase management issued in the test is one the agent runs.
 	t.Cleanup(func() {
 		if unrun := unrunPhases(t, pool); len(unrun) > 0 {
 			t.Errorf("management issued coordinated phases the agent refuses: %v", unrun)
 		}
 	})
-	keys, _ := cryptobox.New("test")
 	st := testStore(t, pool, keys, hosted)
 	if hosted {
 		st.Hosting.ServerLimit = 100
