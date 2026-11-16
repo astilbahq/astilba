@@ -139,3 +139,27 @@ export const DiscardOutlivesAFailedReload: Story = {
     ).toBeVisible();
   },
 };
+
+// The discard starts but its reply is lost: the dialog keeps the error, and says why it offers no
+// second attempt.
+export const LostDiscardReply: Story = {
+  parameters: scenario(
+    session,
+    ...revokedServerBackupHandlers({ loseReply: true }),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const { dialog } = await discardFirstRestore(canvasElement);
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      "The platform couldn't be reached.",
+    );
+    await waitFor(() =>
+      expect(dialog.getByRole("status")).toHaveTextContent(
+        /^Discarding the volume\./,
+      ),
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Discard volume" }),
+    ).toHaveAttribute("aria-disabled", "true");
+  },
+};

@@ -145,11 +145,12 @@ export function resetRevokedServerBackups() {
 /**
  * With `refuseDiscard`, another owner's discard starts first, so the owner's own is refused.
  * With `failReload`, the reload after an accepted discard fails, and by the next one the
- * discard has already failed.
+ * discard has already failed. With `loseReply`, the discard starts but its reply is lost.
  */
 export function revokedServerBackupHandlers({
   refuseDiscard = false,
   failReload = false,
+  loseReply = false,
 } = {}) {
   const policyPath = `${environmentRoot}/backup-policies/:policyId`;
   const withDiscard = (r: Schema["BackupRecoveryRecord"]) => ({
@@ -231,6 +232,15 @@ export function revokedServerBackupHandlers({
           : { operationId: operation.id, state: "running", note: "" },
       );
       if (failReload) reloadsToFail = 1;
+      if (loseReply)
+        return HttpResponse.json(
+          {
+            code: "unavailable",
+            message: "The platform couldn't be reached.",
+            requestId: "workshop",
+          } satisfies Schema["Error"],
+          { status: 502 },
+        );
       if (refuseDiscard)
         return HttpResponse.json(
           {

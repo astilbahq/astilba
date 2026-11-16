@@ -519,9 +519,12 @@ function DiscardTarget({
               volume: recovery.targetId,
             })}
           </AlertDialogDescription>
-          {/* Always mounted, so a hold that arrives while the dialog is open is announced. */}
+          {/* Always mounted, so a hold that arrives while the dialog is open is announced, unless
+              the refusal already says why. */}
           <p role="status" className={s.muted}>
-            {held && !action.error ? status : null}
+            {held && refusal !== "discardActive" && refusal !== "volumeDeleted"
+              ? status
+              : null}
           </p>
           <ErrorNotice
             error={action.error}

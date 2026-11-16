@@ -37,10 +37,10 @@ func refused(t *testing.T, what string, got reply, field string) {
 	}
 }
 
-// A restore's volume is either cut over to or discarded. While a discard is active the volume
-// can't be switched in or discarded again, and the restore records the discard; a failed one
-// leaves it usable. A draft, or a plan prepared from it, that mounts the volume keeps it, and a
-// cutover and a discard sent together don't both succeed.
+// A restore's volume is either cut over to or discarded, on its server while the environment runs
+// there. While a discard is active the volume can't be switched in or discarded again, and the
+// restore records the discard; a failed one leaves it usable. A draft, or a plan prepared from it,
+// that mounts the volume keeps it, and a cutover and a discard sent together don't both succeed.
 func TestACutoverAndADiscardExcludeEachOther(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	l := g.lostFiles(t)
@@ -49,6 +49,17 @@ func TestACutoverAndADiscardExcludeEachOther(t *testing.T) {
 	if op, _ := g.discardOf(t, l, record.Id); op != uuid.Nil {
 		t.Fatal("a restore records a discard it never had")
 	}
+
+	// The volume is discarded on the server the restore was made on, while the environment runs there.
+	runOn := func(server uuid.UUID) {
+		t.Helper()
+		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE deployment_units SET server_id=$1 WHERE (workspace_id, environment_id) = (SELECT workspace_id, environment_id FROM backup_recoveries WHERE id=$2) AND primary_unit`, server, record.Id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runOn(l.gone.id)
+	refused(t, "a discard once the environment moved", g.discard(l, record.Id), "restore.server")
+	runOn(l.b.id)
 
 	// An active discard holds the volume, and a failed one gives it back.
 	g.hold(l.b, "visual-delete-volume")
