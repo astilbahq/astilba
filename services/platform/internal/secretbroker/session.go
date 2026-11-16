@@ -166,8 +166,9 @@ type Fence interface {
 	ShareEnvironmentKey(ctx context.Context, arg db.ShareEnvironmentKeyParams) (int64, error)
 	EnvironmentKeyForSealing(ctx context.Context, arg db.EnvironmentKeyForSealingParams) (db.EnvironmentKeyForSealingRow, error)
 	EnvironmentSealingRefused(ctx context.Context, arg db.EnvironmentSealingRefusedParams) (bool, error)
-	InsertEnvironmentKey(ctx context.Context, arg db.InsertEnvironmentKeyParams) (int64, error)
+	InsertEnvironmentKey(ctx context.Context, arg db.InsertEnvironmentKeyParams) error
 	LockEnvironmentKeyCreation(ctx context.Context, name string) error
+	HoldSecretVersionsForWriting(ctx context.Context) error
 	keyEventWriter
 	instanceCounter
 	WorkspaceHasKeys(ctx context.Context, workspaceID uuid.UUID) (bool, error)
@@ -195,7 +196,7 @@ func (s *Session) Seal(ctx context.Context, q Fence, item Item, plaintext []byte
 	}
 	toEnvironment := false
 	if item.Kind.environmental() {
-		if toEnvironment, err = sealsUnderEnvironments(ctx, q); err != nil {
+		if toEnvironment, err = storesUnderEnvironments(ctx, q); err != nil {
 			return nil, err
 		}
 	}
@@ -228,6 +229,17 @@ func (s *Session) Seal(ctx context.Context, q Fence, item Item, plaintext []byte
 	return sealed, err
 }
 
+// storesUnderEnvironments is sealsUnderEnvironments for a value q, the transaction, stores in
+// secret_versions. It takes the table's write lock first, so converting, which holds the table
+// while it counts values outside their environment's key and records stage 6, either sees this
+// value or has recorded the stage before the gate is read.
+func storesUnderEnvironments(ctx context.Context, q Fence) (bool, error) {
+	if err := q.HoldSecretVersionsForWriting(ctx); err != nil {
+		return false, err
+	}
+	return sealsUnderEnvironments(ctx, q)
+}
+
 // Rehome wraps a stored value's data key again under the generation new values are sealed under,
 // as Seal does for a new value, and leaves its data as it is. Recovery uses it, so that values it
 // restores never land under a generation that is no longer active.
@@ -256,7 +268,7 @@ func (s *Session) Rehome(ctx context.Context, q Fence, item Item, ciphertext []b
 	var environmentGeneration int64
 	toEnvironment := false
 	if item.Kind.environmental() && item.Environment != uuid.Nil {
-		if toEnvironment, err = sealsUnderEnvironments(ctx, q); err != nil {
+		if toEnvironment, err = storesUnderEnvironments(ctx, q); err != nil {
 			return nil, err
 		}
 	}
@@ -363,8 +375,7 @@ func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment u
 	if err != nil {
 		return err
 	}
-	made, err := q.InsertEnvironmentKey(ctx, db.InsertEnvironmentKeyParams{WorkspaceID: ws, EnvironmentID: environment, Generation: 1, WorkspaceGeneration: ref.generation, Wrapped: wrapped, Kcv: custody.KeyCheck(key)})
-	if err != nil || made == 0 {
+	if err = q.InsertEnvironmentKey(ctx, db.InsertEnvironmentKeyParams{WorkspaceID: ws, EnvironmentID: environment, Generation: 1, WorkspaceGeneration: ref.generation, Wrapped: wrapped, Kcv: custody.KeyCheck(key)}); err != nil {
 		return err
 	}
 	return s.broker.event(ctx, q, keyEvent{run: s.id, kind: "environment-key-created", scope: custody.ScopeWorkspace, workspace: &ws, generation: ref.generation, details: map[string]string{

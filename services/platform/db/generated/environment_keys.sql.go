@@ -157,6 +157,7 @@ const environmentSealingRefused = `-- name: EnvironmentSealingRefused :one
 SELECT (e.state IN ('purging', 'purged') OR EXISTS (
     SELECT 1 FROM environment_keys k WHERE k.workspace_id = e.workspace_id AND k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
 FROM environments e WHERE e.workspace_id = $1 AND e.id = $2
+FOR SHARE OF e
 `
 
 type EnvironmentSealingRefusedParams struct {
@@ -165,7 +166,9 @@ type EnvironmentSealingRefusedParams struct {
 }
 
 // Whether an environment of the workspace may no longer have values sealed for it: it is being
-// purged, or its key was destroyed. No row is an environment the workspace does not have.
+// purged, or its key was destroyed. No row is an environment the workspace does not have. The
+// environment is held until the transaction ends, so a purge under way is waited for and seen,
+// and a purge waits for the key made after this to be stored, then destroys it.
 func (q *Queries) EnvironmentSealingRefused(ctx context.Context, arg EnvironmentSealingRefusedParams) (bool, error) {
 	row := q.db.QueryRow(ctx, environmentSealingRefused, arg.WorkspaceID, arg.EnvironmentID)
 	var refused bool
@@ -173,10 +176,34 @@ func (q *Queries) EnvironmentSealingRefused(ctx context.Context, arg Environment
 	return refused, err
 }
 
-const insertEnvironmentKey = `-- name: InsertEnvironmentKey :execrows
+const environmentValuesOutsideTheirKeys = `-- name: EnvironmentValuesOutsideTheirKeys :one
+SELECT EXISTS (SELECT 1 FROM secret_versions WHERE encrypted_value IS NOT NULL
+    AND substring(encrypted_value FROM 1 FOR 35) IS DISTINCT FROM '\x7b2276657273696f6e223a322c2273636f7065223a22656e7669726f6e6d656e74222c'::bytea)::boolean
+`
+
+// unscoped: whether any environment value is stored outside its environment's key.
+func (q *Queries) EnvironmentValuesOutsideTheirKeys(ctx context.Context) (bool, error) {
+	row := q.db.QueryRow(ctx, environmentValuesOutsideTheirKeys)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const holdSecretVersionsForWriting = `-- name: HoldSecretVersionsForWriting :exec
+LOCK TABLE secret_versions IN ROW EXCLUSIVE MODE
+`
+
+// Takes the lock a write to secret_versions takes, before a writer reads whether to seal under
+// environment keys, so converting cannot count the values and record stage 6 between that read
+// and the value being stored.
+func (q *Queries) HoldSecretVersionsForWriting(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, holdSecretVersionsForWriting)
+	return err
+}
+
+const insertEnvironmentKey = `-- name: InsertEnvironmentKey :exec
 INSERT INTO environment_keys(workspace_id, environment_id, generation, state, workspace_generation, wrapped, kcv)
 VALUES ($1, $2, $3, 'active', $4, $5, $6)
-ON CONFLICT (workspace_id, environment_id, generation) DO NOTHING
 `
 
 type InsertEnvironmentKeyParams struct {
@@ -188,10 +215,10 @@ type InsertEnvironmentKeyParams struct {
 	Kcv                 []byte    `json:"kcv"`
 }
 
-// An environment's first key, made by whichever writer seals its first value; another made at
-// the same time is kept instead.
-func (q *Queries) InsertEnvironmentKey(ctx context.Context, arg InsertEnvironmentKeyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertEnvironmentKey,
+// An environment's first key, made by whichever writer seals its first value, while it holds
+// LockEnvironmentKeyCreation.
+func (q *Queries) InsertEnvironmentKey(ctx context.Context, arg InsertEnvironmentKeyParams) error {
+	_, err := q.db.Exec(ctx, insertEnvironmentKey,
 		arg.WorkspaceID,
 		arg.EnvironmentID,
 		arg.Generation,
@@ -199,10 +226,7 @@ func (q *Queries) InsertEnvironmentKey(ctx context.Context, arg InsertEnvironmen
 		arg.Wrapped,
 		arg.Kcv,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	return err
 }
 
 const lockEnvironmentKeyCreation = `-- name: LockEnvironmentKeyCreation :exec

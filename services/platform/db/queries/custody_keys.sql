@@ -129,6 +129,11 @@ WHERE scope = @scope AND generation = @generation AND purpose = @purpose AND bac
 SELECT count(*)::bigint FROM custody_instances i, custody_stage s
 WHERE i.seen_at > s.advanced_at AND (i.stage IS NULL OR i.stage < @stage::integer);
 
--- name: RevertCustodyStage :execrows
--- Records an installation as back at @back, from @current, once what @current says stopped being true.
+-- name: LockCustodyStage :one
+-- unscoped: the custody stage, held until the transaction ends so it is not recorded meanwhile.
+SELECT stage FROM custody_stage FOR UPDATE;
+
+-- name: RevertCustodyStage :exec
+-- Records an installation as back at @back, from @current, once what @current says stopped being
+-- true, while LockCustodyStage holds it.
 UPDATE custody_stage SET stage = @back, advanced_at = now() WHERE stage = @current;

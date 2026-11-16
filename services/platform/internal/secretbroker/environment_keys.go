@@ -62,7 +62,20 @@ func (b *Broker) correctEnvironmentsStage(ctx context.Context, startup bool) err
 		// Custody is not installed: there is no stage to correct.
 		return nil
 	}
-	q := db.New(b.pool)
+	if stage, err := db.New(b.pool).CustodyStage(ctx); err != nil || stage != sealEnvironmentsStage {
+		return err
+	}
+	tx, err := b.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(tx)
+	// Holding the stage while checking keeps converting from recording it anew in between, which
+	// the check would otherwise revert for an instance seen before it was.
+	if stage, err := q.LockCustodyStage(ctx); err != nil || stage != sealEnvironmentsStage {
+		return err
+	}
 	older, err := q.InstancesBelowStageSinceRecorded(ctx, sealEnvironmentsStage)
 	if err != nil {
 		return err
@@ -72,36 +85,21 @@ func (b *Broker) correctEnvironmentsStage(ctx context.Context, startup bool) err
 	case older > 0:
 		reason = "an instance of a release before stage 6 ran since it was recorded"
 	case startup:
-		stage, err := q.CustodyStage(ctx)
-		if err != nil || stage < sealEnvironmentsStage {
-			return err
-		}
-		counts, err := q.LegacyValueCounts(ctx)
+		outside, err := q.EnvironmentValuesOutsideTheirKeys(ctx)
 		if err != nil {
 			return err
 		}
-		var outside int64
-		for _, c := range counts {
-			outside += c.Outside
-		}
-		if outside > 0 {
-			reason = strconv.FormatInt(outside, 10) + " environment values are under their workspace's key"
+		if outside {
+			reason = "environment values are under their workspace's key"
 		}
 	}
 	if reason == "" {
 		return nil
 	}
-	tx, err := b.pool.Begin(ctx)
-	if err != nil {
+	if err = q.RevertCustodyStage(ctx, db.RevertCustodyStageParams{Back: sealEnvironmentsStage - 1, Current: sealEnvironmentsStage}); err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	tq := db.New(tx)
-	reverted, err := tq.RevertCustodyStage(ctx, db.RevertCustodyStageParams{Back: sealEnvironmentsStage - 1, Current: sealEnvironmentsStage})
-	if err != nil || reverted == 0 {
-		return err
-	}
-	if err = b.event(ctx, tq, keyEvent{run: uuid.New(), kind: "stage-reverted", reason: reason, details: map[string]string{"stage": strconv.Itoa(sealEnvironmentsStage - 1), "from": strconv.Itoa(sealEnvironmentsStage)}}); err != nil {
+	if err = b.event(ctx, q, keyEvent{run: uuid.New(), kind: "stage-reverted", reason: reason, details: map[string]string{"stage": strconv.Itoa(sealEnvironmentsStage - 1), "from": strconv.Itoa(sealEnvironmentsStage)}}); err != nil {
 		return err
 	}
 	b.log.Warn("custody stage recorded as 5 again: run `astilba custody convert`", "reason", reason)

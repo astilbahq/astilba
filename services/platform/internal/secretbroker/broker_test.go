@@ -115,14 +115,15 @@ func (f fence) EnvironmentKeyForSealing(context.Context, db.EnvironmentKeyForSea
 func (f fence) EnvironmentSealingRefused(context.Context, db.EnvironmentSealingRefusedParams) (bool, error) {
 	return f.destroyed, nil
 }
-func (f fence) InsertEnvironmentKey(context.Context, db.InsertEnvironmentKeyParams) (int64, error) {
-	return 0, errors.New("no environment keys in unit tests")
+func (f fence) InsertEnvironmentKey(context.Context, db.InsertEnvironmentKeyParams) error {
+	return errors.New("no environment keys in unit tests")
 }
 
 // InstancesBelowStage reports an older instance, so unit tests seal under the workspace key: they
 // have no environment keys.
 func (f fence) InstancesBelowStage(context.Context, int32) (int64, error) { return 1, nil }
 func (f fence) LockEnvironmentKeyCreation(context.Context, string) error  { return nil }
+func (f fence) HoldSecretVersionsForWriting(context.Context) error        { return nil }
 func (f fence) InsertInstallationKeyEvent(context.Context, db.InsertInstallationKeyEventParams) error {
 	return nil
 }

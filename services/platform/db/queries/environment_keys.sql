@@ -35,17 +35,19 @@ FOR SHARE;
 
 -- name: EnvironmentSealingRefused :one
 -- Whether an environment of the workspace may no longer have values sealed for it: it is being
--- purged, or its key was destroyed. No row is an environment the workspace does not have.
+-- purged, or its key was destroyed. No row is an environment the workspace does not have. The
+-- environment is held until the transaction ends, so a purge under way is waited for and seen,
+-- and a purge waits for the key made after this to be stored, then destroys it.
 SELECT (e.state IN ('purging', 'purged') OR EXISTS (
     SELECT 1 FROM environment_keys k WHERE k.workspace_id = e.workspace_id AND k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
-FROM environments e WHERE e.workspace_id = @workspace_id AND e.id = @environment_id;
+FROM environments e WHERE e.workspace_id = @workspace_id AND e.id = @environment_id
+FOR SHARE OF e;
 
--- name: InsertEnvironmentKey :execrows
--- An environment's first key, made by whichever writer seals its first value; another made at
--- the same time is kept instead.
+-- name: InsertEnvironmentKey :exec
+-- An environment's first key, made by whichever writer seals its first value, while it holds
+-- LockEnvironmentKeyCreation.
 INSERT INTO environment_keys(workspace_id, environment_id, generation, state, workspace_generation, wrapped, kcv)
-VALUES (@workspace_id, @environment_id, @generation, 'active', @workspace_generation, @wrapped, @kcv)
-ON CONFLICT (workspace_id, environment_id, generation) DO NOTHING;
+VALUES (@workspace_id, @environment_id, @generation, 'active', @workspace_generation, @wrapped, @kcv);
 
 -- name: LockEnvironmentKeyCreation :exec
 -- Holds the making of an environment's first key, named "environment:<workspace>:<environment>",
@@ -58,3 +60,14 @@ SELECT pg_advisory_xact_lock(hashtextextended(@name::text, 4281642306));
 -- the environment's values: a writer holds the key, then its value, so the purge takes them in the
 -- same order.
 SELECT 1 FROM environment_keys WHERE workspace_id = @workspace_id AND environment_id = @environment_id FOR UPDATE;
+
+-- name: HoldSecretVersionsForWriting :exec
+-- Takes the lock a write to secret_versions takes, before a writer reads whether to seal under
+-- environment keys, so converting cannot count the values and record stage 6 between that read
+-- and the value being stored.
+LOCK TABLE secret_versions IN ROW EXCLUSIVE MODE;
+
+-- name: EnvironmentValuesOutsideTheirKeys :one
+-- unscoped: whether any environment value is stored outside its environment's key.
+SELECT EXISTS (SELECT 1 FROM secret_versions WHERE encrypted_value IS NOT NULL
+    AND substring(encrypted_value FROM 1 FOR 35) IS DISTINCT FROM '\x7b2276657273696f6e223a322c2273636f7065223a22656e7669726f6e6d656e74222c'::bytea)::boolean;

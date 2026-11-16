@@ -690,7 +690,7 @@ func TestStageSixCorrectsItselfAfterARoundTrip(t *testing.T) {
 	if stage() != 5 || everyCopy() {
 		t.Fatal("an instance starting beside a value under a workspace key kept stage 6")
 	}
-	if reverted = keyEvents(t, f, "stage-reverted"); len(reverted) != 2 || reverted[1].Reason.String != "1 environment values are under their workspace's key" {
+	if reverted = keyEvents(t, f, "stage-reverted"); len(reverted) != 2 || reverted[1].Reason.String != "environment values are under their workspace's key" {
 		t.Fatalf("reverted events %+v", reverted)
 	}
 }
@@ -825,5 +825,132 @@ func TestEnvironmentKeysAreTheirWorkspaces(t *testing.T) {
 	}
 	if n := x.count("SELECT count(*) FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2 AND state='active'", x.ws, env.Id); n != 1 {
 		t.Fatal("purging the other workspace's environment touched the original's key")
+	}
+}
+
+// A writer making an environment's first key while a purge of it is under way waits for the purge,
+// then is refused, rather than failing on the key's guard.
+func TestAKeyMadeWhileAPurgeIsUnderWayIsRefused(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Keyless"}, 201, &env)
+	x.lifecycle(x.owner, x.prefix+"/"+env.Id.String(), "retire", "Keyless", 201)
+	purge, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer purge.Rollback(ctx)
+	pq := db.New(purge)
+	var project uuid.UUID
+	if err = purge.QueryRow(ctx, `SELECT project_id FROM environments WHERE workspace_id=$1 AND id=$2`, x.ws, env.Id).Scan(&project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pq.LockRetirementEnvironment(ctx, db.LockRetirementEnvironmentParams{WorkspaceID: x.ws, ProjectID: project, ID: env.Id}); err != nil {
+		t.Fatal(err)
+	}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}
+	keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	sealed := make(chan error, 1)
+	go func() {
+		writer, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			sealed <- err
+			return
+		}
+		defer writer.Rollback(ctx)
+		_, err = keys.Seal(ctx, db.New(writer), item, []byte("late"))
+		sealed <- err
+	}()
+	select {
+	case err := <-sealed:
+		t.Fatal("the writer did not wait for the purge", err)
+	case <-time.After(time.Second):
+	}
+	if err = pq.EraseEnvironmentSecretValues(ctx, db.EraseEnvironmentSecretValuesParams{WorkspaceID: x.ws, EnvironmentID: env.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if err = pq.SetEnvironmentPurge(ctx, db.SetEnvironmentPurgeParams{State: "purged", PurgedBy: f.owner, WorkspaceID: x.ws, ID: env.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if err = purge.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-sealed; !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+		t.Fatal("a writer beside a purge", err)
+	}
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2", x.ws, env.Id); n != 0 {
+		t.Fatal("a key was made for a purged environment")
+	}
+}
+
+// A value a writer seals under its workspace's key, beside an instance of an earlier release, is
+// counted by a conversion that records stage 6 once the instance has gone, even when the writer
+// stores it after that conversion has begun counting.
+func TestConvertCountsAValueStoredWhileItRecordsTheStage(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_stage SET stage=5`); err != nil {
+		t.Fatal(err)
+	}
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Counted"}, 201, &env)
+	var first api.SecretVersion
+	x.owner.call("POST", x.prefix+"/"+env.Id.String()+"/secrets", map[string]string{"name": "TOKEN", "value": "first"}, 201, &first)
+	older := uuid.New()
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, older); err != nil {
+		t.Fatal(err)
+	}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}
+	keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	writer, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	late, err := keys.Seal(ctx, db.New(writer), item, []byte("late"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header, err := cryptobox.ReadHeader(late); err != nil || header.Scope != cryptobox.ScopeWorkspace {
+		t.Fatalf("sealed as %+v beside an older instance %v", header, err)
+	}
+	// The instance goes before the writer stores the value.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
+		t.Fatal(err)
+	}
+	converted := make(chan secretbroker.Conversion, 1)
+	failed := make(chan error, 1)
+	go func() {
+		c, err := f.st.Broker.Convert(ctx, "operator@example.test", "stage 6")
+		failed <- err
+		converted <- c
+	}()
+	select {
+	case err := <-failed:
+		t.Fatalf("conversion did not wait for the writer: %+v %v", <-converted, err)
+	case <-time.After(time.Second):
+	}
+	if _, err = db.New(writer).InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: x.ws, SecretID: first.SecretId, ID: item.ID, EncryptedValue: late, AuthorID: f.owner}); err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-failed; err != nil {
+		t.Fatal(err)
+	}
+	if c := <-converted; c.Stage != 5 || c.Waiting == "" {
+		t.Fatalf("recorded beside a value under its workspace's key: %+v", c)
 	}
 }

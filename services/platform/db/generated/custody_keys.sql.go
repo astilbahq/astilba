@@ -297,6 +297,18 @@ func (q *Queries) KeyProgress(ctx context.Context) (KeyProgressRow, error) {
 	return i, err
 }
 
+const lockCustodyStage = `-- name: LockCustodyStage :one
+SELECT stage FROM custody_stage FOR UPDATE
+`
+
+// unscoped: the custody stage, held until the transaction ends so it is not recorded meanwhile.
+func (q *Queries) LockCustodyStage(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, lockCustodyStage)
+	var stage int32
+	err := row.Scan(&stage)
+	return stage, err
+}
+
 const pruneCustodyInstances = `-- name: PruneCustodyInstances :exec
 DELETE FROM custody_instances WHERE seen_at < now() - interval '1 day'
 `
@@ -325,7 +337,7 @@ func (q *Queries) RecordCustodyInstance(ctx context.Context, arg RecordCustodyIn
 	return err
 }
 
-const revertCustodyStage = `-- name: RevertCustodyStage :execrows
+const revertCustodyStage = `-- name: RevertCustodyStage :exec
 UPDATE custody_stage SET stage = $1, advanced_at = now() WHERE stage = $2
 `
 
@@ -334,13 +346,11 @@ type RevertCustodyStageParams struct {
 	Current int32 `json:"current"`
 }
 
-// Records an installation as back at @back, from @current, once what @current says stopped being true.
-func (q *Queries) RevertCustodyStage(ctx context.Context, arg RevertCustodyStageParams) (int64, error) {
-	result, err := q.db.Exec(ctx, revertCustodyStage, arg.Back, arg.Current)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Records an installation as back at @back, from @current, once what @current says stopped being
+// true, while LockCustodyStage holds it.
+func (q *Queries) RevertCustodyStage(ctx context.Context, arg RevertCustodyStageParams) error {
+	_, err := q.db.Exec(ctx, revertCustodyStage, arg.Back, arg.Current)
+	return err
 }
 
 const rewrapInstallationKeyWrapping = `-- name: RewrapInstallationKeyWrapping :execrows
