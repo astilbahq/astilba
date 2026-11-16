@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const claimExpiryNotice = `-- name: ClaimExpiryNotice :one
@@ -169,6 +170,27 @@ func (q *Queries) GrantHostedManagement(ctx context.Context, arg GrantHostedMana
 	return result.RowsAffected(), nil
 }
 
+const heldSubscription = `-- name: HeldSubscription :one
+SELECT s.subscription_id,s.status,COALESCE(NOT c.completed,false)::boolean AS checkout_open
+FROM hosted_subscriptions s LEFT JOIN hosted_checkouts c USING(workspace_id)
+WHERE s.workspace_id = $1
+`
+
+type HeldSubscriptionRow struct {
+	SubscriptionID pgtype.Text `json:"subscription_id"`
+	Status         string      `json:"status"`
+	CheckoutOpen   bool        `json:"checkout_open"`
+}
+
+// checkout_open: a checkout intent not yet completed, which could still be applied however
+// long ago it expired, since a session completed in time can be delivered later.
+func (q *Queries) HeldSubscription(ctx context.Context, workspaceID uuid.UUID) (HeldSubscriptionRow, error) {
+	row := q.db.QueryRow(ctx, heldSubscription, workspaceID)
+	var i HeldSubscriptionRow
+	err := row.Scan(&i.SubscriptionID, &i.Status, &i.CheckoutOpen)
+	return i, err
+}
+
 const hostedCohortSize = `-- name: HostedCohortSize :one
 SELECT ((SELECT count(*) FROM workspaces)+(SELECT count(*) FROM hosted_invitations WHERE claimed_at IS NULL))::bigint AS size
 `
@@ -214,6 +236,18 @@ func (q *Queries) HostedInvitationOpen(ctx context.Context, arg HostedInvitation
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const hostedWorkspaceOfCustomer = `-- name: HostedWorkspaceOfCustomer :one
+SELECT workspace_id FROM hosted_subscriptions WHERE customer_id = $1
+`
+
+// unscoped: a Stripe invoice event names only the customer, and each workspace has its own.
+func (q *Queries) HostedWorkspaceOfCustomer(ctx context.Context, customerID pgtype.Text) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, hostedWorkspaceOfCustomer, customerID)
+	var workspace_id uuid.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
 }
 
 const insertHostedInvitation = `-- name: InsertHostedInvitation :exec

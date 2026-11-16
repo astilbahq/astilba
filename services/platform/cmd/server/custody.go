@@ -24,7 +24,7 @@ import (
 // each key it makes.
 func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st *store.Store, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: astilba custody status|history|rewrap|init-keys")
+		return errors.New("usage: astilba custody status|history|rewrap|init-keys|convert")
 	}
 	switch args[0] {
 	case "status":
@@ -74,6 +74,26 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 			return err
 		}
 		return st.Rewrap(ctx, *operator, *reason)
+	case "convert":
+		f := flag.NewFlagSet("custody convert", flag.ContinueOnError)
+		operator := f.String("operator", "", "who runs the conversion, kept in the installation's key history")
+		reason := f.String("reason", "", "why, kept with it")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if err := c.RequirePinnedInstallation(); err != nil {
+			return err
+		}
+		if err := st.Broker.Install(ctx, pool, c.InstallationID, true); err != nil {
+			return err
+		}
+		result, err := st.Broker.Convert(ctx, *operator, *reason)
+		printConversion(os.Stdout, result)
+		if err == nil && result.Waiting != "" {
+			// A run that left something to do is not done, whatever it moved.
+			return errors.New("conversion is not complete")
+		}
+		return err
 	case "init-keys":
 		// `serve` does the same in the background; this runs it to the end, and is safe to run
 		// beside it.
@@ -102,7 +122,7 @@ func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st
 			}
 		}
 	}
-	return errors.New("usage: astilba custody status|history|rewrap|init-keys")
+	return errors.New("usage: astilba custody status|history|rewrap|init-keys|convert")
 }
 
 func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {
@@ -125,6 +145,10 @@ func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {
 	fmt.Fprintf(w, "canaries       %s\n", strings.Join(states, ", "))
 	fmt.Fprintf(w, "custody stage  %d\n", s.Stage)
 	fmt.Fprintf(w, "keys           %d of %d workspaces, installation key %s, token key %s\n", s.Keys.WithKeys, s.Keys.Workspaces, keyState(s.Keys.Installation), keyState(s.Keys.Token))
+	fmt.Fprintf(w, "under keyring  %s\n", legacyValues(s.Legacy))
+	if s.Stage < 4 {
+		fmt.Fprintf(w, "stored values  %d, which recording stage 4 reads while writes to them wait\n", storedValues(s.Legacy))
+	}
 	pending := s.Pending()
 	if len(pending) == 0 {
 		fmt.Fprintln(w, "pending        none")
@@ -144,4 +168,52 @@ func keyState(present bool) string {
 		return "present"
 	}
 	return "missing"
+}
+
+// legacyValues lists how many values of each kind are still sealed under the installation keyring.
+func legacyValues(counts []db.LegacyValueCountsRow) string {
+	var parts []string
+	for _, c := range counts {
+		if c.Remaining > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c.Remaining, c.Kind))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// storedValues is how many sealed values the installation stores, of every kind.
+func storedValues(counts []db.LegacyValueCountsRow) (n int64) {
+	for _, c := range counts {
+		n += c.Stored
+	}
+	return n
+}
+
+// printConversion prints what a run did, and only what it found out: nothing for a run refused
+// before it started, and no counts or stage for one that failed before reading them.
+func printConversion(w io.Writer, c secretbroker.Conversion) {
+	if c.Holders == 0 && c.Counts == nil {
+		return
+	}
+	fmt.Fprintf(w, "run            %s\n", c.Run)
+	fmt.Fprintf(w, "converted      %d values across %d holders\n", c.Values, c.Holders)
+	if c.Raced > 0 {
+		fmt.Fprintf(w, "changed        %d values changed while converting and were kept; run it again to convert them\n", c.Raced)
+	}
+	for _, s := range c.Skipped {
+		fmt.Fprintf(w, "skipped        %s\n", s)
+	}
+	if c.Counts != nil {
+		fmt.Fprintf(w, "under keyring  %s\n", legacyValues(c.Counts))
+		fmt.Fprintf(w, "stored values  %d\n", storedValues(c.Counts))
+	}
+	if c.Stage > 0 {
+		fmt.Fprintf(w, "custody stage  %d\n", c.Stage)
+	}
+	if c.Waiting != "" {
+		fmt.Fprintf(w, "not complete   %s\n", c.Waiting)
+	}
 }
