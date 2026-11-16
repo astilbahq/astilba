@@ -175,15 +175,15 @@ func (b *Broker) begin(ctx context.Context, r Request, rule rule) (*Session, err
 	}
 	if err = ctx.Err(); err != nil {
 		// The record is written, so it ends now rather than being swept as abandoned later.
-		b.outcome(ctx, id, Refused)
+		b.outcome(ctx, id, Refused, nil)
 		return nil, err
 	}
-	keys, sealing, err := b.unwrap(ctx, held, r.Workspace, string(r.Purpose))
+	keys, sealing, requests, err := b.unwrap(ctx, held, r.Workspace, string(r.Purpose))
 	if err != nil {
-		b.outcome(ctx, id, Failed)
+		b.outcome(ctx, id, Failed, requests)
 		return nil, err
 	}
-	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: keys, sealing: sealing, keyless: held.keyless, environments: held.environments}
+	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: keys, sealing: sealing, keyless: held.keyless, environments: held.environments, requests: requests}
 	b.log.Info("secret access", "access", id, "workspace", r.Workspace, "purpose", r.Purpose, "principal", r.Principal.Kind, "items", len(r.Items), "kinds", len(r.Kinds), "backend", b.backend.ID())
 	return s, nil
 }
@@ -302,10 +302,19 @@ func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request, held []int
 // optionalText is an empty string as NULL.
 func optionalText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
 
-func (b *Broker) outcome(ctx context.Context, id uuid.UUID, outcome Outcome) error {
+// outcome records how an access ended, with the key service's IDs for the requests its keys took,
+// so each can be found in the provider's own audit log.
+func (b *Broker) outcome(ctx context.Context, id uuid.UUID, outcome Outcome, requests []string) error {
+	if requests == nil {
+		requests = []string{}
+	}
+	ids, err := stablejson.Marshal(requests)
+	if err != nil {
+		return err
+	}
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	return b.q.InsertSecretAccessOutcome(write, db.InsertSecretAccessOutcomeParams{AccessID: id, Outcome: string(outcome), ProviderRequestIds: []byte("[]")})
+	return b.q.InsertSecretAccessOutcome(write, db.InsertSecretAccessOutcomeParams{AccessID: id, Outcome: string(outcome), ProviderRequestIds: ids})
 }
 
 // Sweep records as abandoned every access whose session must have ended without saying how.

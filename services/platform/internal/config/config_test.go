@@ -233,7 +233,8 @@ func TestCustodyConfiguration(t *testing.T) {
 		t.Fatalf("defaults: %+v %v", c, err)
 	}
 	for _, bad := range []struct{ name, value string }{
-		{"ASTILBA_KEY_BACKEND", "transit"},
+		{"ASTILBA_KEY_BACKEND", "transit"}, // without its address
+		{"ASTILBA_KEY_BACKEND", "awskms"},
 		{"ASTILBA_INSTALLATION_ID", "not-a-uuid"},
 		{"ASTILBA_INSTALLATION_ID", uuid.Nil.String()},
 	} {
@@ -252,6 +253,46 @@ func TestCustodyConfiguration(t *testing.T) {
 	t.Setenv("ASTILBA_KEYRING", "")
 	if _, err = Load(); err == nil {
 		t.Fatal("no keyring accepted")
+	}
+}
+
+func TestTransitConfiguration(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_HOSTED", "false")
+	t.Setenv("ASTILBA_KEY_BACKEND", "transit")
+	clean := map[string]string{"ASTILBA_TRANSIT_ADDR": "https://bao.internal:8200", "ASTILBA_TRANSIT_ROLE_ID_FILE": "/run/astilba/role-id", "ASTILBA_TRANSIT_SECRET_ID_FILE": "/run/astilba/secret-id"}
+	for _, name := range []string{"ASTILBA_TRANSIT_MOUNT", "ASTILBA_TRANSIT_NAMESPACE", "ASTILBA_TRANSIT_CA_FILE", "ASTILBA_TRANSIT_AUTH", "ASTILBA_TRANSIT_AUTH_MOUNT", "ASTILBA_TRANSIT_JWT_FILE", "ASTILBA_TRANSIT_JWT_ROLE", "ASTILBA_TRANSIT_TOKEN", "ASTILBA_TRANSIT_SECRET_ID", "ASTILBA_TRANSIT_ROLE_ID", "VAULT_TOKEN", "BAO_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	for name, value := range clean {
+		t.Setenv(name, value)
+	}
+	c, err := Load()
+	if err != nil || c.KeyBackend != "transit" || c.Transit.Auth != "approle" || c.Transit.Address != clean["ASTILBA_TRANSIT_ADDR"] || c.Transit.SecretIDFile != clean["ASTILBA_TRANSIT_SECRET_ID_FILE"] {
+		t.Fatalf("approle: %+v %v", c.Transit, err)
+	}
+	for _, bad := range [][2]string{
+		{"ASTILBA_TRANSIT_ADDR", ""},
+		// A credential in the environment is refused, never used.
+		{"ASTILBA_TRANSIT_SECRET_ID", "s.123"},
+		{"VAULT_TOKEN", "hvs.123"},
+		{"BAO_TOKEN", "s.123"},
+	} {
+		t.Run(bad[0]+"="+bad[1], func(t *testing.T) {
+			t.Setenv(bad[0], bad[1])
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+	t.Setenv("ASTILBA_TRANSIT_AUTH", "jwt")
+	t.Setenv("ASTILBA_TRANSIT_ROLE_ID_FILE", "")
+	t.Setenv("ASTILBA_TRANSIT_SECRET_ID_FILE", "")
+	t.Setenv("ASTILBA_TRANSIT_JWT_FILE", "/var/run/secrets/astilba/token")
+	t.Setenv("ASTILBA_TRANSIT_JWT_ROLE", "astilba-serving")
+	if c, err = Load(); err != nil || c.Transit.Auth != "jwt" || c.Transit.JWTRole != "astilba-serving" || c.Transit.JWTFile != "/var/run/secrets/astilba/token" {
+		t.Fatalf("jwt: %+v %v", c.Transit, err)
 	}
 }
 

@@ -24,7 +24,12 @@ const vmFlags = [
 ];
 // The VM ports the tunnel reaches. The agent's management origin is fixed here, so a
 // different `--port` on the Mac doesn't change what the enrolled agent recorded.
-export const vmPorts = { postgres: 5432, ingress: 80, management: 9443 };
+export const vmPorts = {
+  postgres: 5432,
+  ingress: 80,
+  management: 9443,
+  openbao: 8200,
+};
 export const agentOrigin = `https://localhost:${vmPorts.management}`;
 export const backupRoot = "/var/lib/astilba-dev-backups";
 // Creating a VM downloads its image the first time.
@@ -143,7 +148,8 @@ export function devHost({ profile, owner, root, run }) {
     },
     // One SSH connection, independent of Lima's own control connection, carrying the
     // database and routes to Mac loopback and the agent's management link into the VM's.
-    tunnel({ config, alias, databasePort, ingressPort, proxyPort }) {
+    // With --custody=openbao it also carries the key service, for management and its commands.
+    tunnel({ config, alias, databasePort, ingressPort, proxyPort, openBaoPort }) {
       return [
         "-F",
         config,
@@ -166,6 +172,9 @@ export function devHost({ profile, owner, root, run }) {
         `127.0.0.1:${ingressPort}:127.0.0.1:${vmPorts.ingress}`,
         "-R",
         `127.0.0.1:${vmPorts.management}:127.0.0.1:${proxyPort}`,
+        ...(openBaoPort
+          ? ["-L", `127.0.0.1:${openBaoPort}:127.0.0.1:${vmPorts.openbao}`]
+          : []),
         alias,
       ];
     },

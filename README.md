@@ -25,6 +25,7 @@ The management application and host agent are fully self-hostable, without an As
 - [Resource history](docs/operational-visibility.md) and [operational alerts](docs/operational-alerts.md)
 - [Self-hosting, management backup and controller transfer](docs/hosting.md)
 - [Management backups](docs/management-backups.md) and [upgrades](docs/management-upgrades.md)
+- [Key custody with OpenBao or Vault Transit](docs/key-custody-transit.md)
 
 - [Product brief](docs/platform-product-brief.md)
 - [Architecture](docs/platform-architecture.md)

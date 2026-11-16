@@ -69,6 +69,9 @@ type Session struct {
 	environments map[environmentRef]*environmentKey
 	// sealed are the checkpoints a seal session sealed, the only values it opens.
 	sealed map[[sha256.Size]byte]bool
+	// requests are the key service's IDs for the unwraps that gave the session its keys, and for
+	// a rotation's rewraps.
+	requests []string
 }
 
 // Live reports whether the session can still be used.
@@ -323,6 +326,13 @@ func (s *Session) markStale() {
 	s.mu.Unlock()
 }
 
+// took adds the key service's IDs for requests the session made after it began.
+func (s *Session) took(requests []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = append(s.requests, requests...)
+}
+
 // Close lets go of the keys and records how the session ended. Only the first call records.
 func (s *Session) Close(ctx context.Context, outcome Outcome) {
 	s.mu.Lock()
@@ -336,11 +346,12 @@ func (s *Session) Close(ctx context.Context, outcome Outcome) {
 		clear(k.opened)
 	}
 	s.environments = nil
+	requests := s.requests
 	s.mu.Unlock()
 	if !open {
 		return
 	}
-	if err := s.broker.outcome(ctx, s.id, outcome); err != nil {
+	if err := s.broker.outcome(ctx, s.id, outcome, requests); err != nil {
 		// The sweep records it as abandoned instead.
 		s.broker.log.Error("secret access outcome not recorded", "access", s.id, "error", err.Error())
 		return
