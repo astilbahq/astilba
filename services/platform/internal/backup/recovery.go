@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"time"
 
@@ -53,7 +54,25 @@ func (Recovery) Lifetime() time.Duration { return max(commandLifetime, RestoreTi
 // for, before anything is downloaded or created for it.
 func (r Recovery) Admits(m Manifest) error {
 	p := r.Installation.Policy
-	if m.Recipe != Recipe || m.PolicyID != p.ID || m.EnvironmentID != p.EnvironmentID || m.ResourceID != p.ResourceID || m.Method != p.Method || m.RunID == uuid.Nil {
+	if m.PolicyID != p.ID || m.EnvironmentID != p.EnvironmentID || m.ResourceID != p.ResourceID || m.Method != p.Method {
+		return errors.New("snapshot was not written for this policy")
+	}
+	return m.recipeBounded()
+}
+
+// ParseRecoveryResult reads a recorded restore's result, which must name the restore's own
+// snapshot and target and hold a manifest of its policy and environment within the recipe's bounds.
+func ParseRecoveryResult(raw []byte, policy, environment uuid.UUID, snapshot string, target uuid.UUID) (RecoveryResult, error) {
+	var out RecoveryResult
+	if json.Unmarshal(raw, &out) != nil || out.Snapshot != snapshot || out.TargetID != target || out.Manifest.PolicyID != policy || out.Manifest.EnvironmentID != environment {
+		return out, errors.New("invalid restore result")
+	}
+	return out, out.Manifest.recipeBounded()
+}
+
+// recipeBounded checks what a manifest holds against what the recipe writes.
+func (m Manifest) recipeBounded() error {
+	if m.Recipe != Recipe || m.RunID == uuid.Nil {
 		return errors.New("snapshot was not written for this policy")
 	}
 	if m.Bytes <= 0 || m.Bytes > 1<<40 || !SnapshotID(m.SHA256) {

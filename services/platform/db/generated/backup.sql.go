@@ -373,6 +373,28 @@ func (q *Queries) DisableEnvironmentBackupPolicies(ctx context.Context, arg Disa
 	return err
 }
 
+const finishUndeliveredRecovery = `-- name: FinishUndeliveredRecovery :exec
+UPDATE execution_operations SET state = $1, note = $2::text || CASE WHEN note <> '' THEN ' ' || note ELSE '' END
+WHERE workspace_id = $3 AND id = $4
+`
+
+type FinishUndeliveredRecoveryParams struct {
+	State       string    `json:"state"`
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) FinishUndeliveredRecovery(ctx context.Context, arg FinishUndeliveredRecoveryParams) error {
+	_, err := q.db.Exec(ctx, finishUndeliveredRecovery,
+		arg.State,
+		arg.Note,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const insertBackupCutover = `-- name: InsertBackupCutover :exec
 INSERT INTO backup_cutovers(workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration)
 VALUES($1,$2,$3,$4,$5,$6)
@@ -673,6 +695,41 @@ func (q *Queries) LockCoordinatedBackupPolicy(ctx context.Context, arg LockCoord
 	return i, err
 }
 
+const lockRecoveryDelivery = `-- name: LockRecoveryDelivery :one
+SELECT o.command,o.state,o.cancel_requested,(o.report_sequence > 0 OR EXISTS(
+    SELECT 1 FROM secret_releases r WHERE r.workspace_id = o.workspace_id AND r.operation_id = o.id))::boolean AS held
+FROM execution_operations o
+WHERE o.workspace_id = $1 AND o.id = $2 AND o.server_id = $3 AND o.kind = 'restore'
+FOR UPDATE OF o
+`
+
+type LockRecoveryDeliveryParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type LockRecoveryDeliveryRow struct {
+	Command         []byte `json:"command"`
+	State           string `json:"state"`
+	CancelRequested bool   `json:"cancel_requested"`
+	Held            bool   `json:"held"`
+}
+
+// A restore of the polling server, locked to decide its delivery. Held is whether an agent may
+// have it: its values were released to one, or it reported.
+func (q *Queries) LockRecoveryDelivery(ctx context.Context, arg LockRecoveryDeliveryParams) (LockRecoveryDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, lockRecoveryDelivery, arg.WorkspaceID, arg.ID, arg.ServerID)
+	var i LockRecoveryDeliveryRow
+	err := row.Scan(
+		&i.Command,
+		&i.State,
+		&i.CancelRequested,
+		&i.Held,
+	)
+	return i, err
+}
+
 const operationCommandByRequestKey = `-- name: OperationCommandByRequestKey :one
 SELECT command FROM execution_operations WHERE workspace_id = $1 AND request_key = $2
 `
@@ -689,29 +746,20 @@ func (q *Queries) OperationCommandByRequestKey(ctx context.Context, arg Operatio
 	return command, err
 }
 
-const recordBackupRecoveryResult = `-- name: RecordBackupRecoveryResult :execrows
-UPDATE backup_recoveries SET result = $1
-WHERE workspace_id = $2 AND operation_id = $3 AND server_id = $4 AND result IS NULL
+const recordBackupRecoveryResult = `-- name: RecordBackupRecoveryResult :exec
+UPDATE backup_recoveries SET result = $1 WHERE workspace_id = $2 AND operation_id = $3
 `
 
 type RecordBackupRecoveryResultParams struct {
 	Result      []byte    `json:"result"`
 	WorkspaceID uuid.UUID `json:"workspace_id"`
 	OperationID uuid.UUID `json:"operation_id"`
-	ServerID    uuid.UUID `json:"server_id"`
 }
 
-func (q *Queries) RecordBackupRecoveryResult(ctx context.Context, arg RecordBackupRecoveryResultParams) (int64, error) {
-	result, err := q.db.Exec(ctx, recordBackupRecoveryResult,
-		arg.Result,
-		arg.WorkspaceID,
-		arg.OperationID,
-		arg.ServerID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Reports stop once the operation is terminal, so the succeeded report is the only writer.
+func (q *Queries) RecordBackupRecoveryResult(ctx context.Context, arg RecordBackupRecoveryResultParams) error {
+	_, err := q.db.Exec(ctx, recordBackupRecoveryResult, arg.Result, arg.WorkspaceID, arg.OperationID)
+	return err
 }
 
 const recordBackupSnapshotReceipts = `-- name: RecordBackupSnapshotReceipts :exec

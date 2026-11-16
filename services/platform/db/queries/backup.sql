@@ -146,9 +146,22 @@ JOIN backup_policies p ON p.workspace_id = r.workspace_id AND p.environment_id =
 WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.id = @id
 AND r.operation_id = @operation_id AND r.server_id = @server_id AND r.policy_id = @policy_id;
 
--- name: RecordBackupRecoveryResult :execrows
-UPDATE backup_recoveries SET result = @result
-WHERE workspace_id = @workspace_id AND operation_id = @operation_id AND server_id = @server_id AND result IS NULL;
+-- name: RecordBackupRecoveryResult :exec
+-- Reports stop once the operation is terminal, so the succeeded report is the only writer.
+UPDATE backup_recoveries SET result = @result WHERE workspace_id = @workspace_id AND operation_id = @operation_id;
+
+-- name: LockRecoveryDelivery :one
+-- A restore of the polling server, locked to decide its delivery. Held is whether an agent may
+-- have it: its values were released to one, or it reported.
+SELECT o.command,o.state,o.cancel_requested,(o.report_sequence > 0 OR EXISTS(
+    SELECT 1 FROM secret_releases r WHERE r.workspace_id = o.workspace_id AND r.operation_id = o.id))::boolean AS held
+FROM execution_operations o
+WHERE o.workspace_id = @workspace_id AND o.id = @id AND o.server_id = @server_id AND o.kind = 'restore'
+FOR UPDATE OF o;
+
+-- name: FinishUndeliveredRecovery :exec
+UPDATE execution_operations SET state = @state, note = @note::text || CASE WHEN note <> '' THEN ' ' || note ELSE '' END
+WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ListBackupRecoveries :many
 SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note

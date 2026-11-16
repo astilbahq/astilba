@@ -118,9 +118,9 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 			}
 			c.CancelRequested = cancel
-			// A stop carries no values. Hydration finishes a pipeline no runner holds, and adds no
-			// credentials to one it might.
-			if cancel && c.Kind != "pipeline" {
+			// A stop carries no values. Hydration finishes a pipeline or restore no agent holds, and
+			// adds no credentials to one it might.
+			if cancel && c.Kind != "pipeline" && c.Kind != "restore" {
 				return &c, nil
 			}
 			if carriesValues(c) {

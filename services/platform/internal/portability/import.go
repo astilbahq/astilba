@@ -176,8 +176,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			if _, found := domain.NULField(row, ""); found {
 				return archive, ErrArchive
 			}
-			if table.Name == "backup_policies" {
+			switch table.Name {
+			case "backup_policies":
 				if _, e = backup.ParseReceipts(row["snapshot_receipts"]); e != nil {
+					return archive, ErrArchive
+				}
+			case "backup_recoveries":
+				if e = checkRecoveryResult(row); e != nil {
 					return archive, ErrArchive
 				}
 			}

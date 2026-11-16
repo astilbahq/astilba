@@ -28,12 +28,6 @@ import (
 func (s *Service) StartBackupRecovery(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.BackupRecoveryRequest) (api.Operation, error) {
 	var out api.Operation
 	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: true}, "backup.recovery.start", id, func(tx pgx.Tx) error {
-		if !in.Acknowledged {
-			return domain.Invalid("acknowledged")
-		}
-		if !backup.SnapshotID(in.Snapshot) {
-			return domain.Invalid("snapshot")
-		}
 		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
 		if err != nil {
 			return err
@@ -78,9 +72,6 @@ func (s *Service) StartBackupRecovery(ctx context.Context, p store.Principal, ws
 			return err
 		}
 		if err = requireRecoveryRestore(ctx, tx, ws, server); err != nil {
-			return err
-		}
-		if err = noActiveUpgrade(ctx, tx, server); err != nil {
 			return err
 		}
 		raw, err := db.New(tx).BackupDestinationConfiguration(ctx, db.BackupDestinationConfigurationParams{WorkspaceID: ws, ID: source.DestinationID})
@@ -149,7 +140,7 @@ func (s *Service) StartBackupRecovery(ctx context.Context, p store.Principal, ws
 		if out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c); err != nil {
 			return err
 		}
-		return db.New(tx).InsertBackupRecovery(ctx, db.InsertBackupRecoveryParams{ID: r.RunID, WorkspaceID: ws, EnvironmentID: env, PolicyID: id, OperationID: out.Id, SourceServerID: source.ServerID, ServerID: server, PlanID: plan.ID, Snapshot: in.Snapshot, FirstReportedAt: reported, TargetVolumeID: r.TargetID, CreatedAt: out.CreatedAt})
+		return db.New(tx).InsertBackupRecovery(ctx, db.InsertBackupRecoveryParams{ID: r.RunID, WorkspaceID: ws, EnvironmentID: env, PolicyID: id, OperationID: out.Id, SourceServerID: source.ServerID, ServerID: server, PlanID: planID, Snapshot: in.Snapshot, FirstReportedAt: reported, TargetVolumeID: r.TargetID, CreatedAt: out.CreatedAt})
 	})
 	return operationFor(p, out), err
 }
@@ -180,16 +171,22 @@ func requireRecoveredResource(source backup.Policy, spec domain.Specification) e
 }
 
 func requireRecoveryRestore(ctx context.Context, q db.DBTX, ws, server uuid.UUID) error {
+	able, err := canRestoreRecovery(ctx, q, ws, server)
+	if err == nil && !able {
+		err = domain.Invalid("server.capabilities.recoveryRestore")
+	}
+	return err
+}
+
+// canRestoreRecovery reports whether a server's agent advertises the restore kind. One without it
+// would hold the command unsettled.
+func canRestoreRecovery(ctx context.Context, q db.DBTX, ws, server uuid.UUID) (bool, error) {
 	raw, err := db.New(q).ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: server})
 	if err != nil {
-		return err
+		return false, err
 	}
-	// An agent without the restore kind would hold the command unsettled.
 	var c api.AgentCapabilities
-	if json.Unmarshal(raw, &c) != nil || c.RecoveryRestore == nil || !*c.RecoveryRestore {
-		return domain.Invalid("server.capabilities.recoveryRestore")
-	}
-	return nil
+	return json.Unmarshal(raw, &c) == nil && c.RecoveryRestore != nil && *c.RecoveryRestore, nil
 }
 
 // BackupRecoveries lists restores of a policy's snapshots onto another server, newest first.
@@ -197,6 +194,9 @@ func (s *Service) BackupRecoveries(ctx context.Context, p store.Principal, ws, p
 	out := []api.BackupRecoveryRecord{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+			return err
+		}
+		if _, err := loadBackupPolicy(ctx, tx, ws, env, id); err != nil {
 			return err
 		}
 		rows, err := db.New(tx).ListBackupRecoveries(ctx, db.ListBackupRecoveriesParams{WorkspaceID: ws, EnvironmentID: env, PolicyID: id})
@@ -223,44 +223,143 @@ func (s *Service) BackupRecoveries(ctx context.Context, p store.Principal, ws, p
 	return out, err
 }
 
-// hydrateRecovery fills a restore command's repository access, or with nil keys only makes its
-// checks. It is released only to the server the restore was recorded for, as the operation it
-// was issued as, while the policy is the generation it froze and its server is still revoked.
-func (s *Service) hydrateRecovery(ctx context.Context, keys valueKeys, c *api.ExecutionCommand) error {
-	if c.CancelRequested || time.Now().After(c.Deadline) {
-		return nil
-	}
+const (
+	recoveryUndeliveredNote = "Cancelled or expired before any agent received it."
+	recoveryChangedNote     = "Stopped: the backup policy changed after this restore was started."
+	recoveryRenewedNote     = "Stopped: the policy's server was renewed, and restores its own snapshots again."
+	recoveryIncapableNote   = "Waiting for this server's agent to report that it can restore backups; it may need upgrading."
+)
+
+// hydrateRecovery decides a restore command's delivery and, with keys, fills its repository
+// access. The access goes only to the server the restore was recorded for, as the operation it was
+// issued as, while the policy is the generation it froze and its server is still revoked, and first
+// only once that server's agent advertises the restore kind. A restore that can't go ahead never
+// fails the poll, which would hold every command after it: one no agent has received ends here,
+// or waits for the capability, and one an agent may hold is stopped without values.
+func (s *Service) hydrateRecovery(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (deliver, carried bool, err error) {
 	var r backup.Recovery
-	if c.Backup == nil || json.Unmarshal(*c.Backup, &r) != nil || r.Digest() != c.PlanHash || r.Validate() != nil || r.Installation.Policy.ID != c.ResourceId || r.Installation.Policy.ServerID != c.ServerId {
-		return domain.Invalid("backup")
+	if c.Backup == nil || json.Unmarshal(*c.Backup, &r) != nil || r.Digest() != c.PlanHash {
+		return false, false, domain.Invalid("backup")
 	}
-	ws := r.Installation.Policy.WorkspaceID
-	if err := requireRecoveryRestore(ctx, s.Store.Pool, ws, c.ServerId); err != nil {
-		return err
-	}
-	stored, err := s.Store.Queries.BackupRecoveryAccess(ctx, db.BackupRecoveryAccessParams{WorkspaceID: ws, EnvironmentID: c.EnvironmentId, ID: r.RunID, OperationID: c.Id, ServerID: c.ServerId, PolicyID: c.ResourceId})
+	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
+		return false, false, err
+	}
+	defer tx.Rollback(ctx)
+	// Reporting's lock order: the identity, then the operation.
+	valid, err := lockAgentCredential(ctx, tx, a)
+	if err != nil {
+		return false, false, err
+	}
+	if !valid {
+		return false, false, domain.Unauthenticated
+	}
+	ws, q := a.Workspace, db.New(tx)
+	op, err := q.LockRecoveryDelivery(ctx, db.LockRecoveryDeliveryParams{WorkspaceID: ws, ID: c.Id, ServerID: a.ID})
+	if err != nil {
+		return false, false, err
+	}
+	if Terminal(api.ExecutionState(op.State)) {
+		return false, false, nil
+	}
+	cancelled, expired := c.CancelRequested || op.CancelRequested, time.Now().After(c.Deadline)
+	if !op.Held {
+		// No agent has it, so it ends here rather than reaching one that may not know the kind.
+		if cancelled || expired {
+			return false, false, finishUndeliveredRecovery(ctx, tx, c.Id, ws, "cancelled", recoveryUndeliveredNote)
+		}
+		// The capability is read from each heartbeat, so an agent that lacks it may have it on the
+		// next one. Until then the restore waits, and the poll goes on to the server's other work.
+		able, err := canRestoreRecovery(ctx, tx, ws, c.ServerId)
+		if err != nil {
+			return false, false, err
+		}
+		if !able {
+			if err = q.AddOperationNote(ctx, db.AddOperationNoteParams{WorkspaceID: ws, ID: c.Id, Note: recoveryIncapableNote}); err != nil {
+				return false, false, err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return false, false, err
+			}
+			return false, false, errHoldBack
+		}
+	}
+	if cancelled {
+		c.CancelRequested = true
+		return true, false, tx.Commit(ctx)
+	}
+	note, release, err := recoveryRefusal(ctx, tx, ws, r, c)
+	if err != nil {
+		return false, false, err
+	}
+	switch {
+	case note != "" && !op.Held:
+		return false, false, finishUndeliveredRecovery(ctx, tx, c.Id, ws, "failed", note)
+	case note != "":
+		if err = q.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+			return false, false, err
+		}
+		c.CancelRequested = true
+		return true, false, tx.Commit(ctx)
+	case expired:
+		// Past its deadline the agent decides: one that started it runs to its own limit, one that
+		// holds it unstarted ends it as expired, and one that lost it says so (stopLostWork).
+		return true, false, tx.Commit(ctx)
+	}
+	if keys != nil {
+		if err = openRecoveryAccess(ctx, q, keys, ws, release, &r, c); err != nil {
+			return false, false, err
+		}
+	}
+	return true, true, tx.Commit(ctx)
+}
+
+// finishUndeliveredRecovery ends a restore no agent has received, with a note saying why ahead of
+// what it already said, such as why it waited.
+func finishUndeliveredRecovery(ctx context.Context, tx pgx.Tx, id, ws uuid.UUID, state, note string) error {
+	if err := db.New(tx).FinishUndeliveredRecovery(ctx, db.FinishUndeliveredRecoveryParams{WorkspaceID: ws, ID: id, State: state, Note: note}); err != nil {
 		return err
 	}
-	var policy backup.Policy
-	if json.Unmarshal(stored.Configuration, &policy) != nil || policy.Generation != r.Installation.Policy.Generation || policy.DestinationID != r.Installation.Destination.ID {
-		return domain.Conflict
+	return tx.Commit(ctx)
+}
+
+// recoveryRelease is the stored policy a restore is released under, with its sealed access.
+type recoveryRelease struct {
+	policy    backup.Policy
+	encrypted []byte
+}
+
+// recoveryRefusal says why a restore can no longer be released, or returns what it is released
+// under.
+func recoveryRefusal(ctx context.Context, tx pgx.Tx, ws uuid.UUID, r backup.Recovery, c *api.ExecutionCommand) (string, recoveryRelease, error) {
+	var out recoveryRelease
+	stored, err := db.New(tx).BackupRecoveryAccess(ctx, db.BackupRecoveryAccessParams{WorkspaceID: ws, EnvironmentID: c.EnvironmentId, ID: r.RunID, OperationID: c.Id, ServerID: c.ServerId, PolicyID: c.ResourceId})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return recoveryChangedNote, out, nil
+	}
+	if err != nil {
+		return "", out, err
+	}
+	p := &out.policy
+	if json.Unmarshal(stored.Configuration, p) != nil || p.Generation != r.Installation.Policy.Generation || p.DestinationID != r.Installation.Destination.ID {
+		return recoveryChangedNote, out, nil
 	}
 	// A renewed source server writes to the same repository again, through its own schedule.
-	revoked, err := serverRevoked(ctx, s.Store.Pool, ws, policy.ServerID)
-	if err != nil {
+	revoked, err := serverRevoked(ctx, tx, ws, p.ServerID)
+	if err != nil || !revoked {
+		return recoveryRenewedNote, out, err
+	}
+	out.encrypted = stored.EncryptedAccess
+	return "", out, nil
+}
+
+// openRecoveryAccess fills a released restore's repository and destination access.
+func openRecoveryAccess(ctx context.Context, q *db.Queries, keys valueKeys, ws uuid.UUID, release recoveryRelease, r *backup.Recovery, c *api.ExecutionCommand) error {
+	policy := release.policy
+	if err := openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: c.ResourceId}, release.encrypted, &r.Installation.Access); err != nil {
 		return err
 	}
-	if !revoked {
-		return domain.Conflict
-	}
-	if keys == nil {
-		return nil
-	}
-	if err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: c.ResourceId}, stored.EncryptedAccess, &r.Installation.Access); err != nil {
-		return err
-	}
-	destination, err := s.Store.Queries.BackupDestinationAccess(ctx, db.BackupDestinationAccessParams{WorkspaceID: ws, ID: policy.DestinationID})
+	destination, err := q.BackupDestinationAccess(ctx, db.BackupDestinationAccessParams{WorkspaceID: ws, ID: policy.DestinationID})
 	if err != nil {
 		return err
 	}
@@ -302,12 +401,5 @@ func recoveryReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.Executio
 	if err != nil {
 		return err
 	}
-	n, err := db.New(tx).RecordBackupRecoveryResult(ctx, db.RecordBackupRecoveryResultParams{WorkspaceID: ws, OperationID: c.Id, ServerID: c.ServerId, Result: raw})
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return domain.Conflict
-	}
-	return nil
+	return db.New(tx).RecordBackupRecoveryResult(ctx, db.RecordBackupRecoveryResultParams{WorkspaceID: ws, OperationID: c.Id, Result: raw})
 }

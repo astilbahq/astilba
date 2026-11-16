@@ -28,8 +28,18 @@ type lostFiles struct {
 
 func (g *revokedGroup) lostFiles(t *testing.T) lostFiles {
 	t.Helper()
+	return g.lostFilesAcross(t)
+}
+
+// lostFilesAcross is lostFiles with the web application placed on each of across.
+func (g *revokedGroup) lostFilesAcross(t *testing.T, across ...uuid.UUID) lostFiles {
+	t.Helper()
 	l := lostFiles{gone: g.hosts[0], b: g.hosts[1], snapshot: snapshotID("e")}
 	l.e, l.volume = g.filesStack(t, l.gone)
+	if len(across) > 0 {
+		l.e.spec.Applications[0].Replicas = len(across)
+		g.applied(t, &l.e, g.place(t, &l.e, l.gone.id, across...))
+	}
 	var bucket backup.Destination
 	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &bucket)
 	password := "fixture-repository-password"
@@ -222,8 +232,10 @@ func TestRestoreReportsAreCheckedAgainstTheirCommand(t *testing.T) {
 	}
 }
 
-// What a restore is issued on must still hold when it is released: an agent that stopped
-// advertising the restore kind, or a source server no longer revoked, gets nothing released.
+// What a restore is issued on must still hold when it is released. One that can't go ahead never
+// fails the poll, which would hold the server's other commands: if no agent has received it, it
+// ends in management or waits for the agent's capability, and an agent that may hold it is told to
+// stop, without the repository access.
 func TestRestoreIsReleasedOnlyWhileItsConditionsHold(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	l := g.lostFiles(t)
@@ -232,42 +244,180 @@ func TestRestoreIsReleasedOnlyWhileItsConditionsHold(t *testing.T) {
 	capable := func(yes bool) {
 		g.reports(t, l.b, func(c *api.AgentCapabilities, _ *api.HostPreflight) { c.RecoveryRestore = &yes })
 	}
-	capable(true)
-	g.pause(l.b, true)
-	// Once the test's own poll holds the lease, the host's last poll has ended.
-	if c, err := g.pollFor(l.b); err != nil || c != nil {
-		t.Fatalf("the paused host had work: %v %v", c, err)
-	}
-	var op api.Operation
-	g.b.call("POST", l.e.path+"/backup-policies/"+l.policy.ID.String()+"/recoveries", recoveryRequest(l.snapshot), 202, &op)
-	capable(false)
-	var invalid *domain.Error
-	if c, err := g.pollUntil(t, l.b); !errors.As(err, &invalid) || !slices.Contains(invalid.Fields, "server.capabilities.recoveryRestore") {
-		t.Fatalf("a restore was released to an agent that can't run it: %v %v", c, err)
-	}
-	capable(true)
 	// Renewing the lost server clears its revocation.
 	revoked := func(yes bool) {
 		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE servers SET revoked=$2 WHERE id=$1`, l.gone.id, yes); err != nil {
 			t.Fatal(err)
 		}
 	}
+	capable(true)
+	g.pause(l.b, true)
+	// Once the test's own poll holds the lease, the host's last poll has ended.
+	if c, err := g.pollFor(l.b); err != nil || c != nil {
+		t.Fatalf("the paused host had work: %v %v", c, err)
+	}
+	start := func() uuid.UUID {
+		var op api.Operation
+		g.b.call("POST", l.e.path+"/backup-policies/"+l.policy.ID.String()+"/recoveries", recoveryRequest(l.snapshot), 202, &op)
+		return op.Id
+	}
+	ended := func(id uuid.UUID, want, why string) {
+		t.Helper()
+		var state, note string
+		g.waitFor(t, "the restore to end", func() bool {
+			if c, err := g.pollFor(l.b); err != nil || c != nil {
+				t.Fatalf("a restore that can't go ahead was sent or failed the poll: %v %v", c, err)
+			}
+			state, note = g.operationState(t, id)
+			return state == "succeeded" || state == "failed" || state == "cancelled"
+		})
+		if state != want || !strings.Contains(note, why) {
+			t.Fatalf("restore ended %s: %s", state, note)
+		}
+	}
+
+	op := start()
 	revoked(false)
-	if c, err := g.pollUntil(t, l.b); !errors.Is(err, domain.Conflict) {
-		t.Fatalf("a restore was released while its source server was renewed: %v %v", c, err)
-	}
+	ended(op, "failed", "renewed")
 	revoked(true)
+
+	op = start()
+	g.b.call("POST", g.base+"/operations/"+op.String()+"/cancel", nil, 204, nil)
+	ended(op, "cancelled", "before any agent received it")
+
+	expire := func(op uuid.UUID) {
+		t.Helper()
+		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE execution_operations SET command=jsonb_set(command,'{deadline}',to_jsonb('2001-01-01T00:00:00Z'::text)) WHERE id=$1`, op); err != nil {
+			t.Fatal(err)
+		}
+	}
+	op = start()
+	expire(op)
+	ended(op, "cancelled", "before any agent received it")
+
+	// An agent that doesn't advertise the restore kind may on its next heartbeat, so the restore
+	// waits for it, without failing the poll.
+	op = start()
+	capable(false)
+	for range 3 {
+		if c, err := g.pollFor(l.b); err != nil || c != nil {
+			t.Fatalf("a restore was sent to an agent without the restore kind, or failed the poll: %v %v", c, err)
+		}
+	}
+	if state, note := g.operationState(t, op); state != "dispatched" || !strings.Contains(note, "can restore backups") {
+		t.Fatalf("a restore waiting for the capability is %s: %s", state, note)
+	}
+	// One that waits past its deadline ends, and says what it waited for.
+	expire(op)
+	ended(op, "cancelled", "before any agent received it")
+	if _, note := g.operationState(t, op); !strings.Contains(note, "can restore backups") {
+		t.Fatalf("an expired restore lost why it waited: %s", note)
+	}
+	capable(true)
+	op = start()
 	c, err := g.pollUntil(t, l.b)
-	if err != nil || c == nil || c.Id != op.Id {
-		t.Fatalf("the restore wasn't released once the agent could run it: %v %v", c, err)
-	}
 	var r backup.Recovery
-	if json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Access.SecretKey != "storage-secret" {
-		t.Fatal("the restore was released without its repository access")
+	if err != nil || c == nil || c.Id != op || c.CancelRequested || json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Access.SecretKey != "storage-secret" {
+		t.Fatalf("the restore wasn't released with its repository access: %v %v", c, err)
 	}
-	g.pause(l.b, false)
+	// Once an agent may hold it, a lost capability or a passed deadline is the agent's to settle:
+	// it goes on, without the access sent again.
+	capable(false)
+	expire(op)
+	c, err = g.pollUntil(t, l.b)
+	if err != nil || c == nil || c.Id != op || c.CancelRequested || json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Access != (backup.Access{}) {
+		t.Fatalf("a held restore past its deadline wasn't left to its agent: %v %v", c, err)
+	}
+	// A renewed source server stops it, without the access.
+	revoked(false)
+	c, err = g.pollUntil(t, l.b)
+	if err != nil || c == nil || c.Id != op || !c.CancelRequested || json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Access != (backup.Access{}) {
+		t.Fatalf("a restore an agent may hold wasn't stopped without its access: %v %v", c, err)
+	}
+	if state, note := g.operationState(t, op); state != "dispatched" || !strings.Contains(note, "renewed") {
+		t.Fatalf("the stopped restore is %s: %s", state, note)
+	}
+}
+
+// An agent that says it lost a restore it was sent gets its access again before the deadline, and is
+// told to stop after it, since it could no longer start it.
+func TestRestoreAnAgentLostIsStoppedAfterItsDeadline(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	l := g.lostFiles(t)
+	g.revoke(t, l.gone)
+	g.applied(t, &l.e, g.replace(&l.e, l.b.id, l.volume))
+	g.reports(t, l.b, func(c *api.AgentCapabilities, _ *api.HostPreflight) {
+		yes := true
+		c.RecoveryRestore = &yes
+	})
+	g.pause(l.b, true)
+	if c, err := g.pollFor(l.b); err != nil || c != nil {
+		t.Fatalf("the paused host had work: %v %v", c, err)
+	}
+	var op api.Operation
+	g.b.call("POST", l.e.path+"/backup-policies/"+l.policy.ID.String()+"/recoveries", recoveryRequest(l.snapshot), 202, &op)
+	released := func() (api.ExecutionCommand, backup.Recovery) {
+		t.Helper()
+		c, err := g.pollUntil(t, l.b)
+		var r backup.Recovery
+		if err != nil || c == nil || c.Id != op.Id || c.Backup == nil || json.Unmarshal(*c.Backup, &r) != nil {
+			t.Fatalf("the restore wasn't sent: %v %v", c, err)
+		}
+		return *c, r
+	}
+	lost := func(c api.ExecutionCommand) {
+		t.Helper()
+		notice := api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: c.Id, Epoch: c.SecretRelease.Epoch, Reason: api.JournalMissing}}}
+		if err := g.f.execution.NoticeSecretReleases(g.ctx, l.b.identity, notice); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, r := released()
+	lost(c)
+	if c, r = released(); c.CancelRequested || r.Installation.Access.SecretKey != "storage-secret" {
+		t.Fatal("a restore its agent lost before the deadline wasn't sent with its access again")
+	}
+	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE execution_operations SET command=jsonb_set(command,'{deadline}',to_jsonb('2001-01-01T00:00:00Z'::text)) WHERE id=$1`, op.Id); err != nil {
+		t.Fatal(err)
+	}
+	lost(c)
+	if c, r = released(); !c.CancelRequested || r.Installation.Access != (backup.Access{}) {
+		t.Fatal("a restore its agent lost after the deadline wasn't stopped without its access")
+	}
+	if state, note := g.operationState(t, op.Id); state != "dispatched" || !strings.Contains(note, "lost this restore") {
+		t.Fatalf("the lost restore is %s: %s", state, note)
+	}
+}
+
+// A restore onto an environment that spans servers runs on its primary unit's server and records
+// the plan the environment applied.
+func TestRestoringOntoAnEnvironmentAcrossServers(t *testing.T) {
+	g := newRevokedGroup(t, 3)
+	other := g.hosts[2]
+	l := g.lostFilesAcross(t, g.hosts[1].id, other.id)
+	g.revoke(t, l.gone)
+	g.networkReady(t)
+	// Moving the ingress to the new primary is saved in the draft, though only a replacement plans it.
+	wantRefusedField(t, g.place(t, &l.e, l.b.id, l.b.id, other.id), "replacement")
+	status := g.applied(t, &l.e, g.replace(&l.e, l.b.id, l.volume))
+	if status.Plan.Distributed == nil || status.Plan.PrimaryPlan().ServerID != l.b.id {
+		t.Fatal("the environment doesn't span servers with its primary on the new server")
+	}
+	g.reports(t, l.b, func(c *api.AgentCapabilities, _ *api.HostPreflight) {
+		yes := true
+		c.RecoveryRestore = &yes
+	})
+	var op api.Operation
+	g.b.call("POST", l.e.path+"/backup-policies/"+l.policy.ID.String()+"/recoveries", recoveryRequest(l.snapshot), 202, &op)
 	if state := g.finished(t, op.Id); state != "succeeded" {
 		t.Fatalf("restore ended %s", state)
+	}
+	records := g.recoveries(l)
+	if len(records) != 1 || records[0].ServerId != l.b.id || records[0].PlanId != status.Plan.VisualPlanID() || records[0].Restored == nil {
+		t.Fatalf("the restore across servers wasn't recorded against the applied plan: %+v", records)
+	}
+	if g.received(other, "restore") {
+		t.Fatal("a restore reached the environment's other server")
 	}
 }
 
