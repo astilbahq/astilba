@@ -427,6 +427,7 @@ export default interface Resources {
       "purgeDialogTitle": "Delete the retained data of <name/>?",
       "purgeEffects": {
         "backups": "Backups at the workspace’s backup destination are kept.",
+        "copies": "Copies of those values in recovery data, on its servers and anywhere else can no longer be read. Management database backups taken before keep them until they expire, and a workspace export someone downloaded keeps them.",
         "kept": "Its configuration, revisions and history are kept, read-only.",
         "noPreviews": "None of its previews holds copies of its secrets.",
         "noVolumes": "It keeps no data volumes, so nothing is deleted from its server.",

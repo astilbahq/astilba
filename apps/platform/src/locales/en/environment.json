@@ -145,6 +145,7 @@
       "previewWithNote": "Request #{{number}}: {{state}}. {{note}}",
       "noPreviews": "None of its previews holds copies of its secrets.",
       "secrets": "The values of its secrets are erased, for every version.",
+      "copies": "Copies of those values in recovery data, on its servers and anywhere else can no longer be read. Management database backups taken before keep them until they expire, and a workspace export someone downloaded keeps them.",
       "kept": "Its configuration, revisions and history are kept, read-only.",
       "backups": "Backups at the workspace’s backup destination are kept."
     },

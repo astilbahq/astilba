@@ -17,9 +17,14 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// convertStage is the custody stage converting completes: no stored value is sealed under the
-// installation keyring any more, and no instance seals one.
-const convertStage = 4
+// convertStage is the custody stage converting completed first: no stored value is sealed under
+// the installation keyring any more, and no instance seals one. sealEnvironmentsStage is the one
+// it completes now, once every environment's values are also under the environment's own key, and
+// no instance seals one under its workspace's key.
+const (
+	convertStage          = 4
+	sealEnvironmentsStage = 6
+)
 
 // convertBatch is how many values one of a conversion's transactions moves.
 const convertBatch = 100
@@ -109,15 +114,20 @@ func (b *Broker) convert(ctx context.Context, c *Conversion) error {
 	if c.Counts, err = q.LegacyValueCounts(ctx); err != nil {
 		return err
 	}
-	var remaining int64
+	var remaining, outside int64
 	for _, r := range c.Counts {
 		remaining += r.Remaining
+		outside += r.Outside
 	}
 	switch {
 	case len(c.Skipped) > 0:
 		c.Waiting = fmt.Sprintf("%d holders were not converted", len(c.Skipped))
 	case remaining > 0:
 		c.Waiting = fmt.Sprintf("%d values are still sealed under the installation keyring: run this again", remaining)
+	case outside > 0 && !b.SealsUnderEnvironments():
+		c.Waiting = fmt.Sprintf("%d environment values stay under their workspace's key while an instance of a release before stage 5 runs: run this again five minutes after the last one stopped", outside)
+	case outside > 0:
+		c.Waiting = fmt.Sprintf("%d environment values are not yet under their environment's key: run this again", outside)
 	default:
 		c.Stage, c.Waiting, err = b.completeConversion(ctx)
 		return err
@@ -139,7 +149,7 @@ func (b *Broker) convertHolder(ctx context.Context, c *Conversion, holder uuid.U
 		// Most workspaces have nothing under the keyring: look before locking it or opening its
 		// keys. One with nothing yet that gains a value is left for the next run, as the counts
 		// afterwards say.
-		values, _, _, err := legacyValues(ctx, db.New(b.pool), holder, convertCursor{})
+		values, _, _, err := legacyValues(ctx, db.New(b.pool), holder, convertCursor{}, b.SealsUnderEnvironments())
 		if err != nil || len(values) == 0 {
 			return err
 		}
@@ -268,12 +278,12 @@ func (b *Broker) convertBatch(ctx context.Context, conn pgxConn, run uuid.UUID, 
 	if err = q.LockBootstrap(ctx); err != nil {
 		return out, err
 	}
-	values, next, full, err := legacyValues(ctx, q, holder, *cursor)
+	values, next, full, err := legacyValues(ctx, q, holder, *cursor, b.SealsUnderEnvironments())
 	if err != nil {
 		return out, err
 	}
 	for _, v := range values {
-		if header, err := cryptobox.ReadHeader(v.sealed); err == nil && header.Version == 2 {
+		if header, err := cryptobox.ReadHeader(v.sealed); err == nil && header.Version == 2 && (v.item.Environment == uuid.Nil || header.Scope == cryptobox.ScopeEnvironment) {
 			// The database reads only the envelope's first bytes; this one is converted already.
 			continue
 		}
@@ -336,18 +346,20 @@ type legacyValue struct {
 
 // legacyValues reads the next batch of a holder's values sealed under the keyring, after cursor,
 // and says where the next batch starts and whether this one was full.
-func legacyValues(ctx context.Context, q *db.Queries, holder uuid.UUID, cursor convertCursor) ([]legacyValue, convertCursor, bool, error) {
+func legacyValues(ctx context.Context, q *db.Queries, holder uuid.UUID, cursor convertCursor, environments bool) ([]legacyValue, convertCursor, bool, error) {
 	if holder == uuid.Nil {
 		return legacySecondFactors(ctx, q, cursor)
 	}
-	rows, err := q.LegacyWorkspaceValues(ctx, db.LegacyWorkspaceValuesParams{Workspace: holder, AfterKind: cursor.kind, AfterID: cursor.id, Batch: convertBatch})
+	rows, err := q.LegacyWorkspaceValues(ctx, db.LegacyWorkspaceValuesParams{Workspace: holder, Environments: environments, AfterKind: cursor.kind, AfterID: cursor.id, Batch: convertBatch})
 	if err != nil {
 		return nil, cursor, false, err
 	}
 	out := make([]legacyValue, 0, len(rows))
 	for _, row := range rows {
 		ws, id, previous := holder, row.ID, row.Sealed
-		v := legacyValue{item: Item{Kind: Kind(row.Kind), ID: id}, sealed: previous}
+		// An environment's value moves onto the environment's own key, once every instance opens
+		// values under one.
+		v := legacyValue{item: Item{Kind: Kind(row.Kind), ID: id, Environment: row.EnvironmentID}, sealed: previous}
 		switch v.item.Kind {
 		case SecretVersion:
 			v.store = func(ctx context.Context, q *db.Queries, converted []byte) (int64, error) {
@@ -445,21 +457,28 @@ func (b *Broker) recordConverted(ctx context.Context) (int32, string, error) {
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
-	waiting, err := b.CheckConverted(ctx, q)
+	counts, err := b.holdSealedValues(ctx, q)
 	if err != nil {
 		// The transaction failed with it, so the stage is read by whoever reports it.
+		return 0, "", err
+	}
+	waiting, err := b.keyringWaiting(ctx, q, counts)
+	if err == nil && waiting == "" {
+		waiting, err = b.environmentsWaiting(ctx, q, counts)
+	}
+	if err != nil {
 		return 0, "", err
 	}
 	if waiting != "" {
 		stage, err := q.CustodyStage(ctx)
 		return stage, waiting, err
 	}
-	n, err := q.AdvanceCustodyStage(ctx, convertStage-1)
+	n, err := q.AdvanceCustodyStage(ctx, sealEnvironmentsStage-1)
 	if err != nil {
 		return 0, "", err
 	}
 	if n == 1 {
-		if err = b.event(ctx, q, keyEvent{run: uuid.New(), kind: "stage-completed", details: map[string]string{"stage": strconv.Itoa(convertStage)}}); err != nil {
+		if err = b.event(ctx, q, keyEvent{run: uuid.New(), kind: "stage-completed", details: map[string]string{"stage": strconv.Itoa(sealEnvironmentsStage)}}); err != nil {
 			return 0, "", err
 		}
 	}
@@ -467,8 +486,8 @@ func (b *Broker) recordConverted(ctx context.Context) (int32, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	if stage < convertStage {
-		return stage, "", fmt.Errorf("custody stage %d is not complete, so stage %d cannot be", convertStage-1, convertStage)
+	if stage < sealEnvironmentsStage {
+		return stage, "", fmt.Errorf("custody stage %d is not complete, so stage %d cannot be", sealEnvironmentsStage-1, sealEnvironmentsStage)
 	}
 	return stage, "", tx.Commit(ctx)
 }
@@ -480,22 +499,34 @@ func (b *Broker) recordConverted(ctx context.Context) (int32, string, error) {
 // recorded. An instance of an older release that starts later, or one unseen for longer, can still
 // store such a value afterwards, so whatever stops reading the keyring runs this again first.
 func (b *Broker) CheckConverted(ctx context.Context, q *db.Queries) (string, error) {
+	counts, err := b.holdSealedValues(ctx, q)
+	if err != nil {
+		return "", err
+	}
+	return b.keyringWaiting(ctx, q, counts)
+}
+
+// holdSealedValues holds every table with sealed values against writes until q's transaction
+// ends, and counts what they store.
+func (b *Broker) holdSealedValues(ctx context.Context, q *db.Queries) ([]db.LegacyValueCountsRow, error) {
 	// A rewrap holds these tables' rows for its whole transaction: wait for it before holding any.
 	// Only rewraps, conversions and the first owner's bootstrap wait behind this lock, none of them
 	// for long, so the wait is not bounded.
 	if err := q.LockBootstrap(ctx); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := q.LimitLockWait(ctx, "2s"); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := q.HoldSealedValueTables(ctx); err != nil {
-		return "", fmt.Errorf("cannot hold the tables with sealed values against writes; try again: %w", err)
+		return nil, fmt.Errorf("cannot hold the tables with sealed values against writes; try again: %w", err)
 	}
-	counts, err := q.LegacyValueCounts(ctx)
-	if err != nil {
-		return "", err
-	}
+	return q.LegacyValueCounts(ctx)
+}
+
+// keyringWaiting says why values may still be sealed under the installation keyring: some are, or
+// an instance seen in the last five minutes runs a release that seals under it.
+func (b *Broker) keyringWaiting(ctx context.Context, q *db.Queries, counts []db.LegacyValueCountsRow) (string, error) {
 	var remaining int64
 	for _, c := range counts {
 		remaining += c.Remaining
@@ -509,6 +540,26 @@ func (b *Broker) CheckConverted(ctx context.Context, q *db.Queries) (string, err
 	}
 	if older > 0 {
 		return fmt.Sprintf("%d instances seen in the last five minutes run a release before stage 4, which may store values under the installation keyring: upgrade any still running, then run this again five minutes after the last one stopped", older), nil
+	}
+	return "", nil
+}
+
+// environmentsWaiting says why an environment's values may still be under its workspace's key:
+// some are, or an instance seen in the last five minutes runs a release that seals them there.
+func (b *Broker) environmentsWaiting(ctx context.Context, q *db.Queries, counts []db.LegacyValueCountsRow) (string, error) {
+	var outside int64
+	for _, c := range counts {
+		outside += c.Outside
+	}
+	if outside > 0 {
+		return fmt.Sprintf("%d environment values are not under their environment's key", outside), nil
+	}
+	older, err := q.InstancesBelowStage(ctx, sealEnvironmentsStage)
+	if err != nil {
+		return "", err
+	}
+	if older > 0 {
+		return fmt.Sprintf("%d instances seen in the last five minutes run a release before stage %d, which seals environment values under their workspace's key: upgrade any still running, then run this again five minutes after the last one stopped", older, sealEnvironmentsStage), nil
 	}
 	return "", nil
 }

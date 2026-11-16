@@ -30,7 +30,7 @@ type legacySeed struct {
 
 // seedLegacyValues stores one value of every kind conversion moves under the keyring: one in each
 // workspace table, and the owner's active and pending second factors. The installation starts at
-// stage 3, as one upgraded from the release before.
+// stage 5, as one an instance of a release before stage 3 stored them in after converting.
 func seedLegacyValues(t *testing.T, f *fixture) (uuid.UUID, []legacySeed) {
 	t.Helper()
 	ctx := context.Background()
@@ -95,7 +95,7 @@ func seedLegacyValues(t *testing.T, f *fixture) (uuid.UUID, []legacySeed) {
 	seeds = append(seeds,
 		legacySeed{item: secretbroker.Item{Kind: secretbroker.TOTP, ID: f.owner}, plain: "legacy-totp", read: `SELECT totp_secret FROM accounts WHERE id=$1`},
 		legacySeed{item: secretbroker.Item{Kind: secretbroker.TOTPPending, ID: f.owner}, plain: "legacy-pending", read: `SELECT totp_pending FROM accounts WHERE id=$1`})
-	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_stage SET stage=3`); err != nil {
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_stage SET stage=5`); err != nil {
 		t.Fatal(err)
 	}
 	return ws, seeds
@@ -183,14 +183,19 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	// A workspace with nothing under the keyring is left alone: no session opens its keys.
 	untouched := insertWorkspace(t, f, "Nothing to convert")
 	c := convert(t, f)
-	if c.Holders != 2 || c.Values != int64(len(seeds)) || c.Raced != 0 || len(c.Skipped) != 0 || remaining(c) != 0 || c.Stage != 4 || c.Waiting != "" {
+	if c.Holders != 2 || c.Values != int64(len(seeds)) || c.Raced != 0 || len(c.Skipped) != 0 || remaining(c) != 0 || c.Stage != 6 || c.Waiting != "" {
 		t.Fatalf("conversion %+v", c)
 	}
 	for _, s := range seeds {
 		sealed := s.stored(t, f)
+		// An environment's values go onto its own key, others onto their workspace's, and second
+		// factors onto the installation's.
 		scope := cryptobox.ScopeWorkspace
-		if s.ws == uuid.Nil {
+		switch {
+		case s.ws == uuid.Nil:
 			scope = cryptobox.ScopeInstallation
+		case s.item.Kind == secretbroker.SecretVersion || s.item.Kind == secretbroker.BackupPolicy:
+			scope = cryptobox.ScopeEnvironment
 		}
 		v2Header(t, sealed, scope)
 		if !bytes.Equal(envelopeData(t, sealed), data[s.item.Kind]) {
@@ -216,8 +221,8 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	if moved != 2 {
 		t.Fatalf("%d batches recorded, want the installation's and the workspace's", moved)
 	}
-	if stages := keyEvents(t, f, "stage-completed"); len(stages) == 0 || details(t, stages[len(stages)-1])["stage"] != "4" {
-		t.Fatal("stage 4 was not recorded")
+	if stages := keyEvents(t, f, "stage-completed"); len(stages) == 0 || details(t, stages[len(stages)-1])["stage"] != "6" {
+		t.Fatal("stage 6 was not recorded")
 	}
 	// Tenants' records name the run, never the operator.
 	var records int
@@ -240,7 +245,7 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 		t.Fatal("a recovery base a restored row came from:", err)
 	}
 	again := convert(t, f)
-	if again.Holders != 1 || again.Values != 0 || again.Stage != 4 || remaining(again) != 0 {
+	if again.Holders != 1 || again.Values != 0 || again.Stage != 6 || remaining(again) != 0 {
 		t.Fatalf("second run %+v", again)
 	}
 }
@@ -291,13 +296,13 @@ func TestConvertKeepsAValueWrittenWhileItRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := <-done
-	if c.Raced != 1 || remaining(c) != 1 || c.Stage != 3 || !strings.Contains(c.Waiting, "1 values are still sealed") {
+	if c.Raced != 1 || remaining(c) != 1 || c.Stage != 5 || !strings.Contains(c.Waiting, "1 values are still sealed") {
 		t.Fatalf("conversion %+v", c)
 	}
 	if !bytes.Equal(secret.stored(t, f), newer) {
 		t.Fatal("the value written meanwhile was overwritten")
 	}
-	if c = convert(t, f); c.Values != 1 || c.Stage != 4 {
+	if c = convert(t, f); c.Values != 1 || c.Stage != 6 {
 		t.Fatalf("second run %+v", c)
 	}
 	secret.plain = "written-meanwhile"
@@ -369,7 +374,7 @@ func TestConvertResumesARunThatStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	rest := convert(t, f)
-	if rest.Values+c.Values != 10+149 || rest.Stage != 4 {
+	if rest.Values+c.Values != 10+149 || rest.Stage != 6 {
 		t.Fatalf("first run %d, second %+v", c.Values, rest)
 	}
 }
@@ -390,7 +395,7 @@ func TestConvertSkipsHoldersItCannotConvert(t *testing.T) {
 		t.Fatal(locked, err)
 	}
 	c := convert(t, f)
-	if len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], name) || c.Stage != 3 || remaining(c) != int64(len(seeds)-2) {
+	if len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], name) || c.Stage != 5 || remaining(c) != int64(len(seeds)-2) {
 		t.Fatalf("conversion %+v", c)
 	}
 	if _, err = db.New(conn).UnlockKeyCreation(ctx, name); err != nil {
@@ -412,7 +417,7 @@ func TestConvertSkipsHoldersItCannotConvert(t *testing.T) {
 		t.Fatal(err)
 	}
 	c = <-done
-	if len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], name) || c.Values != 0 || c.Stage != 3 {
+	if len(c.Skipped) != 1 || !strings.Contains(c.Skipped[0], name) || c.Values != 0 || c.Stage != 5 {
 		t.Fatalf("conversion with no sealable generation %+v", c)
 	}
 	for _, s := range seeds[:len(seeds)-2] {
@@ -454,7 +459,7 @@ func TestConvertWaitsForARewrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := <-done
-	if r.err != nil || r.c.Values == 0 || r.c.Stage != 4 {
+	if r.err != nil || r.c.Values == 0 || r.c.Stage != 6 {
 		t.Fatalf("conversion after the rewrap %+v %v", r.c, r.err)
 	}
 }
@@ -484,7 +489,7 @@ func TestConvertGivesUpWhileWritersHoldTheTables(t *testing.T) {
 	if err = writer.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if c = convert(t, f); c.Stage != 4 {
+	if c = convert(t, f); c.Stage != 6 {
 		t.Fatalf("conversion once the writer finished %+v", c)
 	}
 }
@@ -500,13 +505,13 @@ func TestConvertWaitsForOlderInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := convert(t, f)
-	if remaining(c) != 0 || c.Stage != 3 || !strings.Contains(c.Waiting, "1 instances seen in the last five minutes") {
+	if remaining(c) != 0 || c.Stage != 5 || !strings.Contains(c.Waiting, "1 instances seen in the last five minutes") {
 		t.Fatalf("conversion %+v", c)
 	}
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
 		t.Fatal(err)
 	}
-	if c = convert(t, f); c.Stage != 4 {
+	if c = convert(t, f); c.Stage != 6 {
 		t.Fatalf("conversion once it stopped %+v", c)
 	}
 	// An instance of this release reports the stage it completes.
@@ -550,7 +555,7 @@ func TestConversionCheckCatchesLaterLegacyValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending := strings.Join(status.Pending(), "\n"); status.Stage != 4 || !strings.Contains(pending, "1 values are sealed under the installation keyring although they were converted") {
+	if pending := strings.Join(status.Pending(), "\n"); status.Stage != 6 || !strings.Contains(pending, "1 values are sealed under the installation keyring although they were converted") {
 		t.Fatalf("pending %q", pending)
 	}
 	if tx, err = f.st.Pool.Begin(ctx); err != nil {
@@ -561,7 +566,7 @@ func TestConversionCheckCatchesLaterLegacyValues(t *testing.T) {
 		t.Fatal(waiting, err)
 	}
 	tx.Rollback(ctx)
-	if c := convert(t, f); c.Values != 1 || c.Stage != 4 || remaining(c) != 0 {
+	if c := convert(t, f); c.Values != 1 || c.Stage != 6 || remaining(c) != 0 {
 		t.Fatalf("conversion %+v", c)
 	}
 }

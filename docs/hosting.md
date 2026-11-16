@@ -135,14 +135,17 @@ its keys when it first starts. From stage 3, every new value is sealed under its
 or a second factor under the installation key, and tokens are issued under a token key. Values
 stored before then stay under the keyring until [converted](#converting-values), which completes
 stage 4. From stage 5, a release also opens values sealed under an environment's own key, which
-that key's workspace key wraps; a later release seals each environment's secret values under it,
-so that purging the environment can destroy the key and every copy of them with it. This release
-completes stage 5 when it starts, once stage 4 is complete, and needs stage 4: `migrate`, `serve`
-and every other command refuse it on an installation that hasn't completed stage 4, so run
-`custody convert` with the stage 4 release until `custody status` shows stage 4 first. Going back
-to a stage 2, 3 or 4 release is a redeploy: each opens everything this one seals, converted
-values included. Going back to an earlier release needs the backup taken before upgrading to stage
-3, since an earlier release cannot open these values, so never run one beside this one.
+that key's workspace key wraps, and a stage 5 release records stage 5 when it starts. This
+release seals each environment's secret values and backup policy credentials under the
+environment's key, made when its first value is saved, so that purging the environment destroys
+the key and every copy of them with it. It does so only while every instance seen in the last
+five minutes runs a stage 5 release or later; beside an older one, values stay under their
+workspace's key until converted. Converting them completes stage 6. This release needs stage 5:
+`migrate`, `serve` and every other command refuse it on an installation that hasn't completed
+stage 5, so run the stage 5 release until `custody status` shows stage 5 first. Going back to a
+stage 5 release is a redeploy: it opens everything this one seals. Going back further needs the
+backup taken before upgrading to this release, since an earlier release cannot open values under
+environment keys, so never run one beside this one.
 
 - **New workspaces** get their key in the transaction that creates them.
 - **Existing workspaces** without a key, such as one created by an earlier release after a
@@ -176,8 +179,8 @@ matching source archive available with every distributed or hosted version.
 
 #### Converting values
 
-Once every instance runs a stage 4 release, and five minutes after the last older one stopped,
-run `custody convert` once, at a quiet time:
+Once every instance runs this release, and five minutes after the last older one stopped, run
+`custody convert` once, at a quiet time:
 
 ```sh
 docker compose run --rm --no-deps platform custody convert --operator "$(whoami)"
@@ -186,9 +189,10 @@ docker compose run --rm --no-deps platform custody convert --operator "$(whoami)
 With Transit, give the command the operator's credentials rather than serving's, as for
 `custody rewrap`.
 
-- It moves each value still sealed under the keyring onto its workspace's key, or a second factor
-  onto the installation key. Only the value's key is wrapped again; the value itself is kept, so
-  recovery data captured before still matches it.
+- It moves each value still sealed under the keyring onto its workspace's key, each secret value
+  and backup policy credential onto its environment's key, and a second factor onto the
+  installation key. Only the value's key is wrapped again; the value itself is kept, so recovery
+  data captured before still matches it.
 - It works in batches, one workspace at a time, and is safe to stop, run again, or run beside
   running instances. A value saved while it runs is kept, and the next run converts it if it needs
   to be. A workspace another run is converting, or that has no key to move onto yet, is skipped
@@ -196,8 +200,9 @@ With Transit, give the command the operator's credentials rather than serving's,
 - Recovery checkpoints are never converted, since hosts hold them bound to their exact bytes.
   They keep opening with the keyring, as do tokens issued before stage 3 until they expire, so
   keep the keyring.
-- It records custody stage 4 once no value is sealed under the keyring and every instance seen in
-  the last five minutes runs a stage 4 release or later. An instance counts as seen until five
+- It records custody stage 6 once no value is sealed under the keyring, every environment's
+  values are under its own key, and every instance seen in the last five minutes runs a stage 6
+  release or later. An instance counts as seen until five
   minutes after it stops, so a run sooner than that finishes the values and says to run it again.
   For the last check it waits for a running rewrap, then holds the tables that store values
   against writes while it reads every stored value; `custody status` shows how many there are.
@@ -207,11 +212,10 @@ With Transit, give the command the operator's credentials rather than serving's,
   waits at most two seconds for each, while writers to the tables it already holds wait too. If a
   wait runs out, it lets go of every table, tries twice more, then stops without recording the
   stage; run it again at a quieter time.
-- It exits non-zero unless nothing is left to convert and stage 4 is recorded, and says what is
+- It exits non-zero unless nothing is left to convert and stage 6 is recorded, and says what is
   left.
-- Rolling back after it, to a release from stage 3 on, needs no restore: that release opens
-  converted values. A release that compares recovery rows by their stored bytes, as stage 3's
-  first releases do, refuses a checkpoint taken before the conversion.
+- Rolling back after it, to a stage 5 release, needs no restore: that release opens converted
+  values.
 - An instance of a release before stage 3 that starts afterwards can still store a value under
   the keyring. `custody status` counts such values by kind; run `custody convert` again to move
   them. A later release that stops reading the keyring checks again first.

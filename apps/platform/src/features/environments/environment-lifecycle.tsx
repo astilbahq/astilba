@@ -429,6 +429,7 @@ export function LifecycleDialog({
                   </li>
                 )}
                 <li>{t(($) => $.lifecycle.purgeEffects.secrets)}</li>
+                <li>{t(($) => $.lifecycle.purgeEffects.copies)}</li>
                 <li>{t(($) => $.lifecycle.purgeEffects.kept)}</li>
                 <li>{t(($) => $.lifecycle.purgeEffects.backups)}</li>
               </ul>
