@@ -186,8 +186,10 @@ one backend to another is supported.
    the new version at once, and old ones still open.
 2. Run `astilba custody rewrap --operator <name>` with the operator's credentials. It moves
    every wrapping onto the newest version of the same key inside the key service (Transit's
-   `rewrap`), with the same context, without unwrapping it. If the key service refuses a
-   rewrap, the command stops; it never unwraps and wraps instead.
+   `rewrap`), with the same context, without unwrapping it. So the operator moves the serve,
+   export and installation wrappings without ever seeing those keys: its policy decrypts only
+   under `astilba-rotate`. If the key service refuses a rewrap, the command stops; it never
+   unwraps and wraps instead.
 3. Once a rewrap that started after the rotation has finished, raise `min_decryption_version` so
    the old version no longer decrypts:
    `bao write astilba-transit/keys/astilba-serve/config min_decryption_version=2`.
