@@ -22,6 +22,8 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   network_problem: "Private network updates are failing",
   identity_conflict: "Another copy of a server's agent key is in use",
   recovery_window: "Cross-host recovery window is shorter than 35 days",
+  dns_withdrawal_held:
+    "DNS records may resolve to addresses Astilba no longer controls: the operator must review them with `astilba dns withdrawals`",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);

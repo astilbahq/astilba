@@ -34,7 +34,7 @@ For local development only, set `ASTILBA_DEVELOPMENT=true`, `ASTILBA_LISTEN=127.
 | `ASTILBA_DATABASE_URL` | PostgreSQL connection URL. Require TLS and certificate verification for a remote database. |
 | `ASTILBA_KEYRING` | External JSON keyring path. Regular file, owner-only permissions; never stored in PostgreSQL. |
 | `ASTILBA_INSTALLATION_ID` | The installation's ID, from `astilba custody status`. Required when hosted. See [key custody](../../docs/hosting.md#key-custody). |
-| `ASTILBA_KEY_BACKEND` | Optional; `file`, the keyring file, is the default and the only key service so far. |
+| `ASTILBA_KEY_BACKEND` | Optional; `file`, the keyring file, is the default. `transit` is OpenBao or Vault Transit: see [key custody with Transit](../../docs/key-custody-transit.md). |
 | `ASTILBA_ORIGIN` | Exact browser origin, without a path or trailing slash. HTTPS outside explicit local development. |
 | `ASTILBA_LISTEN` | HTTP listener; defaults to `127.0.0.1:8080`. Use a TLS-terminating reverse proxy in production. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Connections each process may hold, 4 to 1000; defaults to 12. See [database connections](../../docs/hosting.md#database-connections). |

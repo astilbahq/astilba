@@ -214,3 +214,130 @@ test("the way out stops only a VM this run checked, started or created for itsel
   await quietly(() => interrupted.release());
   assert.deepEqual(early.calls, ["create", "stop"]);
 });
+
+test("the stack keeps the custody it was created with", async () => {
+  const { checkCustody } = await import("./platform-dev-custody.mjs");
+  checkCustody({ custody: "file", stack: false });
+  checkCustody({ custody: "openbao", stack: true });
+  // An older stack, or one that never started, may choose.
+  checkCustody({ custody: "file", stack: true, saved: { initialized: true } });
+  checkCustody({
+    custody: "openbao",
+    stack: true,
+    saved: { initialized: false, custody: "file" },
+  });
+  for (const [args, message] of [
+    [{ custody: "vault", stack: true }, /--custody must be/],
+    [{ custody: "openbao", stack: false }, /add --vm/],
+    [
+      { custody: "openbao", stack: true, saved: { initialized: true } },
+      /--custody=file; pass that, or start over with --reset/,
+    ],
+    [
+      {
+        custody: "file",
+        stack: true,
+        saved: { initialized: true, custody: "openbao" },
+      },
+      /--custody=openbao/,
+    ],
+  ])
+    assert.throws(() => checkCustody(args), message);
+});
+
+test("the stack's OpenBao listens only on the VM's loopback, with an audit device", async () => {
+  const { openBaoRun, openBaoImage } = await import(
+    "./platform-dev-custody.mjs"
+  );
+  const args = openBaoRun({
+    name: "astilba-dev-x-openbao",
+    label: "com.astilba.dev-owner",
+    owner: "x",
+    port: 8200,
+  });
+  assert.equal(args[args.indexOf("-p") + 1], "127.0.0.1:8200:8200");
+  assert.ok(args.includes(openBaoImage));
+  assert.match(openBaoImage, /^openbao\/openbao:[0-9.]+@sha256:[0-9a-f]{64}$/);
+  const config = args.find((a) => a.startsWith("ASTILBA_OPENBAO_CONFIG="));
+  assert.match(config, /audit "file"/);
+  assert.match(config, /storage "raft"/);
+  assert.match(config, /=cluster_name = "astilba-dev"\n/);
+  assert.doesNotMatch(config, /disable_mlock/);
+  // A real server, whose storage outlives a restart: not dev mode.
+  assert.doesNotMatch(args.at(-1), /\s-dev\b/);
+  assert.match(args.at(-1), /bao server -config=/);
+  // The integration tests run the same release.
+  assert.ok(
+    read("services/platform/internal/integration/openbao_test.go").includes(
+      openBaoImage,
+    ),
+  );
+});
+
+test("the stack's OpenBao is initialised once and unsealed on every start", async () => {
+  const { mkdtempSync, readFileSync: read, statSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { openBao } = await import("./platform-dev-custody.mjs");
+  const directory = mkdtempSync(join(tmpdir(), "astilba-openbao-"));
+  let status = { initialized: false, sealed: true };
+  const calls = [];
+  const fetch = async (url, { method, body }) => {
+    const path = new URL(url).pathname;
+    calls.push(`${method} ${path}`);
+    let answer = {};
+    if (path === "/v1/sys/seal-status") answer = status;
+    if (path === "/v1/sys/health")
+      return new Response("{}", { status: status.sealed ? 503 : 200 });
+    if (path === "/v1/sys/init") {
+      status = { initialized: true, sealed: true };
+      answer = { keys_base64: ["unseal-key"], root_token: "root-token" };
+    }
+    if (path === "/v1/sys/unseal") {
+      assert.equal(JSON.parse(body).key, "unseal-key");
+      status = { initialized: true, sealed: false };
+      answer = status;
+    }
+    return new Response(JSON.stringify(answer), { status: 200 });
+  };
+  const vault = openBao({ directory, fetch });
+  assert.equal(await vault.active("http://127.0.0.1:1"), false);
+  await vault.unseal("http://127.0.0.1:1");
+  assert.equal(await vault.active("http://127.0.0.1:1"), true);
+  assert.equal(read(vault.tokenFile, "utf8"), "root-token\n");
+  assert.equal(statSync(vault.tokenFile).mode & 0o777, 0o600);
+  assert.equal(statSync(join(directory, "openbao.json")).mode & 0o777, 0o600);
+  status = { initialized: true, sealed: true };
+  await vault.unseal("http://127.0.0.1:1");
+  assert.deepEqual(calls, [
+    "GET /v1/sys/health",
+    "GET /v1/sys/seal-status",
+    "PUT /v1/sys/init",
+    "PUT /v1/sys/unseal",
+    "GET /v1/sys/health",
+    "GET /v1/sys/seal-status",
+    "PUT /v1/sys/unseal",
+  ]);
+  // Each start waits for the server, unseals it, and sets it up again as the serving role.
+  let initArgs;
+  const started = await vault.start("http://127.0.0.1:1", {
+    waitFor: async (check) => assert.equal(await check(), true),
+    initTransit: async (args) => (initArgs = args),
+  });
+  assert.deepEqual(initArgs, [
+    "--dev",
+    "--address",
+    "http://127.0.0.1:1",
+    "--token-file",
+    vault.tokenFile,
+    "--out",
+    vault.credentials,
+  ]);
+  assert.equal(started.env.ASTILBA_KEY_BACKEND, "transit");
+  assert.match(started.env.ASTILBA_TRANSIT_ROLE_ID_FILE, /serving-role-id$/);
+  assert.match(started.operator, /operator-secret-id/);
+  assert.match(started.operator, /ASTILBA_DEVELOPMENT=true/);
+  // A server that lost its storage is never initialised again over the keys it held.
+  status = { initialized: false, sealed: true };
+  await assert.rejects(vault.unseal("http://127.0.0.1:1"), /lost its storage/);
+});

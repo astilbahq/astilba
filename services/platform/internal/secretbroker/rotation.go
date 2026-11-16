@@ -84,7 +84,8 @@ func (r *Rotation) RewrapCanaries(ctx context.Context) error {
 		return err
 	}
 	for _, c := range canaries {
-		blob, err := custody.RewrapCanary(ctx, b.backend, custody.Class(c.Class), b.installation, c.Wrapped)
+		blob, requests, err := custody.RewrapCanary(ctx, b.backend, custody.Class(c.Class), b.installation, c.Wrapped)
+		r.session.took(requests)
 		if err != nil {
 			return err
 		}
@@ -111,7 +112,8 @@ func (r *Rotation) RewrapWrappings(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("%s key generation %d has a %s wrapping, which no key class covers", scope, generation, purpose)
 		}
-		wrapped, err := custody.Rewrap(ctx, b.backend, class, blob, custody.Context{Installation: b.installation, Scope: scope, Workspace: holder, Generation: generation, Purpose: purpose})
+		wrapped, requests, err := custody.Rewrap(ctx, b.backend, class, blob, custody.Context{Installation: b.installation, Scope: scope, Workspace: holder, Generation: generation, Purpose: purpose})
+		r.session.took(requests)
 		if err != nil {
 			return fmt.Errorf("cannot rewrap %s key generation %d for %s: %w", scope, generation, purpose, err)
 		}
@@ -154,7 +156,9 @@ func (r *Rotation) ValuesRewrapped(ctx context.Context, q *db.Queries) error {
 }
 
 // Close ends the session and records the run's finish, with how many canaries and key wrappings
-// it rewrapped. Each is stored as it is rewrapped, so the counts hold whatever the outcome.
+// it rewrapped. Each is stored as it is rewrapped, so the counts hold whatever the outcome. The
+// session's outcome names the key service's request for each rewrap, as any session's names its
+// unwraps.
 func (r *Rotation) Close(ctx context.Context, outcome Outcome) {
 	r.session.Close(ctx, outcome)
 	r.session.broker.finish(ctx, r.run, "rewrap-finished", outcome, map[string]string{"canaries": strconv.Itoa(r.canaries), "wrappings": strconv.Itoa(r.wrappings)})

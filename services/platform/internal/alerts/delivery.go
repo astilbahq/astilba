@@ -297,6 +297,8 @@ func Title(kind api.AlertKind) string {
 		return "Another copy of a server's agent key is in use"
 	case api.RecoveryWindow:
 		return "Cross-host recovery window is shorter than 35 days"
+	case api.DnsWithdrawalHeld:
+		return heldTitle
 	default:
 		return "Operational alert"
 	}
