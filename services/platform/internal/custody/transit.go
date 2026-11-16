@@ -181,9 +181,11 @@ func loopback(host string) bool {
 
 func (t *Transit) ID() string { return "transit:primary" }
 
+// transitData is an encrypt, decrypt or rewrap answer. A key travels as bytes, which the JSON
+// codec reads and writes as base64, so no copy of it is left in a string that cannot be cleared.
 type transitData struct {
 	Ciphertext string `json:"ciphertext"`
-	Plaintext  string `json:"plaintext"`
+	Plaintext  []byte `json:"plaintext"`
 }
 
 func transitClass(class Class) error {
@@ -198,9 +200,8 @@ func (t *Transit) Wrap(ctx context.Context, class Class, key []byte, c Context) 
 	if err := transitClass(class); err != nil {
 		return nil, "", err
 	}
-	plaintext := base64.StdEncoding.EncodeToString(key)
 	var out transitData
-	id, err := t.call(ctx, "/"+t.config.Mount+"/encrypt/"+TransitKey(class), map[string]string{"plaintext": plaintext, "context": transitContext(c)}, &out, false)
+	id, err := t.call(ctx, "/"+t.config.Mount+"/encrypt/"+TransitKey(class), map[string]any{"plaintext": key, "context": transitContext(c)}, &out, false)
 	if err != nil {
 		return nil, id, err
 	}
@@ -223,11 +224,10 @@ func (t *Transit) Unwrap(ctx context.Context, class Class, blob []byte, c Contex
 	if err != nil {
 		return Result{ProviderRequestID: id}, err
 	}
-	key, err := base64.StdEncoding.DecodeString(out.Plaintext)
-	if err != nil {
-		return Result{ProviderRequestID: id}, fmt.Errorf("%w: Transit returned a malformed key", ErrUnavailable)
+	if len(out.Plaintext) == 0 {
+		return Result{ProviderRequestID: id}, fmt.Errorf("%w: Transit returned no key", ErrUnavailable)
 	}
-	return Result{Key: key, ProviderRequestID: id}, nil
+	return Result{Key: out.Plaintext, ProviderRequestID: id}, nil
 }
 
 // OperatorUnwraps is the shipped operator policy: the operator decrypts only with the rotate
@@ -299,24 +299,32 @@ func (t *Transit) call(ctx context.Context, path string, body any, out any, unwr
 	return id, err
 }
 
+// attempt makes one request with a working token. Renewing or replacing the token has a deadline
+// of its own, so the request keeps its whole one.
 func (t *Transit) attempt(ctx context.Context, path string, body any, out any, unwrapping bool) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, t.timeout)
-	defer cancel()
 	token, err := t.currentToken(ctx)
 	if err != nil {
 		return "", err
 	}
-	id, status, err := t.send(ctx, path, token, body, out, unwrapping)
-	if status != http.StatusForbidden {
+	id, status, err := t.sendWithin(ctx, path, token, body, out, unwrapping)
+	// A 403 is the policy's refusal, or a token the server no longer accepts. A token that still
+	// looks itself up is accepted, so the refusal is the policy's: signing in again would change
+	// nothing, and would leave another token behind.
+	if status != http.StatusForbidden || t.accepted(ctx, token) {
 		return id, err
 	}
-	// The token may have expired or been revoked: sign in again, once, and try with the new one.
-	// Another refusal is the policy's.
 	if token, err = t.replaceToken(ctx, token); err != nil {
 		return "", err
 	}
-	id, _, err = t.send(ctx, path, token, body, out, unwrapping)
+	id, _, err = t.sendWithin(ctx, path, token, body, out, unwrapping)
 	return id, err
+}
+
+// sendWithin is send with the per-attempt deadline.
+func (t *Transit) sendWithin(ctx context.Context, path, token string, body any, out any, unwrapping bool) (string, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	return t.send(ctx, path, token, body, out, unwrapping)
 }
 
 // maxResponse bounds what is read from the server.
@@ -327,6 +335,11 @@ type transitResponse struct {
 	Data      jsontext.Value `json:"data"`
 	Auth      *transitAuth   `json:"auth"`
 	Errors    []string       `json:"errors"`
+}
+
+// transitStatus is what is read of sys/seal-status.
+type transitStatus struct {
+	ClusterName string `json:"cluster_name"`
 }
 
 type transitAuth struct {
@@ -382,6 +395,8 @@ func (t transitServer) send(ctx context.Context, path, token string, body any, o
 			return "", res.StatusCode, fmt.Errorf("%w: Transit answered with malformed JSON", ErrUnavailable)
 		}
 	}
+	// The codec copies data out of the payload, so the copy is cleared too.
+	defer clear(parsed.Data)
 	if err = transitError(res.StatusCode, parsed.Errors, unwrapping); err != nil {
 		return parsed.RequestID, res.StatusCode, err
 	}
@@ -389,6 +404,11 @@ func (t transitServer) send(ctx context.Context, path, token string, body any, o
 	case nil:
 	case **transitAuth:
 		*v = parsed.Auth
+	case *transitStatus:
+		// System status endpoints answer at the top level, not under data.
+		if err = json.Unmarshal(payload, v); err != nil {
+			return parsed.RequestID, res.StatusCode, fmt.Errorf("%w: Transit returned a malformed status", ErrUnavailable)
+		}
 	default:
 		if len(parsed.Data) == 0 {
 			return parsed.RequestID, res.StatusCode, fmt.Errorf("%w: Transit returned no data", ErrUnavailable)
@@ -432,141 +452,4 @@ func transitError(status int, messages []string, unwrapping bool) error {
 	default:
 		return fmt.Errorf("%w: Transit answered %d: %s", ErrDenied, status, text)
 	}
-}
-
-// currentToken returns a token to use, renewing or replacing it first when it is due. While the
-// token still works, one call refreshes it and the others go on using it, and a refresh the key
-// service could not answer leaves it in use until it expires: the next call tries again.
-func (t *Transit) currentToken(ctx context.Context) (string, error) {
-	t.mu.Lock()
-	token, refresh, expires := t.token, t.refresh, t.expires
-	t.mu.Unlock()
-	if token != "" && t.now().Before(refresh) {
-		return token, nil
-	}
-	valid := token != "" && t.now().Before(expires)
-	if !valid {
-		t.signIn.Lock()
-	} else if !t.signIn.TryLock() {
-		return token, nil
-	}
-	defer t.signIn.Unlock()
-	t.mu.Lock()
-	token, refresh, expires, renewable := t.token, t.refresh, t.expires, t.renewable
-	t.mu.Unlock()
-	if token != "" && t.now().Before(refresh) {
-		return token, nil
-	}
-	valid = token != "" && t.now().Before(expires)
-	if valid && renewable && t.renew(ctx, token) {
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		return t.token, nil
-	}
-	fresh, err := t.login(ctx)
-	// A refused sign-in is never papered over: its credentials need fixing.
-	if err != nil && valid && (errors.Is(err, ErrUnavailable) || errors.Is(err, ErrThrottled)) {
-		return token, nil
-	}
-	return fresh, err
-}
-
-// replaceToken signs in again after refused was refused, unless another call already has.
-func (t *Transit) replaceToken(ctx context.Context, refused string) (string, error) {
-	t.signIn.Lock()
-	defer t.signIn.Unlock()
-	t.mu.Lock()
-	token := t.token
-	t.mu.Unlock()
-	if token != "" && token != refused {
-		return token, nil
-	}
-	return t.login(ctx)
-}
-
-// renew extends the token, and reports whether it got a useful extension. A token near its maximum
-// lifetime comes back with less than it had, and is replaced by a sign-in instead.
-func (t *Transit) renew(ctx context.Context, token string) bool {
-	var auth *transitAuth
-	if _, _, err := t.send(ctx, "/auth/token/renew-self", token, map[string]string{}, &auth, false); err != nil || auth == nil {
-		return false
-	}
-	t.mu.Lock()
-	previous := t.lease
-	t.mu.Unlock()
-	if time.Duration(auth.LeaseDuration)*time.Second < previous/3 {
-		return false
-	}
-	t.keep(token, auth)
-	return true
-}
-
-// login signs in with the configured method, reading its credentials afresh. The caller holds
-// signIn.
-func (t *Transit) login(ctx context.Context) (string, error) {
-	var body map[string]string
-	switch t.config.Auth.Method {
-	case "approle":
-		role, err := readCredential(t.config.Auth.RoleIDFile)
-		if err != nil {
-			return "", err
-		}
-		secret, err := readCredential(t.config.Auth.SecretIDFile)
-		if err != nil {
-			return "", err
-		}
-		body = map[string]string{"role_id": role, "secret_id": secret}
-	case "jwt":
-		jwt, err := readCredential(t.config.Auth.JWTFile)
-		if err != nil {
-			return "", err
-		}
-		body = map[string]string{"role": t.config.Auth.Role, "jwt": jwt}
-	}
-	var auth *transitAuth
-	_, status, err := t.send(ctx, "/auth/"+t.config.Auth.Mount+"/login", "", body, &auth, false)
-	if err != nil {
-		// A refused sign-in is never the server being away, so it is not retried as one.
-		if status >= 400 && status < 500 && status != http.StatusTooManyRequests {
-			return "", fmt.Errorf("%w: Transit refused the sign-in: %v", ErrDenied, err)
-		}
-		return "", err
-	}
-	if auth == nil || auth.ClientToken == "" {
-		return "", fmt.Errorf("%w: Transit returned no token", ErrDenied)
-	}
-	t.keep(auth.ClientToken, auth)
-	return auth.ClientToken, nil
-}
-
-// keep stores a token, due for renewal two thirds of the way through its lease. A token without a
-// lease never expires; it is treated as a three-hour one, so it is looked at again after two.
-func (t *Transit) keep(token string, auth *transitAuth) {
-	lease := time.Duration(auth.LeaseDuration) * time.Second
-	if lease <= 0 {
-		lease = 3 * time.Hour
-	}
-	now := t.now()
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.token, t.renewable, t.lease = token, auth.Renewable, lease
-	t.refresh, t.expires = now.Add(lease*2/3), now.Add(lease)
-}
-
-// readCredential reads a sign-in credential from a private file.
-func readCredential(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 16384 {
-		return "", fmt.Errorf("%w: %s must be a private regular file (mode 0600)", ErrDenied, path)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("%w: cannot read %s", ErrDenied, path)
-	}
-	value := strings.TrimSpace(string(raw))
-	clear(raw)
-	if value == "" {
-		return "", fmt.Errorf("%w: %s is empty", ErrDenied, path)
-	}
-	return value, nil
 }

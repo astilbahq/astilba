@@ -71,11 +71,12 @@ func accessOutcome(t *testing.T, f *fixture, id uuid.UUID) (string, []string) {
 	return outcome, requests
 }
 
-// lastRotation is the access record of the most recent operator's rotation.
+// lastRotation is the access record of the most recent operator's rotation, which names its run.
 func lastRotation(t *testing.T, f *fixture) uuid.UUID {
 	t.Helper()
+	started := keyEvents(t, f, "rewrap-started")
 	var id uuid.UUID
-	if err := f.st.Pool.QueryRow(context.Background(), `SELECT id FROM secret_access WHERE purpose='rotate' AND principal_kind='operator' ORDER BY at DESC LIMIT 1`).Scan(&id); err != nil {
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT id FROM secret_access WHERE purpose='rotate' AND principal_kind='operator' AND operator_ref=$1`, started[len(started)-1].RunID.String()).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id

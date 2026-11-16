@@ -15,8 +15,10 @@ export const openBaoImage =
 // stays with the container across stops; OpenBao 2 has no other persistent storage that needs no
 // database. Plain HTTP on the container's port, which the VM publishes only on its loopback and the
 // stack's tunnel carries to the Mac's. The audit device writes to standard output, so `docker logs`
-// shows it; OpenBao creates audit devices only from configuration.
-export const openBaoConfig = `storage "raft" {
+// shows it; OpenBao creates audit devices only from configuration. The cluster name is what
+// `custody init-transit --dev` looks for before it changes anything.
+export const openBaoConfig = `cluster_name = "astilba-dev"
+storage "raft" {
   path    = "/openbao/file"
   node_id = "astilba-dev"
 }
@@ -130,7 +132,12 @@ export function openBao({ directory, fetch = globalThis.fetch }) {
         "--out",
         credentials,
       ]);
-      const operator = transitEnv({ address, credentials, role: "operator" });
+      // The server answers in plain HTTP on loopback, which management allows only in
+      // development.
+      const operator = {
+        ASTILBA_DEVELOPMENT: "true",
+        ...transitEnv({ address, credentials, role: "operator" }),
+      };
       return {
         env: transitEnv({ address, credentials }),
         operator: Object.entries(operator)

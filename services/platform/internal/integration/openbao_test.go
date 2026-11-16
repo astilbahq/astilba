@@ -37,7 +37,8 @@ const openBaoImage = "openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab05150
 
 // openBaoConfig adds a file audit device writing to standard output, so the test reads what the
 // server recorded from the container's log. OpenBao creates audit devices only from configuration.
-const openBaoConfig = `audit "file" "stdout" {
+const openBaoConfig = `cluster_name = "` + custody.TransitDevCluster + `"
+audit "file" "stdout" {
   options = {
     file_path = "stdout"
   }
@@ -84,7 +85,7 @@ func startOpenBao(t *testing.T) *devOpenBao {
 	root := hex.EncodeToString(secret)
 	// Listening on the container's loopback only: the test reaches it through the Docker API.
 	script := `printf '%s' "$ASTILBA_AUDIT" > /tmp/astilba-audit.hcl && exec bao server -dev -dev-listen-address=127.0.0.1:8200 -config=/tmp/astilba-audit.hcl`
-	dockerRun(t, "run", "--detach", "--name", name, "--label", "com.astilba.openbao-test="+label, "--cap-add", "IPC_LOCK",
+	dockerRun(t, "run", "--detach", "--name", name, "--label", "com.astilba.openbao-test="+label,
 		"--env", "BAO_DEV_ROOT_TOKEN_ID="+root, "--env", "ASTILBA_AUDIT="+openBaoConfig, "--entrypoint", "sh", openBaoImage, "-c", script)
 	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
 	if err != nil {
@@ -199,20 +200,40 @@ type auditEntry struct {
 }
 
 // audit reads every entry of one type, "request" or "response", the server's audit device wrote.
+// Docker copies the container's output to its log after the fact, so it first makes a request of
+// its own and waits until its entry is there: the device writes in order, so everything before it
+// is too.
 func (o *devOpenBao) audit(kind string) []auditEntry {
 	o.t.Helper()
-	logs := dockerOutput(o.t, "logs", o.container)
-	var out []auditEntry
-	lines := bufio.NewScanner(bytes.NewReader(logs))
-	lines.Buffer(make([]byte, 1<<20), 1<<20)
-	for lines.Scan() {
-		var e auditEntry
-		if !bytes.HasPrefix(lines.Bytes(), []byte(`{"time"`)) || json.Unmarshal(lines.Bytes(), &e) != nil || e.Type != kind {
-			continue
+	marker := "astilba-audit-marker-" + uuid.NewString()
+	o.api("GET", "sys/policies/acl/"+marker, o.root, nil)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var out []auditEntry
+		seen := false
+		logs := dockerOutput(o.t, "logs", o.container)
+		lines := bufio.NewScanner(bytes.NewReader(logs))
+		lines.Buffer(make([]byte, 1<<20), 1<<20)
+		for lines.Scan() {
+			var e auditEntry
+			if !bytes.HasPrefix(lines.Bytes(), []byte(`{"time"`)) || json.Unmarshal(lines.Bytes(), &e) != nil {
+				continue
+			}
+			if e.Type == "response" && strings.HasSuffix(e.Request.Path, marker) {
+				seen = true
+			}
+			if e.Type == kind && !strings.HasSuffix(e.Request.Path, marker) {
+				out = append(out, e)
+			}
 		}
-		out = append(out, e)
+		if seen {
+			return out
+		}
+		if time.Now().After(deadline) {
+			o.t.Fatal("the audit log did not catch up")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return out
 }
 
 // The Transit backend passes the conformance suite every backend passes, against a real OpenBao,
@@ -486,7 +507,7 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 	}
 	s.Close(ctx, secretbroker.Used)
 	// The operator unwrapped only under rotate, and rewrapped everything else in place. The
-	// rotation's outcome, before the conversion's, names each rewrap's request.
+	// rotation's outcome names each rewrap's request.
 	var rewraps []string
 	for _, e := range o.audit("request") {
 		if !slices.Contains(e.Auth.Policies, "astilba-operator") {
@@ -503,7 +524,7 @@ func TestOpenBaoBrokerRecordsProviderRequests(t *testing.T) {
 	if len(rewraps) != len(custody.Classes)+len(custody.Purposes(custody.ScopeInstallation))+len(custody.Purposes(custody.ScopeToken)) {
 		t.Errorf("%d rewraps", len(rewraps))
 	}
-	if err = pool.QueryRow(ctx, `SELECT o.provider_request_ids FROM secret_access a JOIN secret_access_outcomes o ON o.access_id = a.id WHERE a.purpose='rotate' AND a.principal_kind='operator' ORDER BY a.at LIMIT 1`).Scan(&raw); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT o.provider_request_ids FROM secret_access a JOIN secret_access_outcomes o ON o.access_id = a.id JOIN installation_key_events e ON e.kind = 'rewrap-started' AND a.operator_ref = e.run_id::text WHERE a.purpose='rotate' AND a.principal_kind='operator'`).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	if err = json.Unmarshal(raw, &requests); err != nil || !slices.Equal(slices.Sorted(slices.Values(requests)), slices.Sorted(slices.Values(rewraps))) {

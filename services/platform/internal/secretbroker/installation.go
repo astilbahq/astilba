@@ -73,7 +73,7 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 	}
 	// A backend that refuses is recorded; one that cannot be reached is tried again at the next start.
 	if err = b.backend.Check(ctx); err != nil {
-		if errors.Is(err, custody.ErrDenied) || errors.Is(err, custody.ErrInvalid) {
+		if errors.Is(err, custody.ErrDenied) {
 			return fmt.Errorf("%w: %w", refuse(ErrBackendRefused, map[string]string{"reason": err.Error()}), err)
 		}
 		return err

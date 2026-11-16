@@ -66,9 +66,9 @@ func initTransitCommand(ctx context.Context, out io.Writer, args []string) error
 	return nil
 }
 
-// custodyCommand runs `astilba custody status|history|rewrap|init-keys|convert|init-transit`. Status and history change
-// nothing; rewrap records its start and finish in the installation's key history, and init-keys
-// each key it makes.
+// custodyCommand runs `astilba custody status|history|rewrap|init-keys|convert`; init-transit runs
+// before configuration loads. Status and history change nothing; rewrap records its start and
+// finish in the installation's key history, and init-keys each key it makes.
 func custodyCommand(ctx context.Context, c config.Config, pool *pgxpool.Pool, st *store.Store, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: astilba custody status|history|rewrap|init-keys|convert|init-transit")

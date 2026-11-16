@@ -28,6 +28,11 @@ func TransitPolicy(name string) (string, error) {
 	return string(raw), err
 }
 
+// TransitDevCluster is the cluster name the local stack's OpenBao, and the tests', are configured
+// with. ProvisionTransitDev sets up only a server that has it, so a production server reached
+// through a forwarded loopback port is never changed by it.
+const TransitDevCluster = "astilba-dev"
+
 // TransitDevCredentials names the files ProvisionTransitDev writes for one identity.
 type TransitDevCredentials struct {
 	RoleIDFile, SecretIDFile string
@@ -56,6 +61,13 @@ func ProvisionTransitDev(ctx context.Context, address, tokenFile, dir string) (m
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
+	var seal transitStatus
+	if _, _, err = server.send(ctx, "/sys/seal-status", "", nil, &seal, false); err != nil {
+		return nil, fmt.Errorf("/sys/seal-status: %w", err)
+	}
+	if seal.ClusterName != TransitDevCluster {
+		return nil, fmt.Errorf("init-transit --dev sets up only the local stack's OpenBao, whose cluster is named %s; this one is named %q", TransitDevCluster, seal.ClusterName)
+	}
 	call := func(path string, body any, out any) error {
 		_, _, err := server.send(ctx, path, rootToken, body, out, false)
 		if err != nil {

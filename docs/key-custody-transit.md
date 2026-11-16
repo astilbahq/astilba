@@ -9,7 +9,8 @@ key generation and purpose of each request. Management stores the key service's 
 each [secret access record](hosting.md#operational-bounds-and-retention), so the two can be
 matched: a session's unwraps, and a `custody rewrap`'s rewraps, on its outcome. Token keys stay
 loaded while an instance runs, so the request for each is in `custody history` instead, on the
-`token-key-opened` or `token-key-not-opened` event that follows its `token-key-loaded`.
+`token-key-opened` or `token-key-not-opened` event that follows its `token-key-loaded`. The key
+service names no request it refuses, so a refused one is matched by its context and time instead.
 
 OpenBao is the reference implementation: the tests and the local stack run OpenBao 2.7. Vault
 uses the same API.
@@ -109,6 +110,10 @@ Vault, use `vault`.
     bao read -field=role_id auth/approle/role/astilba-serving/role-id > role-id
     bao write -f -field=secret_id auth/approle/role/astilba-serving/secret-id > secret-id)
    ```
+
+   Leave the roles' tokens their default policy: when a request is refused, management asks the
+   key service whether its token still works (`auth/token/lookup-self`), and signs in again only
+   if it doesn't.
 
    Install `role-id` and `secret-id` on each management host as private files (mode `0600`,
    owned by the user management runs as). Management reads them again at each sign-in, so you can

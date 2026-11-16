@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -103,6 +104,8 @@ func (f *fakeTransit) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	mount, op, key := splitTransitPath(path)
 	switch {
+	case path == "/auth/token/lookup-self":
+		reply(map[string]any{"policies": []string{"default"}}, nil)
 	case path == "/auth/token/renew-self":
 		f.mu.Lock()
 		lease := f.lease
@@ -250,8 +253,8 @@ func TestTransitErrorTypes(t *testing.T) {
 	})
 }
 
-// A refused token is replaced once by a new sign-in. A policy that refuses the new one too is the
-// policy's answer, and is never tried again.
+// A refused token is replaced once by a new sign-in. A refusal of a token the server still accepts
+// is the policy's answer: no new sign-in, and no second try.
 func TestTransitSignsInAgainOnceWhenRefused(t *testing.T) {
 	f, s := newFakeTransit(t)
 	tr := newTestTransit(t, s.URL)
@@ -275,8 +278,8 @@ func TestTransitSignsInAgainOnceWhenRefused(t *testing.T) {
 	if _, err = tr.Unwrap(ctx, ClassRotate, blob, testContext); !errors.Is(err, ErrDenied) {
 		t.Fatal(err)
 	}
-	if n := f.count(decrypt); n != 2 || f.issued != 3 {
-		t.Fatalf("%d attempts and %d sign-ins, want 2 and 3", n, f.issued)
+	if n := f.count(decrypt); n != 1 || f.issued != 2 || f.count("/auth/token/lookup-self") != 2 {
+		t.Fatalf("%d attempts, %d sign-ins and %d lookups, want 1, 2 and 2", n, f.issued, f.count("/auth/token/lookup-self"))
 	}
 	// A refused sign-in is a refusal, not an outage.
 	f.set("/auth/approle/login", status(http.StatusBadRequest, "invalid role or secret ID"))
@@ -509,12 +512,18 @@ func TestTransitKeepsAWorkingTokenWhenRefreshFails(t *testing.T) {
 	if f.count("/auth/token/renew-self") == 0 || f.count("/auth/approle/login") < 2 {
 		t.Fatal("the refresh was not tried")
 	}
+	// Until a little later, calls go on with the token without trying again.
+	tried := f.count("/auth/approle/login")
+	if err := wrap(); err != nil || f.count("/auth/approle/login") != tried {
+		t.Fatalf("a call straight after a failed refresh: %v, %d sign-ins", err, f.count("/auth/approle/login")-tried)
+	}
+	now = now.Add(refreshRetry)
 	f.set("/auth/approle/login", status(http.StatusBadRequest, "invalid secret ID"))
 	if err := wrap(); !errors.Is(err, ErrDenied) {
 		t.Fatalf("a refused sign-in: %v", err)
 	}
 	f.set("/auth/approle/login", status(http.StatusServiceUnavailable, "sealed"))
-	now = now.Add(11 * time.Minute)
+	now = now.Add(10 * time.Minute)
 	if err := wrap(); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("an expired token: %v", err)
 	}
@@ -556,5 +565,48 @@ func TestTransitRefreshesWithoutHoldingCallsUp(t *testing.T) {
 	close(release)
 	if err := <-renewing; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A refresh that runs out of time leaves the call its own deadline, so it goes on with the token.
+func TestTransitRefreshDoesNotSpendTheCallsDeadline(t *testing.T) {
+	f, s := newFakeTransit(t)
+	tr := newTestTransit(t, s.URL)
+	tr.timeout = 300 * time.Millisecond
+	now := time.Now()
+	tr.now = func() time.Time { return now }
+	ctx := t.Context()
+	if _, _, err := tr.Wrap(ctx, ClassServe, []byte("k"), testContext); err != nil {
+		t.Fatal(err)
+	}
+	f.set("/auth/token/renew-self", func(w http.ResponseWriter) {
+		time.Sleep(time.Second)
+		status(http.StatusServiceUnavailable, "sealed")(w)
+	})
+	now = now.Add(50 * time.Minute)
+	if _, _, err := tr.Wrap(ctx, ClassServe, []byte("k"), testContext); err != nil {
+		t.Fatalf("a call after a slow refresh: %v", err)
+	}
+}
+
+// init-transit --dev changes nothing on a server that is not the local stack's, even on a loopback
+// address, as a production one reached through a forwarded port would be.
+func TestProvisionTransitDevRefusesAnotherServer(t *testing.T) {
+	var calls []string
+	var mu sync.Mutex
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		stablejson.Encode(w, map[string]any{"initialized": true, "sealed": false, "cluster_name": "vault-cluster-prod"})
+	}))
+	t.Cleanup(s.Close)
+	if _, err := ProvisionTransitDev(t.Context(), s.URL, privateFile(t, "root", "root-token"), t.TempDir()); err == nil || !strings.Contains(err.Error(), "astilba-dev") {
+		t.Fatalf("%v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(calls, []string{"/v1/sys/seal-status"}) {
+		t.Fatalf("calls %v", calls)
 	}
 }

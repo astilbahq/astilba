@@ -261,6 +261,7 @@ test("the stack's OpenBao listens only on the VM's loopback, with an audit devic
   const config = args.find((a) => a.startsWith("ASTILBA_OPENBAO_CONFIG="));
   assert.match(config, /audit "file"/);
   assert.match(config, /storage "raft"/);
+  assert.match(config, /=cluster_name = "astilba-dev"\n/);
   assert.doesNotMatch(config, /disable_mlock/);
   // A real server, whose storage outlives a restart: not dev mode.
   assert.doesNotMatch(args.at(-1), /\s-dev\b/);
@@ -335,6 +336,7 @@ test("the stack's OpenBao is initialised once and unsealed on every start", asyn
   assert.equal(started.env.ASTILBA_KEY_BACKEND, "transit");
   assert.match(started.env.ASTILBA_TRANSIT_ROLE_ID_FILE, /serving-role-id$/);
   assert.match(started.operator, /operator-secret-id/);
+  assert.match(started.operator, /ASTILBA_DEVELOPMENT=true/);
   // A server that lost its storage is never initialised again over the keys it held.
   status = { initialized: false, sealed: true };
   await assert.rejects(vault.unseal("http://127.0.0.1:1"), /lost its storage/);
