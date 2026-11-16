@@ -17,9 +17,9 @@ CREATE FUNCTION custody_value_converted(value bytea) RETURNS boolean LANGUAGE sq
 $$;
 -- +goose StatementEnd
 
-INSERT INTO schema_additive_migrations (version) VALUES (65);
+INSERT INTO schema_additive_migrations (version) VALUES (66);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 65;
+DELETE FROM schema_additive_migrations WHERE version = 66;
 DROP FUNCTION custody_value_converted(bytea);
 ALTER TABLE custody_instances DROP COLUMN stage;
