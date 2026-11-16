@@ -116,7 +116,7 @@ func stageRefusal(required, completed int) error {
 		return nil
 	case completed+1 == convertedStage:
 		// No release completes it by starting: an operator converts with the release before.
-		return fmt.Errorf("this release needs custody stage %d, and the installation has completed stage %d: run `astilba custody convert` with the stage %d release until `astilba custody status` shows stage %d, then upgrade", required-1, completed, convertedStage, convertedStage)
+		return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: run `astilba custody convert` with the stage %d release until `astilba custody status` shows stage %d, then upgrade through any releases between", required, completed, convertedStage, convertedStage)
 	}
 	return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: upgrade through the releases between them first", required, completed)
 }

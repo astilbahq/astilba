@@ -35,9 +35,9 @@ Upgrade management before the agents. These steps assume
    installation must have completed the stage before it, which `custody status` shows as
    `custody stage`; run it with the image you run now:
    `docker compose run --rm --no-deps platform custody status`. Stage 4 is the one no release
-   completes by starting: run [`custody convert`](hosting.md#converting-values) with the release
-   you have until it shows stage 4. A release further ahead is refused before it changes
-   anything.
+   completes by starting: if it shows stage 3, upgrade to the stage 4 release first and run
+   [`custody convert`](hosting.md#converting-values) with it until it shows stage 4. A release
+   further ahead is refused before it changes anything.
 4. **Pick a quiet moment**, with no deployment, backup or other operation running, and none
    waiting for attention: agents still receive those. Stopping management does not wait for
    requests in progress. This shows how many operations are unfinished:
