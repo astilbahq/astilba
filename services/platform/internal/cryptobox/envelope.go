@@ -124,9 +124,6 @@ func targetOf(env envelopeV2) target {
 // SealUnder seals a value in a v2 envelope, with its data key wrapped under key, which is scope's
 // key at generation. The environment scope seals with SealUnderEnvironment.
 func SealUnder(key []byte, scope string, generation int64, value []byte, identity string) ([]byte, error) {
-	if scope == ScopeEnvironment {
-		return nil, ErrKey
-	}
 	return sealUnder(key, target{scope: scope, generation: generation}, value, identity)
 }
 
@@ -190,9 +187,6 @@ func wrapUnder(key []byte, t target, dataKey, data []byte, identity string, limi
 // ring, or v2, opened with from, the key its header names. Its data is checked before it moves.
 // The environment scope moves with MoveUnderEnvironment.
 func MoveUnder(ring *Keyring, from, blob []byte, identity string, key []byte, scope string, generation int64) ([]byte, error) {
-	if scope == ScopeEnvironment {
-		return nil, ErrKey
-	}
 	return moveUnder(ring, from, blob, identity, key, target{scope: scope, generation: generation})
 }
 

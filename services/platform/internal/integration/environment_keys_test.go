@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -65,16 +66,17 @@ func TestEnvironmentValuesOpenUnderTheirKey(t *testing.T) {
 	if value, err := inspectValue(t, f.st, f.owner, x.ws, item, sealed); err != nil || string(value) != "environment-canary" {
 		t.Fatal(string(value), err)
 	}
-	// The same bytes passed off as another environment's do not open.
+	// The same bytes, edited to name another environment of the workspace, do not open with its
+	// key.
 	var other api.Environment
 	x.owner.call("POST", x.prefix, map[string]string{"name": "Another"}, 201, &other)
 	environmentKey(t, f, x.ws, other.Id)
-	moved, err := cryptobox.SealUnderEnvironment(key, other.Id, 1, []byte("environment-canary"), secretIdentity(x.ws, secret.Id))
-	if err != nil {
-		t.Fatal(err)
+	moved := []byte(strings.Replace(string(sealed), env.Id.String(), other.Id.String(), 1))
+	if string(moved) == string(sealed) {
+		t.Fatal("the holder was not changed")
 	}
-	if _, err = inspectValue(t, f.st, f.owner, x.ws, item, moved); !errors.Is(err, cryptobox.ErrKey) && !errors.Is(err, secretbroker.ErrKeyCheck) {
-		t.Fatal("a value sealed under one environment's key opened as another's", err)
+	if _, err := inspectValue(t, f.st, f.owner, x.ws, item, moved); !errors.Is(err, cryptobox.ErrKey) {
+		t.Fatal("a value under one environment's key opened as another's", err)
 	}
 	// A workspace export opens it.
 	account, err := f.st.Queries.AccountByID(ctx, f.owner)
@@ -152,12 +154,9 @@ func TestPurgeDestroysTheEnvironmentKey(t *testing.T) {
 		t.Fatal("a purged environment got a new key")
 	}
 
-	// Recovery from the pre-purge checkpoint: its key check passes, and the purged value, which
-	// the live database no longer lists, comes back erased.
+	// Recovery from the pre-purge checkpoint: its key check passes, the purged value stays erased,
+	// and the kept environment's value stays under its key.
 	if err := portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.st.Pool.Exec(ctx, `DELETE FROM secret_versions WHERE workspace_id=$1 AND id=ANY($2)`, x.ws, []uuid.UUID{secret.Id, other.Id}); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := f.st.Pool.Begin(ctx)
@@ -173,12 +172,110 @@ func TestPurgeDestroysTheEnvironmentKey(t *testing.T) {
 	if err = tx.QueryRow(ctx, `SELECT encrypted_value, erased_at IS NOT NULL FROM secret_versions WHERE workspace_id=$1 AND id=$2`, x.ws, secret.Id).Scan(&restored, &erased); err != nil || restored != nil || !erased {
 		t.Fatal("the purged value was restored", err)
 	}
-	// A value under a key that lives is restored as it was, still under its environment's key.
 	if err = tx.QueryRow(ctx, `SELECT encrypted_value FROM secret_versions WHERE workspace_id=$1 AND id=$2`, x.ws, other.Id).Scan(&restoredKept); err != nil || string(restoredKept) != string(keptSealed) {
 		t.Fatal("the kept environment's value moved", err)
 	}
 	if n := x.count("SELECT count(*) FROM environment_keys WHERE environment_id=$1 AND state='active'", kept.Id); n != 1 {
 		t.Fatal("purging one environment touched another's key")
+	}
+}
+
+// Recovery can bring a purge or end a preview that management's database has not seen, such as one
+// restored from a backup taken before. Destroying ended environments' keys afterwards reaches both,
+// and a preview's secret copies that a checkpoint still holds come back erased: the key that sealed
+// them is gone.
+func TestRecoveryDestroysTheKeysOfEndedEnvironments(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var purged, preview, live api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Purged elsewhere"}, 201, &purged)
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Preview"}, 201, &preview)
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Live"}, 201, &live)
+	var copied api.SecretVersion
+	x.owner.call("POST", x.prefix+"/"+preview.Id.String()+"/secrets", map[string]string{"name": "Token", "value": "placeholder"}, 201, &copied)
+	x.lifecycle(x.owner, x.prefix+"/"+purged.Id.String(), "retire", "Purged elsewhere", 201)
+	// A preview environment, as one is made: its purpose is fixed once set, so it is set with the
+	// guards off, as other preview tests do.
+	conn, err := f.st.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{`SET session_replication_role=replica`, `UPDATE environments SET purpose='preview' WHERE id='` + preview.Id.String() + `'`, `SET session_replication_role=DEFAULT`} {
+		if _, err = conn.Exec(ctx, statement); err != nil {
+			conn.Release()
+			t.Fatal(statement, err)
+		}
+	}
+	conn.Release()
+	keys := map[uuid.UUID][]byte{}
+	for _, env := range []uuid.UUID{purged.Id, preview.Id, live.Id} {
+		keys[env] = environmentKey(t, f, x.ws, env)
+	}
+	underEnvironment(t, f, x.ws, preview.Id, copied.Id, keys[preview.Id], "preview-copy-canary")
+	// What a merge can leave: an environment purged by the checkpoint while its key lives on in
+	// the restored database, and a preview with no open request whose secret copies were removed.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE environments SET state='purged', purged_at=now(), purged_by=$2, purged_without_host=true WHERE id=$1`, purged.Id, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	base := capturedBase(t, f, x.ws)
+	if _, err = f.st.Pool.Exec(ctx, `DELETE FROM secret_versions WHERE workspace_id=$1 AND id=$2`, x.ws, copied.Id); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing but those ends destroys a key: the live environment's is refused.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE environment_keys SET state='destroyed', wrapped=NULL, kcv=NULL WHERE environment_id=$1`, live.Id); err == nil {
+		t.Fatal("a live environment's key was destroyed")
+	}
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.st.Broker.DestroyEndedEnvironmentKeys(ctx, db.New(tx), x.ws); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	states := map[uuid.UUID]string{}
+	rows, err := f.st.Pool.Query(ctx, `SELECT environment_id, state FROM environment_keys WHERE workspace_id=$1`, x.ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var env uuid.UUID
+		var state string
+		if err = rows.Scan(&env, &state); err != nil {
+			t.Fatal(err)
+		}
+		states[env] = state
+	}
+	rows.Close()
+	if states[purged.Id] != "destroyed" || states[preview.Id] != "destroyed" || states[live.Id] != "active" {
+		t.Fatalf("key states %v", states)
+	}
+	reasons := map[string]bool{}
+	for _, e := range keyEvents(t, f, "environment-key-destroyed") {
+		reasons[e.Reason.String] = true
+	}
+	if !reasons["environment purge taken by recovery"] || !reasons["preview ended by recovery"] {
+		t.Fatalf("reasons %v", reasons)
+	}
+	// The checkpoint's preview copy no longer opens: the merge passes its key check and restores
+	// it erased, where the value it held would otherwise come back.
+	if err = portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil {
+		t.Fatal(err)
+	}
+	if tx, err = f.st.Pool.Begin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, f.st, x.ws), base, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	var restored []byte
+	var erased bool
+	if err = tx.QueryRow(ctx, `SELECT encrypted_value, erased_at IS NOT NULL FROM secret_versions WHERE workspace_id=$1 AND id=$2`, x.ws, copied.Id).Scan(&restored, &erased); err != nil || restored != nil || !erased {
+		t.Fatal("a copy under a destroyed key was restored", err)
 	}
 }
 

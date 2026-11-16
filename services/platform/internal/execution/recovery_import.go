@@ -222,14 +222,8 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = q.DeleteEndedPreviewSecrets(ctx, in.WorkspaceID); err != nil {
 		return out, err
 	}
-	ended, err := q.EndedPreviewEnvironmentKeys(ctx, in.WorkspaceID)
-	if err != nil {
+	if err = s.Store.Broker.DestroyEndedEnvironmentKeys(ctx, q, in.WorkspaceID); err != nil {
 		return out, err
-	}
-	for _, env := range ended {
-		if err = s.Store.Broker.DestroyEnvironmentKeys(ctx, q, in.WorkspaceID, env, "preview ended by recovery"); err != nil {
-			return out, err
-		}
 	}
 	if err = portability.StoreRecoveredHistory(ctx, tx, in.WorkspaceID, source.History); err != nil {
 		return out, err

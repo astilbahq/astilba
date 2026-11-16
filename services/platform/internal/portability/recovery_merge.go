@@ -342,11 +342,6 @@ func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbro
 	}
 	if table == "secret_versions" {
 		setValue(row, "encrypted_value", nil)
-		for _, field := range []string{"plaintext_bytes", "json_bytes"} {
-			if _, ok := row[field]; ok {
-				setValue(row, field, nil)
-			}
-		}
 		setValue(row, "erased_at", time.Now().UTC())
 	}
 	return nil

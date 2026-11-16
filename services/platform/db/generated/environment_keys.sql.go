@@ -43,28 +43,34 @@ func (q *Queries) DestroyEnvironmentKeys(ctx context.Context, arg DestroyEnviron
 	return items, nil
 }
 
-const endedPreviewEnvironmentKeys = `-- name: EndedPreviewEnvironmentKeys :many
-SELECT DISTINCT k.environment_id FROM environment_keys k
+const endedEnvironmentKeys = `-- name: EndedEnvironmentKeys :many
+SELECT DISTINCT k.environment_id, (e.state IN ('purging', 'purged'))::boolean AS purged FROM environment_keys k
 JOIN environments e ON e.workspace_id = k.workspace_id AND e.id = k.environment_id
-WHERE k.workspace_id = $1 AND k.state = 'active' AND e.purpose = 'preview'
-    AND NOT EXISTS (SELECT 1 FROM preview_requests r WHERE r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.state <> 'deleted')
+WHERE k.workspace_id = $1 AND k.state = 'active' AND (e.state IN ('purging', 'purged') OR e.purpose = 'preview'
+    AND NOT EXISTS (SELECT 1 FROM preview_requests r WHERE r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.state <> 'deleted'))
 `
 
-// The preview environments with an active key whose every request has ended, which recovery
-// destroys as it removes their secret copies.
-func (q *Queries) EndedPreviewEnvironmentKeys(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := q.db.Query(ctx, endedPreviewEnvironmentKeys, workspaceID)
+type EndedEnvironmentKeysRow struct {
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	Purged        bool      `json:"purged"`
+}
+
+// The environments with an active key that has no further use: purging or purged, or a preview
+// whose every request has ended. Recovery can bring either about, by taking a checkpoint's purge
+// or ending a request.
+func (q *Queries) EndedEnvironmentKeys(ctx context.Context, workspaceID uuid.UUID) ([]EndedEnvironmentKeysRow, error) {
+	rows, err := q.db.Query(ctx, endedEnvironmentKeys, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []uuid.UUID{}
+	items := []EndedEnvironmentKeysRow{}
 	for rows.Next() {
-		var environment_id uuid.UUID
-		if err := rows.Scan(&environment_id); err != nil {
+		var i EndedEnvironmentKeysRow
+		if err := rows.Scan(&i.EnvironmentID, &i.Purged); err != nil {
 			return nil, err
 		}
-		items = append(items, environment_id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

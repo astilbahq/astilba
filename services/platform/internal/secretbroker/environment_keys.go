@@ -29,3 +29,24 @@ func (b *Broker) DestroyEnvironmentKeys(ctx context.Context, q *db.Queries, work
 	}
 	return nil
 }
+
+// DestroyEndedEnvironmentKeys destroys, in q, the keys of a workspace's environments that are
+// purging or purged, or are previews whose every request has ended, while any is still active.
+// Recovery runs it after merging, since a checkpoint can bring a purge or end a preview that
+// management's database has not seen, such as one restored from a backup taken before.
+func (b *Broker) DestroyEndedEnvironmentKeys(ctx context.Context, q *db.Queries, workspace uuid.UUID) error {
+	ended, err := q.EndedEnvironmentKeys(ctx, workspace)
+	if err != nil {
+		return err
+	}
+	for _, e := range ended {
+		reason := "preview ended by recovery"
+		if e.Purged {
+			reason = "environment purge taken by recovery"
+		}
+		if err = b.DestroyEnvironmentKeys(ctx, q, workspace, e.EnvironmentID, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}

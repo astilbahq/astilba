@@ -321,8 +321,9 @@ func (k *NewKeys) Close(ctx context.Context, outcome Outcome) {
 // keysStage is the custody stage creating every key completes: every workspace, the
 // installation and the token keys have a generation. sealStage follows at once, since every
 // release from it seals new values under those keys. convertStage is recorded only by Convert.
-// readEnvironmentsStage follows it once a release that opens values under environment keys runs,
-// which is what a release that seals under them needs first.
+// readEnvironmentsStage follows it once a release that opens values under environment keys runs.
+// A release that seals under them needs it, and still checks that no instance of an earlier
+// release is running, since this one records it without asking.
 const (
 	keysStage             = 2
 	sealStage             = 3
@@ -490,7 +491,7 @@ func openV2(keys map[keyRef][]byte, item Item, header cryptobox.Header, cipherte
 // ErrKeysChanged a key made since the session began, which a new session holds. The caller holds
 // s.mu.
 func (s *Session) environmentKeyFor(item Item, header cryptobox.Header) ([]byte, error) {
-	if !item.Kind.environmental() || header.Holder == uuid.Nil {
+	if !item.Kind.environmental() {
 		return nil, cryptobox.ErrKey
 	}
 	k, ok := s.environments[environmentRef{header.Holder, header.Generation}]

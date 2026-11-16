@@ -63,7 +63,7 @@ var ErrKeyMissing = errors.New("the workspace has no key yet: run `astilba custo
 
 // ErrKeyDestroyed is a value sealed under an environment's key that purging the environment, or
 // ending its preview, destroyed. Nothing opens it again: callers treat it as erased.
-var ErrKeyDestroyed = errors.New("the environment's key was destroyed when it was purged, so its value is erased")
+var ErrKeyDestroyed = errors.New("the environment's key was destroyed when the environment was purged or its preview ended, so its value is erased")
 
 // ErrKeyPending is a holder still waiting for its first key, which the key job is making. How far
 // that job has got across the installation is for operators, in its log and custody status.

@@ -30,7 +30,15 @@ Upgrade management before the agents. These steps assume
 2. **Read what changed** between the two commits, especially
    `services/platform/db/migrations`, these docs and the agent: notes on agent compatibility
    tell you whether hosts need anything.
-3. **Pick a quiet moment**, with no deployment, backup or other operation running, and none
+3. **Check the custody stage.** The release notes, or `CustodyStage` in
+   `services/platform/db/migrate.go`, say which custody stage the new release completes. The
+   installation must have completed the stage before it, which `custody status` shows as
+   `custody stage`; run it with the image you run now:
+   `docker compose run --rm --no-deps platform custody status`. Stage 4 is the one no release
+   completes by starting: run [`custody convert`](hosting.md#converting-values) with the release
+   you have until it shows stage 4. A release further ahead is refused before it changes
+   anything.
+4. **Pick a quiet moment**, with no deployment, backup or other operation running, and none
    waiting for attention: agents still receive those. Stopping management does not wait for
    requests in progress. This shows how many operations are unfinished:
 
