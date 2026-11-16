@@ -584,14 +584,19 @@ Stripe is optional. For paid Checkout, configure `ASTILBA_STRIPE_SECRET`,
 monthly price with quantity one and configure the Stripe customer portal. Pin the
 webhook endpoint to API version `2026-09-30.endive`, matching the client, at
 `/hooks/stripe`. Subscribe to `checkout.session.completed`,
-`customer.subscription.updated` and `customer.subscription.deleted`.
+`customer.subscription.updated`, `customer.subscription.deleted` and `invoice.paid`.
 
 The operator creates and verifies the Stripe product/price outside the application.
 Use test mode first. Checkout reserves one durable intent per workspace and reuses
 it after network failure. Completion is reconciled before an expired intent is
 replaced. Webhooks verify their timestamped raw-body signature, deduplicate events
 and retrieve the current subscription instead of trusting event delivery order.
-Unrecognized customers and subscriptions never grant access. New checkout success
+Unrecognized customers and subscriptions never grant access. Management is extended only by
+a paid invoice: it lasts until the end of the latest period a paid invoice covers, plus 24
+hours for Stripe to charge the next renewal. A renewal that fails, or whose collection is
+paused, keeps the period already paid for and nothing more. Ending the subscription ends
+management at the time it ends. An `invoice.paid` event that arrives before its checkout is
+applied is answered 409, so Stripe delivers it again. New checkout success
 and cancellation return to the workspace onboarding route. The URL is a navigation
 hint; setup completes only when the server reports active management access. If
 Stripe is not configured, onboarding explains how to contact the operator.

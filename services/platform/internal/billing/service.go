@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Service struct {
@@ -94,10 +95,12 @@ type answer struct {
 
 // An observation is what Stripe says of a subscription: everything applySubscription decides
 // from, so that a decision under the lock asks nothing. Ticket orders observations by when they
-// were asked for.
+// were asked for. PaidThrough is the end of the latest period a paid invoice covers, nil when
+// none is paid.
 type observation struct {
 	Ticket       int64
 	Subscription hosting.Subscription
+	PaidThrough  *time.Time
 }
 
 // errSuperseded is an observation of the workspace's subscription older than the one it holds.
@@ -176,10 +179,19 @@ func (s *Service) ask(ctx context.Context, q question) (answer, error) {
 	return a, nil
 }
 
-// observeSubscription asks Stripe about a subscription, with nothing held.
+// observeSubscription asks Stripe about a subscription and its paid invoices, with nothing
+// held. The two answers need not be one snapshot: the paid invoices only ever grow, and the
+// ticket was taken before either was asked for.
 func (s *Service) observeSubscription(ctx context.Context, ticket int64, id, customer string) (observation, error) {
 	sub, e := s.Stripe.Subscription(ctx, id, customer)
-	return observation{Ticket: ticket, Subscription: sub}, e
+	if e != nil {
+		return observation{}, e
+	}
+	paid, e := s.Stripe.PaidThrough(ctx, id, customer)
+	if e != nil {
+		return observation{}, e
+	}
+	return observation{Ticket: ticket, Subscription: sub, PaidThrough: paid}, nil
 }
 
 func (s *Service) Checkout(ctx context.Context, p store.Principal, ws uuid.UUID) (string, error) {
@@ -304,10 +316,7 @@ func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 	if allowNew && known != nil && *known != id && previousStatus != "canceled" && previousStatus != "incomplete_expired" {
 		return domain.Conflict
 	}
-	until := previous
-	if sub.Status == "active" {
-		until = sub.Entitlement().Until
-	}
+	until := extend(previous, seen.PaidThrough)
 	if sub.EndedAt != nil {
 		end := time.Unix(*sub.EndedAt, 0)
 		if until != nil && end.Before(*until) {
@@ -316,6 +325,25 @@ func (s *Service) applySubscription(ctx context.Context, tx pgx.Tx, ws uuid.UUID
 	}
 	_, e := tx.Exec(ctx, `UPDATE hosted_subscriptions SET subscription_id=$2,status=$3,management_until=$4,updated_at=now(),observed_ticket=$6 WHERE workspace_id=$1 AND customer_id=$5`, ws, id, sub.Status, until, customer, seen.Ticket)
 	return e
+}
+
+// extend returns how long management lasts given what was stored and a subscription's paid
+// evidence. Only a paid invoice moves it later, to the end of the period paid for plus
+// hosting.RenewalAllowance. Stripe's current period end is not evidence: it advances when the
+// renewal invoice is created, before anything is paid, and stays advanced while collection is
+// paused. Status is not consulted either: a period paid for stays paid for whatever the
+// subscription became, and its ended_at, applied after this, is what ends it. So the result
+// depends only on what Stripe holds, never on which observation was applied first: it is
+// never earlier than stored, and the paid evidence only grows.
+func extend(stored *time.Time, paid *time.Time) *time.Time {
+	if paid == nil {
+		return stored
+	}
+	end := paid.Add(hosting.RenewalAllowance)
+	if stored != nil && !end.After(*stored) {
+		return stored
+	}
+	return &end
 }
 
 // applyCheckout completes the workspace's checkout intent from a session Stripe reported
@@ -344,20 +372,39 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 	if e != nil {
 		return domain.Invalid("signature")
 	}
-	if event.Type != "checkout.session.completed" && event.Type != "customer.subscription.updated" && event.Type != "customer.subscription.deleted" {
+	switch event.Type {
+	case "checkout.session.completed", "customer.subscription.updated", "customer.subscription.deleted", "invoice.paid":
+	default:
 		return nil
 	}
 	var obj struct {
 		ID        string `json:"id"`
 		Customer  string `json:"customer"`
 		Reference string `json:"client_reference_id"`
+		Parent    struct {
+			Details struct {
+				Subscription string `json:"subscription"`
+			} `json:"subscription_details"`
+		} `json:"parent"`
 	}
 	if json.Unmarshal(event.Data.Object, &obj) != nil {
 		return domain.Invalid("event")
 	}
 	var ws uuid.UUID
 	checkout := event.Type == "checkout.session.completed"
-	if checkout {
+	// An invoice event only says to look again: the workspace is found by its own customer,
+	// and the subscription to observe is the one it holds.
+	invoice := event.Type == "invoice.paid"
+	switch {
+	case invoice:
+		ws, e = db.New(s.Store.Pool).HostedWorkspaceOfCustomer(ctx, pgtype.Text{String: obj.Customer, Valid: true})
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+	case checkout:
 		id, e := uuid.Parse(obj.Reference)
 		if e != nil {
 			return domain.Invalid("event")
@@ -369,7 +416,7 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		if e != nil {
 			return e
 		}
-	} else {
+	default:
 		e = s.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM hosted_subscriptions WHERE customer_id=$1 AND subscription_id=$2", obj.Customer, obj.ID).Scan(&ws)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return nil
@@ -392,11 +439,33 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		if n.RowsAffected() == 0 {
 			return tx.Commit(ctx)
 		}
+		subscription := obj.ID
+		if invoice {
+			held, e := db.New(tx).HeldSubscription(ctx, ws)
+			if e != nil {
+				return e
+			}
+			// The invoice's own subscription only says whether to wait, never what was paid.
+			named := obj.Parent.Details.Subscription
+			ended := held.Status == "canceled" || held.Status == "incomplete_expired"
+			unheld := !held.SubscriptionID.Valid || ended && named != "" && named != held.SubscriptionID.String
+			if unheld && held.CheckoutOpen {
+				// The open checkout may have observed Stripe before this payment and not yet
+				// be applied. Recording the event would lose it, so Stripe is asked to
+				// deliver it again.
+				return domain.Conflict
+			}
+			if !held.SubscriptionID.Valid {
+				// No checkout can bring the invoice's subscription here.
+				return tx.Commit(ctx)
+			}
+			subscription = held.SubscriptionID.String
+		}
 		q := question{customer: obj.Customer}
 		if checkout {
 			q.session = obj.ID
 		} else {
-			q.subscription = obj.ID
+			q.subscription = subscription
 		}
 		a, e := answered(seen, q)
 		if e != nil {
@@ -405,7 +474,7 @@ func (s *Service) Webhook(ctx context.Context, raw []byte, signature string) err
 		if checkout {
 			e = s.applyCheckout(ctx, tx, ws, *a.checkout, a.subscription)
 		} else {
-			e = s.applySubscription(ctx, tx, ws, obj.ID, obj.Customer, *a.subscription, false)
+			e = s.applySubscription(ctx, tx, ws, subscription, obj.Customer, *a.subscription, false)
 		}
 		// An observation asked for after this one has been applied, and saw at least as much.
 		if e != nil && !errors.Is(e, errSuperseded) {
