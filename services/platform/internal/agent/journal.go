@@ -69,6 +69,8 @@ type Record struct {
 	// wait for the host. The client accepts a command when it polls, before that wait.
 	StartedAt *time.Time                 `json:",omitempty"`
 	Railpack  *pipeline.PreparedRailpack `json:",omitempty"`
+	// Values says whether the values released for the command were removed while it was parked.
+	Values recordValues `json:",omitempty"`
 }
 type Journal struct {
 	db *journalDB
@@ -88,6 +90,7 @@ type Journal struct {
 	// rekeyedAt is the transaction that last re-sealed every record.
 	rekeyedAt      atomic.Uint64
 	startupUpdates map[uuid.UUID]bool
+	swept          sweptScratch
 }
 
 // Open opens a journal whose keyring is never sealed, for tests and development. It refuses one
@@ -114,7 +117,7 @@ func openJournal(ctx context.Context, dir string, store func(context.Context) (K
 		return nil, err
 	}
 	fail := func(err error) (*Journal, error) { db.Close(); return nil, err }
-	j := &Journal{db: &journalDB{DB: db}, dir: dir}
+	j := &Journal{db: &journalDB{DB: db}, dir: dir, swept: sweepScratch(dir)}
 	if err = j.openLocalKeys(ctx, store, point); err != nil {
 		return fail(err)
 	}
@@ -141,7 +144,7 @@ func openJournal(ctx context.Context, dir string, store func(context.Context) (K
 		if err := j.dropSubmissionCredentials(tx); err != nil {
 			return err
 		}
-		if err := j.redactFinished(tx); err != nil {
+		if err := j.redactUnneeded(tx); err != nil {
 			return err
 		}
 		if !clean {
@@ -466,6 +469,7 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 				return errors.New("command identity changed")
 			}
 			existing.Command.CancelRequested = existing.Command.CancelRequested || c.CancelRequested
+			takeReleasedValues(&existing, c)
 			out = existing
 			return j.put(tx, "operations", c.Id.String(), out)
 		} else if !errors.Is(e, os.ErrNotExist) {

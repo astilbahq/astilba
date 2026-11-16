@@ -168,7 +168,7 @@ func (e *Engine) restoreArchive(ctx context.Context, in backup.Installation, run
 	if _, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); !errdefs.IsNotFound(err) {
 		return restoreRefusal("restore target must be absent")
 	}
-	stage, err := os.MkdirTemp(e.Journal.dir, "restore-stage-")
+	stage, err := e.Journal.scratchDir(scratchRestoreStage)
 	if err != nil {
 		return err
 	}
@@ -328,7 +328,7 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 	}
 	// Re-dump with the same pinned tool to verify all archived definitions and data,
 	// including database settings, owners, grants and sequence contents.
-	verify, err := os.CreateTemp(e.Journal.dir, "restore-verification-")
+	verify, err := e.Journal.scratchFile(scratchRestoreVerification)
 	if err != nil {
 		return err
 	}

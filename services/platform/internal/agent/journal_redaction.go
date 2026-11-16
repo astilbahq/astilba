@@ -146,6 +146,72 @@ func (r Record) finished() bool {
 	return r.Acknowledged && execution.Terminal(r.Report.State)
 }
 
+// recordValues is Record.Values.
+type recordValues string
+
+const (
+	// valuesRemoved marks a record whose released values were removed while it waited for
+	// attention. It may never need them again: most ways out of attention settle it without them.
+	valuesRemoved recordValues = "removed"
+	// valuesWanted marks a record retried after its values were removed, which waits for
+	// management to release them again before it goes on.
+	valuesWanted recordValues = "wanted"
+)
+
+// parkedValues are the kinds whose released values a record gives up while it waits for
+// attention: the repository access of a backup or schedule command.
+//
+// Nothing that settles such a record reads that access. A run is settled by its run state, and a
+// scheduled backup or restore runs with the access its installed schedule holds. Only an install or
+// a check reads the command's own, and asks for it again (awaitValues). An earlier agent restored
+// onto this journal ignores Values; its retry of an install or check fails at the repository's
+// password check, before any effect. Kinds whose executors would act without their values, such as
+// a deployment without its secrets, are not listed.
+var parkedValues = map[api.ExecutionCommandKind]bool{"backup": true, "schedule": true}
+
+// parked reports whether a record waits for attention: an operator's retry, resolve-run, or a
+// coordinated rejection.
+func (r Record) parked() bool {
+	return !r.Acknowledged && r.Report.State == "needs_attention"
+}
+
+// withoutUnneededValues removes the values a record no longer needs, and reports whether it changed
+// the record: every value once it has finished, and a backup's repository access while it waits for
+// attention. A parked record also stops waiting for values, so being parked again after a retry
+// asks for nothing until the next retry.
+func withoutUnneededValues(r *Record) bool {
+	switch {
+	case r.finished():
+		return redactCommand(&r.Command)
+	case r.parked() && parkedValues[r.Command.Kind]:
+		if redactCommand(&r.Command) || r.Values == valuesWanted {
+			r.Values = valuesRemoved
+			return true
+		}
+	}
+	return false
+}
+
+// takeReleasedValues gives a record that waits for its values those a delivery of the same command
+// brings, and only such a record: one still parked keeps none, whatever a delivery brings, and any
+// other keeps the values it was first given. Accept has already matched the delivery to the record
+// by digest.
+func takeReleasedValues(r *Record, delivered api.ExecutionCommand) {
+	if r.Values != valuesWanted || r.Command.Kind != delivered.Kind {
+		return
+	}
+	held := delivered
+	if !redactCommand(&held) {
+		return
+	}
+	body, from := commandBody(&r.Command), commandBody(&delivered)
+	if body == nil || from == nil {
+		return
+	}
+	*body = *from
+	r.Values = ""
+}
+
 // upgradeActions are every action a command can ask of an upgrade.
 var upgradeActions = []string{"prepare", "cutover", "return", "reconcile"}
 
@@ -160,13 +226,13 @@ func withoutUpgradeValues(s *upgradeState) bool {
 	return true
 }
 
-// withoutReleasedValues is what put seals in place of value: a finished record or an ended upgrade
-// never reaches the journal with its values, whichever path writes it.
+// withoutReleasedValues is what put seals in place of value: a finished record, a parked backup or an
+// ended upgrade never reaches the journal with values it no longer needs, whichever path writes it.
 func withoutReleasedValues(bucket string, value any) any {
 	switch v := value.(type) {
 	case Record:
-		if bucket == "operations" && v.finished() {
-			redactCommand(&v.Command)
+		if bucket == "operations" {
+			withoutUnneededValues(&v)
 		}
 		return v
 	case upgradeState:
@@ -178,13 +244,13 @@ func withoutReleasedValues(bucket string, value any) any {
 	return value
 }
 
-// redactFinished removes the values of every finished record and ended upgrade already in the
-// journal, as an earlier agent left them. It runs on every open, inside the open's transaction, so a
-// crash leaves each record as it was or redacted, never in between, and records an earlier agent
-// wrote after a rollback are redacted when this one returns. Unfinished records keep their values
-// for the work and redelivery that still need them. Sentinels and fences are never finished and
-// carry no payload, so they are left as they are.
-func (j *Journal) redactFinished(tx *bolt.Tx) error {
+// redactUnneeded removes the values of every finished record, parked backup and ended upgrade
+// already in the journal, as an earlier agent left them. It runs on every open, inside the open's
+// transaction, so a crash leaves each record as it was or redacted, never in between, and records an
+// earlier agent wrote after a rollback are redacted when this one returns. Other records keep their
+// values for the work and redelivery that still need them. Sentinels and fences are never finished,
+// and carry no payload a parked backup would, so they are left as they are.
+func (j *Journal) redactUnneeded(tx *bolt.Tx) error {
 	keys := []string{}
 	if err := tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
 		keys = append(keys, string(k))
@@ -197,7 +263,7 @@ func (j *Journal) redactFinished(tx *bolt.Tx) error {
 		if err := j.get(tx, "operations", k, &r); err != nil {
 			return err
 		}
-		if r.finished() && redactCommand(&r.Command) {
+		if withoutUnneededValues(&r) {
 			if err := j.put(tx, "operations", k, r); err != nil {
 				return err
 			}

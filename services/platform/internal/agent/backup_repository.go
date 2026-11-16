@@ -34,12 +34,12 @@ func (e *Engine) resticTo(ctx context.Context, in backup.Installation, dir strin
 	if err != nil || !strings.HasPrefix(string(version), "restic "+backup.ResticVersion+" ") {
 		return errors.New("supported restic version required")
 	}
-	secret, err := os.MkdirTemp(e.Journal.dir, "restic-access-")
+	secret, err := e.Journal.scratchDir(scratchResticAccess)
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(secret)
-	if err = os.WriteFile(filepath.Join(secret, "password"), []byte(in.Access.Password), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(secret, scratchPassword), []byte(in.Access.Password), 0600); err != nil {
 		return err
 	}
 	repo := ""
@@ -50,7 +50,7 @@ func (e *Engine) resticTo(ctx context.Context, in backup.Installation, dir strin
 	}
 	cmd := exec.CommandContext(ctx, cli, append([]string{"--no-cache", "--json"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + secret, "RESTIC_REPOSITORY=" + repo, "RESTIC_PASSWORD_FILE=" + filepath.Join(secret, "password"), "AWS_ACCESS_KEY_ID=" + in.Access.AccessKey, "AWS_SECRET_ACCESS_KEY=" + in.Access.SecretKey, "AWS_DEFAULT_REGION=" + in.Destination.Region, "TMPDIR=" + secret}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + secret, "RESTIC_REPOSITORY=" + repo, "RESTIC_PASSWORD_FILE=" + filepath.Join(secret, scratchPassword), "AWS_ACCESS_KEY_ID=" + in.Access.AccessKey, "AWS_SECRET_ACCESS_KEY=" + in.Access.SecretKey, "AWS_DEFAULT_REGION=" + in.Destination.Region, "TMPDIR=" + secret}
 	cmd.Stdout = out
 	cmd.Stderr = io.Discard
 	if err = cmd.Run(); err != nil {
@@ -160,7 +160,7 @@ func (e *Engine) backupSnapshot(ctx context.Context, s *scheduleState, r *backup
 	if freeBytes(e.Journal.dir) < 256<<20 {
 		return errors.New("insufficient staging capacity")
 	}
-	stage, err := os.MkdirTemp(e.Journal.dir, "backup-stage-")
+	stage, err := e.Journal.scratchDir(scratchBackupStage)
 	if err != nil {
 		return err
 	}
