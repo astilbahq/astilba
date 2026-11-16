@@ -84,11 +84,11 @@ GROUP BY v.kind ORDER BY v.kind;
 LOCK TABLE secret_versions, git_connections, github_app_authorizations, registries, build_secret_versions,
     backup_destinations, backup_policies, alert_settings, accounts IN SHARE MODE;
 
--- name: InstancesSealingUnderTheKeyring :one
--- unscoped: instances seen in the last five minutes whose release may seal under the installation
--- keyring: one that completes a stage before sealing_stage, or reports none.
+-- name: InstancesBelowStage :one
+-- unscoped: instances seen in the last five minutes whose release completes a stage before
+-- @stage, or reports none, as a release from before instances reported it does.
 SELECT count(*)::bigint FROM custody_instances
-WHERE seen_at > now() - interval '5 minutes' AND (stage IS NULL OR stage < @sealing_stage::integer);
+WHERE seen_at > now() - interval '5 minutes' AND (stage IS NULL OR stage < @stage::integer);
 
 -- name: LimitLockWait :exec
 -- Bounds how long the transaction waits for any lock, so a command refuses rather than queueing

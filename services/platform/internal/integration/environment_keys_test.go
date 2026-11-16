@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -312,6 +313,37 @@ func TestReadingEnvironmentKeysCompletesStageFive(t *testing.T) {
 	events := keyEvents(t, f, "stage-completed")
 	if !slices.Equal([]string{details(t, events[len(events)-1])["stage"]}, []string{"5"}) || len(events) != before+1 {
 		t.Fatal("stage 5 was not recorded once")
+	}
+}
+
+// Values are sealed under environment keys only while every instance seen lately opens them: an
+// instance of a release before stage 5 holds sealing back until it has not been seen for five
+// minutes. Each instance finds out as it loads its token keys.
+func TestEnvironmentSealingWaitsForOlderInstances(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	reload := func() bool {
+		t.Helper()
+		if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
+			t.Fatal(err)
+		}
+		return f.st.Broker.SealsUnderEnvironments()
+	}
+	if !reload() {
+		t.Fatal("an installation running only this release does not seal under environment keys")
+	}
+	older := uuid.New()
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, older); err != nil {
+		t.Fatal(err)
+	}
+	if reload() {
+		t.Fatal("sealed under environment keys beside an instance that cannot open them")
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
+		t.Fatal(err)
+	}
+	if !reload() {
+		t.Fatal("an instance gone for five minutes still holds sealing back")
 	}
 }
 

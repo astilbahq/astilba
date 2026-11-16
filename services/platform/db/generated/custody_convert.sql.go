@@ -278,15 +278,15 @@ func (q *Queries) HoldSealedValueTables(ctx context.Context) error {
 	return err
 }
 
-const instancesSealingUnderTheKeyring = `-- name: InstancesSealingUnderTheKeyring :one
+const instancesBelowStage = `-- name: InstancesBelowStage :one
 SELECT count(*)::bigint FROM custody_instances
 WHERE seen_at > now() - interval '5 minutes' AND (stage IS NULL OR stage < $1::integer)
 `
 
-// unscoped: instances seen in the last five minutes whose release may seal under the installation
-// keyring: one that completes a stage before sealing_stage, or reports none.
-func (q *Queries) InstancesSealingUnderTheKeyring(ctx context.Context, sealingStage int32) (int64, error) {
-	row := q.db.QueryRow(ctx, instancesSealingUnderTheKeyring, sealingStage)
+// unscoped: instances seen in the last five minutes whose release completes a stage before
+// @stage, or reports none, as a release from before instances reported it does.
+func (q *Queries) InstancesBelowStage(ctx context.Context, stage int32) (int64, error) {
+	row := q.db.QueryRow(ctx, instancesBelowStage, stage)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

@@ -503,7 +503,7 @@ func (b *Broker) CheckConverted(ctx context.Context, q *db.Queries) (string, err
 	if remaining > 0 {
 		return fmt.Sprintf("%d values are still sealed under the installation keyring", remaining), nil
 	}
-	older, err := q.InstancesSealingUnderTheKeyring(ctx, sealStage)
+	older, err := q.InstancesBelowStage(ctx, sealStage)
 	if err != nil {
 		return "", err
 	}
