@@ -18,13 +18,6 @@ import (
 // containers.
 const recoveryEffect = "restore-effect"
 
-// recoveryResult is AgentReport.restore: what a succeeded restore put in its target volume.
-type recoveryResult struct {
-	Snapshot string          `json:"snapshot"`
-	TargetID uuid.UUID       `json:"targetId"`
-	Manifest backup.Manifest `json:"manifest"`
-}
-
 // executeRecovery restores a snapshot from a lost server's policy repository into a new volume on
 // this server. Only the snapshot decides what is restored: its manifest is read out of it and
 // checked against the policy before anything is downloaded or created, and the restored data is
@@ -79,10 +72,12 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 			return e.finish(c.Id, "failed", "The restore reached its time limit before it changed anything.")
 		case errors.As(err, &refused):
 			return e.finish(c.Id, "failed", "Restore refused before anything was created: "+refused.Error()+".")
+		case errors.Is(err, errResticVersion):
+			return e.finish(c.Id, "failed", "Restore refused before anything was created: this server needs restic "+backup.ResticVersion+".")
 		}
 		return e.finish(c.Id, "failed", "Restore failed before anything was created. Check the destination's access, that the snapshot still exists, and that this server runs the current deployment.")
 	}
-	raw, err := stablejson.Marshal(recoveryResult{Snapshot: v.Snapshot, TargetID: v.TargetID, Manifest: stored})
+	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: v.Snapshot, TargetID: v.TargetID, Manifest: stored})
 	if err != nil {
 		return err
 	}

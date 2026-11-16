@@ -133,3 +133,38 @@ WHERE workspace_id = @workspace_id AND id = @policy_id;
 -- name: BackupSnapshotReceipts :one
 SELECT snapshot_receipts FROM backup_policies
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id;
+
+-- name: InsertBackupRecovery :exec
+INSERT INTO backup_recoveries(id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at)
+VALUES(@id,@workspace_id,@environment_id,@policy_id,@operation_id,@source_server_id,@server_id,@plan_id,@snapshot,@first_reported_at,@target_volume_id,@created_at);
+
+-- name: BackupRecoveryAccess :one
+-- A recovery's repository access is released only to the server it was issued to, for the
+-- operation it was issued as, while the policy is still the one it froze.
+SELECT p.encrypted_access,p.configuration FROM backup_recoveries r
+JOIN backup_policies p ON p.workspace_id = r.workspace_id AND p.environment_id = r.environment_id AND p.id = r.policy_id
+WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.id = @id
+AND r.operation_id = @operation_id AND r.server_id = @server_id AND r.policy_id = @policy_id;
+
+-- name: RecordBackupRecoveryResult :exec
+-- Reports stop once the operation is terminal, so the succeeded report is the only writer.
+UPDATE backup_recoveries SET result = @result WHERE workspace_id = @workspace_id AND operation_id = @operation_id;
+
+-- name: LockRecoveryDelivery :one
+-- A restore of the polling server, locked to decide its delivery. Held is whether an agent may
+-- have it: its values were released to one, or it reported.
+SELECT o.command,o.state,o.cancel_requested,(o.report_sequence > 0 OR EXISTS(
+    SELECT 1 FROM secret_releases r WHERE r.workspace_id = o.workspace_id AND r.operation_id = o.id))::boolean AS held
+FROM execution_operations o
+WHERE o.workspace_id = @workspace_id AND o.id = @id AND o.server_id = @server_id AND o.kind = 'restore'
+FOR UPDATE OF o;
+
+-- name: FinishUndeliveredRecovery :exec
+UPDATE execution_operations SET state = @state, note = @note::text || CASE WHEN note <> '' THEN ' ' || note ELSE '' END
+WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: ListBackupRecoveries :many
+SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.policy_id = @policy_id
+ORDER BY r.created_at DESC, r.id LIMIT 100;

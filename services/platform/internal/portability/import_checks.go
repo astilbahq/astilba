@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"strings"
+
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/google/uuid"
 )
 
 // MaxCounter is the largest counter an agent report or an import may carry. Later statements
@@ -84,4 +87,28 @@ func checkImportedRow(table string, row Row) error {
 		}
 	}
 	return nil
+}
+
+// checkRecoveryResult refuses a restore result that its own row could not have recorded, which the
+// restore's listing would fail to read.
+func checkRecoveryResult(row Row) error {
+	if string(row["result"]) == "null" {
+		return nil
+	}
+	ids := map[string]uuid.UUID{}
+	for _, column := range []string{"policy_id", "environment_id", "target_volume_id"} {
+		value, err := rowString(row, column)
+		if err != nil {
+			return err
+		}
+		if ids[column], err = uuid.Parse(value); err != nil {
+			return ErrArchive
+		}
+	}
+	snapshot, err := rowString(row, "snapshot")
+	if err != nil {
+		return err
+	}
+	_, err = backup.ParseRecoveryResult(row["result"], ids["policy_id"], ids["environment_id"], snapshot, ids["target_volume_id"])
+	return err
 }

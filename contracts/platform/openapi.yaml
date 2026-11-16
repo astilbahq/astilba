@@ -4306,6 +4306,102 @@
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries:
+    get:
+      operationId: ListBackupRecoveries
+      description: Restores of this policy's snapshots onto a server other than its own, newest first.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items:
+                  $ref: '#/components/schemas/BackupRecoveryRecord'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: StartBackupRecovery
+      description: >-
+        Restores one of a revoked server's policy snapshots into a new volume on the environment's
+        current primary. Only a snapshot management received from the policy's server can be
+        chosen, and the owner acknowledges that a server compromised before its revocation could
+        have uploaded altered data. Nothing uses the restored volume until a reviewed cutover.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupRecoveryRequest'
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover:
     post:
       operationId: PrepareBackupCutover
@@ -9834,6 +9930,72 @@
       required: [snapshot, targetId, manifest]
       x-go-type: jsontext.Value
       x-go-type-import: {path: encoding/json/jsontext}
+    BackupRecoveryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        requestKey:
+          type: string
+          format: uuid
+        acknowledged:
+          type: boolean
+          enum: [true]
+          description: The owner understands that a server compromised before it was revoked could have uploaded altered data, which a restore's checks can't tell from genuine data.
+      required: [snapshot, requestKey, acknowledged]
+    BackupRecoveryRecord:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The restore's run ID, which labels what it creates on the receiving server.
+        operationId:
+          type: string
+          format: uuid
+        sourceServerId:
+          type: string
+          format: uuid
+        serverId:
+          type: string
+          format: uuid
+        planId:
+          type: string
+          format: uuid
+          description: The plan applied on the receiving server when the restore was issued.
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        firstReportedAt:
+          type: string
+          format: date-time
+          description: When management first received the snapshot, by its own clock.
+        targetId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        state:
+          $ref: '#/components/schemas/ExecutionState'
+        note:
+          type: string
+        restored:
+          type: object
+          nullable: true
+          description: >-
+            Once the restore succeeded, the manifest read out of the snapshot that the restored data
+            matches. The data came from a server that may have been compromised and isn't reset
+            for use until a cutover.
+          properties:
+            manifest:
+              $ref: '#/components/schemas/BackupManifest'
+          required: [manifest]
+          additionalProperties: false
+      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored]
     BackupCommandRequest:
       type: object
       additionalProperties: false

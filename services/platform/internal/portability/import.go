@@ -133,6 +133,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 		}
 	}
+	// Version 15 carries restores onto another server. None was made before it.
+	if version < 15 {
+		if _, exists := archive.Tables["backup_recoveries"]; exists {
+			return archive, ErrArchive
+		}
+		archive.Tables["backup_recoveries"] = []Row{}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -169,8 +176,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			if _, found := domain.NULField(row, ""); found {
 				return archive, ErrArchive
 			}
-			if table.Name == "backup_policies" {
+			switch table.Name {
+			case "backup_policies":
 				if _, e = backup.ParseReceipts(row["snapshot_receipts"]); e != nil {
+					return archive, ErrArchive
+				}
+			case "backup_recoveries":
+				if e = checkRecoveryResult(row); e != nil {
 					return archive, ErrArchive
 				}
 			}
@@ -200,6 +212,10 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		{"environments", "retirement_operation_id", "execution_operations"},
 		{"environments", "purge_operation_id", "execution_operations"},
 		{"backup_cutovers", "source_plan_id", "visual_requests"},
+		{"backup_recoveries", "operation_id", "execution_operations"},
+		{"backup_recoveries", "plan_id", "visual_requests"},
+		{"backup_recoveries", "source_server_id", "servers"},
+		{"backup_recoveries", "server_id", "servers"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
 		{"network_members", "network_id", "workspace_networks"},
