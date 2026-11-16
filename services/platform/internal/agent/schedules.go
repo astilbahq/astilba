@@ -160,6 +160,15 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 		}
 		return e.finish(c.Id, "cancelled", "Cancelled before backup host effects.")
 	}
+	// An install or a check of a repository reads the command's own repository access, which a
+	// retried command gave up while it waited for attention. Every repository has a password, so
+	// one without it waits for it. Scheduled backups and restores use the installed schedule's
+	// access, and a disable or a container job's install none.
+	if (b.Action == "install" || b.Action == "check") && b.Installation.Policy.Method != "container-job" {
+		if wait, err := e.awaitValues(c, r, b.Installation.Access.Password != ""); wait || err != nil {
+			return err
+		}
+	}
 	parent := ctx
 	started, err := e.Journal.startWork(c.Id)
 	if err != nil {
@@ -419,9 +428,10 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var err error
+	var cleared []clusterSetting
 	if snapshot != "" {
 		// The run recorded above protects its snapshot: see protectRestoreSources.
-		err = e.restoreSnapshot(runCtx, s, &r)
+		cleared, err = e.restoreSnapshot(runCtx, s, &r)
 	} else if s.Installation.Policy.Method == "container-job" {
 		err = e.runContainerJob(runCtx, s, &r)
 	} else {
@@ -439,7 +449,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		r.Note = "Container job finished; exit result recorded."
 	}
 	if r.Verified {
-		r.Note = "Fresh restore verified. Existing services and data remain in use until a separate reviewed deployment."
+		r.Note = "Fresh restore matched its manifest, and a restored database's cluster was checked on a best-effort basis. Existing services and data remain in use until a separate reviewed deployment." + clearedNote(cleared)
 	}
 	// A run that failed before its first effect changed nothing, whatever the method.
 	effects := s.BeforeEffects != r.ID
@@ -456,6 +466,8 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 			r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
 		case timedOut:
 			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
+		case errors.As(err, new(clusterRefusal)):
+			r.Note = "Fresh restore refused: the restored database holds what a backup can't (" + clusterReason(err) + "), so the database may have been compromised. Nothing uses its target volume. Inspect the database before relying on its backups."
 		case errors.Is(err, errUnsupportedPostgresImage):
 			r.Note = "The database's PostgreSQL image is no longer one Astilba supports, so it was not dumped. Redeploy the database on a supported image, then refresh the policy."
 		default:

@@ -428,6 +428,9 @@ func (c *Client) Run(ctx context.Context) error {
 					}
 				}
 			}
+			if at, waiting := c.Journal.valuesDeadline(); waiting && retry == nil {
+				retry = time.After(time.Until(at) + time.Millisecond)
+			}
 		}
 	})
 	delay := time.Second

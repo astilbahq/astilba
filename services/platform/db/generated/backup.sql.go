@@ -214,6 +214,49 @@ func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatus
 	return status, err
 }
 
+const backupRecovery = `-- name: BackupRecovery :one
+SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3 AND r.id = $4
+`
+
+type BackupRecoveryParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+type BackupRecoveryRow struct {
+	ServerID       uuid.UUID `json:"server_id"`
+	PlanID         uuid.UUID `json:"plan_id"`
+	Snapshot       string    `json:"snapshot"`
+	TargetVolumeID uuid.UUID `json:"target_volume_id"`
+	Result         []byte    `json:"result"`
+	State          string    `json:"state"`
+}
+
+// One restore of a policy's snapshot onto another server, with its operation's state. A restore's
+// result is written once, when its operation ends.
+func (q *Queries) BackupRecovery(ctx context.Context, arg BackupRecoveryParams) (BackupRecoveryRow, error) {
+	row := q.db.QueryRow(ctx, backupRecovery,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.PolicyID,
+		arg.ID,
+	)
+	var i BackupRecoveryRow
+	err := row.Scan(
+		&i.ServerID,
+		&i.PlanID,
+		&i.Snapshot,
+		&i.TargetVolumeID,
+		&i.Result,
+		&i.State,
+	)
+	return i, err
+}
+
 const backupRecoveryAccess = `-- name: BackupRecoveryAccess :one
 SELECT p.encrypted_access,p.configuration FROM backup_recoveries r
 JOIN backup_policies p ON p.workspace_id = r.workspace_id AND p.environment_id = r.environment_id AND p.id = r.policy_id
@@ -536,8 +579,9 @@ func (q *Queries) ListBackupPolicies(ctx context.Context, arg ListBackupPolicies
 }
 
 const listBackupRecoveries = `-- name: ListBackupRecoveries :many
-SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note
+SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note,coalesce(v.deleted,false)::boolean AS target_deleted
 FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+LEFT JOIN managed_volumes v ON v.workspace_id = r.workspace_id AND v.environment_id = r.environment_id AND v.id = r.target_volume_id
 WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3
 ORDER BY r.created_at DESC, r.id LIMIT 100
 `
@@ -561,6 +605,7 @@ type ListBackupRecoveriesRow struct {
 	Result          []byte    `json:"result"`
 	State           string    `json:"state"`
 	Note            string    `json:"note"`
+	TargetDeleted   bool      `json:"target_deleted"`
 }
 
 func (q *Queries) ListBackupRecoveries(ctx context.Context, arg ListBackupRecoveriesParams) ([]ListBackupRecoveriesRow, error) {
@@ -585,6 +630,7 @@ func (q *Queries) ListBackupRecoveries(ctx context.Context, arg ListBackupRecove
 			&i.Result,
 			&i.State,
 			&i.Note,
+			&i.TargetDeleted,
 		); err != nil {
 			return nil, err
 		}

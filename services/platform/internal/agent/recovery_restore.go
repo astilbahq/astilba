@@ -34,6 +34,10 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	if e.cancelled(c.Id) || time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "Cancelled before the restore changed anything.")
 	}
+	// A retried restore gave up the repository's access while it waited for attention.
+	if wait, err := e.awaitValues(c, r, v.Installation.Access.Password != ""); wait || err != nil {
+		return err
+	}
 	parent := ctx
 	started, err := e.Journal.startWork(c.Id)
 	if err != nil {
@@ -45,7 +49,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	runCtx, cancel := context.WithTimeout(ctx, backup.RestoreTimeout)
 	defer cancel()
 	effects := false
-	stored, err := e.recoverSnapshot(runCtx, v, func() error {
+	stored, cleared, err := e.recoverSnapshot(runCtx, v, func() error {
 		if err := runCtx.Err(); err != nil {
 			return err
 		}
@@ -64,6 +68,8 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 		switch {
 		case effects && runCtx.Err() != nil:
 			return e.settleRecovery(c.Id, p, v.RunID, "The restore was cancelled or reached its time limit.")
+		case effects && errors.As(err, new(clusterRefusal)):
+			return e.settleRecovery(c.Id, p, v.RunID, "The restored database was refused: it holds what a backup can't ("+clusterReason(err)+"), so the server it was backed up from may have been compromised. Nothing uses the restored volume. Discard it and restore an earlier snapshot.")
 		case effects:
 			return e.settleRecovery(c.Id, p, v.RunID, "The restore failed while restoring or verifying its data.")
 		case ctx.Err() != nil:
@@ -84,15 +90,15 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	return e.Journal.Mutate(c.Id, func(record *Record) {
 		result := jsontext.Value(raw)
 		record.Report.Restore = &result
-		settleReport(record, "succeeded", "Snapshot restored into a new volume and verified against its manifest. Nothing uses the volume until a reviewed cutover.")
+		settleReport(record, "succeeded", "Snapshot restored into a new volume and matched against its manifest. A restored database's settings files were reset to this server's and its cluster checked on a best-effort basis, which doesn't make a database from a compromised server safe to use. Nothing uses the volume until a reviewed cutover."+clearedNote(cleared))
 	})
 }
 
 // recoverSnapshot checks the restore against this server and the snapshot, then restores it.
-func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin func() error) (backup.Manifest, error) {
+func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin func() error) (backup.Manifest, []clusterSetting, error) {
 	in := v.Installation
 	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
-		return backup.Manifest{}, err
+		return backup.Manifest{}, nil, err
 	}
 	// The database password is the one this server's own database was created with, never one
 	// released with the command: the restored cluster replaces that database's volume at cutover.
@@ -100,33 +106,33 @@ func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin f
 	if in.Policy.Method == "postgres-logical" {
 		password, err := e.databasePassword(ctx, in.Policy)
 		if err != nil {
-			return backup.Manifest{}, restoreRefusal("this server's database is not running as the deployment describes")
+			return backup.Manifest{}, nil, restoreRefusal("this server's database is not running as the deployment describes")
 		}
 		in.Access.DatabasePassword = password
 	}
 	if err := e.prepareRepository(ctx, &in, false); err != nil {
-		return backup.Manifest{}, err
+		return backup.Manifest{}, nil, err
 	}
 	m, archive, err := e.snapshotManifest(ctx, in, v.Snapshot)
 	if err != nil {
-		return backup.Manifest{}, err
+		return backup.Manifest{}, nil, err
 	}
 	if err = v.Admits(m); err != nil {
-		return backup.Manifest{}, restoreRefusal(err.Error())
+		return backup.Manifest{}, nil, restoreRefusal(err.Error())
 	}
-	return m, e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
+	cleared, err := e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
+	return m, cleared, err
 }
 
 // settleRecovery ends a restore that may have created its volume or containers. Once nothing it
 // started can still be running it has failed, whatever its volume holds: nothing uses that volume,
 // and only a succeeded restore's can be cut over to. Otherwise it is left to inspect, and holds
-// this host until resolve-run or retry settles it. Neither uses the repository's access, so the
-// record no longer keeps it.
+// this host until resolve-run or retry settles it. Neither uses the repository's access, which the
+// journal removes from a parked restore.
 func (e *Engine) settleRecovery(id uuid.UUID, p backup.Policy, run uuid.UUID, cause string) error {
 	if left := e.removeRunContainers(p, run); left != "" {
 		return e.Journal.Mutate(id, func(r *Record) {
 			settleReport(r, "needs_attention", cause+" Its cleanup could not be confirmed: "+left+". Inspect containers labelled com.astilba.run="+run.String()+", then run resolve-run for this policy and run.")
-			redactCommand(&r.Command)
 		})
 	}
 	return e.finish(id, "failed", cause+" Nothing it started is still running. Its target volume may hold partial data; nothing uses it.")

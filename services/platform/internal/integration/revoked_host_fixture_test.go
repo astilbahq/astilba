@@ -425,6 +425,13 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 		if !g.note(h, "restore") {
 			return report, false
 		}
+		g.mu.Lock()
+		failing := g.failing["restore/"+h.id.String()]
+		g.mu.Unlock()
+		if failing {
+			report.State = "failed"
+			return report, true
+		}
 		report.Restore = claimMessage(t, fixtureRecovery(r))
 	case "upgrade":
 		var command upgrade.Command

@@ -427,4 +427,8 @@ func TestCustodyStagesAreTakenInOrder(t *testing.T) {
 			t.Errorf("%d after %d allowed", c.required, c.completed)
 		}
 	}
+	// Stage 4 is completed by converting, not by a release, so the refusal says to convert.
+	if err := stageRefusal(5, 3); err == nil || !strings.Contains(err.Error(), "custody convert") {
+		t.Errorf("5 after 3: %v", err)
+	}
 }

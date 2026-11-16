@@ -134,12 +134,15 @@ By custody stage 2 every key exists, and values sealed under them open; a new in
 its keys when it first starts. From stage 3, every new value is sealed under its workspace's key,
 or a second factor under the installation key, and tokens are issued under a token key. Values
 stored before then stay under the keyring until [converted](#converting-values), which completes
-stage 4. This release needs stage 3: `migrate`, `serve` and every other command refuse it on an
-installation that hasn't completed stage 3, so run the stage 3 release until `custody status`
-shows stage 3 first. Going back to a stage 2 or stage 3 release is a redeploy: both open
-everything this one seals, converted values included. Going back to an earlier release needs the
-backup taken before upgrading to stage 3, since an earlier release cannot open these values, so
-never run one beside this one.
+stage 4. From stage 5, a release also opens values sealed under an environment's own key, which
+that key's workspace key wraps; a later release seals each environment's secret values under it,
+so that purging the environment can destroy the key and every copy of them with it. This release
+completes stage 5 when it starts, once stage 4 is complete, and needs stage 4: `migrate`, `serve`
+and every other command refuse it on an installation that hasn't completed stage 4, so run
+`custody convert` with the stage 4 release until `custody status` shows stage 4 first. Going back
+to a stage 2, 3 or 4 release is a redeploy: each opens everything this one seals, converted
+values included. Going back to an earlier release needs the backup taken before upgrading to stage
+3, since an earlier release cannot open these values, so never run one beside this one.
 
 - **New workspaces** get their key in the transaction that creates them.
 - **Existing workspaces** without a key, such as one created by an earlier release after a
