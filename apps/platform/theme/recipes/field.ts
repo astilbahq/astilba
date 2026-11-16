@@ -14,7 +14,9 @@ export const fieldRecipe = defineSlotRecipe({
       fontSize: "secondary",
       // Base UI keeps a resolved error in the page until the next animation frame, for an exit
       // animation it doesn't have, so what follows would move a frame after the field is valid.
-      "&[data-ending-style]": { display: "none" },
+      // Base UI marks its error invalid while the error applies, including when the field turns
+      // invalid again before that frame.
+      "&[data-ending-style]:not([data-invalid])": { display: "none" },
     },
   },
   variants: {

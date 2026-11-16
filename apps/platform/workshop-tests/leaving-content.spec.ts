@@ -5,24 +5,30 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 // content still to leave would move what follows it when it goes, and a press can then be released
 // over a different element.
 async function holdAnimationFrames(page: Page) {
-  await page.evaluate(() => {
-    const native = window.requestAnimationFrame.bind(window);
-    const held: FrameRequestCallback[] = [];
-    window.requestAnimationFrame = (callback) => {
-      held.push(callback);
-      return 0;
-    };
-    Object.assign(window, {
-      releaseAnimationFrames: () =>
-        new Promise<void>((resolve) => {
-          window.requestAnimationFrame = native;
-          native((time) => {
-            for (const callback of held.splice(0)) callback(time);
-            native(() => resolve());
-          });
-        }),
-    });
-  });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const native = window.requestAnimationFrame.bind(window);
+        const held: FrameRequestCallback[] = [];
+        window.requestAnimationFrame = (callback) => {
+          held.push(callback);
+          return 0;
+        };
+        Object.assign(window, {
+          releaseAnimationFrames: () =>
+            new Promise<void>((released) => {
+              window.requestAnimationFrame = native;
+              native((time) => {
+                for (const callback of held.splice(0)) callback(time);
+                released();
+              });
+            }),
+        });
+        // Base UI asks for a frame only when it has none pending, so let one already requested
+        // run first; everything it asks for from then on is held.
+        native(() => resolve());
+      }),
+  );
   return () =>
     page.evaluate(() =>
       (
