@@ -169,6 +169,7 @@ type BackupPolicy struct {
 	Status               []byte    `json:"status"`
 	StatusSequence       int64     `json:"status_sequence"`
 	CoordinatedCheckedAt time.Time `json:"coordinated_checked_at"`
+	SnapshotReceipts     []byte    `json:"snapshot_receipts"`
 }
 
 type BuildArtifact struct {
@@ -310,10 +311,11 @@ type CustodyBackendsVersion struct {
 }
 
 type CustodyInstance struct {
-	InstanceID       uuid.UUID `json:"instance_id"`
-	TokenGenerations []int64   `json:"token_generations"`
-	StartedAt        time.Time `json:"started_at"`
-	SeenAt           time.Time `json:"seen_at"`
+	InstanceID       uuid.UUID   `json:"instance_id"`
+	TokenGenerations []int64     `json:"token_generations"`
+	StartedAt        time.Time   `json:"started_at"`
+	SeenAt           time.Time   `json:"seen_at"`
+	Stage            pgtype.Int4 `json:"stage"`
 }
 
 type CustodyStage struct {
@@ -988,6 +990,7 @@ type Server struct {
 	IdentityHistoryUntil        *time.Time  `json:"identity_history_until"`
 	EnrollmentIssuerID          *uuid.UUID  `json:"enrollment_issuer_id"`
 	EnrollmentIssuerAuthVersion pgtype.Int8 `json:"enrollment_issuer_auth_version"`
+	RevokedAt                   *time.Time  `json:"revoked_at"`
 }
 
 type ServerDnsLease struct {

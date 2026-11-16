@@ -72,8 +72,9 @@ var version5Tables = func() []table {
 // (RecoveryArchiveVersion). Version 7 added source_submissions; version 8 added each environment's
 // retirement and the PostgreSQL major each managed volume was initialised by; version 9 added
 // purges, retired secrets and erased secret values; version 11 added which preview requests
-// revoking their preview's host released. Version 10 is a recovery base.
-const ArchiveVersion = 11
+// revoking their preview's host released; version 13 added when each server's revocation began and
+// when management first received each backup snapshot. Versions 10 and 12 are recovery bases.
+const ArchiveVersion = 13
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -123,11 +124,27 @@ var version9Tables = func() []table {
 
 // Version 11 carries whether revoking its preview's host released a preview request, which its
 // note tells the owner while the request has a new preview elsewhere.
-var tables = func() []table {
+var version11Tables = func() []table {
 	out := append([]table{}, version9Tables...)
 	for i := range out {
 		if out[i].Name == "preview_requests" {
 			out[i].Columns += ",released_by_revocation"
+		}
+	}
+	return out
+}()
+
+// Version 13 carries when each server's revocation began and when management first received each
+// backup snapshot, which restoring onto a replacement server shows the owner. Version 12 is a
+// recovery base.
+var tables = func() []table {
+	out := append([]table{}, version11Tables...)
+	for i := range out {
+		switch out[i].Name {
+		case "servers":
+			out[i].Columns += ",revoked_at"
+		case "backup_policies":
+			out[i].Columns += ",snapshot_receipts"
 		}
 	}
 	return out

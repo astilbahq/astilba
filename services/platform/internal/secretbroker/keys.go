@@ -292,8 +292,9 @@ func (k *NewKeys) Close(ctx context.Context, outcome Outcome) {
 }
 
 // keysStage is the custody stage creating every key completes: every workspace, the
-// installation and the token keys have a generation. sealStage follows at once in this release,
-// which seals every new value under those keys.
+// installation and the token keys have a generation. sealStage follows at once, since every
+// release from it seals new values under those keys. Creating keys completes no later stage:
+// convertStage is recorded only by Convert.
 const (
 	keysStage = 2
 	sealStage = 3

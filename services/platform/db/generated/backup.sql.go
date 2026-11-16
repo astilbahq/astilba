@@ -214,6 +214,24 @@ func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatus
 	return status, err
 }
 
+const backupSnapshotReceipts = `-- name: BackupSnapshotReceipts :one
+SELECT snapshot_receipts FROM backup_policies
+WHERE workspace_id = $1 AND environment_id = $2 AND id = $3
+`
+
+type BackupSnapshotReceiptsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+func (q *Queries) BackupSnapshotReceipts(ctx context.Context, arg BackupSnapshotReceiptsParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, backupSnapshotReceipts, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var snapshot_receipts []byte
+	err := row.Scan(&snapshot_receipts)
+	return snapshot_receipts, err
+}
+
 const claimDueCoordinatedBackupPolicy = `-- name: ClaimDueCoordinatedBackupPolicy :one
 UPDATE backup_policies SET coordinated_checked_at=clock_timestamp()
 WHERE id=(SELECT p.id FROM backup_policies p
@@ -533,6 +551,34 @@ func (q *Queries) OperationCommandByRequestKey(ctx context.Context, arg Operatio
 	var command []byte
 	err := row.Scan(&command)
 	return command, err
+}
+
+const recordBackupSnapshotReceipts = `-- name: RecordBackupSnapshotReceipts :exec
+UPDATE backup_policies p SET snapshot_receipts = COALESCE((
+    SELECT jsonb_object_agg(s.snapshot, COALESCE(p.snapshot_receipts->s.snapshot, to_jsonb(clock_timestamp())))
+    FROM unnest($1::text[]) AS s(snapshot)
+    WHERE p.snapshot_receipts->s.snapshot IS NOT NULL OR s.snapshot = ANY($2::text[])
+), '{}')
+WHERE workspace_id = $3 AND id = $4
+`
+
+type RecordBackupSnapshotReceiptsParams struct {
+	Listed      []string  `json:"listed"`
+	Uploaded    []string  `json:"uploaded"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	PolicyID    uuid.UUID `json:"policy_id"`
+}
+
+// A listed snapshot keeps the time management first received it, one an upload lists gets
+// management's clock now, and one no longer listed loses its receipt.
+func (q *Queries) RecordBackupSnapshotReceipts(ctx context.Context, arg RecordBackupSnapshotReceiptsParams) error {
+	_, err := q.db.Exec(ctx, recordBackupSnapshotReceipts,
+		arg.Listed,
+		arg.Uploaded,
+		arg.WorkspaceID,
+		arg.PolicyID,
+	)
+	return err
 }
 
 const rewrapBackupDestinationAccess = `-- name: RewrapBackupDestinationAccess :exec

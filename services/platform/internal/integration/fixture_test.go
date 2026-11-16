@@ -438,7 +438,7 @@ func setupDatabase(t *testing.T, name string, bootstrap, hosted bool, keys *cryp
 	if more, e := st.Broker.InitKeys(ctx, func() bool { return true }); e != nil || more {
 		t.Fatal(more, e)
 	}
-	tokens, e := st.Broker.Tokens(ctx)
+	tokens, e := st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 	if e != nil {
 		t.Fatal(e)
 	}

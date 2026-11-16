@@ -45,8 +45,14 @@ func subscriptionLookup(r *http.Request) bool {
 // subscribedWorkspace is a hosted workspace that completed its checkout for sub_fixture.
 func subscribedWorkspace(t *testing.T) (*fixture, store.Principal, uuid.UUID, *stripeFixture, *billing.Service) {
 	t.Helper()
+	return subscribedWorkspaceWith(t, newStripeFixture(t))
+}
+
+// subscribedWorkspaceWith completes a hosted workspace's checkout for sub_fixture as stripe
+// stands.
+func subscribedWorkspaceWith(t *testing.T, stripe *stripeFixture) (*fixture, store.Principal, uuid.UUID, *stripeFixture, *billing.Service) {
+	t.Helper()
 	f, p, ws := hostedFixture(t)
-	stripe := &stripeFixture{t: t, customer: "cus_fixture", sessions: map[string]hosting.Checkout{}, keys: map[string]bool{}, until: time.Now().Add(time.Hour), status: "active"}
 	svc := &billing.Service{Store: f.st, Stripe: hosting.Stripe{Key: "fixture", Price: "price_monthly", HTTP: &http.Client{Transport: stripe}}, Origin: "https://panel.example.test", Now: time.Now}
 	if _, e := svc.Checkout(t.Context(), p, ws); e != nil {
 		t.Fatal(e)
@@ -140,7 +146,8 @@ func TestHungStripeWebhooksHoldNothing(t *testing.T) {
 }
 
 // Answers fetched with nothing held can arrive out of order. One asked for before another
-// was must not replace it: here the earlier answer would restore lapsed access.
+// was must not replace it: here the earlier answer, of a paid active subscription, would
+// restore access its cancellation ended.
 func TestOvertakenStripeAnswerIsNotApplied(t *testing.T) {
 	f, p, ws, stripe, svc := subscribedWorkspace(t)
 	entered, release := stripe.hold(t, subscriptionLookup, true)
@@ -149,9 +156,7 @@ func TestOvertakenStripeAnswerIsNotApplied(t *testing.T) {
 	go func() { earlier <- svc.Webhook(context.Background(), raw, sig) }()
 	waitEntered(t, entered)
 	requireWorkspaceWritable(t, f, p, ws)
-	stripe.mu.Lock()
-	stripe.until = time.Now().Add(-time.Minute)
-	stripe.mu.Unlock()
+	stripe.cancel(time.Now().Add(-time.Minute))
 	raw, sig = stripe.subscriptionEvent(t, "evt_later")
 	if err := svc.Webhook(t.Context(), raw, sig); err != nil {
 		t.Fatal(err)
@@ -168,10 +173,13 @@ func TestOvertakenStripeAnswerIsNotApplied(t *testing.T) {
 	if err = f.st.Pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM hosted_billing_events WHERE id='evt_earlier')").Scan(&recorded); err != nil || !recorded {
 		t.Fatal("the overtaken delivery was not recorded, so Stripe would send it forever", err)
 	}
-	// A later delivery asks again and applies what Stripe says now.
+	// A later delivery asks again and applies what Stripe says now. (Stripe never revives a
+	// cancelled subscription; the fixture does, to show the later answer is applied.)
 	stripe.mu.Lock()
-	stripe.until = time.Now().Add(time.Hour)
+	stripe.endedAt = nil
 	stripe.mu.Unlock()
+	stripe.renew("paid")
+	stripe.settle("active", "paid")
 	raw, sig = stripe.subscriptionEvent(t, "evt_renewed")
 	if err = svc.Webhook(t.Context(), raw, sig); err != nil {
 		t.Fatal(err)
@@ -185,7 +193,8 @@ func TestOvertakenStripeAnswerIsNotApplied(t *testing.T) {
 // webhook that completed the checkout meanwhile stands, and no second checkout is created.
 func TestHungCheckoutRecoveryHoldsNothing(t *testing.T) {
 	f, p, ws := hostedFixture(t)
-	stripe := &stripeFixture{t: t, customer: "cus_fixture", sessions: map[string]hosting.Checkout{}, keys: map[string]bool{}, until: time.Now().Add(time.Hour), status: "active", loseResponse: true}
+	stripe := newStripeFixture(t)
+	stripe.loseResponse = true
 	svc := &billing.Service{Store: f.st, Stripe: hosting.Stripe{Key: "fixture", Price: "price_monthly", HTTP: &http.Client{Transport: stripe}}, Origin: "https://panel.example.test", Now: time.Now}
 	if _, e := svc.Checkout(t.Context(), p, ws); e == nil {
 		t.Fatal("expected lost response")

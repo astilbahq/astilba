@@ -82,3 +82,27 @@ func TestEnvelopeV2RefusesReservedAndUnknownFields(t *testing.T) {
 		t.Fatal("sealed under a reserved scope", err)
 	}
 }
+
+// The database tells converted values from the rest by their first bytes (custody_value_converted,
+// in the custody conversion migration), so every envelope starts with its version.
+func TestEnvelopesStartWithTheirVersion(t *testing.T) {
+	ring, err := New("prefix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1, err := ring.Seal([]byte("value"), "secret:v1:a:b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, err := SealUnder(bytes.Repeat([]byte{7}, 32), ScopeWorkspace, 1, []byte("value"), "secret:v1:a:b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := MoveUnder(ring, nil, v1, "secret:v1:a:b", bytes.Repeat([]byte{7}, 32), ScopeWorkspace, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(v1, []byte(`{"version":1,`)) || !bytes.HasPrefix(v2, []byte(`{"version":2,`)) || !bytes.HasPrefix(moved, []byte(`{"version":2,`)) {
+		t.Fatalf("%.16s %.16s %.16s", v1, v2, moved)
+	}
+}

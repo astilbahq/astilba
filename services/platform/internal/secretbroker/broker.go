@@ -155,6 +155,11 @@ func (b *Broker) Begin(ctx context.Context, r Request) (*Session, error) {
 	if !b.budgets.take(b.now(), budgetKeys(r)) {
 		return nil, domain.RateLimited
 	}
+	return b.begin(ctx, r, rule)
+}
+
+// begin records an admitted request, then unwraps the keys its session holds.
+func (b *Broker) begin(ctx context.Context, r Request, rule rule) (*Session, error) {
 	held, err := b.wrappedKeys(ctx, r)
 	if err != nil {
 		return nil, err

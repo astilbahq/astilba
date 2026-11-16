@@ -103,10 +103,11 @@ remove the trigger.
 
 | Command | What it does |
 | --- | --- |
-| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, and any pending work. It changes nothing. |
+| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, how many values recording stage 4 reads, and any pending work. It changes nothing. |
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
 | `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
 | `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
+| `astilba custody convert --operator <name or role> [--reason <text>]` | Moves every value still sealed under the keyring onto its workspace's key, or a second factor onto the installation key, and records custody stage 4 once none is left. See [converting values](#converting-values). |
 
 `custody status` lists a command that recorded a start and no finish, unless a run of it that
 started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
@@ -123,13 +124,15 @@ or delivering, under the backend's key for that purpose's class. A key check val
 it shows whether a wrapping opens to the right key before any value is opened with it.
 
 By custody stage 2 every key exists, and values sealed under them open; a new installation makes
-its keys when it first starts. This release (custody
-stage 3) seals every new value under its workspace's key, or a second factor under the installation
-key, and issues tokens under a token key. Going back to the stage 2 release is a redeploy: it opens
-everything this one seals. Going back to an earlier release needs the backup taken before the
-upgrade, since an earlier release cannot open these values, so never run one beside this one.
-`migrate`, `serve` and every other command refuse this release on an installation that hasn't
-completed stage 2: run the stage 2 release until `custody status` shows stage 2 first.
+its keys when it first starts. From stage 3, every new value is sealed under its workspace's key,
+or a second factor under the installation key, and tokens are issued under a token key. Values
+stored before then stay under the keyring until [converted](#converting-values), which completes
+stage 4. This release needs stage 3: `migrate`, `serve` and every other command refuse it on an
+installation that hasn't completed stage 3, so run the stage 3 release until `custody status`
+shows stage 3 first. Going back to a stage 2 or stage 3 release is a redeploy: both open
+everything this one seals, converted values included. Going back to an earlier release needs the
+backup taken before upgrading to stage 3, since an earlier release cannot open these values, so
+never run one beside this one.
 
 - **New workspaces** get their key in the transaction that creates them.
 - **Existing workspaces** without a key, such as one created by an earlier release after a
@@ -160,6 +163,48 @@ events, that guards against mistakes, not against whoever owns the database.
 
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
+
+#### Converting values
+
+Once every instance runs a stage 4 release, and five minutes after the last older one stopped,
+run `custody convert` once, at a quiet time:
+
+```sh
+docker compose run --rm --no-deps platform custody convert --operator "$(whoami)"
+```
+
+- It moves each value still sealed under the keyring onto its workspace's key, or a second factor
+  onto the installation key. Only the value's key is wrapped again; the value itself is kept, so
+  recovery data captured before still matches it.
+- It works in batches, one workspace at a time, and is safe to stop, run again, or run beside
+  running instances. A value saved while it runs is kept, and the next run converts it if it needs
+  to be. A workspace another run is converting, or that has no key to move onto yet, is skipped
+  and named.
+- Recovery checkpoints are never converted, since hosts hold them bound to their exact bytes.
+  They keep opening with the keyring, as do tokens issued before stage 3 until they expire, so
+  keep the keyring.
+- It records custody stage 4 once no value is sealed under the keyring and every instance seen in
+  the last five minutes runs a stage 4 release or later. An instance counts as seen until five
+  minutes after it stops, so a run sooner than that finishes the values and says to run it again.
+  For the last check it waits for a running rewrap, then holds the tables that store values
+  against writes while it reads every stored value; `custody status` shows how many there are.
+  Saving a value, signing in with a second factor and changing an integration wait meanwhile: in
+  testing, the check read 100,000 values in about 15 ms and a million in about 60 ms with the
+  tables in memory, and reading them from disk takes longer. It takes the tables one at a time and
+  waits at most two seconds for each, while writers to the tables it already holds wait too. If a
+  wait runs out, it lets go of every table, tries twice more, then stops without recording the
+  stage; run it again at a quieter time.
+- It exits non-zero unless nothing is left to convert and stage 4 is recorded, and says what is
+  left.
+- Rolling back after it, to a release from stage 3 on, needs no restore: that release opens
+  converted values. A release that compares recovery rows by their stored bytes, as stage 3's
+  first releases do, refuses a checkpoint taken before the conversion.
+- An instance of a release before stage 3 that starts afterwards can still store a value under
+  the keyring. `custody status` counts such values by kind; run `custody convert` again to move
+  them. A later release that stops reading the keyring checks again first.
+
+The key history records each run, with the operator and reason, and each batch it stored. Each
+workspace with a value to convert gets an access record, which names the run, not the operator.
 
 ### Database connections
 
@@ -584,14 +629,19 @@ Stripe is optional. For paid Checkout, configure `ASTILBA_STRIPE_SECRET`,
 monthly price with quantity one and configure the Stripe customer portal. Pin the
 webhook endpoint to API version `2026-09-30.endive`, matching the client, at
 `/hooks/stripe`. Subscribe to `checkout.session.completed`,
-`customer.subscription.updated` and `customer.subscription.deleted`.
+`customer.subscription.updated`, `customer.subscription.deleted` and `invoice.paid`.
 
 The operator creates and verifies the Stripe product/price outside the application.
 Use test mode first. Checkout reserves one durable intent per workspace and reuses
 it after network failure. Completion is reconciled before an expired intent is
 replaced. Webhooks verify their timestamped raw-body signature, deduplicate events
 and retrieve the current subscription instead of trusting event delivery order.
-Unrecognized customers and subscriptions never grant access. New checkout success
+Unrecognized customers and subscriptions never grant access. Management is extended only by
+a paid invoice: it lasts until the end of the latest period a paid invoice covers, plus 24
+hours for Stripe to charge the next renewal. A renewal that fails, or whose collection is
+paused, keeps the period already paid for and nothing more. Ending the subscription ends
+management at the time it ends. An `invoice.paid` event that arrives before its checkout is
+applied is answered 409, so Stripe delivers it again. New checkout success
 and cancellation return to the workspace onboarding route. The URL is a navigation
 hint; setup completes only when the server reports active management access. If
 Stripe is not configured, onboarding explains how to contact the operator.
@@ -1012,4 +1062,4 @@ schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
 
-Workspace exports use archive version 11, which adds which preview requests revoking their preview host released to version 9's environment purges, retired secrets and erased secret values, version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Cross-host recovery checkpoints use version 12, with version 11's tables; version 10 is a checkpoint with version 9's, and no export uses either. Versions 1–9 remain importable. Nothing in them is recorded as released by revocation, and nothing in versions 1–8 is purged or erased. Their environments import as active or retired as recorded, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
+Workspace exports use archive version 13, which adds when each server's revocation began and when management first received each backup snapshot to version 11's record of which preview requests revoking their preview host released, version 9's environment purges, retired secrets and erased secret values, version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Cross-host recovery checkpoints use version 14, with version 13's tables; versions 12 and 10 are checkpoints with version 11's and version 9's, and no export uses any of them. Versions 1–11 remain importable. Nothing in them records when a revocation began or when a snapshot was first reported, nothing in versions 1–9 is recorded as released by revocation, and nothing in versions 1–8 is purged or erased. Their environments import as active or retired as recorded, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
