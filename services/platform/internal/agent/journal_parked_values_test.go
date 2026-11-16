@@ -267,9 +267,6 @@ func TestRetriedRestoreWaitsForItsAccess(t *testing.T) {
 	if err = j.Mutate(restore.Id, func(r *Record) { settleReport(r, "needs_attention", "Inspect it.") }); err != nil {
 		t.Fatal(err)
 	}
-	if held() {
-		t.Fatal("a parked restore kept its access")
-	}
 	if err = j.Retry(restore.Id); err != nil {
 		t.Fatal(err)
 	}
@@ -420,5 +417,59 @@ func TestWantedValuesAreAskedForAgain(t *testing.T) {
 	}
 	if r, err := j.Record(full.Id); err != nil || r.ValuesWanted || !bytes.Contains(sealedRecord(t, j, full.Id), []byte(releaseCanary)) {
 		t.Fatal("a released delivery did not give a wanting command its values", err)
+	}
+}
+
+// A restore stopped after it began changing this server is left to inspect without the repository's
+// access, which settling it never reads. Retried past its deadline, it is still settled by its
+// containers rather than waiting for its access or cancelled as though it changed nothing.
+func TestRetriedRestorePastItsEffectSettlesWithoutItsAccess(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	left := `[{"Id":"left","Names":["/left"],"State":"exited"}]`
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/containers/json") {
+			// Until the operator clears it, a container that removal never takes away.
+			_, _ = w.Write([]byte(left))
+			return
+		}
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"absent"}`))
+	}))
+	defer daemon.Close()
+	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	e := &Engine{Journal: j, Docker: docker}
+	restore, v := recoveryCommand(t, plan, nil)
+	restore.Deadline = time.Now().Add(-time.Minute)
+	if _, err = j.Accept(restore); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.checkpoint(restore.Id, recoveryEffect); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err = e.Execute(ctx, restore); err != nil {
+		t.Fatal(err)
+	}
+	r, err := j.Record(restore.Id)
+	if err != nil || r.Report.State != "needs_attention" || bytes.Contains(sealedRecord(t, j, restore.Id), []byte(v.Installation.Access.Password)) {
+		t.Fatal("the restore was not left to inspect without its access:", r.Report.State, r.Report.Note, err)
+	}
+	left = `[]`
+	if err = j.Retry(restore.Id); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = j.Record(restore.Id); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Execute(ctx, r.Command); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = j.Record(restore.Id); err != nil || r.Report.State != "failed" || !strings.Contains(r.Report.Note, "Nothing it started is still running.") || r.ValuesWanted {
+		t.Fatal("the retried restore was not settled by its containers:", r.Report.State, r.Report.Note, r.ValuesWanted, err)
 	}
 }
