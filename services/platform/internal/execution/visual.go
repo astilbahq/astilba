@@ -376,7 +376,7 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 			if existing == nil || *existing != id {
 				return domain.Conflict
 			}
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, key))
+			out, err = operationByRequestKey(ctx, tx, ws, key)
 			return err
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {

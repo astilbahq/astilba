@@ -221,7 +221,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 				if c.Kind != "upgrade" || c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &cmd) != nil || cmd.Plan.ID != id || cmd.Action != string(in.Action) {
 					return domain.Conflict
 				}
-				out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey))
+				out, err = operationByRequestKey(ctx, tx, ws, in.RequestKey)
 				return err
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {

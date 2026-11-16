@@ -32,7 +32,7 @@ SELECT (steps @> jsonb_build_array(jsonb_build_object('name', @step::text)))::bo
 SELECT o.command, o.state, o.cancel_requested FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
 WHERE o.workspace_id = @workspace_id AND o.id = @id AND o.server_id = @server_id AND o.kind = 'pipeline' AND (r.delivery_started IS NOT FALSE OR o.report_sequence > 0)
 FOR UPDATE OF o;
--- name: StopPossiblyDeliveredPipeline :exec
+-- name: StopPossiblyDeliveredOperation :exec
 UPDATE execution_operations SET cancel_requested = true, note = @note::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AutomaticBuildArtifact :one

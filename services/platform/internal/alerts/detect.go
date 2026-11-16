@@ -76,6 +76,9 @@ func (s *Service) detect(ctx context.Context, ws uuid.UUID) error {
 	if err = s.recoveryWindow(ctx, tx, ws); err != nil {
 		return err
 	}
+	if err = s.dnsWithdrawalHeld(ctx, tx, ws); err != nil {
+		return err
+	}
 	// Active incidents remain visible until observation establishes recovery or monitoring ends.
 	if _, err = tx.Exec(ctx, `DELETE FROM operational_alerts WHERE id IN (SELECT id FROM operational_alerts WHERE workspace_id=$1 AND state<>'firing' AND (COALESCE(resolved_at,opened_at)<$2::timestamptz-interval '30 days' OR id IN (SELECT id FROM operational_alerts WHERE workspace_id=$1 AND state<>'firing' ORDER BY opened_at DESC,id DESC OFFSET 1000)) LIMIT 1000)`, ws, s.Now()); err != nil {
 		return err
@@ -153,7 +156,7 @@ func (s *Service) operations(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error
 			if c.Pipeline != nil && json.Unmarshal(*c.Pipeline, &p) == nil && (p.Action == "build" || p.Action == "build-preview") {
 				kind = api.BuildProblem
 			}
-		case "backup", "schedule":
+		case "backup", "schedule", "restore":
 			kind = api.BackupProblem
 		}
 		if kind != "" {

@@ -212,7 +212,9 @@ run a drill on the management host: the restore steps name the real database con
 drill copy holds the same Git, provider and webhook credentials as the real installation, so it
 must not be able to use them. Give it an environment file of its own that holds only the
 database password, keyring path, origin and image, with no SMTP, DNS provider or GitHub App
-settings. Put it and its database only on a Docker network created with `internal: true`,
+settings. A drill given the DNS settings would act on the live zone as the installation it was
+restored from: at startup it [removes every record](hosting.md#records-the-database-has-lost)
+the backup doesn't know, which includes everything the real installation published after it. Put it and its database only on a Docker network created with `internal: true`,
 which has no route off the host, and publish no ports. With PostgreSQL as a Compose service
 called `database`, an override does this:
 

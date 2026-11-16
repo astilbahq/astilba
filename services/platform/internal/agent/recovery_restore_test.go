@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,35 @@ func TestResolveRunSettlesARestoreLeftToInspect(t *testing.T) {
 	}
 	r, err = j.Record(c.Id)
 	if err != nil || r.Report.State != "failed" || r.Report.Note != resolvedRunNote {
+		t.Fatalf("ended %s: %s %v", r.Report.State, r.Report.Note, err)
+	}
+}
+
+// An agent sent a restore while its restic is missing or another version says so, rather than
+// pointing at the destination.
+func TestRestoreNamesAMissingRestic(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	if err := j.saveUnit(unitState{Plan: plan, Expected: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"absent"}`))
+	}))
+	defer daemon.Close()
+	docker, err := client.New(client.WithHost(daemon.URL), client.WithAPIVersion("1.54"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer docker.Close()
+	e := &Engine{Journal: j, Docker: docker, ResticCLI: filepath.Join(t.TempDir(), "restic")}
+	c, _ := recoveryCommand(t, plan, nil)
+	if err = e.Execute(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	r, err := j.Record(c.Id)
+	if err != nil || r.Report.State != "failed" || !strings.Contains(r.Report.Note, "needs restic "+backup.ResticVersion) {
 		t.Fatalf("ended %s: %s %v", r.Report.State, r.Report.Note, err)
 	}
 }

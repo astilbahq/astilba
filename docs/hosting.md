@@ -771,6 +771,67 @@ record Astilba made there, for live and revoked servers alike. Delete them yours
 their comment starts with `astilba:` followed by the installation's ID. At startup,
 management logs a warning with the number of names it can no longer clean up.
 
+### Records the database has lost
+
+The database is Astilba's only record of which names it published. It can lose some: a restore
+from an older [management backup](management-backups.md) forgets every server enrolled or
+approved after the backup, and a crash, or a provider request that lands after its job gave up,
+can leave a record the database doesn't know about. Such a record may point at an address the
+server no longer holds, which someone else could then be given.
+
+So with automatic Cloudflare DNS, management compares the zone with the database at startup,
+which covers a restore, and every five minutes after. It lists the zone's records whose comment
+starts with `astilba:` and this installation's ID, and reads the server and base from each one's
+comment and name. Then, for each name:
+
+- **The database records it.** Nothing changes here: the rules in
+  [removing generated records](#removing-generated-records) apply, so a server fenced by
+  recovery keeps its records.
+- **The database lost it, and the server's approval for that name is current.** The name is
+  recorded again and the server's records are reconciled with the approval. Approved records are
+  never removed by the comparison.
+- **Anything else.** The record is unbacked and is removed. That includes servers the database
+  has never heard of, servers no longer approved, and names under a base other than
+  `ASTILBA_APPLICATION_DOMAIN`. Each deletion is audited first, with reason `unbacked`.
+
+Records whose comment carries another installation's ID, records without the comment, and records
+Astilba never makes are never removed. Records Astilba never makes are anything other than A or
+AAAA, names that aren't the commented server's, and comments that match this installation's only
+when case is ignored. Management logs a warning counting them.
+
+The comparison reads at most 30,000 of this installation's records. A zone holding more isn't
+compared at all, and management logs an error every five minutes.
+
+#### When many records would go at once
+
+If one comparison would remove more than 10 records, and more than a fifth of this installation's
+records it listed, it removes none of them and holds them instead. That covers a fault in the
+comparison, and a management that shouldn't be acting on this zone at all, such as a restore
+drill given the live zone's credentials. A genuine restore from an older backup can trip it too.
+While records are held, management logs an error every five minutes. On a self-hosted
+installation, each workspace whose servers have held records also gets a
+[`dns_withdrawal_held` alert](operational-alerts.md). Held records may resolve to addresses
+Astilba no longer controls, so review them promptly:
+
+```sh
+astilba dns withdrawals
+astilba dns confirm-withdrawals --hold HOLD_ID --count N --operator NAME --note REASON
+```
+
+`withdrawals` shows each hold: how many records it holds per workspace, a sample of names and
+addresses, and the exact command to confirm it. `--count` must match the number of records the
+hold holds. If the comparison has since found a record the hold doesn't hold, the hold is
+replaced, and the command asks you to look again. The next comparison, within five minutes,
+removes the confirmed records that are still unbacked. Records found later are judged afresh. A
+confirmed hold closes once all its records are removed. Otherwise the confirmation lapses after a
+day. A hold whose records fall back under the threshold, because some were backed
+again or deleted by hand, closes on its own and the rest are removed as usual.
+
+The threshold covers only this comparison between the zone and the database. Removals the
+database itself decides on, such as a revoked server's, are never held.
+
+Never give a restore drill the DNS settings: see [restore drills](management-backups.md#restore-drills).
+
 ### The pinned list
 
 Astilba checks against its own copy of the list in
@@ -934,7 +995,9 @@ encrypt and upload the database nightly to storage the server cannot erase, with
 alert when it fails, and the full restore procedure.
 
 Restore with the matching application version, or a newer one after `astilba migrate`,
-into a clean database and private keyring mount. Cross-host recovery reads the checkpoints the
+into a clean database and private keyring mount. With automatic DNS, the restored management
+removes, as soon as it starts, the records of servers enrolled or approved after the backup; see
+[records the database has lost](#records-the-database-has-lost). Cross-host recovery reads the checkpoints the
 hosts hold, so run it with the release that sealed the newest of them or a newer one, even when
 the backup is older. Restore the backup, migrate to that release, then recover. An older release
 refuses those checkpoints. Recovery starts from the workspaces the backup holds and opens their
@@ -1012,4 +1075,4 @@ schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
 
-Workspace exports use archive version 13, which adds when each server's revocation began and when management first received each backup snapshot to version 11's record of which preview requests revoking their preview host released, version 9's environment purges, retired secrets and erased secret values, version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Cross-host recovery checkpoints use version 14, with version 13's tables; versions 12 and 10 are checkpoints with version 11's and version 9's, and no export uses any of them. Versions 1–11 remain importable. Nothing in them records when a revocation began or when a snapshot was first reported, nothing in versions 1–9 is recorded as released by revocation, and nothing in versions 1–8 is purged or erased. Their environments import as active or retired as recorded, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
+Workspace exports use archive version 15, which adds restores of a lost server's snapshots onto another server (each backup policy's newest 100, and the restore of each operation the export carries) to version 13's record of when each server's revocation began and when management first received each backup snapshot, and to version 11's record of which preview requests revoking their preview host released, version 9's environment purges, retired secrets and erased secret values, version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Cross-host recovery checkpoints use version 16, with version 15's tables; versions 14, 12 and 10 are checkpoints with version 13's, version 11's and version 9's, and no export uses any of them. Versions 1–13 remain importable. Nothing in versions 1–13 records a restore onto another server, nothing in versions 1–11 records when a revocation began or when a snapshot was first reported, nothing in versions 1–9 is recorded as released by revocation, and nothing in versions 1–8 is purged or erased. Their environments import as active or retired as recorded, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).

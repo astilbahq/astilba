@@ -129,6 +129,11 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					selected, err = recoveryUpgradeKnowledge(prior, row)
 				case "backup_policies":
 					selected, err = recoveryPolicyKnowledge(prior, row)
+				case "backup_recoveries":
+					// Recorded once, by the restore's succeeded report.
+					if string(prior["result"]) == "null" {
+						selected["result"] = row["result"]
+					}
 				case "pipeline_runs":
 					if op, exists := incoming["execution_operations"][key]; exists {
 						if oldOp, exists := known["execution_operations"][key]; exists {

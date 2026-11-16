@@ -78,11 +78,11 @@ The deployment panel says when the environment's primary was revoked. Choose a h
 - makes the chosen server the primary. If it already holds this environment's unit, that unit takes the role, so the host keeps a single unit. Otherwise the server gets a new unit. The former primary's unit is detached and never reused, so its old volumes on that host can't come back by accident
 - starts the volumes the revision declares empty, with the same identities, and drops the others
 - moves the route claims, so point custom domains at the new server, and change generated domains, which name their server
-- leaves the environment's backup policies with the revoked server, where they can't run. Create new ones.
+- leaves the environment's backup policies with the revoked server, where they can't run. Create new ones for later backups.
 
 The plan applies only while the old primary is still revoked. If the deployment doesn't finish, the environment is already on its way to that server, and the panel continues there. Other servers are refused while that server is healthy, because the first attempt may have left containers and volumes on it. If it's revoked too, choose any healthy server.
 
-To get the data back, restore a snapshot by hand, as [Backups](backups.md#recovery-without-the-management-database) describes, into the new empty volumes. Filesystem backup destinations on the revoked server are lost with it.
+To get the data back, restore one of the revoked server's S3 snapshots onto the new primary, as [Backups](backups.md#restoring-a-lost-servers-snapshot) describes. Filesystem backup destinations on the revoked server are lost with it.
 
 The new server needs an agent from this release. An older agent refuses the plan before changing anything. Deploying back onto a renewed former primary fails, because its old volumes are labelled for the detached unit. Replace that host rather than reuse it.
 

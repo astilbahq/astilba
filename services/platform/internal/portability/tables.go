@@ -73,8 +73,9 @@ var version5Tables = func() []table {
 // retirement and the PostgreSQL major each managed volume was initialised by; version 9 added
 // purges, retired secrets and erased secret values; version 11 added which preview requests
 // revoking their preview's host released; version 13 added when each server's revocation began and
-// when management first received each backup snapshot. Versions 10 and 12 are recovery bases.
-const ArchiveVersion = 13
+// when management first received each backup snapshot; version 15 added restores of a revoked
+// server's backup snapshots onto another server. Versions 10, 12 and 14 are recovery bases.
+const ArchiveVersion = 15
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -137,7 +138,7 @@ var version11Tables = func() []table {
 // Version 13 carries when each server's revocation began and when management first received each
 // backup snapshot, which restoring onto a replacement server shows the owner. Version 12 is a
 // recovery base.
-var tables = func() []table {
+var version13Tables = func() []table {
 	out := append([]table{}, version11Tables...)
 	for i := range out {
 		switch out[i].Name {
@@ -149,3 +150,7 @@ var tables = func() []table {
 	}
 	return out
 }()
+
+// Version 15 carries each restore of a revoked server's backup snapshot onto another server, which
+// a cutover is reviewed against. Version 14 is a recovery base.
+var tables = append(append([]table{}, version13Tables...), table{Name: "backup_recoveries", Columns: "id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at,result"})

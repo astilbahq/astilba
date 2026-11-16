@@ -47,11 +47,15 @@ type revokedGroup struct {
 	journalDirs map[uuid.UUID]string
 	refused     map[uuid.UUID]int
 	journalMu   sync.Mutex
+	// restores holds the last restore command each host was released, and paused the hosts that
+	// stop polling while the test polls for them, both guarded by mu.
+	restores map[uuid.UUID]api.ExecutionCommand
+	paused   map[uuid.UUID]bool
 }
 
 func newRevokedGroup(t *testing.T, count int) *revokedGroup {
 	t.Helper()
-	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}, failing: map[string]bool{}, late: map[string]bool{}, journals: map[uuid.UUID]*agent.Journal{}, journalDirs: map[uuid.UUID]string{}, refused: map[uuid.UUID]int{}}
+	g := &revokedGroup{aheadNetwork: newAheadNetwork(t, count), held: map[string]bool{}, seen: map[string]bool{}, attention: map[string]bool{}, failing: map[string]bool{}, late: map[string]bool{}, journals: map[uuid.UUID]*agent.Journal{}, journalDirs: map[uuid.UUID]string{}, refused: map[uuid.UUID]int{}, restores: map[uuid.UUID]api.ExecutionCommand{}, paused: map[uuid.UUID]bool{}}
 	g.save(t, g.hosts...)
 	g.converge(t)
 	yes := true
@@ -115,6 +119,13 @@ func (g *revokedGroup) arriveLate(h *aheadHost, phase string, late bool) {
 	g.late[phase+"/"+h.id.String()] = late
 }
 
+// pause stops the host polling, or lets it go on, so the test can poll in its place.
+func (g *revokedGroup) pause(h *aheadHost, paused bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.paused[h.id] = paused
+}
+
 func (g *revokedGroup) release(h *aheadHost, phase string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -143,6 +154,13 @@ func (g *revokedGroup) answer(ctx context.Context, t *testing.T, h *aheadHost) {
 				return
 			}
 			beat = time.Now()
+		}
+		g.mu.Lock()
+		paused := g.paused[h.id]
+		g.mu.Unlock()
+		if paused {
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
 		poll, done := context.WithTimeout(ctx, 200*time.Millisecond)
 		c, err := pollReleased(g.f.execution, poll, h.identity)
@@ -395,6 +413,19 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 		if !g.note(h, "backup") {
 			return report, false
 		}
+	case "restore":
+		var r backup.Recovery
+		if c.Backup == nil || json.Unmarshal(*c.Backup, &r) != nil {
+			t.Error("invalid restore command")
+			return report, false
+		}
+		g.mu.Lock()
+		g.restores[h.id] = c
+		g.mu.Unlock()
+		if !g.note(h, "restore") {
+			return report, false
+		}
+		report.Restore = claimMessage(t, fixtureRecovery(r))
 	case "upgrade":
 		var command upgrade.Command
 		if c.Upgrade == nil || json.Unmarshal(*c.Upgrade, &command) != nil {
@@ -410,6 +441,14 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 		return report, false
 	}
 	return report, true
+}
+
+// fixtureRecovery is what an agent reports after restoring the snapshot a recovery names: a
+// manifest read out of it that the policy admits.
+func fixtureRecovery(r backup.Recovery) backup.RecoveryResult {
+	p := r.Installation.Policy
+	m := backup.Manifest{Recipe: backup.Recipe, PolicyID: p.ID, RunID: uuid.New(), EnvironmentID: p.EnvironmentID, ResourceID: p.ResourceID, Method: p.Method, CreatedAt: time.Now().UTC().Truncate(time.Second), Bytes: 4096, SHA256: strings.Repeat("d", 64), Roles: []backup.Role{}, Extensions: []string{}}
+	return backup.RecoveryResult{Snapshot: r.Snapshot, TargetID: r.TargetID, Manifest: m}
 }
 
 // note records that the host received a phase and says whether it will answer.

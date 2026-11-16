@@ -172,6 +172,22 @@ type BackupPolicy struct {
 	SnapshotReceipts     []byte    `json:"snapshot_receipts"`
 }
 
+type BackupRecovery struct {
+	ID              uuid.UUID `json:"id"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	PolicyID        uuid.UUID `json:"policy_id"`
+	OperationID     uuid.UUID `json:"operation_id"`
+	SourceServerID  uuid.UUID `json:"source_server_id"`
+	ServerID        uuid.UUID `json:"server_id"`
+	PlanID          uuid.UUID `json:"plan_id"`
+	Snapshot        string    `json:"snapshot"`
+	FirstReportedAt time.Time `json:"first_reported_at"`
+	TargetVolumeID  uuid.UUID `json:"target_volume_id"`
+	CreatedAt       time.Time `json:"created_at"`
+	Result          []byte    `json:"result"`
+}
+
 type BuildArtifact struct {
 	ID            uuid.UUID `json:"id"`
 	WorkspaceID   uuid.UUID `json:"workspace_id"`
@@ -353,7 +369,7 @@ type DnsPublication struct {
 
 type DnsRecordRemoval struct {
 	ID          uuid.UUID  `json:"id"`
-	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	WorkspaceID *uuid.UUID `json:"workspace_id"`
 	ServerID    uuid.UUID  `json:"server_id"`
 	Name        string     `json:"name"`
 	Zone        string     `json:"zone"`
@@ -363,6 +379,31 @@ type DnsRecordRemoval struct {
 	Reason      string     `json:"reason"`
 	RequestedAt time.Time  `json:"requested_at"`
 	ConfirmedAt *time.Time `json:"confirmed_at"`
+	HoldID      *uuid.UUID `json:"hold_id"`
+}
+
+type DnsWithdrawalHold struct {
+	ID               uuid.UUID   `json:"id"`
+	Zone             string      `json:"zone"`
+	Records          int32       `json:"records"`
+	Marked           int32       `json:"marked"`
+	OpenedAt         time.Time   `json:"opened_at"`
+	SeenAt           time.Time   `json:"seen_at"`
+	ConfirmedAt      *time.Time  `json:"confirmed_at"`
+	ConfirmedBy      pgtype.Text `json:"confirmed_by"`
+	ConfirmationNote pgtype.Text `json:"confirmation_note"`
+	ClosedAt         *time.Time  `json:"closed_at"`
+	CloseReason      pgtype.Text `json:"close_reason"`
+}
+
+type DnsWithdrawalHoldRecord struct {
+	HoldID      uuid.UUID  `json:"hold_id"`
+	RecordID    string     `json:"record_id"`
+	ServerID    uuid.UUID  `json:"server_id"`
+	WorkspaceID *uuid.UUID `json:"workspace_id"`
+	Name        string     `json:"name"`
+	RecordType  string     `json:"record_type"`
+	Content     string     `json:"content"`
 }
 
 type EmailVerification struct {
