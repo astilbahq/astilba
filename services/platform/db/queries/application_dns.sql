@@ -102,13 +102,27 @@ DELETE FROM server_dns_leases WHERE server_id = @server_id AND holder = @holder;
 -- name: DNSPublicationTarget :one
 -- unscoped: a DNS job names the server. The addresses a job may publish: the generation it was
 -- queued for, still approved under the server's current controller, in the configured base.
-SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id AS installation_id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i
+-- With them, when they were approved and the records the last job observed, and in which zone,
+-- which the job judges the provider's records against.
+SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,d.approved_at,d.records,d.observed_zone,i.id AS installation_id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN installation i
 WHERE d.server_id = @server_id AND d.generation = @generation AND d.approved_controller = @controller AND s.controller_generation = @controller
     AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base = @base;
 
+-- name: AuditedDNSRecordRemovals :many
+-- unscoped: a DNS job names the records. Which of these records in the zone this database has
+-- audited a deletion of, and so knows why they are gone.
+SELECT record_id FROM dns_record_removals WHERE zone = @zone AND record_id = ANY(@record_ids::text[]);
+
+-- name: EndOutdatedServerDomain :execrows
+-- unscoped: a DNS job or the zone sweep names the server, holding its DNS lock. Ends an approval
+-- the provider's zone shows is older than its records, as long as it is the approval that was
+-- judged, so an owner approves the addresses again.
+UPDATE server_domains SET approved_controller=NULL,generation=generation+1,state='review_required',note = @note,observed_at=NULL
+WHERE server_id = @server_id AND generation = @generation AND approved_controller = @controller;
+
 -- name: ObserveServerDomain :exec
 -- unscoped: a DNS job names the server. Ignored once the profile has moved on.
-UPDATE server_domains SET state = @state,note = @note,observed_at=clock_timestamp(),records = @records
+UPDATE server_domains SET state = @state,note = @note,observed_at=clock_timestamp(),records = @records,observed_zone = @zone
 WHERE server_id = @server_id AND generation = @generation AND approved_controller = @controller;
 
 -- name: RecordLateDNSPublication :exec
@@ -157,7 +171,10 @@ SELECT f.server_id::uuid AS server_id,f.base::text AS base,(s.id IS NOT NULL)::b
     (EXISTS(SELECT 1 FROM dns_publications p WHERE p.server_id=f.server_id AND p.base=f.base AND p.zone IN ('',given.zone))
         OR EXISTS(SELECT 1 FROM dns_late_publications l WHERE l.server_id=f.server_id AND l.base=f.base AND l.zone=given.zone))::boolean AS recorded,
     COALESCE(d.base=f.base AND f.base=given.configured AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer,false)::boolean AS approved,
-    COALESCE(d.generation,0)::bigint AS generation,COALESCE(d.approved_controller,0)::bigint AS controller
+    COALESCE(d.generation,0)::bigint AS generation,COALESCE(d.approved_controller,0)::bigint AS controller,
+    -- The server's last approval, when it was for this base, which records there are judged against.
+    COALESCE(d.base=f.base AND NOT s.revoked,false)::boolean AS approval_here,
+    COALESCE(d.ipv4,'')::text AS ipv4,COALESCE(d.ipv6,'')::text AS ipv6,d.approved_at
 FROM f CROSS JOIN given
 LEFT JOIN servers s ON s.id=f.server_id
 LEFT JOIN server_domains d ON d.server_id=f.server_id
@@ -173,13 +190,14 @@ WHERE s.id = @server_id AND d.base = @base AND d.base = @configured::text AND d.
     AND NOT s.revoked AND NOT s.awaiting_transfer
 ON CONFLICT(server_id,base,zone) DO NOTHING;
 
--- name: InsertUnbackedDNSRecordRemoval :execrows
+-- name: InsertZoneDNSRecordRemoval :execrows
 -- unscoped: the zone sweep names the server. Written before the deletion is sent, for a record
--- nothing backs. The workspace is the server's, or none for a server this database has never
--- heard of; the row is written only while the server is as known or unknown as the sweep found
--- it, so a deletion is never sent for a server whose state the sweep didn't judge.
+-- nothing backs, or one changed after its server's approval. The workspace is the server's, or
+-- none for a server this database has never heard of; the row is written only while the server is
+-- as known or unknown as the sweep found it, so a deletion is never sent for a server whose state
+-- the sweep didn't judge.
 INSERT INTO dns_record_removals(workspace_id,server_id,name,zone,record_id,record_type,content,reason,hold_id)
-SELECT s.workspace_id,@server_id,@name,@zone,@record_id,@record_type,@content,'unbacked',sqlc.narg(hold_id)::uuid
+SELECT s.workspace_id,@server_id,@name,@zone,@record_id,@record_type,@content,@reason,sqlc.narg(hold_id)::uuid
 FROM (SELECT 1) one LEFT JOIN servers s ON s.id = @server_id
 WHERE (s.id IS NOT NULL) = @known::boolean
 ON CONFLICT(zone,record_id) DO UPDATE SET content=EXCLUDED.content,reason=EXCLUDED.reason,requested_at=EXCLUDED.requested_at,hold_id=EXCLUDED.hold_id

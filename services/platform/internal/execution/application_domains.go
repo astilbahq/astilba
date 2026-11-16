@@ -72,8 +72,11 @@ func (s *Service) domainConfiguration(ctx context.Context, tx pgx.Tx, ws, id uui
 		return v, nil
 	}
 	if e == nil && (storedBase != base || approved == nil || *approved != controller || transfer) {
+		// An approval that ended says why, such as revocation or DNS records newer than it.
+		if v.State != "review_required" || v.Note == "" {
+			v.Note = "An owner must review and approve these addresses before DNS automation can resume."
+		}
 		v.State = "review_required"
-		v.Note = "An owner must review and approve these addresses before DNS automation can resume."
 	}
 	return v, e
 }
@@ -122,7 +125,7 @@ func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, 
 			state = "pending"
 		}
 		var generation int64
-		e = tx.QueryRow(ctx, `INSERT INTO server_domains(server_id,workspace_id,base,ipv4,ipv6,approved_controller,state) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(server_id) DO UPDATE SET base=$3,ipv4=$4,ipv6=$5,generation=server_domains.generation+1,approved_controller=$6,state=$7,observed_at=NULL,note='' RETURNING generation`, id, ws, current.Base, ipv4, ipv6, controller, state).Scan(&generation)
+		e = tx.QueryRow(ctx, `INSERT INTO server_domains(server_id,workspace_id,base,ipv4,ipv6,approved_controller,state,approved_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp()) ON CONFLICT(server_id) DO UPDATE SET base=$3,ipv4=$4,ipv6=$5,generation=server_domains.generation+1,approved_controller=$6,state=$7,observed_at=NULL,note='',approved_at=clock_timestamp() RETURNING generation`, id, ws, current.Base, ipv4, ipv6, controller, state).Scan(&generation)
 		if e != nil {
 			return e
 		}
@@ -319,10 +322,19 @@ func (s *Service) claimPublication(ctx context.Context, lease dnsLease, a domain
 	return claimed, nil
 }
 
-// publish asks the provider for the claimed addresses, then records what it observed.
+// publish asks the provider for the claimed addresses, then records what it observed. When the
+// provider's records show the approval is older than the zone, it publishes nothing and ends the
+// approval instead.
 func (s *Service) publish(ctx context.Context, lease dnsLease, a domainArgs, target *db.DNSPublicationTargetRow) error {
 	name := dnsName(target.Base, a.Server)
-	records, providerErr := s.DNS.Reconcile(ctx, name, dnsMarker(target.InstallationID, a.Server), target.Ipv4, target.Ipv6, s.auditDeletion(ctx, target.WorkspaceID, a.Server, name, withdrawAddress))
+	judge, e := s.approvalJudge(ctx, target)
+	if e != nil {
+		return e
+	}
+	records, providerErr := s.DNS.Reconcile(ctx, name, dnsMarker(target.InstallationID, a.Server), target.Ipv4, target.Ipv6, judge, s.auditDeletion(ctx, target.WorkspaceID, a.Server, name, withdrawAddress))
+	if errors.Is(providerErr, errApprovalOutdated) {
+		return s.endOutdatedApproval(ctx, lease, a)
+	}
 	state, note := "applied", "Provider records observed. DNS propagation, TLS and application reachability are separate checks."
 	if providerErr != nil {
 		state, note = "failed", providerErr.Error()
@@ -331,14 +343,14 @@ func (s *Service) publish(ctx context.Context, lease dnsLease, a domainArgs, tar
 	if records == nil {
 		raw = []byte(`{}`)
 	}
-	e := s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
+	e = s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
 		q := db.New(tx)
 		if providerErr == nil {
 			if e := s.confirmDeletions(ctx, q, a.Server, name, records); e != nil {
 				return e
 			}
 		}
-		return q.ObserveServerDomain(ctx, db.ObserveServerDomainParams{State: state, Note: note, Records: raw, ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}})
+		return q.ObserveServerDomain(ctx, db.ObserveServerDomainParams{State: state, Note: note, Records: raw, Zone: s.DNS.Zone, ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}})
 	})
 	return errors.Join(providerErr, e)
 }

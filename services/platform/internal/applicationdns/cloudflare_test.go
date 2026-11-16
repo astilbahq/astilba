@@ -2,6 +2,7 @@ package applicationdns
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,7 @@ type zone struct {
 	lose       bool
 	deletes    []string
 	listed     []record // answered to every listing when set
+	writes     []record
 	// limited answers that many requests with a 429 and retryAfter.
 	limited    int
 	retryAfter string
@@ -76,6 +78,20 @@ func (z *zone) serve(w http.ResponseWriter, r *http.Request) {
 		if z.listed != nil {
 			result = z.listed
 		}
+	case "PUT", "POST":
+		var in record
+		if json.UnmarshalRead(r.Body, &in) != nil {
+			w.WriteHeader(400)
+			return
+		}
+		in.ID = id('9')
+		if r.Method == "PUT" {
+			in.ID = r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		}
+		in.ModifiedOn = time.Now().UTC()
+		z.records[in.ID] = in
+		z.writes = append(z.writes, in)
+		result = in
 	case "DELETE":
 		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		z.deletes = append(z.deletes, id)
@@ -102,6 +118,9 @@ func (z *zone) serve(w http.ResponseWriter, r *http.Request) {
 func fixture(t *testing.T, records ...record) (*zone, *Cloudflare) {
 	z := &zone{records: map[string]record{}}
 	for _, r := range records {
+		if r.ModifiedOn.IsZero() {
+			r.ModifiedOn = listedAt
+		}
 		z.records[r.ID] = r
 	}
 	server := httptest.NewServer(http.HandlerFunc(z.serve))
@@ -111,6 +130,9 @@ func fixture(t *testing.T, records ...record) (*zone, *Cloudflare) {
 }
 
 func id(c byte) string { return strings.Repeat(string(c), 32) }
+
+// listedAt is when the fixture's records were last changed, unless a test says otherwise.
+var listedAt = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
 const (
 	name   = "*.s1.apps.example.test"
@@ -220,12 +242,57 @@ func TestRemoveListedLeavesRecordsItWasNotGiven(t *testing.T) {
 		record{ID: id('2'), Type: "AAAA", Name: name, Content: "2001:db8::1", Comment: marker},
 		record{ID: id('3'), Type: "A", Name: name, Content: "198.51.100.2", Comment: "someone else"},
 	)
-	left, e := c.RemoveListed(context.Background(), name, marker, []string{id('1'), id('3'), id('9')}, func(Removed) error { return nil })
+	listed := []Marked{{ID: id('1'), ModifiedOn: listedAt}, {ID: id('3'), ModifiedOn: listedAt}, {ID: id('9'), ModifiedOn: listedAt}}
+	left, e := c.RemoveListed(context.Background(), name, marker, listed, func(Removed) error { return nil })
 	if e != nil || len(left) != 1 || left[0] != id('2') {
 		t.Fatal("left", left, e)
 	}
 	if _, ok := z.records[id('1')]; ok || len(z.records) != 2 || len(z.deletes) != 1 {
 		t.Fatalf("records %v, deletes %v", z.records, z.deletes)
+	}
+}
+
+func TestRemoveListedLeavesARecordChangedSinceItWasListed(t *testing.T) {
+	z, c := fixture(t, record{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker, ModifiedOn: listedAt.Add(time.Second)})
+	left, e := c.RemoveListed(context.Background(), name, marker, []Marked{{ID: id('1'), ModifiedOn: listedAt}}, func(Removed) error { return nil })
+	if e != nil || len(left) != 1 || len(z.deletes) != 0 {
+		t.Fatal("deleted a record changed since it was listed", left, e, z.deletes)
+	}
+}
+
+func TestReconcileShowsTheJudgeOurRecordsBeforeSendingAnything(t *testing.T) {
+	z, c := fixture(t,
+		record{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker},
+		record{ID: id('3'), Type: "TXT", Name: name, Content: "verification", Comment: marker},
+	)
+	refused := errors.New("outdated")
+	var shown []Listed
+	judge := func(present []Listed) error { shown = present; return refused }
+	if _, e := c.Reconcile(context.Background(), name, marker, "198.51.100.2", "2001:db8::2", judge, func(Removed) error { return nil }); !errors.Is(e, refused) {
+		t.Fatal("the judge's refusal was not returned", e)
+	}
+	if len(z.writes) != 0 || len(z.deletes) != 0 || len(z.requests) != 1 {
+		t.Fatal("sent a change the judge refused", z.writes, z.deletes)
+	}
+	if len(shown) != 1 || shown[0] != (Listed{id('1'), "A", "198.51.100.1", listedAt}) {
+		t.Fatal("judge was shown", shown)
+	}
+	got, e := c.Reconcile(context.Background(), name, marker, "198.51.100.2", "", func([]Listed) error { return nil }, func(Removed) error { return nil })
+	if e != nil || got["A"] != id('1') || len(z.writes) != 1 || z.writes[0].Content != "198.51.100.2" {
+		t.Fatal("an accepted reconcile did not write", got, e, z.writes)
+	}
+}
+
+func TestRecordsWithoutAModificationTimeAreRefused(t *testing.T) {
+	z, c := fixture(t)
+	// Added after the fixture would have stamped it.
+	z.records[id('1')] = record{ID: id('1'), Type: "A", Name: name, Content: "198.51.100.1", Comment: marker}
+	judged := false
+	if _, e := c.Reconcile(context.Background(), name, marker, "198.51.100.2", "", func([]Listed) error { judged = true; return nil }, func(Removed) error { return nil }); !errors.Is(e, ErrProvider) || judged || len(z.writes) != 0 {
+		t.Fatal("reconciled over a record without a modification time", e)
+	}
+	if _, e := c.ListMarked(context.Background(), "astilba:installation:"); !errors.Is(e, ErrProvider) {
+		t.Fatal("listed a record without a modification time", e)
 	}
 }
 

@@ -35,6 +35,15 @@ type dnsZone struct {
 	entered chan struct{}
 	once    bool
 	url     *url.URL
+	// writes are the records the provider was asked to create or change, as it stored them.
+	writes []map[string]any
+	// ahead moves the provider's clock, which stamps each record it changes, ahead of the database's.
+	ahead time.Duration
+}
+
+// modifiedOn is the provider's time now, as it stamps a record it changes.
+func (z *dnsZone) modifiedOn() string {
+	return time.Now().Add(z.ahead).UTC().Format(time.RFC3339Nano)
 }
 
 func newDNSZone(t *testing.T, f *fixture) *dnsZone {
@@ -106,7 +115,9 @@ func (z *dnsZone) serve(w http.ResponseWriter, r *http.Request) {
 			id = strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
 		v["id"] = id
+		v["modified_on"] = z.modifiedOn()
 		z.records[id] = v
+		z.writes = append(z.writes, v)
 		result = v
 	case "DELETE":
 		z.deletes++
@@ -131,7 +142,7 @@ func (z *dnsZone) add(kind, name, content, comment string) string {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	id := strings.ReplaceAll(uuid.NewString(), "-", "")
-	z.records[id] = map[string]any{"id": id, "type": kind, "name": name, "content": content, "comment": comment, "proxied": false, "ttl": 300}
+	z.records[id] = map[string]any{"id": id, "type": kind, "name": name, "content": content, "comment": comment, "proxied": false, "ttl": 300, "modified_on": z.modifiedOn()}
 	return id
 }
 

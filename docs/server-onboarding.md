@@ -52,6 +52,15 @@ A record that points at an address nobody vouches for any more is a takeover ris
 
 A server fenced by management recovery keeps its records until an owner reviews it. It is still the workspace's server, and its records are only frozen.
 
+### When an approval is older than DNS
+
+Before publishing, Astilba checks the server's records in the zone against the approval. It stops, and the approval ends, when DNS shows the records changed after the addresses were approved:
+
+- **A record of ours holds another address and was changed more than two and a half minutes after the approval.** This happens when management is restored from a backup taken before the owner moved the server. Republishing the backup's addresses could point the server's names at an address someone else now holds. A change within the first two and a half minutes is a job's request landing late; Astilba puts the approved address back.
+- **A record Astilba last saw is gone, and Astilba didn't delete it.** This happens when management is restored from a backup taken before the owner removed an address or revoked the server. It also happens when someone deletes the record by hand in Cloudflare: Astilba asks for a new approval rather than recreating it.
+
+The server's DNS state becomes `review_required` with a note saying why. Within five minutes the zone comparison also removes the newer records, since no approval in the database backs them. See [hosting](hosting.md#records-the-database-has-lost). Until an owner checks the server's addresses and approves them again, its generated names don't resolve.
+
 The database can also lose track of records it made: a restore from an older backup forgets everything after it, and a crash or a request that lands late can leave a record behind. Every five minutes, and at startup, management lists the zone's records carrying this installation's ownership comment and removes those nothing in the database backs. See [hosting](hosting.md#records-the-database-has-lost).
 
 Before Astilba asks the provider to create anything, it records the name in the database. Removal lists that exact name and deletes only A/AAAA records carrying this installation's and server's ownership comment. Records anyone else created at the name, including another installation's, are left alone. Each deletion is written to an audit table before it is sent and confirmed once the provider lists the record as gone. A failed or interrupted removal keeps its database row, and is retried within about a minute until it succeeds, including after a restart.

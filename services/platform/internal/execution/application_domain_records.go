@@ -21,6 +21,8 @@ const (
 	withdrawInactive    = "management_inactive"
 	withdrawBaseChanged = "base_changed"
 	withdrawAddress     = "address_removed"
+	withdrawUnbacked    = "unbacked"
+	withdrawOutdated    = "approval_outdated"
 )
 
 const (

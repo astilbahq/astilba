@@ -1011,6 +1011,8 @@ type ServerDomain struct {
 	ObservedAt         *time.Time  `json:"observed_at"`
 	Note               string      `json:"note"`
 	Records            []byte      `json:"records"`
+	ApprovedAt         *time.Time  `json:"approved_at"`
+	ObservedZone       string      `json:"observed_zone"`
 }
 
 type ServerMetric struct {
