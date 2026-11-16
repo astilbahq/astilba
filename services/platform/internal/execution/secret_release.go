@@ -49,10 +49,6 @@ func carriesValues(c api.ExecutionCommand) bool {
 	return false
 }
 
-// errHoldBack is a hydration's answer that the polling agent can't receive the command yet, but
-// may receive what follows it.
-var errHoldBack = errors.New("command held back from this agent")
-
 // releaseDecision is what a poll does with a command that carries values.
 type releaseDecision int
 
@@ -100,9 +96,6 @@ func (s *Service) release(ctx context.Context, a Identity, epoch int64, c *api.E
 		return s.releaseValues(ctx, a, key, reason, c)
 	}
 	deliver, _, err := s.hydrate(ctx, a, nil, c)
-	if errors.Is(err, errHoldBack) {
-		return skipCommand, nil
-	}
 	if err != nil || !deliver {
 		return waitForRelease, err
 	}
@@ -133,10 +126,6 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 	outcome := secretbroker.Failed
 	defer func() { keys.finish(ctx, outcome) }()
 	deliver, carried, err := s.hydrate(ctx, a, keys, c)
-	if errors.Is(err, errHoldBack) {
-		outcome = secretbroker.UsedIf(keys.opened())
-		return skipCommand, nil
-	}
 	if err != nil || !deliver || !carried {
 		if err == nil {
 			outcome = secretbroker.UsedIf(keys.opened())
@@ -144,8 +133,8 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 		if err != nil || !deliver {
 			return waitForRelease, err
 		}
-		// A pipeline past its deadline goes without values: an instance that holds it, such as
-		// one whose key has changed since, goes on with it, and one that doesn't says so
+		// A pipeline or restore past its deadline goes without values: an instance that holds it,
+		// such as one whose key has changed since, goes on with it, and one that doesn't says so
 		// (stopLostWork) rather than accept it.
 		if !c.CancelRequested {
 			c.SecretRelease = &api.SecretRelease{Epoch: key.DispatchEpoch, Values: false}

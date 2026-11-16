@@ -170,23 +170,28 @@ func requireRecoveredResource(source backup.Policy, spec domain.Specification) e
 	return domain.Invalid("policy.resource")
 }
 
+// requireRecoveryRestore admits a restore onto a server whose agent can run one now.
 func requireRecoveryRestore(ctx context.Context, q db.DBTX, ws, server uuid.UUID) error {
-	able, err := canRestoreRecovery(ctx, q, ws, server)
-	if err == nil && !able {
+	able, err := recoveryRestore(ctx, q, ws, server)
+	if err == nil && (able == nil || !*able) {
 		err = domain.Invalid("server.capabilities.recoveryRestore")
 	}
 	return err
 }
 
-// canRestoreRecovery reports whether a server's agent advertises the restore kind. One without it
-// would hold the command unsettled.
-func canRestoreRecovery(ctx context.Context, q db.DBTX, ws, server uuid.UUID) (bool, error) {
+// recoveryRestore reads what a server's agent last advertised for the restore kind: nil from one
+// that doesn't run it, which would hold the command unsettled, and otherwise whether its restore
+// prerequisites passed at that heartbeat.
+func recoveryRestore(ctx context.Context, q db.DBTX, ws, server uuid.UUID) (*bool, error) {
 	raw, err := db.New(q).ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: server})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	var c api.AgentCapabilities
-	return json.Unmarshal(raw, &c) == nil && c.RecoveryRestore != nil && *c.RecoveryRestore, nil
+	if json.Unmarshal(raw, &c) != nil {
+		return nil, nil
+	}
+	return c.RecoveryRestore, nil
 }
 
 // BackupRecoveries lists restores of a policy's snapshots onto another server, newest first.
@@ -227,15 +232,15 @@ const (
 	recoveryUndeliveredNote = "Cancelled or expired before any agent received it."
 	recoveryChangedNote     = "Stopped: the backup policy changed after this restore was started."
 	recoveryRenewedNote     = "Stopped: the policy's server was renewed, and restores its own snapshots again."
-	recoveryIncapableNote   = "Waiting for this server's agent to report that it can restore backups; it may need upgrading."
+	recoveryUnsupportedNote = "Stopped: this server's agent no longer runs restores. Upgrade it and start the restore again."
 )
 
 // hydrateRecovery decides a restore command's delivery and, with keys, fills its repository
 // access. The access goes only to the server the restore was recorded for, as the operation it was
 // issued as, while the policy is the generation it froze and its server is still revoked, and first
-// only once that server's agent advertises the restore kind. A restore that can't go ahead never
-// fails the poll, which would hold every command after it: one no agent has received ends here,
-// or waits for the capability, and one an agent may hold is stopped without values.
+// only to an agent that runs the restore kind. A restore that can't go ahead never fails or skips
+// the poll, which would hold or reorder the commands after it: one no agent has received ends
+// here, and one an agent may hold is stopped without values.
 func (s *Service) hydrateRecovery(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (deliver, carried bool, err error) {
 	var r backup.Recovery
 	if c.Backup == nil || json.Unmarshal(*c.Backup, &r) != nil || r.Digest() != c.PlanHash {
@@ -263,26 +268,9 @@ func (s *Service) hydrateRecovery(ctx context.Context, a Identity, keys valueKey
 		return false, false, nil
 	}
 	cancelled, expired := c.CancelRequested || op.CancelRequested, time.Now().After(c.Deadline)
-	if !op.Held {
+	if !op.Held && (cancelled || expired) {
 		// No agent has it, so it ends here rather than reaching one that may not know the kind.
-		if cancelled || expired {
-			return false, false, finishUndeliveredRecovery(ctx, tx, c.Id, ws, "cancelled", recoveryUndeliveredNote)
-		}
-		// The capability is read from each heartbeat, so an agent that lacks it may have it on the
-		// next one. Until then the restore waits, and the poll goes on to the server's other work.
-		able, err := canRestoreRecovery(ctx, tx, ws, c.ServerId)
-		if err != nil {
-			return false, false, err
-		}
-		if !able {
-			if err = q.AddOperationNote(ctx, db.AddOperationNoteParams{WorkspaceID: ws, ID: c.Id, Note: recoveryIncapableNote}); err != nil {
-				return false, false, err
-			}
-			if err = tx.Commit(ctx); err != nil {
-				return false, false, err
-			}
-			return false, false, errHoldBack
-		}
+		return false, false, finishUndeliveredRecovery(ctx, tx, c.Id, ws, "cancelled", recoveryUndeliveredNote)
 	}
 	if cancelled {
 		c.CancelRequested = true
@@ -291,6 +279,17 @@ func (s *Service) hydrateRecovery(ctx context.Context, a Identity, keys valueKey
 	note, release, err := recoveryRefusal(ctx, tx, ws, r, c)
 	if err != nil {
 		return false, false, err
+	}
+	if note == "" && !op.Held {
+		// An agent that runs the kind settles it, even when its restore prerequisites fail at a
+		// heartbeat; one that doesn't, such as a downgraded one, would hold it unsettled.
+		runs, err := recoveryRestore(ctx, tx, ws, c.ServerId)
+		if err != nil {
+			return false, false, err
+		}
+		if runs == nil {
+			note = recoveryUnsupportedNote
+		}
 	}
 	switch {
 	case note != "" && !op.Held:

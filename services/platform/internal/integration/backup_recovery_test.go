@@ -241,16 +241,17 @@ func TestRestoreIsReleasedOnlyWhileItsConditionsHold(t *testing.T) {
 	l := g.lostFiles(t)
 	g.revoke(t, l.gone)
 	g.applied(t, &l.e, g.replace(&l.e, l.b.id, l.volume))
-	capable := func(yes bool) {
-		g.reports(t, l.b, func(c *api.AgentCapabilities, _ *api.HostPreflight) { c.RecoveryRestore = &yes })
+	capable := func(yes *bool) {
+		g.reports(t, l.b, func(c *api.AgentCapabilities, _ *api.HostPreflight) { c.RecoveryRestore = yes })
 	}
+	yes, no := true, false
 	// Renewing the lost server clears its revocation.
 	revoked := func(yes bool) {
 		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE servers SET revoked=$2 WHERE id=$1`, l.gone.id, yes); err != nil {
 			t.Fatal(err)
 		}
 	}
-	capable(true)
+	capable(&yes)
 	g.pause(l.b, true)
 	// Once the test's own poll holds the lease, the host's last poll has ended.
 	if c, err := g.pollFor(l.b); err != nil || c != nil {
@@ -295,26 +296,16 @@ func TestRestoreIsReleasedOnlyWhileItsConditionsHold(t *testing.T) {
 	expire(op)
 	ended(op, "cancelled", "before any agent received it")
 
-	// An agent that doesn't advertise the restore kind may on its next heartbeat, so the restore
-	// waits for it, without failing the poll.
+	// An agent that no longer runs the restore kind, such as a downgraded one, would hold it
+	// unsettled.
 	op = start()
-	capable(false)
-	for range 3 {
-		if c, err := g.pollFor(l.b); err != nil || c != nil {
-			t.Fatalf("a restore was sent to an agent without the restore kind, or failed the poll: %v %v", c, err)
-		}
-	}
-	if state, note := g.operationState(t, op); state != "dispatched" || !strings.Contains(note, "can restore backups") {
-		t.Fatalf("a restore waiting for the capability is %s: %s", state, note)
-	}
-	// One that waits past its deadline ends, and says what it waited for.
-	expire(op)
-	ended(op, "cancelled", "before any agent received it")
-	if _, note := g.operationState(t, op); !strings.Contains(note, "can restore backups") {
-		t.Fatalf("an expired restore lost why it waited: %s", note)
-	}
-	capable(true)
+	capable(nil)
+	ended(op, "failed", "no longer runs restores")
+
+	// One that runs it gets it even while its restore prerequisites fail, and settles it itself.
+	capable(&yes)
 	op = start()
+	capable(&no)
 	c, err := g.pollUntil(t, l.b)
 	var r backup.Recovery
 	if err != nil || c == nil || c.Id != op || c.CancelRequested || json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Access.SecretKey != "storage-secret" {
@@ -322,7 +313,7 @@ func TestRestoreIsReleasedOnlyWhileItsConditionsHold(t *testing.T) {
 	}
 	// Once an agent may hold it, a lost capability or a passed deadline is the agent's to settle:
 	// it goes on, without the access sent again.
-	capable(false)
+	capable(nil)
 	expire(op)
 	c, err = g.pollUntil(t, l.b)
 	if err != nil || c == nil || c.Id != op || c.CancelRequested || json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Access != (backup.Access{}) {
