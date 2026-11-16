@@ -214,6 +214,43 @@ func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatus
 	return status, err
 }
 
+const backupRecoveryAccess = `-- name: BackupRecoveryAccess :one
+SELECT p.encrypted_access,p.configuration FROM backup_recoveries r
+JOIN backup_policies p ON p.workspace_id = r.workspace_id AND p.environment_id = r.environment_id AND p.id = r.policy_id
+WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.id = $3
+AND r.operation_id = $4 AND r.server_id = $5 AND r.policy_id = $6
+`
+
+type BackupRecoveryAccessParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	ServerID      uuid.UUID `json:"server_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+}
+
+type BackupRecoveryAccessRow struct {
+	EncryptedAccess []byte `json:"encrypted_access"`
+	Configuration   []byte `json:"configuration"`
+}
+
+// A recovery's repository access is released only to the server it was issued to, for the
+// operation it was issued as, while the policy is still the one it froze.
+func (q *Queries) BackupRecoveryAccess(ctx context.Context, arg BackupRecoveryAccessParams) (BackupRecoveryAccessRow, error) {
+	row := q.db.QueryRow(ctx, backupRecoveryAccess,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ID,
+		arg.OperationID,
+		arg.ServerID,
+		arg.PolicyID,
+	)
+	var i BackupRecoveryAccessRow
+	err := row.Scan(&i.EncryptedAccess, &i.Configuration)
+	return i, err
+}
+
 const backupSnapshotReceipts = `-- name: BackupSnapshotReceipts :one
 SELECT snapshot_receipts FROM backup_policies
 WHERE workspace_id = $1 AND environment_id = $2 AND id = $3
@@ -384,6 +421,44 @@ func (q *Queries) InsertBackupDestination(ctx context.Context, arg InsertBackupD
 	return err
 }
 
+const insertBackupRecovery = `-- name: InsertBackupRecovery :exec
+INSERT INTO backup_recoveries(id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+`
+
+type InsertBackupRecoveryParams struct {
+	ID              uuid.UUID `json:"id"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	PolicyID        uuid.UUID `json:"policy_id"`
+	OperationID     uuid.UUID `json:"operation_id"`
+	SourceServerID  uuid.UUID `json:"source_server_id"`
+	ServerID        uuid.UUID `json:"server_id"`
+	PlanID          uuid.UUID `json:"plan_id"`
+	Snapshot        string    `json:"snapshot"`
+	FirstReportedAt time.Time `json:"first_reported_at"`
+	TargetVolumeID  uuid.UUID `json:"target_volume_id"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertBackupRecovery(ctx context.Context, arg InsertBackupRecoveryParams) error {
+	_, err := q.db.Exec(ctx, insertBackupRecovery,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.PolicyID,
+		arg.OperationID,
+		arg.SourceServerID,
+		arg.ServerID,
+		arg.PlanID,
+		arg.Snapshot,
+		arg.FirstReportedAt,
+		arg.TargetVolumeID,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const listBackupDestinations = `-- name: ListBackupDestinations :many
 SELECT configuration FROM backup_destinations WHERE workspace_id = $1 ORDER BY id LIMIT 100
 `
@@ -431,6 +506,67 @@ func (q *Queries) ListBackupPolicies(ctx context.Context, arg ListBackupPolicies
 			return nil, err
 		}
 		items = append(items, configuration)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBackupRecoveries = `-- name: ListBackupRecoveries :many
+SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3
+ORDER BY r.created_at DESC, r.id LIMIT 100
+`
+
+type ListBackupRecoveriesParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+}
+
+type ListBackupRecoveriesRow struct {
+	ID              uuid.UUID `json:"id"`
+	OperationID     uuid.UUID `json:"operation_id"`
+	SourceServerID  uuid.UUID `json:"source_server_id"`
+	ServerID        uuid.UUID `json:"server_id"`
+	PlanID          uuid.UUID `json:"plan_id"`
+	Snapshot        string    `json:"snapshot"`
+	FirstReportedAt time.Time `json:"first_reported_at"`
+	TargetVolumeID  uuid.UUID `json:"target_volume_id"`
+	CreatedAt       time.Time `json:"created_at"`
+	Result          []byte    `json:"result"`
+	State           string    `json:"state"`
+	Note            string    `json:"note"`
+}
+
+func (q *Queries) ListBackupRecoveries(ctx context.Context, arg ListBackupRecoveriesParams) ([]ListBackupRecoveriesRow, error) {
+	rows, err := q.db.Query(ctx, listBackupRecoveries, arg.WorkspaceID, arg.EnvironmentID, arg.PolicyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBackupRecoveriesRow{}
+	for rows.Next() {
+		var i ListBackupRecoveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OperationID,
+			&i.SourceServerID,
+			&i.ServerID,
+			&i.PlanID,
+			&i.Snapshot,
+			&i.FirstReportedAt,
+			&i.TargetVolumeID,
+			&i.CreatedAt,
+			&i.Result,
+			&i.State,
+			&i.Note,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -551,6 +687,31 @@ func (q *Queries) OperationCommandByRequestKey(ctx context.Context, arg Operatio
 	var command []byte
 	err := row.Scan(&command)
 	return command, err
+}
+
+const recordBackupRecoveryResult = `-- name: RecordBackupRecoveryResult :execrows
+UPDATE backup_recoveries SET result = $1
+WHERE workspace_id = $2 AND operation_id = $3 AND server_id = $4 AND result IS NULL
+`
+
+type RecordBackupRecoveryResultParams struct {
+	Result      []byte    `json:"result"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	OperationID uuid.UUID `json:"operation_id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+func (q *Queries) RecordBackupRecoveryResult(ctx context.Context, arg RecordBackupRecoveryResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordBackupRecoveryResult,
+		arg.Result,
+		arg.WorkspaceID,
+		arg.OperationID,
+		arg.ServerID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const recordBackupSnapshotReceipts = `-- name: RecordBackupSnapshotReceipts :exec

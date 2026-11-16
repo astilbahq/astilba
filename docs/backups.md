@@ -82,6 +82,12 @@ Revoking a server records when the revocation began, and the servers list shows 
 
 Workspace exports and cross-host recovery carry both. Recovery keeps a receipt for each snapshot the newer of the two copies' reports lists as available, at the earlier time of the copies that have one. Of two copies of a revocation it keeps the earlier time, and when one copy has no time, it shows the time as unknown.
 
+## Restoring a lost server's snapshot
+
+Once a policy's server is revoked and the environment has [moved to a new primary](cross-host-placement.md#a-revoked-primary), an owner with recent authentication can restore one of the policy's snapshots onto the new primary through the policy's `recoveries` endpoint. Only a snapshot with a receipt can be chosen, and only from an S3 destination, since a filesystem repository was on the lost server. The new primary's deployment must still declare the policy's volume, or its database with the same database name and owner, and its agent must advertise `recoveryRestore`. The owner must acknowledge that a server compromised before it was revoked could have uploaded altered data, which the restore's checks can't tell from genuine data.
+
+The policy stays bound to the revoked server and is never changed. Each restore is recorded against it, with the server it ran on, the plan applied there when it was issued and the snapshot's receipt time, and only that server is given the policy's repository access, for that restore alone. A succeeded restore's record holds the manifest the restored data matched. The data lands in a new volume, which nothing uses until a cutover resets it for use; this release doesn't offer that cutover yet.
+
 ## Restore and cutover
 
 Choose an uploaded snapshot and request a fresh restore. The agent checks source ownership, repository identity, manifest checksums and capacity before creating a new volume, and downloads only the snapshot's manifest and archive. Capacity must cover the existing workload, staging and the new target; an unknown or insufficient capacity blocks restoration. PostgreSQL restore is isolated from application networks. A successful recipe check records a separate verified result and target volume.

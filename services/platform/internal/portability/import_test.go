@@ -379,6 +379,7 @@ func TestArchiveRefusesAmbiguousNames(t *testing.T) {
 // withoutVersionThirteen makes a decoded archive look as one written before it recorded when
 // revocations began and when snapshots were first reported. It copies the rows it changes.
 func withoutVersionThirteen(a Archive) {
+	withoutVersionFifteen(a)
 	for table, column := range map[string]string{"servers": "revoked_at", "backup_policies": "snapshot_receipts"} {
 		rows := []Row{}
 		for _, row := range a.Tables[table] {
@@ -462,5 +463,34 @@ func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 		if _, err := decode(version, change); err == nil {
 			t.Error("an archive with", name, "was accepted")
 		}
+	}
+}
+
+// withoutVersionFifteen makes a decoded archive look as one written before it carried restores onto
+// another server.
+func withoutVersionFifteen(a Archive) {
+	delete(a.Tables, "backup_recoveries")
+}
+
+// An archive from before version 15 made no restore onto another server, and may not carry one.
+func TestVersionFourteenArchivesCarryNoRecoveries(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Version = 13
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("a version 13 archive carried restores onto another server")
+	}
+	withoutVersionFifteen(a)
+	raw, _ = stablejson.Marshal(a)
+	got, err := decodeArchive(raw)
+	if err != nil || got.Tables["backup_recoveries"] == nil || len(got.Tables["backup_recoveries"]) != 0 {
+		t.Fatal("a version 13 archive wasn't read as making no restores: ", err)
 	}
 }

@@ -43,7 +43,7 @@ func carriesValues(c api.ExecutionCommand) bool {
 		// Removing a preview or a retired environment's unit needs no secret or registry access.
 		var p deployment.Payload
 		return c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != "preview-cleanup" && p.Action != retireAction
-	case "crosshost", "backup", "schedule", "pipeline", "upgrade":
+	case "crosshost", "backup", "schedule", "restore", "pipeline", "upgrade":
 		return true
 	}
 	return false
@@ -175,6 +175,8 @@ func (s *Service) hydrate(ctx context.Context, a Identity, keys valueKeys, c *ap
 			return s.hydrateUpgrade(ctx, keys, c)
 		case "backup", "schedule":
 			return s.hydrateBackup(ctx, keys, c)
+		case "restore":
+			return s.hydrateRecovery(ctx, keys, c)
 		case "crosshost":
 			return s.hydrateCrossHost(ctx, keys, c)
 		case "visual":

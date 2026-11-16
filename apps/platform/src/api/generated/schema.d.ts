@@ -2011,6 +2011,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Restores of this policy's snapshots onto a server other than its own, newest first. */
+        get: operations["ListBackupRecoveries"];
+        put?: never;
+        /** @description Restores one of a revoked server's policy snapshots into a new volume on the environment's current primary. Only a snapshot management received from the policy's server can be chosen, and the owner acknowledges that a server compromised before its revocation could have uploaded altered data. Nothing uses the restored volume until a reviewed cutover. */
+        post: operations["StartBackupRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover": {
         parameters: {
             query?: never;
@@ -4727,6 +4745,50 @@ export interface components {
             /** Format: uuid */
             targetId: string;
             manifest: components["schemas"]["BackupManifest"];
+        };
+        BackupRecoveryRequest: {
+            snapshot: string;
+            /** Format: uuid */
+            requestKey: string;
+            /**
+             * @description The owner understands that a server compromised before it was revoked could have uploaded altered data, which a restore's checks can't tell from genuine data.
+             * @enum {boolean}
+             */
+            acknowledged: true;
+        };
+        BackupRecoveryRecord: {
+            /**
+             * Format: uuid
+             * @description The restore's run ID, which labels what it creates on the receiving server.
+             */
+            id: string;
+            /** Format: uuid */
+            operationId: string;
+            /** Format: uuid */
+            sourceServerId: string;
+            /** Format: uuid */
+            serverId: string;
+            /**
+             * Format: uuid
+             * @description The plan applied on the receiving server when the restore was issued.
+             */
+            planId: string;
+            snapshot: string;
+            /**
+             * Format: date-time
+             * @description When management first received the snapshot, by its own clock.
+             */
+            firstReportedAt: string;
+            /** Format: uuid */
+            targetId: string;
+            /** Format: date-time */
+            createdAt: string;
+            state: components["schemas"]["ExecutionState"];
+            note: string;
+            /** @description Once the restore succeeded, the manifest read out of the snapshot that the restored data matches. The data came from a server that may have been compromised and isn't reset for use until a cutover. */
+            restored: {
+                manifest: components["schemas"]["BackupManifest"];
+            } | null;
         };
         BackupCommandRequest: {
             /** @enum {string} */
@@ -10076,6 +10138,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BackupSnapshotReceipt"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ListBackupRecoveries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupRecoveryRecord"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    StartBackupRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupRecoveryRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
                 };
             };
             /** @description Error */

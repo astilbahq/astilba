@@ -20,6 +20,14 @@ type Recovery struct {
 	TargetID     uuid.UUID    `json:"targetId"`
 }
 
+// RecoveryResult is what a succeeded restore put in its target volume (AgentReport.restore): the
+// snapshot, the target, and the manifest read out of the snapshot that the restored data matches.
+type RecoveryResult struct {
+	Snapshot string    `json:"snapshot"`
+	TargetID uuid.UUID `json:"targetId"`
+	Manifest Manifest  `json:"manifest"`
+}
+
 // MaxManifestBytes bounds the manifest a recovery reads out of a snapshot before trusting it.
 const MaxManifestBytes = 65536
 

@@ -274,9 +274,9 @@ func TestNativeRecoveryRestore(t *testing.T) {
 			t.Fatal("a refused restore created its target")
 		}
 	}
-	result := func(t *testing.T, r Record) recoveryResult {
+	result := func(t *testing.T, r Record) backup.RecoveryResult {
 		t.Helper()
-		var out recoveryResult
+		var out backup.RecoveryResult
 		if r.Report.State != "succeeded" || r.Report.Restore == nil || json.Unmarshal(*r.Report.Restore, &out) != nil {
 			t.Fatalf("restore ended %s: %s", r.Report.State, r.Report.Note)
 		}

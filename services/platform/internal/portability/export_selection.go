@@ -140,6 +140,8 @@ const archiveClosure = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,i
 	UNION ALL SELECT 'request',t.plan_id FROM visual_runtime t JOIN archive_keep k ON k.kind='env' AND k.id=t.environment_id WHERE t.workspace_id=$1
 	UNION ALL SELECT 'request',t.plan_id FROM cross_host_runtime t JOIN archive_keep k ON k.kind='env' AND k.id=t.environment_id WHERE t.workspace_id=$1
 	UNION ALL SELECT 'request',c.source_plan_id FROM backup_cutovers c JOIN archive_keep k ON k.kind='env' AND k.id=c.environment_id WHERE c.workspace_id=$1
+	UNION ALL SELECT 'request',r.plan_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='env' AND k.id=r.environment_id WHERE r.workspace_id=$1
+	UNION ALL SELECT 'op',r.operation_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='env' AND k.id=r.environment_id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'request',n.plan_id FROM network_endpoints n JOIN archive_keep k ON k.kind='endpoint' AND k.id=n.id WHERE n.workspace_id=$1
 	UNION ALL SELECT 'request',r.plan_id FROM preview_requests r JOIN archive_keep k ON k.kind='preview' AND k.id=r.id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'request',d.plan_id FROM pipeline_auto_deployments d JOIN archive_keep k ON k.kind='run' AND k.id=d.id WHERE d.workspace_id=$1
@@ -191,7 +193,7 @@ var archiveFilters = func() map[string]string {
 		"execution_plans":           ` AND id IN (SELECT o.plan_id FROM execution_operations o JOIN archive_keep k ON k.kind='op' AND k.id=o.id)`,
 		"secret_versions":           ` AND secret_id IN (SELECT s.id FROM secrets s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1)`,
 	}
-	for _, table := range []string{"deployment_units", "environment_layouts", "secrets", "managed_volumes", "managed_resources", "route_claims", "visual_runtime", "cross_host_runtime", "git_sources", "build_targets", "backup_policies", "backup_cutovers"} {
+	for _, table := range []string{"deployment_units", "environment_layouts", "secrets", "managed_volumes", "managed_resources", "route_claims", "visual_runtime", "cross_host_runtime", "git_sources", "build_targets", "backup_policies", "backup_cutovers", "backup_recoveries"} {
 		out[table] = archiveKept("env", "environment_id")
 	}
 	return out

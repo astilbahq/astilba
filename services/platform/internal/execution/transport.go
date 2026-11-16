@@ -302,6 +302,9 @@ func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received tim
 			return err
 		}
 	}
+	if err = recoveryReport(ctx, tx, a.Workspace, c, &r); err != nil {
+		return err
+	}
 	if err = s.crossHostReport(ctx, tx, a.Workspace, c, &r); err != nil {
 		return err
 	}
