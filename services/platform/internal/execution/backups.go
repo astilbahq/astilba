@@ -282,7 +282,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 			if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Installation.Policy.ID != id || b.Action != string(in.Action) || b.Snapshot != in.Snapshot {
 				return domain.Conflict
 			}
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey))
+			out, err = operationByRequestKey(ctx, tx, ws, in.RequestKey)
 			return err
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {

@@ -24,6 +24,9 @@ func (e *Engine) restic(ctx context.Context, in backup.Installation, dir string,
 	return out.b.Bytes(), nil
 }
 
+// errResticVersion is resticTo's refusal to run anything but the pinned restic.
+var errResticVersion = errors.New("supported restic version required")
+
 // resticTo runs restic against the installation's repository, writing its standard output to out.
 func (e *Engine) resticTo(ctx context.Context, in backup.Installation, dir string, out io.Writer, args ...string) error {
 	cli := e.ResticCLI
@@ -32,7 +35,7 @@ func (e *Engine) resticTo(ctx context.Context, in backup.Installation, dir strin
 	}
 	version, err := exec.CommandContext(ctx, cli, "version").Output()
 	if err != nil || !strings.HasPrefix(string(version), "restic "+backup.ResticVersion+" ") {
-		return errors.New("supported restic version required")
+		return errResticVersion
 	}
 	secret, err := os.MkdirTemp(e.Journal.dir, "restic-access-")
 	if err != nil {

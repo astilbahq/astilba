@@ -71,6 +71,12 @@ func scanOperation(row pgx.Row) (api.Operation, error) {
 	}
 	return v, err
 }
+
+// operationByRequestKey reads the operation a request key already started.
+func operationByRequestKey(ctx context.Context, tx pgx.Tx, ws, key uuid.UUID) (api.Operation, error) {
+	return scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, key))
+}
+
 func (s *Service) Apply(ctx context.Context, p store.Principal, ws, planID, key uuid.UUID) (api.Operation, error) {
 	var out api.Operation
 	err := s.scope(ctx, p, ws, workspaceAccess{Write: true}, "operation.apply", planID, func(tx pgx.Tx) error {
@@ -80,7 +86,7 @@ func (s *Service) Apply(ctx context.Context, p store.Principal, ws, planID, key 
 			if existingPlan == nil || *existingPlan != planID {
 				return domain.Conflict
 			}
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, key))
+			out, err = operationByRequestKey(ctx, tx, ws, key)
 			return err
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {

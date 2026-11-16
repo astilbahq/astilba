@@ -44,6 +44,10 @@ func recoveryCommand(c api.ExecutionCommand) bool {
 		var b backup.Command
 		return json.Unmarshal(*c.Backup, &b) == nil && (b.Action == "restore" || b.Action == "check" || b.Action == "snapshots")
 	}
+	// Restoring a revoked server's snapshot onto its replacement is recovery.
+	if c.Kind == "restore" {
+		return true
+	}
 	if c.Kind == "upgrade" && c.Upgrade != nil {
 		var u upgrade.Command
 		return json.Unmarshal(*c.Upgrade, &u) == nil && (u.Action == "return" || u.Action == "reconcile")

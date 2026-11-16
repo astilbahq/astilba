@@ -373,3 +373,58 @@ func TestRecoveryKeepsTheEarliestReceiptsAndRevocationTimes(t *testing.T) {
 		t.Fatal("recovery kept a receipt the newer report no longer lists", got.receipts)
 	}
 }
+
+// A restore's result is recorded once, by its succeeded report. Recovery from a checkpoint that
+// holds the result keeps it when the restored database had the restore still running, so the
+// restore doesn't end succeeded with nothing recorded of what it restored.
+func TestRecoveryKeepsARestoresRecordedResult(t *testing.T) {
+	var op uuid.UUID
+	var result []byte
+	r := newClaimRecovery(t, 1, func(f *fixture, b *browser, ws, _ uuid.UUID) {
+		p := newReportingPolicy(t, f, b, ws, "Restored backups")
+		receiver := enrolPreviewHost(t, f, b, ws)
+		env := p.policy.EnvironmentID
+		var plan uuid.UUID
+		if err := f.st.Pool.QueryRow(t.Context(), `SELECT plan_id FROM visual_runtime WHERE environment_id=$1`, env).Scan(&plan); err != nil {
+			t.Fatal(err)
+		}
+		op = uuid.New()
+		target, snapshot := uuid.New(), snapshotID("a")
+		result, _ = stablejson.Marshal(backup.RecoveryResult{Snapshot: snapshot, TargetID: target, Manifest: backup.Manifest{Recipe: backup.Recipe, PolicyID: p.policy.ID, RunID: uuid.New(), EnvironmentID: env, ResourceID: p.policy.ResourceID, Method: p.policy.Method, Bytes: 4096, SHA256: snapshotID("d"), Roles: []backup.Role{}, Extensions: []string{}}})
+		for _, statement := range []struct {
+			sql  string
+			args []any
+		}{
+			{`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence) VALUES($1,$2,$3,$4,1000,$5,'{"kind":"restore"}','restore','succeeded',1)`, []any{op, ws, receiver, env, uuid.New()}},
+			{`INSERT INTO backup_recoveries(id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at,result) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),$10,now(),$11::jsonb)`, []any{uuid.New(), ws, env, p.policy.ID, op, p.server, receiver, plan, snapshot, target, string(result)}},
+		} {
+			if _, err := f.st.Pool.Exec(t.Context(), statement.sql, statement.args...); err != nil {
+				t.Fatal(statement.sql, err)
+			}
+		}
+		for _, server := range []uuid.UUID{p.server, receiver} {
+			revokeServer(b, ws, server)
+		}
+	})
+	// The restored database: the restore still running, with no result yet.
+	for _, statement := range []string{
+		`UPDATE backup_recoveries SET result=NULL WHERE operation_id=$1`,
+		`UPDATE execution_operations SET state='running',report_sequence=0 WHERE id=$1`,
+	} {
+		if _, err := r.f.st.Pool.Exec(r.ctx, statement, op); err != nil {
+			t.Fatal(statement, err)
+		}
+	}
+	r.recoverAll(t, r.exports(t, claimExport{}))
+	var state string
+	var got []byte
+	if err := r.f.st.Pool.QueryRow(r.ctx, `SELECT o.state,r.result FROM backup_recoveries r JOIN execution_operations o ON o.id=r.operation_id WHERE r.operation_id=$1`, op).Scan(&state, &got); err != nil {
+		t.Fatal(err)
+	}
+	if state != "succeeded" || got == nil {
+		t.Fatalf("recovery left the restore %s with result %s", state, got)
+	}
+	if string(stablejson.Normalize(got)) != string(stablejson.Normalize(result)) {
+		t.Fatalf("recovery changed the restore's result: %s, want %s", got, result)
+	}
+}
