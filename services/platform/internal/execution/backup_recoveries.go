@@ -314,7 +314,7 @@ func (s *Service) hydrateRecovery(ctx context.Context, a Identity, keys valueKey
 }
 
 // finishUndeliveredRecovery ends a restore no agent has received, with a note saying why ahead of
-// what it already said, such as why it waited.
+// what it already said, such as that its agent must be upgraded to receive it.
 func finishUndeliveredRecovery(ctx context.Context, tx pgx.Tx, id, ws uuid.UUID, state, note string) error {
 	if err := db.New(tx).FinishUndeliveredRecovery(ctx, db.FinishUndeliveredRecoveryParams{WorkspaceID: ws, ID: id, State: state, Note: note}); err != nil {
 		return err

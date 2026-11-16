@@ -72,6 +72,8 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 			return e.finish(c.Id, "failed", "The restore reached its time limit before it changed anything.")
 		case errors.As(err, &refused):
 			return e.finish(c.Id, "failed", "Restore refused before anything was created: "+refused.Error()+".")
+		case errors.Is(err, errResticVersion):
+			return e.finish(c.Id, "failed", "Restore refused before anything was created: this server needs restic "+backup.ResticVersion+".")
 		}
 		return e.finish(c.Id, "failed", "Restore failed before anything was created. Check the destination's access, that the snapshot still exists, and that this server runs the current deployment.")
 	}

@@ -233,9 +233,9 @@ func TestRestoreReportsAreCheckedAgainstTheirCommand(t *testing.T) {
 }
 
 // What a restore is issued on must still hold when it is released. One that can't go ahead never
-// fails the poll, which would hold the server's other commands: if no agent has received it, it
-// ends in management or waits for the agent's capability, and an agent that may hold it is told to
-// stop, without the repository access.
+// fails or skips the poll, which would hold or reorder the server's other commands: if no agent has
+// received it, it ends in management, and an agent that may hold it is told to stop, without the
+// repository access.
 func TestRestoreIsReleasedOnlyWhileItsConditionsHold(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	l := g.lostFiles(t)
