@@ -23,6 +23,7 @@ var releasedValues = map[api.ExecutionCommandKind][][]string{
 	"pipeline":  {{"access"}, {"buildSecrets"}, {"registryAccess"}},
 	"backup":    {{"installation", "access"}},
 	"schedule":  {{"installation", "access"}},
+	"restore":   {{"installation", "access"}},
 	"upgrade":   {{"secrets"}, {"installation", "access"}},
 }
 
@@ -35,7 +36,7 @@ func commandBody(c *api.ExecutionCommand) **jsontext.Value {
 		return &c.Crosshost
 	case "pipeline":
 		return &c.Pipeline
-	case "backup", "schedule":
+	case "backup", "schedule", "restore":
 		return &c.Backup
 	case "upgrade":
 		return &c.Upgrade

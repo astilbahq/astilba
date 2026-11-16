@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -194,23 +193,7 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			break
 		}
 		if b.Installation.Policy.Method == "postgres-logical" {
-			a, sourceErr := sourceApp(b.Installation.Policy)
-			if sourceErr != nil {
-				err = sourceErr
-				break
-			}
-			source, sourceErr := e.sourceContainer(ctx, b.Installation.Policy, a.ID)
-			if sourceErr != nil {
-				err = sourceErr
-				break
-			}
-			for _, value := range source.Config.Env {
-				if password, ok := strings.CutPrefix(value, "POSTGRES_PASSWORD="); ok {
-					b.Installation.Access.DatabasePassword = password
-				}
-			}
-			if b.Installation.Access.DatabasePassword == "" {
-				err = errors.New("database initialization credential unavailable")
+			if b.Installation.Access.DatabasePassword, err = e.databasePassword(ctx, b.Installation.Policy); err != nil {
 				break
 			}
 		}

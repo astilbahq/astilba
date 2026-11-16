@@ -265,7 +265,7 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "upgrades" || bucket == "releases" || bucket == "cross-host" || bucket == "retained-pools" || bucket == "recovery-authority" {
 		limit = 524288
 	}
-	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {
+	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "restore" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {
 		limit = 524288
 	}
 	if len(raw) > limit {
@@ -371,6 +371,13 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 	}
 	if (a.Kind == "backup" || a.Kind == "schedule") && a.Kind == b.Kind {
 		var ap, bp backup.Command
+		if a.Backup == nil || b.Backup == nil || json.Unmarshal(*a.Backup, &ap) != nil || json.Unmarshal(*b.Backup, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
+			return false
+		}
+		a.Backup, b.Backup = nil, nil
+	}
+	if a.Kind == "restore" && b.Kind == "restore" {
+		var ap, bp backup.Recovery
 		if a.Backup == nil || b.Backup == nil || json.Unmarshal(*a.Backup, &ap) != nil || json.Unmarshal(*b.Backup, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
 			return false
 		}
