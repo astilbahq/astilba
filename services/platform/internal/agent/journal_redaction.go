@@ -187,8 +187,9 @@ func takeReleasedValues(r *Record, delivered api.ExecutionCommand) {
 		return
 	}
 	*commandBody(&r.Command) = *commandBody(&delivered)
-	r.ValuesWanted = false
-	r.Report.Note = ""
+	// Management takes only a report later than the one that said it waits.
+	r.ValuesWanted, r.Report.Note = false, ""
+	r.Report.Sequence++
 }
 
 // upgradeActions are every action a command can ask of an upgrade.

@@ -207,9 +207,9 @@ func TestRetriedCheckWaitsForItsAccess(t *testing.T) {
 		}
 	}
 	// The executor read this copy before the delivery that brings the access back.
-	read := r.Command
-	if r, err = e.Journal.Accept(check); err != nil || !held() || r.ValuesWanted || r.Report.Note != "" {
-		t.Fatal("the delivery that brings the access back was not taken", r.Report.Note, err)
+	read, waiting := r.Command, r.Report.Sequence
+	if r, err = e.Journal.Accept(check); err != nil || !held() || r.ValuesWanted || r.Report.Note != "" || r.Report.Sequence <= waiting {
+		t.Fatal("the delivery that brings the access back was not taken, or not reported over the wait", r.Report.Note, err)
 	}
 	if err = e.Execute(ctx, read); err != nil {
 		t.Fatal(err)
@@ -242,7 +242,8 @@ func TestWaitForAccessEndsAtTheDeadlineWithoutManagement(t *testing.T) {
 	e, p, _ := scheduledJobFixture(t, "")
 	p.ID, p.Method, p.Command, p.DestinationID = uuid.New(), backup.QuiescedFiles, nil, uuid.New()
 	destination := backup.Destination{ID: p.DestinationID, Name: "Bucket", Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "parked-fixture", Region: "test-1"}
-	check := scheduleCommand(p, backup.Command{Action: "check", Installation: backup.Installation{Destination: destination}}, time.Now().Add(time.Second))
+	// Long enough for a slow runner to start waiting before it.
+	check := scheduleCommand(p, backup.Command{Action: "check", Installation: backup.Installation{Destination: destination}}, time.Now().Add(3*time.Second))
 	if _, err := e.Journal.Accept(check); err != nil {
 		t.Fatal(err)
 	}
