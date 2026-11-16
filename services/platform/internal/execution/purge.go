@@ -155,7 +155,12 @@ func (s *Service) purge(ctx context.Context, tx pgx.Tx, p store.Principal, ws, p
 		}
 		next.State, next.PurgeOperationID = "purging", &op.Id
 	}
-	return q.SetEnvironmentPurge(ctx, next)
+	if err = q.SetEnvironmentPurge(ctx, next); err != nil {
+		return err
+	}
+	// Destroying the environment's key leaves every copy of its values unreadable: those in
+	// recovery checkpoints, on hosts, and anywhere else the ciphertext was kept.
+	return s.Store.Broker.DestroyEnvironmentKeys(ctx, q, ws, env, "environment purged")
 }
 
 // finalizePurge records a host's confirmed deletion of the volumes its purge command named. The

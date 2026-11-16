@@ -26,7 +26,7 @@ const Version int64 = 71
 // CustodyStage is the custody stage this release completes. It assumes the one before is
 // complete, so `migrate` and Check refuse an installation further behind: stages are taken one
 // release at a time. See docs/hosting.md#key-custody.
-const CustodyStage = 4
+const CustodyStage = 5
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
@@ -111,11 +111,18 @@ func checkStage(ctx context.Context, db *sql.DB) (bool, error) {
 // stageRefusal refuses a release that completes stage required on an installation that has
 // completed stage completed, unless it is the next stage or an earlier one.
 func stageRefusal(required, completed int) error {
-	if required > completed+1 {
-		return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: upgrade through the releases between them first", required, completed)
+	switch {
+	case required <= completed+1:
+		return nil
+	case completed+1 == convertedStage:
+		// No release completes it by starting: an operator converts with the release before.
+		return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: run `astilba custody convert` with the stage %d release until `astilba custody status` shows stage %d, then upgrade through any releases between", required, completed, convertedStage, convertedStage)
 	}
-	return nil
+	return fmt.Errorf("this release completes custody stage %d, and the installation has completed stage %d: upgrade through the releases between them first", required, completed)
 }
+
+// convertedStage is the custody stage `astilba custody convert` records, rather than a release.
+const convertedStage = 4
 
 func Check(ctx context.Context, dsn string) error {
 	p, db, err := provider(dsn)
