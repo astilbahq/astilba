@@ -22,7 +22,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/config"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
-	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
@@ -51,6 +50,10 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// It runs before configuration loads: it makes the credentials that configuration names.
+	if len(os.Args) > 2 && os.Args[1] == "custody" && os.Args[2] == "init-transit" {
+		return initTransitCommand(ctx, os.Stdout, os.Args[3:])
+	}
 	if os.Args[1] == "keygen" {
 		f := flag.NewFlagSet("keygen", flag.ContinueOnError)
 		file := f.String("out", "", "new private keyring file")
@@ -97,7 +100,7 @@ func run() error {
 		return errors.New("cannot configure database")
 	}
 	defer pool.Close()
-	backend, e := custody.NewFile(keys)
+	backend, e := keyBackend(c, keys)
 	if e != nil {
 		return e
 	}

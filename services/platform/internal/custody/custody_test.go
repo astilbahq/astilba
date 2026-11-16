@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
@@ -75,9 +77,9 @@ func TestCanaryBindsKeyAndInstallation(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	rewrapped, err := RewrapCanary(ctx, f, ClassServe, installation, blob)
-	if err != nil || bytes.Equal(rewrapped, blob) {
-		t.Fatalf("rewrap: %v", err)
+	rewrapped, requests, err := RewrapCanary(ctx, f, ClassServe, installation, blob)
+	if err != nil || bytes.Equal(rewrapped, blob) || len(requests) != 0 {
+		t.Fatalf("rewrap: %q %v", requests, err)
 	}
 	if err = CheckCanary(ctx, f, ClassServe, installation, rewrapped); err != nil {
 		t.Fatal(err)
@@ -118,5 +120,57 @@ func TestKeyCheckValues(t *testing.T) {
 	other, _, _ := NewKey()
 	if CheckKey(other, check) {
 		t.Fatal("another key matched")
+	}
+}
+
+// namingFile names each wrap and unwrap as a key service with no rewrap of its own would, and can
+// refuse unwraps.
+type namingFile struct {
+	*File
+	n      int
+	refuse error
+}
+
+func (f *namingFile) Wrap(ctx context.Context, class Class, key []byte, c Context) ([]byte, string, error) {
+	f.n++
+	blob, _, err := f.File.Wrap(ctx, class, key, c)
+	return blob, fmt.Sprintf("wrap-%d", f.n), err
+}
+
+func (f *namingFile) Unwrap(ctx context.Context, class Class, blob []byte, c Context) (Result, error) {
+	f.n++
+	id := fmt.Sprintf("unwrap-%d", f.n)
+	if f.refuse != nil {
+		return Result{ProviderRequestID: id}, f.refuse
+	}
+	r, err := f.File.Unwrap(ctx, class, blob, c)
+	r.ProviderRequestID = id
+	return r, err
+}
+
+// A backend with no rewrap of its own rewraps by unwrapping and wrapping, and names both requests,
+// or the unwrap alone when it was refused, so the broker can record them.
+func TestRewrapNamesEachRequest(t *testing.T) {
+	ring, err := cryptobox.New("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := NewFile(ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &namingFile{File: file}
+	ctx := context.Background()
+	c := Context{Installation: uuid.New(), Scope: ScopeWorkspace, Workspace: uuid.New(), Generation: 1, Purpose: "deliver"}
+	blob, _, err := f.Wrap(ctx, ClassServe, bytes.Repeat([]byte{7}, 32), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, requests, err := Rewrap(ctx, f, ClassServe, blob, c); err != nil || !slices.Equal(requests, []string{"unwrap-2", "wrap-3"}) {
+		t.Fatalf("%q %v", requests, err)
+	}
+	f.refuse = ErrDenied
+	if _, requests, err := Rewrap(ctx, f, ClassServe, blob, c); !errors.Is(err, ErrDenied) || !slices.Equal(requests, []string{"unwrap-4"}) {
+		t.Fatalf("%q %v", requests, err)
 	}
 }
