@@ -35,7 +35,7 @@ an owner-only environment file outside source control:
 | `ASTILBA_DATABASE_URL` | PostgreSQL connection URL; use verified TLS for a remote database. |
 | `ASTILBA_KEYRING` | Path to a mounted owner-only keyring, readable by UID 65532. |
 | `ASTILBA_INSTALLATION_ID` | The installation's ID, which `astilba custody status` shows after `astilba migrate`. Required when hosted, and recommended everywhere: a database that belongs to another installation is then refused. See [key custody](#key-custody). |
-| `ASTILBA_KEY_BACKEND` | Optional. The key service keys are read from; `file`, the keyring file, is the default and the only one so far. |
+| `ASTILBA_KEY_BACKEND` | Optional. The key service keys are read from: `file`, the keyring file, is the default; `transit` is OpenBao or Vault Transit, set up as [key custody with Transit](key-custody-transit.md) describes. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
@@ -72,6 +72,10 @@ To move to a newer version later, follow [upgrading management](management-upgra
 
 ### Key custody
 
+Workspace keys are wrapped by the keyring file, or by OpenBao or Vault Transit keys that never
+leave the key service, which records each use in its own audit log. See [key custody with
+Transit](key-custody-transit.md) for the second.
+
 The keyring is a file. Management doesn't read a keyring from its environment, where anything
 that can read the environment would find it beside the database URL. `ASTILBA_KEYRING_JSON` was
 removed, and setting it stops management from starting.
@@ -103,11 +107,14 @@ remove the trigger.
 
 | Command | What it does |
 | --- | --- |
-| `astilba custody status` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, how many values recording stage 4 reads, and any pending work. It changes nothing. |
+| `astilba custody status [--as-operator]` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, how many values recording stage 4 reads, and any pending work. It changes nothing. With a [Transit](key-custody-transit.md) backend, add `--as-operator` when it runs with the operator's credentials. |
 | `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
-| `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the keyring's active key, recording its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+| `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the newest key: the keyring's active key, or with [Transit](key-custody-transit.md) each class's newest key version, rewrapped inside the key service. It records its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+| `astilba custody init-transit --dev --address <URL> --token-file <file> --out <dir>` | Sets up a local OpenBao dev server for the local stack's `--custody openbao` profile. It refuses anything but `--dev`, a loopback address, and a server whose cluster is named `astilba-dev`, as the local stack's is; set up a real key service as [key custody with Transit](key-custody-transit.md) describes. |
 | `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
 | `astilba custody convert --operator <name or role> [--reason <text>]` | Moves every value still sealed under the keyring onto its workspace's key, or a second factor onto the installation key, and records custody stage 4 once none is left. See [converting values](#converting-values). |
+
+With Transit, `rewrap` and `convert` run with the operator's credentials, and `init-keys` with serving's; started with the other identity's, they are refused.
 
 `custody status` lists a command that recorded a start and no finish, unless a run of it that
 started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
@@ -172,6 +179,9 @@ run `custody convert` once, at a quiet time:
 ```sh
 docker compose run --rm --no-deps platform custody convert --operator "$(whoami)"
 ```
+
+With Transit, give the command the operator's credentials rather than serving's, as for
+`custody rewrap`.
 
 - It moves each value still sealed under the keyring onto its workspace's key, or a second factor
   onto the installation key. Only the value's key is wrapped again; the value itself is kept, so
