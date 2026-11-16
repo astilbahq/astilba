@@ -60,8 +60,7 @@ func environmentsOf(a Archive) (secretEnvironments, error) {
 
 // credential names a row's sealed column and the value it holds, or "" for a table with none or a
 // secret version whose value was erased, which holds nothing to open or seal. With environments,
-// the item names the environment its value is sealed for: a backup policy's own, or a secret
-// version's secret's.
+// a secret version's item names its secret's environment, whose key it is sealed under.
 func credential(table string, row Row, environments secretEnvironments) (string, secretbroker.Item, error) {
 	var field string
 	var kind secretbroker.Kind
@@ -107,10 +106,6 @@ func credential(table string, row Row, environments secretEnvironments) (string,
 				return "", secretbroker.Item{}, ErrArchive
 			}
 			item.Environment = environments[secret]
-		case "backup_policies":
-			if json.Unmarshal(row["environment_id"], &item.Environment) != nil || item.Environment == uuid.Nil {
-				return "", secretbroker.Item{}, ErrArchive
-			}
 		}
 	}
 	return field, item, nil
@@ -143,27 +138,6 @@ func transformCredential(table string, row Row, environments secretEnvironments,
 	setValue(row, field, `\x`+hex.EncodeToString(value))
 	clear(value)
 	return nil
-}
-
-// exportCredential opens a row's value for an export. A value whose environment's key was
-// destroyed, by purging the environment or ending its preview, is exported erased: a secret version
-// without its value, and a backup policy with no access, which the policy, disabled in its purged
-// environment, never uses.
-func exportCredential(table string, row Row, keys *secretbroker.Session) error {
-	err := transformCredential(table, row, nil, keys.Open)
-	if !errors.Is(err, secretbroker.ErrKeyDestroyed) {
-		return err
-	}
-	switch table {
-	case "secret_versions":
-		setValue(row, "encrypted_value", nil)
-		setValue(row, "erased_at", time.Now().UTC())
-		return nil
-	case "backup_policies":
-		setValue(row, "encrypted_access", `\x`+hex.EncodeToString([]byte("{}")))
-		return nil
-	}
-	return err
 }
 
 // AdmitExport refuses what Export would refuse before reading the workspace: an account that
@@ -209,7 +183,7 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 				if err := omitExportLogs(table.Name, row); err != nil {
 					return err
 				}
-				if err := exportCredential(table.Name, row, keys); err != nil {
+				if err := transformCredential(table.Name, row, nil, keys.Open); err != nil {
 					return err
 				}
 			}

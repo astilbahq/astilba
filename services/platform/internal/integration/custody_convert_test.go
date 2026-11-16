@@ -188,13 +188,13 @@ func TestConvertMovesEveryValueOntoItsHoldersKey(t *testing.T) {
 	}
 	for _, s := range seeds {
 		sealed := s.stored(t, f)
-		// An environment's values go onto its own key, others onto their workspace's, and second
-		// factors onto the installation's.
+		// An environment's secret values go onto its own key, others onto their workspace's, and
+		// second factors onto the installation's.
 		scope := cryptobox.ScopeWorkspace
 		switch {
 		case s.ws == uuid.Nil:
 			scope = cryptobox.ScopeInstallation
-		case s.item.Kind == secretbroker.SecretVersion || s.item.Kind == secretbroker.BackupPolicy:
+		case s.item.Kind == secretbroker.SecretVersion:
 			scope = cryptobox.ScopeEnvironment
 		}
 		v2Header(t, sealed, scope)

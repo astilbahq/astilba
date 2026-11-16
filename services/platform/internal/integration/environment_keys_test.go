@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"slices"
@@ -18,7 +17,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
-	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
@@ -546,69 +544,6 @@ func TestPurgeWaitsForAWriterAndRefusesLaterOnes(t *testing.T) {
 	}
 }
 
-// A workspace still exports after one of its environments is purged with a backup policy whose
-// credential is sealed under the environment's key: the policy is exported with no access, as an
-// erased value, since the key that sealed it is gone.
-func TestExportAfterPurgeWritesDestroyedValuesErased(t *testing.T) {
-	x := newRetirementFixture(t)
-	f := x.f
-	ctx := context.Background()
-	var env api.Environment
-	x.owner.call("POST", x.prefix, map[string]string{"name": "Backed up"}, 201, &env)
-	server, policy := uuid.New(), uuid.New()
-	sealed, err := cryptobox.SealUnderEnvironment(environmentKey(t, f, x.ws, env.Id), env.Id, 1, []byte(`{"password":"policy-canary"}`), pipeline.EncryptionIdentity(x.ws, policy, "backup-policy"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.st.Pool.Exec(ctx, `INSERT INTO servers(id,workspace_id,name,role) VALUES($1,$2,'Backups','deployment')`, server, x.ws); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.st.Pool.Exec(ctx, `INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access,status) VALUES($1,$2,$3,$4,'{}',$5,'{}')`, policy, x.ws, env.Id, server, sealed); err != nil {
-		t.Fatal(err)
-	}
-	account, err := f.st.Queries.AccountByID(ctx, f.owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	exportAccess := func() string {
-		t.Helper()
-		const passphrase = "environment-keys-export-passphrase"
-		encrypted, err := (&portability.Service{Store: f.st}).Export(ctx, browserPrincipal(t, f.st, account, false), x.ws, passphrase)
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, err := portability.Open(ctx, passphrase, encrypted)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var exported portability.Archive
-		if err = json.Unmarshal(raw, &exported); err != nil {
-			t.Fatal(err)
-		}
-		for _, row := range exported.Tables["backup_policies"] {
-			var id uuid.UUID
-			var access string
-			if json.Unmarshal(row["id"], &id) == nil && id == policy && json.Unmarshal(row["encrypted_access"], &access) == nil {
-				plain, err := hex.DecodeString(strings.TrimPrefix(access, `\x`))
-				if err != nil {
-					t.Fatal(err)
-				}
-				return string(plain)
-			}
-		}
-		t.Fatal("the policy was not exported")
-		return ""
-	}
-	if access := exportAccess(); !strings.Contains(access, "policy-canary") {
-		t.Fatalf("exported access %q before the purge", access)
-	}
-	x.lifecycle(x.owner, x.prefix+"/"+env.Id.String(), "retire", "Backed up", 201)
-	x.purge(x.owner, x.prefix+"/"+env.Id.String(), "Backed up", []uuid.UUID{}, 201)
-	if access := exportAccess(); access != "{}" {
-		t.Fatalf("exported access %q after the purge", access)
-	}
-}
-
 // Values saved beside an instance of an earlier release stay under their workspace's key, and
 // converting waits for that instance; once it has gone, converting moves them onto their
 // environment's key and records custody stage 6.
@@ -759,6 +694,85 @@ func TestStageSixCorrectsItselfAfterARoundTrip(t *testing.T) {
 	}
 	if reverted = keyEvents(t, f, "stage-reverted"); len(reverted) != 2 || reverted[1].Reason.String != "1 environment values are under their workspace's key" {
 		t.Fatalf("reverted events %+v", reverted)
+	}
+}
+
+// An environment's ID is unique within its workspace only, and importing keeps it, so an import
+// can bring an environment with another workspace's environment ID, by accident or on purpose.
+// Each keeps its own key: both seal, and purging one leaves the other's key as it was.
+func TestSealingBesideAnotherWorkspacesEnvironmentOfTheSameID(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Shared ID"}, 201, &env)
+	x.owner.call("POST", x.prefix+"/"+env.Id.String()+"/secrets", map[string]string{"name": "TOKEN", "value": "original-canary"}, 201, nil)
+	// Another workspace with an environment of the same ID, as an import makes it.
+	other := insertWorkspace(t, f, "Imported")
+	keysJobDone(t, f)
+	q := db.New(f.st.Pool)
+	project, err := q.InsertProject(ctx, db.InsertProjectParams{WorkspaceID: other, ID: uuid.New(), Name: "Imported"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec []byte
+	if err = f.st.Pool.QueryRow(ctx, `SELECT r.specification FROM specification_revisions r JOIN environments e ON e.workspace_id=r.workspace_id AND e.draft_revision_id=r.id WHERE e.workspace_id=$1 AND e.id=$2`, x.ws, env.Id).Scan(&spec); err != nil {
+		t.Fatal(err)
+	}
+	made, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer made.Rollback(ctx)
+	revision, hash := uuid.New(), sha256.Sum256(spec)
+	if _, err = db.New(made).InsertEnvironment(ctx, db.InsertEnvironmentParams{WorkspaceID: other, ProjectID: project.ID, ID: env.Id, Name: "Shared ID", DraftRevisionID: revision}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.New(made).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: other, EnvironmentID: env.Id, ID: revision, AuthorID: f.owner, Specification: spec, ContentHash: hash[:]}); err != nil {
+		t.Fatal(err)
+	}
+	if err = made.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	seal := func(ws uuid.UUID) error {
+		t.Helper()
+		item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}
+		keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer keys.Close(ctx, secretbroker.Used)
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err = keys.Seal(ctx, db.New(tx), item, []byte("value")); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if err = seal(other); err != nil {
+		t.Fatal("the other workspace's environment:", err)
+	}
+	if err = seal(x.ws); err != nil {
+		t.Fatal("the original environment beside the other's key:", err)
+	}
+	if n := x.count("SELECT count(DISTINCT workspace_id) FROM environment_keys WHERE environment_id=$1 AND state='active'", env.Id); n != 2 {
+		t.Fatalf("%d workspaces hold a key for the shared environment ID", n)
+	}
+	// Purging the other workspace's environment destroys its key only.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE environments SET state='purged', retired_at=now(), retired_by=$3, purged_at=now(), purged_by=$3, purged_without_host=true WHERE workspace_id=$1 AND id=$2`, other, env.Id, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.st.Broker.DestroyEnvironmentKeys(ctx, q, other, env.Id, "environment purged"); err != nil {
+		t.Fatal(err)
+	}
+	if err = seal(x.ws); err != nil {
+		t.Fatal("the original environment after the other's purge:", err)
+	}
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2 AND state='active'", x.ws, env.Id); n != 1 {
+		t.Fatal("purging the other workspace's environment touched the original's key")
 	}
 }
 

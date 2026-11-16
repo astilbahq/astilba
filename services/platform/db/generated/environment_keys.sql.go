@@ -155,7 +155,7 @@ func (q *Queries) EnvironmentKeys(ctx context.Context, workspaceID uuid.UUID) ([
 
 const environmentSealingRefused = `-- name: EnvironmentSealingRefused :one
 SELECT (e.state IN ('purging', 'purged') OR EXISTS (
-    SELECT 1 FROM environment_keys k WHERE k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
+    SELECT 1 FROM environment_keys k WHERE k.workspace_id = e.workspace_id AND k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
 FROM environments e WHERE e.workspace_id = $1 AND e.id = $2
 `
 
@@ -176,7 +176,7 @@ func (q *Queries) EnvironmentSealingRefused(ctx context.Context, arg Environment
 const insertEnvironmentKey = `-- name: InsertEnvironmentKey :execrows
 INSERT INTO environment_keys(workspace_id, environment_id, generation, state, workspace_generation, wrapped, kcv)
 VALUES ($1, $2, $3, 'active', $4, $5, $6)
-ON CONFLICT (environment_id, generation) DO NOTHING
+ON CONFLICT (workspace_id, environment_id, generation) DO NOTHING
 `
 
 type InsertEnvironmentKeyParams struct {

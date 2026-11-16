@@ -37,7 +37,7 @@ FOR SHARE;
 -- Whether an environment of the workspace may no longer have values sealed for it: it is being
 -- purged, or its key was destroyed. No row is an environment the workspace does not have.
 SELECT (e.state IN ('purging', 'purged') OR EXISTS (
-    SELECT 1 FROM environment_keys k WHERE k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
+    SELECT 1 FROM environment_keys k WHERE k.workspace_id = e.workspace_id AND k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
 FROM environments e WHERE e.workspace_id = @workspace_id AND e.id = @environment_id;
 
 -- name: InsertEnvironmentKey :execrows
@@ -45,7 +45,7 @@ FROM environments e WHERE e.workspace_id = @workspace_id AND e.id = @environment
 -- the same time is kept instead.
 INSERT INTO environment_keys(workspace_id, environment_id, generation, state, workspace_generation, wrapped, kcv)
 VALUES (@workspace_id, @environment_id, @generation, 'active', @workspace_generation, @wrapped, @kcv)
-ON CONFLICT (environment_id, generation) DO NOTHING;
+ON CONFLICT (workspace_id, environment_id, generation) DO NOTHING;
 
 -- name: LockEnvironmentKeyCreation :exec
 -- Holds the making of an environment's first key, named "environment:<workspace>:<environment>",

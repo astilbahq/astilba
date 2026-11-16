@@ -334,7 +334,7 @@ func (q *Queries) LegacyTOTPSecrets(ctx context.Context, arg LegacyTOTPSecretsPa
 const legacyValueCounts = `-- name: LegacyValueCounts :many
 SELECT v.kind::text AS kind, count(*)::bigint AS stored,
     count(*) FILTER (WHERE custody_value_converted(v.sealed) IS NOT TRUE)::bigint AS remaining,
-    count(*) FILTER (WHERE v.kind IN ('secret-version', 'backup-policy') AND substring(v.sealed FROM 1 FOR 35) IS DISTINCT FROM '\x7b2276657273696f6e223a322c2273636f7065223a22656e7669726f6e6d656e74222c'::bytea)::bigint AS outside
+    count(*) FILTER (WHERE v.kind = 'secret-version' AND substring(v.sealed FROM 1 FOR 35) IS DISTINCT FROM '\x7b2276657273696f6e223a322c2273636f7065223a22656e7669726f6e6d656e74222c'::bytea)::bigint AS outside
 FROM (
     SELECT 'secret-version' AS kind, encrypted_value AS sealed FROM secret_versions WHERE encrypted_value IS NOT NULL
     UNION ALL SELECT 'git', encrypted_access FROM git_connections
@@ -396,8 +396,7 @@ SELECT v.kind::text AS kind, v.id::uuid AS id, v.sealed::bytea AS sealed, COALES
     UNION ALL SELECT 'registry', id, encrypted_access, NULL FROM registries WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
     UNION ALL SELECT 'build-secret', id, encrypted_value, NULL FROM build_secret_versions WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_value) IS NOT TRUE
     UNION ALL SELECT 'backup-destination', id, encrypted_access, NULL FROM backup_destinations WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
-    UNION ALL SELECT 'backup-policy', id, encrypted_access, environment_id FROM backup_policies WHERE workspace_id = $1::uuid
-        AND (custody_value_converted(encrypted_access) IS NOT TRUE OR $2::boolean AND substring(encrypted_access FROM 1 FOR 35) <> '\x7b2276657273696f6e223a322c2273636f7065223a22656e7669726f6e6d656e74222c'::bytea)
+    UNION ALL SELECT 'backup-policy', id, encrypted_access, NULL FROM backup_policies WHERE workspace_id = $1::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
     UNION ALL SELECT 'alert-webhook', workspace_id, encrypted_webhook, NULL FROM alert_settings WHERE workspace_id = $1::uuid AND encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
 ) v
 WHERE (v.kind, v.id) > ($3::text, $4::uuid)

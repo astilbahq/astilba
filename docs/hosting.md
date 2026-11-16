@@ -136,11 +136,12 @@ or a second factor under the installation key, and tokens are issued under a tok
 stored before then stay under the keyring until [converted](#converting-values), which completes
 stage 4. From stage 5, a release also opens values sealed under an environment's own key, which
 that key's workspace key wraps, and a stage 5 release records stage 5 when it starts. This
-release seals each environment's secret values and backup policy credentials under the
-environment's key, made when its first value is saved, so that purging the environment destroys
-the key and every copy of them with it. It does so only while every instance seen in the last
-five minutes runs a stage 5 release or later; beside an older one, values stay under their
-workspace's key until converted. Converting them completes stage 6. This release needs stage 5:
+release seals each environment's secret values under the environment's key, made when its first
+value is saved, so that purging the environment destroys the key and every copy of them with it.
+Backup policy credentials stay under the workspace's key, so the environment's backups that
+purging keeps can still be restored. It seals under environment keys only while every instance
+seen in the last five minutes runs a stage 5 release or later; beside an older one, values stay
+under their workspace's key until converted. Converting them completes stage 6. This release needs stage 5:
 `migrate`, `serve` and every other command refuse it on an installation that hasn't completed
 stage 5, so run the stage 5 release until `custody status` shows stage 5 first. Going back to a
 stage 5 release is a redeploy: it opens everything this one seals. Going back further needs the
@@ -190,8 +191,7 @@ With Transit, give the command the operator's credentials rather than serving's,
 `custody rewrap`.
 
 - It moves each value still sealed under the keyring onto its workspace's key, each secret value
-  and backup policy credential onto its environment's key, and a second factor onto the
-  installation key. Only the value's key is wrapped again; the value itself is kept, so recovery
+  onto its environment's key, and a second factor onto the installation key. Only the value's key is wrapped again; the value itself is kept, so recovery
   data captured before still matches it.
 - It works in batches, one workspace at a time, and is safe to stop, run again, or run beside
   running instances. A value saved while it runs is kept, and the next run converts it if it needs
