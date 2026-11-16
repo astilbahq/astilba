@@ -53,11 +53,28 @@ type sealedKey struct {
 }
 
 // heldKeys is what a session holds of its scope's key: the generations it unwraps, and whether the
-// holder had any key at all when it began.
+// holder had any key at all when it began. A workspace session also holds its environments' keys,
+// still wrapped.
 type heldKeys struct {
-	scope   custody.Scope
-	wrapped []sealedKey
-	keyless bool
+	scope        custody.Scope
+	wrapped      []sealedKey
+	keyless      bool
+	environments map[environmentRef]*environmentKey
+}
+
+// environmentRef names one environment's key at one generation.
+type environmentRef struct {
+	environment uuid.UUID
+	generation  int64
+}
+
+// environmentKey is an environment's key as a session holds it: wrapped under a generation of its
+// workspace's key until a value needs it, then opened, or destroyed.
+type environmentKey struct {
+	workspaceGeneration int64
+	wrapped, kcv        []byte
+	destroyed           bool
+	opened              []byte
 }
 
 // wrappedKeys reads the generations a request's session holds, and their wrappings for its
@@ -79,6 +96,16 @@ func (b *Broker) wrappedKeys(ctx context.Context, r Request) (heldKeys, error) {
 		}
 		for _, row := range rows {
 			out = append(out, sealedKey{row.Generation, row.Kcv, row.Wrapped, row.State == "active" && row.Sealable})
+		}
+		if len(rows) > 0 {
+			environments, err := b.q.EnvironmentKeys(ctx, r.Workspace)
+			if err != nil {
+				return h, err
+			}
+			h.environments = map[environmentRef]*environmentKey{}
+			for _, e := range environments {
+				h.environments[environmentRef{e.EnvironmentID, e.Generation}] = &environmentKey{workspaceGeneration: e.WorkspaceGeneration, wrapped: e.Wrapped, kcv: e.Kcv, destroyed: e.State == "destroyed"}
+			}
 		}
 	} else {
 		rows, err := b.q.InstallationKeyWrappings(ctx, db.InstallationKeyWrappingsParams{Purpose: string(r.Purpose), BackendID: b.backend.ID(), Scope: string(h.scope), States: liveStates(r.Purpose)})
@@ -293,11 +320,13 @@ func (k *NewKeys) Close(ctx context.Context, outcome Outcome) {
 
 // keysStage is the custody stage creating every key completes: every workspace, the
 // installation and the token keys have a generation. sealStage follows at once, since every
-// release from it seals new values under those keys. Creating keys completes no later stage:
-// convertStage is recorded only by Convert.
+// release from it seals new values under those keys. convertStage is recorded only by Convert.
+// readEnvironmentsStage follows it once a release that opens values under environment keys runs,
+// which is what a release that seals under them needs first.
 const (
-	keysStage = 2
-	sealStage = 3
+	keysStage             = 2
+	sealStage             = 3
+	readEnvironmentsStage = 5
 )
 
 // InitKeys makes generation 1 of the installation and token keys, and of the key of every
@@ -355,7 +384,9 @@ func (b *Broker) InitKeys(ctx context.Context, more func() bool) (bool, error) {
 	if progress.WithKeys < progress.Workspaces || !progress.Installation || !progress.Token {
 		return true, nil
 	}
-	for _, stage := range []int{keysStage, sealStage} {
+	// Each stage is recorded only once the one before it is, so an installation still to convert
+	// stays at sealStage.
+	for _, stage := range []int{keysStage, sealStage, readEnvironmentsStage} {
 		if err = b.completeStage(ctx, stage); err != nil {
 			return false, err
 		}
@@ -452,4 +483,41 @@ func openV2(keys map[keyRef][]byte, item Item, header cryptobox.Header, cipherte
 		return nil, cryptobox.ErrKey
 	}
 	return cryptobox.OpenUnder(key, ciphertext, identity)
+}
+
+// environmentKeyFor opens the key an environment value's header names, once per session, with the
+// workspace key generation it is wrapped under. ErrKeyDestroyed is a key a purge destroyed;
+// ErrKeysChanged a key made since the session began, which a new session holds. The caller holds
+// s.mu.
+func (s *Session) environmentKeyFor(item Item, header cryptobox.Header) ([]byte, error) {
+	if !item.Kind.environmental() || header.Holder == uuid.Nil {
+		return nil, cryptobox.ErrKey
+	}
+	k, ok := s.environments[environmentRef{header.Holder, header.Generation}]
+	switch {
+	case !ok && s.request.Purpose == Recover:
+		// Recovery runs on a database restored from before the key was made.
+		return nil, ErrKeyNotInBackup
+	case !ok:
+		s.stale = true
+		return nil, ErrKeysChanged
+	case k.destroyed:
+		return nil, ErrKeyDestroyed
+	case k.opened != nil:
+		return k.opened, nil
+	}
+	workspaceKey, ok := s.keys[keyRef{custody.ScopeWorkspace, k.workspaceGeneration}]
+	if !ok {
+		return nil, cryptobox.ErrKey
+	}
+	opened, err := cryptobox.OpenEnvironmentKey(workspaceKey, k.wrapped, s.request.Workspace, header.Holder, header.Generation, k.workspaceGeneration)
+	if err != nil {
+		return nil, err
+	}
+	if !custody.CheckKey(opened, k.kcv) {
+		clear(opened)
+		return nil, ErrKeyCheck
+	}
+	k.opened = opened
+	return opened, nil
 }

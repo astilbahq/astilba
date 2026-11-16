@@ -64,6 +64,9 @@ type Session struct {
 	keyless bool
 	// stale is a session that met keys newer than it holds, which a new session would hold.
 	stale bool
+	// environments are the workspace's environment keys, which values sealed for one environment
+	// are under. Each is opened the first time a value needs it.
+	environments map[environmentRef]*environmentKey
 	// sealed are the checkpoints a seal session sealed, the only values it opens.
 	sealed map[[sha256.Size]byte]bool
 }
@@ -134,6 +137,13 @@ func (s *Session) Open(item Item, ciphertext []byte) ([]byte, error) {
 		s.stale = true
 		return nil, ErrKeysChanged
 	}
+	if header.Scope == cryptobox.ScopeEnvironment {
+		key, err := s.environmentKeyFor(item, header)
+		if err != nil {
+			return nil, err
+		}
+		return cryptobox.OpenUnder(key, ciphertext, identity)
+	}
 	return openV2(s.keys, item, header, ciphertext, identity)
 }
 
@@ -149,6 +159,7 @@ func (s *Session) sealedHere(ciphertext []byte) bool {
 type Fence interface {
 	ShareSealableWorkspaceKey(ctx context.Context, arg db.ShareSealableWorkspaceKeyParams) (int64, error)
 	ShareSealableInstallationKey(ctx context.Context, arg db.ShareSealableInstallationKeyParams) (int64, error)
+	ShareEnvironmentKey(ctx context.Context, arg db.ShareEnvironmentKeyParams) (int64, error)
 	WorkspaceHasKeys(ctx context.Context, workspaceID uuid.UUID) (bool, error)
 	InstallationScopeHasKeys(ctx context.Context, scope string) (bool, error)
 }
@@ -198,6 +209,9 @@ func (s *Session) Rehome(ctx context.Context, q Fence, item Item, ciphertext []b
 	if err != nil {
 		return nil, err
 	}
+	if header.Scope == cryptobox.ScopeEnvironment {
+		return s.keepUnderEnvironment(ctx, q, item, header, ciphertext, identity)
+	}
 	ref, err := s.fence(ctx, q, item)
 	if err != nil {
 		return nil, err
@@ -218,6 +232,33 @@ func (s *Session) Rehome(ctx context.Context, q Fence, item Item, ciphertext []b
 		}
 	}
 	return cryptobox.MoveUnder(ring, from, ciphertext, identity, key, string(ref.scope), ref.generation)
+}
+
+// keepUnderEnvironment is Rehome for a value already under its environment's key, which already
+// confines it to the environment: it stays as it is, checked to open, with the key held in q so a
+// purge cannot destroy it before the value is stored. A destroyed key is ErrKeyDestroyed.
+func (s *Session) keepUnderEnvironment(ctx context.Context, q Fence, item Item, header cryptobox.Header, ciphertext []byte, identity string) ([]byte, error) {
+	s.mu.Lock()
+	if s.keys == nil {
+		s.mu.Unlock()
+		return nil, ErrNeedKeys
+	}
+	key, err := s.environmentKeyFor(item, header)
+	if err == nil {
+		var plain []byte
+		plain, err = cryptobox.OpenUnder(key, ciphertext, identity)
+		clear(plain)
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if _, err = q.ShareEnvironmentKey(ctx, db.ShareEnvironmentKeyParams{WorkspaceID: s.request.Workspace, EnvironmentID: header.Holder, Generation: header.Generation}); errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrKeyDestroyed
+	} else if err != nil {
+		return nil, err
+	}
+	return ciphertext, nil
 }
 
 // fence holds the session's sealing generation in q, or says why there is none: no key yet, or
@@ -291,6 +332,10 @@ func (s *Session) Close(ctx context.Context, outcome Outcome) {
 		clear(key)
 	}
 	s.keys = nil
+	for _, k := range s.environments {
+		clear(k.opened)
+	}
+	s.environments = nil
 	s.mu.Unlock()
 	if !open {
 		return

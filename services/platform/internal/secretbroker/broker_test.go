@@ -28,8 +28,10 @@ type fakeQueries struct {
 	// named has generation 1 of a key made when a session first asks, unless keyless names it.
 	keys    map[string][]db.WorkspaceKeyWrappingsRow
 	keyless map[uuid.UUID]bool
-	made    map[string][]byte
-	wrap    func(ctx context.Context, scope custody.Scope, holder uuid.UUID, purpose string, key []byte) ([]byte, error)
+	// environments are each workspace's environment keys.
+	environments map[uuid.UUID][]db.EnvironmentKeysRow
+	made         map[string][]byte
+	wrap         func(ctx context.Context, scope custody.Scope, holder uuid.UUID, purpose string, key []byte) ([]byte, error)
 }
 
 // generation is a holder's generation 1, wrapped for purpose.
@@ -79,6 +81,10 @@ func (f *fakeQueries) WorkspaceKeyWrappings(ctx context.Context, arg db.Workspac
 	kcv, wrapped, err := f.generation(ctx, custody.ScopeWorkspace, arg.WorkspaceID, arg.Purpose)
 	return []db.WorkspaceKeyWrappingsRow{{Generation: 1, State: "active", Sealable: true, Kcv: kcv, Wrapped: wrapped}}, err
 }
+func (f *fakeQueries) EnvironmentKeys(_ context.Context, ws uuid.UUID) ([]db.EnvironmentKeysRow, error) {
+	return f.environments[ws], nil
+}
+
 func (f *fakeQueries) InstallationKeyWrappings(ctx context.Context, arg db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error) {
 	kcv, wrapped, err := f.generation(ctx, custody.Scope(arg.Scope), uuid.Nil, arg.Purpose)
 	return []db.InstallationKeyWrappingsRow{{Generation: 1, State: "active", Sealable: true, Kcv: kcv, Wrapped: wrapped}}, err
@@ -87,7 +93,7 @@ func (f *fakeQueries) InstallationKeyWrappings(ctx context.Context, arg db.Insta
 // fence stands for the transaction sealed values are stored in. sealable is whether generation 1
 // may still be sealed under, and has whether a keyless holder has been given its key since.
 type fence struct {
-	unsealable, has bool
+	unsealable, has, destroyed bool
 }
 
 func (f fence) ShareSealableWorkspaceKey(_ context.Context, arg db.ShareSealableWorkspaceKeyParams) (int64, error) {
@@ -102,7 +108,13 @@ func (f fence) ShareSealableInstallationKey(_ context.Context, arg db.ShareSeala
 	}
 	return arg.Generation, nil
 }
-func (f fence) WorkspaceHasKeys(context.Context, uuid.UUID) (bool, error)      { return f.has, nil }
+func (f fence) WorkspaceHasKeys(context.Context, uuid.UUID) (bool, error) { return f.has, nil }
+func (f fence) ShareEnvironmentKey(_ context.Context, arg db.ShareEnvironmentKeyParams) (int64, error) {
+	if f.destroyed {
+		return 0, pgx.ErrNoRows
+	}
+	return arg.Generation, nil
+}
 func (f fence) InstallationScopeHasKeys(context.Context, string) (bool, error) { return f.has, nil }
 
 func setup(t *testing.T) (*Broker, *fakeQueries, uuid.UUID, uuid.UUID, uuid.UUID) {

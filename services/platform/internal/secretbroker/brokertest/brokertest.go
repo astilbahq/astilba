@@ -90,6 +90,12 @@ func (r *Records) WorkspaceKeyWrappings(ctx context.Context, arg db.WorkspaceKey
 	}
 	return []db.WorkspaceKeyWrappingsRow{{Generation: 1, State: "active", Sealable: true, Kcv: kcv, Wrapped: wrapped}}, nil
 }
+
+// EnvironmentKeys is none: no value is sealed under an environment's key here.
+func (r *Records) EnvironmentKeys(context.Context, uuid.UUID) ([]db.EnvironmentKeysRow, error) {
+	return nil, nil
+}
+
 func (r *Records) InstallationKeyWrappings(ctx context.Context, arg db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error) {
 	kcv, wrapped, err := r.generation(ctx, custody.Scope(arg.Scope), uuid.Nil, arg.Purpose)
 	if err != nil {
@@ -108,5 +114,8 @@ func (Fence) ShareSealableWorkspaceKey(_ context.Context, arg db.ShareSealableWo
 func (Fence) ShareSealableInstallationKey(_ context.Context, arg db.ShareSealableInstallationKeyParams) (int64, error) {
 	return arg.Generation, nil
 }
-func (Fence) WorkspaceHasKeys(context.Context, uuid.UUID) (bool, error)      { return true, nil }
+func (Fence) WorkspaceHasKeys(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (Fence) ShareEnvironmentKey(_ context.Context, arg db.ShareEnvironmentKeyParams) (int64, error) {
+	return arg.Generation, nil
+}
 func (Fence) InstallationScopeHasKeys(context.Context, string) (bool, error) { return true, nil }

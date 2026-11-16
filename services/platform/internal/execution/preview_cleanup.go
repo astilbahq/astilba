@@ -158,8 +158,10 @@ func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid
 	if err := db.New(tx).DeleteEnvironmentSecrets(ctx, db.DeleteEnvironmentSecretsParams{WorkspaceID: ws, EnvironmentID: c.EnvironmentId}); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, "UPDATE preview_requests SET state='deleted',note='Preview resources and owned data were removed.',released_by_revocation=false,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day' WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND generation=$4", ws, p.Plan.Preview.RequestID, c.EnvironmentId, p.Plan.Preview.Generation)
-	return err
+	if _, err = tx.Exec(ctx, "UPDATE preview_requests SET state='deleted',note='Preview resources and owned data were removed.',released_by_revocation=false,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day' WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND generation=$4", ws, p.Plan.Preview.RequestID, c.EnvironmentId, p.Plan.Preview.Generation); err != nil {
+		return err
+	}
+	return s.Store.Broker.DestroyEnvironmentKeys(ctx, db.New(tx), ws, c.EnvironmentId, "preview removed")
 }
 func (s *Service) acceptPreviewCleanupProofs(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID, receipts *[]api.PreviewCleanupReceipt) error {
 	if receipts == nil {

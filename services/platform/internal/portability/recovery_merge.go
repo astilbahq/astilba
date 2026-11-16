@@ -330,9 +330,24 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session
 }
 
 // rehomeCredential moves a recovered row's value onto the generation keys seal under, in q, the
-// transaction that writes the row.
+// transaction that writes the row. A value whose environment's key a purge destroyed opens nowhere
+// again: a secret version is restored erased, as the purge left it, and any other value is kept
+// as it was, unreadable, in its purged environment.
 func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row) error {
-	return transformCredential(table, row, func(item secretbroker.Item, value []byte) ([]byte, error) {
+	err := transformCredential(table, row, func(item secretbroker.Item, value []byte) ([]byte, error) {
 		return keys.Rehome(ctx, q, item, value)
 	})
+	if !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+		return err
+	}
+	if table == "secret_versions" {
+		setValue(row, "encrypted_value", nil)
+		for _, field := range []string{"plaintext_bytes", "json_bytes"} {
+			if _, ok := row[field]; ok {
+				setValue(row, field, nil)
+			}
+		}
+		setValue(row, "erased_at", time.Now().UTC())
+	}
+	return nil
 }
