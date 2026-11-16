@@ -2,6 +2,7 @@ package agent
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -95,5 +96,26 @@ func TestSettingNameMatchesAsTheServerDoes(t *testing.T) {
 		if got := settingName(name); got != want {
 			t.Errorf("%q: %q", name, got)
 		}
+	}
+}
+
+func TestClearedNoteNamesWhatFitsInAReport(t *testing.T) {
+	if clearedNote(nil) != "" {
+		t.Fatal("a restore that cleared nothing has a note")
+	}
+	few := clearedNote([]clusterSetting{{name: "log_statement", role: "reader"}, {name: "session_preload_libraries"}})
+	if !strings.Contains(few, `"log_statement" for role "reader", "session_preload_libraries".`) {
+		t.Fatalf("the note does not name each setting: %q", few)
+	}
+	many := make([]clusterSetting, 2000)
+	for i := range many {
+		many[i] = clusterSetting{name: "log_statement", role: strings.Repeat("\xff", 63)}
+	}
+	if note := clearedNote(many); len(note) > clearedNoteLimit || !strings.Contains(note, " more.") {
+		t.Fatalf("the note is %d bytes: %q", len(note), note)
+	}
+	long := []clusterSetting{{name: strings.Repeat("\xff", 200), role: strings.Repeat("\xff", 63)}}
+	if note := clearedNote(long); len(note) > clearedNoteLimit || !strings.Contains(note, ": 1 setting with a long name.") {
+		t.Fatalf("the note is %d bytes: %q", len(note), note)
 	}
 }

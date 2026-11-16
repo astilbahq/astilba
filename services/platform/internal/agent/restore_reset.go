@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"regexp"
 	"slices"
@@ -100,8 +101,14 @@ func (e *Engine) baseline(ctx context.Context, id string, m backup.Manifest) (cl
 	if err != nil {
 		return clusterBaseline{}, err
 	}
-	if json.Unmarshal(bytes.TrimSpace(raw), &b.contexts) != nil {
+	var contexts map[string]string
+	if json.Unmarshal(bytes.TrimSpace(raw), &contexts) != nil {
 		return clusterBaseline{}, errors.New("cluster settings are unreadable")
+	}
+	// The server spells a few names in capitals, such as TimeZone, and matches them in any case.
+	b.contexts = make(map[string]string, len(contexts))
+	for name, context := range contexts {
+		b.contexts[settingName(name)] = context
 	}
 	return b, nil
 }
@@ -122,24 +129,29 @@ func (e *Engine) catalog(ctx context.Context, id string, m backup.Manifest, data
 	return rows, nil
 }
 
+// clusterSetting is a database setting, for every role or for one.
+type clusterSetting struct{ role, name string }
+
 // checkRestoredCluster refuses a restored cluster, running in container id with event triggers
 // off for its clients, that holds what a dump of m's database can't leave in the cluster b was
 // read from: a changed role or membership, another database, a setting outside the database or
-// one only an administrator may choose, or a subscription. Tablespaces, replication slots and
-// prepared transactions keep files a cluster's check refuses.
-func (e *Engine) checkRestoredCluster(ctx context.Context, id string, m backup.Manifest, b clusterBaseline) error {
+// one the server doesn't know, or an enabled subscription, which a dump restores disabled.
+// Tablespaces, replication slots and prepared transactions keep files a cluster's check refuses.
+// It returns the database's settings only an administrator may choose, which a dump can carry
+// but a restored database doesn't keep.
+func (e *Engine) checkRestoredCluster(ctx context.Context, id string, m backup.Manifest, b clusterBaseline) ([]clusterSetting, error) {
 	for i, table := range clusterRoles {
 		rows, err := e.catalog(ctx, id, m, m.Database, table)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !slices.EqualFunc(rows, b.roles[i], slices.Equal) {
-			return clusterRefusal("a role or membership the restore didn't create")
+			return nil, clusterRefusal("a role or membership the restore didn't create")
 		}
 	}
 	databases, err := e.catalog(ctx, id, m, m.Database, "pg_database (datname, oid)")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	names := []string{"postgres", "template0", "template1"}
 	if !slices.Contains(names, m.Database) {
@@ -149,39 +161,109 @@ func (e *Engine) checkRestoredCluster(ctx context.Context, id string, m backup.M
 	oid := ""
 	for i, d := range databases {
 		if i >= len(names) || d[0] != names[i] {
-			return clusterRefusal("a database the backup doesn't hold")
+			return nil, clusterRefusal("a database the backup doesn't hold")
 		}
 		if d[0] == m.Database {
 			oid = d[1]
 		}
 	}
 	if len(databases) != len(names) {
-		return clusterRefusal("a database the backup doesn't hold")
+		return nil, clusterRefusal("a database the backup doesn't hold")
 	}
-	settings, err := e.catalog(ctx, id, m, m.Database, "pg_db_role_setting (setdatabase, setconfig)")
+	// The roles are the baseline's, so they name each setting's role.
+	roles := map[string]string{"0": ""}
+	for _, r := range b.roles[0] {
+		roles[r[0]] = r[1]
+	}
+	settings, err := e.catalog(ctx, id, m, m.Database, "pg_db_role_setting (setdatabase, setrole, setconfig)")
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var administrative []clusterSetting
 	for _, s := range settings {
-		// Settings in the database, its own or a role's, are part of its dump, but only those any
-		// client may set: one that loads code or reaches past the database is the cluster's to
-		// choose. A name the server doesn't know is a custom setting only with a dot in it.
-		set, ok := settingNames(s[1])
-		if !ok || s[0] != oid || slices.ContainsFunc(set, func(name string) bool {
-			c, known := b.contexts[settingName(name)]
-			return c != "user" && (known || !strings.Contains(name, "."))
-		}) {
-			return clusterRefusal("a setting only an administrator may choose")
+		// Settings in the database, its own or a role's, are part of its dump. A name the server
+		// doesn't know is a custom setting only with a dot in it.
+		set, ok := settingNames(s[2])
+		role, known := roles[s[1]]
+		if !ok || !known || s[0] != oid {
+			return nil, clusterRefusal("a setting outside the database")
+		}
+		for _, name := range set {
+			switch c, known := b.contexts[settingName(name)]; {
+			case !known && !strings.Contains(name, "."):
+				return nil, clusterRefusal("a setting the server doesn't know")
+			case known && c != "user":
+				administrative = append(administrative, clusterSetting{role: role, name: name})
+			}
 		}
 	}
-	subscriptions, err := e.catalog(ctx, id, m, m.Database, "pg_subscription (oid)")
+	subscriptions, err := e.catalog(ctx, id, m, m.Database, "pg_subscription (subenabled)")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if len(subscriptions) != 0 {
-		return clusterRefusal("a subscription")
+	if slices.ContainsFunc(subscriptions, func(s []string) bool { return s[0] != "f" }) {
+		return nil, clusterRefusal("an enabled subscription")
 	}
-	return nil
+	return administrative, nil
+}
+
+// clearSettings removes settings from m's database in the restored cluster running in container
+// id. Only an administrator may choose them, and the deployment's database runs without them, as
+// it would have if it had been created by its own user rather than restored.
+func (e *Engine) clearSettings(ctx context.Context, id string, m backup.Manifest, settings []clusterSetting) error {
+	sql := "SET search_path = pg_catalog, pg_temp;\n"
+	for _, s := range settings {
+		// inline-sql: changes the restored cluster, not the platform database.
+		statement := "ALTER DATABASE " + quoteIdentifier(m.Database)
+		if s.role != "" {
+			// inline-sql: changes the restored cluster, not the platform database.
+			statement = "ALTER ROLE " + quoteIdentifier(s.role) + " IN DATABASE " + quoteIdentifier(m.Database)
+		}
+		sql += statement + " RESET " + quoteIdentifier(s.name) + ";\n"
+	}
+	// The settings are cleared from another database, so none of them applies to the session
+	// clearing them: a database whose sessions are read-only can't be changed from one of its own.
+	// The other databases have no settings, or the check would have refused the cluster.
+	other := "template1"
+	if m.Database == other {
+		other = "postgres"
+	}
+	return e.dataTool(ctx, strings.NewReader(sql), io.Discard, "exec", "-i", id, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", m.Username, "-d", other, "-f", "-")
+}
+
+// clearedNoteLimit keeps the note clearedNote adds within a report's 1024 bytes, after the longest
+// note it ends, however long the names it holds are.
+const clearedNoteLimit = 512
+
+// clearedNote tells an owner which of a restored database's settings it no longer has.
+func clearedNote(settings []clusterSetting) string {
+	if len(settings) == 0 {
+		return ""
+	}
+	const prefix, suffix = " Database settings only an administrator may choose were cleared from the restored database: ", ". Set again any that are still needed once it is in use."
+	named := ""
+	for i, s := range settings {
+		name := fmt.Sprintf("%q", s.name)
+		if s.role != "" {
+			name += fmt.Sprintf(" for role %q", s.role)
+		}
+		if i > 0 {
+			name = ", " + name
+		}
+		// Room is kept for the count of the settings left unnamed.
+		if len(prefix)+len(named)+len(name)+len(suffix)+len(", and 99999999 more") > clearedNoteLimit {
+			named += fmt.Sprintf(", and %d more", len(settings)-i)
+			if i == 0 {
+				named = "1 setting with a long name"
+				if len(settings) > 1 {
+					named = fmt.Sprintf("%d settings", len(settings))
+				}
+			}
+			break
+		}
+		named += name
+	}
+	return prefix + named + suffix
 }
 
 // settingName is name as the server matches it to a setting: ASCII letters in any case.

@@ -45,7 +45,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	runCtx, cancel := context.WithTimeout(ctx, backup.RestoreTimeout)
 	defer cancel()
 	effects := false
-	stored, err := e.recoverSnapshot(runCtx, v, func() error {
+	stored, cleared, err := e.recoverSnapshot(runCtx, v, func() error {
 		if err := runCtx.Err(); err != nil {
 			return err
 		}
@@ -86,15 +86,15 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	return e.Journal.Mutate(c.Id, func(record *Record) {
 		result := jsontext.Value(raw)
 		record.Report.Restore = &result
-		settleReport(record, "succeeded", "Snapshot restored into a new volume and matched against its manifest. A restored database's settings files were reset to this server's and its cluster checked on a best-effort basis, which doesn't make a database from a compromised server safe to use. Nothing uses the volume until a reviewed cutover.")
+		settleReport(record, "succeeded", "Snapshot restored into a new volume and matched against its manifest. A restored database's settings files were reset to this server's and its cluster checked on a best-effort basis, which doesn't make a database from a compromised server safe to use. Nothing uses the volume until a reviewed cutover."+clearedNote(cleared))
 	})
 }
 
 // recoverSnapshot checks the restore against this server and the snapshot, then restores it.
-func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin func() error) (backup.Manifest, error) {
+func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin func() error) (backup.Manifest, []clusterSetting, error) {
 	in := v.Installation
 	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
-		return backup.Manifest{}, err
+		return backup.Manifest{}, nil, err
 	}
 	// The database password is the one this server's own database was created with, never one
 	// released with the command: the restored cluster replaces that database's volume at cutover.
@@ -102,21 +102,22 @@ func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin f
 	if in.Policy.Method == "postgres-logical" {
 		password, err := e.databasePassword(ctx, in.Policy)
 		if err != nil {
-			return backup.Manifest{}, restoreRefusal("this server's database is not running as the deployment describes")
+			return backup.Manifest{}, nil, restoreRefusal("this server's database is not running as the deployment describes")
 		}
 		in.Access.DatabasePassword = password
 	}
 	if err := e.prepareRepository(ctx, &in, false); err != nil {
-		return backup.Manifest{}, err
+		return backup.Manifest{}, nil, err
 	}
 	m, archive, err := e.snapshotManifest(ctx, in, v.Snapshot)
 	if err != nil {
-		return backup.Manifest{}, err
+		return backup.Manifest{}, nil, err
 	}
 	if err = v.Admits(m); err != nil {
-		return backup.Manifest{}, restoreRefusal(err.Error())
+		return backup.Manifest{}, nil, restoreRefusal(err.Error())
 	}
-	return m, e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
+	cleared, err := e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
+	return m, cleared, err
 }
 
 // settleRecovery ends a restore that may have created its volume or containers. Once nothing it

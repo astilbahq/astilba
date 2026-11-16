@@ -419,9 +419,10 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var err error
+	var cleared []clusterSetting
 	if snapshot != "" {
 		// The run recorded above protects its snapshot: see protectRestoreSources.
-		err = e.restoreSnapshot(runCtx, s, &r)
+		cleared, err = e.restoreSnapshot(runCtx, s, &r)
 	} else if s.Installation.Policy.Method == "container-job" {
 		err = e.runContainerJob(runCtx, s, &r)
 	} else {
@@ -439,7 +440,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		r.Note = "Container job finished; exit result recorded."
 	}
 	if r.Verified {
-		r.Note = "Fresh restore matched its manifest, and a restored database's cluster was checked on a best-effort basis. Existing services and data remain in use until a separate reviewed deployment."
+		r.Note = "Fresh restore matched its manifest, and a restored database's cluster was checked on a best-effort basis. Existing services and data remain in use until a separate reviewed deployment." + clearedNote(cleared)
 	}
 	// A run that failed before its first effect changed nothing, whatever the method.
 	effects := s.BeforeEffects != r.ID

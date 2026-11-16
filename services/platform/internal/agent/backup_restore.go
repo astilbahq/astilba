@@ -27,19 +27,20 @@ import (
 
 // restoreSnapshot restores a snapshot from this server's own policy catalogue into a new volume,
 // once the snapshot's manifest matches the one its upload recorded.
-func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backup.Run) error {
+// It returns the settings it cleared from a restored database.
+func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backup.Run) ([]clusterSetting, error) {
 	in := &s.Installation
 	if in.Policy.Method == "container-job" || !backup.SnapshotID(r.Snapshot) || r.TargetID == uuid.Nil {
-		return errors.New("invalid restore")
+		return nil, errors.New("invalid restore")
 	}
 	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
-		return err
+		return nil, err
 	}
 	if err := e.beginEffects(ctx, s, r); err != nil {
-		return err
+		return nil, err
 	}
 	if err := e.prepareRepository(ctx, in, false); err != nil {
-		return err
+		return nil, err
 	}
 	var original *backup.Run
 	for i := range s.Runs {
@@ -50,26 +51,27 @@ func (e *Engine) restoreSnapshot(ctx context.Context, s *scheduleState, r *backu
 		}
 	}
 	if original == nil {
-		return errors.New("snapshot not in successful policy catalogue")
+		return nil, errors.New("snapshot not in successful policy catalogue")
 	}
 	m := *original.Manifest
 	if m.Recipe != backup.Recipe || m.PolicyID != in.Policy.ID || m.ResourceID != in.Policy.ResourceID || m.Method != in.Policy.Method || m.Bytes <= 0 || m.Bytes > 1<<40 || !backup.SnapshotID(m.SHA256) {
-		return errors.New("invalid backup manifest")
+		return nil, errors.New("invalid backup manifest")
 	}
 	stored, archive, err := e.snapshotManifest(ctx, *in, r.Snapshot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if backup.Hash(stored) != original.ManifestHash {
-		return errors.New("snapshot manifest differs from the uploaded record")
+		return nil, errors.New("snapshot manifest differs from the uploaded record")
 	}
-	if err = e.restoreArchive(ctx, *in, r.ID, r.TargetID, r.Snapshot, archive, stored, func() error { return nil }); err != nil {
-		return err
+	cleared, err := e.restoreArchive(ctx, *in, r.ID, r.TargetID, r.Snapshot, archive, stored, func() error { return nil })
+	if err != nil {
+		return nil, err
 	}
 	r.Manifest = &stored
 	r.ManifestHash = backup.Hash(stored)
 	r.Verified = true
-	return nil
+	return cleared, nil
 }
 
 // restoreRefusal is a check that stopped a restore before it created anything. Its text says which.
@@ -147,67 +149,68 @@ func (e *Engine) snapshotManifest(ctx context.Context, in backup.Installation, s
 // is called once it matches m, just before the volume is created, which is the restore's first
 // effect outside the journal and its staging directory. The restored data is read back and compared
 // with the archive before it returns.
-func (e *Engine) restoreArchive(ctx context.Context, in backup.Installation, run, target uuid.UUID, snapshot, archive string, m backup.Manifest, begin func() error) error {
+func (e *Engine) restoreArchive(ctx context.Context, in backup.Installation, run, target uuid.UUID, snapshot, archive string, m backup.Manifest, begin func() error) ([]clusterSetting, error) {
 	// Reserve headroom for the downloaded archive and expanded database, retaining
 	// both old and new volumes. Refuse unknown capacity rather than assuming room.
 	if freeBytes(e.Journal.dir) < m.Bytes*2+256<<20 || dockerFreeBytes(ctx, e.Docker) < m.Bytes*4+256<<20 {
-		return restoreRefusal("insufficient restore capacity")
+		return nil, restoreRefusal("insufficient restore capacity")
 	}
 	var database domain.Application
 	if m.Method == "postgres-logical" {
 		a, err := postgresRecipe(in.Policy, m)
 		if err != nil {
-			return restoreRefusal("the snapshot's database is not the one this deployment runs")
+			return nil, restoreRefusal("the snapshot's database is not the one this deployment runs")
 		}
 		database = a
 	}
 	// A volume the deployment declares would be adopted by it, unreviewed, if a restore created it.
 	if slices.ContainsFunc(in.Policy.Plan.Specification.Volumes, func(v domain.Volume) bool { return v.ID == target }) {
-		return restoreRefusal("restore target must be a new volume")
+		return nil, restoreRefusal("restore target must be a new volume")
 	}
 	if _, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); !errdefs.IsNotFound(err) {
-		return restoreRefusal("restore target must be absent")
+		return nil, restoreRefusal("restore target must be absent")
 	}
 	stage, err := os.MkdirTemp(e.Journal.dir, "restore-stage-")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(stage)
 	file := filepath.Join(stage, archiveName(m.Method))
 	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	capped := &cappedWriter{w: f, left: m.Bytes}
 	err = errors.Join(e.resticTo(ctx, in, stage, capped, "dump", snapshot, archive), f.Close())
 	if capped.over {
-		return restoreRefusal("snapshot archive is larger than its manifest says")
+		return nil, restoreRefusal("snapshot archive is larger than its manifest says")
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	checked := m
 	if err = checksumFile(file, &checked); err != nil || checked.Bytes != m.Bytes || checked.SHA256 != m.SHA256 {
-		return restoreRefusal("snapshot archive does not match its manifest")
+		return nil, restoreRefusal("snapshot archive does not match its manifest")
 	}
 	if err = begin(); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err = e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(target), Driver: "local", Labels: restoreTargetLabels(in.Policy.Plan, target, m)}); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err = e.volumePath(ctx, in.Policy, target); err != nil {
-		return err
+		return nil, err
 	}
+	var cleared []clusterSetting
 	if m.Method == "postgres-logical" {
-		err = e.restorePostgres(ctx, in.Policy, database, run, target, stage, m, in.Access.DatabasePassword)
+		cleared, err = e.restorePostgres(ctx, in.Policy, database, run, target, stage, m, in.Access.DatabasePassword)
 	} else {
 		err = e.restoreFiles(ctx, in.Policy, run, target, stage, stage)
 	}
 	if err != nil || ctx.Err() != nil {
-		return errors.Join(errors.New("fresh restore failed"), err, ctx.Err())
+		return nil, errors.Join(errors.New("fresh restore failed"), err, ctx.Err())
 	}
-	return nil
+	return cleared, nil
 }
 
 // cappedWriter writes to w until it has been offered more than left bytes, then fails.
@@ -283,9 +286,10 @@ func postgresRecipe(p backup.Policy, m backup.Manifest) (domain.Application, err
 // runs as postgres with no capabilities or network and mounts only its target volume, and the dump
 // reaches it only through pg_restore's standard input. Once the dump's server has stopped, the
 // cluster is held to what a dump of one database can leave before a fresh server verifies it.
-func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.Application, run, target uuid.UUID, dir string, m backup.Manifest, password string) error {
+// It returns the settings it cleared from the restored database.
+func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.Application, run, target uuid.UUID, dir string, m backup.Manifest, password string) ([]clusterSetting, error) {
 	if password == "" {
-		return errors.New("database initialization credential unavailable")
+		return nil, errors.New("database initialization credential unavailable")
 	}
 	maintenance := "postgres"
 	if m.Database == maintenance {
@@ -312,27 +316,46 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 		defer file.Close()
 		// Recreate only inside this fresh, isolated cluster. CREATE DATABASE cannot
 		// run in a transaction; a failed restore never exposes this target to writers.
-		return e.dataTool(ctx, file, io.Discard, "exec", "-i", id, "pg_restore", "--exit-on-error", "--clean", "--if-exists", "--create", "-U", m.Username, "-d", maintenance)
+		// pg_restore sets its own timeouts but not this: once it has applied the database's
+		// settings, a database whose sessions are read-only would refuse the rest of the dump.
+		// A client's options outrank the database's.
+		return e.dataTool(ctx, file, io.Discard, "exec", "-i", "-e", "PGOPTIONS=-c default_transaction_read_only=off", id, "pg_restore", "--exit-on-error", "--clean", "--if-exists", "--create", "-U", m.Username, "-d", maintenance)
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	if err := e.resetClusterFiles(ctx, p, run, target, m.Image, b.files); err != nil {
-		return err
+		return nil, err
 	}
 	// A server that has just started reads the cluster as the deployment's database will, not
 	// through what the dump's server kept in memory. No client of it runs event triggers, and
 	// autovacuum, which can run the dump's functions, stays off.
-	if err := e.restoreServer(ctx, p, run, target, m, "astilba-verify-", []string{"PGOPTIONS=-c event_triggers=off"}, []string{"postgres", "-c", "autovacuum=off"}, func(id string) error {
-		if err := e.checkRestoredCluster(ctx, id, m, b); err != nil {
+	var cleared []clusterSetting
+	if err := e.restoreServer(ctx, p, run, target, m, "astilba-verify-", []string{"PGOPTIONS=-c event_triggers=off"}, []string{"postgres", "-c", "autovacuum=off"}, func(id string) (err error) {
+		if cleared, err = e.checkRestoredCluster(ctx, id, m, b); err != nil {
 			return err
 		}
-		return e.verifyRestoredDump(ctx, a, id, dir, m)
-	}); err != nil {
+		// The restored data is compared with the archive before anything in it changes.
+		if err = e.verifyRestoredDump(ctx, a, id, dir, m); err != nil {
+			return err
+		}
+		if len(cleared) == 0 {
+			return nil
+		}
+		if err = e.clearSettings(ctx, id, m, cleared); err != nil {
+			return err
+		}
+		// The settings are read again, so one the server didn't remove is refused, not kept.
+		left, err := e.checkRestoredCluster(ctx, id, m, b)
+		if err == nil && len(left) > 0 {
+			err = clusterRefusal("a setting only an administrator may choose that couldn't be cleared")
+		}
 		return err
+	}); err != nil {
+		return nil, err
 	}
 	// The dump's code can still have run while that server did, so its files are checked and
 	// reset again.
-	return e.resetClusterFiles(ctx, p, run, target, m.Image, b.files)
+	return cleared, e.resetClusterFiles(ctx, p, run, target, m.Image, b.files)
 }
 
 // restoreServer runs the pinned image's server on target in its own container, isolated as

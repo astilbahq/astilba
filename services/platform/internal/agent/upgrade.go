@@ -390,11 +390,12 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	m.Image = domain.PostgresImage
-	if err = e.restorePostgres(ctx, policy, a, p.ID, p.TargetVolumeID, dir, m, s.Command.Installation.Access.DatabasePassword); err != nil {
+	cleared, err := e.restorePostgres(ctx, policy, a, p.ID, p.TargetVolumeID, dir, m, s.Command.Installation.Access.DatabasePassword)
+	if err != nil {
 		return err
 	}
 	e.point("upgrade-restore-effect")
-	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."
+	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."+clearedNote(cleared)
 	return nil
 }
 
