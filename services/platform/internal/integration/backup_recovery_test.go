@@ -410,6 +410,9 @@ func TestRestoringOntoAnEnvironmentAcrossServers(t *testing.T) {
 	if g.received(other, "restore") {
 		t.Fatal("a restore reached the environment's other server")
 	}
+	// Its volume can't be switched in until a distributed cutover records its own boundary.
+	draft := g.draft(t, l)
+	wantRefusedField(t, g.cutover(l, records[0].Id, draft.Id), "deployment.distributed")
 }
 
 // Restoring data from a lost server is an owner's action that needs recent authentication.
@@ -447,4 +450,195 @@ func TestRestoreNeedsTheVolumeStillDeclared(t *testing.T) {
 		c.RecoveryRestore = &yes
 	})
 	wantRefusedField(t, g.recover(l, l.policy, recoveryRequest(l.snapshot)), "policy.resource")
+}
+
+// restoreCapable revokes l's lost server, moves the environment onto its new primary and has that
+// server's agent advertise the restore kind.
+func (g *revokedGroup) restoreCapable(t *testing.T, l *lostFiles) {
+	t.Helper()
+	g.revoke(t, l.gone)
+	g.applied(t, &l.e, g.replace(&l.e, l.b.id, l.volume))
+	g.reports(t, l.b, func(c *api.AgentCapabilities, _ *api.HostPreflight) {
+		yes := true
+		c.RecoveryRestore = &yes
+	})
+}
+
+// restored starts a restore of l's snapshot and returns its record once it has ended as want.
+func (g *revokedGroup) restored(t *testing.T, l lostFiles, want api.ExecutionState) api.BackupRecoveryRecord {
+	t.Helper()
+	var op api.Operation
+	g.b.call("POST", l.e.path+"/backup-policies/"+l.policy.ID.String()+"/recoveries", recoveryRequest(l.snapshot), 202, &op)
+	if state := g.finished(t, op.Id); state != string(want) {
+		t.Fatalf("restore ended %s", state)
+	}
+	for _, r := range g.recoveries(l) {
+		if r.OperationId == op.Id {
+			return r
+		}
+	}
+	t.Fatal("the restore wasn't recorded")
+	return api.BackupRecoveryRecord{}
+}
+
+func recoveryPath(l lostFiles, id uuid.UUID) string {
+	return l.e.path + "/backup-policies/" + l.policy.ID.String() + "/recoveries/" + id.String()
+}
+
+func (g *revokedGroup) cutover(l lostFiles, id, base uuid.UUID) reply {
+	return <-g.b.send("POST", recoveryPath(l, id)+"/cutover", api.BackupRecoveryCutoverRequest{BaseRevisionId: base})
+}
+
+func (g *revokedGroup) discard(l lostFiles, id uuid.UUID) reply {
+	return <-g.b.send("DELETE", recoveryPath(l, id)+"/target", nil)
+}
+
+type draftRevision struct {
+	Id            uuid.UUID            `json:"id"`
+	Specification domain.Specification `json:"specification"`
+}
+
+func (g *revokedGroup) draft(t *testing.T, l lostFiles) draftRevision {
+	t.Helper()
+	var out draftRevision
+	g.b.call("GET", l.e.path+"/draft", nil, 200, &out)
+	return out
+}
+
+// mounts reports whether spec declares volume and its files service mounts it.
+func mounts(spec domain.Specification, volume uuid.UUID) bool {
+	return slices.ContainsFunc(spec.Volumes, func(v domain.Volume) bool { return v.ID == volume }) && slices.ContainsFunc(spec.Applications, func(a domain.Application) bool {
+		return slices.ContainsFunc(a.Mounts, func(m domain.VolumeMount) bool { return m.VolumeID == volume })
+	})
+}
+
+// A succeeded restore's volume is switched in through a draft, deployed like any other. The draft
+// is written only from the restore's recorded result, checked again, for the plan it ran against.
+func TestCuttingOverToARestoredVolume(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	l := g.lostFiles(t)
+	g.restoreCapable(t, &l)
+	record := g.restored(t, l, "succeeded")
+	draft := g.draft(t, l)
+	if got := g.cutover(l, record.Id, uuid.New()); got.status != http.StatusConflict {
+		t.Fatalf("a cutover from another draft = %d %s", got.status, got.body)
+	}
+	if got := g.cutover(l, uuid.New(), draft.Id); got.status != http.StatusNotFound {
+		t.Fatalf("a cutover from an unknown restore = %d %s", got.status, got.body)
+	}
+	// A result altered since it was recorded no longer matches its restore.
+	var result []byte
+	var target uuid.UUID
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT result, target_volume_id FROM backup_recoveries WHERE id = $1`, record.Id).Scan(&result, &target); err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]string{
+		"another snapshot":          `UPDATE backup_recoveries SET result = jsonb_set(result, '{snapshot}', to_jsonb(repeat('f', 64))) WHERE id = $1`,
+		"another policy's manifest": `UPDATE backup_recoveries SET result = jsonb_set(result, '{manifest,policyId}', to_jsonb(gen_random_uuid()::text)) WHERE id = $1`,
+		"an unbounded manifest":     `UPDATE backup_recoveries SET result = jsonb_set(result, '{manifest,extensions}', '["adminpack"]') WHERE id = $1`,
+		"another target":            `UPDATE backup_recoveries SET target_volume_id = gen_random_uuid() WHERE id = $1`,
+	} {
+		if _, err := g.f.st.Pool.Exec(g.ctx, change, record.Id); err != nil {
+			t.Fatal(err)
+		}
+		got := g.cutover(l, record.Id, draft.Id)
+		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE backup_recoveries SET result = $2, target_volume_id = $3 WHERE id = $1`, record.Id, result, target); err != nil {
+			t.Fatal(err)
+		}
+		if got.status != http.StatusConflict {
+			t.Fatalf("a cutover from a result with %s = %d %s", name, got.status, got.body)
+		}
+	}
+
+	got := g.cutover(l, record.Id, draft.Id)
+	var revision draftRevision
+	if got.err != nil || got.status != http.StatusOK || json.Unmarshal(got.body, &revision) != nil {
+		t.Fatalf("cutover = %d %s %v", got.status, got.body, got.err)
+	}
+	if !mounts(revision.Specification, record.TargetId) || mounts(revision.Specification, l.volume) {
+		t.Fatalf("the draft doesn't switch the restored volume in: %+v", revision.Specification)
+	}
+	g.b.call("GET", l.e.path+"/draft", nil, 200, &l.e.draft)
+	status := g.applied(t, &l.e, <-g.b.send("POST", l.e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision.Id, ServerId: l.b.id}))
+	if !mounts(status.Plan.Specification, record.TargetId) {
+		t.Fatal("the deployed plan doesn't mount the restored volume")
+	}
+	// The deployment no longer runs the plan the restore ran against.
+	if got := g.cutover(l, record.Id, revision.Id); got.status != http.StatusConflict {
+		t.Fatalf("a second cutover = %d %s", got.status, got.body)
+	}
+}
+
+// An ended restore's volume can be deleted, unless the draft mounts it, and once deleted it can't
+// be switched in.
+func TestDiscardingARestoredVolume(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	l := g.lostFiles(t)
+	g.restoreCapable(t, &l)
+	discarded := func(id uuid.UUID) {
+		t.Helper()
+		got := g.discard(l, id)
+		var op api.Operation
+		if got.err != nil || got.status != http.StatusCreated || json.Unmarshal(got.body, &op) != nil {
+			t.Fatalf("discard = %d %s %v", got.status, got.body, got.err)
+		}
+		if state := g.finished(t, op.Id); state != "succeeded" {
+			t.Fatalf("discard ended %s", state)
+		}
+		for _, r := range g.recoveries(l) {
+			if r.Id == id && !r.TargetDeleted {
+				t.Fatal("the discarded volume isn't recorded as deleted")
+			}
+		}
+	}
+
+	g.mu.Lock()
+	g.failing["restore/"+l.b.id.String()] = true
+	g.mu.Unlock()
+	failed := g.restored(t, l, "failed")
+	if failed.TargetDeleted {
+		t.Fatal("a restore's volume was recorded as deleted before it was discarded")
+	}
+	discarded(failed.Id)
+	if got := g.discard(l, failed.Id); got.status != http.StatusConflict {
+		t.Fatalf("a second discard = %d %s", got.status, got.body)
+	}
+	g.mu.Lock()
+	delete(g.failing, "restore/"+l.b.id.String())
+	g.mu.Unlock()
+
+	// A restore still running keeps its volume.
+	g.hold(l.b, "restore")
+	var op api.Operation
+	g.b.call("POST", l.e.path+"/backup-policies/"+l.policy.ID.String()+"/recoveries", recoveryRequest(l.snapshot), 202, &op)
+	g.waitFor(t, "the restore to reach the new primary", func() bool { return g.received(l.b, "restore") })
+	var running api.BackupRecoveryRecord
+	for _, r := range g.recoveries(l) {
+		if r.OperationId == op.Id {
+			running = r
+		}
+	}
+	if got := g.discard(l, running.Id); got.status != http.StatusConflict {
+		t.Fatalf("a running restore's discard = %d %s", got.status, got.body)
+	}
+	g.release(l.b, "restore")
+	if state := g.finished(t, op.Id); state != "succeeded" {
+		t.Fatalf("restore ended %s", state)
+	}
+
+	// A draft that mounts the volume keeps it.
+	before := g.draft(t, l)
+	var revision draftRevision
+	got := g.cutover(l, running.Id, before.Id)
+	if got.status != http.StatusOK || json.Unmarshal(got.body, &revision) != nil {
+		t.Fatalf("cutover = %d %s", got.status, got.body)
+	}
+	if got := g.discard(l, running.Id); got.status != http.StatusConflict {
+		t.Fatalf("a discard of a volume the draft mounts = %d %s", got.status, got.body)
+	}
+	g.b.call("PUT", l.e.path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": before.Specification}, 200, &revision)
+	discarded(running.Id)
+	if got := g.cutover(l, running.Id, revision.Id); got.status != http.StatusConflict {
+		t.Fatalf("a cutover to a discarded volume = %d %s", got.status, got.body)
+	}
 }

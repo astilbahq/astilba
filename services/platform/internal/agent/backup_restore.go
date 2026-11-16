@@ -279,8 +279,10 @@ func postgresRecipe(p backup.Policy, m backup.Manifest) (domain.Application, err
 
 // restorePostgres restores dir's data.dump, which m describes, into a fresh cluster on the target
 // volume for a, the application postgresRecipe found for it. A dump may come from a server that was
-// lost, so the cluster runs as postgres with no capabilities or network, and mounts only its target
-// volume; the dump reaches it only through pg_restore's standard input.
+// lost, and its SQL runs as the cluster's superuser, so each container that touches the cluster
+// runs as postgres with no capabilities or network and mounts only its target volume, and the dump
+// reaches it only through pg_restore's standard input. Once the dump's server has stopped, the
+// cluster is held to what a dump of one database can leave before a fresh server verifies it.
 func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.Application, run, target uuid.UUID, dir string, m backup.Manifest, password string) error {
 	if password == "" {
 		return errors.New("database initialization credential unavailable")
@@ -289,10 +291,57 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 	if m.Database == maintenance {
 		maintenance = "template1"
 	}
+	var settings map[string][]byte
+	if err := e.restoreServer(ctx, p, run, target, m, "astilba-restore-", []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, nil, func(id string) (err error) {
+		// Read before the dump runs anything, these are the settings the deployment's database
+		// would have had if it had created the cluster itself.
+		if settings, err = e.clusterSettings(ctx, id, m.Image); err != nil {
+			return err
+		}
+		for _, role := range m.Roles {
+			if role.Name == m.Username || len(role.Name) > 63 || strings.ContainsRune(role.Name, 0) {
+				return errors.New("invalid role")
+			}
+			if _, err = e.pgQuery(ctx, pgClient{container: id}, a, "CREATE ROLE "+quoteIdentifier(role.Name)+" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
+				return err
+			}
+		}
+		file, err := os.Open(filepath.Join(dir, "data.dump"))
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		// Recreate only inside this fresh, isolated cluster. CREATE DATABASE cannot
+		// run in a transaction; a failed restore never exposes this target to writers.
+		return e.dataTool(ctx, file, io.Discard, "exec", "-i", id, "pg_restore", "--exit-on-error", "--clean", "--if-exists", "--create", "-U", m.Username, "-d", maintenance)
+	}); err != nil {
+		return err
+	}
+	if err := e.resetClusterFiles(ctx, p, run, target, m.Image, settings); err != nil {
+		return err
+	}
+	// A server that has just started reads the cluster as the deployment's database will, not
+	// through what the dump's server kept in memory. No client of it runs event triggers, and
+	// autovacuum, which can run the dump's functions, stays off.
+	return e.restoreServer(ctx, p, run, target, m, "astilba-verify-", []string{"PGOPTIONS=-c event_triggers=off"}, []string{"postgres", "-c", "autovacuum=off"}, func(id string) error {
+		if err := e.checkRestoredCluster(ctx, id, m); err != nil {
+			return err
+		}
+		if err := e.verifyRestoredDump(ctx, a, id, dir, m); err != nil {
+			return err
+		}
+		return e.resetClusterPassword(ctx, id, m, password)
+	})
+}
+
+// restoreServer runs the pinned image's server on target in its own container, isolated as
+// restorePostgres describes, calls use once it accepts connections, and then stops it, which must
+// leave the cluster shut down cleanly. The container is gone when it returns.
+func (e *Engine) restoreServer(ctx context.Context, p backup.Policy, run, target uuid.UUID, m backup.Manifest, name string, env, cmd []string, use func(id string) error) error {
 	labels := visualLabels(p.Plan, target)
 	labels[labelKind] = "backup-restore-v1"
 	labels["com.astilba.run"] = run.String()
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: "astilba-restore-" + run.String(), Config: &container.Config{Image: m.Image, User: "postgres", Env: []string{"POSTGRES_USER=" + m.Username, "POSTGRES_DB=" + m.Database, "POSTGRES_PASSWORD=" + password}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(target), Target: domain.PostgresMount(m.Image)}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name + run.String(), Config: &container.Config{Image: m.Image, User: "postgres", Env: env, Cmd: cmd, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}, Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(target), Target: domain.PostgresMount(m.Image)}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
 	if err != nil {
 		return err
 	}
@@ -308,32 +357,29 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 	if err = e.waitPostgresStartup(ctx, created.ID, m.Username, m.Database); err != nil {
 		return err
 	}
-	for _, role := range m.Roles {
-		if role.Name == m.Username || len(role.Name) > 63 || strings.ContainsRune(role.Name, 0) {
-			return errors.New("invalid role")
-		}
-		if _, err = e.pgQuery(ctx, pgClient{container: created.ID}, a, "CREATE ROLE "+quoteIdentifier(role.Name)+" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
-			return err
-		}
-	}
-	file, err := os.Open(filepath.Join(dir, "data.dump"))
-	if err != nil {
+	if err = use(created.ID); err != nil {
 		return err
 	}
-	defer file.Close()
-	// Recreate only inside this fresh, isolated cluster. CREATE DATABASE cannot
-	// run in a transaction; a failed restore never exposes this target to writers.
-	if err = e.dataTool(ctx, file, io.Discard, "exec", "-i", created.ID, "pg_restore", "--exit-on-error", "--clean", "--if-exists", "--create", "-U", m.Username, "-d", maintenance); err != nil {
+	if _, err = e.Docker.ContainerStop(ctx, created.ID, client.ContainerStopOptions{Timeout: ptr(60)}); err != nil {
 		return err
 	}
-	// Re-dump with the same pinned tool to verify all archived definitions and data,
-	// including database settings, owners, grants and sequence contents.
+	stopped, err := e.Docker.ContainerInspect(ctx, created.ID, client.ContainerInspectOptions{})
+	if err != nil || stopped.Container.State.Running || stopped.Container.State.ExitCode != 0 {
+		return errors.Join(errors.New("restored database did not stop cleanly"), err)
+	}
+	return nil
+}
+
+// verifyRestoredDump re-dumps the restored database with the same pinned tool and compares it
+// with dir's archive, all definitions and data, including database settings, owners, grants and
+// sequence contents.
+func (e *Engine) verifyRestoredDump(ctx context.Context, a domain.Application, id, dir string, m backup.Manifest) error {
 	verify, err := os.CreateTemp(e.Journal.dir, "restore-verification-")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(verify.Name())
-	dumpArgs := []string{"exec", created.ID, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", m.Username, "-d", m.Database}
+	dumpArgs := []string{"exec", id, "pg_dump", "-Fc", "-Z0", "--no-password", "-U", m.Username, "-d", m.Database}
 	crossMajor := a.Source.Image != nil && *a.Source.Image == domain.Postgres17Image && m.Image == domain.PostgresImage
 	if crossMajor {
 		dumpArgs = append(dumpArgs, "--quote-all-identifiers")
@@ -359,7 +405,7 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 		if crossMajor {
 			out = &upgradeSQLHeader{out: out}
 		}
-		err = e.dataTool(ctx, file, out, "exec", "-i", created.ID, "pg_restore", "--create", "--file=-", "--restrict-key=AstilbaRestoreVerification")
+		err = e.dataTool(ctx, file, out, "exec", "-i", id, "pg_restore", "--create", "--file=-", "--restrict-key=AstilbaRestoreVerification")
 		closeErr := file.Close()
 		if err != nil || closeErr != nil {
 			return errors.Join(err, closeErr)
@@ -367,9 +413,6 @@ func (e *Engine) restorePostgres(ctx context.Context, p backup.Policy, a domain.
 	}
 	if !bytes.Equal(originalSQL.Sum(nil), restoredSQL.Sum(nil)) {
 		return errors.New("restored database differs from archived records or schema")
-	}
-	if _, err = e.Docker.ContainerStop(ctx, created.ID, client.ContainerStopOptions{}); err != nil {
-		return err
 	}
 	return nil
 }

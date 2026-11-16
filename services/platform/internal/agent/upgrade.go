@@ -404,6 +404,8 @@ func (e *Engine) removeUpgradeHelpers(ctx context.Context, s upgradeState) error
 		{"astilba-upgrade-preflight-" + p.ID.String(), "upgrade-preflight-v1", domain.Postgres17Image},
 		{"astilba-upgrade-tools-" + p.ID.String(), "upgrade-tools-v1", domain.PostgresImage},
 		{"astilba-restore-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
+		{"astilba-reset-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
+		{"astilba-verify-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
 		{"astilba-upgrade-source-" + p.ID.String(), "upgrade-source-v1", domain.Postgres17Image},
 	} {
 		v, err := e.Docker.ContainerInspect(ctx, entry.name, client.ContainerInspectOptions{})

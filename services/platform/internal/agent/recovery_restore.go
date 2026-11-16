@@ -64,6 +64,8 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 		switch {
 		case effects && runCtx.Err() != nil:
 			return e.settleRecovery(c.Id, p, v.RunID, "The restore was cancelled or reached its time limit.")
+		case effects && errors.As(err, new(clusterRefusal)):
+			return e.settleRecovery(c.Id, p, v.RunID, "The restored database was refused: it holds what a backup can't ("+clusterReason(err)+").")
 		case effects:
 			return e.settleRecovery(c.Id, p, v.RunID, "The restore failed while restoring or verifying its data.")
 		case ctx.Err() != nil:
@@ -84,7 +86,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	return e.Journal.Mutate(c.Id, func(record *Record) {
 		result := jsontext.Value(raw)
 		record.Report.Restore = &result
-		settleReport(record, "succeeded", "Snapshot restored into a new volume and verified against its manifest. Nothing uses the volume until a reviewed cutover.")
+		settleReport(record, "succeeded", "Snapshot restored into a new volume and verified against its manifest, with a restored database's settings reset to this server's. Nothing uses the volume until a reviewed cutover.")
 	})
 }
 

@@ -4402,6 +4402,113 @@
           application/json:
             schema:
               $ref: '#/components/schemas/BackupRecoveryRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/cutover:
+    post:
+      operationId: PrepareRecoveryCutover
+      description: >-
+        Writes a draft that switches a succeeded restore's volume in for the one the deployment's
+        resource uses now. Deploying that draft, through the ordinary plan review, performs the
+        cutover. A distributed deployment is refused.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: recoveryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Revision'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupRecoveryCutoverRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/target:
+    delete:
+      operationId: DiscardRecoveryTarget
+      description: >-
+        Deletes the volume an ended restore created, on the server it ran on, unless the
+        deployment's draft mounts it. A discarded volume can't be cut over.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: recoveryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover:
     post:
       operationId: PrepareBackupCutover
@@ -9988,14 +10095,18 @@
           nullable: true
           description: >-
             Once the restore succeeded, the manifest read out of the snapshot that the restored data
-            matches. The data came from a server that may have been compromised and isn't reset
-            for use until a cutover.
+            matches. The data came from a server that may have been compromised. A restored
+            database held nothing beyond what a dump of one database can leave, and its settings
+            files and the deployment's password were reset, before the restore succeeded.
           properties:
             manifest:
               $ref: '#/components/schemas/BackupManifest'
           required: [manifest]
           additionalProperties: false
-      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored]
+        targetDeleted:
+          type: boolean
+          description: Whether the server deleted the restore's volume once it was discarded.
+      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored, targetDeleted]
     BackupCommandRequest:
       type: object
       additionalProperties: false
@@ -10018,6 +10129,15 @@
         - action
         - requestKey
         - snapshot
+    BackupRecoveryCutoverRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        baseRevisionId:
+          type: string
+          format: uuid
+      required:
+        - baseRevisionId
     BackupCutoverRequest:
       type: object
       additionalProperties: false

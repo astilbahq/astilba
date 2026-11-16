@@ -456,6 +456,8 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 			r.Note = "Container job exceeded its timeout; its owned container was stopped and the exit result recorded."
 		case timedOut:
 			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
+		case errors.As(err, new(clusterRefusal)):
+			r.Note = "Fresh restore refused: the restored database holds what a backup can't (" + clusterReason(err) + "). Nothing uses its target volume."
 		case errors.Is(err, errUnsupportedPostgresImage):
 			r.Note = "The database's PostgreSQL image is no longer one Astilba supports, so it was not dumped. Redeploy the database on a supported image, then refresh the policy."
 		default:

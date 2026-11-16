@@ -2029,6 +2029,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/cutover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Writes a draft that switches a succeeded restore's volume in for the one the deployment's resource uses now. Deploying that draft, through the ordinary plan review, performs the cutover. A distributed deployment is refused. */
+        post: operations["PrepareRecoveryCutover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/target": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Deletes the volume an ended restore created, on the server it ran on, unless the deployment's draft mounts it. A discarded volume can't be cut over. */
+        delete: operations["DiscardRecoveryTarget"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover": {
         parameters: {
             query?: never;
@@ -4785,10 +4819,12 @@ export interface components {
             createdAt: string;
             state: components["schemas"]["ExecutionState"];
             note: string;
-            /** @description Once the restore succeeded, the manifest read out of the snapshot that the restored data matches. The data came from a server that may have been compromised and isn't reset for use until a cutover. */
+            /** @description Once the restore succeeded, the manifest read out of the snapshot that the restored data matches. The data came from a server that may have been compromised. A restored database held nothing beyond what a dump of one database can leave, and its settings files and the deployment's password were reset, before the restore succeeded. */
             restored: {
                 manifest: components["schemas"]["BackupManifest"];
             } | null;
+            /** @description Whether the server deleted the restore's volume once it was discarded. */
+            targetDeleted: boolean;
         };
         BackupCommandRequest: {
             /** @enum {string} */
@@ -4796,6 +4832,10 @@ export interface components {
             /** Format: uuid */
             requestKey: string;
             snapshot: string;
+        };
+        BackupRecoveryCutoverRequest: {
+            /** Format: uuid */
+            baseRevisionId: string;
         };
         BackupCutoverRequest: {
             /** Format: uuid */
@@ -10205,6 +10245,80 @@ export interface operations {
         responses: {
             /** @description Success */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    PrepareRecoveryCutover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+                recoveryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupRecoveryCutoverRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    DiscardRecoveryTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+                recoveryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

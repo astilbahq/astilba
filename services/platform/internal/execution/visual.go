@@ -534,57 +534,62 @@ func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
-		if v.Server == nil {
-			return domain.Invalid("server")
-		}
-		if _, err = s.visualServer(ctx, tx, ws, *v.Server); err != nil {
-			return err
-		}
-		var id uuid.UUID
-		err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = tx.QueryRow(ctx, "SELECT visual_plan_id FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND visual_plan_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", ws, env).Scan(&id)
-		}
-		if err != nil {
-			return err
-		}
-		plan, err := readPlan(ctx, tx, ws, env, id)
-		if err != nil {
-			return err
-		}
-		if plan.Distributed != nil {
-			if volume == nil {
-				out, err = s.insertCoordination(ctx, tx, ws, uuid.New(), "observe", plan)
-				return err
-			}
-			plan = plan.PrimaryPlan()
-		}
-		action := "observe"
-		if volume != nil {
-			action = "delete-volume"
-			var protected bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE workspace_id=$1 AND environment_id=$2 AND (plan->>'targetVolumeId'=$3 OR EXISTS(SELECT 1 FROM jsonb_array_elements(plan->'source'->'specification'->'applications') a, jsonb_array_elements(a->'mounts') m WHERE a->>'id'=plan->>'resourceId' AND m->>'volumeId'=$3)) AND (status->>'phase' NOT IN ('planned','rejected','complete','returned') OR (status->>'keepUntil')::timestamptz>now()))`, ws, env, volume.String()).Scan(&protected); err != nil {
-				return err
-			}
-			if protected {
-				return domain.Conflict
-			}
-			var ok bool
-			if err := tx.QueryRow(ctx, "SELECT true FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3 AND id=$4 AND NOT deleted", ws, env, v.Unit, *volume).Scan(&ok); err != nil {
-				return err
-			}
-			for _, a := range v.Spec.Applications {
-				for _, m := range a.Mounts {
-					if m.VolumeID == *volume {
-						return domain.Conflict
-					}
-				}
-			}
-		}
-		out, err = s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: action, Plan: plan, VolumeID: volume})
+		out, err = s.observeVisual(ctx, tx, ws, env, v, volume)
 		return err
 	})
 	return operationFor(p, out), err
+}
+
+// observeVisual asks v's server to report its runtime, or with volume, to delete that volume of
+// the environment's, which no plan or draft may mount.
+func (s *Service) observeVisual(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, v visualEnvironment, volume *uuid.UUID) (api.Operation, error) {
+	if v.Server == nil {
+		return api.Operation{}, domain.Invalid("server")
+	}
+	if _, err := s.visualServer(ctx, tx, ws, *v.Server); err != nil {
+		return api.Operation{}, err
+	}
+	var id uuid.UUID
+	err := tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, "SELECT visual_plan_id FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND visual_plan_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", ws, env).Scan(&id)
+	}
+	if err != nil {
+		return api.Operation{}, err
+	}
+	plan, err := readPlan(ctx, tx, ws, env, id)
+	if err != nil {
+		return api.Operation{}, err
+	}
+	if plan.Distributed != nil {
+		if volume == nil {
+			return s.insertCoordination(ctx, tx, ws, uuid.New(), "observe", plan)
+		}
+		plan = plan.PrimaryPlan()
+	}
+	action := "observe"
+	if volume != nil {
+		action = "delete-volume"
+		var protected bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE workspace_id=$1 AND environment_id=$2 AND (plan->>'targetVolumeId'=$3 OR EXISTS(SELECT 1 FROM jsonb_array_elements(plan->'source'->'specification'->'applications') a, jsonb_array_elements(a->'mounts') m WHERE a->>'id'=plan->>'resourceId' AND m->>'volumeId'=$3)) AND (status->>'phase' NOT IN ('planned','rejected','complete','returned') OR (status->>'keepUntil')::timestamptz>now()))`, ws, env, volume.String()).Scan(&protected); err != nil {
+			return api.Operation{}, err
+		}
+		if protected {
+			return api.Operation{}, domain.Conflict
+		}
+		var ok bool
+		if err := tx.QueryRow(ctx, "SELECT true FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3 AND id=$4 AND NOT deleted", ws, env, v.Unit, *volume).Scan(&ok); err != nil {
+			return api.Operation{}, err
+		}
+		for _, a := range v.Spec.Applications {
+			for _, m := range a.Mounts {
+				if m.VolumeID == *volume {
+					return api.Operation{}, domain.Conflict
+				}
+			}
+		}
+	}
+	return s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: action, Plan: plan, VolumeID: volume})
 }
 
 func rawMessage(raw []byte) *jsontext.Value { v := jsontext.Value(raw); return &v }

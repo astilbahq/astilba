@@ -221,11 +221,113 @@ func (s *Service) BackupRecoveries(ctx context.Context, p store.Principal, ws, p
 					Manifest api.BackupManifest `json:"manifest"`
 				}{result.Manifest}
 			}
+			v.TargetDeleted = row.TargetDeleted
 			out = append(out, v)
 		}
 		return nil
 	})
 	return out, err
+}
+
+// PrepareRecoveryCutover writes a draft that switches a succeeded restore's target in for the
+// volume the deployment's resource uses now, as PrepareBackupCutover does for a policy's own
+// restore. The restore's recorded result is checked again, and the deployment must still be the
+// single-server plan the restore was issued against, on the server it ran on.
+func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal, ws, pid, env, id, recovery uuid.UUID, in api.BackupRecoveryCutoverRequest) (db.SpecificationRevision, error) {
+	var out db.SpecificationRevision
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.recovery.cutover", recovery, func(tx pgx.Tx) error {
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		if err = requireActive(v.State); err != nil {
+			return err
+		}
+		if v.Revision != in.BaseRevisionId {
+			return domain.Conflict
+		}
+		source, row, err := loadBackupRecovery(ctx, tx, ws, env, id, recovery)
+		if err != nil {
+			return err
+		}
+		if row.State != string(api.ExecutionStateSucceeded) {
+			return domain.Conflict
+		}
+		result, err := backup.ParseRecoveryResult(row.Result, id, env, row.Snapshot, row.TargetVolumeID)
+		if err != nil {
+			return domain.Conflict
+		}
+		planID, err := db.New(tx).EnvironmentRuntimePlan(ctx, db.EnvironmentRuntimePlanParams{WorkspaceID: ws, EnvironmentID: env})
+		if err != nil {
+			return err
+		}
+		if v.Server == nil || *v.Server != row.ServerID || planID != row.PlanID {
+			return domain.Conflict
+		}
+		plan, err := readPlan(ctx, tx, ws, env, planID)
+		if err != nil {
+			return err
+		}
+		// A distributed deployment switches volumes through its own boundary, which a restore
+		// onto another server doesn't record.
+		if plan.Distributed != nil {
+			return domain.Invalid("deployment.distributed")
+		}
+		view := source
+		view.ServerID, view.Plan = row.ServerID, plan
+		old, err := backup.RestoredVolume(view, row.TargetVolumeID, result.Manifest)
+		if err != nil {
+			return domain.Invalid("restore.compatibility")
+		}
+		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, view, recovery, row.TargetVolumeID, old, result.Manifest, nil)
+		return err
+	})
+	return out, err
+}
+
+// DiscardRecoveryTarget deletes the volume an ended restore onto another server created, on that
+// server while it is still the environment's. The volume becomes one of the environment's own
+// first, so a draft that mounts it keeps it, and a cutover can't claim it once it is deleted.
+func (s *Service) DiscardRecoveryTarget(ctx context.Context, p store.Principal, ws, pid, env, id, recovery uuid.UUID) (api.Operation, error) {
+	var out api.Operation
+	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true}, "backup.recovery.discard", recovery, func(tx pgx.Tx) error {
+		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+		if err != nil {
+			return err
+		}
+		_, row, err := loadBackupRecovery(ctx, tx, ws, env, id, recovery)
+		if err != nil {
+			return err
+		}
+		// A restore that hasn't ended holds the environment's one active operation, so the
+		// deletion can't be issued until it does.
+		if v.Server == nil || *v.Server != row.ServerID {
+			return domain.Conflict
+		}
+		_, err = db.New(tx).ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: v.Unit, ID: row.TargetVolumeID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Conflict
+		}
+		if err != nil {
+			return err
+		}
+		out, err = s.observeVisual(ctx, tx, ws, env, v, &row.TargetVolumeID)
+		return err
+	})
+	return operationFor(p, out), err
+}
+
+// loadBackupRecovery reads a policy and one of its restores onto another server.
+func loadBackupRecovery(ctx context.Context, tx pgx.Tx, ws, env, id, recovery uuid.UUID) (backup.Policy, db.BackupRecoveryRow, error) {
+	source, err := loadBackupPolicy(ctx, tx, ws, env, id)
+	if err != nil {
+		return source, db.BackupRecoveryRow{}, err
+	}
+	row, err := db.New(tx).BackupRecovery(ctx, db.BackupRecoveryParams{WorkspaceID: ws, EnvironmentID: env, PolicyID: id, ID: recovery})
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = domain.NotFound
+	}
+	return source, row, err
 }
 
 const (
