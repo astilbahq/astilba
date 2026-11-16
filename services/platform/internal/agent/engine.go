@@ -286,7 +286,8 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return e.executeNetwork(ctx, c, r)
 	}
 	if c.Kind == "backup" || c.Kind == "schedule" {
-		return e.executeBackup(ctx, c, r)
+		// The journal's copy: values a retry asked for may have reached it since c was read.
+		return e.executeBackup(ctx, r.Command, r)
 	}
 	if c.Kind == "restore" {
 		return e.executeRecovery(ctx, c, r)

@@ -213,7 +213,7 @@ sudo astilba-agent retry --operation OPERATION_UUID
 sudo systemctl start astilba-agent
 ```
 
-A backup or schedule command that needs attention keeps no repository access in the journal: the agent removes it as soon as the command is parked, and on every start removes any an earlier agent left. When a retried install or check reaches the point where it reads that access, it waits, with a note saying so, and asks management to release it again, as it does for a command its journal lost. Management checks again whether it may go, and releases the destination's and policy's current access through its secret broker. A retried command whose deadline has passed is cancelled instead, and the owner starts it again.
+A backup or schedule command that needs attention keeps no repository access in the journal: the agent removes it as soon as the command is parked, and on every start removes any an earlier agent left. When a retried install or check of a repository reaches the point where it reads that access, it waits, with a note saying so, and asks management to release it again, as it does for a command its journal lost. Management checks again whether it may go, and releases the destination's and policy's current access through its secret broker. Like any unfinished command, a waiting one holds the host's local schedules. It is cancelled at its deadline, with management reachable or not, and the owner starts it again.
 
 A writer that does not come back after coordinated maintenance can instead be accepted as it is, so that the maintenance can finish and release its reservation. See [maintenance and compatibility](cross-host-placement.md#maintenance-and-compatibility).
 

@@ -29,7 +29,7 @@ func (c *Client) acceptReleased(ctx context.Context, command api.ExecutionComman
 	if err != nil {
 		return err
 	}
-	if release != nil && !release.Values && record.Values == valuesWanted && !record.Command.CancelRequested {
+	if release != nil && !release.Values && record.ValuesWanted && !record.Command.CancelRequested {
 		// The journal holds the command but not its values: the redelivery a lost record asks
 		// for. Management's release checks decide again whether they may go.
 		return c.requestRedelivery(ctx, command.Id, release.Epoch)
@@ -54,27 +54,44 @@ func (c *Client) requestRedelivery(ctx context.Context, id uuid.UUID, epoch int6
 }
 
 const (
-	valuesWantedNote  = "Waiting for management to release this command's repository access again. The agent removed it while the command waited for attention."
-	valuesExpiredNote = "Cancelled. The agent removed this command's repository access while it waited for attention, and management releases it only before the command's deadline. Start it again."
+	valuesWantedNote  = "Waiting for management to release this command's repository access again. The agent removes it while a command waits for attention."
+	valuesExpiredNote = "Cancelled. This command no longer holds its repository access, which the agent removes while a command waits for attention, and management releases it again only before the command's deadline. Start it again."
 )
 
-// awaitValues reports whether a command must wait for values it gave up while it waited for
-// attention, and asks for them: acceptReleased then requests them from management on each delivery
-// until one brings them. Past its deadline, management releases nothing, so the command is
-// cancelled instead.
-func (e *Engine) awaitValues(c api.ExecutionCommand, r Record) (bool, error) {
+// awaitValues reports whether a command must wait for the values it reads but does not hold, as
+// after it gave them up while it waited for attention, and asks for them: acceptReleased then
+// requests them from management on each delivery until one brings them. Past its deadline,
+// management releases nothing, so the command is cancelled instead.
+func (e *Engine) awaitValues(c api.ExecutionCommand, r Record, held bool) (bool, error) {
 	switch {
-	case r.Values == "":
+	case held:
 		return false, nil
 	case time.Now().After(c.Deadline):
 		return true, e.finish(c.Id, "cancelled", valuesExpiredNote)
-	case r.Values == valuesWanted:
+	case r.ValuesWanted:
 		return true, nil
 	}
 	return true, e.Journal.Mutate(c.Id, func(r *Record) {
-		r.Values = valuesWanted
+		r.ValuesWanted = true
 		r.Report.Note = valuesWantedNote
 	})
+}
+
+// valuesDeadline is the earliest deadline of a command waiting for its values, when the executor
+// looks at it again whether or not a delivery has woken it: with management out of reach, the
+// command still ends then, and with it the wait it puts on local schedules.
+func (j *Journal) valuesDeadline() (time.Time, bool) {
+	pending, err := j.Pending()
+	if err != nil {
+		return time.Time{}, false
+	}
+	var at time.Time
+	for _, r := range pending {
+		if r.ValuesWanted && (at.IsZero() || r.Command.Deadline.Before(at)) {
+			at = r.Command.Deadline
+		}
+	}
+	return at, !at.IsZero()
 }
 
 // acknowledgementBatch is the most releases one notice may acknowledge.

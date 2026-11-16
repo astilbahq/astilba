@@ -138,7 +138,7 @@ func TestParkedBackupGivesUpItsAccessAndARetryGetsItBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	parked, err := journal.Record(op.Id)
-	if err != nil || holds() || parked.Values != "removed" {
+	if err != nil || holds() {
 		t.Fatal("a parked check kept its repository access", err)
 	}
 	report(parked.Report, nil)

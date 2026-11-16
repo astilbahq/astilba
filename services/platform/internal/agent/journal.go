@@ -69,8 +69,8 @@ type Record struct {
 	// wait for the host. The client accepts a command when it polls, before that wait.
 	StartedAt *time.Time                 `json:",omitempty"`
 	Railpack  *pipeline.PreparedRailpack `json:",omitempty"`
-	// Values says whether the values released for the command were removed while it was parked.
-	Values recordValues `json:",omitempty"`
+	// ValuesWanted says the running command waits for management to release its values again.
+	ValuesWanted bool `json:",omitempty"`
 }
 type Journal struct {
 	db *journalDB
@@ -90,7 +90,6 @@ type Journal struct {
 	// rekeyedAt is the transaction that last re-sealed every record.
 	rekeyedAt      atomic.Uint64
 	startupUpdates map[uuid.UUID]bool
-	swept          sweptScratch
 }
 
 // Open opens a journal whose keyring is never sealed, for tests and development. It refuses one
@@ -117,7 +116,8 @@ func openJournal(ctx context.Context, dir string, store func(context.Context) (K
 		return nil, err
 	}
 	fail := func(err error) (*Journal, error) { db.Close(); return nil, err }
-	j := &Journal{db: &journalDB{DB: db}, dir: dir, swept: sweepScratch(dir)}
+	sweepScratch(dir)
+	j := &Journal{db: &journalDB{DB: db}, dir: dir}
 	if err = j.openLocalKeys(ctx, store, point); err != nil {
 		return fail(err)
 	}

@@ -146,27 +146,15 @@ func (r Record) finished() bool {
 	return r.Acknowledged && execution.Terminal(r.Report.State)
 }
 
-// recordValues is Record.Values.
-type recordValues string
-
-const (
-	// valuesRemoved marks a record whose released values were removed while it waited for
-	// attention. It may never need them again: most ways out of attention settle it without them.
-	valuesRemoved recordValues = "removed"
-	// valuesWanted marks a record retried after its values were removed, which waits for
-	// management to release them again before it goes on.
-	valuesWanted recordValues = "wanted"
-)
-
 // parkedValues are the kinds whose released values a record gives up while it waits for
 // attention: the repository access of a backup or schedule command.
 //
 // Nothing that settles such a record reads that access. A run is settled by its run state, and a
 // scheduled backup or restore runs with the access its installed schedule holds. Only an install or
-// a check reads the command's own, and asks for it again (awaitValues). An earlier agent restored
-// onto this journal ignores Values; its retry of an install or check fails at the repository's
-// password check, before any effect. Kinds whose executors would act without their values, such as
-// a deployment without its secrets, are not listed.
+// a check of a repository reads the command's own, and one retried without it asks for it again
+// (awaitValues). An earlier agent restored onto this journal retries one without it, and fails at
+// the repository's password check before any effect. Kinds whose executors would act without their
+// values, such as a deployment without its secrets, are not listed.
 var parkedValues = map[api.ExecutionCommandKind]bool{"backup": true, "schedule": true}
 
 // parked reports whether a record waits for attention: an operator's retry, resolve-run, or a
@@ -177,39 +165,30 @@ func (r Record) parked() bool {
 
 // withoutUnneededValues removes the values a record no longer needs, and reports whether it changed
 // the record: every value once it has finished, and a backup's repository access while it waits for
-// attention. A parked record also stops waiting for values, so being parked again after a retry
-// asks for nothing until the next retry.
+// attention. Only a running command waits for values, so one that has ended or is parked again
+// asks for none.
 func withoutUnneededValues(r *Record) bool {
-	switch {
-	case r.finished():
-		return redactCommand(&r.Command)
-	case r.parked() && parkedValues[r.Command.Kind]:
-		if redactCommand(&r.Command) || r.Values == valuesWanted {
-			r.Values = valuesRemoved
-			return true
-		}
+	changed := false
+	if r.ValuesWanted && r.Report.State != "running" {
+		r.ValuesWanted, changed = false, true
 	}
-	return false
+	if r.finished() || r.parked() && parkedValues[r.Command.Kind] {
+		changed = redactCommand(&r.Command) || changed
+	}
+	return changed
 }
 
-// takeReleasedValues gives a record that waits for its values those a delivery of the same command
-// brings, and only such a record: one still parked keeps none, whatever a delivery brings, and any
-// other keeps the values it was first given. Accept has already matched the delivery to the record
-// by digest.
+// takeReleasedValues gives a command that waits for its values those a delivery of it brings, and
+// only such a command: one parked keeps none, whatever a delivery brings, and any other keeps the
+// values it was first given. Accept has already matched the delivery to the record.
 func takeReleasedValues(r *Record, delivered api.ExecutionCommand) {
-	if r.Values != valuesWanted || r.Command.Kind != delivered.Kind {
-		return
-	}
 	held := delivered
-	if !redactCommand(&held) {
+	if !r.ValuesWanted || !redactCommand(&held) {
 		return
 	}
-	body, from := commandBody(&r.Command), commandBody(&delivered)
-	if body == nil || from == nil {
-		return
-	}
-	*body = *from
-	r.Values = ""
+	*commandBody(&r.Command) = *commandBody(&delivered)
+	r.ValuesWanted = false
+	r.Report.Note = ""
 }
 
 // upgradeActions are every action a command can ask of an upgrade.

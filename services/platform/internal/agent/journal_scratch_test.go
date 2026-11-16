@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -85,6 +84,7 @@ func TestOpenSweepsOnlyLeftoverScratch(t *testing.T) {
 	}
 	unexpected := []string{"backup-stage-78", "restic-access-77", "restore-verification-79"}
 
+	trail := captureTrail(t)
 	j, err = Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -95,12 +95,18 @@ func TestOpenSweepsOnlyLeftoverScratch(t *testing.T) {
 			t.Fatal("leftover scratch survived the open:", name, err)
 		}
 	}
-	removed := slices.Sorted(slices.Values(j.swept.Removed))
-	if !slices.Equal(removed, slices.Sorted(slices.Values(scratch))) {
-		t.Fatal("the sweep reported removing", removed, "not", scratch)
+	// The operator can tell what it removed from what it left.
+	logged := trail.String()
+	for _, name := range append(scratch, unexpected...) {
+		if strings.Count(logged, name) != 1 {
+			t.Fatal("the sweep did not log", name, "once:", logged)
+		}
 	}
-	if got := slices.Sorted(slices.Values(j.swept.Unexpected)); !slices.Equal(got, unexpected) {
-		t.Fatal("the sweep reported as unexpected", got, "not", unexpected)
+	_, left, _ := strings.Cut(logged, "did not make")
+	for _, name := range unexpected {
+		if !strings.Contains(left, name) {
+			t.Fatal("the sweep did not log what it left as such:", logged)
+		}
 	}
 	for _, name := range append(kept, unexpected...) {
 		if _, err = os.Lstat(filepath.Join(dir, name)); err != nil {

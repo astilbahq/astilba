@@ -239,9 +239,6 @@ func TestNativeCrashLeavesNoRepositoryAccessOrStaging(t *testing.T) {
 			if remaining := scratchEntries(t, state); len(remaining) != 0 {
 				t.Fatal("opening the journal left scratch behind:", remaining)
 			}
-			if !slices.Equal(slices.Sorted(slices.Values(j.swept.Removed)), slices.Sorted(slices.Values(left))) || len(j.swept.Unexpected) != 0 {
-				t.Fatal("the sweep reported", j.swept, "for", left)
-			}
 			if freeBytes(state) < needed {
 				t.Fatal("the state directory has not got its space back")
 			}

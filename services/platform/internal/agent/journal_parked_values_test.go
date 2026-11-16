@@ -5,6 +5,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -48,13 +50,13 @@ func TestParkedBackupsKeepNoRepositoryAccess(t *testing.T) {
 			}
 			held := bytes.Contains(sealedRecord(t, j, full.Id), []byte(releaseCanary))
 			if parkedValues[kind] {
-				if held || stored.Values != valuesRemoved {
-					t.Fatal(kind, "a parked backup kept its repository access, or did not record removing it:", stored.Values)
+				if held {
+					t.Fatal(kind, "a parked backup kept its repository access")
 				}
 				if !sameCommand(stored.Command, full) || stored.Command.PlanHash != full.PlanHash {
 					t.Fatal(kind, "a parked backup no longer matches its command")
 				}
-			} else if !held || stored.Values != "" {
+			} else if !held {
 				t.Fatal(kind, "a parked command of a kind that keeps its values lost them")
 			}
 			j = reopen(t, j)
@@ -69,7 +71,7 @@ func TestOpenRemovesAccessAnEarlierAgentParked(t *testing.T) {
 	writeAsEarlierAgent(t, j, "operations", c.Id.String(), Record{Command: c, Report: api.AgentReport{Id: c.Id, State: "needs_attention", Sequence: 2}, Checkpoint: "accepted"})
 	j = reopen(t, j)
 	stored, err := j.Record(c.Id)
-	if err != nil || stored.Values != valuesRemoved || bytes.Contains(sealedRecord(t, j, c.Id), []byte(releaseCanary)) {
+	if err != nil || !sameCommand(stored.Command, c) || bytes.Contains(sealedRecord(t, j, c.Id), []byte(releaseCanary)) {
 		t.Fatal("opening kept a parked backup's access", err)
 	}
 	before := sealedRows(t, j)
@@ -81,7 +83,7 @@ func TestOpenRemovesAccessAnEarlierAgentParked(t *testing.T) {
 
 // A parked command takes its values back only once a retry wants them: not from a delivery while it
 // is parked, such as a release made again after its lease, nor before the retry reaches the step that
-// reads them. Parked again, it gives them up again and wants none.
+// reads them. Parked again, or ended, it wants none.
 func TestParkedBackupTakesValuesBackOnlyOnceWanted(t *testing.T) {
 	j, plan := testVisualJournal(t)
 	full := releasedCommand(t, plan, "backup", uuid.New(), 1, true)
@@ -98,7 +100,7 @@ func TestParkedBackupTakesValuesBackOnlyOnceWanted(t *testing.T) {
 	}
 	held := func() bool { return bytes.Contains(sealedRecord(t, j, full.Id), []byte(releaseCanary)) }
 	park()
-	if r, err := j.Accept(full); err != nil || held() || r.Values != valuesRemoved {
+	if r, err := j.Accept(full); err != nil || held() || r.ValuesWanted {
 		t.Fatal("a parked backup took values from a delivery", err)
 	}
 	if err := j.Retry(full.Id); err != nil {
@@ -107,103 +109,179 @@ func TestParkedBackupTakesValuesBackOnlyOnceWanted(t *testing.T) {
 	if r, err := j.Accept(full); err != nil || held() || r.Report.State != "running" {
 		t.Fatal("a retried backup took values before it wanted them", err)
 	}
-	if err := j.Mutate(full.Id, func(r *Record) { r.Values = valuesWanted }); err != nil {
-		t.Fatal(err)
+	want := func() {
+		t.Helper()
+		if err := j.Mutate(full.Id, func(r *Record) { r.ValuesWanted = true }); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if r, err := j.Accept(valueFree); err != nil || held() || r.Values != valuesWanted {
+	want()
+	if r, err := j.Accept(valueFree); err != nil || held() || !r.ValuesWanted {
 		t.Fatal("a delivery without values changed a backup that wants them", err)
 	}
 	r, err := j.Accept(full)
-	if err != nil || !held() || r.Values != "" {
+	if err != nil || !held() || r.ValuesWanted {
 		t.Fatal("a backup that wants its values did not take them from a delivery that brings them", err)
 	}
 	stored, err := j.Record(full.Id)
 	if err != nil || !sameCommand(stored.Command, full) || stored.Command.Backup == nil || !bytes.Equal(*stored.Command.Backup, *full.Backup) {
 		t.Fatal("taking values back changed the command", err)
 	}
-	if err = j.Mutate(full.Id, func(r *Record) { r.Values = valuesWanted }); err != nil {
+	want()
+	park()
+	if r, err = j.Accept(full); err != nil || held() || r.ValuesWanted {
+		t.Fatal("a backup parked again kept its values or still wants them", err)
+	}
+	if err = j.Retry(full.Id); err != nil {
 		t.Fatal(err)
 	}
-	park()
-	if stored, err = j.Record(full.Id); err != nil || held() || stored.Values != valuesRemoved {
-		t.Fatal("a backup parked again kept its values or still wants them", err)
+	want()
+	if err = j.Mutate(full.Id, func(r *Record) { settleReport(r, "cancelled", "Cancelled.") }); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = j.Accept(full); err != nil || held() || r.ValuesWanted {
+		t.Fatal("an ended backup still wants values, or took them", err)
 	}
 }
 
-// A retried install that gave up its access waits for it, with a note saying so, and runs once a
-// delivery brings it back. Past its deadline it is cancelled instead, since management releases
-// nothing then.
-func TestRetriedInstallWaitsForItsAccess(t *testing.T) {
+// accessRestic stands in for restic. It answers a repository's config only when given the access
+// it expects, so a command that runs without its access fails.
+func accessRestic(t *testing.T, access backup.Access) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "restic")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = version ]; then printf '%s\\n' 'restic " + backup.ResticVersion + " fixture'; exit 0; fi\n" +
+		"[ \"$(cat \"$RESTIC_PASSWORD_FILE\")\" = '" + access.Password + "' ] || exit 3\n" +
+		"[ \"$AWS_SECRET_ACCESS_KEY\" = '" + access.SecretKey + "' ] || exit 4\n" +
+		"case \"$*\" in *'cat config'*) printf '{\"id\":\"" + strings.Repeat("e", 64) + "\",\"version\":2}\\n'; exit 0;; esac\n" +
+		"exit 5\n"
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A retried check of a repository that gave up its access waits for it, with a note saying so, and
+// runs with it once a delivery brings it back, even from a copy of the command read before then.
+// A retried install past its first effect and its deadline is cancelled instead, since management
+// releases nothing then.
+func TestRetriedCheckWaitsForItsAccess(t *testing.T) {
 	e, p, _ := scheduledJobFixture(t, "")
-	// An interrupted run of another policy holds the host, so the install is parked before it starts.
+	p.ID, p.Method, p.Command, p.DestinationID = uuid.New(), backup.QuiescedFiles, nil, uuid.New()
+	destination := backup.Destination{ID: p.DestinationID, Name: "Bucket", Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "parked-fixture", Region: "test-1"}
+	e.ResticCLI = accessRestic(t, canaryAccess)
+	// An interrupted run of another policy holds the host, so the check is parked before it starts.
 	other := backup.Policy{ID: uuid.New(), ServerID: p.ServerID, EnvironmentID: p.EnvironmentID, Generation: 1}
 	uncertain := backup.Run{ID: uuid.New(), PolicyID: other.ID, State: "needs_attention", StartedAt: time.Now().UTC()}
 	if err := e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: other}, Runs: []backup.Run{uncertain}}); err != nil {
 		t.Fatal(err)
 	}
-	install := scheduleCommand(p, backup.Command{Action: "install", Installation: backup.Installation{Access: canaryAccess}}, time.Now().Add(time.Minute))
-	held := func() bool { return bytes.Contains(sealedRecord(t, e.Journal, install.Id), []byte(releaseCanary)) }
+	check := scheduleCommand(p, backup.Command{Action: "check", Installation: backup.Installation{Destination: destination, Access: canaryAccess}}, time.Now().Add(time.Minute))
+	held := func() bool { return bytes.Contains(sealedRecord(t, e.Journal, check.Id), []byte(releaseCanary)) }
 	ctx := context.Background()
-	if err := e.Execute(ctx, install); err != nil {
+	if err := e.Execute(ctx, check); err != nil {
 		t.Fatal(err)
 	}
-	r, err := e.Journal.Record(install.Id)
-	if err != nil || r.Report.State != "needs_attention" || r.Values != valuesRemoved || held() {
-		t.Fatal("the gate's parked install kept its access:", r.Report.State, r.Values, err)
+	r, err := e.Journal.Record(check.Id)
+	if err != nil || r.Report.State != "needs_attention" || held() {
+		t.Fatal("the gate's parked check kept its access:", r.Report.State, err)
 	}
 
-	// The operator resolves the run and retries the install.
+	// The operator resolves the run and retries the check.
 	uncertain.State = "failed"
 	if err = e.Journal.saveSchedule(scheduleState{Installation: backup.Installation{Policy: other}, Runs: []backup.Run{uncertain}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = e.Journal.Retry(install.Id); err != nil {
+	if err = e.Journal.Retry(check.Id); err != nil {
 		t.Fatal(err)
 	}
-	if r, err = e.Journal.Record(install.Id); err != nil {
+	if r, err = e.Journal.Record(check.Id); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
 		if err = e.Execute(ctx, r.Command); err != nil {
 			t.Fatal(err)
 		}
-		if r, err = e.Journal.Record(install.Id); err != nil || r.Report.State != "running" || r.Values != valuesWanted || r.Report.Note != valuesWantedNote || r.reached("backup-effect") {
-			t.Fatal("a retried install ran without its access, or did not say it waits for it:", r.Report.State, r.Values, r.Report.Note, err)
+		if r, err = e.Journal.Record(check.Id); err != nil || r.Report.State != "running" || !r.ValuesWanted || r.Report.Note != valuesWantedNote {
+			t.Fatal("a retried check ran without its access, or did not say it waits for it:", r.Report.State, r.ValuesWanted, r.Report.Note, err)
 		}
 	}
-	if _, err = e.Journal.Accept(install); err != nil || !held() {
-		t.Fatal("the delivery that brings the access back was not taken", err)
+	// The executor read this copy before the delivery that brings the access back.
+	read := r.Command
+	if r, err = e.Journal.Accept(check); err != nil || !held() || r.ValuesWanted || r.Report.Note != "" {
+		t.Fatal("the delivery that brings the access back was not taken", r.Report.Note, err)
 	}
-	if r, err = e.Journal.Record(install.Id); err != nil {
+	if err = e.Execute(ctx, read); err != nil {
 		t.Fatal(err)
 	}
-	if err = e.Execute(ctx, r.Command); err != nil {
-		t.Fatal(err)
-	}
-	if r, err = e.Journal.Record(install.Id); err != nil || r.Report.State != "succeeded" {
-		t.Fatal("a retried install with its access back did not run:", r.Report.State, r.Report.Note, err)
+	if r, err = e.Journal.Record(check.Id); err != nil || r.Report.State != "succeeded" {
+		t.Fatal("a retried check with its access back did not run with it:", r.Report.State, r.Report.Note, err)
 	}
 
-	// The same wait past the deadline ends the command.
-	late := scheduleCommand(p, backup.Command{Action: "check"}, time.Now().Add(-time.Second))
-	late.Generation = install.Generation + 10
-	if err = e.Journal.Acknowledge(install.Id, r.Report.Sequence); err != nil {
+	if err = e.Journal.Acknowledge(check.Id, r.Report.Sequence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.Journal.Accept(late); err != nil {
+	install := scheduleCommand(p, backup.Command{Action: "install", Installation: backup.Installation{Destination: destination}}, time.Now().Add(-time.Second))
+	if _, err = e.Journal.Accept(install); err != nil {
 		t.Fatal(err)
 	}
-	if err = e.Journal.Mutate(late.Id, func(r *Record) { r.Values = valuesRemoved }); err != nil {
+	if err = e.Journal.Mutate(install.Id, func(r *Record) { r.Checkpoint = "backup-effect" }); err != nil {
 		t.Fatal(err)
 	}
-	if r, err = e.Journal.Record(late.Id); err != nil {
+	if err = e.Execute(ctx, install); err != nil {
 		t.Fatal(err)
 	}
-	if wait, err := e.awaitValues(late, r); !wait || err != nil {
-		t.Fatal("a command past its deadline did not stop waiting", err)
+	if r, err = e.Journal.Record(install.Id); err != nil || r.Report.State != "cancelled" || r.Report.Note != valuesExpiredNote {
+		t.Fatal("a retried install past its deadline was not cancelled:", r.Report.State, r.Report.Note, err)
 	}
-	if r, err = e.Journal.Record(late.Id); err != nil || r.Report.State != "cancelled" || r.Report.Note != valuesExpiredNote {
-		t.Fatal("a command past its deadline was not cancelled:", r.Report.State, r.Report.Note, err)
+}
+
+// A command waiting for its access ends at its deadline though management is out of reach and no
+// delivery wakes it, so it does not hold the host's local schedules beyond then.
+func TestWaitForAccessEndsAtTheDeadlineWithoutManagement(t *testing.T) {
+	e, p, _ := scheduledJobFixture(t, "")
+	p.ID, p.Method, p.Command, p.DestinationID = uuid.New(), backup.QuiescedFiles, nil, uuid.New()
+	destination := backup.Destination{ID: p.DestinationID, Name: "Bucket", Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "parked-fixture", Region: "test-1"}
+	check := scheduleCommand(p, backup.Command{Action: "check", Installation: backup.Installation{Destination: destination}}, time.Now().Add(time.Second))
+	if _, err := e.Journal.Accept(check); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	defer server.Close()
+	cfg, err := e.Journal.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Origin, cfg.Enrolled, cfg.Credential = server.URL, true, "agent-credential"
+	if err = e.Journal.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient(e.Journal, e)
+	c.HTTP = server.Client()
+	c.Observe = func(context.Context) api.AgentHeartbeat { return api.AgentHeartbeat{} }
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- c.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+	waited := false
+	for limit := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		r, err := e.Journal.Record(check.Id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waited = waited || r.ValuesWanted
+		if r.Report.State == "cancelled" {
+			break
+		}
+		if time.Now().After(limit) {
+			t.Fatal("a command waiting for its access outlived its deadline:", r.Report.State, r.Report.Note)
+		}
+	}
+	if !waited {
+		t.Fatal("the command did not wait for its access before its deadline")
 	}
 }
 
@@ -263,7 +341,7 @@ func TestWantedValuesAreAskedForAgain(t *testing.T) {
 	if err = j.Retry(full.Id); err != nil {
 		t.Fatal(err)
 	}
-	if err = j.Mutate(full.Id, func(r *Record) { r.Values = valuesWanted }); err != nil {
+	if err = j.Mutate(full.Id, func(r *Record) { r.ValuesWanted = true }); err != nil {
 		t.Fatal(err)
 	}
 	if err = c.acceptReleased(ctx, without); err != nil || redeliveries() != 1 {
@@ -279,7 +357,7 @@ func TestWantedValuesAreAskedForAgain(t *testing.T) {
 	if err = c.acceptReleased(ctx, with); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := j.Record(full.Id); err != nil || r.Values != "" || !bytes.Contains(sealedRecord(t, j, full.Id), []byte(releaseCanary)) {
+	if r, err := j.Record(full.Id); err != nil || r.ValuesWanted || !bytes.Contains(sealedRecord(t, j, full.Id), []byte(releaseCanary)) {
 		t.Fatal("a released delivery did not give a wanting command its values", err)
 	}
 }

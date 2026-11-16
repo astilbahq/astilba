@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path"
 	"strings"
 )
 
@@ -68,34 +67,24 @@ func scratchName(name string) (scratchKind, bool) {
 	return scratchKind{}, false
 }
 
-// sweptScratch is what one startup sweep found.
-type sweptScratch struct {
-	// Removed names the scratch it removed.
-	Removed []string
-	// Unexpected names entries with a scratch name it left alone: a symlink, another type than
-	// the kind makes, or another owner's.
-	Unexpected []string
-}
-
 // sweepScratch removes the scratch a process that died left in the state directory. The caller
-// holds the journal's lock. Password files go first, each before the rest of its directory. It
-// looks only at the directory's own entries and removes only those whose name, type and owner are
-// what scratchDir and scratchFile make, and through the directory's root, so no link leads it
-// elsewhere. A removal that fails is logged and left for the next open: the journal still opens, so
-// the agent can settle its commands.
-func sweepScratch(dir string) sweptScratch {
-	var out sweptScratch
+// holds the journal's lock. It looks only at the directory's own entries and removes only those
+// whose name and type are what scratchDir and scratchFile make, through the directory's root, so no
+// link leads it elsewhere. Passwords go first. A removal that fails is logged and left for the next
+// open: the journal still opens, so the agent can settle its commands.
+func sweepScratch(dir string) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		slog.Warn("the agent could not open its state directory to remove leftover scratch", "error", err)
-		return out
+		return
 	}
 	defer root.Close()
 	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
 		slog.Warn("the agent could not list its state directory to remove leftover scratch", "error", err)
-		return out
+		return
 	}
+	var removed, unexpected []string
 	for _, k := range scratchKinds {
 		for _, entry := range entries {
 			name := entry.Name()
@@ -110,37 +99,21 @@ func sweepScratch(dir string) sweptScratch {
 				slog.Warn("the agent could not inspect leftover scratch", "name", name, "error", err)
 				continue
 			}
-			if !scratchShaped(k, info) {
-				out.Unexpected = append(out.Unexpected, name)
+			if k.file && !info.Mode().IsRegular() || !k.file && !info.IsDir() {
+				unexpected = append(unexpected, name)
 				continue
-			}
-			if k == scratchResticAccess {
-				if err = root.Remove(path.Join(name, scratchPassword)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-					slog.Warn("the agent could not remove a leftover repository password", "name", name, "error", err)
-					continue
-				}
 			}
 			if err = root.RemoveAll(name); err != nil {
 				slog.Warn("the agent could not remove leftover scratch", "name", name, "error", err)
 				continue
 			}
-			out.Removed = append(out.Removed, name)
+			removed = append(removed, name)
 		}
 	}
-	if len(out.Removed) > 0 {
-		slog.Info("the agent removed scratch an interrupted process left in its state directory", "names", out.Removed)
+	if len(removed) > 0 {
+		slog.Info("the agent removed scratch an interrupted process left in its state directory", "names", removed)
 	}
-	if len(out.Unexpected) > 0 {
-		slog.Warn("the agent left entries with scratch names that it did not make in its state directory", "names", out.Unexpected)
+	if len(unexpected) > 0 {
+		slog.Warn("the agent left entries with scratch names that it did not make in its state directory", "names", unexpected)
 	}
-	return out
-}
-
-// scratchShaped reports whether info is what kind k makes: a directory or a regular file, not a
-// link, owned by this process's user.
-func scratchShaped(k scratchKind, info fs.FileInfo) bool {
-	if k.file && !info.Mode().IsRegular() || !k.file && !info.IsDir() {
-		return false
-	}
-	return ownedByProcess(info)
 }
