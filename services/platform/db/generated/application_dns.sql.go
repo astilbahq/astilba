@@ -157,8 +157,12 @@ func (q *Queries) CloseWithdrawnDNSWithdrawalHolds(ctx context.Context, zone str
 }
 
 const confirmDNSRecordRemovals = `-- name: ConfirmDNSRecordRemovals :exec
-UPDATE dns_record_removals SET confirmed_at=clock_timestamp()
-WHERE server_id = $1 AND name = $2 AND zone = $3 AND confirmed_at IS NULL AND NOT (record_id = ANY($4::text[]))
+WITH unsent AS (
+    DELETE FROM dns_record_removals u
+    WHERE u.server_id = $1 AND u.name = $2 AND u.zone = $3 AND u.confirmed_at IS NULL AND u.record_id = ANY($4::text[])
+)
+UPDATE dns_record_removals r SET confirmed_at=clock_timestamp()
+WHERE r.server_id = $1 AND r.name = $2 AND r.zone = $3 AND r.confirmed_at IS NULL AND NOT (r.record_id = ANY($4::text[]))
 `
 
 type ConfirmDNSRecordRemovalsParams struct {
@@ -169,7 +173,9 @@ type ConfirmDNSRecordRemovalsParams struct {
 }
 
 // unscoped: a DNS job names the server. Called once the provider lists none of these records
-// except those kept, which are still published.
+// except those kept, which are still published. An attempt to delete a kept record never took
+// effect, so its row is dropped: a DNS job takes an audited deletion to explain why a record it
+// observed is gone, and this one would explain away the record's later loss.
 func (q *Queries) ConfirmDNSRecordRemovals(ctx context.Context, arg ConfirmDNSRecordRemovalsParams) error {
 	_, err := q.db.Exec(ctx, confirmDNSRecordRemovals,
 		arg.ServerID,
@@ -756,20 +762,30 @@ func (q *Queries) MarkRevokedServersDNSPublications(ctx context.Context) error {
 }
 
 const noteWithdrawnServerDomain = `-- name: NoteWithdrawnServerDomain :exec
-UPDATE server_domains SET records='{}',observed_at=NULL,note = $1,
-    state=CASE WHEN state IN ('manual','review_required') THEN state ELSE 'pending' END
-WHERE server_id = $2 AND base = $3
+UPDATE server_domains d SET records='{}',observed_zone='',observed_at=NULL,
+    note=CASE WHEN NOT $1::boolean OR EXISTS(SELECT 1 FROM servers s WHERE s.id=d.server_id
+        AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer) THEN $2::text ELSE d.note END,
+    state=CASE WHEN d.state IN ('manual','review_required') THEN d.state ELSE 'pending' END
+WHERE d.server_id = $3 AND d.base = $4
 `
 
 type NoteWithdrawnServerDomainParams struct {
-	Note     string    `json:"note"`
-	ServerID uuid.UUID `json:"server_id"`
-	Base     string    `json:"base"`
+	WhileApproved bool      `json:"while_approved"`
+	Note          string    `json:"note"`
+	ServerID      uuid.UUID `json:"server_id"`
+	Base          string    `json:"base"`
 }
 
-// unscoped: a DNS job names the server, which establishes the workspace.
+// unscoped: a DNS job names the server, which establishes the workspace. A note that promises the
+// records back once management resumes is left only while the approval is current, which is what
+// is published again then; an ended approval keeps the note that says why it ended.
 func (q *Queries) NoteWithdrawnServerDomain(ctx context.Context, arg NoteWithdrawnServerDomainParams) error {
-	_, err := q.db.Exec(ctx, noteWithdrawnServerDomain, arg.Note, arg.ServerID, arg.Base)
+	_, err := q.db.Exec(ctx, noteWithdrawnServerDomain,
+		arg.WhileApproved,
+		arg.Note,
+		arg.ServerID,
+		arg.Base,
+	)
 	return err
 }
 

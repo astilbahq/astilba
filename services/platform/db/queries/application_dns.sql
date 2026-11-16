@@ -36,15 +36,25 @@ WHERE dns_record_removals.confirmed_at IS NULL;
 
 -- name: ConfirmDNSRecordRemovals :exec
 -- unscoped: a DNS job names the server. Called once the provider lists none of these records
--- except those kept, which are still published.
-UPDATE dns_record_removals SET confirmed_at=clock_timestamp()
-WHERE server_id = @server_id AND name = @name AND zone = @zone AND confirmed_at IS NULL AND NOT (record_id = ANY(@kept::text[]));
+-- except those kept, which are still published. An attempt to delete a kept record never took
+-- effect, so its row is dropped: a DNS job takes an audited deletion to explain why a record it
+-- observed is gone, and this one would explain away the record's later loss.
+WITH unsent AS (
+    DELETE FROM dns_record_removals u
+    WHERE u.server_id = @server_id AND u.name = @name AND u.zone = @zone AND u.confirmed_at IS NULL AND u.record_id = ANY(@kept::text[])
+)
+UPDATE dns_record_removals r SET confirmed_at=clock_timestamp()
+WHERE r.server_id = @server_id AND r.name = @name AND r.zone = @zone AND r.confirmed_at IS NULL AND NOT (r.record_id = ANY(@kept::text[]));
 
 -- name: NoteWithdrawnServerDomain :exec
--- unscoped: a DNS job names the server, which establishes the workspace.
-UPDATE server_domains SET records='{}',observed_at=NULL,note = @note,
-    state=CASE WHEN state IN ('manual','review_required') THEN state ELSE 'pending' END
-WHERE server_id = @server_id AND base = @base;
+-- unscoped: a DNS job names the server, which establishes the workspace. A note that promises the
+-- records back once management resumes is left only while the approval is current, which is what
+-- is published again then; an ended approval keeps the note that says why it ended.
+UPDATE server_domains d SET records='{}',observed_zone='',observed_at=NULL,
+    note=CASE WHEN NOT @while_approved::boolean OR EXISTS(SELECT 1 FROM servers s WHERE s.id=d.server_id
+        AND d.approved_controller=s.controller_generation AND NOT s.revoked AND NOT s.awaiting_transfer) THEN @note::text ELSE d.note END,
+    state=CASE WHEN d.state IN ('manual','review_required') THEN d.state ELSE 'pending' END
+WHERE d.server_id = @server_id AND d.base = @base;
 
 -- name: WithdrawRevokedServerDomain :one
 -- Renewal may bring the server back on another machine or address, so an owner approves again.

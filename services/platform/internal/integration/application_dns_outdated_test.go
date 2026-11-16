@@ -290,6 +290,41 @@ func TestApprovalChangesAreNotMistakenForANewerZone(t *testing.T) {
 	}
 }
 
+func TestADeletionThatNeverTookEffectDoesNotExplainALaterLoss(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.st.ApplicationDomain = zoneBase
+	z := newDNSZone(t, f)
+	s := publishedServer(t, f, z)
+	dnsJobsDone(t, f)
+	// The owner removes the IPv6 address, but every deletion fails, so the record stays published.
+	z.mu.Lock()
+	z.failDelete = 100
+	z.mu.Unlock()
+	var profile api.ServerDomain
+	s.b.call("GET", s.path+"/domain", nil, 200, &profile)
+	s.b.call("PUT", s.path+"/domain", api.ConfigureServerDomain{BaseGeneration: profile.Generation, Ipv4: approvedFirst[0]}, 200, nil)
+	s.waitState(t, "failed")
+	// Approving the address again keeps the record the deletion missed.
+	reconfigure(t, s, approvedFirst)
+	s.waitState(t, "applied")
+	z.mu.Lock()
+	z.failDelete = 0
+	z.mu.Unlock()
+	if _, e := f.st.Pool.Exec(ctx, "UPDATE river_job SET scheduled_at=now() WHERE kind='platform_dns_v1' AND state IN ('retryable','scheduled')"); e != nil {
+		t.Fatal(e)
+	}
+	dnsJobsDone(t, f)
+	// Losing it later, outside this database, ends the approval: the failed attempt explains nothing.
+	deleteByHand(z, s, "AAAA")
+	z.mu.Lock()
+	z.writes = nil
+	z.mu.Unlock()
+	runDNSJobs(t, f)
+	expectNoWrites(t, z)
+	endedAsOutdated(t, f, s)
+}
+
 func TestAFailedJobKeepsTheRecordsItLastObserved(t *testing.T) {
 	n := restoreOverNewerZone(t)
 	ctx := context.Background()
@@ -365,7 +400,10 @@ func TestRecordsObservedUnderAnotherBaseAreNotHeldAgainstANewApproval(t *testing
 	}
 }
 
-func TestInactiveManagementJudgesRecordsBeforeRemovingThem(t *testing.T) {
+// lapsingServer is a published server in a hosted workspace, and a restart that moves the end of
+// its management to until from now.
+func lapsingServer(t *testing.T) (*fixture, *dnsZone, dnsServer, func(until string)) {
+	t.Helper()
 	f := setup(t)
 	ctx := context.Background()
 	f.st.ApplicationDomain = zoneBase
@@ -395,15 +433,25 @@ func TestInactiveManagementJudgesRecordsBeforeRemovingThem(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	// A record of the server's is deleted outside this database, then its management lapses. The
-	// removal must not explain the deleted record away, or resuming would publish the approval again.
+	return f, z, s, restart
+}
+
+// deleteByHand deletes the server's record of the type from the zone, as someone outside Astilba would.
+func deleteByHand(z *dnsZone, s dnsServer, kind string) {
 	z.mu.Lock()
+	defer z.mu.Unlock()
 	for id, r := range z.records {
-		if r["comment"] == s.marker && r["type"] == "AAAA" {
+		if r["comment"] == s.marker && r["type"] == kind {
 			delete(z.records, id)
 		}
 	}
-	z.mu.Unlock()
+}
+
+func TestInactiveManagementJudgesRecordsBeforeRemovingThem(t *testing.T) {
+	f, z, s, restart := lapsingServer(t)
+	// A record of the server's is deleted outside this database, then its management lapses. The
+	// removal must not explain the deleted record away, or resuming would publish the approval again.
+	deleteByHand(z, s, "AAAA")
 	restart("-1 second")
 	eventually(t, "the lapsed workspace's records are removed", func() bool { return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0 })
 	endedAsOutdated(t, f, s)
@@ -416,8 +464,18 @@ func TestInactiveManagementJudgesRecordsBeforeRemovingThem(t *testing.T) {
 	endedAsOutdated(t, f, s)
 }
 
-// heldOutdated restores over a newer zone holding enough other unbacked records that the sweep
-// holds the moved server's outdated records back with them, and returns the hold.
+func TestAnEndedApprovalKeepsItsNoteWhenManagementLapses(t *testing.T) {
+	f, z, s, restart := lapsingServer(t)
+	// The job ends the approval first; the record still holding the approved address stays.
+	deleteByHand(z, s, "AAAA")
+	runDNSJobs(t, f)
+	endedAsOutdated(t, f, s)
+	restart("-1 second")
+	eventually(t, "the lapsed workspace's records are removed", func() bool { return z.marked(s.name(), s.marker) == 0 && s.publications(t) == 0 })
+	// The note still says why the approval ended, not that resuming publishes it again.
+	endedAsOutdated(t, f, s)
+}
+
 func heldOutdated(t *testing.T) (newerZone, zoneHold) {
 	t.Helper()
 	n := restoreOverNewerZone(t)
