@@ -165,7 +165,7 @@ func (q *Queries) EnvironmentRuntimePlan(ctx context.Context, arg EnvironmentRun
 }
 
 const getEnvironment = `-- name: GetEnvironment :one
-SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host, e.purged_at, e.purged_by, e.purge_operation_id, e.purged_without_host,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
+SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host, e.purged_at, e.purged_by, e.purge_operation_id, e.purged_without_host,d.id AS unit_id,d.runtime,d.server_id,(SELECT stage FROM custody_stage)::integer AS custody_stage FROM environments e JOIN deployment_units d
 ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3
 `
 
@@ -199,6 +199,7 @@ type GetEnvironmentRow struct {
 	UnitID                uuid.UUID  `json:"unit_id"`
 	Runtime               string     `json:"runtime"`
 	ServerID              *uuid.UUID `json:"server_id"`
+	CustodyStage          int32      `json:"custody_stage"`
 }
 
 func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) (GetEnvironmentRow, error) {
@@ -228,6 +229,7 @@ func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) 
 		&i.UnitID,
 		&i.Runtime,
 		&i.ServerID,
+		&i.CustodyStage,
 	)
 	return i, err
 }

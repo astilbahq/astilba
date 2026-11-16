@@ -429,7 +429,13 @@ export function LifecycleDialog({
                   </li>
                 )}
                 <li>{t(($) => $.lifecycle.purgeEffects.secrets)}</li>
-                <li>{t(($) => $.lifecycle.purgeEffects.copies)}</li>
+                <li>
+                  {/* Only once every environment's values are under its own key does destroying
+                      it reach every copy; until then, copies under the workspace key stay. */}
+                  {environment.purgeReachesEveryCopy
+                    ? t(($) => $.lifecycle.purgeEffects.copies)
+                    : t(($) => $.lifecycle.purgeEffects.copiesSomeKept)}
+                </li>
                 <li>{t(($) => $.lifecycle.purgeEffects.kept)}</li>
                 <li>{t(($) => $.lifecycle.purgeEffects.backups)}</li>
               </ul>

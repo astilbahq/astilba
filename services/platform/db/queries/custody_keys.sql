@@ -122,3 +122,13 @@ ORDER BY scope,generation,purpose;
 -- name: RewrapInstallationKeyWrapping :execrows
 UPDATE installation_key_wrappings SET wrapped = @wrapped
 WHERE scope = @scope AND generation = @generation AND purpose = @purpose AND backend_id = @backend_id AND wrapped = @previous;
+
+-- name: InstancesBelowStageSinceRecorded :one
+-- unscoped: instances seen since the custody stage was last recorded whose release completes a
+-- stage before @stage, or reports none.
+SELECT count(*)::bigint FROM custody_instances i, custody_stage s
+WHERE i.seen_at > s.advanced_at AND (i.stage IS NULL OR i.stage < @stage::integer);
+
+-- name: RevertCustodyStage :execrows
+-- Records an installation as back at @back, from @current, once what @current says stopped being true.
+UPDATE custody_stage SET stage = @back, advanced_at = now() WHERE stage = @current;

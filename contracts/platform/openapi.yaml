@@ -7058,6 +7058,7 @@
         purgedBy: {type: string, format: uuid, nullable: true, description: The owner who requested the purge.}
         purgeOperationId: {type: string, format: uuid, nullable: true, description: The operation that deletes the retained volumes from the server.}
         purgedWithoutHost: {type: boolean, description: The purge finished without contacting the server because the server was revoked. Its volumes may still be there.}
+        purgeReachesEveryCopy: {type: boolean, description: "Whether purging would leave every copy of the environment's secret values held by management or its servers unreadable: every environment's values are under its own key (custody stage 6). Otherwise only copies sealed under its key are."}
       "required":
         - "id"
         - "projectId"

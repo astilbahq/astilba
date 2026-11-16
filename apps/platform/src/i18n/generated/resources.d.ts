@@ -428,6 +428,7 @@ export default interface Resources {
       "purgeEffects": {
         "backups": "Backups at the workspace’s backup destination are kept.",
         "copies": "Copies of those values in recovery data, on its servers and anywhere else can no longer be read. Management database backups taken before keep them until they expire, and a workspace export someone downloaded keeps them.",
+        "copiesSomeKept": "Copies of values sealed under the environment’s own key can no longer be read. The installation has not moved every value onto its environment’s key yet, so copies of the others, in recovery data and on its servers, stay readable, as do management database backups taken before, until they expire, and workspace exports someone downloaded.",
         "kept": "Its configuration, revisions and history are kept, read-only.",
         "noPreviews": "None of its previews holds copies of its secrets.",
         "noVolumes": "It keeps no data volumes, so nothing is deleted from its server.",

@@ -202,7 +202,10 @@ With Transit, give the command the operator's credentials rather than serving's,
   keep the keyring.
 - It records custody stage 6 once no value is sealed under the keyring, every environment's
   values are under its own key, and every instance seen in the last five minutes runs a stage 6
-  release or later. An instance counts as seen until five
+  release or later. Stage 6 can stop being true: an instance of a stage 5 release, such as after
+  rolling back and forward again, stores environment values under their workspace's key. An
+  instance of this release that sees one running since stage 6 was recorded, or finds such values
+  when it starts, records stage 5 again and logs it; run `custody convert` again to move them. An instance counts as seen until five
   minutes after it stops, so a run sooner than that finishes the values and says to run it again.
   For the last check it waits for a running rewrap, then holds the tables that store values
   against writes while it reads every stored value; `custody status` shows how many there are.

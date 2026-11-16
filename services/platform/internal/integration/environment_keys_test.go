@@ -603,6 +603,89 @@ func TestConvertMovesEnvironmentValuesOntoTheirKeys(t *testing.T) {
 	}
 }
 
+// Stage 6 says purging reaches every copy, and corrects itself when that stops being true. An
+// instance of a stage 5 release running after it is recorded may store environment values under
+// their workspace's key, as rolling back and forward again does: the next check records stage 5
+// again, the purge dialog stops claiming every copy, and converting moves the values and records
+// stage 6 anew. Values found under a workspace key when an instance starts do the same, for an
+// earlier release that ran while none of this one did.
+func TestStageSixCorrectsItselfAfterARoundTrip(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	stage := func() int32 {
+		t.Helper()
+		s, err := db.New(f.st.Pool).CustodyStage(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	reload := func() {
+		t.Helper()
+		if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Round trip"}, 201, &env)
+	path := x.prefix + "/" + env.Id.String()
+	everyCopy := func() bool {
+		t.Helper()
+		var got api.Environment
+		x.owner.call("GET", path, nil, 200, &got)
+		return got.PurgeReachesEveryCopy != nil && *got.PurgeReachesEveryCopy
+	}
+	if stage() != 6 || !everyCopy() {
+		t.Fatal("a new installation does not start with every copy reached")
+	}
+	// An instance of the stage 5 release runs again, and stores a value under the workspace key.
+	older := uuid.New()
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,5)`, older); err != nil {
+		t.Fatal(err)
+	}
+	var secret api.SecretVersion
+	x.owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "round-trip-canary"}, 201, &secret)
+	workspaceSealed, err := cryptobox.SealUnder(workspaceKey(t, f, x.ws, 1), cryptobox.ScopeWorkspace, 1, []byte("round-trip-canary"), secretIdentity(x.ws, secret.Id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE secret_versions SET encrypted_value=$2 WHERE id=$1`, secret.Id, workspaceSealed); err != nil {
+		t.Fatal(err)
+	}
+	reload()
+	if stage() != 5 || everyCopy() {
+		t.Fatal("stage 6 stayed recorded beside a stage 5 instance")
+	}
+	reverted := keyEvents(t, f, "stage-reverted")
+	if len(reverted) != 1 || details(t, reverted[0])["stage"] != "5" {
+		t.Fatalf("reverted events %+v", reverted)
+	}
+	// Once it has gone, converting moves the value and records stage 6 again.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
+		t.Fatal(err)
+	}
+	reload()
+	if c := convert(t, f); c.Values != 1 || c.Stage != 6 || !everyCopy() {
+		t.Fatalf("conversion after the round trip %+v", c)
+	}
+	if header, _ := sealedHeader(t, f, x.ws, secret.Id); header.Scope != cryptobox.ScopeEnvironment {
+		t.Fatalf("converted to %+v", header)
+	}
+	// A value under a workspace key that no instance seen since stage 6 accounts for, as one an
+	// earlier release stored while none of this one ran, is found when an instance starts.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE secret_versions SET encrypted_value=$2 WHERE id=$1`, secret.Id, workspaceSealed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.st.Pool.Exec(ctx, `DELETE FROM custody_instances WHERE instance_id=$1`, older); err != nil {
+		t.Fatal(err)
+	}
+	reload()
+	if stage() != 5 || everyCopy() {
+		t.Fatal("an instance starting beside a value under a workspace key kept stage 6")
+	}
+}
+
 // An environment's ID is unique within its workspace only, and importing keeps it, so an import
 // can bring an environment with another workspace's environment ID, by accident or on purpose.
 // Each workspace keeps its own key for it, and destroying one leaves the other as it was.

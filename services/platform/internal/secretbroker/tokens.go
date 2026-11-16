@@ -73,6 +73,10 @@ func (b *Broker) Tokens(ctx context.Context, stage int32) (*Tokens, error) {
 	}
 	err := t.load(ctx)
 	if err == nil {
+		// Stage 6 could have stopped being true while no instance of this release ran.
+		err = b.correctEnvironmentsStage(ctx, true)
+	}
+	if err == nil {
 		// The keys are now resident for this process's life, which is the rest of the record's
 		// story.
 		err = b.outcome(ctx, t.instance, Released, nil)
@@ -149,6 +153,9 @@ func (t *Tokens) load(ctx context.Context) error {
 	older, err := q.InstancesBelowStage(ctx, readEnvironmentsStage)
 	t.broker.environmentsSealable.Store(err == nil && older == 0)
 	if err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	if err = t.broker.correctEnvironmentsStage(ctx, false); err != nil {
 		return errors.Join(append(failures, err)...)
 	}
 	// Issuing moves to a generation only once every instance running holds it, this one included,
