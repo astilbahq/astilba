@@ -52,6 +52,9 @@ var integrationKinds = []Kind{BuildSecret, Git, GitHubAuthorization, Registry, B
 type Item struct {
 	Kind Kind      `json:"kind"`
 	ID   uuid.UUID `json:"id"`
+	// Environment is the environment a secret version or backup policy belongs to, whose key it
+	// is sealed under. Sealing one needs it.
+	Environment uuid.UUID `json:"-"`
 	// A recovery checkpoint's identity is its descriptor's, and names its own workspace.
 	checkpoint string
 	workspace  uuid.UUID

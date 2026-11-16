@@ -2,6 +2,7 @@ package secretbroker
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"slices"
@@ -163,6 +164,10 @@ type Fence interface {
 	ShareSealableWorkspaceKey(ctx context.Context, arg db.ShareSealableWorkspaceKeyParams) (int64, error)
 	ShareSealableInstallationKey(ctx context.Context, arg db.ShareSealableInstallationKeyParams) (int64, error)
 	ShareEnvironmentKey(ctx context.Context, arg db.ShareEnvironmentKeyParams) (int64, error)
+	EnvironmentKeyForSealing(ctx context.Context, arg db.EnvironmentKeyForSealingParams) (db.EnvironmentKeyForSealingRow, error)
+	EnvironmentSealingRefused(ctx context.Context, arg db.EnvironmentSealingRefusedParams) (bool, error)
+	InsertEnvironmentKey(ctx context.Context, arg db.InsertEnvironmentKeyParams) (int64, error)
+	keyEventWriter
 	WorkspaceHasKeys(ctx context.Context, workspaceID uuid.UUID) (bool, error)
 	InstallationScopeHasKeys(ctx context.Context, scope string) (bool, error)
 }
@@ -177,9 +182,21 @@ func (s *Session) Seal(ctx context.Context, q Fence, item Item, plaintext []byte
 	if err != nil {
 		return nil, err
 	}
+	if item.Kind.environmental() && item.Environment == uuid.Nil {
+		// A caller that does not name the value's environment would seal it beyond the reach of
+		// the environment's purge.
+		return nil, ErrNotAllowed
+	}
 	ref, err := s.fence(ctx, q, item)
 	if err != nil {
 		return nil, err
+	}
+	if item.Kind.environmental() && s.broker.SealsUnderEnvironments() {
+		key, generation, err := s.environmentSealingKey(ctx, q, item.Environment, ref)
+		if err != nil {
+			return nil, err
+		}
+		return cryptobox.SealUnderEnvironment(key, item.Environment, generation, plaintext, identity)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -219,6 +236,16 @@ func (s *Session) Rehome(ctx context.Context, q Fence, item Item, ciphertext []b
 	if err != nil {
 		return nil, err
 	}
+	// A value whose environment the caller names moves onto that environment's key, once every
+	// instance opens values under one.
+	var environmentKey []byte
+	var environmentGeneration int64
+	toEnvironment := item.Kind.environmental() && item.Environment != uuid.Nil && s.broker.SealsUnderEnvironments()
+	if toEnvironment {
+		if environmentKey, environmentGeneration, err = s.environmentSealingKey(ctx, q, item.Environment, ref); err != nil {
+			return nil, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key, ok := s.keys[ref]
@@ -234,7 +261,88 @@ func (s *Session) Rehome(ctx context.Context, q Fence, item Item, ciphertext []b
 			return nil, cryptobox.ErrKey
 		}
 	}
+	if toEnvironment {
+		return cryptobox.MoveUnderEnvironment(ring, from, ciphertext, identity, environmentKey, item.Environment, environmentGeneration)
+	}
 	return cryptobox.MoveUnder(ring, from, ciphertext, identity, key, string(ref.scope), ref.generation)
+}
+
+// environmentSealingKey is the key an environment's new values are sealed under, held in q, the
+// writer's transaction. The environment's first value makes it, wrapped under ref, the workspace
+// key generation the session seals under: inside the transaction, with no call to the key
+// service, and recorded in the installation's key history. A writer making it at the same time
+// keeps the other's. An environment being purged, or whose key was destroyed, gets no value, nor
+// a new key: ErrKeyDestroyed.
+func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environment uuid.UUID, ref keyRef) ([]byte, int64, error) {
+	ws := s.request.Workspace
+	row, err := q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
+	if errors.Is(err, pgx.ErrNoRows) {
+		var refused bool
+		refused, err = q.EnvironmentSealingRefused(ctx, db.EnvironmentSealingRefusedParams{WorkspaceID: ws, EnvironmentID: environment})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Not one of the workspace's environments.
+			return nil, 0, ErrNotAllowed
+		case err != nil:
+			return nil, 0, err
+		case refused:
+			return nil, 0, ErrKeyDestroyed
+		}
+		if err = s.makeEnvironmentKey(ctx, q, environment, ref); err != nil {
+			return nil, 0, err
+		}
+		row, err = q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keys == nil {
+		return nil, 0, ErrNeedKeys
+	}
+	k := s.environments[environmentRef{environment, row.Generation}]
+	if k == nil || k.destroyed {
+		// Made since the session began: it holds it from now on.
+		k = &environmentKey{workspaceGeneration: row.WorkspaceGeneration, wrapped: row.Wrapped, kcv: row.Kcv}
+		if s.environments == nil {
+			s.environments = map[environmentRef]*environmentKey{}
+		}
+		s.environments[environmentRef{environment, row.Generation}] = k
+	}
+	key, err := s.environmentKeyFor(Item{Kind: SecretVersion}, cryptobox.Header{Scope: cryptobox.ScopeEnvironment, Holder: environment, Generation: row.Generation})
+	return key, row.Generation, err
+}
+
+// makeEnvironmentKey makes an environment's first key, wrapped under ref, and records it.
+func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment uuid.UUID, ref keyRef) error {
+	ws := s.request.Workspace
+	key := make([]byte, 32)
+	defer clear(key)
+	if _, err := rand.Read(key); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	workspaceKey, ok := s.keys[ref]
+	var wrapped []byte
+	var err error
+	if ok {
+		wrapped, err = cryptobox.WrapEnvironmentKey(workspaceKey, ws, environment, 1, ref.generation, key)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return ErrNeedKeys
+	}
+	if err != nil {
+		return err
+	}
+	made, err := q.InsertEnvironmentKey(ctx, db.InsertEnvironmentKeyParams{WorkspaceID: ws, EnvironmentID: environment, Generation: 1, WorkspaceGeneration: ref.generation, Wrapped: wrapped, Kcv: custody.KeyCheck(key)})
+	if err != nil || made == 0 {
+		return err
+	}
+	return s.broker.event(ctx, q, keyEvent{run: s.id, kind: "environment-key-created", scope: custody.ScopeWorkspace, workspace: &ws, generation: ref.generation, details: map[string]string{
+		"environment": environment.String(), "generation": "1",
+	}})
 }
 
 // keepUnderEnvironment is Rehome for a value already under its environment's key, which already

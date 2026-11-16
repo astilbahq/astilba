@@ -24,7 +24,7 @@ func busy(err error) bool {
 func TestSealWritesV2UnderTheActiveGeneration(t *testing.T) {
 	b, _, owner, _, _ := setup(t)
 	ctx := context.Background()
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}})
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestSealWritesV2UnderTheActiveGeneration(t *testing.T) {
 func TestSealIsFencedOnItsGeneration(t *testing.T) {
 	b, _, owner, _, _ := setup(t)
 	ctx := context.Background()
-	item := Item{Kind: SecretVersion, ID: uuid.New()}
+	item := Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	s, err := b.Begin(ctx, Request{Workspace: uuid.New(), Purpose: Seal, Principal: Account(owner), Items: []Item{item}})
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestSealIsFencedOnItsGeneration(t *testing.T) {
 func TestSealWaitsForKeys(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
 	ctx := context.Background()
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	q.keyless[ws] = true
 	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestSealWaitsForKeys(t *testing.T) {
 func TestSessionsTellNewKeysFromForgedOnes(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
 	ctx := context.Background()
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	q.keyless[ws] = true
 	early, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}})
 	if err != nil {
@@ -144,7 +144,7 @@ func TestSessionsTellNewKeysFromForgedOnes(t *testing.T) {
 func TestUnsealableGenerationRefusesNewValues(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
 	ctx := context.Background()
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	q.keys = map[string][]db.WorkspaceKeyWrappingsRow{ws.String() + ":seal": {{Generation: 1, State: "active", Sealable: false, Kcv: make([]byte, 32)}}}
 	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}})
 	if err != nil {
@@ -187,7 +187,7 @@ func TestSealSessionsOpenOnlyWhatTheySealed(t *testing.T) {
 func TestRehomeKeepsTheData(t *testing.T) {
 	b, _, _, _, _ := setup(t)
 	ctx := context.Background()
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	v1, err := b.backend.Keyring().Seal([]byte("value"), item.identity(ws))
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestRehomeKeepsTheData(t *testing.T) {
 	if plain, err := s.Open(item, again); err != nil || string(plain) != "value" {
 		t.Fatal(string(plain), err)
 	}
-	other := Item{Kind: SecretVersion, ID: uuid.New()}
+	other := Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	if _, err = s.Rehome(ctx, fence{}, other, moved); !errors.Is(err, cryptobox.ErrKey) {
 		t.Fatalf("a value moved under another row's identity: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestSecondFactorsSealUnderTheInstallationKey(t *testing.T) {
 func TestRecoverySessionsDoNotWaitForKeys(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
 	ctx := context.Background()
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	seal, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}})
 	if err != nil {
 		t.Fatal(err)

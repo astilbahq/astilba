@@ -274,9 +274,14 @@ type keyEvent struct {
 	details    map[string]string
 }
 
+// keyEventWriter is the transaction a key event is recorded in. *db.Queries provides it.
+type keyEventWriter interface {
+	InsertInstallationKeyEvent(ctx context.Context, arg db.InsertInstallationKeyEventParams) error
+}
+
 // event records a key event. It never fails silently: a command that cannot record what it does
 // does not do it.
-func (b *Broker) event(ctx context.Context, q *db.Queries, e keyEvent) error {
+func (b *Broker) event(ctx context.Context, q keyEventWriter, e keyEvent) error {
 	if e.details == nil {
 		e.details = map[string]string{}
 	}

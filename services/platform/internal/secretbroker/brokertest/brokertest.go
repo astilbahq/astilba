@@ -3,6 +3,7 @@ package brokertest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Records is what a test broker recorded, and the keys it made.
@@ -115,6 +117,18 @@ func (Fence) ShareSealableInstallationKey(_ context.Context, arg db.ShareSealabl
 	return arg.Generation, nil
 }
 func (Fence) WorkspaceHasKeys(context.Context, uuid.UUID) (bool, error) { return true, nil }
+func (Fence) EnvironmentKeyForSealing(context.Context, db.EnvironmentKeyForSealingParams) (db.EnvironmentKeyForSealingRow, error) {
+	return db.EnvironmentKeyForSealingRow{}, pgx.ErrNoRows
+}
+func (Fence) EnvironmentSealingRefused(context.Context, db.EnvironmentSealingRefusedParams) (bool, error) {
+	return false, nil
+}
+func (Fence) InsertEnvironmentKey(context.Context, db.InsertEnvironmentKeyParams) (int64, error) {
+	return 0, errors.New("brokertest makes no environment keys")
+}
+func (Fence) InsertInstallationKeyEvent(context.Context, db.InsertInstallationKeyEventParams) error {
+	return nil
+}
 func (Fence) ShareEnvironmentKey(_ context.Context, arg db.ShareEnvironmentKeyParams) (int64, error) {
 	return arg.Generation, nil
 }

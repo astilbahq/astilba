@@ -99,7 +99,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 	if creating {
 		id = uuid.New()
 	}
-	item := secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: id}
+	item := secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: id, Environment: env}
 	keys, done, err := s.sealing(ctx, p, ws, item)
 	if err != nil {
 		return out, err

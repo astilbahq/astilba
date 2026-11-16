@@ -78,6 +78,38 @@ func (q *Queries) EndedEnvironmentKeys(ctx context.Context, workspaceID uuid.UUI
 	return items, nil
 }
 
+const environmentKeyForSealing = `-- name: EnvironmentKeyForSealing :one
+SELECT generation, workspace_generation, wrapped, kcv FROM environment_keys
+WHERE workspace_id = $1 AND environment_id = $2 AND state = 'active'
+FOR SHARE
+`
+
+type EnvironmentKeyForSealingParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+type EnvironmentKeyForSealingRow struct {
+	Generation          int64  `json:"generation"`
+	WorkspaceGeneration int64  `json:"workspace_generation"`
+	Wrapped             []byte `json:"wrapped"`
+	Kcv                 []byte `json:"kcv"`
+}
+
+// An environment's active key, held until the transaction ends so a purge waits for the value
+// sealed under it to be stored, and none is stored after the purge.
+func (q *Queries) EnvironmentKeyForSealing(ctx context.Context, arg EnvironmentKeyForSealingParams) (EnvironmentKeyForSealingRow, error) {
+	row := q.db.QueryRow(ctx, environmentKeyForSealing, arg.WorkspaceID, arg.EnvironmentID)
+	var i EnvironmentKeyForSealingRow
+	err := row.Scan(
+		&i.Generation,
+		&i.WorkspaceGeneration,
+		&i.Wrapped,
+		&i.Kcv,
+	)
+	return i, err
+}
+
 const environmentKeys = `-- name: EnvironmentKeys :many
 SELECT environment_id, generation, state, workspace_generation, wrapped, kcv
 FROM environment_keys WHERE workspace_id = $1
@@ -119,6 +151,58 @@ func (q *Queries) EnvironmentKeys(ctx context.Context, workspaceID uuid.UUID) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const environmentSealingRefused = `-- name: EnvironmentSealingRefused :one
+SELECT (e.state IN ('purging', 'purged') OR EXISTS (
+    SELECT 1 FROM environment_keys k WHERE k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
+FROM environments e WHERE e.workspace_id = $1 AND e.id = $2
+`
+
+type EnvironmentSealingRefusedParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+}
+
+// Whether an environment of the workspace may no longer have values sealed for it: it is being
+// purged, or its key was destroyed. No row is an environment the workspace does not have.
+func (q *Queries) EnvironmentSealingRefused(ctx context.Context, arg EnvironmentSealingRefusedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, environmentSealingRefused, arg.WorkspaceID, arg.EnvironmentID)
+	var refused bool
+	err := row.Scan(&refused)
+	return refused, err
+}
+
+const insertEnvironmentKey = `-- name: InsertEnvironmentKey :execrows
+INSERT INTO environment_keys(workspace_id, environment_id, generation, state, workspace_generation, wrapped, kcv)
+VALUES ($1, $2, $3, 'active', $4, $5, $6)
+ON CONFLICT (environment_id, generation) DO NOTHING
+`
+
+type InsertEnvironmentKeyParams struct {
+	WorkspaceID         uuid.UUID `json:"workspace_id"`
+	EnvironmentID       uuid.UUID `json:"environment_id"`
+	Generation          int64     `json:"generation"`
+	WorkspaceGeneration int64     `json:"workspace_generation"`
+	Wrapped             []byte    `json:"wrapped"`
+	Kcv                 []byte    `json:"kcv"`
+}
+
+// An environment's first key, made by whichever writer seals its first value; another made at
+// the same time is kept instead.
+func (q *Queries) InsertEnvironmentKey(ctx context.Context, arg InsertEnvironmentKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertEnvironmentKey,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.Generation,
+		arg.WorkspaceGeneration,
+		arg.Wrapped,
+		arg.Kcv,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const shareEnvironmentKey = `-- name: ShareEnvironmentKey :one

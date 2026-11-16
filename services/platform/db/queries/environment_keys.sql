@@ -25,3 +25,24 @@ SELECT DISTINCT k.environment_id, (e.state IN ('purging', 'purged'))::boolean AS
 JOIN environments e ON e.workspace_id = k.workspace_id AND e.id = k.environment_id
 WHERE k.workspace_id = @workspace_id AND k.state = 'active' AND (e.state IN ('purging', 'purged') OR e.purpose = 'preview'
     AND NOT EXISTS (SELECT 1 FROM preview_requests r WHERE r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.state <> 'deleted'));
+
+-- name: EnvironmentKeyForSealing :one
+-- An environment's active key, held until the transaction ends so a purge waits for the value
+-- sealed under it to be stored, and none is stored after the purge.
+SELECT generation, workspace_generation, wrapped, kcv FROM environment_keys
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND state = 'active'
+FOR SHARE;
+
+-- name: EnvironmentSealingRefused :one
+-- Whether an environment of the workspace may no longer have values sealed for it: it is being
+-- purged, or its key was destroyed. No row is an environment the workspace does not have.
+SELECT (e.state IN ('purging', 'purged') OR EXISTS (
+    SELECT 1 FROM environment_keys k WHERE k.environment_id = e.id AND k.state = 'destroyed'))::boolean AS refused
+FROM environments e WHERE e.workspace_id = @workspace_id AND e.id = @environment_id;
+
+-- name: InsertEnvironmentKey :execrows
+-- An environment's first key, made by whichever writer seals its first value; another made at
+-- the same time is kept instead.
+INSERT INTO environment_keys(workspace_id, environment_id, generation, state, workspace_generation, wrapped, kcv)
+VALUES (@workspace_id, @environment_id, @generation, 'active', @workspace_generation, @wrapped, @kcv)
+ON CONFLICT (environment_id, generation) DO NOTHING;

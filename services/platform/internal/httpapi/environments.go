@@ -435,7 +435,7 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 		return
 	}
 	versionID := uuid.New()
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID, Environment: env}
 	access := store.WorkspaceAccess{Write: true, Recent: true}
 	keys, e := s.Store.BeginKeys(r.Context(), *principal(r.Context()), access, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: []secretbroker.Item{item}})
 	if e != nil {

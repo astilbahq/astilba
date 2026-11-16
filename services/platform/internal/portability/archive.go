@@ -41,9 +41,28 @@ func rowString(row Row, key string) (string, error) {
 }
 func setValue(row Row, key string, value any) { row[key], _ = stablejson.Marshal(value) }
 
+// secretEnvironments maps each secret in an archive to its environment, which a secret version's
+// value is sealed for.
+type secretEnvironments map[uuid.UUID]uuid.UUID
+
+// environmentsOf reads which environment each of an archive's secrets belongs to.
+func environmentsOf(a Archive) (secretEnvironments, error) {
+	out := secretEnvironments{}
+	for _, row := range a.Tables["secrets"] {
+		var id, env uuid.UUID
+		if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["environment_id"], &env) != nil {
+			return nil, ErrArchive
+		}
+		out[id] = env
+	}
+	return out, nil
+}
+
 // credential names a row's sealed column and the value it holds, or "" for a table with none or a
-// secret version whose value was erased, which holds nothing to open or seal.
-func credential(table string, row Row) (string, secretbroker.Item, error) {
+// secret version whose value was erased, which holds nothing to open or seal. With environments,
+// the item names the environment its value is sealed for: a backup policy's own, or a secret
+// version's secret's.
+func credential(table string, row Row, environments secretEnvironments) (string, secretbroker.Item, error) {
 	var field string
 	var kind secretbroker.Kind
 	switch table {
@@ -79,13 +98,28 @@ func credential(table string, row Row) (string, secretbroker.Item, error) {
 	if e != nil {
 		return "", secretbroker.Item{}, ErrArchive
 	}
-	return field, secretbroker.Item{Kind: kind, ID: id}, nil
+	item := secretbroker.Item{Kind: kind, ID: id}
+	if environments != nil {
+		switch table {
+		case "secret_versions":
+			var secret uuid.UUID
+			if json.Unmarshal(row["secret_id"], &secret) != nil || environments[secret] == uuid.Nil {
+				return "", secretbroker.Item{}, ErrArchive
+			}
+			item.Environment = environments[secret]
+		case "backup_policies":
+			if json.Unmarshal(row["environment_id"], &item.Environment) != nil || item.Environment == uuid.Nil {
+				return "", secretbroker.Item{}, ErrArchive
+			}
+		}
+	}
+	return field, item, nil
 }
 
 // transformCredential replaces a row's value with what transform makes of it: the value opened for
 // an export, or sealed for an import, by keys for the workspace being exported or created.
-func transformCredential(table string, row Row, transform func(secretbroker.Item, []byte) ([]byte, error)) error {
-	field, item, e := credential(table, row)
+func transformCredential(table string, row Row, environments secretEnvironments, transform func(secretbroker.Item, []byte) ([]byte, error)) error {
+	field, item, e := credential(table, row, environments)
 	if e != nil || field == "" {
 		return e
 	}
@@ -154,7 +188,7 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 				if err := omitExportLogs(table.Name, row); err != nil {
 					return err
 				}
-				if err := transformCredential(table.Name, row, keys.Open); err != nil {
+				if err := transformCredential(table.Name, row, nil, keys.Open); err != nil {
 					return err
 				}
 			}

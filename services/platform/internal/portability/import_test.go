@@ -310,7 +310,7 @@ func TestErasedSecretVersionsCarryNoValue(t *testing.T) {
 		{"value without erasure", "null", "null", "", true},
 		{"erasure with a value", `"\x00"`, `"2026-11-13T00:00:00Z"`, "", true},
 	} {
-		field, _, err := credential("secret_versions", Row{"id": id, "encrypted_value": jsontext.Value(c.value), "erased_at": jsontext.Value(c.erased)})
+		field, _, err := credential("secret_versions", Row{"id": id, "encrypted_value": jsontext.Value(c.value), "erased_at": jsontext.Value(c.erased)}, nil)
 		if (err != nil) != c.fails || !c.fails && field != c.field {
 			t.Errorf("%s: field %q, error %v", c.name, field, err)
 		}

@@ -153,6 +153,11 @@ func RecoveryImmutable(name string) bool {
 func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session, a Archive, owner uuid.UUID) error {
 	links := map[string]map[string]jsontext.Value{"environments": {}, "execution_operations": {}}
 	appliedOperations := map[string]jsontext.Value{}
+	// A restored value moves onto its environment's key.
+	environments, err := environmentsOf(a)
+	if err != nil {
+		return err
+	}
 	for _, t := range tables {
 		rows, err := recoveryMergeOrder(t.Name, a.Tables[t.Name])
 		if err != nil {
@@ -267,7 +272,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session
 					setValue(row, "runtime_operation_id", nil)
 				}
 			}
-			if err = rehomeCredential(ctx, db.New(tx), session, t.Name, row); err != nil {
+			if err = rehomeCredential(ctx, db.New(tx), session, t.Name, row, environments); err != nil {
 				return err
 			}
 			raw, err := stablejson.Marshal(row)
@@ -333,8 +338,8 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session
 // transaction that writes the row. A value whose environment's key a purge destroyed opens nowhere
 // again: a secret version is restored erased, as the purge left it, and any other value is kept
 // as it was, unreadable, in its purged environment.
-func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row) error {
-	err := transformCredential(table, row, func(item secretbroker.Item, value []byte) ([]byte, error) {
+func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row, environments secretEnvironments) error {
+	err := transformCredential(table, row, environments, func(item secretbroker.Item, value []byte) ([]byte, error) {
 		return keys.Rehome(ctx, q, item, value)
 	})
 	if !errors.Is(err, secretbroker.ErrKeyDestroyed) {

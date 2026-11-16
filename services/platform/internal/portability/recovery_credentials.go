@@ -13,7 +13,7 @@ import (
 func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) error {
 	for _, table := range tables {
 		for _, row := range a.Tables[table.Name] {
-			field, item, err := credential(table.Name, row)
+			field, item, err := credential(table.Name, row, nil)
 			if err != nil {
 				return err
 			}

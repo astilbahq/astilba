@@ -7,7 +7,9 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	dbmigrate "github.com/astilbahq/astilba/services/platform/db"
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -19,10 +21,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// environmentKey makes an environment's key as a release that seals under it does: a random key
-// wrapped under its workspace's key at generation 1.
+// environmentKey is an environment's key: the one saving its first secret made, or else one made
+// as that does, a random key wrapped under its workspace's key at generation 1.
 func environmentKey(t *testing.T, f *fixture, ws, env uuid.UUID) []byte {
 	t.Helper()
+	var existing []byte
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT wrapped FROM environment_keys WHERE environment_id=$1 AND state='active'`, env).Scan(&existing); err == nil {
+		key, err := cryptobox.OpenEnvironmentKey(workspaceKey(t, f, ws, 1), existing, ws, env, 1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		t.Fatal(err)
@@ -344,6 +354,130 @@ func TestEnvironmentSealingWaitsForOlderInstances(t *testing.T) {
 	}
 	if !reload() {
 		t.Fatal("an instance gone for five minutes still holds sealing back")
+	}
+}
+
+// sealedHeader reads a secret version's stored header.
+func sealedHeader(t *testing.T, f *fixture, ws, version uuid.UUID) (cryptobox.Header, []byte) {
+	t.Helper()
+	var sealed []byte
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT encrypted_value FROM secret_versions WHERE workspace_id=$1 AND id=$2`, ws, version).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	header, err := cryptobox.ReadHeader(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return header, sealed
+}
+
+// An environment's first secret makes its key, inside the transaction that stores the value and
+// recorded in the key history; its values are sealed under it and open. Writers making the key at
+// once end up with one.
+func TestNewValuesAreSealedUnderTheirEnvironmentKey(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Sealed"}, 201, &env)
+	path := x.prefix + "/" + env.Id.String()
+	versions := make([]api.SecretVersion, 4)
+	var wg sync.WaitGroup
+	for i := range versions {
+		wg.Go(func() {
+			x.owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN_" + string(rune('A'+i)), "value": "concurrent-canary"}, 201, &versions[i])
+		})
+	}
+	wg.Wait()
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE environment_id=$1", env.Id); n != 1 {
+		t.Fatalf("%d keys for one environment", n)
+	}
+	if created := keyEvents(t, f, "environment-key-created"); len(created) != 1 || details(t, created[0])["environment"] != env.Id.String() {
+		t.Fatalf("created events %+v", created)
+	}
+	for _, v := range versions {
+		header, sealed := sealedHeader(t, f, x.ws, v.Id)
+		if header.Scope != cryptobox.ScopeEnvironment || header.Holder != env.Id || header.Generation != 1 {
+			t.Fatalf("stored as %+v", header)
+		}
+		if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.Id}, sealed); err != nil || string(value) != "concurrent-canary" {
+			t.Fatal(string(value), err)
+		}
+	}
+}
+
+// While an instance of an earlier release is running, values stay under the workspace's key,
+// which it opens; converting moves them later.
+func TestValuesStayUnderTheWorkspaceKeyBesideOlderInstances(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage); err != nil {
+		t.Fatal(err)
+	}
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Mixed fleet"}, 201, &env)
+	var secret api.SecretVersion
+	x.owner.call("POST", x.prefix+"/"+env.Id.String()+"/secrets", map[string]string{"name": "TOKEN", "value": "fleet-canary"}, 201, &secret)
+	if header, _ := sealedHeader(t, f, x.ws, secret.Id); header.Scope != cryptobox.ScopeWorkspace {
+		t.Fatalf("stored as %+v beside an older instance", header)
+	}
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE environment_id=$1", env.Id); n != 0 {
+		t.Fatal("a key was made beside an older instance")
+	}
+}
+
+// A writer holding an environment's key stores its value before a purge destroys the key, and no
+// value is sealed for the environment afterwards, nor a new key made for it.
+func TestPurgeWaitsForAWriterAndRefusesLaterOnes(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Raced"}, 201, &env)
+	path := x.prefix + "/" + env.Id.String()
+	var first api.SecretVersion
+	x.owner.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "first"}, 201, &first)
+	x.lifecycle(x.owner, path, "retire", "Raced", 201)
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New(), Environment: env.Id}
+	keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close(ctx, secretbroker.Used)
+	writer, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	if _, err = keys.Seal(ctx, db.New(writer), item, []byte("late")); err != nil {
+		t.Fatal(err)
+	}
+	purged := make(chan api.Environment, 1)
+	go func() { purged <- x.purge(x.owner, path, "Raced", []uuid.UUID{}, 201) }()
+	select {
+	case v := <-purged:
+		t.Fatalf("purged while a writer held the key: %+v", v)
+	case <-time.After(time.Second):
+	}
+	if err = writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v := <-purged; v.State != api.EnvironmentStatePurged {
+		t.Fatalf("purge %+v", v)
+	}
+	again, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Rollback(ctx)
+	if _, err = keys.Seal(ctx, db.New(again), item, []byte("after")); !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+		t.Fatal("sealed for a purged environment", err)
+	}
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE environment_id=$1 AND state='active'", env.Id); n != 0 {
+		t.Fatal("a purged environment has a key")
 	}
 }
 
