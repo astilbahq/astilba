@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { backupPolicyPath as policyRoot } from "../api/backups";
 import { client, result, type Schema } from "../api/client";
@@ -299,15 +299,33 @@ function RecoveryItem({
     discard.state !== "succeeded" &&
     !recovery.targetDeleted;
   const held = pending || recovery.targetDeleted;
-  // The actions go once the volume is held, after this owner's discard, a refusal or another
-  // owner's discard. If focus was in this restore, its dialog included, and fell to the page with
-  // them, it moves to the volume's status, which announces each change to the discard itself.
+  // The actions go once the volume is held, after this owner's discard or cutover or another
+  // owner's discard, but an open discard dialog keeps them until it closes, so a refusal shows in
+  // it. If focus was in the actions when they went, it moves to the volume's status, which
+  // announces each change to the discard itself. Focus is followed from the actions' own element,
+  // as a removed control blurs to nothing.
+  const [discarding, setDiscarding] = useState(false);
+  const actions =
+    owner && ended.includes(recovery.state) && (!held || discarding);
   const volume = useRef<HTMLParagraphElement>(null);
   const focused = useRef(false);
+  const follow = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const enter = () => (focused.current = true);
+    const leave = () => (focused.current = false);
+    node.addEventListener("focusin", enter);
+    node.addEventListener("focusout", leave);
+    return () => {
+      node.removeEventListener("focusin", enter);
+      node.removeEventListener("focusout", leave);
+    };
+  }, []);
   useEffect(() => {
-    if (held && focused.current && document.activeElement === document.body)
+    if (actions) return;
+    if (focused.current && document.activeElement === document.body)
       volume.current?.focus();
-  }, [held]);
+    focused.current = false;
+  }, [actions]);
   // A refusal means the server's view moved on, as when another owner started a discard.
   const refresh = () =>
     queries.invalidateQueries({
@@ -315,15 +333,7 @@ function RecoveryItem({
     });
   const succeeded = recovery.state === "succeeded" && !recovery.targetDeleted;
   return (
-    // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Tracks focus, the portalled dialog's included; it takes no input.
-    <li
-      className={s.stack}
-      onFocus={() => (focused.current = true)}
-      // A removed control blurs to nothing, which still counts as in this restore.
-      onBlur={(event) => {
-        if (event.relatedTarget) focused.current = false;
-      }}
-    >
+    <li className={s.stack}>
       <p>
         {t(($) => $.restores.item, {
           snapshot: recovery.snapshot.slice(0, 12),
@@ -360,12 +370,14 @@ function RecoveryItem({
           )}
         </>
       )}
-      {owner && !held && ended.includes(recovery.state) && (
-        <div className={s.row}>
-          {succeeded && (
+      {actions && (
+        <div ref={follow} className={s.row}>
+          {succeeded && !held && (
             <Button
               type="button"
               variant="primary"
+              // Keeps focus while busy, so focus is still in the actions if the volume is held.
+              focusableWhenDisabled
               disabled={action.isPending || dirty}
               onClick={() =>
                 action.run(async () => {
@@ -397,7 +409,13 @@ function RecoveryItem({
           <DiscardTarget
             path={p}
             recovery={recovery}
-            action={action}
+            busy={action.isPending}
+            open={discarding}
+            setOpen={(open) => {
+              // Closing returns focus to the actions, even when they go in the same commit.
+              if (!open) focused.current = true;
+              setDiscarding(open);
+            }}
             refresh={refresh}
           />
         </div>
@@ -409,17 +427,22 @@ function RecoveryItem({
 function DiscardTarget({
   path,
   recovery,
-  action,
+  busy,
+  open,
+  setOpen,
   refresh,
 }: {
   path: EnvironmentPath & { policyId: string; recoveryId: string };
   recovery: Recovery;
-  /** The restore's own action, so a refusal stays shown if the refetch takes this away. */
-  action: ReturnType<typeof useAction>;
+  /** A cutover is running, so a discard waits for it. */
+  busy: boolean;
+  /** Owned by the restore, which keeps an open dialog while the volume becomes held. */
+  open: boolean;
+  setOpen: (open: boolean) => void;
   refresh: () => Promise<void>;
 }) {
   const { t } = useTranslation("backup-recovery");
-  const [open, setOpen] = useState(false);
+  const action = useAction({ recentAuth: true });
   const trigger = useRef<HTMLButtonElement>(null);
   return (
     <>
@@ -427,6 +450,7 @@ function DiscardTarget({
         ref={trigger}
         type="button"
         variant="danger"
+        disabled={busy}
         onClick={() => {
           action.reset();
           setOpen(true);
@@ -461,6 +485,8 @@ function DiscardTarget({
             <Button
               type="button"
               variant="danger"
+              // Keeps focus while busy, so a refusal is read beside it.
+              focusableWhenDisabled
               disabled={action.isPending}
               onClick={(event) =>
                 action.run(async () => {

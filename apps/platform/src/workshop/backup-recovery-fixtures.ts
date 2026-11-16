@@ -140,7 +140,8 @@ export function resetRevokedServerBackups() {
   discards.clear();
 }
 
-export function revokedServerBackupHandlers() {
+/** With `refuseDiscard`, another owner's discard starts first, so the owner's own is refused. */
+export function revokedServerBackupHandlers({ refuseDiscard = false } = {}) {
   const policyPath = `${environmentRoot}/backup-policies/:policyId`;
   const withDiscard = (r: Schema["BackupRecoveryRecord"]) => ({
     ...r,
@@ -215,6 +216,15 @@ export function revokedServerBackupHandlers() {
         state: "running",
         note: "",
       });
+      if (refuseDiscard)
+        return HttpResponse.json(
+          {
+            code: "conflict",
+            message: "Server text the dashboard does not show.",
+            requestId: "workshop",
+          } satisfies Schema["Error"],
+          { status: 409 },
+        );
       return HttpResponse.json(operation, { status: 201 });
     }),
     http.get(`${policyPath}/recoveries`, () =>

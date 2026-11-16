@@ -12,10 +12,6 @@ import {
   projectHandlers,
 } from "../../workshop/app-preview";
 import {
-  resetRevokedServerBackups,
-  revokedServerBackupHandlers,
-} from "../../workshop/backup-recovery-fixtures";
-import {
   draftPath,
   composeRevision,
   environmentRoot,
@@ -274,49 +270,6 @@ export const Deployments: Story = {
     await expect(
       await canvas.findByRole("heading", { name: "Review and deploy" }),
     ).toBeVisible();
-  },
-};
-// A policy whose server was revoked offers its recorded snapshots for a restore onto the
-// replacement, and its destination is marked as exposed.
-export const RevokedServerBackups: Story = {
-  beforeEach: resetRevokedServerBackups,
-  parameters: scenario(
-    session,
-    ...revokedServerBackupHandlers(),
-    ...projectHandlers(),
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("tab", { name: "Deployments" }),
-    );
-    await expect(
-      await canvas.findByRole("region", {
-        name: "Restore from a revoked server",
-      }),
-    ).toBeVisible();
-    // Every receipt is offered, and none is chosen for the owner.
-    await expect(
-      await canvas.findAllByRole("radio", {
-        name: /Recorded by Astilba/,
-        checked: false,
-      }),
-    ).toHaveLength(2);
-    // A confirmed discard hides the restore's actions; its running status takes their focus.
-    const [discard] = await canvas.findAllByRole("button", {
-      name: "Discard restored volume",
-    });
-    await userEvent.click(discard);
-    const body = within(canvasElement.ownerDocument.body);
-    await userEvent.click(
-      await body.findByRole("button", { name: "Discard volume" }),
-    );
-    await waitFor(() =>
-      expect(canvas.getByText(/^Discarding the volume\./)).toHaveFocus(),
-    );
-    await expect(
-      canvas.queryByRole("button", { name: "Prepare cutover draft" }),
-    ).not.toBeInTheDocument();
   },
 };
 export const Settings: Story = {

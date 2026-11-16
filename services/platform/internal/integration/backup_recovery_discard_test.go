@@ -72,12 +72,18 @@ func TestACutoverAndADiscardExcludeEachOther(t *testing.T) {
 		t.Fatalf("the restore records its discard %s", state)
 	}
 
-	// A cutover draft, and a plan prepared from it, keep the volume. A plan can't be applied once
-	// the draft has moved on, so the draft decides.
-	got = g.cutover(l, record.Id, draft.Id)
+	// Two cutovers sent together from the same draft: the first moves the draft on, so the other
+	// is refused. A cutover draft, and a plan prepared from it, keep the volume. A plan can't be
+	// applied once the draft has moved on, so the draft decides.
+	first := g.b.send("POST", recoveryPath(l, record.Id)+"/cutover", api.BackupRecoveryCutoverRequest{BaseRevisionId: draft.Id})
+	second := g.b.send("POST", recoveryPath(l, record.Id)+"/cutover", api.BackupRecoveryCutoverRequest{BaseRevisionId: draft.Id})
+	got, other := <-first, <-second
+	if got.status == http.StatusConflict {
+		got, other = other, got
+	}
 	var revision draftRevision
-	if got.status != http.StatusOK || json.Unmarshal(got.body, &revision) != nil {
-		t.Fatalf("a cutover after a failed discard = %d %s", got.status, got.body)
+	if got.status != http.StatusOK || other.status != http.StatusConflict || json.Unmarshal(got.body, &revision) != nil {
+		t.Fatalf("two cutovers after a failed discard = %d %s and %d %s", got.status, got.body, other.status, other.body)
 	}
 	g.b.call("GET", l.e.path+"/draft", nil, 200, &l.e.draft)
 	plan := g.reviewed(t, &l.e, <-g.b.send("POST", l.e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: revision.Id, ServerId: l.b.id}))
