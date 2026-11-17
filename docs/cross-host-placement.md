@@ -226,6 +226,17 @@ management knowledge, cancellation, revocation and deletion state. Conflicting
 machine identities, epochs, plans or proofs require inspection rather than a
 counter reset. Missing imported records are attributed to the importing owner.
 
+An environment's secret values are sealed under its own key, which is made when its first
+secret is saved. If the management backup was taken before that, it has no key for them, and
+recovery stops: it names each such environment, with its project, and changes nothing. Restore
+a management backup taken after their first secrets were saved, or repeat the command with
+`--accept-erased-environments ENV_UUID,…` naming exactly the environments it named, to restore
+those secret values erased. An acceptance that names any other environment, or leaves one out,
+is refused. The report's `erasedValues` lists each erased value by project, environment and
+secret name, never its value, so that an owner can enter it again, and the audit log records
+the acceptance as `workspace.recover_erased_environment_values` for each environment. Values a
+recovery restored erased stay erased, and a later recovery does not stop for them again.
+
 Start destination management and use its normal authenticated transfer workflow
 for each server. On each stopped agent, supply its matching handover JSON through
 `transfer --recovery-handover FILE`, together with the normal management origin,

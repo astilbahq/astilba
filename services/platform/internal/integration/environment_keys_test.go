@@ -165,7 +165,7 @@ func TestPurgeDestroysTheEnvironmentKey(t *testing.T) {
 
 	// Recovery from the pre-purge checkpoint: its key check passes, the purged value stays erased,
 	// and the kept environment's value stays under its key.
-	if err := portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil {
+	if unopened, err := portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil || len(unopened) != 0 {
 		t.Fatal(err)
 	}
 	tx, err := f.st.Pool.Begin(ctx)
@@ -271,7 +271,7 @@ func TestRecoveryDestroysTheKeysOfEndedEnvironments(t *testing.T) {
 	}
 	// The checkpoint's preview copy no longer opens: the merge passes its key check and restores
 	// it erased, where the value it held would otherwise come back.
-	if err = portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil {
+	if unopened, err := portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil || len(unopened) != 0 {
 		t.Fatal(err)
 	}
 	if tx, err = f.st.Pool.Begin(ctx); err != nil {

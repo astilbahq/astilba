@@ -125,7 +125,11 @@ func transformCredential(table string, row Row, environments secretEnvironments,
 	}
 	value, e = transform(item, value)
 	// A value that does not open, or would not open once sealed, is the archive's fault; anything
-	// else, such as an ended session or keys not made yet, is not.
+	// else, such as an ended session, keys not made yet, or a key the restored database never had,
+	// is not.
+	if errors.Is(e, secretbroker.ErrKeyNotInBackup) {
+		return e
+	}
 	if errors.Is(e, cryptobox.ErrKey) || errors.Is(e, secretbroker.ErrTooLarge) {
 		return ErrArchive
 	}

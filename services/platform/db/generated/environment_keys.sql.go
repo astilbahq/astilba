@@ -221,6 +221,37 @@ func (q *Queries) EnvironmentValuesOutsideTheirKeys(ctx context.Context) (bool, 
 	return column_1, err
 }
 
+const erasedSecretVersions = `-- name: ErasedSecretVersions :many
+SELECT id FROM secret_versions
+WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND erased_at IS NOT NULL
+`
+
+type ErasedSecretVersionsParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+// The secret versions among ids the workspace stores erased, which recovery never brings back.
+func (q *Queries) ErasedSecretVersions(ctx context.Context, arg ErasedSecretVersionsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, erasedSecretVersions, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const holdSecretVersionsForWriting = `-- name: HoldSecretVersionsForWriting :exec
 LOCK TABLE secret_versions IN ROW EXCLUSIVE MODE
 `

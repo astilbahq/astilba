@@ -77,3 +77,8 @@ SELECT EXISTS (SELECT 1 FROM secret_versions WHERE encrypted_value IS NOT NULL
 -- made and has not committed.
 SELECT state, workspace_generation, wrapped, kcv FROM environment_keys
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND generation = @generation;
+
+-- name: ErasedSecretVersions :many
+-- The secret versions among ids the workspace stores erased, which recovery never brings back.
+SELECT id FROM secret_versions
+WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]) AND erased_at IS NOT NULL;

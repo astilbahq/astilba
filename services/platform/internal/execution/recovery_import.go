@@ -25,6 +25,10 @@ type RecoveryImport struct {
 	OwnerID       uuid.UUID
 	ExpectedState string
 	HostExports   []string
+	// AcceptErasedEnvironments are the environments whose keys the restored management database
+	// never had, whose values the operator accepts recovery restores erased. It must name exactly
+	// them.
+	AcceptErasedEnvironments []uuid.UUID
 }
 
 type RecoveryPreview struct {
@@ -36,6 +40,9 @@ type RecoveryPreview struct {
 	AlreadyApplied bool                                      `json:"alreadyApplied"`
 	// SetAside names the checkpoints recovery authenticated and doesn't use.
 	SetAside []RecoverySetAside `json:"setAside"`
+	// ErasedValues are the secret versions recovery restores erased, as the operator accepted, to
+	// be entered again.
+	ErasedValues []RecoveryErasedValue `json:"erasedValues"`
 }
 
 type recoveringRoot struct {
@@ -54,7 +61,7 @@ var ErrRecoveryWorkspaceMissing = errors.New("this management database has no su
 // a concrete preview; a write must name the exact current workspace state from
 // that preview. Accounts, sessions and installation keys are never imported.
 func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ RecoveryPreview, err error) {
-	out := RecoveryPreview{WorkspaceID: in.WorkspaceID, Parents: []uuid.UUID{}, Handovers: map[uuid.UUID]deployment.RecoveryHandover{}}
+	out := RecoveryPreview{WorkspaceID: in.WorkspaceID, Parents: []uuid.UUID{}, Handovers: map[uuid.UUID]deployment.RecoveryHandover{}, ErasedValues: []RecoveryErasedValue{}}
 	if in.WorkspaceID == uuid.Nil || in.OwnerID == uuid.Nil {
 		return out, domain.Invalid("recovery.owner")
 	}
@@ -194,9 +201,18 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = validateRecoveryRestrictionEvidence(ctx, tx, out.Handovers); err != nil {
 		return out, err
 	}
-	if err = portability.CheckRecoveryKeys(keys, source.Archive); err != nil {
+	unopened, err := portability.CheckRecoveryKeys(keys, source.Archive)
+	if err != nil {
 		return out, err
 	}
+	if unopened, err = unopenedToRestore(ctx, q, in.WorkspaceID, unopened); err != nil {
+		return out, err
+	}
+	erase, erased, err := recoveryErasure(source.Archive, unopened, in.AcceptErasedEnvironments)
+	if err != nil {
+		return out, err
+	}
+	out.ErasedValues = erased
 	if in.ExpectedState == "" {
 		return out, nil
 	}
@@ -211,7 +227,10 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = stageRecoveryProjections(ctx, tx, in.WorkspaceID, source.Projections); err != nil {
 		return out, err
 	}
-	if err = portability.MergeRecovery(ctx, tx, keys, source.Archive, in.OwnerID); err != nil {
+	if err = portability.MergeRecoveryErasing(ctx, tx, keys, source.Archive, in.OwnerID, erase); err != nil {
+		return out, err
+	}
+	if err = recordRecoveryErasure(ctx, q, in, erase); err != nil {
 		return out, err
 	}
 	// Merging never deletes, so where it ends a preview the restored database lists open, that
