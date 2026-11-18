@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
+import { nilID, backupPolicyPath as policyRoot } from "../api/backups";
 import { client, result, type Schema } from "../api/client";
 import { publishDraft } from "../api/environment";
 import { Button } from "../components/button";
@@ -9,22 +10,24 @@ import { Label } from "../components/label";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 import {
+  ExposedDestinationNotice,
+  RevokedServerHistory,
+  RevokedServerRecovery,
+} from "./backup-recovery";
+import {
   ScheduleFields,
+  nextRunDescription,
+  scheduleDescription,
   scheduleInput,
   scheduleTimeout,
-  scheduleDescription,
-  nextRunDescription,
 } from "./schedule-fields";
 import type { EnvironmentPath } from "./visual-editor";
 
-export const wsRoot = "/api/v1/workspaces/{workspaceId}" as const;
-export const root =
-  `${wsRoot}/projects/{projectId}/environments/{environmentId}` as const;
-const policyRoot = `${root}/backup-policies/{policyId}` as const;
-export const nil = "00000000-0000-0000-0000-000000000000";
 export function PolicyStatus({
   path,
   policy,
+  server,
+  exposed,
   owner,
   revision,
   dirty,
@@ -32,11 +35,19 @@ export function PolicyStatus({
 }: {
   path: EnvironmentPath;
   policy: Schema["BackupPolicy"];
+  server?: Schema["Server"];
+  exposed: boolean;
   owner: boolean;
   revision: Schema["Revision"];
   dirty: boolean;
   load: (revision: Schema["Revision"]) => boolean;
 }) {
+  // A revoked server's policy is frozen: what is left is restoring its snapshots elsewhere.
+  const revoked = server?.status === "revoked";
+  // Until its server is known, nothing says the policy can still be managed, or that what it
+  // reported about its runs can be shown as fact.
+  const manage = owner && !!server && !revoked;
+  const reported = !!server && !revoked;
   // Every action here hands the policy's credentials to its server or changes them, so each
   // needs a recent confirmation of identity.
   const action = useAction({ recentAuth: true }),
@@ -85,20 +96,26 @@ export function PolicyStatus({
           ? "Missed runs skipped; no overlap."
           : "Missed runs coalesced; no overlap."}
       </p>
-      <p>
+      <p hidden={!reported}>
         {status.data?.generation === policy.generation
           ? `Installed generation ${status.data.generation}. ${status.data.enabled ? `Next run: ${nextRunDescription(status.data.next, policy.schedule)}` : "Local schedule disabled. After a rollback or local recovery, save and install a new generation to enable the configured schedule."}`
           : "Current policy is not installed."}
       </p>
-      <p>
+      <p hidden={!reported}>
         Last successful snapshot:{" "}
-        {last
-          ? `${last.snapshot} (${new Date(last.startedAt).toLocaleString()})`
-          : "None"}
+        {last ? (
+          <>
+            <code className={s.code}>{last.snapshot}</code> (
+            {new Date(last.startedAt).toLocaleString()})
+          </>
+        ) : (
+          "None"
+        )}
       </p>
+      {exposed && <ExposedDestinationNotice />}
       <ErrorNotice error={action.error ?? status.error} />
       {message && <p role="status">{message}</p>}
-      {owner && (
+      {manage && (
         <div className={s.row}>
           <Button
             type="button"
@@ -131,7 +148,7 @@ export function PolicyStatus({
           </Button>
         </div>
       )}
-      {owner && (
+      {manage && (
         <details
           onToggle={(event) =>
             setEditing(event.currentTarget.open ? policy : undefined)
@@ -225,7 +242,20 @@ export function PolicyStatus({
           )}
         </details>
       )}
-      <ol>
+      {revoked && (
+        <RevokedServerRecovery
+          path={path}
+          policy={policy}
+          server={server}
+          runs={runs}
+          revision={revision}
+          owner={owner}
+          dirty={dirty}
+          load={load}
+        />
+      )}
+      {revoked && !!runs.length && <RevokedServerHistory />}
+      <ol hidden={!server}>
         {runs.map((r) => (
           <li key={r.id}>
             <p>
@@ -234,7 +264,7 @@ export function PolicyStatus({
             </p>
             {r.snapshot && (
               <p>
-                Snapshot {r.snapshot}:{" "}
+                Snapshot <code className={s.code}>{r.snapshot}</code>:{" "}
                 {r.pruned
                   ? "pruned"
                   : r.verified
@@ -243,14 +273,14 @@ export function PolicyStatus({
                 {r.protected ? "; protected from retention" : ""}
               </p>
             )}
-            {owner &&
+            {manage &&
               r.state === "succeeded" &&
               r.snapshot &&
               !r.pruned &&
-              r.targetId !== nil && (
+              r.targetId !== nilID && (
                 <p>Restored volume {r.targetId} remains separate.</p>
               )}
-            {owner && r.state === "succeeded" && r.snapshot && !r.pruned && (
+            {manage && r.state === "succeeded" && r.snapshot && !r.pruned && (
               <Button
                 type="button"
                 disabled={action.isPending}
@@ -259,9 +289,9 @@ export function PolicyStatus({
                 Restore snapshot into fresh storage
               </Button>
             )}
-            {owner &&
+            {manage &&
               r.verified &&
-              r.targetId !== nil &&
+              r.targetId !== nilID &&
               r.state === "succeeded" && (
                 <>
                   <p>

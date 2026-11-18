@@ -220,6 +220,35 @@ func (q *Queries) FinishAlertDelivery(ctx context.Context, arg FinishAlertDelive
 	return err
 }
 
+const firingAlertResources = `-- name: FiringAlertResources :many
+SELECT resource_id FROM operational_alerts WHERE workspace_id = $1 AND kind = $2 AND state = 'firing'
+`
+
+type FiringAlertResourcesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	Kind        string    `json:"kind"`
+}
+
+func (q *Queries) FiringAlertResources(ctx context.Context, arg FiringAlertResourcesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, firingAlertResources, arg.WorkspaceID, arg.Kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var resource_id uuid.UUID
+		if err := rows.Scan(&resource_id); err != nil {
+			return nil, err
+		}
+		items = append(items, resource_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const leaseAlertDelivery = `-- name: LeaseAlertDelivery :one
 WITH due AS (
     SELECT d.id FROM alert_deliveries d

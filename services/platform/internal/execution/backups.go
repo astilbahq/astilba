@@ -22,10 +22,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]backup.Destination, error) {
-	out := []backup.Destination{}
+func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.BackupDestination, error) {
+	out := []api.BackupDestination{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := db.New(tx).ListBackupDestinations(ctx, ws)
+		if err != nil {
+			return err
+		}
+		exposed, err := db.New(tx).ExposedBackupDestinations(ctx, ws)
+		if err != nil {
+			return err
+		}
+		policies, err := db.New(tx).BackupDestinationPolicies(ctx, ws)
 		if err != nil {
 			return err
 		}
@@ -34,22 +42,33 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 			if err = json.Unmarshal(raw, &v); err != nil {
 				return err
 			}
-			out = append(out, v)
+			view := destinationView(v, slices.Contains(exposed, v.ID))
+			for _, p := range policies {
+				if p.DestinationID == v.ID {
+					view.Policies = append(view.Policies, api.BackupDestinationPolicy{Id: p.ID, Name: p.Name, ProjectId: p.ProjectID, EnvironmentId: p.EnvironmentID, EnvironmentName: p.EnvironmentName})
+				}
+			}
+			out = append(out, view)
 		}
 		return nil
 	})
 	return out, err
 }
-func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access) (backup.Destination, error) {
+
+// destinationView is d as the API shows it.
+func destinationView(d backup.Destination, exposed bool) api.BackupDestination {
+	return api.BackupDestination{Id: d.ID, Name: d.Name, Kind: api.BackupDestinationKind(d.Kind), Root: d.Root, Endpoint: d.Endpoint, Bucket: d.Bucket, Region: d.Region, Exposed: exposed, Policies: []api.BackupDestinationPolicy{}}
+}
+func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access) (api.BackupDestination, error) {
 	d.ID = uuid.New()
 	a.Password = ""
 	if backup.ValidateDestination(d, a) != nil {
-		return d, domain.Invalid("destination")
+		return api.BackupDestination{}, domain.Invalid("destination")
 	}
 	item := secretbroker.Item{Kind: secretbroker.BackupDestination, ID: d.ID}
 	keys, done, err := s.sealing(ctx, p, ws, item)
 	if err != nil {
-		return d, err
+		return api.BackupDestination{}, err
 	}
 	sealed := false
 	defer func() { done(sealed) }()
@@ -69,7 +88,11 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		raw, _ := stablejson.Marshal(d)
 		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret})
 	})
-	return d, err
+	if err != nil {
+		return api.BackupDestination{}, err
+	}
+	// No policy uses a new destination yet.
+	return destinationView(d, false), nil
 }
 func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]backup.Policy, error) {
 	out := []backup.Policy{}
@@ -207,6 +230,22 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			}
 			if !exists {
 				return domain.NotFound
+			}
+			// A revoked server that held the destination's keys can still delete or overwrite what a
+			// new policy writes there, so choosing it is acknowledged and recorded.
+			if creating {
+				exposed, err := db.New(tx).ExposedBackupDestinations(ctx, ws)
+				if err != nil {
+					return err
+				}
+				if slices.Contains(exposed, out.DestinationID) {
+					if in.ExposureAcknowledged == nil || !*in.ExposureAcknowledged {
+						return domain.Invalid("destination.exposed")
+					}
+					if err = store.Audit(ctx, db.New(tx), p, ws, "backup.destination.exposure.acknowledge", out.DestinationID); err != nil {
+						return err
+					}
+				}
 			}
 			if in.Password == nil || len(*in.Password) < 16 || len(*in.Password) > 512 {
 				return domain.Invalid("password")
