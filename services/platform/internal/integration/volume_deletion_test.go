@@ -161,6 +161,11 @@ func TestADraftCantUseAVolumeBeingDeleted(t *testing.T) {
 	// A plan prepared before the delete still declares the volume.
 	prepared := e.plan()
 	deletion := e.deleted()
+	var volumes []api.ManagedVolume
+	e.b.call("GET", e.path+"/volumes", nil, 200, &volumes)
+	if len(volumes) != 1 || !volumes[0].Deleting || volumes[0].Deleted {
+		t.Fatalf("volumes during a delete = %+v", volumes)
+	}
 	refused(t, "a draft mounting a volume being deleted", <-e.saving(), "volume.deleting")
 	refused(t, "a second delete", <-e.deleting(), "volume.deleting")
 	refused(t, "applying a plan prepared before the delete", e.applying(prepared), "volume.deleting")
@@ -174,6 +179,10 @@ func TestADraftCantUseAVolumeBeingDeleted(t *testing.T) {
 	prepared = e.plan()
 	deletion = e.deleted()
 	e.report(deletion, "succeeded", deployment.Observation{})
+	e.b.call("GET", e.path+"/volumes", nil, 200, &volumes)
+	if len(volumes) != 1 || volumes[0].Deleting || !volumes[0].Deleted {
+		t.Fatalf("volumes after a delete = %+v", volumes)
+	}
 	refused(t, "a draft mounting a deleted volume", <-e.saving(), "volume.deleted")
 	refused(t, "a delete of a deleted volume", <-e.deleting(), "volume.deleted")
 	refused(t, "applying a plan that declares a deleted volume", e.applying(prepared), "volume.deleted")
