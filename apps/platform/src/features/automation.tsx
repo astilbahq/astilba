@@ -29,7 +29,8 @@ export function AutomationCredentials({
   path: EnvironmentPath;
   readOnly?: boolean;
 }) {
-  const action = useAction();
+  // Issuing a token and revoking one both need a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [revealed, setRevealed] = useState<{ id: string; token: string }>();
   const [message, setMessage] = useState("");
   const credentials = useQuery({

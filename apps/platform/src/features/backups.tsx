@@ -40,7 +40,9 @@ export function Backups({
   dirty: boolean;
   load: (revision: Schema["Revision"]) => boolean;
 }) {
-  const action = useAction(),
+  // Destinations and policies take storage credentials, which the server accepts only from a
+  // recent confirmation of identity.
+  const action = useAction({ recentAuth: true }),
     queries = useQueryClient();
   const [method, setMethod] =
     useState<Schema["BackupPolicyRequest"]["method"]>("postgres-logical");
@@ -336,7 +338,9 @@ function PolicyStatus({
   dirty: boolean;
   load: (revision: Schema["Revision"]) => boolean;
 }) {
-  const action = useAction(),
+  // Every action here hands the policy's credentials to its server or changes them, so each
+  // needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true }),
     queries = useQueryClient(),
     p = { ...path, policyId: policy.id };
   const [message, setMessage] = useState("");

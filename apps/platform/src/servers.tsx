@@ -37,6 +37,9 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
   const workspaceId = workspace.id;
   const queries = useQueryClient();
   const action = useAction();
+  // A server's credentials, from a transfer ticket to its agent key, change only after a recent
+  // confirmation of identity, so their controls ask for one first.
+  const credentials = useAction({ recentAuth: true });
   const [enrollment, setEnrollment] = useState<Schema["Enrollment"]>();
   useEffect(() => {
     if (!enrollment) return;
@@ -104,16 +107,28 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
     await queries.invalidateQueries({ queryKey: ["servers", workspaceId] });
     await queries.invalidateQueries({ queryKey: ["operations", workspaceId] });
   };
-  const run = (fn: () => Promise<unknown>) =>
+  // The two share one error notice, so starting either clears what the other last reported.
+  const run = (fn: () => Promise<unknown>) => {
+    credentials.reset();
     action.run(async () => {
       await fn();
       await refresh();
     });
+  };
+  const runCredential = (fn: () => Promise<unknown>) => {
+    action.reset();
+    credentials.run(async () => {
+      await fn();
+      await refresh();
+    });
+  };
+  const busy = action.isPending || credentials.isPending;
   return (
     <>
       <ErrorNotice
         error={
           action.error ||
+          credentials.error ||
           servers.error ||
           operations.error ||
           projects.error ||
@@ -258,9 +273,9 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 </p>
                 <Button
                   type="button"
-                  disabled={action.isPending}
+                  disabled={busy}
                   onClick={() =>
-                    run(async () =>
+                    runCredential(async () =>
                       setTransfer(
                         await result(
                           client.POST(
@@ -339,8 +354,8 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               <ServerCredentials
                 workspaceId={workspaceId}
                 server={server}
-                busy={action.isPending}
-                run={run}
+                busy={busy}
+                run={runCredential}
                 onEnrollment={setEnrollment}
               />
             )}
@@ -387,7 +402,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                         ))}
                     </Select>
                   </Label>
-                  <BusyButton busy={action.isPending}>Update agent</BusyButton>
+                  <BusyButton busy={busy}>Update agent</BusyButton>
                 </Form>
               )}
           </article>
@@ -473,7 +488,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   <option value="remove">Remove probe</option>
                 </Select>
               </Label>
-              <BusyButton busy={action.isPending}>Review test plan</BusyButton>
+              <BusyButton busy={busy}>Review test plan</BusyButton>
             </Form>
           ) : (
             <p>Create a project and environment first.</p>
@@ -497,7 +512,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               </p>
               <Button
                 type="button"
-                disabled={action.isPending}
+                disabled={busy}
                 onClick={() =>
                   run(async () => {
                     await result(
@@ -559,7 +574,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               !["succeeded", "failed", "cancelled"].includes(op.state) && (
                 <Button
                   type="button"
-                  disabled={action.isPending || op.cancelRequested}
+                  disabled={busy || op.cancelRequested}
                   onClick={() =>
                     run(() =>
                       result(

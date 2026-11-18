@@ -7,7 +7,8 @@ import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 
 export function WorkspaceExport({ workspaceId }: { workspaceId: string }) {
-  const action = useAction();
+  // An export carries the workspace's secrets, so it needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [saved, setSaved] = useState(false);
   return (
     <section className={s.panel}>
@@ -73,7 +74,8 @@ export function WorkspaceExport({ workspaceId }: { workspaceId: string }) {
 }
 
 export function WorkspaceImport({ hosted }: { hosted: boolean }) {
-  const action = useAction();
+  // An import stores the archive's secrets, so it needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [done, setDone] = useState(false);
   return (
     <details className={s.workspaceUtility}>
