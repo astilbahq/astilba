@@ -29,7 +29,8 @@ export function AutomationCredentials({
   path: EnvironmentPath;
   readOnly?: boolean;
 }) {
-  const action = useAction();
+  // Issuing a token and revoking one both need a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [revealed, setRevealed] = useState<{ id: string; token: string }>();
   const [message, setMessage] = useState("");
   const credentials = useQuery({
@@ -90,13 +91,16 @@ export function AutomationCredentials({
         <Form
           action={action}
           label="Create automation credential"
-          onSubmit={(data, form) =>
+          onSubmit={(data, form) => {
+            const selected = data.getAll(
+              "capability",
+            ) as Schema["AutomationCapability"][];
+            if (selected.length === 0)
+              return action.reportInvalid(
+                form.elements.namedItem("capability"),
+                "Choose at least one capability.",
+              );
             action.run(async () => {
-              const selected = data.getAll(
-                "capability",
-              ) as Schema["AutomationCapability"][];
-              if (selected.length === 0)
-                throw new Error("Choose at least one capability.");
               const created = await result(
                 client.POST(
                   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/automation-credentials",
@@ -120,8 +124,8 @@ export function AutomationCredentials({
               setMessage("Automation credential created for this environment.");
               form.reset();
               await credentials.refetch();
-            })
-          }
+            });
+          }}
         >
           <Label>
             Token name
