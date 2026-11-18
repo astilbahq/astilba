@@ -74,8 +74,9 @@ var version5Tables = func() []table {
 // purges, retired secrets and erased secret values; version 11 added which preview requests
 // revoking their preview's host released; version 13 added when each server's revocation began and
 // when management first received each backup snapshot; version 15 added restores of a revoked
-// server's backup snapshots onto another server. Versions 10, 12 and 14 are recovery bases.
-const ArchiveVersion = 15
+// server's backup snapshots onto another server; version 17 added each restore's latest discard.
+// Versions 10, 12, 14 and 16 are recovery bases.
+const ArchiveVersion = 17
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -153,4 +154,16 @@ var version13Tables = func() []table {
 
 // Version 15 carries each restore of a revoked server's backup snapshot onto another server, which
 // a cutover is reviewed against. Version 14 is a recovery base.
-var tables = append(append([]table{}, version13Tables...), table{Name: "backup_recoveries", Columns: "id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at,result"})
+var version15Tables = append(append([]table{}, version13Tables...), table{Name: "backup_recoveries", Columns: "id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at,result"})
+
+// Version 17 carries each restore's latest discard of its volume, which holds the volume while it
+// is active. Version 16 is a recovery base.
+var tables = func() []table {
+	out := append([]table{}, version15Tables...)
+	for i := range out {
+		if out[i].Name == "backup_recoveries" {
+			out[i].Columns += ",discard_operation_id"
+		}
+	}
+	return out
+}()

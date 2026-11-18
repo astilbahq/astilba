@@ -3,6 +3,7 @@ import { initReactI18next } from "react-i18next";
 import account from "../locales/en/account.json";
 import app from "../locales/en/app.json";
 import auth from "../locales/en/auth.json";
+import backupRecovery from "../locales/en/backup-recovery.json";
 import common from "../locales/en/common.json";
 import environment from "../locales/en/environment.json";
 import projects from "../locales/en/projects.json";
@@ -28,6 +29,7 @@ export async function initializeI18n(
       troubleshooting,
       "secret-access": secretAccess,
       workspace,
+      "backup-recovery": backupRecovery,
     },
   };
   await instance.use(initReactI18next).init({
@@ -47,6 +49,7 @@ export async function initializeI18n(
       "troubleshooting",
       "secret-access",
       "workspace",
+      "backup-recovery",
     ],
     returnEmptyString: false,
     interpolation: { escapeValue: false },

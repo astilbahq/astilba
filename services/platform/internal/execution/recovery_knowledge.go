@@ -134,6 +134,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					if string(prior["result"]) == "null" {
 						selected["result"] = row["result"]
 					}
+					err = recoveryDiscardKnowledge(selected, prior, row, known["execution_operations"], incoming["execution_operations"])
 				case "pipeline_runs":
 					if op, exists := incoming["execution_operations"][key]; exists {
 						if oldOp, exists := known["execution_operations"][key]; exists {

@@ -1,17 +1,25 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { client, result, type Schema } from "../api/client";
+import {
+  backupDestinationsOptions,
+  backupDestinationsPath,
+  backupPoliciesPath,
+  nilID,
+} from "../api/backups";
+import { ApiError, client, result, type Schema } from "../api/client";
+import { serversOptions } from "../api/servers";
 import { Checkbox } from "../components/checkbox";
 import { Input } from "../components/input";
 import { Label } from "../components/label";
 import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
-import { nil, PolicyStatus, root, wsRoot } from "./backup-policy-status";
+import { PolicyStatus } from "./backup-policy-status";
 import {
   BackupRecommendations,
   type RecommendedBackup,
 } from "./backup-recommendations";
+import { ExposureAcknowledgement } from "./backup-recovery";
 import {
   ScheduleFields,
   scheduleInput,
@@ -38,16 +46,14 @@ export function Backups({
     queries = useQueryClient();
   const [method, setMethod] =
     useState<Schema["BackupPolicyRequest"]["method"]>("postgres-logical");
-  const destinations = useQuery({
-    queryKey: ["backup-destinations", path.workspaceId],
-    queryFn: () =>
-      result(client.GET(`${wsRoot}/backup-destinations`, { params: { path } })),
-  });
+  const destinations = useQuery(backupDestinationsOptions(path.workspaceId));
   const policies = useQuery({
     queryKey: ["backup-policies", path],
-    queryFn: () =>
-      result(client.GET(`${root}/backup-policies`, { params: { path } })),
+    queryFn: () => result(client.GET(backupPoliciesPath, { params: { path } })),
   });
+  const servers = useQuery(serversOptions(path.workspaceId));
+  const [destination, setDestination] = useState("");
+  const exposed = destinations.data?.find((d) => d.id === destination)?.exposed;
   const [preset, setPreset] = useState<RecommendedBackup>();
   const createPolicy = useRef<HTMLDetailsElement>(null);
   return (
@@ -59,7 +65,9 @@ export function Backups({
         the host execution lock with deployments; runs never overlap.
       </p>
       <ErrorNotice
-        error={action.error ?? destinations.error ?? policies.error}
+        error={
+          action.error ?? destinations.error ?? policies.error ?? servers.error
+        }
       />
       {owner && (
         <>
@@ -76,7 +84,7 @@ export function Backups({
               onSubmit={(d, form) =>
                 action.run(async () => {
                   await result(
-                    client.POST(`${wsRoot}/backup-destinations`, {
+                    client.POST(backupDestinationsPath, {
                       params: { path },
                       body: {
                         name: text(d, "name"),
@@ -167,14 +175,14 @@ export function Backups({
                   }
                 action.run(async () => {
                   await result(
-                    client.POST(`${root}/backup-policies`, {
+                    client.POST(backupPoliciesPath, {
                       params: { path },
                       body: {
                         name: text(d, "name"),
                         resourceId: text(d, "resource"),
                         destinationId:
                           method === "container-job"
-                            ? nil
+                            ? nilID
                             : text(d, "destination"),
                         method,
                         schedule: scheduleInput(d),
@@ -184,10 +192,26 @@ export function Backups({
                         command,
                         password: text(d, "password"),
                         baseGeneration: 0,
+                        exposureAcknowledged: d.has("exposureAcknowledged")
+                          ? true
+                          : undefined,
                       },
                     }),
-                  );
+                  ).catch(async (error: unknown) => {
+                    // A destination exposed since the list loaded is refused until it is
+                    // acknowledged, so the list is refreshed to offer the acknowledgement.
+                    if (
+                      error instanceof ApiError &&
+                      error.detail.fields?.includes("destination.exposed")
+                    )
+                      await queries.invalidateQueries({
+                        queryKey: backupDestinationsOptions(path.workspaceId)
+                          .queryKey,
+                      });
+                    throw error;
+                  });
                   form.reset();
+                  setDestination("");
                   setPreset(undefined);
                   await queries.invalidateQueries({
                     queryKey: ["backup-policies", path],
@@ -246,7 +270,12 @@ export function Backups({
                 <>
                   <Label>
                     Backup destination
-                    <Select name="destination" required>
+                    <Select
+                      name="destination"
+                      required
+                      value={destination}
+                      onChange={(e) => setDestination(e.target.value)}
+                    >
                       <option value="">Choose a destination</option>
                       {destinations.data?.map((d) => (
                         <option key={d.id} value={d.id}>
@@ -254,10 +283,14 @@ export function Backups({
                           {d.kind === "filesystem"
                             ? " — same server failure boundary"
                             : ""}
+                          {d.exposed
+                            ? " — keys exposed to a revoked server"
+                            : ""}
                         </option>
                       ))}
                     </Select>
                   </Label>
+                  {exposed && <ExposureAcknowledgement />}
                   <Field
                     name="password"
                     label="Repository password (keep a recovery copy)"
@@ -313,6 +346,13 @@ export function Backups({
           key={policy.id}
           path={path}
           policy={policy}
+          server={servers.data?.find((v) => v.id === policy.serverId)}
+          exposed={
+            // A container job is never given a destination's keys.
+            policy.method !== "container-job" &&
+            !!destinations.data?.find((d) => d.id === policy.destinationId)
+              ?.exposed
+          }
           owner={owner}
           revision={revision}
           dirty={dirty}

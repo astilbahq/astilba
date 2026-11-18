@@ -9540,6 +9540,18 @@
         region:
           type: string
           maxLength: 80
+        exposed:
+          type: boolean
+          description: >-
+            Whether a revoked server holds this S3 destination's storage keys: the server a policy
+            using it is bound to, or one a restore of such a policy was recorded for. It can delete
+            or overwrite any backup they reach until they are revoked at the provider. A new policy
+            on it needs an acknowledgement, and a backup_exposure alert fires for it.
+        policies:
+          type: array
+          maxItems: 100
+          description: The backup policies using this destination.
+          items: {$ref: '#/components/schemas/BackupDestinationPolicy'}
       required:
         - id
         - name
@@ -9548,6 +9560,54 @@
         - endpoint
         - bucket
         - region
+        - exposed
+        - policies
+    BackupInstallationDestination:
+      type: object
+      additionalProperties: false
+      description: A destination's configuration as a server receives it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        kind:
+          type: string
+          enum:
+            - filesystem
+            - s3
+        root:
+          type: string
+          maxLength: 512
+        endpoint:
+          type: string
+          maxLength: 512
+        bucket:
+          type: string
+          maxLength: 63
+        region:
+          type: string
+          maxLength: 80
+      required:
+        - id
+        - name
+        - kind
+        - root
+        - endpoint
+        - bucket
+        - region
+    BackupDestinationPolicy:
+      type: object
+      additionalProperties: false
+      required: [id, name, projectId, environmentId, environmentName]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        projectId: {type: string, format: uuid}
+        environmentId: {type: string, format: uuid}
+        environmentName: {type: string}
     BackupAccess:
       type: object
       additionalProperties: false
@@ -9681,6 +9741,12 @@
         baseGeneration:
           type: integer
           format: int64
+        exposureAcknowledged:
+          type: boolean
+          description: >-
+            Required as true to create a policy on an exposed destination: the owner understands
+            that a revoked server can still delete or overwrite its backups until its storage keys
+            are revoked at the provider.
       required:
         - name
         - resourceId
@@ -9951,7 +10017,7 @@
         policy:
           $ref: '#/components/schemas/BackupPolicy'
         destination:
-          $ref: '#/components/schemas/BackupDestination'
+          $ref: '#/components/schemas/BackupInstallationDestination'
         access:
           $ref: '#/components/schemas/BackupAccess'
         repositoryId:
@@ -10108,7 +10174,23 @@
         targetDeleted:
           type: boolean
           description: Whether the server deleted the restore's volume once it was discarded.
-      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored, targetDeleted]
+        discard:
+          type: object
+          nullable: true
+          description: >-
+            The latest discard of the restore's volume. While it is active the volume can't be cut
+            over to or discarded again. A succeeded one deleted it, as targetDeleted shows.
+          properties:
+            operationId:
+              type: string
+              format: uuid
+            state:
+              $ref: '#/components/schemas/ExecutionState'
+            note:
+              type: string
+          required: [operationId, state, note]
+          additionalProperties: false
+      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored, targetDeleted, discard]
     BackupCommandRequest:
       type: object
       additionalProperties: false
@@ -10487,7 +10569,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held, backup_exposure]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}

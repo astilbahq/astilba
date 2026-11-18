@@ -4602,6 +4602,32 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
+            /** @description Whether a revoked server holds this S3 destination's storage keys: the server a policy using it is bound to, or one a restore of such a policy was recorded for. It can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement, and a backup_exposure alert fires for it. */
+            exposed: boolean;
+            /** @description The backup policies using this destination. */
+            policies: components["schemas"]["BackupDestinationPolicy"][];
+        };
+        /** @description A destination's configuration as a server receives it. */
+        BackupInstallationDestination: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            kind: "filesystem" | "s3";
+            root: string;
+            endpoint: string;
+            bucket: string;
+            region: string;
+        };
+        BackupDestinationPolicy: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            projectId: string;
+            /** Format: uuid */
+            environmentId: string;
+            environmentName: string;
         };
         BackupAccess: {
             databasePassword?: string;
@@ -4646,6 +4672,8 @@ export interface components {
             password: string;
             /** Format: int64 */
             baseGeneration: number;
+            /** @description Required as true to create a policy on an exposed destination: the owner understands that a revoked server can still delete or overwrite its backups until its storage keys are revoked at the provider. */
+            exposureAcknowledged?: boolean;
         };
         BackupPolicy: {
             /** @description Writer-stopping schedule is executed by management across all placement units. */
@@ -4745,7 +4773,7 @@ export interface components {
         };
         BackupInstallation: {
             policy: components["schemas"]["BackupPolicy"];
-            destination: components["schemas"]["BackupDestination"];
+            destination: components["schemas"]["BackupInstallationDestination"];
             access: components["schemas"]["BackupAccess"];
             repositoryId: string;
             /** Format: date-time */
@@ -4827,6 +4855,13 @@ export interface components {
             } | null;
             /** @description Whether the server deleted the restore's volume once it was discarded. */
             targetDeleted: boolean;
+            /** @description The latest discard of the restore's volume. While it is active the volume can't be cut over to or discarded again. A succeeded one deleted it, as targetDeleted shows. */
+            discard: {
+                /** Format: uuid */
+                operationId: string;
+                state: components["schemas"]["ExecutionState"];
+                note: string;
+            } | null;
         };
         BackupCommandRequest: {
             /** @enum {string} */
@@ -5043,7 +5078,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held" | "backup_exposure";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */

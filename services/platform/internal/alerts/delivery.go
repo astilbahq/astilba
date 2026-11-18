@@ -299,6 +299,8 @@ func Title(kind api.AlertKind) string {
 		return "Cross-host recovery window is shorter than 35 days"
 	case api.DnsWithdrawalHeld:
 		return heldTitle
+	case api.BackupExposure:
+		return "A revoked server holds a backup destination's storage keys"
 	default:
 		return "Operational alert"
 	}

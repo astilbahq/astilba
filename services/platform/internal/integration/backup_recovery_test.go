@@ -570,9 +570,7 @@ func TestCuttingOverToARestoredVolume(t *testing.T) {
 	// The volume the server runs is kept, even once the draft no longer mounts it.
 	g.b.call("GET", l.e.path+"/draft", nil, 200, &revision)
 	g.b.call("PUT", l.e.path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": draft.Specification}, 200, &revision)
-	if got := g.discard(l, record.Id); got.status != http.StatusConflict {
-		t.Fatalf("a discard of the volume the server runs = %d %s", got.status, got.body)
-	}
+	refused(t, "a discard of the volume the server runs", g.discard(l, record.Id), "volume.inUse")
 }
 
 // An ended restore's volume can be deleted, unless the draft mounts it, and once deleted it can't
@@ -606,9 +604,7 @@ func TestDiscardingARestoredVolume(t *testing.T) {
 		t.Fatal("a restore's volume was recorded as deleted before it was discarded")
 	}
 	discarded(failed.Id)
-	if got := g.discard(l, failed.Id); got.status != http.StatusConflict {
-		t.Fatalf("a second discard = %d %s", got.status, got.body)
-	}
+	refused(t, "a second discard", g.discard(l, failed.Id), "volume.deleted")
 	g.mu.Lock()
 	delete(g.failing, "restore/"+l.b.id.String())
 	g.mu.Unlock()
@@ -639,12 +635,127 @@ func TestDiscardingARestoredVolume(t *testing.T) {
 	if got.status != http.StatusOK || json.Unmarshal(got.body, &revision) != nil {
 		t.Fatalf("cutover = %d %s", got.status, got.body)
 	}
-	if got := g.discard(l, running.Id); got.status != http.StatusConflict {
-		t.Fatalf("a discard of a volume the draft mounts = %d %s", got.status, got.body)
-	}
+	refused(t, "a discard of a volume the draft mounts", g.discard(l, running.Id), "volume.inUse")
 	g.b.call("PUT", l.e.path+"/draft", map[string]any{"baseRevisionId": revision.Id, "specification": before.Specification}, 200, &revision)
 	discarded(running.Id)
 	if got := g.cutover(l, running.Id, revision.Id); got.status != http.StatusConflict {
 		t.Fatalf("a cutover to a discarded volume = %d %s", got.status, got.body)
+	}
+}
+
+// destinations lists g's backup destinations by ID.
+func (g *revokedGroup) destinations() map[uuid.UUID]api.BackupDestination {
+	var list []api.BackupDestination
+	g.b.call("GET", g.base+"/backup-destinations", nil, 200, &list)
+	out := map[uuid.UUID]api.BackupDestination{}
+	for _, d := range list {
+		out[d.Id] = d
+	}
+	return out
+}
+
+// exposureAlerts sweeps g's alerts and returns the state of each backup_exposure alert by
+// destination, the newest alert's for each.
+func (g *revokedGroup) exposureAlerts(t *testing.T) map[uuid.UUID]api.AlertState {
+	t.Helper()
+	alertSweep(t, g.f, g.ws)
+	var inbox api.AlertInbox
+	g.b.call("GET", g.base+"/alerts?view=all", nil, 200, &inbox)
+	out := map[uuid.UUID]api.AlertState{}
+	for _, a := range inbox.Alerts {
+		if _, seen := out[a.ResourceId]; !seen && a.Kind == api.BackupExposure {
+			out[a.ResourceId] = a.State
+		}
+	}
+	return out
+}
+
+// An S3 destination is exposed while a policy using it is bound to a revoked server, which was
+// given its storage keys. A new policy on it needs an acknowledgement, which is recorded, and one
+// alert names the destination. A filesystem destination has no keys, and its repository was on the
+// revoked server's own disk.
+func TestAnExposedDestinationNeedsAnAcknowledgement(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	l := g.lostFiles(t)
+	var unused api.BackupDestination
+	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Unused", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "unused-fixture", "region": "test-1", "access": map[string]string{"accessKey": "unused-key", "secretKey": "unused-secret", "password": ""}}, 201, &unused)
+	before := g.destinations()
+	if unused.Exposed || len(unused.Policies) != 0 || before[l.policy.DestinationID].Exposed || before[l.local.DestinationID].Exposed {
+		t.Fatal("a destination was exposed before its server was revoked")
+	}
+	if got := before[l.policy.DestinationID].Policies; len(got) != 1 || got[0].Id != l.policy.ID || got[0].Name != "Files" || got[0].EnvironmentId != l.policy.EnvironmentID {
+		t.Fatalf("the destination's policies = %+v", got)
+	}
+	if alerts := g.exposureAlerts(t); len(alerts) != 0 {
+		t.Fatalf("exposure alerts before a revocation = %v", alerts)
+	}
+	g.revoke(t, l.gone)
+	g.applied(t, &l.e, g.replace(&l.e, l.b.id, l.volume))
+	now := g.destinations()
+	if !now[l.policy.DestinationID].Exposed || now[l.local.DestinationID].Exposed || now[unused.Id].Exposed {
+		t.Fatalf("exposed destinations = %+v", now)
+	}
+	if alerts := g.exposureAlerts(t); len(alerts) != 1 || alerts[l.policy.DestinationID] != api.AlertFiring {
+		t.Fatalf("exposure alerts = %v", alerts)
+	}
+
+	password := "replacement-repository-password"
+	request := api.BackupPolicyRequest{Name: "Files again", ResourceId: l.volume, DestinationId: l.policy.DestinationID, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: 3, Minute: 0, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
+	wantRefusedField(t, <-g.b.send("POST", l.e.path+"/backup-policies", request), "destination.exposed")
+	no := false
+	request.ExposureAcknowledged = &no
+	wantRefusedField(t, <-g.b.send("POST", l.e.path+"/backup-policies", request), "destination.exposed")
+	yes := true
+	request.ExposureAcknowledged = &yes
+	var created backup.Policy
+	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &created)
+	var audited int
+	if err := g.f.st.Pool.QueryRow(g.ctx, "SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action='backup.destination.exposure.acknowledge' AND resource_id=$2", g.ws, l.policy.DestinationID).Scan(&audited); err != nil || audited != 1 {
+		t.Fatalf("the acknowledgement was audited %d times: %v", audited, err)
+	}
+	// Only choosing the destination is acknowledged: an update keeps it.
+	update := request
+	update.ExposureAcknowledged, update.BaseGeneration, update.Retain = nil, created.Generation, 8
+	g.b.call("PUT", l.e.path+"/backup-policies/"+created.ID.String(), update, 200, &created)
+	if got := g.destinations()[l.policy.DestinationID].Policies; len(got) != 2 {
+		t.Fatalf("the exposed destination's policies = %+v", got)
+	}
+	// A destination nothing revoked used needs none, a filesystem one neither, and a new policy
+	// on a server in use exposes neither.
+	request.Name, request.DestinationId, request.ExposureAcknowledged = "Files elsewhere", unused.Id, nil
+	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &created)
+	request.Name, request.DestinationId = "Local files again", l.local.DestinationID
+	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &created)
+	if now := g.destinations(); now[unused.Id].Exposed || now[l.local.DestinationID].Exposed {
+		t.Fatal("a policy on a server in use exposed its destination")
+	}
+}
+
+// A restore onto a new primary gives that server the destination's keys too, so the destination
+// is exposed while either server is revoked, and its alert resolves only once neither is.
+func TestARestoresServerKeepsItsDestinationExposed(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	l := g.lostFiles(t)
+	g.restoreCapable(t, &l)
+	if got := g.recover(l, l.policy, recoveryRequest(l.snapshot)); got.err != nil || got.status != http.StatusAccepted {
+		t.Fatalf("restore = %d %s %v", got.status, got.body, got.err)
+	}
+	if alerts := g.exposureAlerts(t); alerts[l.policy.DestinationID] != api.AlertFiring {
+		t.Fatalf("exposure alerts = %v", alerts)
+	}
+	// Renewing the lost server trusts it again, and nothing revoked holds the keys.
+	g.b.call("POST", g.base+"/servers/"+l.gone.id.String()+"/enrollment", nil, 201, nil)
+	if g.destinations()[l.policy.DestinationID].Exposed {
+		t.Fatal("a destination no revoked server holds the keys of is exposed")
+	}
+	if alerts := g.exposureAlerts(t); alerts[l.policy.DestinationID] != api.AlertResolved {
+		t.Fatalf("exposure alerts once nothing revoked holds the keys = %v", alerts)
+	}
+	g.revoke(t, l.b)
+	if !g.destinations()[l.policy.DestinationID].Exposed {
+		t.Fatal("the restore's revoked server holds the keys, but the destination isn't exposed")
+	}
+	if alerts := g.exposureAlerts(t); alerts[l.policy.DestinationID] != api.AlertFiring {
+		t.Fatalf("exposure alerts once the restore's server is revoked = %v", alerts)
 	}
 }
