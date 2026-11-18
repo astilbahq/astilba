@@ -367,6 +367,7 @@ func restoreDatabase(t *testing.T, source *fixture, file string) *fixture {
 	if out, e := testDatabase("createdb", "--username", "postgres", name); e != nil {
 		t.Fatal(string(out), e)
 	}
+	dropDatabaseAfter(t, name)
 	if out, e := testDatabase("pg_restore", "--username", "postgres", "--single-transaction", "--exit-on-error", "--dbname", name, file); e != nil {
 		t.Fatal(string(out), e)
 	}
