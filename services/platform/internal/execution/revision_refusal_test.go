@@ -9,7 +9,6 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -30,8 +29,8 @@ func TestRefusalStopsOnlyWhatARetryWouldRepeat(t *testing.T) {
 		{&pgconn.PgError{Code: "22021", Message: "invalid byte sequence: SECRET_VALUE"}, true},
 		{fmt.Errorf("saving: %w", &pgconn.PgError{Code: "22P05"}), true},
 		// A delete that hasn't ended may still fail, but the writer stops rather than wait for it.
-		{domain.UsesDeletedVolume("SECRET_VALUE", uuid.New(), true), true},
-		{fmt.Errorf("saving: %w", domain.UsesDeletedVolume("SECRET_VALUE", uuid.New(), false)), true},
+		{domain.UsesVolumeBeingDeleted, true},
+		{fmt.Errorf("saving: %w", domain.UsesDeletedVolume), true},
 		{&pgconn.PgError{Code: "23505"}, false},
 		{domain.Conflict, false},
 		{domain.Forbidden, false},

@@ -19,7 +19,7 @@ func refusePlanDeletedVolumes(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID,
 	for _, vol := range spec.Volumes {
 		ids = append(ids, vol.ID)
 	}
-	return store.RefuseDeletedVolumes(ctx, db.New(tx), ws, env, ids, domain.VolumeNames(spec))
+	return store.RefuseDeletedVolumes(ctx, db.New(tx), ws, env, ids)
 }
 
 // claimPlanVolumes records each volume an applied plan mounts as the environment's, and refuses

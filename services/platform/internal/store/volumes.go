@@ -68,8 +68,8 @@ func VolumeDeletions(ctx context.Context, q *db.Queries, ws, env uuid.UUID, ids 
 
 // RefuseDeletedVolumes refuses volumes, those a new draft or plan of env's uses, when one is
 // deleted or being deleted. Once a delete has run, a plan that uses its volume would start
-// without the volume's data, or not at all. names gives each volume's name for the refusal.
-func RefuseDeletedVolumes(ctx context.Context, q *db.Queries, ws, env uuid.UUID, volumes []uuid.UUID, names map[uuid.UUID]string) error {
+// without the volume's data, or not at all.
+func RefuseDeletedVolumes(ctx context.Context, q *db.Queries, ws, env uuid.UUID, volumes []uuid.UUID) error {
 	if len(volumes) == 0 {
 		return nil
 	}
@@ -78,8 +78,11 @@ func RefuseDeletedVolumes(ctx context.Context, q *db.Queries, ws, env uuid.UUID,
 		return err
 	}
 	for _, id := range volumes {
-		if state, found := deletions[id]; found {
-			return domain.UsesDeletedVolume(names[id], id, state == VolumeDeleting)
+		switch deletions[id] {
+		case VolumeDeleting:
+			return domain.UsesVolumeBeingDeleted
+		case VolumeDeleted:
+			return domain.UsesDeletedVolume
 		}
 	}
 	return nil
@@ -89,5 +92,5 @@ func RefuseDeletedVolumes(ctx context.Context, q *db.Queries, ws, env uuid.UUID,
 // or being deleted. A draft that only still declares such a volume is kept, so an owner can remove
 // it from their source files after the delete. Applying a plan refuses it until they do.
 func RefuseDeletedMounts(ctx context.Context, q *db.Queries, ws, env uuid.UUID, spec domain.Specification) error {
-	return RefuseDeletedVolumes(ctx, q, ws, env, domain.MountedVolumes(spec), domain.VolumeNames(spec))
+	return RefuseDeletedVolumes(ctx, q, ws, env, domain.MountedVolumes(spec))
 }
