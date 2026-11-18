@@ -110,7 +110,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e = destination.st.Pool.QueryRow(context.Background(), "SELECT encrypted_value,author_id FROM secret_versions WHERE id=$1", secret.Id).Scan(&importedCipher, &author); e != nil {
 		t.Fatal(e)
 	}
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}
 	recovered, e := inspectValue(t, destination.st, destination.owner, ws, item, importedCipher)
 	if e != nil || string(recovered) != "portable-secret-canary" || author != destination.owner {
 		t.Fatalf("secret or author was not transferred: %v", e)

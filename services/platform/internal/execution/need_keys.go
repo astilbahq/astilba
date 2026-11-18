@@ -77,6 +77,9 @@ type valueKeys interface {
 	open(item secretbroker.Item, cipher []byte) ([]byte, error)
 	// openBetweenPasses is for code that holds nothing, such as a provider call.
 	openBetweenPasses(ctx context.Context, item secretbroker.Item, cipher []byte) ([]byte, error)
+	// openIn is open for a value q, the pass's transaction, stored, perhaps under an environment
+	// key it made, which no session holds until the transaction commits.
+	openIn(ctx context.Context, q secretbroker.EnvironmentKeyReader, item secretbroker.Item, cipher []byte) ([]byte, error)
 	close(ctx context.Context)
 }
 
@@ -94,6 +97,18 @@ func (k *passKeys) openBetweenPasses(ctx context.Context, item secretbroker.Item
 		return nil, &keysUnavailable{err}
 	}
 	return k.opened(session, item, cipher)
+}
+
+func (k *passKeys) openIn(ctx context.Context, q secretbroker.EnvironmentKeyReader, item secretbroker.Item, cipher []byte) ([]byte, error) {
+	session, err := k.get()
+	if err != nil {
+		return nil, err
+	}
+	plain, err := session.OpenIn(ctx, q, item, cipher)
+	if err == nil {
+		k.use()
+	}
+	return plain, err
 }
 
 func (k *passKeys) opened(session *secretbroker.Session, item secretbroker.Item, cipher []byte) ([]byte, error) {

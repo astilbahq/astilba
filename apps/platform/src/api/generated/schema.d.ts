@@ -3586,6 +3586,8 @@ export interface components {
             purgeOperationId?: string | null;
             /** @description The purge finished without contacting the server because the server was revoked. Its volumes may still be there. */
             purgedWithoutHost?: boolean;
+            /** @description Whether every environment's values are under its own key (custody stage 6), so purging would leave every copy of the environment's values sealed since then unreadable, wherever it is held. Copies in recovery data captured before its values moved onto its key, and in management database backups, are not reached either way. Otherwise only copies sealed under its key are. */
+            purgeReachesEveryCopy?: boolean;
         };
         ApplicationSource: {
             /** @enum {string} */

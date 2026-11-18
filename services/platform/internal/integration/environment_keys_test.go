@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"slices"
 	"strings"
@@ -17,10 +18,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// environmentKey makes an environment's key as a release that seals under it does: a random key
-// wrapped under its workspace's key at generation 1.
+// environmentKey is an environment's key: the one saving its first secret made, or else one made
+// as that does, a random key wrapped under its workspace's key at generation 1.
 func environmentKey(t *testing.T, f *fixture, ws, env uuid.UUID) []byte {
 	t.Helper()
+	var existing []byte
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT wrapped FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2 AND state='active'`, ws, env).Scan(&existing); err == nil {
+		key, err := cryptobox.OpenEnvironmentKey(workspaceKey(t, f, ws, 1), existing, ws, env, 1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		t.Fatal(err)
@@ -62,7 +71,7 @@ func TestEnvironmentValuesOpenUnderTheirKey(t *testing.T) {
 	x.owner.call("POST", path+"/secrets", map[string]string{"name": "Token", "value": "placeholder"}, 201, &secret)
 	key := environmentKey(t, f, x.ws, env.Id)
 	sealed := underEnvironment(t, f, x.ws, env.Id, secret.Id, key, "environment-canary")
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}
 	if value, err := inspectValue(t, f.st, f.owner, x.ws, item, sealed); err != nil || string(value) != "environment-canary" {
 		t.Fatal(string(value), err)
 	}
@@ -99,6 +108,51 @@ func TestEnvironmentValuesOpenUnderTheirKey(t *testing.T) {
 		if c.Remaining != 0 {
 			t.Fatalf("%d %s values counted as under the keyring", c.Remaining, c.Kind)
 		}
+	}
+}
+
+// A value under one environment's key is never read or kept as another's: a row claiming
+// environment B whose value is sealed under A's key does not open, is not kept by a rehome, and is
+// not named as B's, though the bytes and the version are A's own and A's key opens them. Purging B
+// would not reach it.
+func TestAValueUnderAnotherEnvironmentsKeyIsRefused(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var a, b api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Sealed under"}, 201, &a)
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Claimed by"}, 201, &b)
+	var secret api.SecretVersion
+	x.owner.call("POST", x.prefix+"/"+a.Id.String()+"/secrets", map[string]string{"name": "Token", "value": "placeholder"}, 201, &secret)
+	sealed := underEnvironment(t, f, x.ws, a.Id, secret.Id, environmentKey(t, f, x.ws, a.Id), "a-canary")
+	environmentKey(t, f, x.ws, b.Id)
+	own := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: a.Id}
+	if value, err := inspectValue(t, f.st, f.owner, x.ws, own, sealed); err != nil || string(value) != "a-canary" {
+		t.Fatal(string(value), err)
+	}
+	for _, claimed := range []uuid.UUID{b.Id, uuid.Nil} {
+		item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: claimed}
+		if _, err := inspectValue(t, f.st, f.owner, x.ws, item, sealed); !errors.Is(err, cryptobox.ErrKey) {
+			t.Fatal("opened as environment", claimed, err)
+		}
+		keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Rotate, Principal: secretbroker.Operator("test"), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = keys.Rehome(ctx, db.New(tx), item, sealed); !errors.Is(err, cryptobox.ErrKey) {
+			t.Fatal("kept as environment", claimed, err)
+		}
+		if _, _, err = keys.EnvironmentKeyGeneration(item, sealed); !errors.Is(err, cryptobox.ErrKey) {
+			t.Fatal("named as environment", claimed, err)
+		}
+		if err = tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		keys.Close(ctx, secretbroker.Used)
 	}
 }
 
@@ -143,10 +197,10 @@ func TestPurgeDestroysTheEnvironmentKey(t *testing.T) {
 		t.Fatalf("destroyed events %+v", destroyed)
 	}
 	// The copy the checkpoint holds no longer opens; the kept environment's still does.
-	if _, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}, sealed); !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+	if _, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}, sealed); !errors.Is(err, secretbroker.ErrKeyDestroyed) {
 		t.Fatal("a purged environment's value opened", err)
 	}
-	if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: other.Id}, keptSealed); err != nil || string(value) != "kept-canary" {
+	if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: other.Id, Environment: kept.Id}, keptSealed); err != nil || string(value) != "kept-canary" {
 		t.Fatal(string(value), err)
 	}
 	// The key is never made again for the purged environment.
@@ -156,7 +210,7 @@ func TestPurgeDestroysTheEnvironmentKey(t *testing.T) {
 
 	// Recovery from the pre-purge checkpoint: its key check passes, the purged value stays erased,
 	// and the kept environment's value stays under its key.
-	if err := portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil {
+	if unopened, err := portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base, nil); err != nil || len(unopened) != 0 {
 		t.Fatal(err)
 	}
 	tx, err := f.st.Pool.Begin(ctx)
@@ -262,7 +316,7 @@ func TestRecoveryDestroysTheKeysOfEndedEnvironments(t *testing.T) {
 	}
 	// The checkpoint's preview copy no longer opens: the merge passes its key check and restores
 	// it erased, where the value it held would otherwise come back.
-	if err = portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base); err != nil {
+	if unopened, err := portability.CheckRecoveryKeys(recoverKeys(t, f.st, x.ws), base, nil); err != nil || len(unopened) != 0 {
 		t.Fatal(err)
 	}
 	if tx, err = f.st.Pool.Begin(ctx); err != nil {
@@ -311,5 +365,61 @@ func TestReadingEnvironmentKeysCompletesStageFive(t *testing.T) {
 	events := keyEvents(t, f, "stage-completed")
 	if !slices.Equal([]string{details(t, events[len(events)-1])["stage"]}, []string{"5"}) || len(events) != before+1 {
 		t.Fatal("stage 5 was not recorded once")
+	}
+}
+
+// An environment's ID is unique within its workspace only, and importing keeps it, so an import
+// can bring an environment with another workspace's environment ID, by accident or on purpose.
+// Each workspace keeps its own key for it, and destroying one leaves the other as it was.
+func TestEnvironmentKeysAreTheirWorkspaces(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var env api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Shared ID"}, 201, &env)
+	environmentKey(t, f, x.ws, env.Id)
+	// Another workspace with an environment of the same ID, as an import makes it. Its key is made
+	// here, after the start-up key job, which would otherwise race this for it.
+	keysJobDone(t, f)
+	other := insertWorkspace(t, f, "Imported")
+	initKeys(t, f.st.Broker)
+	q := db.New(f.st.Pool)
+	project, err := q.InsertProject(ctx, db.InsertProjectParams{WorkspaceID: other, ID: uuid.New(), Name: "Imported"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec []byte
+	if err = f.st.Pool.QueryRow(ctx, `SELECT r.specification FROM specification_revisions r JOIN environments e ON e.workspace_id=r.workspace_id AND e.draft_revision_id=r.id WHERE e.workspace_id=$1 AND e.id=$2`, x.ws, env.Id).Scan(&spec); err != nil {
+		t.Fatal(err)
+	}
+	made, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer made.Rollback(ctx)
+	revision, hash := uuid.New(), sha256.Sum256(spec)
+	if _, err = db.New(made).InsertEnvironment(ctx, db.InsertEnvironmentParams{WorkspaceID: other, ProjectID: project.ID, ID: env.Id, Name: "Shared ID", DraftRevisionID: revision}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.New(made).InsertRevision(ctx, db.InsertRevisionParams{WorkspaceID: other, EnvironmentID: env.Id, ID: revision, AuthorID: f.owner, Specification: spec, ContentHash: hash[:]}); err != nil {
+		t.Fatal(err)
+	}
+	if err = made.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The other workspace's environment gets a key of its own.
+	environmentKey(t, f, other, env.Id)
+	if n := x.count("SELECT count(DISTINCT workspace_id) FROM environment_keys WHERE environment_id=$1 AND state='active'", env.Id); n != 2 {
+		t.Fatalf("%d workspaces hold a key for the shared environment ID", n)
+	}
+	// Purging the other workspace's environment destroys its key only.
+	if _, err = f.st.Pool.Exec(ctx, `UPDATE environments SET state='purged', retired_at=now(), retired_by=$3, purged_at=now(), purged_by=$3, purged_without_host=true WHERE workspace_id=$1 AND id=$2`, other, env.Id, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.st.Broker.DestroyEnvironmentKeys(ctx, q, other, env.Id, "environment purged"); err != nil {
+		t.Fatal(err)
+	}
+	if n := x.count("SELECT count(*) FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2 AND state='active'", x.ws, env.Id); n != 1 {
+		t.Fatal("purging the other workspace's environment touched the original's key")
 	}
 }

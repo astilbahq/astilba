@@ -26,7 +26,7 @@ const Version int64 = 71
 // CustodyStage is the custody stage this release completes. It assumes the one before is
 // complete, so `migrate` and Check refuse an installation further behind: stages are taken one
 // release at a time. See docs/hosting.md#key-custody.
-const CustodyStage = 5
+const CustodyStage = 6
 
 func provider(dsn string) (*goose.Provider, *sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)

@@ -151,8 +151,23 @@ func RecoveryImmutable(name string) bool {
 // workspace's key that new values are sealed under: a restored row never lands
 // under a generation on its way out.
 func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session, a Archive, owner uuid.UUID) error {
+	return MergeRecoveryErasing(ctx, tx, session, a, owner, nil)
+}
+
+// MergeRecoveryErasing is MergeRecovery that restores erased the secret versions of erase, the
+// environments whose keys the restored database never had and whose loss the operator accepted.
+func MergeRecoveryErasing(ctx context.Context, tx pgx.Tx, session *secretbroker.Session, a Archive, owner uuid.UUID, erase map[uuid.UUID]bool) error {
 	links := map[string]map[string]jsontext.Value{"environments": {}, "execution_operations": {}}
 	appliedOperations := map[string]jsontext.Value{}
+	// A restored value moves onto its environment's key.
+	environments, err := environmentsOf(a)
+	if err != nil {
+		return err
+	}
+	loss, err := newAcceptedLoss(session, a, erase)
+	if err != nil {
+		return err
+	}
 	for _, t := range tables {
 		rows, err := recoveryMergeOrder(t.Name, a.Tables[t.Name])
 		if err != nil {
@@ -267,7 +282,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session
 					setValue(row, "runtime_operation_id", nil)
 				}
 			}
-			if err = rehomeCredential(ctx, db.New(tx), session, t.Name, row); err != nil {
+			if err = rehomeCredential(ctx, db.New(tx), session, t.Name, row, environments, loss); err != nil {
 				return err
 			}
 			raw, err := stablejson.Marshal(row)
@@ -329,15 +344,57 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session
 	return backfillPostgresMajors(ctx, db.New(tx), a.Workspace)
 }
 
+// errErasureAccepted is a value under an environment key the restored database never had, which
+// the operator accepted recovery restores erased.
+var errErasureAccepted = errors.New("the operator accepted erasing this value")
+
+// acceptedLoss is the environments whose keys the restored database never had and whose values
+// under them the operator accepted recovery restores erased, with the newest lost generation of
+// each whose key recovery has yet to replace.
+type acceptedLoss struct {
+	erase      map[uuid.UUID]bool
+	unreplaced map[uuid.UUID]int64
+}
+
+// newAcceptedLoss reads from the archive the newest generation each environment of erase lost.
+func newAcceptedLoss(session *secretbroker.Session, a Archive, erase map[uuid.UUID]bool) (*acceptedLoss, error) {
+	loss := &acceptedLoss{erase: erase, unreplaced: map[uuid.UUID]int64{}}
+	if len(erase) == 0 {
+		return loss, nil
+	}
+	values, err := EnvironmentSealedValues(session, a)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range values {
+		if erase[v.Environment] {
+			loss.unreplaced[v.Environment] = max(loss.unreplaced[v.Environment], v.Generation)
+		}
+	}
+	return loss, nil
+}
+
 // rehomeCredential moves a recovered row's value onto the generation keys seal under, in q, the
-// transaction that writes the row. A value whose environment's key a purge destroyed opens nowhere
-// again: a secret version is restored erased, as the purge left it, and any other value is kept
-// as it was, unreadable, in its purged environment.
-func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row) error {
-	err := transformCredential(table, row, func(item secretbroker.Item, value []byte) ([]byte, error) {
-		return keys.Rehome(ctx, q, item, value)
+// transaction that writes the row. A secret version whose environment's key a purge destroyed opens
+// nowhere again: it is restored erased, as the purge left it, as is one under a key the restored
+// database never had, for an environment the operator accepted that of. Before any value of such
+// an environment moves, its key is replaced above the generations it lost, so neither this
+// recovery nor a writer after it makes one at a lost generation.
+func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row, environments secretEnvironments, loss *acceptedLoss) error {
+	err := transformCredential(table, row, environments, func(item secretbroker.Item, value []byte) ([]byte, error) {
+		if lost, ok := loss.unreplaced[item.Environment]; ok {
+			if err := keys.ReplaceLostEnvironmentKey(ctx, q, item.Environment, lost); err != nil && !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+				return nil, err
+			}
+			delete(loss.unreplaced, item.Environment)
+		}
+		moved, err := keys.Rehome(ctx, q, item, value)
+		if errors.Is(err, secretbroker.ErrKeyNotInBackup) && loss.erase[item.Environment] {
+			return nil, errErasureAccepted
+		}
+		return moved, err
 	})
-	if !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+	if !errors.Is(err, secretbroker.ErrKeyDestroyed) && !errors.Is(err, errErasureAccepted) {
 		return err
 	}
 	if table == "secret_versions" {

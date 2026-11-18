@@ -45,17 +45,24 @@ func (keysChanged) Unwrap() []error { return []error{keysChangedBusy, ErrNeedKey
 // new generation replaces it.
 var ErrNoSealableKey = &domain.Error{Code: "temporarily_busy", Message: "New values cannot be saved until a new key replaces the current one. Try again later."}
 
-// ErrKeyNotInBackup is a value a recovery cannot open because the restored database holds no key
-// for its workspace: the backup was taken before the workspace's key existed, and what was sealed
-// under that key opens only with it. It is a value the session cannot open, as cryptobox.ErrKey is.
+// ErrKeyNotInBackup is a value a recovery cannot open because the restored database never had the
+// key it is sealed under, its workspace's or its environment's: the backup was taken before that
+// key existed, and what was sealed under it opens only with it. errors.Is matches it for either
+// key, and the error says which is missing and what the operator can do. It is a value the session
+// cannot open, as cryptobox.ErrKey is.
 var ErrKeyNotInBackup error = keyNotInBackup{}
 
-type keyNotInBackup struct{}
+// keyNotInBackup names the environment whose key is missing, or none for the workspace's.
+type keyNotInBackup struct{ environment uuid.UUID }
 
-func (keyNotInBackup) Error() string {
-	return "this management database holds no key for the workspace: it was restored from a backup taken before the workspace's key existed, so it cannot open what the hosts sealed under that key; restore a backup taken after the workspace was created"
+func (e keyNotInBackup) Error() string {
+	if e.environment == uuid.Nil {
+		return "this management database holds no key for the workspace: it was restored from a backup taken before the workspace's key existed, so it cannot open what the hosts sealed under that key; restore a management backup taken after the workspace's key was made"
+	}
+	return "this management database lacks the key that environment " + e.environment.String() + "'s secret values are sealed under: it was restored from a backup taken before that key existed, so it cannot open them; run recovery again to list every environment whose key is missing, then either restore a management backup taken after their first secrets were saved, or run recovery with --accept-erased-environments naming exactly those environments to restore their values erased"
 }
-func (keyNotInBackup) Unwrap() error { return cryptobox.ErrKey }
+func (keyNotInBackup) Is(target error) bool { _, ok := target.(keyNotInBackup); return ok }
+func (keyNotInBackup) Unwrap() error        { return cryptobox.ErrKey }
 
 // ErrKeyMissing is a recovery into a workspace with no key. Recovery runs with the installation
 // offline, where nothing makes keys, so the operator makes them before recovering again.
@@ -119,6 +126,28 @@ type Broker struct {
 	installation uuid.UUID
 	pool         Pool
 	keysWanted   chan struct{}
+}
+
+// instanceCounter counts instances seen lately by the stage their release completes.
+type instanceCounter interface {
+	InstancesBelowStage(ctx context.Context, stage int32) (int64, error)
+}
+
+// sealsUnderEnvironments reports whether every instance seen in the last five minutes runs a
+// release that opens values sealed under environment keys, read in q, so a value may be sealed
+// under one. Until then an environment's values are sealed under its workspace's key, which every
+// release opens, and converting moves them once none is left.
+func sealsUnderEnvironments(ctx context.Context, q instanceCounter) (bool, error) {
+	older, err := q.InstancesBelowStage(ctx, readEnvironmentsStage)
+	return older == 0, err
+}
+
+// SealsUnderEnvironments is sealsUnderEnvironments for the installation as it is now.
+func (b *Broker) SealsUnderEnvironments(ctx context.Context) (bool, error) {
+	if b.pool == nil {
+		return false, errors.New("custody is not installed")
+	}
+	return sealsUnderEnvironments(ctx, db.New(b.pool))
 }
 
 // New takes queries that do not run in a caller's transaction: each record commits on its own.

@@ -94,7 +94,7 @@ func TestTenantRevisionsAndSecrets(t *testing.T) {
 	if strings.Contains(string(cipher), "sensitive-canary") {
 		t.Fatal("secret stored plaintext")
 	}
-	plain, e := inspectValue(t, f.st, f.owner, ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}, cipher)
+	plain, e := inspectValue(t, f.st, f.owner, ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}, cipher)
 	if e != nil || string(plain) != "sensitive-canary" {
 		t.Fatal("cannot decrypt", e)
 	}

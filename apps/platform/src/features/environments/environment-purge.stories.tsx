@@ -101,7 +101,7 @@ export const PurgeDialog: Story = {
     const regions = canvas.getAllByRole("status");
     const dialog = await openPurgeDialog(canvasElement);
     await expect(dialog).toHaveAccessibleDescription(
-      /cannot be undone, and the environment cannot be restored afterwards\..*Its server is asked to delete these data volumes: postgres-data uploads.*secrets are erased.*Backups at the workspace’s backup destination are kept\./,
+      /cannot be undone, and the environment cannot be restored afterwards\..*Its server is asked to delete these data volumes: postgres-data uploads.*secrets are erased.*The installation has not moved every value onto its environment’s key yet.*Backups at the workspace’s backup destination are kept, with the password that restores them, until the destination’s retention removes them\./,
     );
     const submit = within(dialog).getByRole("button", {
       name: "Delete retained data",
@@ -219,7 +219,11 @@ export const PurgeWithoutVolumes: Story = {
     session,
     http.get(environmentsPath, () =>
       HttpResponse.json(
-        listed(purgedNow ? { ...purged, purgeOperationId: null } : retired),
+        listed(
+          purgedNow
+            ? { ...purged, purgeOperationId: null }
+            : { ...retired, purgeReachesEveryCopy: true },
+        ),
       ),
     ),
     http.post(`${environmentRoot}/purge`, async ({ request }) => {
@@ -239,7 +243,11 @@ export const PurgeWithoutVolumes: Story = {
     const canvas = within(canvasElement);
     const dialog = await openPurgeDialog(canvasElement);
     await expect(dialog).toHaveAccessibleDescription(
-      /It keeps no data volumes, so nothing is deleted from its server\./,
+      /It keeps no data volumes, so nothing is deleted from its server\..*Every value is under the environment’s own key/,
+    );
+    // Every value is under its environment's key, so the dialog says no copy stays readable.
+    await expect(dialog).not.toHaveAccessibleDescription(
+      /has not moved every value/,
     );
     await confirmPurge(dialog);
     await canvas.findByText("Retained data deleted.");

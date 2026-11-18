@@ -17,13 +17,14 @@ CREATE TABLE environment_keys (
     kcv bytea CHECK (length(kcv) = 32),
     created_at timestamptz NOT NULL DEFAULT now(),
     destroyed_at timestamptz,
-    PRIMARY KEY (environment_id, generation),
+    -- An environment's ID is unique within its workspace only, and importing keeps it, so a key
+    -- is always named by both.
+    PRIMARY KEY (workspace_id, environment_id, generation),
     FOREIGN KEY (workspace_id, environment_id) REFERENCES environments (workspace_id, id) ON DELETE CASCADE,
     CHECK ((state = 'active') = (wrapped IS NOT NULL AND kcv IS NOT NULL AND destroyed_at IS NULL)),
     CHECK ((state = 'destroyed') = (wrapped IS NULL AND kcv IS NULL AND destroyed_at IS NOT NULL))
 );
-CREATE UNIQUE INDEX environment_keys_active ON environment_keys (environment_id) WHERE state = 'active';
-CREATE INDEX environment_keys_workspace ON environment_keys (workspace_id);
+CREATE UNIQUE INDEX environment_keys_active ON environment_keys (workspace_id, environment_id) WHERE state = 'active';
 
 -- A key starts active, above every generation its environment has had, and never for an
 -- environment that is being purged or whose key was destroyed: a destroyed key is never replaced,
@@ -49,10 +50,10 @@ BEGIN
         IF NEW.state <> 'active' THEN
             RAISE EXCEPTION 'a new environment key starts active';
         END IF;
-        IF env_state IN ('purging', 'purged') OR EXISTS (SELECT 1 FROM environment_keys WHERE environment_id = NEW.environment_id AND state = 'destroyed') THEN
+        IF env_state IN ('purging', 'purged') OR EXISTS (SELECT 1 FROM environment_keys WHERE workspace_id = NEW.workspace_id AND environment_id = NEW.environment_id AND state = 'destroyed') THEN
             RAISE EXCEPTION 'an environment whose key was destroyed gets no other';
         END IF;
-        SELECT max(generation) INTO top FROM environment_keys WHERE environment_id = NEW.environment_id;
+        SELECT max(generation) INTO top FROM environment_keys WHERE workspace_id = NEW.workspace_id AND environment_id = NEW.environment_id;
         IF NEW.generation <= coalesce(top, 0) THEN
             RAISE EXCEPTION 'a new environment key generation must be above every existing one';
         END IF;

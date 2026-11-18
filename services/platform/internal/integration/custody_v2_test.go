@@ -112,7 +112,7 @@ func TestSealsAreFencedOnTheirGeneration(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	ws := ownerWorkspace(t, f)
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New()}
+	item := secretbroker.Item{Kind: secretbroker.BuildSecret, ID: uuid.New()}
 	begin := func() *secretbroker.Session {
 		t.Helper()
 		s, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
@@ -189,7 +189,7 @@ func TestSealWaitingOnItsGenerationSeesItGo(t *testing.T) {
 		"retiring":   {other, `UPDATE workspace_keys SET state='retiring' WHERE workspace_id=$1 AND generation=1`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New()}
+			item := secretbroker.Item{Kind: secretbroker.BuildSecret, ID: uuid.New()}
 			s, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: c.ws, Purpose: secretbroker.Seal, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})
 			if err != nil {
 				t.Fatal(err)
@@ -250,7 +250,7 @@ func TestSealingWakesTheKeyJob(t *testing.T) {
 	ctx := context.Background()
 	keysJobDone(t, f)
 	ws := insertWorkspace(t, f, "Made by an older release")
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: uuid.New()}
+	item := secretbroker.Item{Kind: secretbroker.BuildSecret, ID: uuid.New()}
 	begin := func(purpose secretbroker.Purpose) *secretbroker.Session {
 		t.Helper()
 		s, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: purpose, Principal: secretbroker.Account(f.owner), Items: []secretbroker.Item{item}})

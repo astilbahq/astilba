@@ -74,7 +74,7 @@ func (s *Service) MeasureSecretLengths(ctx context.Context) (bool, error) {
 func (s *Service) measureSecretVersions(ctx context.Context, ws uuid.UUID, versions []db.UnmeasuredSecretVersionsRow) error {
 	items := make([]secretbroker.Item, len(versions))
 	for i, v := range versions {
-		items[i] = secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.ID}
+		items[i] = secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.ID, Environment: v.EnvironmentID}
 	}
 	keys, err := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Inspect, Principal: secretbroker.System("secret-lengths"), Items: items})
 	if err != nil {
@@ -82,7 +82,7 @@ func (s *Service) measureSecretVersions(ctx context.Context, ws uuid.UUID, versi
 	}
 	var failed []error
 	for _, v := range versions {
-		plain, err := keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.ID}, v.EncryptedValue)
+		plain, err := keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.ID, Environment: v.EnvironmentID}, v.EncryptedValue)
 		if err != nil {
 			failed = append(failed, err)
 			continue

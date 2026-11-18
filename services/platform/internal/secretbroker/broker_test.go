@@ -109,6 +109,24 @@ func (f fence) ShareSealableInstallationKey(_ context.Context, arg db.ShareSeala
 	return arg.Generation, nil
 }
 func (f fence) WorkspaceHasKeys(context.Context, uuid.UUID) (bool, error) { return f.has, nil }
+func (f fence) EnvironmentKeyForSealing(context.Context, db.EnvironmentKeyForSealingParams) (db.EnvironmentKeyForSealingRow, error) {
+	return db.EnvironmentKeyForSealingRow{}, pgx.ErrNoRows
+}
+func (f fence) EnvironmentSealingRefused(context.Context, db.EnvironmentSealingRefusedParams) (bool, error) {
+	return f.destroyed, nil
+}
+func (f fence) InsertEnvironmentKey(context.Context, db.InsertEnvironmentKeyParams) error {
+	return errors.New("no environment keys in unit tests")
+}
+
+// InstancesBelowStage reports an older instance, so unit tests seal under the workspace key: they
+// have no environment keys.
+func (f fence) InstancesBelowStage(context.Context, int32) (int64, error) { return 1, nil }
+func (f fence) LockEnvironmentKeyCreation(context.Context, string) error  { return nil }
+func (f fence) HoldSecretVersionsForWriting(context.Context) error        { return nil }
+func (f fence) InsertInstallationKeyEvent(context.Context, db.InsertInstallationKeyEventParams) error {
+	return nil
+}
 func (f fence) ShareEnvironmentKey(_ context.Context, arg db.ShareEnvironmentKeyParams) (int64, error) {
 	if f.destroyed {
 		return 0, pgx.ErrNoRows
@@ -142,7 +160,7 @@ func TestNothingOpensWithoutACommittedRecord(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
 	ctx := context.Background()
 	ws, version := uuid.New(), uuid.New()
-	item := Item{Kind: SecretVersion, ID: version}
+	item := Item{Kind: SecretVersion, ID: version, Environment: uuid.New()}
 	q.failNext = errors.New("database down")
 	if s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}}); err == nil || s != nil {
 		t.Fatalf("Begin without a record: %v", err)
@@ -186,7 +204,7 @@ func TestPurposeTable(t *testing.T) {
 	b, _, owner, member, server := setup(t)
 	ctx := context.Background()
 	ws := uuid.New()
-	secret := Item{Kind: SecretVersion, ID: uuid.New()}
+	secret := Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	for _, test := range []struct {
 		name string
 		r    Request
@@ -233,7 +251,7 @@ func TestSessionOpensOnlyWhatItWasGiven(t *testing.T) {
 	b, _, owner, _, _ := setup(t)
 	ctx := context.Background()
 	ws, other := uuid.New(), uuid.New()
-	mine, theirs := Item{Kind: SecretVersion, ID: uuid.New()}, Item{Kind: SecretVersion, ID: uuid.New()}
+	mine, theirs := Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}, Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	seal, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{mine, theirs}})
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +308,7 @@ func TestSessionEndsAtItsLimit(t *testing.T) {
 	b, _, owner, _, _ := setup(t)
 	advance := stopClock(b)
 	ctx := context.Background()
-	item := Item{Kind: SecretVersion, ID: uuid.New()}
+	item := Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	s, err := b.Begin(ctx, Request{Workspace: uuid.New(), Purpose: Seal, Principal: Account(owner), NewWorkspace: true, Items: []Item{item}})
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +324,7 @@ func TestBudgets(t *testing.T) {
 	advance := stopClock(b)
 	ctx := context.Background()
 	ws := uuid.New()
-	item := Item{Kind: SecretVersion, ID: uuid.New()}
+	item := Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	for range workspaceBurst {
 		if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Items: []Item{item}}); err != nil {
 			t.Fatal(err)
@@ -362,7 +380,7 @@ func TestDeliveryBudgetIsPerServer(t *testing.T) {
 	ctx := context.Background()
 	ws, other := uuid.New(), uuid.New()
 	q.servers[other] = true
-	secret := Item{Kind: SecretVersion, ID: uuid.New()}
+	secret := Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	for range serverBurst {
 		if _, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Deliver, Principal: Agent(server, "1"), Items: []Item{secret}}); err != nil {
 			t.Fatal(err)
@@ -457,7 +475,7 @@ func TestNoKeyOutlivesItsSession(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
 	counting := &countingBackend{Legacy: b.backend}
 	b.backend = counting
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	key := withWorkspaceKey(t, b, q, ws)
 	sealed, err := cryptobox.SealUnder(key, cryptobox.ScopeWorkspace, 1, []byte("value"), item.identity(ws))
 	if err != nil {
@@ -523,7 +541,7 @@ func TestOutcomesNameTheProvidersRequests(t *testing.T) {
 	b, q, owner, _, _ := setup(t)
 	naming := &namingBackend{Legacy: b.backend}
 	b.backend = naming
-	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New()}
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
 	withWorkspaceKey(t, b, q, ws)
 	ctx := context.Background()
 	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Inspect, Principal: Account(owner), Items: []Item{item}})

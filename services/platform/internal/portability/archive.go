@@ -41,9 +41,27 @@ func rowString(row Row, key string) (string, error) {
 }
 func setValue(row Row, key string, value any) { row[key], _ = stablejson.Marshal(value) }
 
+// secretEnvironments maps each secret in an archive to its environment, which a secret version's
+// value is sealed for.
+type secretEnvironments map[uuid.UUID]uuid.UUID
+
+// environmentsOf reads which environment each of an archive's secrets belongs to.
+func environmentsOf(a Archive) (secretEnvironments, error) {
+	out := secretEnvironments{}
+	for _, row := range a.Tables["secrets"] {
+		var id, env uuid.UUID
+		if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["environment_id"], &env) != nil {
+			return nil, ErrArchive
+		}
+		out[id] = env
+	}
+	return out, nil
+}
+
 // credential names a row's sealed column and the value it holds, or "" for a table with none or a
-// secret version whose value was erased, which holds nothing to open or seal.
-func credential(table string, row Row) (string, secretbroker.Item, error) {
+// secret version whose value was erased, which holds nothing to open or seal. A secret version's
+// item names its secret's environment, from environments, whose key it is sealed under.
+func credential(table string, row Row, environments secretEnvironments) (string, secretbroker.Item, error) {
 	var field string
 	var kind secretbroker.Kind
 	switch table {
@@ -79,27 +97,35 @@ func credential(table string, row Row) (string, secretbroker.Item, error) {
 	if e != nil {
 		return "", secretbroker.Item{}, ErrArchive
 	}
-	return field, secretbroker.Item{Kind: kind, ID: id}, nil
+	item := secretbroker.Item{Kind: kind, ID: id}
+	if table == "secret_versions" {
+		var secret uuid.UUID
+		if json.Unmarshal(row["secret_id"], &secret) != nil || environments[secret] == uuid.Nil {
+			return "", secretbroker.Item{}, ErrArchive
+		}
+		item.Environment = environments[secret]
+	}
+	return field, item, nil
 }
 
 // transformCredential replaces a row's value with what transform makes of it: the value opened for
 // an export, or sealed for an import, by keys for the workspace being exported or created.
-func transformCredential(table string, row Row, transform func(secretbroker.Item, []byte) ([]byte, error)) error {
-	field, item, e := credential(table, row)
+func transformCredential(table string, row Row, environments secretEnvironments, transform func(secretbroker.Item, []byte) ([]byte, error)) error {
+	field, item, e := credential(table, row, environments)
 	if e != nil || field == "" {
 		return e
 	}
-	raw, e := rowString(row, field)
-	if e != nil || !strings.HasPrefix(raw, `\x`) {
-		return ErrArchive
-	}
-	value, e := hex.DecodeString(raw[2:])
+	value, e := sealedColumn(row, field)
 	if e != nil {
-		return ErrArchive
+		return e
 	}
 	value, e = transform(item, value)
 	// A value that does not open, or would not open once sealed, is the archive's fault; anything
-	// else, such as an ended session or keys not made yet, is not.
+	// else, such as an ended session, keys not made yet, or a key the restored database never had,
+	// is not.
+	if errors.Is(e, secretbroker.ErrKeyNotInBackup) {
+		return e
+	}
 	if errors.Is(e, cryptobox.ErrKey) || errors.Is(e, secretbroker.ErrTooLarge) {
 		return ErrArchive
 	}
@@ -109,6 +135,19 @@ func transformCredential(table string, row Row, transform func(secretbroker.Item
 	setValue(row, field, `\x`+hex.EncodeToString(value))
 	clear(value)
 	return nil
+}
+
+// sealedColumn is the sealed value a row's column holds, as PostgreSQL's hex form of bytea.
+func sealedColumn(row Row, field string) ([]byte, error) {
+	raw, err := rowString(row, field)
+	if err != nil || !strings.HasPrefix(raw, `\x`) {
+		return nil, ErrArchive
+	}
+	value, err := hex.DecodeString(raw[2:])
+	if err != nil {
+		return nil, ErrArchive
+	}
+	return value, nil
 }
 
 // AdmitExport refuses what Export would refuse before reading the workspace: an account that
@@ -149,12 +188,16 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 		if err != nil {
 			return err
 		}
+		environments, err := environmentsOf(archive)
+		if err != nil {
+			return err
+		}
 		for _, table := range tables {
 			for _, row := range archive.Tables[table.Name] {
 				if err := omitExportLogs(table.Name, row); err != nil {
 					return err
 				}
-				if err := transformCredential(table.Name, row, keys.Open); err != nil {
+				if err := transformCredential(table.Name, row, environments, keys.Open); err != nil {
 					return err
 				}
 			}
