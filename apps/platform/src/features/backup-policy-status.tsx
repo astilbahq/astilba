@@ -48,7 +48,9 @@ export function PolicyStatus({
   // reported about its runs can be shown as fact.
   const manage = owner && !!server && !revoked;
   const reported = !!server && !revoked;
-  const action = useAction(),
+  // Every action here hands the policy's credentials to its server or changes them, so each
+  // needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true }),
     queries = useQueryClient(),
     p = { ...path, policyId: policy.id };
   const [message, setMessage] = useState("");

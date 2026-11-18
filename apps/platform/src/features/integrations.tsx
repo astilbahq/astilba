@@ -11,7 +11,8 @@ import { GitHubAppSettings } from "./github-app";
 
 const wsRoot = "/api/v1/workspaces/{workspaceId}" as const;
 export function IntegrationSettings({ workspaceId }: { workspaceId: string }) {
-  const action = useAction(),
+  // Each form stores a credential, which needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true }),
     queries = useQueryClient();
   const workspace = { workspaceId },
     path = { workspaceId };

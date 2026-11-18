@@ -3,10 +3,9 @@ import { useContext, useEffect, useState } from "react";
 import { client, result, type Schema } from "./api/client";
 import { serversOptions } from "./api/servers";
 import { Button } from "./components/button";
-import { Input } from "./components/input";
 import { Label } from "./components/label";
-import { Anchor } from "./components/link";
 import { Select } from "./components/select";
+import { EnrollmentInstructions } from "./features/enrollment-instructions";
 import { ManagedNetwork } from "./features/managed-network";
 import { ServerMetrics } from "./features/metrics";
 import { ServerCredentials } from "./features/server-credentials";
@@ -37,6 +36,10 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
   const workspaceId = workspace.id;
   const queries = useQueryClient();
   const action = useAction();
+  // A server's credentials, from a transfer ticket to its agent key, change only after a recent
+  // confirmation of identity, so their controls ask for one before sending when the session is
+  // known not to have it.
+  const credentials = useAction({ recentAuth: true });
   const [enrollment, setEnrollment] = useState<Schema["Enrollment"]>();
   useEffect(() => {
     if (!enrollment) return;
@@ -104,16 +107,28 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
     await queries.invalidateQueries({ queryKey: ["servers", workspaceId] });
     await queries.invalidateQueries({ queryKey: ["operations", workspaceId] });
   };
-  const run = (fn: () => Promise<unknown>) =>
+  // The two share one error notice, so starting either clears what the other last reported.
+  const run = (fn: () => Promise<unknown>) => {
+    credentials.reset();
     action.run(async () => {
       await fn();
       await refresh();
     });
+  };
+  const runCredential = (fn: () => Promise<unknown>) => {
+    action.reset();
+    credentials.run(async () => {
+      await fn();
+      await refresh();
+    });
+  };
+  const busy = action.isPending || credentials.isPending;
   return (
     <>
       <ErrorNotice
         error={
           action.error ||
+          credentials.error ||
           servers.error ||
           operations.error ||
           projects.error ||
@@ -137,70 +152,11 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
         owner={owner}
       />
       {enrollment && (
-        <section className={s.panel} aria-label="Enrollment instructions">
-          <h2>Connect {enrollment.server.name}</h2>
-          <p>
-            One-use code, expires{" "}
-            {new Date(enrollment.expiresAt).toLocaleTimeString()}. Paste it into
-            the agent’s stdin prompt; keep it out of shell history.
-          </p>
-          <Label>
-            Enrollment code
-            <Input readOnly value={enrollment.token} autoComplete="off" />
-          </Label>
-          <code className={s.code}>
-            sudo astilba-agent enroll --management {location.origin} --server{" "}
-            {enrollment.server.id} --release-key /etc/astilba/release-public.pem
-          </code>
-          <code className={s.code}>
-            sudo systemctl enable --now astilba-agent
-          </code>
-          <p>
-            Enrolling does not start the service. Enable it explicitly, then
-            inspect the connection and role capabilities below.
-          </p>
-          <p>
-            Use the signed download and systemd installation steps in the
-            repository’s agent guide before running this command.
-          </p>
-          {releases.data?.length ? (
-            <ul>
-              {releases.data.map((release) => (
-                <li key={release.sha256}>
-                  {release.version} · Linux {release.arch}:{" "}
-                  <Anchor
-                    href={`/agent-artifacts/${release.sha256}`}
-                    download="astilba-agent"
-                  >
-                    Download agent
-                  </Anchor>
-                  {" · "}
-                  <Anchor
-                    href={`/agent-artifacts/${release.sha256}/manifest.json`}
-                    download="release.json"
-                  >
-                    Signed manifest
-                  </Anchor>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p>
-              No signed downloads are configured. The installation operator must
-              provide the agent artifact and its signed manifest.
-            </p>
-          )}
-          <Anchor
-            href="https://github.com/astilbahq/astilba/blob/main/docs/agent.md"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Agent installation guide
-          </Anchor>
-          <Button type="button" onClick={() => setEnrollment(undefined)}>
-            Hide enrollment code
-          </Button>
-        </section>
+        <EnrollmentInstructions
+          enrollment={enrollment}
+          releases={releases.data ?? []}
+          onHide={() => setEnrollment(undefined)}
+        />
       )}
       {transfer && (
         <section className={s.panel}>
@@ -258,9 +214,9 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 </p>
                 <Button
                   type="button"
-                  disabled={action.isPending}
+                  disabled={busy}
                   onClick={() =>
-                    run(async () =>
+                    runCredential(async () =>
                       setTransfer(
                         await result(
                           client.POST(
@@ -339,8 +295,8 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               <ServerCredentials
                 workspaceId={workspaceId}
                 server={server}
-                busy={action.isPending}
-                run={run}
+                busy={busy}
+                run={runCredential}
                 onEnrollment={setEnrollment}
               />
             )}
@@ -387,7 +343,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                         ))}
                     </Select>
                   </Label>
-                  <BusyButton busy={action.isPending}>Update agent</BusyButton>
+                  <BusyButton busy={busy}>Update agent</BusyButton>
                 </Form>
               )}
           </article>
@@ -473,7 +429,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                   <option value="remove">Remove probe</option>
                 </Select>
               </Label>
-              <BusyButton busy={action.isPending}>Review test plan</BusyButton>
+              <BusyButton busy={busy}>Review test plan</BusyButton>
             </Form>
           ) : (
             <p>Create a project and environment first.</p>
@@ -497,7 +453,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               </p>
               <Button
                 type="button"
-                disabled={action.isPending}
+                disabled={busy}
                 onClick={() =>
                   run(async () => {
                     await result(
@@ -559,7 +515,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
               !["succeeded", "failed", "cancelled"].includes(op.state) && (
                 <Button
                   type="button"
-                  disabled={action.isPending || op.cancelRequested}
+                  disabled={busy || op.cancelRequested}
                   onClick={() =>
                     run(() =>
                       result(
