@@ -164,7 +164,7 @@ func MergeRecoveryErasing(ctx context.Context, tx pgx.Tx, session *secretbroker.
 	if err != nil {
 		return err
 	}
-	loss, err := newAcceptedLoss(a, erase)
+	loss, err := newAcceptedLoss(session, a, erase)
 	if err != nil {
 		return err
 	}
@@ -357,12 +357,12 @@ type acceptedLoss struct {
 }
 
 // newAcceptedLoss reads from the archive the newest generation each environment of erase lost.
-func newAcceptedLoss(a Archive, erase map[uuid.UUID]bool) (*acceptedLoss, error) {
+func newAcceptedLoss(session *secretbroker.Session, a Archive, erase map[uuid.UUID]bool) (*acceptedLoss, error) {
 	loss := &acceptedLoss{erase: erase, unreplaced: map[uuid.UUID]int64{}}
 	if len(erase) == 0 {
 		return loss, nil
 	}
-	values, err := EnvironmentSealedValues(a)
+	values, err := EnvironmentSealedValues(session, a)
 	if err != nil {
 		return nil, err
 	}

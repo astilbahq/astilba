@@ -9,6 +9,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 )
 
@@ -107,11 +108,11 @@ func recoveryErasure(a portability.Archive, unopened []portability.UnopenedValue
 // repeatedErasure is the report's erased values for an apply that repeats one the operator
 // accepted erasure for: the archive's values under the keys of the accepted environments, which
 // the first apply stored erased.
-func repeatedErasure(ctx context.Context, q *db.Queries, in RecoveryImport, a portability.Archive) ([]RecoveryErasedValue, error) {
+func repeatedErasure(ctx context.Context, q *db.Queries, keys *secretbroker.Session, in RecoveryImport, a portability.Archive) ([]RecoveryErasedValue, error) {
 	if len(in.AcceptErasedEnvironments) == 0 {
 		return []RecoveryErasedValue{}, nil
 	}
-	values, err := portability.EnvironmentSealedValues(a)
+	values, err := portability.EnvironmentSealedValues(keys, a)
 	if err != nil {
 		return nil, err
 	}

@@ -150,7 +150,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 		if repeated, err := s.repeatedRecovery(ctx, tx, in, inputHash, roots, &out); err != nil {
 			return out, err
 		} else if repeated {
-			out.ErasedValues, err = repeatedErasure(ctx, q, in, source.Archive)
+			out.ErasedValues, err = repeatedErasure(ctx, q, keys, in, source.Archive)
 			return out, err
 		}
 		return out, errors.New("workspace state changed; inspect recovery again")

@@ -221,3 +221,25 @@ func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment u
 		"environment": environment.String(), "generation": strconv.FormatInt(generation, 10),
 	}})
 }
+
+// EnvironmentKeyGeneration is the generation of item's environment's key that ciphertext, one of
+// item's values, is sealed under, read from the envelope without opening it, and false for a value
+// under any other key. Recovery names by it the values a restored database has no key for. A value
+// under another environment's key, which no key of item's opens, is cryptobox.ErrKey, as opening it
+// would be.
+func (s *Session) EnvironmentKeyGeneration(item Item, ciphertext []byte) (int64, bool, error) {
+	if _, _, err := s.allowed(item, s.rule.open); err != nil {
+		return 0, false, err
+	}
+	header, err := cryptobox.ReadHeader(ciphertext)
+	if err != nil {
+		return 0, false, err
+	}
+	if header.Scope != cryptobox.ScopeEnvironment {
+		return 0, false, nil
+	}
+	if !item.Kind.environmental() || header.Holder != item.Environment {
+		return 0, false, cryptobox.ErrKey
+	}
+	return header.Generation, true, nil
+}

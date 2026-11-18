@@ -4,7 +4,6 @@ import (
 	"encoding/json/v2"
 	"errors"
 
-	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 )
@@ -48,7 +47,7 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive, stored map[uuid.UU
 				continue
 			}
 			if errors.Is(err, secretbroker.ErrKeyNotInBackup) && item.Environment != uuid.Nil {
-				value, sealed, err := environmentSealed(row, item, cipher)
+				value, sealed, err := environmentSealed(keys, row, item, cipher)
 				if err != nil {
 					return nil, err
 				}
@@ -68,8 +67,9 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive, stored map[uuid.UU
 	return unopened, nil
 }
 
-// EnvironmentSealedValues is the archive's secret versions sealed under their environments' keys.
-func EnvironmentSealedValues(a Archive) ([]UnopenedValue, error) {
+// EnvironmentSealedValues is the archive's secret versions sealed under their environments' keys,
+// as keys, a recovery session, reads their envelopes.
+func EnvironmentSealedValues(keys *secretbroker.Session, a Archive) ([]UnopenedValue, error) {
 	environments, err := environmentsOf(a)
 	if err != nil {
 		return nil, err
@@ -87,7 +87,7 @@ func EnvironmentSealedValues(a Archive) ([]UnopenedValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		value, sealed, err := environmentSealed(row, item, cipher)
+		value, sealed, err := environmentSealed(keys, row, item, cipher)
 		if err != nil {
 			return nil, err
 		}
@@ -100,14 +100,14 @@ func EnvironmentSealedValues(a Archive) ([]UnopenedValue, error) {
 
 // environmentSealed reports whether a secret version's value is sealed under an environment's
 // key, which must be its own.
-func environmentSealed(row Row, item secretbroker.Item, cipher []byte) (UnopenedValue, bool, error) {
-	header, err := cryptobox.ReadHeader(cipher)
-	if err != nil || header.Scope != cryptobox.ScopeEnvironment {
-		return UnopenedValue{}, false, nil
+func environmentSealed(keys *secretbroker.Session, row Row, item secretbroker.Item, cipher []byte) (UnopenedValue, bool, error) {
+	generation, sealed, err := keys.EnvironmentKeyGeneration(item, cipher)
+	if secretbroker.SessionFailure(err) {
+		return UnopenedValue{}, false, err
 	}
 	var secret uuid.UUID
-	if header.Holder != item.Environment || json.Unmarshal(row["secret_id"], &secret) != nil {
+	if err != nil || sealed && json.Unmarshal(row["secret_id"], &secret) != nil {
 		return UnopenedValue{}, false, ErrArchive
 	}
-	return UnopenedValue{Environment: item.Environment, Secret: secret, Version: item.ID, Generation: header.Generation}, true, nil
+	return UnopenedValue{Environment: item.Environment, Secret: secret, Version: item.ID, Generation: generation}, sealed, nil
 }
