@@ -2,11 +2,15 @@ package secretbroker
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"strconv"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // DestroyEnvironmentKeys destroys an environment's keys in q, the transaction that purges the
@@ -104,4 +108,116 @@ func (b *Broker) correctEnvironmentsStage(ctx context.Context, startup bool) err
 	}
 	b.log.Warn("custody stage recorded as 5 again: run `astilba custody convert`", "reason", reason)
 	return tx.Commit(ctx)
+}
+
+// environmentSealingKey is the key an environment's new values are sealed under, held in q, the
+// writer's transaction. The environment's first value makes it, wrapped under ref, the workspace
+// key generation the session seals under: inside the transaction, with no call to the key
+// service, and recorded in the installation's key history. A writer making it at the same time
+// keeps the other's. An environment being purged, or whose key was destroyed, gets no value, nor
+// a new key: ErrKeyDestroyed.
+func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environment uuid.UUID, ref keyRef) ([]byte, int64, error) {
+	ws := s.request.Workspace
+	row, err := q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Writers making the first key take turns: the second finds the first's.
+		if err = q.LockEnvironmentKeyCreation(ctx, "environment:"+ws.String()+":"+environment.String()); err != nil {
+			return nil, 0, err
+		}
+		row, err = q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		var refused bool
+		refused, err = q.EnvironmentSealingRefused(ctx, db.EnvironmentSealingRefusedParams{WorkspaceID: ws, EnvironmentID: environment})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Not one of the workspace's environments.
+			return nil, 0, ErrNotAllowed
+		case err != nil:
+			return nil, 0, err
+		case refused:
+			return nil, 0, ErrKeyDestroyed
+		}
+		if err = s.makeEnvironmentKey(ctx, q, environment, ref, 1); err != nil {
+			return nil, 0, err
+		}
+		row, err = q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keys == nil {
+		return nil, 0, ErrNeedKeys
+	}
+	ref2 := environmentRef{environment, row.Generation}
+	// A key made since the session began is held as this transaction stores it, never as an
+	// earlier transaction that rolled back made it.
+	s.holdProvisional(ref2, &environmentKey{workspaceGeneration: row.WorkspaceGeneration, wrapped: row.Wrapped, kcv: row.Kcv})
+	key, err := s.openEnvironmentKey(ref2, s.environments[ref2])
+	return key, row.Generation, err
+}
+
+// ReplaceLostEnvironmentKey gives an environment whose keys the restored database never had a key
+// at the generation after lost, the newest one the hosts' checkpoints name, wrapped under the
+// workspace key generation the session seals under. A key made later would otherwise take a lost
+// key's generation, under which a value sealed with the lost key fails to open as if corrupt; above
+// them, such a value stays one recovery stops for, ErrKeyNotInBackup. Only recovery calls it. An
+// environment that already has a key keeps it, and one being purged gets none: ErrKeyDestroyed.
+func (s *Session) ReplaceLostEnvironmentKey(ctx context.Context, q Fence, environment uuid.UUID, lost int64) error {
+	if s.request.Purpose != Recover {
+		return ErrNotAllowed
+	}
+	ws := s.request.Workspace
+	ref, err := s.fence(ctx, q, Item{Kind: SecretVersion, ID: environment, Environment: environment})
+	if err != nil {
+		return err
+	}
+	if err = q.LockEnvironmentKeyCreation(ctx, "environment:"+ws.String()+":"+environment.String()); err != nil {
+		return err
+	}
+	if _, err = q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment}); !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	refused, err := q.EnvironmentSealingRefused(ctx, db.EnvironmentSealingRefusedParams{WorkspaceID: ws, EnvironmentID: environment})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrNotAllowed
+	case err != nil:
+		return err
+	case refused:
+		return ErrKeyDestroyed
+	}
+	return s.makeEnvironmentKey(ctx, q, environment, ref, lost+1)
+}
+
+// makeEnvironmentKey makes an environment's key at generation, wrapped under ref, and records it.
+func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment uuid.UUID, ref keyRef, generation int64) error {
+	ws := s.request.Workspace
+	key := make([]byte, 32)
+	defer clear(key)
+	if _, err := rand.Read(key); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	workspaceKey, ok := s.keys[ref]
+	var wrapped []byte
+	var err error
+	if ok {
+		wrapped, err = cryptobox.WrapEnvironmentKey(workspaceKey, ws, environment, generation, ref.generation, key)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return ErrNeedKeys
+	}
+	if err != nil {
+		return err
+	}
+	if err = q.InsertEnvironmentKey(ctx, db.InsertEnvironmentKeyParams{WorkspaceID: ws, EnvironmentID: environment, Generation: generation, WorkspaceGeneration: ref.generation, Wrapped: wrapped, Kcv: custody.KeyCheck(key)}); err != nil {
+		return err
+	}
+	return s.broker.event(ctx, q, keyEvent{run: s.id, kind: "environment-key-created", scope: custody.ScopeWorkspace, workspace: &ws, generation: ref.generation, details: map[string]string{
+		"environment": environment.String(), "generation": strconv.FormatInt(generation, 10),
+	}})
 }
