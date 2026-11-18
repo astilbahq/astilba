@@ -94,10 +94,13 @@ func TestZoneSweepWithdrawsOnlyRecordsNothingBacks(t *testing.T) {
 	z := newDNSZone(t, f)
 	ctx := context.Background()
 	approved := publishedServer(t, f, z)
-	// A server whose approval is current, but whose publication the database lost, along with one
-	// of its records.
+	// A server whose approval is current, but whose publication the database lost, and one of whose
+	// records the zone lost before the database observed it.
 	lost := publishedServer(t, f, z)
 	if _, e := f.st.Pool.Exec(ctx, "DELETE FROM dns_publications WHERE server_id=$1", lost.id); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := f.st.Pool.Exec(ctx, "UPDATE server_domains SET records=records-'AAAA' WHERE server_id=$1", lost.id); e != nil {
 		t.Fatal(e)
 	}
 	z.mu.Lock()

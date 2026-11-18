@@ -791,6 +791,13 @@ which covers a restore, and every five minutes after. It lists the zone's record
 starts with `astilba:` and this installation's ID, and reads the server and base from each one's
 comment and name. Then, for each name:
 
+- **The record is newer than its server's approval.** It is at the name of the server's last
+  approval, holds an address the approval doesn't, and Cloudflare says it changed more than two
+  and a half minutes after the approval. That's what a restore leaves when the owner moved the
+  server after the backup. The approval ends, so the older addresses are never published again,
+  and the record is removed, audited with reason `approval_outdated`. An owner approves the
+  server's addresses again. See
+  [server onboarding](server-onboarding.md#when-an-approval-is-older-than-dns).
 - **The database records it.** Nothing changes here: the rules in
   [removing generated records](#removing-generated-records) apply, so a server fenced by
   recovery keeps its records.
@@ -800,6 +807,19 @@ comment and name. Then, for each name:
 - **Anything else.** The record is unbacked and is removed. That includes servers the database
   has never heard of, servers no longer approved, and names under a base other than
   `ASTILBA_APPLICATION_DOMAIN`. Each deletion is audited first, with reason `unbacked`.
+
+A DNS job checks the same before it publishes, and also ends the approval when a record it last
+saw is gone without the database having deleted it, such as after a restore from a backup taken
+before the server was revoked. That needs the backup to hold the record the job last saw: one
+taken before the server's records were first published, or published again after its approval
+ended or its base changed, or while hosted management was inactive, holds none. The comparison can't check it, because a listing can miss a record. Removal because a hosted workspace's management is inactive checks the same first, since
+the approval is published again when management resumes. The records a job last saw are forgotten
+when the approval ends this way or its base changes, and kept when the provider fails, so a
+failed job never hides a missing record.
+
+The margin of two and a half minutes covers a job's request that lands late, and the database
+host's clock running up to a minute behind Cloudflare's. Keep the database host's clock
+synchronised.
 
 Records whose comment carries another installation's ID, records without the comment, and records
 Astilba never makes are never removed. Records Astilba never makes are anything other than A or
@@ -811,8 +831,9 @@ compared at all, and management logs an error every five minutes.
 
 #### When many records would go at once
 
-If one comparison would remove more than 10 records, and more than a fifth of this installation's
-records it listed, it removes none of them and holds them instead. That covers a fault in the
+If one comparison would remove more than 10 records, unbacked or newer than their approval
+together, and more than a fifth of this installation's records it listed, it removes none of them
+and holds them instead. Approvals it finds outdated end all the same. That covers a fault in the
 comparison, and a management that shouldn't be acting on this zone at all, such as a restore
 drill given the live zone's credentials. A genuine restore from an older backup can trip it too.
 While records are held, management logs an error every five minutes. On a self-hosted
@@ -829,7 +850,7 @@ astilba dns confirm-withdrawals --hold HOLD_ID --count N --operator NAME --note 
 addresses, and the exact command to confirm it. `--count` must match the number of records the
 hold holds. If the comparison has since found a record the hold doesn't hold, the hold is
 replaced, and the command asks you to look again. The next comparison, within five minutes,
-removes the confirmed records that are still unbacked. Records found later are judged afresh. A
+removes the confirmed records it still finds should go. Records found later are judged afresh. A
 confirmed hold closes once all its records are removed. Otherwise the confirmation lapses after a
 day. A hold whose records fall back under the threshold, because some were backed
 again or deleted by hand, closes on its own and the rest are removed as usual.
@@ -1003,7 +1024,9 @@ alert when it fails, and the full restore procedure.
 
 Restore with the matching application version, or a newer one after `astilba migrate`,
 into a clean database and private keyring mount. With automatic DNS, the restored management
-removes, as soon as it starts, the records of servers enrolled or approved after the backup; see
+removes, as soon as it starts, the records of servers enrolled or approved after the backup. It
+never publishes again an address the owner replaced after the backup: that server's approval
+ends, and an owner approves its addresses again. See
 [records the database has lost](#records-the-database-has-lost). Cross-host recovery reads the checkpoints the
 hosts hold, so run it with the release that sealed the newest of them or a newer one, even when
 the backup is older. Restore the backup, migrate to that release, then recover. An older release

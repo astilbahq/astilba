@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,8 @@ type record struct {
 	Comment string `json:"comment"`
 	Proxied bool   `json:"proxied"`
 	TTL     int    `json:"ttl"`
+	// When the provider last changed the record, by its own clock. Never sent.
+	ModifiedOn time.Time `json:"modified_on,omitzero"`
 }
 
 var ErrProvider = errors.New("DNS provider request failed; inspect the operator configuration and retry")
@@ -197,9 +200,36 @@ func (c *Cloudflare) list(ctx context.Context, name string) ([]record, error) {
 	return records, nil
 }
 
+// Listed is one of this installation's address records at a name, as the provider listed it.
+type Listed struct {
+	ID, Type, Content string
+	ModifiedOn        time.Time
+}
+
+// Judge is shown this installation's address records at a name before Reconcile or Remove changes
+// anything there. An error from it stops them, with nothing sent, and is returned as it is.
+type Judge func([]Listed) error
+
+// judged shows judge our address records, when there is a judge. The provider always says when it
+// changed a record; without that, nothing can be judged.
+func judged(judge Judge, ours []record) error {
+	if judge == nil {
+		return nil
+	}
+	present := make([]Listed, 0, len(ours))
+	for _, r := range ours {
+		if r.ModifiedOn.IsZero() {
+			return ErrProvider
+		}
+		present = append(present, Listed{r.ID, r.Type, r.Content, r.ModifiedOn})
+	}
+	return judge(present)
+}
+
 // Reconcile only changes exact-name A/AAAA records bearing this installation's
-// marker. Listing first also recovers a successful mutation whose response was lost.
-func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 string, deleting Deleting) (map[string]string, error) {
+// marker. Listing first also recovers a successful mutation whose response was lost. judge sees
+// what that listing found before anything is sent.
+func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 string, judge Judge, deleting Deleting) (map[string]string, error) {
 	records, e := c.list(ctx, name)
 	if e != nil {
 		return nil, e
@@ -216,6 +246,15 @@ func (c *Cloudflare) Reconcile(ctx context.Context, name, marker, ipv4, ipv6 str
 			return nil, ErrOwnership
 		}
 		existing[r.Type] = r
+	}
+	ours := []record{}
+	for _, kind := range []string{"A", "AAAA"} {
+		if r := existing[kind]; r.ID != "" {
+			ours = append(ours, r)
+		}
+	}
+	if e := judged(judge, ours); e != nil {
+		return nil, e
 	}
 	out := map[string]string{}
 	for _, kind := range []string{"A", "AAAA"} {
@@ -264,37 +303,42 @@ func (c *Cloudflare) delete(ctx context.Context, r record, deleting Deleting) er
 // and leaves every other record at that name alone. It never matches by name alone:
 // a record someone else created, or another installation's, survives. Run again after
 // a failure, it lists afresh, so a deletion whose response was lost is not repeated.
-// It returns nil only once none of the installation's records are left at the name.
-func (c *Cloudflare) Remove(ctx context.Context, name, marker string, deleting Deleting) error {
-	_, e := c.remove(ctx, name, marker, func(record) bool { return true }, deleting)
+// It returns nil only once none of the installation's records are left at the name. A judge, when
+// given, sees them first, as Reconcile's does.
+func (c *Cloudflare) Remove(ctx context.Context, name, marker string, judge Judge, deleting Deleting) error {
+	_, e := c.remove(ctx, name, marker, judge, func(record) bool { return true }, deleting)
 	return e
 }
 
-// RemoveListed deletes the records ids names that are still at name, as A/AAAA records carrying
-// this installation's marker. Any other record there survives, ours included, so a record
-// published since the caller looked is never deleted on the strength of an older listing. It lists
-// name afresh first, so a deletion whose response was lost is not repeated, and returns the IDs of
-// our address records still at name.
-func (c *Cloudflare) RemoveListed(ctx context.Context, name, marker string, ids []string, deleting Deleting) ([]string, error) {
-	listed := map[string]bool{}
-	for _, id := range ids {
-		listed[id] = true
+// RemoveListed deletes the listed records that are still at name, unchanged since they were
+// listed, as A/AAAA records carrying this installation's marker. Any other record there survives,
+// ours included, so a record published or changed since the caller looked is never deleted on the
+// strength of an older listing. It lists name afresh first, so a deletion whose response was lost
+// is not repeated, and returns the IDs of our address records still at name.
+func (c *Cloudflare) RemoveListed(ctx context.Context, name, marker string, listed []Marked, deleting Deleting) ([]string, error) {
+	seen := map[string]time.Time{}
+	for _, r := range listed {
+		seen[r.ID] = r.ModifiedOn
 	}
-	return c.remove(ctx, name, marker, func(r record) bool { return listed[r.ID] }, deleting)
+	return c.remove(ctx, name, marker, nil, func(r record) bool {
+		at, ok := seen[r.ID]
+		return ok && !at.IsZero() && at.Equal(r.ModifiedOn)
+	}, deleting)
 }
 
-// remove deletes our address records at name that chosen picks, and returns the IDs of the ones
-// it left.
-func (c *Cloudflare) remove(ctx context.Context, name, marker string, chosen func(record) bool, deleting Deleting) ([]string, error) {
+// remove deletes our address records at name that chosen picks, once judge has seen them all, and
+// returns the IDs of the ones it left.
+func (c *Cloudflare) remove(ctx context.Context, name, marker string, judge Judge, chosen func(record) bool, deleting Deleting) ([]string, error) {
 	records, e := c.list(ctx, name)
 	if e != nil {
 		return nil, e
 	}
+	ours := slices.DeleteFunc(records, func(r record) bool { return r.Type != "A" && r.Type != "AAAA" || r.Comment != marker })
+	if e := judged(judge, ours); e != nil {
+		return nil, e
+	}
 	left := []string{}
-	for _, r := range records {
-		if r.Type != "A" && r.Type != "AAAA" || r.Comment != marker {
-			continue
-		}
+	for _, r := range ours {
 		if !chosen(r) {
 			left = append(left, r.ID)
 			continue
@@ -306,8 +350,12 @@ func (c *Cloudflare) remove(ctx context.Context, name, marker string, chosen fun
 	return left, nil
 }
 
-// Marked is a provider record whose comment starts with the prefix the zone was listed for.
-type Marked struct{ ID, Type, Name, Content, Comment string }
+// Marked is a provider record whose comment starts with the prefix the zone was listed for, and
+// when the provider last changed it.
+type Marked struct {
+	ID, Type, Name, Content, Comment string
+	ModifiedOn                       time.Time
+}
 
 // The zone listing reads pages of markedPage records, at most markedPages of them, each answer at
 // most markedBytes. At the client's pace that many pages take under two minutes, which leaves a
@@ -344,12 +392,12 @@ func (c *Cloudflare) ListMarked(ctx context.Context, prefix string) ([]Marked, e
 			return nil, ErrProvider
 		}
 		for _, r := range records {
-			if !cloudflareID.MatchString(r.ID) || !hasFoldedPrefix(r.Comment, prefix) {
+			if !cloudflareID.MatchString(r.ID) || !hasFoldedPrefix(r.Comment, prefix) || r.ModifiedOn.IsZero() {
 				return nil, ErrProvider
 			}
 			if !seen[r.ID] {
 				seen[r.ID] = true
-				out = append(out, Marked{r.ID, r.Type, r.Name, r.Content, r.Comment})
+				out = append(out, Marked{r.ID, r.Type, r.Name, r.Content, r.Comment, r.ModifiedOn})
 			}
 		}
 		// Checked once the page's records are, so a provider that stopped filtering is told apart.

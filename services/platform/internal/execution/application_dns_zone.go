@@ -32,30 +32,38 @@ const (
 )
 
 // zoneRecord is one of this installation's address records in the provider's zone, with the
-// server and base its marker and name name, and the server's workspace once the sweep has read it.
+// server and base its marker and name name, and, once the sweep has judged it, the server's
+// workspace and why it is withdrawn.
 type zoneRecord struct {
 	applicationdns.Marked
 	server    uuid.UUID
 	base      string
 	workspace *uuid.UUID
+	reason    string
 }
 
-// zoneName is a server's name under one base, and the records the zone holds there.
+// zoneName is a server's name under one base, and the records the zone holds there, which the
+// sweep withdraws for one reason when it has judged them.
 type zoneName struct {
 	server  uuid.UUID
 	base    string
+	reason  string
 	records []zoneRecord
 }
 
 // SweepZone compares the provider's zone with the database. It lists every record whose comment
-// carries this installation's marker, with nothing held. A record at a name the database records
+// carries this installation's marker, with nothing held. A record at the name of its server's last
+// approval that the provider changed after the approval, to an address the approval doesn't hold,
+// shows the zone is newer than the database: the approval ends, if it is current, and the record
+// is withdrawn as outdated (see outdatedMargin). Any other record at a name the database records
 // is left to the publication's own withdrawal. One at a name it has lost, whose server's approval
 // for that base is current, is recorded as a publication again, and the server's job queued. Any
 // other is unbacked: the database doesn't know it made it, or its server no longer may have it, so
-// it may point at an address the server no longer holds. Unbacked records are withdrawn, under the
-// server's DNS lease where the server is known, unless there are too many at once (see holdRecords).
-// Records of another installation, records without our marker, and records Astilba never makes
-// (other types, or a name that isn't the marker's server's) are never touched.
+// it may point at an address the server no longer holds. Outdated and unbacked records are
+// withdrawn, under the server's DNS lease where the server is known, unless there are too many at
+// once (see holdRecords). Records of another installation, records without our marker, and
+// records Astilba never makes (other types, or a name that isn't the marker's server's) are never
+// touched.
 func (s *Service) SweepZone(ctx context.Context) error {
 	if s.DNS == nil {
 		return nil
@@ -86,13 +94,28 @@ func (s *Service) SweepZone(ctx context.Context) error {
 	for i, n := range names {
 		b := backing[i]
 		known[n.server] = b.Known
+		approved := b.Approved
+		rest := n.records
+		if outdated := outdatedRecords(n, b); len(outdated) > 0 {
+			if approved {
+				failures = append(failures, s.endOutdatedZoneApproval(ctx, n, b))
+				approved = false
+			}
+			rest = slices.DeleteFunc(slices.Clone(rest), func(r zoneRecord) bool {
+				return slices.ContainsFunc(outdated, func(o zoneRecord) bool { return o.ID == r.ID })
+			})
+			for _, r := range outdated {
+				r.workspace, r.reason = b.WorkspaceID, withdrawOutdated
+				unbacked = append(unbacked, r)
+			}
+		}
 		switch {
 		case b.Recorded:
-		case b.Approved:
+		case approved:
 			failures = append(failures, s.adoptZoneName(ctx, n, b))
 		default:
-			for _, r := range n.records {
-				r.workspace = b.WorkspaceID
+			for _, r := range rest {
+				r.workspace, r.reason = b.WorkspaceID, withdrawUnbacked
 				unbacked = append(unbacked, r)
 			}
 		}
@@ -105,7 +128,7 @@ func (s *Service) SweepZone(ctx context.Context) error {
 		return errors.Join(append(failures, e)...)
 	}
 	for _, n := range groupZone(unbacked) {
-		failures = append(failures, s.withdrawUnbacked(ctx, installation, n, known[n.server], confirmed))
+		failures = append(failures, s.withdrawZoneRecords(ctx, installation, n, known[n.server], confirmed))
 	}
 	return errors.Join(failures...)
 }
@@ -148,17 +171,35 @@ func parseZone(listed []applicationdns.Marked, prefix string) ([]zoneName, int, 
 	return out, marked, strays
 }
 
-// groupZone gathers records by the server and name they're at.
+// outdatedRecords are the records at a name that show its server's last approval there is older
+// than the zone.
+func outdatedRecords(n zoneName, b db.ZoneRecordBackingRow) []zoneRecord {
+	var out []zoneRecord
+	for _, r := range n.records {
+		if outdatedBy(b, r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// outdatedBy reports whether a record shows its server's last approval at its name is older than
+// the zone.
+func outdatedBy(b db.ZoneRecordBackingRow, r zoneRecord) bool {
+	return b.ApprovalHere && storedApproval{b.Ipv4, b.Ipv6, b.ApprovedAt}.outdates(r.Type, r.Content, r.ModifiedOn)
+}
+
+// groupZone gathers records by the server and name they're at, and why they are withdrawn.
 func groupZone(records []zoneRecord) []zoneName {
-	at := map[[2]string]int{}
+	at := map[[3]string]int{}
 	var out []zoneName
 	for _, r := range records {
-		key := [2]string{r.server.String(), r.base}
+		key := [3]string{r.server.String(), r.base, r.reason}
 		i, ok := at[key]
 		if !ok {
 			i = len(out)
 			at[key] = i
-			out = append(out, zoneName{server: r.server, base: r.base})
+			out = append(out, zoneName{server: r.server, base: r.base, reason: r.reason})
 		}
 		out[i].records = append(out[i].records, r)
 	}
@@ -301,39 +342,55 @@ func (s *Service) holdZoneRecords(ctx context.Context, q *db.Queries, awaiting u
 			return e
 		}
 	}
-	slog.Error("the DNS zone sweep is holding back the withdrawal of many records nothing backs; they may resolve to addresses Astilba no longer controls. Review them with `astilba dns withdrawals` and confirm with `astilba dns confirm-withdrawals`; see docs/hosting.md#records-the-database-has-lost", "records", len(records), "marked", marked, "hold", hold)
+	slog.Error("the DNS zone sweep is holding back the withdrawal of many records nothing backs, or newer than their server's approval; they may resolve to addresses Astilba no longer controls. Review them with `astilba dns withdrawals` and confirm with `astilba dns confirm-withdrawals`; see docs/hosting.md#records-the-database-has-lost", "records", len(records), "marked", marked, "hold", hold)
 	return nil
 }
 
-// withdrawUnbacked withdraws the listed records at one of a server's names, once it has checked
-// they are still unbacked. A known server's records are withdrawn under its DNS lease, so no job
-// publishes there meanwhile; if a job holds it, the next sweep tries again. A server this
-// database has never heard of has no lease to take. One can appear while the sweep works, when a
-// workspace is imported with the server's ID, so each deletion's audit row is written only while
-// the server is still as known or unknown as the sweep found it; an imported server never has a
-// publication or a current approval, so its records would be unbacked either way.
-func (s *Service) withdrawUnbacked(ctx context.Context, installation uuid.UUID, n zoneName, known bool, holds map[string]uuid.UUID) error {
+// withdrawZoneRecords withdraws the listed records at one of a server's names, once it has checked
+// they are still unbacked, or still outdated by the server's approval there. A known server's
+// records are withdrawn under its DNS lease, so no job publishes there meanwhile; if a job holds
+// it, the next sweep tries again. A server this database has never heard of has no lease to take.
+// One can appear while the sweep works, when a workspace is imported with the server's ID, so each
+// deletion's audit row is written only while the server is still as known or unknown as the sweep
+// found it; an imported server never has a publication or a current approval, so its records
+// would be unbacked either way. A record the provider changed since the sweep listed it is left
+// for the next sweep to judge.
+func (s *Service) withdrawZoneRecords(ctx context.Context, installation uuid.UUID, n zoneName, known bool, holds map[string]uuid.UUID) error {
 	ctx, cancel := context.WithTimeout(ctx, dnsWork)
 	defer cancel()
 	name, marker := dnsName(n.base, n.server), dnsMarker(installation, n.server)
-	ids := make([]string, 0, len(n.records))
-	for _, r := range n.records {
-		ids = append(ids, r.ID)
-	}
-	unbacked := func(ctx context.Context, q *db.Queries) (bool, error) {
+	var listed []applicationdns.Marked
+	// still narrows listed to the records that may still be withdrawn, and reports whether any are.
+	still := func(ctx context.Context, q *db.Queries) (bool, error) {
 		rows, e := s.zoneBacking(ctx, q, []zoneName{n})
 		if e != nil {
 			return false, e
 		}
-		return rows[0].Known == known && !rows[0].Recorded && !rows[0].Approved, nil
+		b := rows[0]
+		listed = listed[:0]
+		for _, r := range n.records {
+			switch n.reason {
+			case withdrawUnbacked:
+				if b.Known == known && !b.Recorded && !b.Approved {
+					listed = append(listed, r.Marked)
+				}
+			case withdrawOutdated:
+				// Only once the approval has ended: deleting the records while it is current would
+				// leave its job nothing to judge it by, and it would publish the older addresses.
+				if b.Known == known && !b.Approved && outdatedBy(b, r) {
+					listed = append(listed, r.Marked)
+				}
+			}
+		}
+		return len(listed) > 0, nil
 	}
 	audit := func(r applicationdns.Removed) error {
-		slog.Info("removing an application DNS record nothing backs", "server", n.server, "record", r.ID, "type", r.Type)
+		slog.Info("removing an application DNS record", "server", n.server, "record", r.ID, "type", r.Type, "reason", n.reason)
 		var hold *uuid.UUID
 		if h, ok := holds[r.ID]; ok {
 			hold = &h
 		}
-		written, e := db.New(s.Store.Pool).InsertUnbackedDNSRecordRemoval(ctx, db.InsertUnbackedDNSRecordRemovalParams{ServerID: n.server, Name: name, Zone: s.DNS.Zone, RecordID: r.ID, RecordType: r.Type, Content: r.Content, HoldID: hold, Known: known})
+		written, e := db.New(s.Store.Pool).InsertZoneDNSRecordRemoval(ctx, db.InsertZoneDNSRecordRemovalParams{ServerID: n.server, Name: name, Zone: s.DNS.Zone, RecordID: r.ID, RecordType: r.Type, Content: r.Content, Reason: n.reason, HoldID: hold, Known: known})
 		if e == nil && written != 1 {
 			e = errors.New("the server's state changed after the zone sweep judged its records; the next sweep judges them again")
 		}
@@ -343,11 +400,11 @@ func (s *Service) withdrawUnbacked(ctx context.Context, installation uuid.UUID, 
 		return q.ConfirmDNSRecordRemovals(ctx, db.ConfirmDNSRecordRemovalsParams{ServerID: n.server, Name: name, Zone: s.DNS.Zone, Kept: left})
 	}
 	if !known {
-		still, e := unbacked(ctx, db.New(s.Store.Pool))
-		if e != nil || !still {
+		remaining, e := still(ctx, db.New(s.Store.Pool))
+		if e != nil || !remaining {
 			return e
 		}
-		left, e := s.DNS.RemoveListed(ctx, name, marker, ids, audit)
+		left, e := s.DNS.RemoveListed(ctx, name, marker, listed, audit)
 		if e != nil {
 			return e
 		}
@@ -357,15 +414,15 @@ func (s *Service) withdrawUnbacked(ctx context.Context, installation uuid.UUID, 
 	if e != nil || !taken {
 		return e
 	}
-	still := false
+	remaining := false
 	e = s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
-		still, e = unbacked(ctx, db.New(tx))
+		remaining, e = still(ctx, db.New(tx))
 		return e
 	})
 	var left []string
-	if e == nil && still {
-		left, e = s.DNS.RemoveListed(ctx, name, marker, ids, audit)
+	if e == nil && remaining {
+		left, e = s.DNS.RemoveListed(ctx, name, marker, listed, audit)
 		if e == nil {
 			e = s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error { return confirm(ctx, db.New(tx), left) })
 		}
@@ -411,9 +468,9 @@ func ZoneHolds(ctx context.Context, pool *pgxpool.Pool, sample int32) ([]ZoneHol
 }
 
 // ConfirmZoneHold records the operator's confirmation of a hold, which lets the next zone sweep
-// withdraw the records it holds that are still unbacked then. The operator names how many records
-// it holds, so they confirm what they reviewed. Taken under the zone's sweep lock, it never
-// confirms a hold a sweep is superseding.
+// withdraw the records it holds that it still finds should go then. The operator names how many
+// records it holds, so they confirm what they reviewed. Taken under the zone's sweep lock, it
+// never confirms a hold a sweep is superseding.
 func ConfirmZoneHold(ctx context.Context, pool *pgxpool.Pool, hold uuid.UUID, records int32, operator, note string) error {
 	if strings.TrimSpace(operator) == "" || strings.TrimSpace(note) == "" {
 		return errors.New("name who confirms with --operator and why with --note; both are kept with the hold")
@@ -443,6 +500,6 @@ func ConfirmZoneHold(ctx context.Context, pool *pgxpool.Pool, hold uuid.UUID, re
 	if e = tx.Commit(ctx); e != nil {
 		return e
 	}
-	slog.Info("the installation operator confirmed a held DNS withdrawal; the next zone sweep withdraws its records that are still unbacked", "hold", hold, "records", records, "operator", operator)
+	slog.Info("the installation operator confirmed a held DNS withdrawal; the next zone sweep withdraws its records that it still finds should go", "hold", hold, "records", records, "operator", operator)
 	return nil
 }
