@@ -53,6 +53,14 @@ func refusal(err error) string {
 		return "the Compose files could not be changed automatically. Change them in the file editor."
 	case errors.As(err, &invalid) && invalid.Code == "invalid_input":
 		return "the configuration would be invalid."
+	case errors.As(err, &invalid) && usesDeletedVolume(invalid):
+		return "the configuration would mount a volume that is deleted or still being deleted."
 	}
 	return ""
+}
+
+// usesDeletedVolume reports whether err is domain.UsesDeletedVolume's refusal. A delete that hasn't
+// ended may still fail and keep the volume, but the job isn't held until it ends.
+func usesDeletedVolume(err *domain.Error) bool {
+	return err.Code == "conflict" && len(err.Fields) == 1 && (err.Fields[0] == "volume.deleted" || err.Fields[0] == "volume.deleting")
 }

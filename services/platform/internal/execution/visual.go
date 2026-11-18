@@ -240,7 +240,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if err = s.planArtifacts(ctx, tx, ws, &plan); err != nil {
 			return err
 		}
-
+		if err = refusePlanDeletedVolumes(ctx, tx, ws, env, v.Spec); err != nil {
+			return err
+		}
 		if v.Spec.Placement != nil {
 			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement, allowlistReview)
 			return err
@@ -293,9 +295,6 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 			return domain.Invalid("specification")
 		}
 		if err := routesAvailable(ctx, tx, ws, env, plan); err != nil {
-			return err
-		}
-		if err := refusePlanDeletedVolumes(ctx, tx, ws, env, plan.Specification); err != nil {
 			return err
 		}
 		op, err := s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: "resolve", Plan: plan})

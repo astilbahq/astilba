@@ -6,8 +6,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// Refusals to delete a volume or discard a restore's volume. Each carries one stable field, which
-// clients may rely on to explain it; docs/backups.md lists them with the endpoints that return them.
+// Refusals to delete a volume, discard a restore's volume, or use a volume in a draft or plan. Each
+// carries one stable field, which clients may rely on to explain it; docs/backups.md and
+// docs/visual-deployments.md list them with the endpoints that return them.
 var (
 	// VolumeInUse refuses to delete a volume the draft, the plan the server runs or a supported
 	// upgrade still uses.

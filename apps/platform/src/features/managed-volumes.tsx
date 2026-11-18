@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { client, result } from "../api/client";
+import { volumesOptions } from "../api/environment";
 import { Button } from "../components/button";
 import * as s from "../styles";
 import type { useAction } from "../ui";
@@ -31,11 +32,7 @@ export function ManagedVolumes({
   setMessage: (message: string) => void;
 }) {
   const queries = useQueryClient();
-  const volumes = useQuery({
-    queryKey: ["volumes", path],
-    queryFn: () => result(client.GET(`${root}/volumes`, { params: { path } })),
-    refetchInterval: 5000,
-  });
+  const volumes = useQuery({ ...volumesOptions(path), refetchInterval: 5000 });
   return (
     <ul className={s.list}>
       {volumes.data?.map((volume) => (

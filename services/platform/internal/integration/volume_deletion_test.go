@@ -257,13 +257,14 @@ func TestADraftAndADeleteOfItsVolumeDontBothGoAhead(t *testing.T) {
 	refused(t, "a delete that waited for a draft mounting the volume", <-deleting, "volume.inUse")
 }
 
-// waitForLockWaiter waits until a transaction is waiting for a row lock another holds.
+// waitForLockWaiter waits until a transaction is waiting to take an environment's row lock, the one
+// volume decisions are made under, while another holds it.
 func waitForLockWaiter(t *testing.T, f *fixture) {
 	t.Helper()
 	end := time.Now().Add(5 * time.Second)
 	for time.Now().Before(end) {
 		var waiting int
-		if err := f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").Scan(&waiting); err != nil {
+		if err := f.st.Pool.QueryRow(context.Background(), "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%-- name: LockEnvironmentDraft %'").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {

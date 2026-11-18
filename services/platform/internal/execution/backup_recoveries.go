@@ -262,8 +262,11 @@ func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal,
 		if err != nil {
 			return err
 		}
-		if deletions[row.TargetVolumeID] == store.VolumeDeleting {
+		switch deletions[row.TargetVolumeID] {
+		case store.VolumeDeleting:
 			return domain.DiscardActive
+		case store.VolumeDeleted:
+			return domain.VolumeDeleted
 		}
 		if row.State != string(api.ExecutionStateSucceeded) {
 			return domain.Conflict
@@ -320,18 +323,18 @@ func (s *Service) DiscardRecoveryTarget(ctx context.Context, p store.Principal, 
 		if v.Server == nil || *v.Server != row.ServerID {
 			return domain.RestoreServerMoved
 		}
-		// Any delete of the volume, a discard or another, claims it until the delete ends. This
-		// takes the lock observeVisual decides the delete under before ClaimRestoreTarget locks
-		// the volume's row.
+		// Any delete of the volume, a discard or another, claims it until the delete ends. Rows are
+		// locked in the order an agent's report locks them: the server's, then the environment's,
+		// which observeVisual decides the delete under, then the volume's in ClaimRestoreTarget.
+		if _, err = s.visualServer(ctx, tx, ws, row.ServerID); err != nil {
+			return err
+		}
 		deletions, err := store.VolumeDeletions(ctx, db.New(tx), ws, env, []uuid.UUID{row.TargetVolumeID})
 		if err != nil {
 			return err
 		}
-		switch deletions[row.TargetVolumeID] {
-		case store.VolumeDeleting:
+		if deletions[row.TargetVolumeID] == store.VolumeDeleting {
 			return domain.DiscardActive
-		case store.VolumeDeleted:
-			return domain.VolumeDeleted
 		}
 		_, err = db.New(tx).ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: v.Unit, ID: row.TargetVolumeID})
 		if errors.Is(err, pgx.ErrNoRows) {

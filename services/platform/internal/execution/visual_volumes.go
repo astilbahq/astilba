@@ -32,7 +32,6 @@ func claimPlanVolumes(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, plan de
 	}
 	for _, vol := range plan.Specification.Volumes {
 		var owner uuid.UUID
-		var deleted bool
 		var initial, stored, major, storedMajor *string
 		for _, app := range plan.Specification.Applications {
 			if app.Postgres != nil && app.Mounts[0].VolumeID == vol.ID {
@@ -43,11 +42,11 @@ func claimPlanVolumes(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, plan de
 				}
 			}
 		}
-		err := tx.QueryRow(ctx, `INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash,postgres_major) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id,deleted,postgres_init_hash,postgres_major`, ws, env, plan.UnitID, vol.ID, initial, major).Scan(&owner, &deleted, &stored, &storedMajor)
+		err := tx.QueryRow(ctx, `INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_init_hash,postgres_major) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(workspace_id,id) DO UPDATE SET id=EXCLUDED.id RETURNING environment_id,postgres_init_hash,postgres_major`, ws, env, plan.UnitID, vol.ID, initial, major).Scan(&owner, &stored, &storedMajor)
 		if err != nil {
 			return err
 		}
-		if owner != env || deleted {
+		if owner != env {
 			return domain.Conflict
 		}
 		if initial != nil {
