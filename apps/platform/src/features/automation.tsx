@@ -8,7 +8,7 @@ import { Label } from "../components/label";
 import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
-import { ErrorNotice, Form, reportInvalid, text, useAction } from "../ui";
+import { ErrorNotice, Form, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
 
 const capabilities: {
@@ -96,7 +96,7 @@ export function AutomationCredentials({
               "capability",
             ) as Schema["AutomationCapability"][];
             if (selected.length === 0)
-              return reportInvalid(
+              return action.reportInvalid(
                 form.elements.namedItem("capability"),
                 "Choose at least one capability.",
               );

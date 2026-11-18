@@ -4,15 +4,7 @@ import { Checkbox } from "./components/checkbox";
 import { Input } from "./components/input";
 import { Label } from "./components/label";
 import * as s from "./styles";
-import {
-  BusyButton,
-  ErrorNotice,
-  Field,
-  Form,
-  reportInvalid,
-  text,
-  useAction,
-} from "./ui";
+import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 
 export function WorkspaceExport({ workspaceId }: { workspaceId: string }) {
   // An export carries the workspace's secrets, so it needs a recent confirmation of identity.
@@ -101,7 +93,7 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
         onSubmit={(data, form) => {
           const file = data.get("archive");
           if (!(file instanceof File) || !file.size || file.size > 33_554_484)
-            return reportInvalid(
+            return action.reportInvalid(
               form.elements.namedItem("archive"),
               "Choose an Astilba archive no larger than 32 MiB.",
             );

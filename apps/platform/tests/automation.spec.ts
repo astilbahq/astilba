@@ -159,4 +159,31 @@ test("a lapsed identity confirmation is asked for only once the token request is
     panel.getByRole("textbox", { name: "Automation token", exact: true }),
   ).toBeVisible();
   expect(refused).toEqual([]);
+  // A check that stops a later submission also clears the error the last request left.
+  let conflicted = false;
+  await page.route(/\/automation-credentials$/, (route) => {
+    if (conflicted || route.request().method() !== "POST")
+      return route.fallback();
+    conflicted = true;
+    return route.fulfill({
+      status: 409,
+      json: {
+        code: "conflict",
+        message: "A token with this name already exists.",
+        fields: ["name"],
+        requestId: "browser-fixture",
+      },
+    });
+  });
+  await panel.getByRole("button", { name: "I have saved the token" }).click();
+  await panel.getByLabel("Token name", { exact: true }).fill("CI read");
+  await create.click();
+  const failure = panel.getByRole("alert");
+  await expect(failure).toHaveText(/A token with this name already exists\./);
+  await read.uncheck();
+  await create.click();
+  await expect
+    .poll(() => read.evaluate((box: HTMLInputElement) => box.validationMessage))
+    .toBe("Choose at least one capability.");
+  await expect(failure).toHaveCount(0);
 });

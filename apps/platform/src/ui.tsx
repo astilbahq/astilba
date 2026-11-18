@@ -108,18 +108,26 @@ export function useAction({
     // control is about to go away, such as a dialog's button, names the one to return to instead.
     run: (fn: () => Promise<unknown>, origin?: Element | null) =>
       mutation.mutate({ fn, origin: origin ?? document.activeElement }),
+    /**
+     * Ends a submission at a check the control's attributes can't express, in place of `run`.
+     * Make such checks before `run`, so an action that needs recent authentication never asks
+     * for it over input it won't send. The previous request's outcome is cleared, as `run`
+     * would, so the form doesn't show it as this submission's.
+     */
+    reportInvalid: (
+      control: Element | RadioNodeList | null,
+      message: string,
+    ) => {
+      mutation.reset();
+      markInvalid(control, message);
+    },
   };
 }
 /**
  * Marks a form control invalid with `message` and shows it as the browser shows a missing
- * required value, for a check its attributes can't express. Make such checks before `run`, so
- * an action that needs recent authentication never asks for it over input it won't send. Any
- * later edit in the form clears the mark.
+ * required value. Any later edit in the form clears the mark.
  */
-export function reportInvalid(
-  control: Element | RadioNodeList | null,
-  message: string,
-) {
+function markInvalid(control: Element | RadioNodeList | null, message: string) {
   const target = control instanceof RadioNodeList ? control[0] : control;
   if (
     !(
