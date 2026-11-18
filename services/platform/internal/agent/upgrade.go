@@ -303,7 +303,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err = e.upgradeStep(c, s, "backup"); err != nil {
 		return err
 	}
-	stage, err := os.MkdirTemp(e.Journal.dir, "upgrade-stage-")
+	stage, err := e.Journal.scratchDir(scratchUpgradeStage)
 	if err != nil {
 		return err
 	}
@@ -348,7 +348,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	// Restore the uploaded copy, so the recovery point itself is demonstrated.
-	download, err := os.MkdirTemp(e.Journal.dir, "upgrade-download-")
+	download, err := e.Journal.scratchDir(scratchUpgradeDownload)
 	if err != nil {
 		return err
 	}

@@ -34,6 +34,10 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	if e.cancelled(c.Id) || time.Now().After(c.Deadline) {
 		return e.finish(c.Id, "cancelled", "Cancelled before the restore changed anything.")
 	}
+	// A retried restore gave up the repository's access while it waited for attention.
+	if wait, err := e.awaitValues(c, r, v.Installation.Access.Password != ""); wait || err != nil {
+		return err
+	}
 	parent := ctx
 	started, err := e.Journal.startWork(c.Id)
 	if err != nil {
@@ -123,13 +127,12 @@ func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin f
 // settleRecovery ends a restore that may have created its volume or containers. Once nothing it
 // started can still be running it has failed, whatever its volume holds: nothing uses that volume,
 // and only a succeeded restore's can be cut over to. Otherwise it is left to inspect, and holds
-// this host until resolve-run or retry settles it. Neither uses the repository's access, so the
-// record no longer keeps it.
+// this host until resolve-run or retry settles it. Neither uses the repository's access, which the
+// journal removes from a parked restore.
 func (e *Engine) settleRecovery(id uuid.UUID, p backup.Policy, run uuid.UUID, cause string) error {
 	if left := e.removeRunContainers(p, run); left != "" {
 		return e.Journal.Mutate(id, func(r *Record) {
 			settleReport(r, "needs_attention", cause+" Its cleanup could not be confirmed: "+left+". Inspect containers labelled com.astilba.run="+run.String()+", then run resolve-run for this policy and run.")
-			redactCommand(&r.Command)
 		})
 	}
 	return e.finish(id, "failed", cause+" Nothing it started is still running. Its target volume may hold partial data; nothing uses it.")

@@ -56,7 +56,7 @@ func dnsCommand(ctx context.Context, pool *pgxpool.Pool, args []string) error {
 		if err = execution.ConfirmZoneHold(ctx, pool, id, int32(*count), *operator, *note); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "Confirmed. The next zone sweep, within %s, withdraws the hold's records that are still unbacked.\n", execution.ZoneSweepInterval)
+		fmt.Fprintf(os.Stdout, "Confirmed. The next zone sweep, within %s, withdraws the hold's records it still finds should go.\n", execution.ZoneSweepInterval)
 		return nil
 	}
 	return errors.New(usage)
@@ -73,7 +73,7 @@ func printZoneHolds(w io.Writer, holds []execution.ZoneHold) {
 			state = fmt.Sprintf("confirmed %s by %q: %q", h.ConfirmedAt.UTC().Format(time.RFC3339), h.ConfirmedBy.String, h.ConfirmationNote.String)
 		}
 		fmt.Fprintf(w, "hold %s  zone %s  %s\n", h.ID, h.Zone, state)
-		fmt.Fprintf(w, "  %d records nothing backs, of %d of this installation's address records listed; opened %s, last seen %s\n",
+		fmt.Fprintf(w, "  %d records to withdraw, unbacked or newer than their server's approval, of %d of this installation's address records listed; opened %s, last seen %s\n",
 			h.Records, h.Marked, h.OpenedAt.UTC().Format(time.RFC3339), h.SeenAt.UTC().Format(time.RFC3339))
 		for _, ws := range h.Workspaces {
 			owner := "servers this database doesn't know"
