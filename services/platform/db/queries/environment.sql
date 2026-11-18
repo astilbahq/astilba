@@ -100,9 +100,10 @@ SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR 
 
 -- name: UnmeasuredSecretVersions :many
 -- unscoped: the job that measures values goes through every workspace's, a batch at a time.
-SELECT workspace_id,id,encrypted_value FROM secret_versions
-WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND erased_at IS NULL AND (workspace_id,id) > (@after_workspace::uuid,@after_id::uuid)
-ORDER BY workspace_id,id LIMIT @batch;
+SELECT v.workspace_id,v.id,v.encrypted_value,s.environment_id FROM secret_versions v
+JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+WHERE (v.plaintext_bytes IS NULL OR v.json_bytes IS NULL) AND v.erased_at IS NULL AND (v.workspace_id,v.id) > (@after_workspace::uuid,@after_id::uuid)
+ORDER BY v.workspace_id,v.id LIMIT @batch;
 
 -- name: MeasureSecretVersion :exec
 UPDATE secret_versions SET plaintext_bytes = @plaintext_bytes::integer, json_bytes = @json_bytes::integer

@@ -505,11 +505,13 @@ func openV2(keys map[keyRef][]byte, item Item, header cryptobox.Header, cipherte
 }
 
 // environmentKeyFor opens the key an environment value's header names, once per session, with the
-// workspace key generation it is wrapped under. ErrKeyDestroyed is a key a purge destroyed;
-// ErrKeysChanged a key made since the session began, which a new session holds. The caller holds
-// s.mu.
+// workspace key generation it is wrapped under. The header must name item's own environment: a
+// value under another environment's key is cryptobox.ErrKey, so it is never read, kept or stored
+// as item's, where purging item's environment would not reach it. ErrKeyDestroyed is a key a
+// purge destroyed; ErrKeysChanged a key made since the session began, which a new session holds.
+// The caller holds s.mu.
 func (s *Session) environmentKeyFor(item Item, header cryptobox.Header) ([]byte, error) {
-	if !item.Kind.environmental() {
+	if !item.Kind.environmental() || header.Holder != item.Environment {
 		return nil, cryptobox.ErrKey
 	}
 	k, ok := s.environments[environmentRef{header.Holder, header.Generation}]

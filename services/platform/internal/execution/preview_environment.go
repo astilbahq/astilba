@@ -64,7 +64,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 			v, err = q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: p.Workspace, EnvironmentID: p.Template, ID: old})
 			if err == nil {
 				var plain []byte
-				plain, err = keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old}, v.EncryptedValue)
+				plain, err = keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old, Environment: p.Template}, v.EncryptedValue)
 				value = string(plain)
 				clear(plain)
 			}

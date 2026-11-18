@@ -169,7 +169,7 @@ type EnvironmentKeyReader interface {
 // OpenIn is Open for a value that q, a transaction, may have stored under an environment key it
 // made itself, which no session holds until the transaction commits.
 func (s *Session) OpenIn(ctx context.Context, q EnvironmentKeyReader, item Item, ciphertext []byte) ([]byte, error) {
-	if header, err := cryptobox.ReadHeader(ciphertext); err == nil && header.Version == 2 && header.Scope == cryptobox.ScopeEnvironment && item.Kind.environmental() {
+	if header, err := cryptobox.ReadHeader(ciphertext); err == nil && header.Version == 2 && header.Scope == cryptobox.ScopeEnvironment && item.Kind.environmental() && header.Holder == item.Environment {
 		if err = s.holdEnvironmentKey(ctx, q, environmentRef{header.Holder, header.Generation}); err != nil {
 			return nil, err
 		}
@@ -367,7 +367,8 @@ func (s *Session) Rehome(ctx context.Context, q Fence, item Item, ciphertext []b
 
 // keepUnderEnvironment is Rehome for a value already under its environment's key, which already
 // confines it to the environment: it stays as it is, checked to open, with the key held in q so a
-// purge cannot destroy it before the value is stored. A destroyed key is ErrKeyDestroyed.
+// purge cannot destroy it before the value is stored. A destroyed key is ErrKeyDestroyed; a value
+// under another environment's key than item's is cryptobox.ErrKey, and is not kept.
 func (s *Session) keepUnderEnvironment(ctx context.Context, q Fence, item Item, header cryptobox.Header, ciphertext []byte, identity string) ([]byte, error) {
 	s.mu.Lock()
 	if s.keys == nil {

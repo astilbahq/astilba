@@ -59,8 +59,8 @@ func environmentsOf(a Archive) (secretEnvironments, error) {
 }
 
 // credential names a row's sealed column and the value it holds, or "" for a table with none or a
-// secret version whose value was erased, which holds nothing to open or seal. With environments,
-// a secret version's item names its secret's environment, whose key it is sealed under.
+// secret version whose value was erased, which holds nothing to open or seal. A secret version's
+// item names its secret's environment, from environments, whose key it is sealed under.
 func credential(table string, row Row, environments secretEnvironments) (string, secretbroker.Item, error) {
 	var field string
 	var kind secretbroker.Kind
@@ -98,7 +98,7 @@ func credential(table string, row Row, environments secretEnvironments) (string,
 		return "", secretbroker.Item{}, ErrArchive
 	}
 	item := secretbroker.Item{Kind: kind, ID: id}
-	if environments != nil && table == "secret_versions" {
+	if table == "secret_versions" {
 		var secret uuid.UUID
 		if json.Unmarshal(row["secret_id"], &secret) != nil || environments[secret] == uuid.Nil {
 			return "", secretbroker.Item{}, ErrArchive
@@ -188,12 +188,16 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 		if err != nil {
 			return err
 		}
+		environments, err := environmentsOf(archive)
+		if err != nil {
+			return err
+		}
 		for _, table := range tables {
 			for _, row := range archive.Tables[table.Name] {
 				if err := omitExportLogs(table.Name, row); err != nil {
 					return err
 				}
-				if err := transformCredential(table.Name, row, nil, keys.Open); err != nil {
+				if err := transformCredential(table.Name, row, environments, keys.Open); err != nil {
 					return err
 				}
 			}

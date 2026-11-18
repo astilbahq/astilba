@@ -71,7 +71,7 @@ func TestEnvironmentValuesOpenUnderTheirKey(t *testing.T) {
 	x.owner.call("POST", path+"/secrets", map[string]string{"name": "Token", "value": "placeholder"}, 201, &secret)
 	key := environmentKey(t, f, x.ws, env.Id)
 	sealed := underEnvironment(t, f, x.ws, env.Id, secret.Id, key, "environment-canary")
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}
 	if value, err := inspectValue(t, f.st, f.owner, x.ws, item, sealed); err != nil || string(value) != "environment-canary" {
 		t.Fatal(string(value), err)
 	}
@@ -108,6 +108,51 @@ func TestEnvironmentValuesOpenUnderTheirKey(t *testing.T) {
 		if c.Remaining != 0 {
 			t.Fatalf("%d %s values counted as under the keyring", c.Remaining, c.Kind)
 		}
+	}
+}
+
+// A value under one environment's key is never read or kept as another's: a row claiming
+// environment B whose value is sealed under A's key does not open, is not kept by a rehome, and is
+// not named as B's, though the bytes and the version are A's own and A's key opens them. Purging B
+// would not reach it.
+func TestAValueUnderAnotherEnvironmentsKeyIsRefused(t *testing.T) {
+	x := newRetirementFixture(t)
+	f := x.f
+	ctx := context.Background()
+	var a, b api.Environment
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Sealed under"}, 201, &a)
+	x.owner.call("POST", x.prefix, map[string]string{"name": "Claimed by"}, 201, &b)
+	var secret api.SecretVersion
+	x.owner.call("POST", x.prefix+"/"+a.Id.String()+"/secrets", map[string]string{"name": "Token", "value": "placeholder"}, 201, &secret)
+	sealed := underEnvironment(t, f, x.ws, a.Id, secret.Id, environmentKey(t, f, x.ws, a.Id), "a-canary")
+	environmentKey(t, f, x.ws, b.Id)
+	own := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: a.Id}
+	if value, err := inspectValue(t, f.st, f.owner, x.ws, own, sealed); err != nil || string(value) != "a-canary" {
+		t.Fatal(string(value), err)
+	}
+	for _, claimed := range []uuid.UUID{b.Id, uuid.Nil} {
+		item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: claimed}
+		if _, err := inspectValue(t, f.st, f.owner, x.ws, item, sealed); !errors.Is(err, cryptobox.ErrKey) {
+			t.Fatal("opened as environment", claimed, err)
+		}
+		keys, err := f.st.Broker.Begin(ctx, secretbroker.Request{Workspace: x.ws, Purpose: secretbroker.Rotate, Principal: secretbroker.Operator("test"), Kinds: []secretbroker.Kind{secretbroker.SecretVersion}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = keys.Rehome(ctx, db.New(tx), item, sealed); !errors.Is(err, cryptobox.ErrKey) {
+			t.Fatal("kept as environment", claimed, err)
+		}
+		if _, _, err = keys.EnvironmentKeyGeneration(item, sealed); !errors.Is(err, cryptobox.ErrKey) {
+			t.Fatal("named as environment", claimed, err)
+		}
+		if err = tx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		keys.Close(ctx, secretbroker.Used)
 	}
 }
 
@@ -152,10 +197,10 @@ func TestPurgeDestroysTheEnvironmentKey(t *testing.T) {
 		t.Fatalf("destroyed events %+v", destroyed)
 	}
 	// The copy the checkpoint holds no longer opens; the kept environment's still does.
-	if _, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}, sealed); !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+	if _, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}, sealed); !errors.Is(err, secretbroker.ErrKeyDestroyed) {
 		t.Fatal("a purged environment's value opened", err)
 	}
-	if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: other.Id}, keptSealed); err != nil || string(value) != "kept-canary" {
+	if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: other.Id, Environment: kept.Id}, keptSealed); err != nil || string(value) != "kept-canary" {
 		t.Fatal(string(value), err)
 	}
 	// The key is never made again for the purged environment.

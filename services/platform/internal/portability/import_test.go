@@ -299,6 +299,8 @@ func TestVersionEightArchiveImportsNothingPurged(t *testing.T) {
 // disagree is not one an export writes.
 func TestErasedSecretVersionsCarryNoValue(t *testing.T) {
 	id := jsontext.Value(`"` + uuid.NewString() + `"`)
+	secret := uuid.New()
+	environments := secretEnvironments{secret: uuid.New()}
 	for _, c := range []struct {
 		name          string
 		value, erased string
@@ -310,7 +312,7 @@ func TestErasedSecretVersionsCarryNoValue(t *testing.T) {
 		{"value without erasure", "null", "null", "", true},
 		{"erasure with a value", `"\x00"`, `"2026-11-13T00:00:00Z"`, "", true},
 	} {
-		field, _, err := credential("secret_versions", Row{"id": id, "encrypted_value": jsontext.Value(c.value), "erased_at": jsontext.Value(c.erased)}, nil)
+		field, _, err := credential("secret_versions", Row{"id": id, "secret_id": jsontext.Value(`"` + secret.String() + `"`), "encrypted_value": jsontext.Value(c.value), "erased_at": jsontext.Value(c.erased)}, environments)
 		if (err != nil) != c.fails || !c.fails && field != c.field {
 			t.Errorf("%s: field %q, error %v", c.name, field, err)
 		}

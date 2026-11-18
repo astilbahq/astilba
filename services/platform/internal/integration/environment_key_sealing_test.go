@@ -93,7 +93,7 @@ func TestNewValuesAreSealedUnderTheirEnvironmentKey(t *testing.T) {
 		if header.Scope != cryptobox.ScopeEnvironment || header.Holder != env.Id || header.Generation != 1 {
 			t.Fatalf("stored as %+v", header)
 		}
-		if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.Id}, sealed); err != nil || string(value) != "concurrent-canary" {
+		if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: v.Id, Environment: env.Id}, sealed); err != nil || string(value) != "concurrent-canary" {
 			t.Fatal(string(value), err)
 		}
 	}
@@ -294,7 +294,7 @@ func TestConvertMovesEnvironmentValuesOntoTheirKeys(t *testing.T) {
 	if json.Unmarshal(before, &data) != nil || json.Unmarshal(after, &moved) != nil || string(data.Data) != string(moved.Data) {
 		t.Fatal("converting changed the value's data")
 	}
-	if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id}, after); err != nil || string(value) != "moved-canary" {
+	if value, err := inspectValue(t, f.st, f.owner, x.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}, after); err != nil || string(value) != "moved-canary" {
 		t.Fatal(string(value), err)
 	}
 }

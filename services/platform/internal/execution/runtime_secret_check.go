@@ -135,7 +135,7 @@ func (s *Service) rejectRuntimeSecrets(ctx context.Context, tx pgx.Tx, git *gitA
 			return err
 		}
 		// Their environment's key may be one this pass made, which only its transaction holds.
-		return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
+		return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(env, rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
 			return git.keys.inspect.openIn(ctx, q, item, cipher)
 		}))
 	}
@@ -187,14 +187,14 @@ func (s *Service) searchRuntimeSecrets(ctx context.Context, keys valueKeys, ws, 
 	if err != nil {
 		return err
 	}
-	return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
+	return searchSecretValues(domain.NewSecretText(texts...), chosen, openChosen(env, rows, func(item secretbroker.Item, cipher []byte) ([]byte, error) {
 		return keys.openBetweenPasses(ctx, item, cipher)
 	}))
 }
 
-// openChosen opens a chosen version from rows with open; one missing from rows was erased since
-// it was chosen.
-func openChosen(rows []db.SecretVersionValuesRow, open func(secretbroker.Item, []byte) ([]byte, error)) func(checkedVersion) ([]byte, error) {
+// openChosen opens a chosen version from rows, env's, with open; one missing from rows was erased
+// since it was chosen.
+func openChosen(env uuid.UUID, rows []db.SecretVersionValuesRow, open func(secretbroker.Item, []byte) ([]byte, error)) func(checkedVersion) ([]byte, error) {
 	ciphers := make(map[uuid.UUID][]byte, len(rows))
 	for _, row := range rows {
 		ciphers[row.ID] = row.EncryptedValue
@@ -204,7 +204,7 @@ func openChosen(rows []db.SecretVersionValuesRow, open func(secretbroker.Item, [
 		if !ok {
 			return nil, errCheckedVersionsChanged
 		}
-		return open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id}, cipher)
+		return open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: c.id, Environment: env}, cipher)
 	}
 }
 

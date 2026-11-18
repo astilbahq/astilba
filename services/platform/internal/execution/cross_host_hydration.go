@@ -57,7 +57,7 @@ func (s *Service) hydrateCrossHost(ctx context.Context, keys valueKeys, c *api.E
 			if err != nil {
 				return err
 			}
-			plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, v.EncryptedValue)
+			plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id, Environment: c.EnvironmentId}, v.EncryptedValue)
 			if err != nil {
 				return err
 			}

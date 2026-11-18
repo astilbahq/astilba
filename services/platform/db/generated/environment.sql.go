@@ -836,9 +836,10 @@ func (q *Queries) SpecificationTextSize(ctx context.Context, specification []byt
 }
 
 const unmeasuredSecretVersions = `-- name: UnmeasuredSecretVersions :many
-SELECT workspace_id,id,encrypted_value FROM secret_versions
-WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND erased_at IS NULL AND (workspace_id,id) > ($1::uuid,$2::uuid)
-ORDER BY workspace_id,id LIMIT $3
+SELECT v.workspace_id,v.id,v.encrypted_value,s.environment_id FROM secret_versions v
+JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+WHERE (v.plaintext_bytes IS NULL OR v.json_bytes IS NULL) AND v.erased_at IS NULL AND (v.workspace_id,v.id) > ($1::uuid,$2::uuid)
+ORDER BY v.workspace_id,v.id LIMIT $3
 `
 
 type UnmeasuredSecretVersionsParams struct {
@@ -851,6 +852,7 @@ type UnmeasuredSecretVersionsRow struct {
 	WorkspaceID    uuid.UUID `json:"workspace_id"`
 	ID             uuid.UUID `json:"id"`
 	EncryptedValue []byte    `json:"encrypted_value"`
+	EnvironmentID  uuid.UUID `json:"environment_id"`
 }
 
 // unscoped: the job that measures values goes through every workspace's, a batch at a time.
@@ -863,7 +865,12 @@ func (q *Queries) UnmeasuredSecretVersions(ctx context.Context, arg UnmeasuredSe
 	items := []UnmeasuredSecretVersionsRow{}
 	for rows.Next() {
 		var i UnmeasuredSecretVersionsRow
-		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedValue); err != nil {
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.ID,
+			&i.EncryptedValue,
+			&i.EnvironmentID,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
