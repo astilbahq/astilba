@@ -1,10 +1,8 @@
 package portability
 
 import (
-	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
-	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
@@ -20,8 +18,10 @@ type UnopenedValue struct {
 // CheckRecoveryKeys verifies historical credential keys before metadata changes, and returns the
 // secret versions sealed under environment keys the restored database never had: recovery either
 // stops for them or, accepted, restores them erased. Plaintext is discarded immediately and never
-// enters the host handoff.
-func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) ([]UnopenedValue, error) {
+// enters the host handoff. The secret versions in stored, which the workspace already holds, are
+// not opened: the merge keeps a stored version as it is, so it needs no key, and the generation
+// that sealed it may since belong to a key made after the one it names was lost.
+func CheckRecoveryKeys(keys *secretbroker.Session, a Archive, stored map[uuid.UUID]bool) ([]UnopenedValue, error) {
 	environments, err := environmentsOf(a)
 	if err != nil {
 		return nil, err
@@ -33,16 +33,12 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) ([]UnopenedValue, 
 			if err != nil {
 				return nil, err
 			}
-			if field == "" {
+			if field == "" || table.Name == "secret_versions" && stored[item.ID] {
 				continue
 			}
-			raw, err := rowString(row, field)
-			if err != nil || !strings.HasPrefix(raw, `\x`) {
-				return nil, ErrArchive
-			}
-			cipher, err := hex.DecodeString(raw[2:])
+			cipher, err := sealedColumn(row, field)
 			if err != nil {
-				return nil, ErrArchive
+				return nil, err
 			}
 			plain, err := keys.Open(item, cipher)
 			clear(plain)
@@ -51,12 +47,12 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) ([]UnopenedValue, 
 				continue
 			}
 			if errors.Is(err, secretbroker.ErrKeyNotInBackup) && item.Environment != uuid.Nil {
-				if header, e := cryptobox.ReadHeader(cipher); e == nil && header.Scope == cryptobox.ScopeEnvironment {
-					var secret uuid.UUID
-					if header.Holder != item.Environment || json.Unmarshal(row["secret_id"], &secret) != nil {
-						return nil, ErrArchive
-					}
-					unopened = append(unopened, UnopenedValue{Environment: item.Environment, Secret: secret, Version: item.ID})
+				value, sealed, err := environmentSealed(row, item, cipher)
+				if err != nil {
+					return nil, err
+				}
+				if sealed {
+					unopened = append(unopened, value)
 					continue
 				}
 			}
@@ -69,4 +65,48 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) ([]UnopenedValue, 
 		}
 	}
 	return unopened, nil
+}
+
+// EnvironmentSealedValues is the archive's secret versions sealed under their environments' keys.
+func EnvironmentSealedValues(a Archive) ([]UnopenedValue, error) {
+	environments, err := environmentsOf(a)
+	if err != nil {
+		return nil, err
+	}
+	var values []UnopenedValue
+	for _, row := range a.Tables["secret_versions"] {
+		field, item, err := credential("secret_versions", row, environments)
+		if err != nil || field == "" {
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		cipher, err := sealedColumn(row, field)
+		if err != nil {
+			return nil, err
+		}
+		value, sealed, err := environmentSealed(row, item, cipher)
+		if err != nil {
+			return nil, err
+		}
+		if sealed {
+			values = append(values, value)
+		}
+	}
+	return values, nil
+}
+
+// environmentSealed reports whether a secret version's value is sealed under an environment's
+// key, which must be its own.
+func environmentSealed(row Row, item secretbroker.Item, cipher []byte) (UnopenedValue, bool, error) {
+	header, err := cryptobox.ReadHeader(cipher)
+	if err != nil || header.Scope != cryptobox.ScopeEnvironment {
+		return UnopenedValue{}, false, nil
+	}
+	var secret uuid.UUID
+	if header.Holder != item.Environment || json.Unmarshal(row["secret_id"], &secret) != nil {
+		return UnopenedValue{}, false, ErrArchive
+	}
+	return UnopenedValue{Environment: item.Environment, Secret: secret, Version: item.ID}, true, nil
 }

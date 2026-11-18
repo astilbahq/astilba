@@ -221,37 +221,6 @@ func (q *Queries) EnvironmentValuesOutsideTheirKeys(ctx context.Context) (bool, 
 	return column_1, err
 }
 
-const erasedSecretVersions = `-- name: ErasedSecretVersions :many
-SELECT id FROM secret_versions
-WHERE workspace_id = $1 AND id = ANY($2::uuid[]) AND erased_at IS NOT NULL
-`
-
-type ErasedSecretVersionsParams struct {
-	WorkspaceID uuid.UUID   `json:"workspace_id"`
-	Ids         []uuid.UUID `json:"ids"`
-}
-
-// The secret versions among ids the workspace stores erased, which recovery never brings back.
-func (q *Queries) ErasedSecretVersions(ctx context.Context, arg ErasedSecretVersionsParams) ([]uuid.UUID, error) {
-	rows, err := q.db.Query(ctx, erasedSecretVersions, arg.WorkspaceID, arg.Ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []uuid.UUID{}
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const holdSecretVersionsForWriting = `-- name: HoldSecretVersionsForWriting :exec
 LOCK TABLE secret_versions IN ROW EXCLUSIVE MODE
 `
@@ -340,4 +309,40 @@ func (q *Queries) ShareEnvironmentKey(ctx context.Context, arg ShareEnvironmentK
 	var generation int64
 	err := row.Scan(&generation)
 	return generation, err
+}
+
+const storedSecretVersions = `-- name: StoredSecretVersions :many
+SELECT id, (erased_at IS NOT NULL)::boolean AS erased FROM secret_versions
+WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+`
+
+type StoredSecretVersionsParams struct {
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Ids         []uuid.UUID `json:"ids"`
+}
+
+type StoredSecretVersionsRow struct {
+	ID     uuid.UUID `json:"id"`
+	Erased bool      `json:"erased"`
+}
+
+// The secret versions among ids the workspace already stores, which recovery keeps as they are.
+func (q *Queries) StoredSecretVersions(ctx context.Context, arg StoredSecretVersionsParams) ([]StoredSecretVersionsRow, error) {
+	rows, err := q.db.Query(ctx, storedSecretVersions, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []StoredSecretVersionsRow{}
+	for rows.Next() {
+		var i StoredSecretVersionsRow
+		if err := rows.Scan(&i.ID, &i.Erased); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

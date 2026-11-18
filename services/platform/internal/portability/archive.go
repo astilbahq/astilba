@@ -115,13 +115,9 @@ func transformCredential(table string, row Row, environments secretEnvironments,
 	if e != nil || field == "" {
 		return e
 	}
-	raw, e := rowString(row, field)
-	if e != nil || !strings.HasPrefix(raw, `\x`) {
-		return ErrArchive
-	}
-	value, e := hex.DecodeString(raw[2:])
+	value, e := sealedColumn(row, field)
 	if e != nil {
-		return ErrArchive
+		return e
 	}
 	value, e = transform(item, value)
 	// A value that does not open, or would not open once sealed, is the archive's fault; anything
@@ -139,6 +135,19 @@ func transformCredential(table string, row Row, environments secretEnvironments,
 	setValue(row, field, `\x`+hex.EncodeToString(value))
 	clear(value)
 	return nil
+}
+
+// sealedColumn is the sealed value a row's column holds, as PostgreSQL's hex form of bytea.
+func sealedColumn(row Row, field string) ([]byte, error) {
+	raw, err := rowString(row, field)
+	if err != nil || !strings.HasPrefix(raw, `\x`) {
+		return nil, ErrArchive
+	}
+	value, err := hex.DecodeString(raw[2:])
+	if err != nil {
+		return nil, ErrArchive
+	}
+	return value, nil
 }
 
 // AdmitExport refuses what Export would refuse before reading the workspace: an account that

@@ -349,13 +349,25 @@ var errErasureAccepted = errors.New("the operator accepted erasing this value")
 // transaction that writes the row. A secret version whose environment's key a purge destroyed opens
 // nowhere again: it is restored erased, as the purge left it, as is one under a key the restored
 // database never had, for an environment in erase.
+//
+// An environment in erase gets no key from recovery: a key made now would take the lost key's
+// generation, which the hosts' checkpoints still name, so its values recovery restores under the
+// workspace key stay there until conversion moves them.
 func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row, environments secretEnvironments, erase map[uuid.UUID]bool) error {
 	err := transformCredential(table, row, environments, func(item secretbroker.Item, value []byte) ([]byte, error) {
+		if !erase[item.Environment] {
+			return keys.Rehome(ctx, q, item, value)
+		}
+		header, err := cryptobox.ReadHeader(value)
+		if err != nil {
+			return nil, err
+		}
+		if header.Scope != cryptobox.ScopeEnvironment {
+			item.Environment = uuid.Nil
+		}
 		moved, err := keys.Rehome(ctx, q, item, value)
-		if errors.Is(err, secretbroker.ErrKeyNotInBackup) && erase[item.Environment] {
-			if header, e := cryptobox.ReadHeader(value); e == nil && header.Scope == cryptobox.ScopeEnvironment {
-				return nil, errErasureAccepted
-			}
+		if errors.Is(err, secretbroker.ErrKeyNotInBackup) && header.Scope == cryptobox.ScopeEnvironment {
+			return nil, errErasureAccepted
 		}
 		return moved, err
 	})

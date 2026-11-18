@@ -74,14 +74,12 @@ func recoveryErasure(a portability.Archive, unopened []portability.UnopenedValue
 	}
 	names := archiveNames(a)
 	missing := map[uuid.UUID]*RecoveryMissingEnvironment{}
-	values := make([]RecoveryErasedValue, 0, len(unopened))
 	for _, v := range unopened {
-		env := names.environments[v.Environment]
 		if missing[v.Environment] == nil {
+			env := names.environments[v.Environment]
 			missing[v.Environment] = &RecoveryMissingEnvironment{ID: v.Environment, Project: names.projects[env.project], Name: env.name}
 		}
 		missing[v.Environment].Values++
-		values = append(values, RecoveryErasedValue{EnvironmentID: v.Environment, Project: names.projects[env.project], Environment: env.name, Secret: names.secrets[v.Secret], VersionID: v.Version})
 	}
 	exact := len(accept) == len(missing)
 	for id := range missing {
@@ -91,10 +89,7 @@ func recoveryErasure(a portability.Archive, unopened []portability.UnopenedValue
 		if len(missing) == 0 {
 			return nil, []RecoveryErasedValue{}, nil
 		}
-		slices.SortFunc(values, func(a, b RecoveryErasedValue) int {
-			return strings.Compare(a.Project+"\x00"+a.Environment+"\x00"+a.Secret+"\x00"+a.VersionID.String(), b.Project+"\x00"+b.Environment+"\x00"+b.Secret+"\x00"+b.VersionID.String())
-		})
-		return accept, values, nil
+		return accept, names.erasedValues(unopened), nil
 	}
 	refusal := &RecoveryKeysMissing{}
 	for _, env := range missing {
@@ -109,22 +104,52 @@ func recoveryErasure(a portability.Archive, unopened []portability.UnopenedValue
 	return nil, nil, refusal
 }
 
-// unopenedToRestore leaves out of unopened the versions the workspace already stores erased: the
-// merge keeps a stored erasure, so they need no key, and a later recovery does not stop for a loss
-// an earlier one recorded.
-func unopenedToRestore(ctx context.Context, q *db.Queries, ws uuid.UUID, unopened []portability.UnopenedValue) ([]portability.UnopenedValue, error) {
-	if len(unopened) == 0 {
-		return unopened, nil
+// repeatedErasure is the report's erased values for an apply that repeats one the operator
+// accepted erasure for: the archive's values under the keys of the accepted environments, which
+// the first apply stored erased.
+func repeatedErasure(ctx context.Context, q *db.Queries, in RecoveryImport, a portability.Archive) ([]RecoveryErasedValue, error) {
+	if len(in.AcceptErasedEnvironments) == 0 {
+		return []RecoveryErasedValue{}, nil
 	}
-	ids := make([]uuid.UUID, len(unopened))
-	for i, v := range unopened {
-		ids[i] = v.Version
-	}
-	erased, err := q.ErasedSecretVersions(ctx, db.ErasedSecretVersionsParams{WorkspaceID: ws, Ids: ids})
+	values, err := portability.EnvironmentSealedValues(a)
 	if err != nil {
 		return nil, err
 	}
-	return slices.DeleteFunc(unopened, func(v portability.UnopenedValue) bool { return slices.Contains(erased, v.Version) }), nil
+	_, erased, err := storedSecretVersions(ctx, q, a)
+	if err != nil {
+		return nil, err
+	}
+	values = slices.DeleteFunc(values, func(v portability.UnopenedValue) bool {
+		return !slices.Contains(in.AcceptErasedEnvironments, v.Environment) || !erased[v.Version]
+	})
+	return archiveNames(a).erasedValues(values), nil
+}
+
+// storedSecretVersions is the archive's secret versions the workspace already stores, and those
+// of them it stores erased. The merge keeps a stored version as it is, erased or not, so recovery
+// needs no key for it. A database restored from a backup taken before conversion holds them under
+// the workspace key, and a later recovery does not stop for a loss an earlier one recorded.
+func storedSecretVersions(ctx context.Context, q *db.Queries, a portability.Archive) (stored, erased map[uuid.UUID]bool, err error) {
+	ids := make([]uuid.UUID, 0, len(a.Tables["secret_versions"]))
+	for _, row := range a.Tables["secret_versions"] {
+		var id uuid.UUID
+		if json.Unmarshal(row["id"], &id) != nil {
+			return nil, nil, portability.ErrArchive
+		}
+		ids = append(ids, id)
+	}
+	rows, err := q.StoredSecretVersions(ctx, db.StoredSecretVersionsParams{WorkspaceID: a.Workspace, Ids: ids})
+	if err != nil {
+		return nil, nil, err
+	}
+	stored, erased = make(map[uuid.UUID]bool, len(rows)), map[uuid.UUID]bool{}
+	for _, row := range rows {
+		stored[row.ID] = true
+		if row.Erased {
+			erased[row.ID] = true
+		}
+	}
+	return stored, erased, nil
 }
 
 // recordRecoveryErasure records in the audit log each environment whose values the operator
@@ -179,4 +204,17 @@ func archiveNames(a portability.Archive) recoveryNames {
 		}
 	}
 	return n
+}
+
+// erasedValues names values for the report, in a stable order.
+func (n recoveryNames) erasedValues(values []portability.UnopenedValue) []RecoveryErasedValue {
+	out := make([]RecoveryErasedValue, 0, len(values))
+	for _, v := range values {
+		env := n.environments[v.Environment]
+		out = append(out, RecoveryErasedValue{EnvironmentID: v.Environment, Project: n.projects[env.project], Environment: env.name, Secret: n.secrets[v.Secret], VersionID: v.Version})
+	}
+	slices.SortFunc(out, func(a, b RecoveryErasedValue) int {
+		return strings.Compare(a.Project+"\x00"+a.Environment+"\x00"+a.Secret+"\x00"+a.VersionID.String(), b.Project+"\x00"+b.Environment+"\x00"+b.Secret+"\x00"+b.VersionID.String())
+	})
+	return out
 }

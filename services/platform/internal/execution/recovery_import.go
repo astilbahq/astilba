@@ -136,15 +136,22 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	for parent, root := range roots {
 		recovered[parent] = root.Descriptor
 	}
+	// An acceptance of erasure is part of the input, so only an apply naming the same one repeats
+	// it, and its report lists the same erased values.
+	accepted := slices.Clone(in.AcceptErasedEnvironments)
+	slices.SortFunc(accepted, bytesCompareUUID)
+	accepted = slices.Compact(accepted)
 	inputHash := Hash(struct {
-		Hosts map[uuid.UUID]deployment.RecoveryEvidence
-		Roots map[uuid.UUID]deployment.RecoveryDescriptor
-	}{source.Hosts, recovered})
+		Hosts    map[uuid.UUID]deployment.RecoveryEvidence
+		Roots    map[uuid.UUID]deployment.RecoveryDescriptor
+		Accepted []uuid.UUID `json:",omitempty"`
+	}{source.Hosts, recovered, accepted})
 	if in.ExpectedState != "" && in.ExpectedState != out.StateHash {
 		if repeated, err := s.repeatedRecovery(ctx, tx, in, inputHash, roots, &out); err != nil {
 			return out, err
 		} else if repeated {
-			return out, nil
+			out.ErasedValues, err = repeatedErasure(ctx, q, in, source.Archive)
+			return out, err
 		}
 		return out, errors.New("workspace state changed; inspect recovery again")
 	}
@@ -201,11 +208,12 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = validateRecoveryRestrictionEvidence(ctx, tx, out.Handovers); err != nil {
 		return out, err
 	}
-	unopened, err := portability.CheckRecoveryKeys(keys, source.Archive)
+	stored, _, err := storedSecretVersions(ctx, q, source.Archive)
 	if err != nil {
 		return out, err
 	}
-	if unopened, err = unopenedToRestore(ctx, q, in.WorkspaceID, unopened); err != nil {
+	unopened, err := portability.CheckRecoveryKeys(keys, source.Archive, stored)
+	if err != nil {
 		return out, err
 	}
 	erase, erased, err := recoveryErasure(source.Archive, unopened, in.AcceptErasedEnvironments)
