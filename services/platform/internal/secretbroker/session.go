@@ -423,7 +423,7 @@ func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environmen
 // them, such a value stays one recovery stops for, ErrKeyNotInBackup. Only recovery calls it. An
 // environment that already has a key keeps it, and one being purged gets none: ErrKeyDestroyed.
 func (s *Session) ReplaceLostEnvironmentKey(ctx context.Context, q Fence, environment uuid.UUID, lost int64) error {
-	if s.request.Purpose != Recover || lost < 1 {
+	if s.request.Purpose != Recover {
 		return ErrNotAllowed
 	}
 	ws := s.request.Workspace

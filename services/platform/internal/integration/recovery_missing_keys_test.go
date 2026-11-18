@@ -98,24 +98,41 @@ func TestRecoveryStopsForEnvironmentKeysTheBackupLacks(t *testing.T) {
 
 // A database restored from a backup taken before conversion moved an environment's values onto
 // its key holds them under the workspace key, which it opens, and has no environment key. The
-// hosts' checkpoints hold the same versions under the environment key. Recovery keeps the stored
-// versions as they are, so it neither stops for them nor reports them erased.
+// hosts' checkpoints, taken after conversion, hold the same versions under the environment key.
+// Recovery keeps the stored versions as they are, so it neither stops for them nor reports them
+// erased.
 func TestRecoveryKeepsVersionsTheBackupHoldsUnderTheWorkspaceKey(t *testing.T) {
 	const canary = "converted-later-canary"
 	var billing api.Environment
 	var version api.SecretVersion
+	var beforeConversion []byte
 	r := newParticipantRecovery(t, func(f *fixture, b *browser, ws, _ uuid.UUID) {
+		ctx := context.Background()
 		base := "/api/v1/workspaces/" + ws.String()
 		var project api.Project
 		b.call("POST", base+"/projects", map[string]string{"name": "Accounts"}, 201, &project)
 		path := base + "/projects/" + project.Id.String() + "/environments"
 		b.call("POST", path, map[string]string{"name": "Billing"}, 201, &billing)
+		// An instance below stage 5 keeps the value under the workspace key until conversion.
+		older := uuid.New()
+		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO custody_instances(instance_id,stage) VALUES($1,4)`, older); err != nil {
+			t.Fatal(err)
+		}
 		b.call("POST", path+"/"+billing.Id.String()+"/secrets", map[string]string{"name": "PAYMENTS_TOKEN", "value": canary}, 201, &version)
+		if err := f.st.Pool.QueryRow(ctx, `SELECT encrypted_value FROM secret_versions WHERE workspace_id=$1 AND id=$2`, ws, version.Id).Scan(&beforeConversion); err != nil {
+			t.Fatal(err)
+		}
+		if header, err := cryptobox.ReadHeader(beforeConversion); err != nil || header.Scope != cryptobox.ScopeWorkspace {
+			t.Fatalf("sealed as %+v beside an older instance %v", header, err)
+		}
+		if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_instances SET seen_at=now()-interval '6 minutes' WHERE instance_id=$1`, older); err != nil {
+			t.Fatal(err)
+		}
+		if c, err := f.st.Broker.Convert(ctx, "operator@example.test", "stage 6"); err != nil || c.Values == 0 {
+			t.Fatalf("conversion %+v %v", c, err)
+		}
 	})
-	sealed, err := cryptobox.SealUnder(workspaceKey(t, r.f, r.ws, 1), cryptobox.ScopeWorkspace, 1, []byte(canary), secretIdentity(r.ws, version.Id))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The database is as a backup taken before conversion.
 	tx, err := r.f.st.Pool.Begin(r.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +143,7 @@ func TestRecoveryKeepsVersionsTheBackupHoldsUnderTheWorkspaceKey(t *testing.T) {
 		args []any
 	}{
 		{`SET LOCAL session_replication_role=replica`, nil},
-		{`UPDATE secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id=$2`, []any{r.ws, version.Id, sealed}},
+		{`UPDATE secret_versions SET encrypted_value=$3 WHERE workspace_id=$1 AND id=$2`, []any{r.ws, version.Id, beforeConversion}},
 		{`DELETE FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2`, []any{r.ws, billing.Id}},
 	} {
 		if _, err = tx.Exec(r.ctx, statement.sql, statement.args...); err != nil {
@@ -149,7 +166,7 @@ func TestRecoveryKeepsVersionsTheBackupHoldsUnderTheWorkspaceKey(t *testing.T) {
 	if err = r.f.st.Pool.QueryRow(r.ctx, `SELECT encrypted_value FROM secret_versions WHERE workspace_id=$1 AND id=$2`, r.ws, version.Id).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if value, err := inspectValue(t, r.f.st, r.f.owner, r.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: version.Id}, stored); err != nil || string(value) != canary {
+	if value, err := inspectValue(t, r.f.st, r.f.owner, r.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: version.Id, Environment: billing.Id}, stored); err != nil || string(value) != canary {
 		t.Fatal("the stored version did not survive recovery", string(value), err)
 	}
 }
