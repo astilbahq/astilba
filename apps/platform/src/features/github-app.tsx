@@ -13,7 +13,8 @@ const base = "/api/v1/workspaces/{workspaceId}/github-app" as const;
 const grantBase = `${base}/authorizations/{authorizationId}` as const;
 
 export function GitHubAppSettings({ workspaceId }: { workspaceId: string }) {
-  const action = useAction();
+  // Authorizing GitHub and disconnecting a repository both need a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const queries = useQueryClient();
   const path = { workspaceId };
   const status = useQuery({
@@ -154,7 +155,9 @@ export function GitHubCallback() {
   );
 }
 function GitHubSelection({ grant }: { grant: Schema["GitHubAuthorization"] }) {
-  const action = useAction();
+  // Connecting a repository stores the grant's access, which needs a recent confirmation of
+  // identity.
+  const action = useAction({ recentAuth: true });
   const [installation, setInstallation] = useState("");
   const [repository, setRepository] = useState("");
   const [installationPage, setInstallationPage] = useState(1);

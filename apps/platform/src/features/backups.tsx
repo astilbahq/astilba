@@ -40,7 +40,9 @@ export function Backups({
   dirty: boolean;
   load: (revision: Schema["Revision"]) => boolean;
 }) {
-  const action = useAction(),
+  // Destinations and policies take storage credentials, which the server accepts only from a
+  // recent confirmation of identity.
+  const action = useAction({ recentAuth: true }),
     queries = useQueryClient();
   const [method, setMethod] =
     useState<Schema["BackupPolicyRequest"]["method"]>("postgres-logical");
@@ -160,7 +162,17 @@ export function Backups({
             <Form
               action={action}
               label="Create backup policy"
-              onSubmit={(d, form) =>
+              onSubmit={(d, form) => {
+                let command: string[] = [];
+                if (method === "container-job")
+                  try {
+                    command = JSON.parse(text(d, "command"));
+                  } catch {
+                    return action.reportInvalid(
+                      form.elements.namedItem("command"),
+                      'Enter the command as JSON arguments, such as ["node", "job.js"].',
+                    );
+                  }
                 action.run(async () => {
                   await result(
                     client.POST(backupPoliciesPath, {
@@ -177,10 +189,7 @@ export function Backups({
                         timeoutSeconds: scheduleTimeout(d),
                         retain: Number(text(d, "retain")),
                         enabled: d.has("enabled"),
-                        command:
-                          method === "container-job"
-                            ? JSON.parse(text(d, "command"))
-                            : [],
+                        command,
                         password: text(d, "password"),
                         baseGeneration: 0,
                         exposureAcknowledged: d.has("exposureAcknowledged")
@@ -207,8 +216,8 @@ export function Backups({
                   await queries.invalidateQueries({
                     queryKey: ["backup-policies", path],
                   });
-                })
-              }
+                });
+              }}
             >
               <Field
                 key={`name-${preset?.serviceId}`}
