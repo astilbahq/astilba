@@ -8,7 +8,7 @@ import { Label } from "../components/label";
 import { Select } from "../components/select";
 import { Textarea } from "../components/textarea";
 import * as s from "../styles";
-import { ErrorNotice, Form, text, useAction } from "../ui";
+import { ErrorNotice, Form, reportInvalid, text, useAction } from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
 
 const capabilities: {
@@ -91,13 +91,16 @@ export function AutomationCredentials({
         <Form
           action={action}
           label="Create automation credential"
-          onSubmit={(data, form) =>
+          onSubmit={(data, form) => {
+            const selected = data.getAll(
+              "capability",
+            ) as Schema["AutomationCapability"][];
+            if (selected.length === 0)
+              return reportInvalid(
+                form.elements.namedItem("capability"),
+                "Choose at least one capability.",
+              );
             action.run(async () => {
-              const selected = data.getAll(
-                "capability",
-              ) as Schema["AutomationCapability"][];
-              if (selected.length === 0)
-                throw new Error("Choose at least one capability.");
               const created = await result(
                 client.POST(
                   "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/automation-credentials",
@@ -121,8 +124,8 @@ export function AutomationCredentials({
               setMessage("Automation credential created for this environment.");
               form.reset();
               await credentials.refetch();
-            })
-          }
+            });
+          }}
         >
           <Label>
             Token name

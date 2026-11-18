@@ -4,7 +4,15 @@ import { Checkbox } from "./components/checkbox";
 import { Input } from "./components/input";
 import { Label } from "./components/label";
 import * as s from "./styles";
-import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
+import {
+  BusyButton,
+  ErrorNotice,
+  Field,
+  Form,
+  reportInvalid,
+  text,
+  useAction,
+} from "./ui";
 
 export function WorkspaceExport({ workspaceId }: { workspaceId: string }) {
   // An export carries the workspace's secrets, so it needs a recent confirmation of identity.
@@ -90,13 +98,14 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
       <Form
         action={action}
         label="Import workspace"
-        onSubmit={(data, form) =>
+        onSubmit={(data, form) => {
+          const file = data.get("archive");
+          if (!(file instanceof File) || !file.size || file.size > 33_554_484)
+            return reportInvalid(
+              form.elements.namedItem("archive"),
+              "Choose an Astilba archive no larger than 32 MiB.",
+            );
           action.run(async () => {
-            const file = data.get("archive");
-            if (!(file instanceof File) || !file.size || file.size > 33_554_484)
-              throw new Error(
-                "Choose an Astilba archive no larger than 32 MiB.",
-              );
             const bytes = new Uint8Array(await file.arrayBuffer());
             let binary = "";
             for (let at = 0; at < bytes.length; at += 32768)
@@ -112,8 +121,8 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
             );
             form.reset();
             setDone(true);
-          })
-        }
+          });
+        }}
       >
         <Label>
           Encrypted workspace archive

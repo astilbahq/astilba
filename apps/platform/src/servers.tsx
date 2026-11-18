@@ -38,7 +38,8 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
   const queries = useQueryClient();
   const action = useAction();
   // A server's credentials, from a transfer ticket to its agent key, change only after a recent
-  // confirmation of identity, so their controls ask for one first.
+  // confirmation of identity, so their controls ask for one before sending when the session is
+  // known not to have it.
   const credentials = useAction({ recentAuth: true });
   const [enrollment, setEnrollment] = useState<Schema["Enrollment"]>();
   useEffect(() => {

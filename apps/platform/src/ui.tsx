@@ -110,6 +110,33 @@ export function useAction({
       mutation.mutate({ fn, origin: origin ?? document.activeElement }),
   };
 }
+/**
+ * Marks a form control invalid with `message` and shows it as the browser shows a missing
+ * required value, for a check its attributes can't express. Make such checks before `run`, so
+ * an action that needs recent authentication never asks for it over input it won't send. Any
+ * later edit in the form clears the mark.
+ */
+export function reportInvalid(
+  control: Element | RadioNodeList | null,
+  message: string,
+) {
+  const target = control instanceof RadioNodeList ? control[0] : control;
+  if (
+    !(
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement
+    )
+  )
+    return;
+  target.setCustomValidity(message);
+  target.reportValidity();
+  (target.form ?? target).addEventListener(
+    "input",
+    () => target.setCustomValidity(""),
+    { once: true },
+  );
+}
 const FormErrorContext = createContext<{
   id?: string;
   fields: readonly string[];

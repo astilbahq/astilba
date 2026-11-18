@@ -79,7 +79,11 @@ test("a lapsed identity confirmation is asked for before a backup policy's crede
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toBeHidden();
   await expect(password).toHaveValue("browser-stale-session-canary");
-  await expect(form.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("region", { name: "Backups and scheduled jobs", exact: true })
+      .getByRole("alert"),
+  ).toHaveCount(0);
   // Confirming creates the policy as submitted.
   await create.click();
   await confirmIdentityWithPassword(page);
@@ -88,6 +92,20 @@ test("a lapsed identity confirmation is asked for before a backup policy's crede
   ).toBeVisible();
   // The confirmation came first, so the stale session never sent the credentials.
   expect(refused).toEqual([]);
+  // A policy's commands, which hand its credentials to the server, ask first as well.
+  const commands = await lapseRecentConfirmation(page, /\/commands$/);
+  await page.reload();
+  await openEnvironmentSection(page, "Deployments");
+  const policy = page.getByRole("region", {
+    name: "Policy Confirmed backup",
+    exact: true,
+  });
+  await policy.getByRole("button", { name: "Install schedule" }).click();
+  await confirmIdentityWithPassword(page);
+  await expect(policy.getByRole("status")).toHaveText(
+    "Action queued. Check operation history and the run result.",
+  );
+  expect(commands).toEqual([]);
 });
 
 test("general schedule settings retain invalid drafts and save cron and interval generations", async ({

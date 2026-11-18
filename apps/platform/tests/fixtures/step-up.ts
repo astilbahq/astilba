@@ -1,4 +1,18 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
+import { authFixtureSQL } from "../auth-fixture";
+
+// Answers as the server does when the session's identity confirmation has lapsed.
+function refuseForRecentAuthentication(route: Route) {
+  return route.fulfill({
+    status: 403,
+    contentType: "application/json",
+    body: JSON.stringify({
+      code: "recent_auth_required",
+      message: "Confirm your identity before this action.",
+      requestId: "browser-fixture",
+    }),
+  });
+}
 
 /**
  * Answers the next matching request as the server does once a session's identity
@@ -14,15 +28,7 @@ export async function lapseRecentConfirmationFor(
   await page.route(url, async (route) => {
     if (refused || route.request().method() !== method) return route.fallback();
     refused = true;
-    await route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        code: "recent_auth_required",
-        message: "Confirm your identity before this action.",
-        requestId: "browser-fixture",
-      }),
-    });
+    await refuseForRecentAuthentication(route);
   });
 }
 
@@ -59,21 +65,19 @@ export async function lapseRecentConfirmation(
     const request = route.request();
     if (confirmed || request.method() === "GET") return route.fallback();
     refused.push(`${request.method()} ${new URL(request.url()).pathname}`);
-    await route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        code: "recent_auth_required",
-        message: "Confirm your identity before this action.",
-        requestId: "browser-fixture",
-      }),
-    });
+    await refuseForRecentAuthentication(route);
   });
   return refused;
 }
 
 /** Confirms the fixture owner's identity in the shared dialog, by keyboard. */
 export async function confirmIdentityWithPassword(page: Page) {
+  // Every confirmation spends one of the account's few attempts in a fixed window, and every
+  // journey and both browser projects share the fixture owner, so start without the attempts
+  // earlier tests spent.
+  await authFixtureSQL(
+    `DELETE FROM auth_attempts WHERE scope_hash=sha256(convert_to('reauth:' || (SELECT id FROM accounts WHERE email='owner@example.test'), 'UTF8'))`,
+  );
   const dialog = page.getByRole("alertdialog", {
     name: "Confirm your identity",
   });

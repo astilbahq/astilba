@@ -8,7 +8,15 @@ import { Input } from "../components/input";
 import { Label } from "../components/label";
 import { Select } from "../components/select";
 import * as s from "../styles";
-import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
+import {
+  BusyButton,
+  ErrorNotice,
+  Field,
+  Form,
+  reportInvalid,
+  text,
+  useAction,
+} from "../ui";
 import {
   BackupRecommendations,
   type RecommendedBackup,
@@ -162,7 +170,17 @@ export function Backups({
             <Form
               action={action}
               label="Create backup policy"
-              onSubmit={(d, form) =>
+              onSubmit={(d, form) => {
+                let command: string[] = [];
+                if (method === "container-job")
+                  try {
+                    command = JSON.parse(text(d, "command"));
+                  } catch {
+                    return reportInvalid(
+                      form.elements.namedItem("command"),
+                      'Enter the command as JSON arguments, such as ["node", "job.js"].',
+                    );
+                  }
                 action.run(async () => {
                   await result(
                     client.POST(`${root}/backup-policies`, {
@@ -179,10 +197,7 @@ export function Backups({
                         timeoutSeconds: scheduleTimeout(d),
                         retain: Number(text(d, "retain")),
                         enabled: d.has("enabled"),
-                        command:
-                          method === "container-job"
-                            ? JSON.parse(text(d, "command"))
-                            : [],
+                        command,
                         password: text(d, "password"),
                         baseGeneration: 0,
                       },
@@ -193,8 +208,8 @@ export function Backups({
                   await queries.invalidateQueries({
                     queryKey: ["backup-policies", path],
                   });
-                })
-              }
+                });
+              }}
             >
               <Field
                 key={`name-${preset?.serviceId}`}
