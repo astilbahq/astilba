@@ -100,6 +100,10 @@ func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, en
 		major.Valid = major.String != ""
 	}
 	q := db.New(tx)
+	// The lock a new draft's volumes are checked under comes before the target's row.
+	if err := store.LockVolumeDecisions(ctx, q, ws, env); err != nil {
+		return db.SpecificationRevision{}, err
+	}
 	recorded, err := q.ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: policy.Plan.UnitID, ID: target, PostgresMajor: major})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.SpecificationRevision{}, domain.Conflict
@@ -146,8 +150,11 @@ func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, en
 		}
 	}
 	raw, _ := stablejson.Marshal(v.Spec)
-	_, canonical, err := domain.ParseSpec(raw)
+	parsed, canonical, err := domain.ParseSpec(raw)
 	if err != nil {
+		return db.SpecificationRevision{}, err
+	}
+	if err = store.RefuseDeletedMounts(ctx, q, ws, env, parsed); err != nil {
 		return db.SpecificationRevision{}, err
 	}
 	h := sha256.Sum256(canonical)

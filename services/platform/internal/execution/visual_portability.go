@@ -274,6 +274,7 @@ func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid
 				used[mount.VolumeID] = true
 			}
 		}
+		ids := []uuid.UUID{}
 		rows, err := tx.Query(ctx, "SELECT id,deleted FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3 ORDER BY id", ws, env, v.Unit)
 		if err != nil {
 			return err
@@ -284,6 +285,7 @@ func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid
 			if err = rows.Scan(&volume.Id, &volume.Deleted); err != nil {
 				return err
 			}
+			ids = append(ids, volume.Id)
 			volume.Name = names[volume.Id]
 			if volume.Name == "" {
 				volume.Name = "Retained volume " + volume.Id.String()[:8]
@@ -291,7 +293,22 @@ func (s *Service) ManagedVolumes(ctx context.Context, p store.Principal, ws, pid
 			volume.InUse = used[volume.Id]
 			out = append(out, volume)
 		}
-		return rows.Err()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		// Shown, not decided on, so read without the lock a delete is decided under.
+		deletions, err := db.New(tx).VolumeDeletions(ctx, db.VolumeDeletionsParams{WorkspaceID: ws, EnvironmentID: env, Ids: ids})
+		if err != nil {
+			return err
+		}
+		for _, d := range deletions {
+			for i := range out {
+				if out[i].Id == d.ID && !d.Deleted {
+					out[i].Deleting = true
+				}
+			}
+		}
+		return nil
 	})
 	return out, err
 }

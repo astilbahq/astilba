@@ -41,12 +41,14 @@ export const keptVolumes: Schema["ManagedVolumes"] = [
     name: "postgres-data",
     inUse: false,
     deleted: false,
+    deleting: false,
   },
   {
     id: "00000000-0000-4000-8000-000000000071",
     name: "uploads",
     inUse: false,
     deleted: false,
+    deleting: false,
   },
 ];
 export const volumes = http.get(`${environmentRoot}/volumes`, () =>

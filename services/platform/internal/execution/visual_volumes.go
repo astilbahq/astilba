@@ -3,16 +3,33 @@ package execution
 import (
 	"context"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
+// refusePlanDeletedVolumes refuses a plan of spec when it declares a volume that is deleted or
+// being deleted, mounted or not. A draft may still declare one after a delete, until its owner
+// removes it from their source files, but no plan of it is prepared or applied until then.
+func refusePlanDeletedVolumes(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, spec domain.Specification) error {
+	ids := make([]uuid.UUID, 0, len(spec.Volumes))
+	for _, vol := range spec.Volumes {
+		ids = append(ids, vol.ID)
+	}
+	return store.RefuseDeletedVolumes(ctx, db.New(tx), ws, env, ids, domain.VolumeNames(spec))
+}
+
 // claimPlanVolumes records each volume an applied plan mounts as the environment's, and refuses
-// a PostgreSQL service that the volume was not initialised for: other credentials, or another
-// major version, which the volume keeps recording across retirement and restore.
+// one that is deleted or being deleted, or a PostgreSQL service that the volume was not
+// initialised for: other credentials, or another major version, which the volume keeps recording
+// across retirement and restore.
 func claimPlanVolumes(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, plan deployment.Plan) error {
+	if err := refusePlanDeletedVolumes(ctx, tx, ws, env, plan.Specification); err != nil {
+		return err
+	}
 	for _, vol := range plan.Specification.Volumes {
 		var owner uuid.UUID
 		var deleted bool

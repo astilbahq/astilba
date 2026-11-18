@@ -18,7 +18,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // StartBackupRecovery restores one of a revoked server's policy snapshots into a new volume on the
@@ -258,7 +257,12 @@ func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal,
 		if err != nil {
 			return err
 		}
-		if discardActive(row.DiscardState) {
+		// Any delete of the volume, a discard or another, claims it until the delete ends.
+		deletions, err := store.VolumeDeletions(ctx, db.New(tx), ws, env, []uuid.UUID{row.TargetVolumeID})
+		if err != nil {
+			return err
+		}
+		if deletions[row.TargetVolumeID] == store.VolumeDeleting {
 			return domain.DiscardActive
 		}
 		if row.State != string(api.ExecutionStateSucceeded) {
@@ -316,8 +320,18 @@ func (s *Service) DiscardRecoveryTarget(ctx context.Context, p store.Principal, 
 		if v.Server == nil || *v.Server != row.ServerID {
 			return domain.RestoreServerMoved
 		}
-		if discardActive(row.DiscardState) {
+		// Any delete of the volume, a discard or another, claims it until the delete ends. This
+		// takes the lock observeVisual decides the delete under before ClaimRestoreTarget locks
+		// the volume's row.
+		deletions, err := store.VolumeDeletions(ctx, db.New(tx), ws, env, []uuid.UUID{row.TargetVolumeID})
+		if err != nil {
+			return err
+		}
+		switch deletions[row.TargetVolumeID] {
+		case store.VolumeDeleting:
 			return domain.DiscardActive
+		case store.VolumeDeleted:
+			return domain.VolumeDeleted
 		}
 		_, err = db.New(tx).ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: v.Unit, ID: row.TargetVolumeID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -332,12 +346,6 @@ func (s *Service) DiscardRecoveryTarget(ctx context.Context, p store.Principal, 
 		return db.New(tx).SetBackupRecoveryDiscard(ctx, db.SetBackupRecoveryDiscardParams{WorkspaceID: ws, EnvironmentID: env, ID: recovery, DiscardOperationID: &out.Id})
 	})
 	return operationFor(p, out), err
-}
-
-// discardActive reports whether a restore's latest discard is still running, and so claims its
-// volume. A succeeded one deleted the volume, which ClaimRestoreTarget refuses.
-func discardActive(state pgtype.Text) bool {
-	return state.Valid && !Terminal(api.ExecutionState(state.String))
 }
 
 // loadBackupRecovery reads a policy and one of its restores onto another server.

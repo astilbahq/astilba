@@ -98,6 +98,22 @@ SELECT host_review FROM visual_requests WHERE workspace_id=$1 AND id=$2;
 -- a transaction that then locks a build target keeps their order and can't deadlock with them.
 SELECT id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR NO KEY UPDATE;
 
+-- name: LockEnvironmentDraft :one
+-- Takes the environment's row lock, as LockEnvironmentForUpdate does, and returns its draft as it
+-- stands once the lock is held. A delete of one of the environment's volumes and a draft or plan
+-- that uses one are decided under this lock: see store.LockVolumeDecisions.
+SELECT draft_revision_id FROM environments WHERE workspace_id = @workspace_id AND id = @id FOR NO KEY UPDATE;
+
+-- name: VolumeDeletions :many
+-- Those of the environment's volumes among ids that are deleted, or that a delete-volume operation
+-- of the environment's that hasn't ended names. Read it under LockEnvironmentDraft's lock.
+SELECT v.id, v.deleted FROM managed_volumes v
+WHERE v.workspace_id = @workspace_id AND v.environment_id = @environment_id AND v.id = ANY(@ids::uuid[])
+    AND (v.deleted OR EXISTS(SELECT 1 FROM execution_operations o
+        WHERE o.workspace_id = v.workspace_id AND o.environment_id = v.environment_id
+            AND o.state IN ('queued','dispatched','running','needs_attention')
+            AND o.command->'visual'->>'action' = 'delete-volume' AND o.command->'visual'->>'volumeId' = v.id::text));
+
 -- name: UnmeasuredSecretVersions :many
 -- unscoped: the job that measures values goes through every workspace's, a batch at a time.
 SELECT workspace_id,id,encrypted_value FROM secret_versions
