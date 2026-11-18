@@ -52,7 +52,7 @@ func seedLegacyValues(t *testing.T, f *fixture) (uuid.UUID, []legacySeed) {
 		}
 		return sealed
 	}
-	seeds := []legacySeed{{item: secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret}, ws: ws, plain: "legacy-secret", read: `SELECT encrypted_value FROM secret_versions WHERE id=$1`}}
+	seeds := []legacySeed{{item: secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret, Environment: env}, ws: ws, plain: "legacy-secret", read: `SELECT encrypted_value FROM secret_versions WHERE id=$1`}}
 	integrations := []struct {
 		kind   secretbroker.Kind
 		insert string
