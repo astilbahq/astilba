@@ -518,7 +518,7 @@ func (s *Session) environmentKeyFor(item Item, header cryptobox.Header) ([]byte,
 	switch {
 	case !ok && s.request.Purpose == Recover:
 		// Recovery runs on a database restored from before the key was made.
-		return nil, ErrKeyNotInBackup
+		return nil, keyNotInBackup{environment: header.Holder}
 	case !ok:
 		s.stale = true
 		return nil, ErrKeysChanged

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"strings"
 	"testing"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -268,7 +269,8 @@ func TestRecoverySessionsDoNotWaitForKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = recover.Open(item, sealed); !errors.Is(err, ErrKeyNotInBackup) || !errors.Is(err, cryptobox.ErrKey) || SessionFailure(err) || !recover.Live() {
+	if _, err = recover.Open(item, sealed); !errors.Is(err, ErrKeyNotInBackup) || !errors.Is(err, cryptobox.ErrKey) || SessionFailure(err) || !recover.Live() ||
+		!strings.Contains(err.Error(), "holds no key for the workspace") || !strings.Contains(err.Error(), "after the workspace's key was made") {
 		t.Fatalf("keyless recovery: %v", err)
 	}
 	// Nor can it restore a value: the operator makes the key first.
@@ -279,5 +281,34 @@ func TestRecoverySessionsDoNotWaitForKeys(t *testing.T) {
 	case <-b.KeysWanted():
 		t.Fatal("an offline recovery woke the key job")
 	default:
+	}
+}
+
+// A recovery whose database has the workspace's key but not the key an environment's value is
+// sealed under names that environment, and the remedy for it: accepting its values restored
+// erased, which a newer workspace key would not give.
+func TestRecoveryNamesTheEnvironmentWhoseKeyTheBackupLacks(t *testing.T) {
+	b, _, _, _, _ := setup(t)
+	ctx := context.Background()
+	ws, item := uuid.New(), Item{Kind: SecretVersion, ID: uuid.New(), Environment: uuid.New()}
+	sealed, err := cryptobox.SealUnderEnvironment(make([]byte, 32), item.Environment, 1, []byte("value"), item.identity(ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recover, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Recover, Principal: Operator("test"), Kinds: RecoveryKinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = recover.Open(item, sealed)
+	if !errors.Is(err, ErrKeyNotInBackup) || !errors.Is(err, cryptobox.ErrKey) || SessionFailure(err) || !recover.Live() {
+		t.Fatalf("recovery without the environment's key: %v", err)
+	}
+	for _, want := range []string{"environment " + item.Environment.String(), "--accept-erased-environments"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("%q does not say %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "key for the workspace") {
+		t.Fatalf("%q blames the workspace's key", err)
 	}
 }
