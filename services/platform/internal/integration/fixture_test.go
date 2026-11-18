@@ -117,8 +117,11 @@ func TestMain(m *testing.M) {
 	owner := uuid.NewString()
 	password, _ := randtoken.New()
 	name := "astilba-p1-test-" + owner
-	// Nothing is published: the tests reach the database through the Docker API.
-	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--env", "POSTGRES_PASSWORD="+password, postgresImage)
+	// Nothing is published: the tests reach the database through the Docker API. Docker gives a
+	// container 64 MB of /dev/shm unless told otherwise, and PostgreSQL's dynamic shared memory
+	// lives there. Each test's database is dropped when it ends, which keeps that use flat;
+	// --shm-size is headroom for a suite that keeps growing, as the browser workflows' 1g is.
+	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--shm-size", "1g", "--env", "POSTGRES_PASSWORD="+password, postgresImage)
 	if e != nil {
 		fmt.Fprintln(os.Stderr, "cannot start disposable test database", string(out))
 		os.Exit(1)
@@ -395,12 +398,36 @@ func freshDatabase(t *testing.T) *pgxpool.Pool {
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
+	dropDatabaseAfter(t, name)
 	pool := openDatabase(t, name)
 	// The one value a migration makes up. Each installation has its own.
 	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
 		t.Fatal(e)
 	}
 	return pool
+}
+
+// dropDatabaseAfter drops the database name when the test ends. PostgreSQL keeps cumulative
+// statistics for every table and index of every database in shared memory, and only dropping a
+// database frees them; a suite that leaves each test's database behind outgrows /dev/shm near the
+// end of a long run. Call it before opening a pool on the database, as cleanups run in reverse
+// and the pool must be closed first. Dropping forces off a connection a background goroutine
+// has not yet released, which a test cannot see.
+func dropDatabaseAfter(t *testing.T, name string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		admin, e := pgxpool.New(ctx, databaseURL)
+		if e != nil {
+			t.Errorf("cannot connect to drop %s: %v", name, e)
+			return
+		}
+		defer admin.Close()
+		if _, e = admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); e != nil {
+			t.Errorf("cannot drop %s: %v", name, e)
+		}
+	})
 }
 
 // openDatabase is a pool on the database name, configured as management configures its own.

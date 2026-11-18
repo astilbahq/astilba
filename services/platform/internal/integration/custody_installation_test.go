@@ -316,6 +316,7 @@ func TestFirstMigrationAfterAnotherCommand(t *testing.T) {
 	if _, err = admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
 		t.Fatal(err)
 	}
+	dropDatabaseAfter(t, name)
 	if err = dbmigrate.Check(ctx, databaseDSN(name)); err == nil {
 		t.Fatal("an empty database passed the schema check")
 	}
