@@ -13,14 +13,15 @@ import (
 // restored from a backup taken before its environment's key existed.
 type UnopenedValue struct {
 	Environment, Secret, Version uuid.UUID
+	// Generation is the generation of the environment's key it is sealed under.
+	Generation int64
 }
 
 // CheckRecoveryKeys verifies historical credential keys before metadata changes, and returns the
 // secret versions sealed under environment keys the restored database never had: recovery either
 // stops for them or, accepted, restores them erased. Plaintext is discarded immediately and never
 // enters the host handoff. The secret versions in stored, which the workspace already holds, are
-// not opened: the merge keeps a stored version as it is, so it needs no key, and the generation
-// that sealed it may since belong to a key made after the one it names was lost.
+// not opened: the merge keeps a stored version as it is, so it needs no key.
 func CheckRecoveryKeys(keys *secretbroker.Session, a Archive, stored map[uuid.UUID]bool) ([]UnopenedValue, error) {
 	environments, err := environmentsOf(a)
 	if err != nil {
@@ -108,5 +109,5 @@ func environmentSealed(row Row, item secretbroker.Item, cipher []byte) (Unopened
 	if header.Holder != item.Environment || json.Unmarshal(row["secret_id"], &secret) != nil {
 		return UnopenedValue{}, false, ErrArchive
 	}
-	return UnopenedValue{Environment: item.Environment, Secret: secret, Version: item.ID}, true, nil
+	return UnopenedValue{Environment: item.Environment, Secret: secret, Version: item.ID, Generation: header.Generation}, true, nil
 }

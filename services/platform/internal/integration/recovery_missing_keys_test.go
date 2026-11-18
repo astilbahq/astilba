@@ -156,10 +156,11 @@ func TestRecoveryKeepsVersionsTheBackupHoldsUnderTheWorkspaceKey(t *testing.T) {
 
 // An environment whose key the restored database lacks can also have values the hosts'
 // checkpoints hold under the workspace key, sealed before every instance opened environment
-// values. Accepted, recovery makes the environment no key: one made now would take the lost key's
-// generation, under which the other values' ciphertext would not open. So the value under the
-// workspace key stays there, and the one under the lost key comes back erased.
-func TestAcceptedRecoveryMakesNoKeyForTheLostOne(t *testing.T) {
+// values. Accepted, recovery replaces the lost key at the generation after it, and the value under
+// the workspace key moves onto that one, while the one under the lost key comes back erased. A
+// key at the lost generation would fail to open a copy under the lost key as if it were corrupt,
+// so a later recovery that finds such a copy the database lacks stops for it again instead.
+func TestAcceptedRecoveryReplacesTheLostKeyAboveIt(t *testing.T) {
 	const canary = "before-the-key-canary"
 	var billing api.Environment
 	var before, after api.SecretVersion
@@ -180,12 +181,29 @@ func TestAcceptedRecoveryMakesNoKeyForTheLostOne(t *testing.T) {
 		}
 		b.call("POST", path+"/"+billing.Id.String()+"/secrets", map[string]string{"name": "PAYMENTS_TOKEN", "value": "lost-canary"}, 201, &after)
 	})
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM secret_versions WHERE workspace_id=$1 AND id=$2 AND substring(encrypted_value FROM 1 FOR 35)='{"version":2,"scope":"environment",'::bytea`, r.ws, before.Id); count != 0 {
-		t.Fatal("the first value was sealed under the environment key")
+	underEnvironment := `SELECT count(*) FROM secret_versions WHERE workspace_id=$1 AND id=$2 AND substring(encrypted_value FROM 1 FOR 35)='{"version":2,"scope":"environment",'::bytea`
+	if claimCounter(t, r.f, underEnvironment, r.ws, before.Id) != 0 || claimCounter(t, r.f, underEnvironment, r.ws, after.Id) != 1 {
+		t.Fatal("the values were not sealed one under each key")
 	}
+	forget := func(versions ...uuid.UUID) {
+		t.Helper()
+		ids := make([]string, len(versions))
+		for i, id := range versions {
+			ids[i] = "'" + id.String() + "'"
+		}
+		for _, statement := range []string{
+			`SET session_replication_role=replica`,
+			`DELETE FROM secret_versions WHERE workspace_id='` + r.ws.String() + `' AND id IN (` + strings.Join(ids, ",") + `)`,
+			`SET session_replication_role=DEFAULT`,
+		} {
+			if _, err := r.f.st.Pool.Exec(r.ctx, statement); err != nil {
+				t.Fatal(statement, err)
+			}
+		}
+	}
+	forget(before.Id, after.Id)
 	for _, statement := range []string{
 		`SET session_replication_role=replica`,
-		`DELETE FROM secret_versions WHERE workspace_id='` + r.ws.String() + `' AND id IN ('` + before.Id.String() + `','` + after.Id.String() + `')`,
 		`DELETE FROM secrets WHERE workspace_id='` + r.ws.String() + `' AND environment_id='` + billing.Id.String() + `'`,
 		`DELETE FROM environment_keys WHERE workspace_id='` + r.ws.String() + `' AND environment_id='` + billing.Id.String() + `'`,
 		`SET session_replication_role=DEFAULT`,
@@ -194,7 +212,8 @@ func TestAcceptedRecoveryMakesNoKeyForTheLostOne(t *testing.T) {
 			t.Fatal(statement, err)
 		}
 	}
-	in := execution.RecoveryImport{WorkspaceID: r.ws, OwnerID: r.f.owner, HostExports: r.exports(t, claimExport{}), AcceptErasedEnvironments: []uuid.UUID{billing.Id}}
+	exports := r.exports(t, claimExport{})
+	in := execution.RecoveryImport{WorkspaceID: r.ws, OwnerID: r.f.owner, HostExports: exports, AcceptErasedEnvironments: []uuid.UUID{billing.Id}}
 	preview, err := r.f.execution.RecoverCrossHost(r.ctx, in)
 	if err != nil || len(preview.ErasedValues) != 1 || preview.ErasedValues[0].VersionID != after.Id {
 		t.Fatal("preview accepting the erasure:", preview.ErasedValues, err)
@@ -203,17 +222,25 @@ func TestAcceptedRecoveryMakesNoKeyForTheLostOne(t *testing.T) {
 	if applied, err := r.f.execution.RecoverCrossHost(r.ctx, in); err != nil || !applied.Applied {
 		t.Fatalf("recovery accepting the erasure %+v %v", applied, err)
 	}
-	if count := claimCounter(t, r.f, `SELECT count(*) FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2`, r.ws, billing.Id); count != 0 {
-		t.Fatal("recovery made a key in place of the lost one")
+	if count := claimCounter(t, r.f, `SELECT count(*) FROM environment_keys WHERE workspace_id=$1 AND environment_id=$2 AND state='active' AND generation=2`, r.ws, billing.Id); count != 1 {
+		t.Fatal("recovery did not replace the lost key above it")
 	}
 	var stored []byte
 	if err = r.f.st.Pool.QueryRow(r.ctx, `SELECT encrypted_value FROM secret_versions WHERE workspace_id=$1 AND id=$2`, r.ws, before.Id).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if value, err := inspectValue(t, r.f.st, r.f.owner, r.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: before.Id}, stored); err != nil || string(value) != canary {
+	if value, err := inspectValue(t, r.f.st, r.f.owner, r.ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: before.Id, Environment: billing.Id}, stored); err != nil || string(value) != canary {
 		t.Fatal("the value under the workspace key did not survive recovery", string(value), err)
 	}
 	if count := claimCounter(t, r.f, `SELECT count(*) FROM secret_versions WHERE workspace_id=$1 AND id=$2 AND erased_at IS NOT NULL`, r.ws, after.Id); count != 1 {
 		t.Fatal("the value under the lost key was not restored erased")
+	}
+	// A database without the erased version, as one restored from a backup taken before this
+	// recovery, finds its copy under the lost key again, and recovery stops for it by name.
+	forget(after.Id)
+	_, err = r.f.execution.RecoverCrossHost(r.ctx, execution.RecoveryImport{WorkspaceID: r.ws, OwnerID: r.f.owner, HostExports: exports})
+	var missing *execution.RecoveryKeysMissing
+	if !errors.As(err, &missing) || len(missing.Environments) != 1 || missing.Environments[0].ID != billing.Id || missing.Environments[0].Values != 1 {
+		t.Fatal("a later recovery did not stop for the copy under the lost key", err)
 	}
 }

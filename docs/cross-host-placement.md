@@ -231,8 +231,9 @@ secret is saved. If the management backup was taken before that, it has no key f
 recovery stops: it names each such environment, with its project, and changes nothing. Restore
 a management backup taken after their first secrets were saved, or repeat the command with
 `--accept-erased-environments ENV_UUID,…` naming exactly the environments it named, to restore
-those secret values erased. An acceptance that names any other environment, or leaves one out,
-is refused. The report's `erasedValues` lists each erased value by project, environment and
+those secret values erased, and keep the same acceptance on the command that applies it with
+`--expected-state` and on any repeat of that. An acceptance that names any other environment, or
+leaves one out, is refused. The report's `erasedValues` lists each erased value by project, environment and
 secret name, never its value, so that an owner can enter it again, and the audit log records
 the acceptance as `workspace.recover_erased_environment_values` for each environment. Values a
 recovery restored erased stay erased, and a later recovery does not stop for them again.

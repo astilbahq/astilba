@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -394,7 +395,7 @@ func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environmen
 		case refused:
 			return nil, 0, ErrKeyDestroyed
 		}
-		if err = s.makeEnvironmentKey(ctx, q, environment, ref); err != nil {
+		if err = s.makeEnvironmentKey(ctx, q, environment, ref, 1); err != nil {
 			return nil, 0, err
 		}
 		row, err = q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment})
@@ -415,8 +416,41 @@ func (s *Session) environmentSealingKey(ctx context.Context, q Fence, environmen
 	return key, row.Generation, err
 }
 
-// makeEnvironmentKey makes an environment's first key, wrapped under ref, and records it.
-func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment uuid.UUID, ref keyRef) error {
+// ReplaceLostEnvironmentKey gives an environment whose keys the restored database never had a key
+// at the generation after lost, the newest one the hosts' checkpoints name, wrapped under the
+// workspace key generation the session seals under. A key made later would otherwise take a lost
+// key's generation, under which a value sealed with the lost key fails to open as if corrupt; above
+// them, such a value stays one recovery stops for, ErrKeyNotInBackup. Only recovery calls it. An
+// environment that already has a key keeps it, and one being purged gets none: ErrKeyDestroyed.
+func (s *Session) ReplaceLostEnvironmentKey(ctx context.Context, q Fence, environment uuid.UUID, lost int64) error {
+	if s.request.Purpose != Recover || lost < 1 {
+		return ErrNotAllowed
+	}
+	ws := s.request.Workspace
+	ref, err := s.fence(ctx, q, Item{Kind: SecretVersion, ID: environment, Environment: environment})
+	if err != nil {
+		return err
+	}
+	if err = q.LockEnvironmentKeyCreation(ctx, "environment:"+ws.String()+":"+environment.String()); err != nil {
+		return err
+	}
+	if _, err = q.EnvironmentKeyForSealing(ctx, db.EnvironmentKeyForSealingParams{WorkspaceID: ws, EnvironmentID: environment}); !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	refused, err := q.EnvironmentSealingRefused(ctx, db.EnvironmentSealingRefusedParams{WorkspaceID: ws, EnvironmentID: environment})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrNotAllowed
+	case err != nil:
+		return err
+	case refused:
+		return ErrKeyDestroyed
+	}
+	return s.makeEnvironmentKey(ctx, q, environment, ref, lost+1)
+}
+
+// makeEnvironmentKey makes an environment's key at generation, wrapped under ref, and records it.
+func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment uuid.UUID, ref keyRef, generation int64) error {
 	ws := s.request.Workspace
 	key := make([]byte, 32)
 	defer clear(key)
@@ -428,7 +462,7 @@ func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment u
 	var wrapped []byte
 	var err error
 	if ok {
-		wrapped, err = cryptobox.WrapEnvironmentKey(workspaceKey, ws, environment, 1, ref.generation, key)
+		wrapped, err = cryptobox.WrapEnvironmentKey(workspaceKey, ws, environment, generation, ref.generation, key)
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -437,11 +471,11 @@ func (s *Session) makeEnvironmentKey(ctx context.Context, q Fence, environment u
 	if err != nil {
 		return err
 	}
-	if err = q.InsertEnvironmentKey(ctx, db.InsertEnvironmentKeyParams{WorkspaceID: ws, EnvironmentID: environment, Generation: 1, WorkspaceGeneration: ref.generation, Wrapped: wrapped, Kcv: custody.KeyCheck(key)}); err != nil {
+	if err = q.InsertEnvironmentKey(ctx, db.InsertEnvironmentKeyParams{WorkspaceID: ws, EnvironmentID: environment, Generation: generation, WorkspaceGeneration: ref.generation, Wrapped: wrapped, Kcv: custody.KeyCheck(key)}); err != nil {
 		return err
 	}
 	return s.broker.event(ctx, q, keyEvent{run: s.id, kind: "environment-key-created", scope: custody.ScopeWorkspace, workspace: &ws, generation: ref.generation, details: map[string]string{
-		"environment": environment.String(), "generation": "1",
+		"environment": environment.String(), "generation": strconv.FormatInt(generation, 10),
 	}})
 }
 

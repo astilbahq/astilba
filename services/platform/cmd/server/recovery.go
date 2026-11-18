@@ -33,7 +33,7 @@ func recoverCrossHostCommand(ctx context.Context, st *store.Store, args []string
 	outDir := f.String("out", "", "new private handover directory required for a write")
 	var exports recoveryExportPaths
 	f.Var(&exports, "host-export", "private stopped-agent export directory; repeat for each required host")
-	acceptErased := f.String("accept-erased-environments", "", "comma-separated UUIDs of exactly the environments a refused recovery named, whose secret values it then restores erased")
+	acceptErased := f.String("accept-erased-environments", "", "comma-separated UUIDs of exactly the environments a refused recovery named, whose secret values it then restores erased; give the same list when applying with --expected-state and on any repeat of that")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
