@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -199,4 +200,72 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &session)
 	viewer.csrf = session.CsrfToken
 	viewer.call("POST", commandPath, api.BackupCommandRequest{Action: "backup", RequestKey: uuid.New(), Snapshot: ""}, 403, nil)
+}
+
+// Backup destinations and policies hold storage credentials, and a policy's commands hand them to
+// its server, so each needs recent authentication. A stale session is refused before anything is
+// stored, sealed, queued or audited, and before management is given any keys; once the owner
+// confirms their identity, the same requests succeed.
+func TestBackupCredentialsNeedRecentAuthentication(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	p := newReportingPolicy(t, f, b, ws, "Stale")
+	prefix := "/api/v1/workspaces/" + ws.String()
+	environment := strings.TrimSuffix(p.path, "/backup-policies/"+p.policy.ID.String())
+	password := "repository-password-fixture"
+	created := api.BackupPolicyRequest{Name: "Second backup", ResourceId: p.policy.ResourceID, DestinationId: p.policy.DestinationID, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 3, Minute: 0, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
+	updated := created
+	updated.Name, updated.Retain, updated.BaseGeneration = p.policy.Name, 3, p.policy.Generation
+	requests := []struct {
+		method, path string
+		body         any
+		status       int
+	}{
+		{"POST", prefix + "/backup-destinations", map[string]any{"name": "Second bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "stale-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201},
+		{"POST", environment + "/backup-policies", created, 201},
+		{"PUT", p.path, updated, 200},
+		{"POST", p.path + "/commands", api.BackupCommandRequest{Action: "install", RequestKey: uuid.New()}, 202},
+	}
+	ctx := context.Background()
+	effects := func() (n [3]int) {
+		t.Helper()
+		for i, query := range []string{
+			"SELECT count(*) FROM execution_operations WHERE workspace_id=$1",
+			"SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action LIKE 'backup.%'",
+			"SELECT count(*) FROM secret_access WHERE workspace_id=$1",
+		} {
+			if err := f.st.Pool.QueryRow(ctx, query, ws).Scan(&n[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return n
+	}
+	before := effects()
+
+	f.auth.Now = func() time.Time { return time.Now().Add(16 * time.Minute) }
+	for _, r := range requests {
+		status, body := b.request(r.method, r.path, r.body)
+		var problem struct {
+			Code string `json:"code"`
+		}
+		if status != http.StatusForbidden || json.Unmarshal(body, &problem) != nil || problem.Code != domain.RecentRequired.Code {
+			t.Fatalf("a stale session's %s %s = %d %s, want %s", r.method, r.path, status, body, domain.RecentRequired.Code)
+		}
+	}
+	if after := effects(); after != before {
+		t.Fatalf("refused requests left operations, audit records or key access %v, before %v", after, before)
+	}
+	var destinations []backup.Destination
+	b.call("GET", prefix+"/backup-destinations", nil, 200, &destinations)
+	var policies []backup.Policy
+	b.call("GET", environment+"/backup-policies", nil, 200, &policies)
+	if len(destinations) != 1 || len(policies) != 1 || policies[0].Generation != p.policy.Generation || policies[0].Retain != p.policy.Retain {
+		t.Fatalf("refused requests changed the workspace's backups: %+v %+v", destinations, policies)
+	}
+
+	b.reauthenticate(map[string]string{"password": f.password}, 200)
+	for _, r := range requests {
+		b.call(r.method, r.path, r.body, r.status, nil)
+	}
 }

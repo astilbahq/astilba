@@ -259,7 +259,9 @@ function SettingsForm({
   settings: Schema["AlertSettings"];
   onSaved: (saved: boolean) => void;
 }) {
-  const action = useAction();
+  // The settings hold the webhook's URL and signing secret, so saving them needs a recent
+  // confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const queries = useQueryClient();
   const [hook, setHook] = useState(settings.webhookEnabled);
   return (
