@@ -378,7 +378,9 @@ func TestEnvironmentKeysAreTheirWorkspaces(t *testing.T) {
 	var env api.Environment
 	x.owner.call("POST", x.prefix, map[string]string{"name": "Shared ID"}, 201, &env)
 	environmentKey(t, f, x.ws, env.Id)
-	// Another workspace with an environment of the same ID, as an import makes it.
+	// Another workspace with an environment of the same ID, as an import makes it. Its key is made
+	// here, after the start-up key job, which would otherwise race this for it.
+	keysJobDone(t, f)
 	other := insertWorkspace(t, f, "Imported")
 	initKeys(t, f.st.Broker)
 	q := db.New(f.st.Pool)

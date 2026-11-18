@@ -397,9 +397,11 @@ func TestSealingBesideAnotherWorkspacesEnvironmentOfTheSameID(t *testing.T) {
 	var env api.Environment
 	x.owner.call("POST", x.prefix, map[string]string{"name": "Shared ID"}, 201, &env)
 	x.owner.call("POST", x.prefix+"/"+env.Id.String()+"/secrets", map[string]string{"name": "TOKEN", "value": "original-canary"}, 201, nil)
-	// Another workspace with an environment of the same ID, as an import makes it.
-	other := insertWorkspace(t, f, "Imported")
+	// Another workspace with an environment of the same ID, as an import makes it. Its key is made
+	// here: the start-up key job may have run before the workspace existed.
 	keysJobDone(t, f)
+	other := insertWorkspace(t, f, "Imported")
+	initKeys(t, f.st.Broker)
 	q := db.New(f.st.Pool)
 	project, err := q.InsertProject(ctx, db.InsertProjectParams{WorkspaceID: other, ID: uuid.New(), Name: "Imported"})
 	if err != nil {
