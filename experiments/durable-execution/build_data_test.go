@@ -32,7 +32,7 @@ func newBuildHarness(t *testing.T) *runtimeHarness {
 		t.Skip("set PLAT5_HOST_TEST=1 on the disposable Ubuntu host")
 	}
 	h := newRuntimeHarness(t)
-	for tool, want := range map[string]string{"buildctl": "v0.34.1", "zot": "v2.1.22", "railpack": "0.43.0"} {
+	for tool, want := range map[string]string{"buildctl": "v0.35.0", "zot": "v2.1.23", "railpack": "0.43.0"} {
 		out, e := buildExec(context.Background(), buildEnv(h.config), tool, "--version")
 		if e != nil || !bytes.Contains(out, []byte(want)) {
 			t.Fatalf("unexpected %s version: %s", tool, out)
@@ -195,7 +195,7 @@ func TestBuildArtifacts(t *testing.T) {
 	if _, err := h.docker.ImageInspect(context.Background(), reference); !errdefs.IsNotFound(err) {
 		t.Fatal("remote artifact unexpectedly exists in the deployment image store before pull")
 	}
-	t.Logf("BuildKit 0.34.1 remote mTLS worker produced %s for linux/%s", digest, runtime.GOARCH)
+	t.Logf("BuildKit 0.35.0 remote mTLS worker produced %s for linux/%s", digest, runtime.GOARCH)
 	h.command(t, nil, "pull", reference)
 	h.trackImage(t, reference)
 	archive := filepath.Join(h.dir, "remote.tar")
