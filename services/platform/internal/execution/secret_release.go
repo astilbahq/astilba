@@ -336,6 +336,10 @@ func (k *deliveryKeys) openBetweenPasses(ctx context.Context, item secretbroker.
 	return k.note(item, cipher)(k.passKeys.openBetweenPasses(ctx, item, cipher))
 }
 
+func (k *deliveryKeys) openIn(ctx context.Context, q secretbroker.EnvironmentKeyReader, item secretbroker.Item, cipher []byte) ([]byte, error) {
+	return k.note(item, cipher)(k.passKeys.openIn(ctx, q, item, cipher))
+}
+
 func (k *deliveryKeys) note(item secretbroker.Item, cipher []byte) func([]byte, error) ([]byte, error) {
 	return func(plain []byte, err error) ([]byte, error) {
 		if err == nil {

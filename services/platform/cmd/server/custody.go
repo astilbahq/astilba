@@ -198,8 +198,9 @@ func printStatus(w io.Writer, s secretbroker.Status, configured uuid.UUID) {
 	fmt.Fprintf(w, "custody stage  %d\n", s.Stage)
 	fmt.Fprintf(w, "keys           %d of %d workspaces, installation key %s, token key %s\n", s.Keys.WithKeys, s.Keys.Workspaces, keyState(s.Keys.Installation), keyState(s.Keys.Token))
 	fmt.Fprintf(w, "under keyring  %s\n", legacyValues(s.Legacy))
-	if s.Stage < 4 {
-		fmt.Fprintf(w, "stored values  %d, which recording stage 4 reads while writes to them wait\n", storedValues(s.Legacy))
+	fmt.Fprintf(w, "outside env    %s\n", outsideEnvironments(s.Legacy))
+	if s.Stage < 6 {
+		fmt.Fprintf(w, "stored values  %d, which recording stage 6 reads while writes to them wait\n", storedValues(s.Legacy))
 	}
 	pending := s.Pending()
 	if len(pending) == 0 {
@@ -236,6 +237,21 @@ func legacyValues(counts []db.LegacyValueCountsRow) string {
 	return strings.Join(parts, ", ")
 }
 
+// outsideEnvironments lists how many of each kind of an environment's values are not under the
+// environment's own key.
+func outsideEnvironments(counts []db.LegacyValueCountsRow) string {
+	var parts []string
+	for _, c := range counts {
+		if c.Outside > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c.Outside, c.Kind))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
 // storedValues is how many sealed values the installation stores, of every kind.
 func storedValues(counts []db.LegacyValueCountsRow) (n int64) {
 	for _, c := range counts {
@@ -260,6 +276,7 @@ func printConversion(w io.Writer, c secretbroker.Conversion) {
 	}
 	if c.Counts != nil {
 		fmt.Fprintf(w, "under keyring  %s\n", legacyValues(c.Counts))
+		fmt.Fprintf(w, "outside env    %s\n", outsideEnvironments(c.Counts))
 		fmt.Fprintf(w, "stored values  %d\n", storedValues(c.Counts))
 	}
 	if c.Stage > 0 {

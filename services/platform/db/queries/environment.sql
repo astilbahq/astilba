@@ -9,7 +9,7 @@ SELECT * FROM environments WHERE workspace_id=$1 AND project_id=$2 ORDER BY crea
 -- name: InsertEnvironment :one
 INSERT INTO environments(workspace_id,project_id,id,name,draft_revision_id,configuration_owner,purpose) VALUES($1,$2,$3,$4,$5,COALESCE(NULLIF(sqlc.arg(configuration_owner)::text,''),'dashboard'),COALESCE(NULLIF(sqlc.arg(purpose)::text,''),'standard')) RETURNING *;
 -- name: GetEnvironment :one
-SELECT e.*,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
+SELECT e.*,d.id AS unit_id,d.runtime,d.server_id,(SELECT stage FROM custody_stage)::integer AS custody_stage FROM environments e JOIN deployment_units d
 ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3;
 -- name: InsertDeploymentUnit :exec
 INSERT INTO deployment_units(workspace_id,id,environment_id) VALUES($1,$2,$3);
@@ -116,9 +116,10 @@ WHERE v.workspace_id = @workspace_id AND v.environment_id = @environment_id AND 
 
 -- name: UnmeasuredSecretVersions :many
 -- unscoped: the job that measures values goes through every workspace's, a batch at a time.
-SELECT workspace_id,id,encrypted_value FROM secret_versions
-WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND erased_at IS NULL AND (workspace_id,id) > (@after_workspace::uuid,@after_id::uuid)
-ORDER BY workspace_id,id LIMIT @batch;
+SELECT v.workspace_id,v.id,v.encrypted_value,s.environment_id FROM secret_versions v
+JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+WHERE (v.plaintext_bytes IS NULL OR v.json_bytes IS NULL) AND v.erased_at IS NULL AND (v.workspace_id,v.id) > (@after_workspace::uuid,@after_id::uuid)
+ORDER BY v.workspace_id,v.id LIMIT @batch;
 
 -- name: MeasureSecretVersion :exec
 UPDATE secret_versions SET plaintext_bytes = @plaintext_bytes::integer, json_bytes = @json_bytes::integer

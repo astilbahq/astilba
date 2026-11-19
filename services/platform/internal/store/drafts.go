@@ -69,7 +69,7 @@ func InsertSecretValue(ctx context.Context, q *db.Queries, keys *secretbroker.Se
 	if err := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: secret, Name: name}); err != nil {
 		return err
 	}
-	encrypted, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: version}, []byte(value))
+	encrypted, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: version, Environment: env}, []byte(value))
 	if err != nil {
 		return err
 	}

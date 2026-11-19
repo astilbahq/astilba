@@ -496,7 +496,9 @@ export default interface Resources {
       "purgeDialogDescription": "This cannot be undone, and the environment cannot be restored afterwards. When you delete its retained data:",
       "purgeDialogTitle": "Delete the retained data of <name/>?",
       "purgeEffects": {
-        "backups": "Backups at the workspace’s backup destination are kept.",
+        "backups": "Backups at the workspace’s backup destination are kept, with the password that restores them, until the destination’s retention removes them.",
+        "copies": "Every value is under the environment’s own key, so copies of them in recovery data, on its servers and anywhere else can no longer be read. An environment cloned from this one with its secrets keeps its own copies, which stay readable. Recovery data captured before the installation moved its values onto its key, and management database backups taken before, keep them until they are removed or expire, and a workspace export someone downloaded keeps them.",
+        "copiesSomeKept": "Copies of values sealed under the environment’s own key can no longer be read. An environment cloned from this one with its secrets keeps its own copies, which stay readable. The installation has not moved every value onto its environment’s key yet, so copies of the others, in recovery data and on its servers, stay readable, as do management database backups taken before, until they expire, and workspace exports someone downloaded.",
         "kept": "Its configuration, revisions and history are kept, read-only.",
         "noPreviews": "None of its previews holds copies of its secrets.",
         "noVolumes": "It keeps no data volumes, so nothing is deleted from its server.",

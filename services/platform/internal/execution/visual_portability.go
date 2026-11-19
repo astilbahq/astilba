@@ -94,7 +94,7 @@ func (s *Service) CloneVisual(ctx context.Context, p store.Principal, ws, pid, s
 				if err != nil {
 					return err
 				}
-				plain, err := keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old}, secret.EncryptedValue)
+				plain, err := keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old, Environment: source}, secret.EncryptedValue)
 				if err != nil {
 					return err
 				}

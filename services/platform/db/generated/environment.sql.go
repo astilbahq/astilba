@@ -165,7 +165,7 @@ func (q *Queries) EnvironmentRuntimePlan(ctx context.Context, arg EnvironmentRun
 }
 
 const getEnvironment = `-- name: GetEnvironment :one
-SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host, e.purged_at, e.purged_by, e.purge_operation_id, e.purged_without_host,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
+SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host, e.purged_at, e.purged_by, e.purge_operation_id, e.purged_without_host,d.id AS unit_id,d.runtime,d.server_id,(SELECT stage FROM custody_stage)::integer AS custody_stage FROM environments e JOIN deployment_units d
 ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3
 `
 
@@ -199,6 +199,7 @@ type GetEnvironmentRow struct {
 	UnitID                uuid.UUID  `json:"unit_id"`
 	Runtime               string     `json:"runtime"`
 	ServerID              *uuid.UUID `json:"server_id"`
+	CustodyStage          int32      `json:"custody_stage"`
 }
 
 func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) (GetEnvironmentRow, error) {
@@ -228,6 +229,7 @@ func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) 
 		&i.UnitID,
 		&i.Runtime,
 		&i.ServerID,
+		&i.CustodyStage,
 	)
 	return i, err
 }
@@ -853,9 +855,10 @@ func (q *Queries) SpecificationTextSize(ctx context.Context, specification []byt
 }
 
 const unmeasuredSecretVersions = `-- name: UnmeasuredSecretVersions :many
-SELECT workspace_id,id,encrypted_value FROM secret_versions
-WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND erased_at IS NULL AND (workspace_id,id) > ($1::uuid,$2::uuid)
-ORDER BY workspace_id,id LIMIT $3
+SELECT v.workspace_id,v.id,v.encrypted_value,s.environment_id FROM secret_versions v
+JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+WHERE (v.plaintext_bytes IS NULL OR v.json_bytes IS NULL) AND v.erased_at IS NULL AND (v.workspace_id,v.id) > ($1::uuid,$2::uuid)
+ORDER BY v.workspace_id,v.id LIMIT $3
 `
 
 type UnmeasuredSecretVersionsParams struct {
@@ -868,6 +871,7 @@ type UnmeasuredSecretVersionsRow struct {
 	WorkspaceID    uuid.UUID `json:"workspace_id"`
 	ID             uuid.UUID `json:"id"`
 	EncryptedValue []byte    `json:"encrypted_value"`
+	EnvironmentID  uuid.UUID `json:"environment_id"`
 }
 
 // unscoped: the job that measures values goes through every workspace's, a batch at a time.
@@ -880,7 +884,12 @@ func (q *Queries) UnmeasuredSecretVersions(ctx context.Context, arg UnmeasuredSe
 	items := []UnmeasuredSecretVersionsRow{}
 	for rows.Next() {
 		var i UnmeasuredSecretVersionsRow
-		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedValue); err != nil {
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.ID,
+			&i.EncryptedValue,
+			&i.EnvironmentID,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

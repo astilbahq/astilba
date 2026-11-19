@@ -76,6 +76,9 @@ type environmentKey struct {
 	wrapped, kcv        []byte
 	destroyed           bool
 	opened              []byte
+	// provisional is a key the session took from a transaction after it began, which may yet roll
+	// back and leave another key stored for the environment.
+	provisional bool
 }
 
 // wrappedKeys reads the generations a request's session holds, and their wrappings for its
@@ -502,31 +505,40 @@ func openV2(keys map[keyRef][]byte, item Item, header cryptobox.Header, cipherte
 }
 
 // environmentKeyFor opens the key an environment value's header names, once per session, with the
-// workspace key generation it is wrapped under. ErrKeyDestroyed is a key a purge destroyed;
-// ErrKeysChanged a key made since the session began, which a new session holds. The caller holds
-// s.mu.
+// workspace key generation it is wrapped under. The header must name item's own environment: a
+// value under another environment's key is cryptobox.ErrKey, so it is never read, kept or stored
+// as item's, where purging item's environment would not reach it. ErrKeyDestroyed is a key a
+// purge destroyed; ErrKeysChanged a key made since the session began, which a new session holds.
+// The caller holds s.mu.
 func (s *Session) environmentKeyFor(item Item, header cryptobox.Header) ([]byte, error) {
-	if !item.Kind.environmental() {
+	if !item.Kind.environmental() || header.Holder != item.Environment {
 		return nil, cryptobox.ErrKey
 	}
 	k, ok := s.environments[environmentRef{header.Holder, header.Generation}]
 	switch {
 	case !ok && s.request.Purpose == Recover:
 		// Recovery runs on a database restored from before the key was made.
-		return nil, ErrKeyNotInBackup
+		return nil, keyNotInBackup{environment: header.Holder}
 	case !ok:
 		s.stale = true
 		return nil, ErrKeysChanged
 	case k.destroyed:
 		return nil, ErrKeyDestroyed
-	case k.opened != nil:
+	}
+	return s.openEnvironmentKey(environmentRef{header.Holder, header.Generation}, k)
+}
+
+// openEnvironmentKey opens a key the session holds, once, with the workspace key generation it is
+// wrapped under. The caller holds s.mu.
+func (s *Session) openEnvironmentKey(ref environmentRef, k *environmentKey) ([]byte, error) {
+	if k.opened != nil {
 		return k.opened, nil
 	}
 	workspaceKey, ok := s.keys[keyRef{custody.ScopeWorkspace, k.workspaceGeneration}]
 	if !ok {
 		return nil, cryptobox.ErrKey
 	}
-	opened, err := cryptobox.OpenEnvironmentKey(workspaceKey, k.wrapped, s.request.Workspace, header.Holder, header.Generation, k.workspaceGeneration)
+	opened, err := cryptobox.OpenEnvironmentKey(workspaceKey, k.wrapped, s.request.Workspace, ref.environment, ref.generation, k.workspaceGeneration)
 	if err != nil {
 		return nil, err
 	}

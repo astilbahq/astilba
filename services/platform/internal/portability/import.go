@@ -386,6 +386,11 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	applied := map[string]jsontext.Value{}
 	appliedOperations := map[string]jsontext.Value{}
 	visualPlans := map[string]jsontext.Value{}
+	// Each value is sealed for its environment, so purging the environment reaches it.
+	environments, e := environmentsOf(archive)
+	if e != nil {
+		return out, e
+	}
 	for _, table := range tables {
 		for _, row := range archive.Tables[table.Name] {
 			for _, actor := range []string{"author_id", "actor_id", "policy_actor"} {
@@ -487,7 +492,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 				setValue(row, "configuration", config)
 			}
-			if e = transformCredential(table.Name, row, seal); e != nil {
+			if e = transformCredential(table.Name, row, environments, seal); e != nil {
 				return out, e
 			}
 			raw, e := stablejson.Marshal(row)

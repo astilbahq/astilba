@@ -52,6 +52,9 @@ var integrationKinds = []Kind{BuildSecret, Git, GitHubAuthorization, Registry, B
 type Item struct {
 	Kind Kind      `json:"kind"`
 	ID   uuid.UUID `json:"id"`
+	// Environment is the environment a secret version belongs to, whose key it is sealed under.
+	// Sealing one needs it.
+	Environment uuid.UUID `json:"-"`
 	// A recovery checkpoint's identity is its descriptor's, and names its own workspace.
 	checkpoint string
 	workspace  uuid.UUID
@@ -69,9 +72,11 @@ func Checkpoint(d deployment.RecoveryDescriptor) Item {
 
 func (i Item) installation() bool { return i.Kind == TOTP || i.Kind == TOTPPending }
 
-// environmental is a kind whose values belong to one environment, and may be sealed under that
-// environment's key so that purging it destroys them.
-func (k Kind) environmental() bool { return k == SecretVersion || k == BackupPolicy }
+// environmental is a kind whose values belong to one environment, and are sealed under that
+// environment's key so that purging it destroys them. A backup policy belongs to one too, but its
+// credentials, the backup repository's password among them, stay under the workspace's key: purging
+// keeps the environment's backups at the destination, and they stay restorable.
+func (k Kind) environmental() bool { return k == SecretVersion }
 
 // identity is what the value's ciphertext is bound to. It returns "" for an item that does not
 // belong to the workspace.

@@ -25,6 +25,10 @@ type RecoveryImport struct {
 	OwnerID       uuid.UUID
 	ExpectedState string
 	HostExports   []string
+	// AcceptErasedEnvironments are the environments whose keys the restored management database
+	// never had, whose values the operator accepts recovery restores erased. It must name exactly
+	// them.
+	AcceptErasedEnvironments []uuid.UUID
 }
 
 type RecoveryPreview struct {
@@ -36,6 +40,9 @@ type RecoveryPreview struct {
 	AlreadyApplied bool                                      `json:"alreadyApplied"`
 	// SetAside names the checkpoints recovery authenticated and doesn't use.
 	SetAside []RecoverySetAside `json:"setAside"`
+	// ErasedValues are the secret versions recovery restores erased, as the operator accepted, to
+	// be entered again.
+	ErasedValues []RecoveryErasedValue `json:"erasedValues"`
 }
 
 type recoveringRoot struct {
@@ -54,7 +61,7 @@ var ErrRecoveryWorkspaceMissing = errors.New("this management database has no su
 // a concrete preview; a write must name the exact current workspace state from
 // that preview. Accounts, sessions and installation keys are never imported.
 func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ RecoveryPreview, err error) {
-	out := RecoveryPreview{WorkspaceID: in.WorkspaceID, Parents: []uuid.UUID{}, Handovers: map[uuid.UUID]deployment.RecoveryHandover{}}
+	out := RecoveryPreview{WorkspaceID: in.WorkspaceID, Parents: []uuid.UUID{}, Handovers: map[uuid.UUID]deployment.RecoveryHandover{}, ErasedValues: []RecoveryErasedValue{}}
 	if in.WorkspaceID == uuid.Nil || in.OwnerID == uuid.Nil {
 		return out, domain.Invalid("recovery.owner")
 	}
@@ -129,15 +136,22 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	for parent, root := range roots {
 		recovered[parent] = root.Descriptor
 	}
+	// An acceptance of erasure is part of the input, so only an apply naming the same one repeats
+	// it, and its report lists the same erased values.
+	accepted := slices.Clone(in.AcceptErasedEnvironments)
+	slices.SortFunc(accepted, bytesCompareUUID)
+	accepted = slices.Compact(accepted)
 	inputHash := Hash(struct {
-		Hosts map[uuid.UUID]deployment.RecoveryEvidence
-		Roots map[uuid.UUID]deployment.RecoveryDescriptor
-	}{source.Hosts, recovered})
+		Hosts    map[uuid.UUID]deployment.RecoveryEvidence
+		Roots    map[uuid.UUID]deployment.RecoveryDescriptor
+		Accepted []uuid.UUID `json:",omitempty"`
+	}{source.Hosts, recovered, accepted})
 	if in.ExpectedState != "" && in.ExpectedState != out.StateHash {
 		if repeated, err := s.repeatedRecovery(ctx, tx, in, inputHash, roots, &out); err != nil {
 			return out, err
 		} else if repeated {
-			return out, nil
+			out.ErasedValues, err = repeatedErasure(ctx, q, keys, in, source.Archive)
+			return out, err
 		}
 		return out, errors.New("workspace state changed; inspect recovery again")
 	}
@@ -194,9 +208,19 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = validateRecoveryRestrictionEvidence(ctx, tx, out.Handovers); err != nil {
 		return out, err
 	}
-	if err = portability.CheckRecoveryKeys(keys, source.Archive); err != nil {
+	stored, _, err := storedSecretVersions(ctx, q, source.Archive)
+	if err != nil {
 		return out, err
 	}
+	unopened, err := portability.CheckRecoveryKeys(keys, source.Archive, stored)
+	if err != nil {
+		return out, err
+	}
+	erase, erased, err := recoveryErasure(source.Archive, unopened, in.AcceptErasedEnvironments)
+	if err != nil {
+		return out, err
+	}
+	out.ErasedValues = erased
 	if in.ExpectedState == "" {
 		return out, nil
 	}
@@ -211,7 +235,10 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = stageRecoveryProjections(ctx, tx, in.WorkspaceID, source.Projections); err != nil {
 		return out, err
 	}
-	if err = portability.MergeRecovery(ctx, tx, keys, source.Archive, in.OwnerID); err != nil {
+	if err = portability.MergeRecoveryErasing(ctx, tx, keys, source.Archive, in.OwnerID, erase); err != nil {
+		return out, err
+	}
+	if err = recordRecoveryErasure(ctx, q, in, erase); err != nil {
 		return out, err
 	}
 	// Merging never deletes, so where it ends a preview the restored database lists open, that

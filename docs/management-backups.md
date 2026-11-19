@@ -23,6 +23,19 @@ uploaded, so a compromised server cannot destroy that history. On AWS, B2 and Mi
 read or list them either; on Cloudflare R2 it can, so there age encryption is what keeps them
 private. Either way only a [restore drill](#restore-drills) shows that a backup works.
 
+## What a backup covers
+
+A backup holds the database as it was when it ran, including each environment's own key, which
+that environment's secret values are sealed under. An environment's key is made when its first
+secret is saved, so a backup taken before then has none for it. Restoring the database alone
+loses whatever came after the backup anyway, but when you then recover a workspace from its
+servers' checkpoints, as [cross-host recovery](cross-host-placement.md#recovering-management-from-an-older-backup)
+describes, the checkpoints hold that environment's secret values and the restored database cannot
+open them. Recovery then stops and names the environment: you restore a newer backup, or accept
+that those values come back erased, to be entered again. Take a backup after an environment's
+first secret is saved: the nightly timer takes one by the next morning, or run one at once as
+[Install](#install) shows.
+
 ## What you need
 
 - An age identity for restores, kept off the management server. Make two, one for daily use
