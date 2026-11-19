@@ -6,7 +6,7 @@ For dashboard work that needs no agent, `pnpm dev` without `--vm` still runs man
 
 ## Start
 
-You need [Colima](https://github.com/abiosoft/colima) 0.10 or later, OpenSSL and OpenSSH, Go 1.27.4, and Node 24.18.1 with the pinned pnpm. From the repository root:
+You need [Colima](https://github.com/abiosoft/colima) 0.10 or later, OpenSSL and OpenSSH, Go 1.27.4, and Node 24.22.3 with the pinned pnpm. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
