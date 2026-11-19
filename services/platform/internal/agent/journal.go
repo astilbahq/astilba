@@ -69,6 +69,8 @@ type Record struct {
 	// wait for the host. The client accepts a command when it polls, before that wait.
 	StartedAt *time.Time                 `json:",omitempty"`
 	Railpack  *pipeline.PreparedRailpack `json:",omitempty"`
+	// ValuesWanted says the running command waits for management to release its values again.
+	ValuesWanted bool `json:",omitempty"`
 }
 type Journal struct {
 	db *journalDB
@@ -83,6 +85,8 @@ type Journal struct {
 	// is that store once it has, and from then on. Both are guarded by stateMu.
 	sealing bool
 	store   KeyStore
+	// networkStore is store once private-link keys may be sealed to it, read without stateMu.
+	networkStore atomic.Pointer[keyStoreRef]
 	// rekeyedAt is the transaction that last re-sealed every record.
 	rekeyedAt      atomic.Uint64
 	startupUpdates map[uuid.UUID]bool
@@ -112,6 +116,7 @@ func openJournal(ctx context.Context, dir string, store func(context.Context) (K
 		return nil, err
 	}
 	fail := func(err error) (*Journal, error) { db.Close(); return nil, err }
+	sweepScratch(dir)
 	j := &Journal{db: &journalDB{DB: db}, dir: dir}
 	if err = j.openLocalKeys(ctx, store, point); err != nil {
 		return fail(err)
@@ -139,7 +144,7 @@ func openJournal(ctx context.Context, dir string, store func(context.Context) (K
 		if err := j.dropSubmissionCredentials(tx); err != nil {
 			return err
 		}
-		if err := j.redactFinished(tx); err != nil {
+		if err := j.redactUnneeded(tx); err != nil {
 			return err
 		}
 		if !clean {
@@ -263,7 +268,7 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "upgrades" || bucket == "releases" || bucket == "cross-host" || bucket == "retained-pools" || bucket == "recovery-authority" {
 		limit = 524288
 	}
-	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {
+	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "restore" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {
 		limit = 524288
 	}
 	if len(raw) > limit {
@@ -374,6 +379,13 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 		}
 		a.Backup, b.Backup = nil, nil
 	}
+	if a.Kind == "restore" && b.Kind == "restore" {
+		var ap, bp backup.Recovery
+		if a.Backup == nil || b.Backup == nil || json.Unmarshal(*a.Backup, &ap) != nil || json.Unmarshal(*b.Backup, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
+			return false
+		}
+		a.Backup, b.Backup = nil, nil
+	}
 	if a.Kind == "pipeline" && b.Kind == "pipeline" {
 		var ap, bp pipeline.Command
 		if a.Pipeline == nil || b.Pipeline == nil || json.Unmarshal(*a.Pipeline, &ap) != nil || json.Unmarshal(*b.Pipeline, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
@@ -457,6 +469,7 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 				return errors.New("command identity changed")
 			}
 			existing.Command.CancelRequested = existing.Command.CancelRequested || c.CancelRequested
+			takeReleasedValues(&existing, c)
 			out = existing
 			return j.put(tx, "operations", c.Id.String(), out)
 		} else if !errors.Is(e, os.ErrNotExist) {

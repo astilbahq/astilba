@@ -59,6 +59,13 @@ type Engine struct {
 	// networkRefusals is whether management reads a refusal's reason, which it advertises
 	// with Astilba-Agent-Network-Refusals v1. It is unknown until management first answers.
 	networkRefusals atomic.Int32
+	// keyStoreWait is when network commands may next try the key store, after they found it not
+	// working. Until then they leave it alone, rather than call it again every second. It keeps the
+	// monotonic clock reading, so a clock step early in boot doesn't stretch it.
+	keyStoreWait atomic.Pointer[time.Time]
+	// keyStoreLogged is when the agent last logged that the key store isn't working. It logs that at
+	// most once an hour.
+	keyStoreLogged atomic.Pointer[time.Time]
 	// hostChangeReviews is whether management reviews the host changes a plan resolution reports,
 	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
 	// first answers, using the refusal states.
@@ -278,8 +285,13 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.Kind == "network" {
 		return e.executeNetwork(ctx, c, r)
 	}
+	// Backups and restores run the journal's copy: values a retry asked for may have reached it
+	// since c was read.
 	if c.Kind == "backup" || c.Kind == "schedule" {
-		return e.executeBackup(ctx, c, r)
+		return e.executeBackup(ctx, r.Command, r)
+	}
+	if c.Kind == "restore" {
+		return e.executeRecovery(ctx, r.Command, r)
 	}
 	if c.Kind == "pipeline" {
 		return e.executePipeline(ctx, c, r)
@@ -310,8 +322,11 @@ func (e *Engine) inspect(ctx context.Context, c api.ExecutionCommand) (client.Co
 	if err != nil {
 		return v, false, err
 	}
+	// A probe is ours by its name, which only the agent gives a container, and its four labels.
+	// Labels alone prove nothing, since an image's own LABELs reach its containers. The image
+	// is not part of it: a probe started before the test image moved stays managed after it.
 	labels := v.Container.Config.Labels
-	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.ResourceId.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != "probe-v1" || v.Container.Config.Image != c.Image {
+	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.ResourceId.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != "probe-v1" {
 		return v, true, errors.New("resource ownership mismatch")
 	}
 	return v, true, nil

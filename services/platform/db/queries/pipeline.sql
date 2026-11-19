@@ -32,7 +32,7 @@ SELECT (steps @> jsonb_build_array(jsonb_build_object('name', @step::text)))::bo
 SELECT o.command, o.state, o.cancel_requested FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
 WHERE o.workspace_id = @workspace_id AND o.id = @id AND o.server_id = @server_id AND o.kind = 'pipeline' AND (r.delivery_started IS NOT FALSE OR o.report_sequence > 0)
 FOR UPDATE OF o;
--- name: StopPossiblyDeliveredPipeline :exec
+-- name: StopPossiblyDeliveredOperation :exec
 UPDATE execution_operations SET cancel_requested = true, note = @note::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AutomaticBuildArtifact :one
@@ -83,20 +83,45 @@ WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND 
 ORDER BY r.created_at DESC LIMIT 2;
 
 -- name: InsertSourceSubmission :one
-INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,configuration)
-VALUES(@id,@workspace_id,@environment_id,@revision_id,@request_key,@actor_id,@configuration) RETURNING created_at;
+INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,actor_auth_version,configuration)
+VALUES(@id,@workspace_id,@environment_id,@revision_id,@request_key,@actor_id,@actor_auth_version,@configuration) RETURNING created_at;
 
 -- name: SourceSubmissionByRequestKey :one
 SELECT id,environment_id,revision_id,state,note,result,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND request_key = @request_key;
 
 -- name: LatestSourceSubmission :one
 -- The newest attempt for the environment, or for one revision of it when revision_id is set.
-SELECT id,environment_id,revision_id,configuration,state,note,result,created_at FROM source_submissions
+SELECT id,environment_id,revision_id,configuration,state,note,result,created_at,withdrawn_at FROM source_submissions
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND (sqlc.narg(revision_id)::uuid IS NULL OR revision_id = sqlc.narg(revision_id)::uuid)
 ORDER BY created_at DESC,id DESC LIMIT 1;
 
 -- name: LockSourceSubmission :one
-SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+SELECT environment_id,revision_id,configuration,state,created_at,withdrawn_at FROM source_submissions WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+
+-- name: SourceSubmissionSubmitter :one
+-- Whether the member who submitted it may still have it sent: the check every standing approval
+-- makes, which includes the workspace's two-factor requirement, at the role writing needs. Losing
+-- write access has already failed it (WithdrawActorSourceSubmissions). A version is recorded unless
+-- an older release queued it.
+SELECT policy_approver_holds(workspace_id, actor_id, actor_auth_version, false)::boolean AS holds,
+    (actor_auth_version IS NOT NULL)::boolean AS recorded
+FROM source_submissions
+WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: WithdrawActorSourceSubmissions :many
+-- A queued submission is sent on its submitter's say-so, so losing write access fails it, in the
+-- transaction that takes it away, and getting it back doesn't restore it. An attempt may be
+-- sending it with nothing held, so withdrawn_at lets that attempt record what the provider did,
+-- and keeps another attempt for the revision from starting beside it until it must have ended.
+UPDATE source_submissions SET state = 'failed', finished_at = now(), withdrawn_at = now(),
+    note = 'Not submitted: the member who submitted it lost write access. An owner or operator can submit the draft again from a minute later.'
+WHERE workspace_id = @workspace_id AND actor_id = @actor_id AND state = 'queued'
+RETURNING id;
+
+-- name: RecordWithdrawnSourceSubmission :exec
+-- What the provider did for an attempt that was already sending a submission when it was withdrawn.
+UPDATE source_submissions SET state = @state, note = @note, result = sqlc.narg(result)
+WHERE workspace_id = @workspace_id AND id = @id AND state = 'failed' AND withdrawn_at IS NOT NULL;
 
 -- name: FinishSourceSubmission :exec
 UPDATE source_submissions SET state = @state, note = @note, result = sqlc.narg(result), finished_at = now()

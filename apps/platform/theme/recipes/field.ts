@@ -8,7 +8,16 @@ export const fieldRecipe = defineSlotRecipe({
     root: { display: "grid", gap: "2", minInlineSize: "0" },
     control: { display: "grid", minInlineSize: "0" },
     label: { display: "grid", gap: "1.5", fontWeight: "medium" },
-    error: { gridColumn: "1 / -1", color: "error", fontSize: "secondary" },
+    error: {
+      gridColumn: "1 / -1",
+      color: "error",
+      fontSize: "secondary",
+      // Base UI keeps a resolved error in the page until the next animation frame, for an exit
+      // animation it doesn't have, so what follows would move a frame after the field is valid.
+      // Base UI marks its error invalid while the error applies, including when the field turns
+      // invalid again before that frame.
+      "&[data-ending-style]:not([data-invalid])": { display: "none" },
+    },
   },
   variants: {
     hasAction: {

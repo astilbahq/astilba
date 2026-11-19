@@ -69,6 +69,10 @@ func Checkpoint(d deployment.RecoveryDescriptor) Item {
 
 func (i Item) installation() bool { return i.Kind == TOTP || i.Kind == TOTPPending }
 
+// environmental is a kind whose values belong to one environment, and may be sealed under that
+// environment's key so that purging it destroys them.
+func (k Kind) environmental() bool { return k == SecretVersion || k == BackupPolicy }
+
 // identity is what the value's ciphertext is bound to. It returns "" for an item that does not
 // belong to the workspace.
 func (i Item) identity(ws uuid.UUID) string {

@@ -22,8 +22,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/config"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
-	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
@@ -46,10 +46,14 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba keygen|migrate|bootstrap|custody|invite|grant-management|prepare-recovery|recover-cross-host|reset-mfa|serve")
+		return errors.New("usage: astilba keygen|migrate|bootstrap|custody|dns|invite|grant-management|prepare-recovery|recover-cross-host|reset-mfa|serve")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// It runs before configuration loads: it makes the credentials that configuration names.
+	if len(os.Args) > 2 && os.Args[1] == "custody" && os.Args[2] == "init-transit" {
+		return initTransitCommand(ctx, os.Stdout, os.Args[3:])
+	}
 	if os.Args[1] == "keygen" {
 		f := flag.NewFlagSet("keygen", flag.ContinueOnError)
 		file := f.String("out", "", "new private keyring file")
@@ -96,7 +100,7 @@ func run() error {
 		return errors.New("cannot configure database")
 	}
 	defer pool.Close()
-	backend, e := custody.NewFile(keys)
+	backend, e := keyBackend(c, keys)
 	if e != nil {
 		return e
 	}
@@ -106,6 +110,9 @@ func run() error {
 	st.ApplicationDomain = c.ApplicationDNS.Base
 	if os.Args[1] == "custody" {
 		return custodyCommand(ctx, c, pool, st, os.Args[2:])
+	}
+	if os.Args[1] == "dns" {
+		return dnsCommand(ctx, pool, os.Args[2:])
 	}
 	// A command that uses keys first checks they and the database belong to one installation.
 	// Serving checks its database first, to say why it cannot reach it.
@@ -253,7 +260,7 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		tokens, e := st.Broker.Tokens(ctx)
+		tokens, e := st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 		if e != nil {
 			return e
 		}
@@ -344,6 +351,34 @@ func run() error {
 		if e = api.Execution.Start(ctx); e != nil {
 			return e
 		}
+		// Compared with the database once at startup, which is what follows a restore from an
+		// older backup, and then every few minutes. It queues jobs, so it starts after the workers.
+		go func() {
+			sweep := func() {
+				run, cancel := context.WithTimeout(ctx, execution.ZoneSweepInterval-time.Minute)
+				defer cancel()
+				err := api.Execution.SweepZone(run)
+				switch {
+				case err == nil || ctx.Err() != nil:
+				case errors.Is(err, applicationdns.ErrZoneTooLarge):
+					// Lasting: records the sweep would withdraw stay in the zone until the operator acts.
+					slog.Error("application DNS zone sweep refused a zone too large to compare; records Astilba no longer backs, or newer than their server's approval, are not withdrawn. See docs/hosting.md#records-the-database-has-lost", "error", err)
+				default:
+					slog.Warn("application DNS zone sweep failed", "error", err)
+				}
+			}
+			sweep()
+			ticker := time.NewTicker(execution.ZoneSweepInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sweep()
+				}
+			}
+		}()
 		defer func() {
 			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

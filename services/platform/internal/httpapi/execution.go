@@ -63,6 +63,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		// v1 delivers the visual purge action, which deletes a retired environment's volumes.
 		w.Header().Set("Astilba-Agent-Purge", "v1")
 		w.Header().Set("Astilba-Agent-Schedules", "v1")
+		// v1 reads recoveryRestore, an agent that runs the restore command kind.
+		w.Header().Set("Astilba-Agent-Recovery-Restore", "v1")
 		w.Header().Set("Astilba-Agent-Replicas", "v1")
 		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 		w.Header().Set("Astilba-Agent-Maintenance-Continuation", "v1")
@@ -79,6 +81,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Host-Changes", "v1")
 		// v1 releases a command's secrets once per agent instance, until it acknowledges them.
 		w.Header().Set("Astilba-Agent-Secret-Releases", "v1")
+		// v1 reads preflight.containerRanges, which staging and planning check client allowlists against.
+		w.Header().Set("Astilba-Agent-Container-Ranges", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768

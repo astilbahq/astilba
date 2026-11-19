@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
@@ -32,6 +33,7 @@ func (c *Client) hearFeatures(h http.Header) {
 	c.retirement.Store(h.Get("Astilba-Agent-Retirement") == "v1")
 	c.purge.Store(h.Get("Astilba-Agent-Purge") == "v1")
 	c.schedules.Store(h.Get("Astilba-Agent-Schedules") == "v1")
+	c.recoveryRestore.Store(h.Get("Astilba-Agent-Recovery-Restore") == "v1")
 	c.replicas.Store(h.Get("Astilba-Agent-Replicas") == "v1")
 	c.crossHost.Store(h.Get("Astilba-Agent-Cross-Host") == "v1")
 	c.maintenanceContinuation.Store(h.Get("Astilba-Agent-Maintenance-Continuation") == "v1")
@@ -39,6 +41,7 @@ func (c *Client) hearFeatures(h http.Header) {
 	c.troubleshooting.Store(h.Get("Astilba-Agent-Troubleshooting") == "v2")
 	c.machineRotation.Store(h.Get("Astilba-Agent-Machine-Rotation") == "v1")
 	c.secretReleases.Store(h.Get("Astilba-Agent-Secret-Releases") == "v1")
+	c.containerRanges.Store(h.Get("Astilba-Agent-Container-Ranges") == "v1")
 	c.keysSupported.Store(h.Get(agentidentity.KeysHeader) == "v1")
 	if c.Engine != nil {
 		read := refusalsUnread
@@ -134,6 +137,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	if !c.schedules.Load() {
 		v.Schedules = nil
 	}
+	if !c.recoveryRestore.Load() {
+		v.RecoveryRestore = nil
+	}
 	if !c.previews.Load() {
 		v.Previews = nil
 	}
@@ -176,6 +182,22 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.secretReleases.Load() {
 		v.AcknowledgesReleases = nil
+	}
+	if !c.containerRanges.Load() {
+		v.ContainerRanges = nil
+	}
+	return v
+}
+
+// advertisedPreflight leaves out what this controller does not read, as advertisedCapabilities.
+func (c *Client) advertisedPreflight(v api.HostPreflight) api.HostPreflight {
+	if !c.crossHost.Load() {
+		v.CrossHostInventory = nil
+	}
+	if !c.containerRanges.Load() {
+		v.ContainerRanges = nil
+		// The note speaks of a check this controller doesn't make.
+		v.Notes = slices.DeleteFunc(slices.Clone(v.Notes), func(note string) bool { return note == containerRangesUnreadNote })
 	}
 	return v
 }

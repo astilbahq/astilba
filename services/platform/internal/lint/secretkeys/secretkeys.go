@@ -31,8 +31,10 @@ var keyPackages = map[string]bool{
 	"internal/secretbroker": true,
 	// A broker for unit tests, with its records in memory.
 	"internal/secretbroker/brokertest": true,
-	"cmd/server":                       true,
-	"internal/agent":                   true,
+	// The conformance suite every backend passes.
+	"internal/custody/custodytest": true,
+	"cmd/server":                   true,
+	"internal/agent":               true,
 }
 
 // harmless are the cryptobox names that hold no key.

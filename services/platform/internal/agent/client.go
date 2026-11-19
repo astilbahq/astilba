@@ -42,6 +42,7 @@ type Client struct {
 	retirement              atomic.Bool
 	purge                   atomic.Bool
 	schedules               atomic.Bool
+	recoveryRestore         atomic.Bool
 	replicas                atomic.Bool
 	crossHost               atomic.Bool
 	maintenanceContinuation atomic.Bool
@@ -49,6 +50,7 @@ type Client struct {
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
 	secretReleases          atomic.Bool
+	containerRanges         atomic.Bool
 	// negotiated says this process has heard which extensions management reads. Until then the
 	// flags above are unset, and a heartbeat would replace what management holds with a set
 	// stripped of every extension. negotiatedNow is closed when it becomes true.
@@ -127,9 +129,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 	switch value := body.(type) {
 	case api.AgentEnrollment:
 		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
-		if !c.crossHost.Load() {
-			value.Preflight.CrossHostInventory = nil
-		}
+		value.Preflight = c.advertisedPreflight(value.Preflight)
 		body = value
 	case api.AgentHeartbeat:
 		// A heartbeat replaces the capabilities management holds, so it waits until this process
@@ -138,9 +138,7 @@ func (c *Client) send(ctx context.Context, method, path string, body, out any, t
 			return err
 		}
 		value.Capabilities = c.advertisedCapabilities(value.Capabilities)
-		if !c.crossHost.Load() {
-			value.Preflight.CrossHostInventory = nil
-		}
+		value.Preflight = c.advertisedPreflight(value.Preflight)
 		body = value
 	case api.AgentReport:
 		// A refusal's reason was recorded while management read reasons. A controller that no
@@ -272,6 +270,10 @@ func (c *Client) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { c.keepKeyStoreOpen(ctx) })
 	wg.Go(func() { c.keepJournalRekeyed(ctx) })
+	if c.Engine != nil {
+		wg.Go(func() { c.keepPrivateLinksRestored(ctx) })
+		wg.Go(func() { c.keepNetworkKeysSealed(ctx) })
+	}
 	if c.Metrics != nil {
 		wg.Go(func() {
 			c.loop(ctx, time.Minute, func() error {
@@ -425,6 +427,9 @@ func (c *Client) Run(ctx context.Context) error {
 						retry = time.After(time.Second)
 					}
 				}
+			}
+			if at, waiting := c.Journal.valuesDeadline(); waiting && retry == nil {
+				retry = time.After(time.Until(at) + time.Millisecond)
 			}
 		}
 	})

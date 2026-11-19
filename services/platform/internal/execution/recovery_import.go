@@ -45,6 +45,11 @@ type recoveringRoot struct {
 	KnownSequence int64
 }
 
+// ErrRecoveryWorkspaceMissing is a recovery into a database restored from a backup taken before the
+// workspace was created. Recovery starts from the workspace the backup holds, so the hosts'
+// capsules alone cannot bring it back.
+var ErrRecoveryWorkspaceMissing = errors.New("this management database has no such workspace: it was restored from a backup taken before the workspace was created, and recovery cannot rebuild a workspace from its hosts' capsules alone; restore a backup taken after the workspace was created")
+
 // RecoverCrossHost is an offline operator action. An empty ExpectedState returns
 // a concrete preview; a write must name the exact current workspace state from
 // that preview. Accounts, sessions and installation keys are never imported.
@@ -74,6 +79,13 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 		return out, err
 	}
 	if !owner {
+		exists, err := q.RecoveryWorkspaceExists(ctx, in.WorkspaceID)
+		if err != nil {
+			return out, err
+		}
+		if !exists {
+			return out, ErrRecoveryWorkspaceMissing
+		}
 		return out, domain.Forbidden
 	}
 	if _, err = q.LockWorkspaceByID(ctx, in.WorkspaceID); err != nil {
@@ -199,7 +211,7 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 	if err = stageRecoveryProjections(ctx, tx, in.WorkspaceID, source.Projections); err != nil {
 		return out, err
 	}
-	if err = portability.MergeRecovery(ctx, tx, source.Archive, in.OwnerID); err != nil {
+	if err = portability.MergeRecovery(ctx, tx, keys, source.Archive, in.OwnerID); err != nil {
 		return out, err
 	}
 	// Merging never deletes, so where it ends a preview the restored database lists open, that
@@ -208,6 +220,9 @@ func (s *Service) RecoverCrossHost(ctx context.Context, in RecoveryImport) (_ Re
 		return out, err
 	}
 	if err = q.DeleteEndedPreviewSecrets(ctx, in.WorkspaceID); err != nil {
+		return out, err
+	}
+	if err = s.Store.Broker.DestroyEndedEnvironmentKeys(ctx, q, in.WorkspaceID); err != nil {
 		return out, err
 	}
 	if err = portability.StoreRecoveredHistory(ctx, tx, in.WorkspaceID, source.History); err != nil {

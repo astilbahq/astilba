@@ -79,7 +79,7 @@ func TestRecoveryNeverRestoresAnErasedSecret(t *testing.T) {
 		if err = store.RequireOffline(ctx, tx); err != nil {
 			t.Fatal(err)
 		}
-		if err = portability.MergeRecovery(ctx, tx, archive, owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, f.st, archive.Workspace), archive, owner); err != nil {
 			t.Fatal(err)
 		}
 		if err = tx.Commit(ctx); err != nil {

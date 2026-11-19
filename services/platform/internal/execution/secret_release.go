@@ -43,7 +43,7 @@ func carriesValues(c api.ExecutionCommand) bool {
 		// Removing a preview or a retired environment's unit needs no secret or registry access.
 		var p deployment.Payload
 		return c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != "preview-cleanup" && p.Action != retireAction
-	case "crosshost", "backup", "schedule", "pipeline", "upgrade":
+	case "crosshost", "backup", "schedule", "restore", "pipeline", "upgrade":
 		return true
 	}
 	return false
@@ -133,9 +133,9 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 		if err != nil || !deliver {
 			return waitForRelease, err
 		}
-		// A pipeline past its deadline goes without values: an instance that holds it, such as
-		// one whose key has changed since, goes on with it, and one that doesn't says so
-		// (stopLostPipeline) rather than accept it.
+		// A pipeline or restore past its deadline goes without values: an instance that holds it,
+		// such as one whose key has changed since, goes on with it, and one that doesn't says so
+		// (stopLostWork) rather than accept it.
 		if !c.CancelRequested {
 			c.SecretRelease = &api.SecretRelease{Epoch: key.DispatchEpoch, Values: false}
 		}
@@ -163,10 +163,18 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 
 // hydrate fills a command's values for its kind, or with nil keys makes its delivery's
 // decisions alone. It reports whether to deliver the command now, and whether it carries
-// values: a pipeline may decide not to deliver yet, or to stop without credentials.
+// values: a pipeline or a restore may decide not to deliver yet, or to stop without credentials.
 func (s *Service) hydrate(ctx context.Context, a Identity, keys valueKeys, c *api.ExecutionCommand) (deliver, carried bool, err error) {
-	if c.Kind == "pipeline" {
+	switch c.Kind {
+	case "pipeline":
 		return s.hydratePipeline(ctx, a, keys, c)
+	case "restore":
+		err = withProviderCalls(ctx, func() error {
+			var e error
+			deliver, carried, e = s.hydrateRecovery(ctx, a, keys, c)
+			return e
+		})
+		return deliver, carried, err
 	}
 	// Each kind opens its values in one pass, so the session begins between passes.
 	err = withProviderCalls(ctx, func() error {
@@ -229,7 +237,7 @@ func (s *Service) NoticeSecretReleases(ctx context.Context, a Identity, notice a
 			return err
 		}
 		if r.Reason == api.JournalMissing {
-			if err := s.stopLostPipeline(ctx, a, r.OperationId); err != nil {
+			if err := s.stopLostWork(ctx, a, r.OperationId); err != nil {
 				return err
 			}
 		}
@@ -237,12 +245,12 @@ func (s *Service) NoticeSecretReleases(ctx context.Context, a Identity, notice a
 	return nil
 }
 
-// stopLostPipeline stops a pipeline that this agent's runner, to which it may have been
-// delivered, says it no longer holds once its deadline has passed. The runner can never start
-// it again, and would otherwise be offered it without values until its end, holding every later
-// command for the runner. Before the deadline the values are released again instead, and a
-// pipeline never delivered is finished by the next poll.
-func (s *Service) stopLostPipeline(ctx context.Context, a Identity, id uuid.UUID) error {
+// stopLostWork stops a pipeline or restore that this agent, to which it may have been delivered,
+// says it no longer holds once its deadline has passed. The agent can never start it again, and
+// would otherwise be offered it without values for as long as it stays active, holding every later
+// command for the agent. Before the deadline the values are released again instead, and work never
+// delivered is finished by the next poll.
+func (s *Service) stopLostWork(ctx context.Context, a Identity, id uuid.UUID) error {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -257,21 +265,35 @@ func (s *Service) stopLostPipeline(ctx context.Context, a Identity, id uuid.UUID
 		return domain.Unauthenticated
 	}
 	q := db.New(tx)
+	var command []byte
+	var state string
+	var cancelled bool
+	note := "Stopped: the runner lost this pipeline after its deadline, so it could not start it again."
 	op, err := q.LockDeliveredPipeline(ctx, db.LockDeliveredPipelineParams{WorkspaceID: a.Workspace, ID: id, ServerID: a.ID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
+	switch {
+	case err == nil:
+		command, state, cancelled = op.Command, op.State, op.CancelRequested
+	case errors.Is(err, pgx.ErrNoRows):
+		r, err := q.LockRecoveryDelivery(ctx, db.LockRecoveryDeliveryParams{WorkspaceID: a.Workspace, ID: id, ServerID: a.ID})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && !r.Held {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		command, state, cancelled = r.Command, r.State, r.CancelRequested
+		note = "Stopped: the agent lost this restore after its deadline, so it could not start it again."
+	default:
 		return err
 	}
 	var c api.ExecutionCommand
-	if err = json.Unmarshal(op.Command, &c); err != nil {
+	if err = json.Unmarshal(command, &c); err != nil {
 		return err
 	}
-	if Terminal(api.ExecutionState(op.State)) || op.CancelRequested || !time.Now().After(c.Deadline) {
+	if Terminal(api.ExecutionState(state)) || cancelled || !time.Now().After(c.Deadline) {
 		return nil
 	}
-	if err = q.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: a.Workspace, ID: id, Note: "Stopped: the runner lost this pipeline after its deadline, so it could not start it again."}); err != nil {
+	if err = q.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: a.Workspace, ID: id, Note: note}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

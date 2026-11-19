@@ -158,6 +158,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	backups := visual && resticErr == nil && strings.HasPrefix(string(restic), "restic "+backup.ResticVersion+" ")
 	h.Capabilities.Backups = &backups
 	h.Capabilities.Schedules = &backups
+	h.Capabilities.RecoveryRestore = &backups
 	h.Capabilities.Upgrades = &backups
 
 	if err != nil {

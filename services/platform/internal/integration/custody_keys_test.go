@@ -133,9 +133,14 @@ func TestNewWorkspacesHaveKeys(t *testing.T) {
 func TestInitKeysIsResumableAndRunsOnce(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	// The job the workers run at start has made the installation's keys and completed the stage;
-	// workspaces an older release creates afterwards are left for the next run.
+	// The job the workers run at start has made the installation's keys; workspaces an older
+	// release creates afterwards are left for the next run. The installation was upgraded rather
+	// than new, so it has completed only stage 1.
 	keysJobDone(t, f)
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE custody_stage SET stage=1`); err != nil {
+		t.Fatal(err)
+	}
+	before := len(keyEvents(t, f, "stage-completed"))
 	var older []uuid.UUID
 	for i := range 5 {
 		older = append(older, insertWorkspace(t, f, "Older "+string(rune('a'+i))))
@@ -179,11 +184,21 @@ func TestInitKeysIsResumableAndRunsOnce(t *testing.T) {
 	if created := keyEvents(t, f, "key-created"); len(created) != 1+len(older)+2 {
 		t.Fatalf("%d key events", len(created))
 	}
-	if stage, err := db.New(f.st.Pool).CustodyStage(ctx); err != nil || stage != dbmigrate.CustodyStage {
+	// Once every key exists the installation has completed stage 2, and stage 3, since every
+	// release from it seals new values under those keys. Creating keys goes no further: stage 4
+	// says no stored value is still under the keyring and no older instance runs, which only
+	// `custody convert` checks, with the tables held, and records for an operator.
+	if stage, err := db.New(f.st.Pool).CustodyStage(ctx); err != nil || stage != 3 {
 		t.Fatal(stage, err)
 	}
-	if completed := keyEvents(t, f, "stage-completed"); len(completed) != 1 || details(t, completed[0])["stage"] != "2" {
-		t.Fatalf("stage events %+v", completed)
+	var stages []string
+	events := keyEvents(t, f, "stage-completed")
+	// Oldest first: those after the ones before this run.
+	for _, e := range events[before:] {
+		stages = append(stages, details(t, e)["stage"])
+	}
+	if !slices.Equal(stages, []string{"2", "3"}) {
+		t.Fatalf("stage events %v", stages)
 	}
 	// Nothing is left, so another run changes nothing.
 	initKeys(t, f.st.Broker)
@@ -198,6 +213,8 @@ func TestSessionsOpenV2ValuesOfTheirOwnWorkspace(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	a := ownerWorkspace(t, f)
+	// The start-up key job would otherwise race this test's own run for the new workspace.
+	keysJobDone(t, f)
 	b := insertWorkspace(t, f, "Other")
 	initKeys(t, f.st.Broker)
 	item := uuid.New()
@@ -360,6 +377,7 @@ func TestKeyGenerationsOnlyMoveForward(t *testing.T) {
 		t.Fatal(retiredAt, all, err)
 	}
 	// Deleting a workspace deletes its keys.
+	keysJobDone(t, f)
 	gone := insertWorkspace(t, f, "Deleted")
 	initKeys(t, f.st.Broker)
 	if err := exec(`DELETE FROM memberships WHERE workspace_id=$1`, gone); err != nil {
@@ -419,7 +437,7 @@ func TestTokenKeysLoadAsTheyAppear(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	initKeys(t, f.st.Broker)
-	tokens, err := f.st.Broker.Tokens(ctx)
+	tokens, err := f.st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,16 +477,20 @@ func TestTokenKeysLoadAsTheyAppear(t *testing.T) {
 	if err = f.st.Pool.QueryRow(ctx, `SELECT token_generations FROM custody_instances WHERE instance_id=$1`, tokens.Instance()).Scan(&generations); err != nil || !slices.Equal(generations, []int64{1}) {
 		t.Fatal(generations, err)
 	}
-	if loaded := keyEvents(t, f, "token-key-loaded"); len(loaded) != 1 || loaded[0].Generation.Int64 != 1 {
-		t.Fatalf("events %+v", loaded)
+	// Each instance records each generation it loads, under its own run: the server's and this one.
+	var mine []db.InstallationKeyEvent
+	for _, e := range keyEvents(t, f, "token-key-loaded") {
+		if e.RunID == tokens.Instance() {
+			mine = append(mine, e)
+		}
 	}
-	// Legacy tokens still open.
-	legacy, err := tokens.Seal(secretbroker.ResetMail, []byte("c@example.test"))
+	if len(mine) != 1 || mine[0].Generation.Int64 != 1 {
+		t.Fatalf("events %+v", mine)
+	}
+	// Tokens issued under the keyring before token keys still open.
+	legacy, err := keysOf(f.st).Seal([]byte("c@example.test"), "reset-mail:v1")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if header, err := cryptobox.ReadHeader(legacy); err != nil || header.Version != 1 {
-		t.Fatal("tokens are issued under the keyring until values are sealed as v2", err)
 	}
 	if email, err := tokens.Open(secretbroker.ResetMail, legacy); err != nil || string(email) != "c@example.test" {
 		t.Fatal(err)

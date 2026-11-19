@@ -30,7 +30,11 @@ func CheckRecoveryKeys(keys *secretbroker.Session, a Archive) error {
 			}
 			plain, err := keys.Open(item, cipher)
 			clear(plain)
-			if secretbroker.SessionFailure(err) {
+			if errors.Is(err, secretbroker.ErrKeyDestroyed) {
+				// Its environment was purged since: the merge restores it erased.
+				continue
+			}
+			if secretbroker.SessionFailure(err) || errors.Is(err, secretbroker.ErrKeyNotInBackup) {
 				return err
 			}
 			if err != nil {

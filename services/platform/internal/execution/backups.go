@@ -1,10 +1,13 @@
 package execution
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -19,10 +22,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]backup.Destination, error) {
-	out := []backup.Destination{}
+func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.BackupDestination, error) {
+	out := []api.BackupDestination{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
 		rows, err := db.New(tx).ListBackupDestinations(ctx, ws)
+		if err != nil {
+			return err
+		}
+		exposed, err := db.New(tx).ExposedBackupDestinations(ctx, ws)
+		if err != nil {
+			return err
+		}
+		policies, err := db.New(tx).BackupDestinationPolicies(ctx, ws)
 		if err != nil {
 			return err
 		}
@@ -31,22 +42,33 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 			if err = json.Unmarshal(raw, &v); err != nil {
 				return err
 			}
-			out = append(out, v)
+			view := destinationView(v, slices.Contains(exposed, v.ID))
+			for _, p := range policies {
+				if p.DestinationID == v.ID {
+					view.Policies = append(view.Policies, api.BackupDestinationPolicy{Id: p.ID, Name: p.Name, ProjectId: p.ProjectID, EnvironmentId: p.EnvironmentID, EnvironmentName: p.EnvironmentName})
+				}
+			}
+			out = append(out, view)
 		}
 		return nil
 	})
 	return out, err
 }
-func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access) (backup.Destination, error) {
+
+// destinationView is d as the API shows it.
+func destinationView(d backup.Destination, exposed bool) api.BackupDestination {
+	return api.BackupDestination{Id: d.ID, Name: d.Name, Kind: api.BackupDestinationKind(d.Kind), Root: d.Root, Endpoint: d.Endpoint, Bucket: d.Bucket, Region: d.Region, Exposed: exposed, Policies: []api.BackupDestinationPolicy{}}
+}
+func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access) (api.BackupDestination, error) {
 	d.ID = uuid.New()
 	a.Password = ""
 	if backup.ValidateDestination(d, a) != nil {
-		return d, domain.Invalid("destination")
+		return api.BackupDestination{}, domain.Invalid("destination")
 	}
 	item := secretbroker.Item{Kind: secretbroker.BackupDestination, ID: d.ID}
 	keys, done, err := s.sealing(ctx, p, ws, item)
 	if err != nil {
-		return d, err
+		return api.BackupDestination{}, err
 	}
 	sealed := false
 	defer func() { done(sealed) }()
@@ -58,7 +80,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		if n >= 100 {
 			return domain.Conflict
 		}
-		secret, err := sealIntegration(keys, item, a)
+		secret, err := sealIntegration(ctx, db.New(tx), keys, item, a)
 		if err != nil {
 			return err
 		}
@@ -66,7 +88,11 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		raw, _ := stablejson.Marshal(d)
 		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret})
 	})
-	return d, err
+	if err != nil {
+		return api.BackupDestination{}, err
+	}
+	// No policy uses a new destination yet.
+	return destinationView(d, false), nil
 }
 func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]backup.Policy, error) {
 	out := []backup.Policy{}
@@ -205,6 +231,22 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			if !exists {
 				return domain.NotFound
 			}
+			// A revoked server that held the destination's keys can still delete or overwrite what a
+			// new policy writes there, so choosing it is acknowledged and recorded.
+			if creating {
+				exposed, err := db.New(tx).ExposedBackupDestinations(ctx, ws)
+				if err != nil {
+					return err
+				}
+				if slices.Contains(exposed, out.DestinationID) {
+					if in.ExposureAcknowledged == nil || !*in.ExposureAcknowledged {
+						return domain.Invalid("destination.exposed")
+					}
+					if err = store.Audit(ctx, db.New(tx), p, ws, "backup.destination.exposure.acknowledge", out.DestinationID); err != nil {
+						return err
+					}
+				}
+			}
 			if in.Password == nil || len(*in.Password) < 16 || len(*in.Password) > 512 {
 				return domain.Invalid("password")
 			}
@@ -220,7 +262,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 		if in.Password != nil {
 			a.Password = *in.Password
 		}
-		cipher, err := sealIntegration(keys, item, a)
+		cipher, err := sealIntegration(ctx, db.New(tx), keys, item, a)
 		if err != nil {
 			return err
 		}
@@ -279,7 +321,7 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 			if c.Backup == nil || json.Unmarshal(*c.Backup, &b) != nil || b.Installation.Policy.ID != id || b.Action != string(in.Action) || b.Snapshot != in.Snapshot {
 				return domain.Conflict
 			}
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, in.RequestKey))
+			out, err = operationByRequestKey(ctx, tx, ws, in.RequestKey)
 			return err
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -397,7 +439,7 @@ func (s *Service) BackupStatus(ctx context.Context, p store.Principal, ws, pid, 
 	return out, err
 }
 func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64, status backup.Status) error {
-	if a.Role == "build" || sequence < 1 || sequence > 1<<53 || len(status.Runs) > 128 {
+	if a.Role == "build" || sequence < 1 || sequence > 1<<53 || len(status.Runs) > backup.MaxReportedRuns {
 		return domain.Invalid("scheduleReport")
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
@@ -447,7 +489,48 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 	if err = db.New(tx).SaveBackupPolicyReport(ctx, db.SaveBackupPolicyReportParams{Status: raw, StatusSequence: sequence, WorkspaceID: a.Workspace, ID: p.ID}); err != nil {
 		return err
 	}
+	if err = recordSnapshotReceipts(ctx, db.New(tx), a, p.ID, status.Runs); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// recordSnapshotReceipts keeps a receipt for each snapshot a report lists as available
+// (backup.Available). A snapshot keeps the time management first received it for as long as
+// reports go on listing it, whether by its upload or by a restore that verified it after the
+// upload left the history. Only an upload adds one, so one never reported stays on the manual
+// route.
+func recordSnapshotReceipts(ctx context.Context, q *db.Queries, a Identity, policy uuid.UUID, runs []backup.Run) error {
+	listed, uploaded := backup.Available(runs)
+	return q.RecordBackupSnapshotReceipts(ctx, db.RecordBackupSnapshotReceiptsParams{Listed: listed, Uploaded: uploaded, WorkspaceID: a.Workspace, PolicyID: policy})
+}
+
+// BackupSnapshotReceipts lists when management first received each snapshot its policy's reports
+// list as available, by its own clock, newest first. Unlike the times a server reports, a host
+// can't backdate these.
+func (s *Service) BackupSnapshotReceipts(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID) ([]api.BackupSnapshotReceipt, error) {
+	out := []api.BackupSnapshotReceipt{}
+	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
+		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
+			return err
+		}
+		raw, err := db.New(tx).BackupSnapshotReceipts(ctx, db.BackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+		if err != nil {
+			return err
+		}
+		var receipts backup.Receipts
+		if err = json.Unmarshal(raw, &receipts); err != nil {
+			return err
+		}
+		for snapshot, at := range receipts {
+			out = append(out, api.BackupSnapshotReceipt{Snapshot: snapshot, FirstReportedAt: at.UTC()})
+		}
+		slices.SortFunc(out, func(a, b api.BackupSnapshotReceipt) int {
+			return cmp.Or(b.FirstReportedAt.Compare(a.FirstReportedAt), strings.Compare(a.Snapshot, b.Snapshot))
+		})
+		return nil
+	})
+	return out, err
 }
 
 func requireGeneralSchedule(ctx context.Context, q db.DBTX, ws, server uuid.UUID, p backup.Policy) error {
