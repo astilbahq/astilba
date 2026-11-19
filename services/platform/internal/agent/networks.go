@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -17,12 +20,49 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func (e *Engine) networkHost() hostnetwork.Host { return hostnetwork.Host{Dir: e.Journal.dir} }
+// networkHost is this host's managed networking. Its private-link keys are sealed to the journal's
+// key store once the journal's format lets them be.
+func (e *Engine) networkHost() hostnetwork.Host {
+	h := hostnetwork.Host{Dir: e.Journal.dir}
+	if store := e.Journal.networkKeyStore(); store != nil {
+		h.Keys = waitingKeyStore{e, store}
+	}
+	return h
+}
+
+// waitingKeyStore is the key store, which network commands leave alone for a minute after they
+// found it not working, rather than call it again every second. A link that is up needs no key
+// store, so changing it, as removing a peer does, never waits.
+type waitingKeyStore struct {
+	e     *Engine
+	store hostnetwork.Sealer
+}
+
+func (w waitingKeyStore) waiting() error {
+	if until := w.e.keyStoreWait.Load(); until != nil && time.Now().Before(*until) {
+		return errWaitingForKeyStore
+	}
+	return nil
+}
+
+func (w waitingKeyStore) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	if err := w.waiting(); err != nil {
+		return nil, err
+	}
+	return w.store.Seal(ctx, name, plain)
+}
+
+func (w waitingKeyStore) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	if err := w.waiting(); err != nil {
+		return nil, err
+	}
+	return w.store.Unseal(ctx, name, sealed)
+}
 
 // managedHost is the part of the host's managed networking that executeNetwork uses.
 type managedHost interface {
 	Supported(context.Context) bool
-	Identity(uuid.UUID) (hostnetwork.Identity, error)
+	Identity(context.Context, uuid.UUID) (hostnetwork.Identity, error)
 	Snapshot(uuid.UUID) (hostnetwork.Snapshot, error)
 	Apply(context.Context, hostnetwork.Manifest, []hostnetwork.Bridge, bool) error
 }
@@ -32,6 +72,38 @@ func (e *Engine) managedNetworking() managedHost {
 		return e.managed
 	}
 	return e.networkHost()
+}
+
+// sealedNetworkKeyNote says why a server whose private-link key won't open stays off the network.
+// The agent has checked that its key store works, so the key is to blame.
+const sealedNetworkKeyNote = "This server's key store works but can't open its sealed private-link key: the key came from another machine, or this host's TPM or systemd host key changed. Nothing changed and no new key was made. Remove the server from private networks and add it back to give it a new key."
+
+// errWaitingForKeyStore says the key store wasn't working when the agent last tried it, so it isn't
+// tried again yet.
+var errWaitingForKeyStore = fmt.Errorf("%w: it wasn't working a moment ago, so it isn't tried again yet", hostnetwork.ErrKeyStoreUnavailable)
+
+// noteKeyStore makes the agent leave the key store alone for a minute when err says it isn't
+// working.
+func (e *Engine) noteKeyStore(err error) {
+	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		_ = e.waitForKeyStore(err)
+	}
+}
+
+// waitForKeyStore makes the agent leave the key store alone for a minute, and logs why. It returns
+// err, so a command runs again.
+func (e *Engine) waitForKeyStore(err error) error {
+	if errors.Is(err, errWaitingForKeyStore) {
+		return err
+	}
+	now := time.Now()
+	until := now.Add(keyStoreRetry)
+	e.keyStoreWait.Store(&until)
+	if logged := e.keyStoreLogged.Load(); logged == nil || now.Sub(*logged) >= journalRekeyInterval {
+		e.keyStoreLogged.Store(&now)
+		slog.Warn("the agent's key store isn't working, so private-link changes wait for it and try again each minute", "error", err)
+	}
+	return err
 }
 
 func networkRestriction(c api.ExecutionCommand) bool {
@@ -62,7 +134,11 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 	if !host.Supported(ctx) {
 		return finish("failed", "Managed networking tools, kernel support or service permissions are unavailable.")
 	}
-	identity, err := host.Identity(command.MembershipID)
+	identity, err := host.Identity(ctx, command.MembershipID)
+	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		// Nothing changed. The command runs again once the store may work.
+		return e.waitForKeyStore(err)
+	}
 	if err != nil {
 		return finish("needs_attention", "Local network identity requires inspection.")
 	}
@@ -124,6 +200,16 @@ func (e *Engine) executeNetwork(ctx context.Context, c api.ExecutionCommand, r R
 			// Docker's record is unread and nothing changed. The command reruns from its
 			// checkpoint, after a Docker restart or the agent's own.
 			return err
+		}
+		if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+			// The key is opened before anything changes. The command runs again from its
+			// checkpoint once the store may work.
+			return e.waitForKeyStore(err)
+		}
+		if errors.Is(err, hostnetwork.ErrSealedKey) {
+			// The key stays as it is: a new one would change this server's identity on the network
+			// without its owner knowing.
+			return finish("needs_attention", sealedNetworkKeyNote)
 		}
 		if errors.As(err, &conflict) {
 			// Management may hold no record of what this host has, after a lost receipt or a
@@ -207,7 +293,7 @@ func (e *Engine) refuseRouteConflict(ctx context.Context, c api.ExecutionCommand
 // membership's peers. A disabled one doesn't count, since its removal was not checked. Nor does
 // a disabled manifest, which is how management removes a
 // member it has no record of: refusing it would leave that member's removal pending for good,
-// and it installs no peers, only its own address on an interface it leaves down. The route
+// and it installs no peers: at most its own address on an interface it leaves down. The route
 // check still applies to it. Only networks with addresses on this host count, so swarm-scoped
 // and config-only networks, and ipvlan in L3 mode, which the host doesn't route to, are left
 // out. An error other than a RouteConflictError means Docker's record was not read.

@@ -67,12 +67,7 @@ func (x troubleshootingFixture) optIn(t *testing.T) {
 
 func (x troubleshootingFixture) member(t *testing.T, email, role string) *browser {
 	t.Helper()
-	x.owner.call("POST", x.prefix+"/invitations", map[string]string{"email": email, "role": role}, 201, nil)
-	b := x.f.browser(t)
-	var accepted api.Session
-	b.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromLinkMail(t, x.f, "/invitation"), "name": role, "password": x.f.password}, 200, &accepted)
-	b.csrf = accepted.CsrfToken
-	return b
+	return inviteMember(t, x.f, x.owner, x.prefix, email, role)
 }
 
 func (x troubleshootingFixture) open(t *testing.T, b *browser, app uuid.UUID, instance, status int) api.OpenedTroubleshootingSession {

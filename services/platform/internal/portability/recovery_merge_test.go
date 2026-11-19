@@ -3,9 +3,11 @@ package portability
 import (
 	"encoding/json/jsontext"
 	"maps"
+	"slices"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/recoveryrows"
 	"github.com/google/uuid"
 )
 
@@ -38,14 +40,25 @@ func TestRuntimeOutcomesAcceptEquivalentRemovalAcknowledgements(t *testing.T) {
 
 // Recovery bundles written by an earlier release are compared against these hashes.
 func TestRecoveryHashesKeepTheirReleasedValues(t *testing.T) {
-	if got := recoveryRowHash([]byte(`{ "z": 12345678901234567890, "a": "<&>", "f": 1.50 }`)); got != "5c49f6125abc1c236566d3a168d97c59e8e09a18058fa283efc2b59c865a8f83" {
+	if got := recoveryrows.Hash([]byte(`{ "z": 12345678901234567890, "a": "<&>", "f": 1.50 }`)); got != "5c49f6125abc1c236566d3a168d97c59e8e09a18058fa283efc2b59c865a8f83" {
 		t.Errorf("row hash changed to %s", got)
 	}
-	if got := recoveryRowHash([]byte(`not json`)); got != "7ccfa1fbf3940e6f0c0375d87c0f9235a50514e14cb427bdfaf5077987b26ccf" {
+	if got := recoveryrows.Hash([]byte(`not json`)); got != "7ccfa1fbf3940e6f0c0375d87c0f9235a50514e14cb427bdfaf5077987b26ccf" {
 		t.Errorf("unparseable row hash changed to %s", got)
 	}
 	state, err := recoveryStateHash(Archive{Name: "a && b", RequireMFA: true, Tables: map[string][]Row{"z": {{"k": jsontext.Value(`{ "x" : "<" }`), "n": jsontext.Value("null")}}, "a": nil}})
 	if err != nil || state != "1984a913f487793d106b3381b1780af5355345ee1e56fa420428c7fb472ab0cd" {
 		t.Errorf("state hash changed to %s, %v", state, err)
+	}
+}
+
+// Recovery reads the immutable tables that hold sealed values with the columns recoveryrows hashes,
+// so re-keying a restored row's record finds the row a merge compares.
+func TestRecoveryRowsReadWhatRecoveryReads(t *testing.T) {
+	for _, name := range []string{"secret_versions", "build_secret_versions"} {
+		i := slices.IndexFunc(tables, func(t table) bool { return t.Name == name })
+		if i < 0 || !RecoveryImmutable(name) || tables[i].Columns != recoveryrows.Columns(name) {
+			t.Errorf("%s: recovery reads %q, recoveryrows hashes %q", name, tables[i].Columns, recoveryrows.Columns(name))
+		}
 	}
 }

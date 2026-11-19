@@ -81,7 +81,7 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 			}
 			// These are the existing custom-format archives: no new manifest or
 			// dump option is required to recover their database metadata.
-			if err := e.restorePostgres(ctx, policy, &backup.Run{ID: uuid.New(), TargetID: volumes[1]}, dir, m, "metadata-fixture-password"); err != nil {
+			if _, err := e.restorePostgres(ctx, policy, a, uuid.New(), volumes[1], dir, m, "metadata-fixture-password"); err != nil {
 				t.Fatal(err)
 			}
 			restored := start(volumes[1])
@@ -189,6 +189,24 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	if v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || restored.Manifest == nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(restored.Manifest.Image) || v.Volume.Labels[labelPostgresMajor] == "" {
 		t.Fatalf("the restore target does not record its PostgreSQL major: %v", err)
 	}
+	// A snapshot that no longer holds the manifest its upload recorded is refused before any effect.
+	replaced := s
+	replaced.Runs = append([]backup.Run{}, s.Runs...)
+	for i := range replaced.Runs {
+		if replaced.Runs[i].Snapshot == snapshot {
+			replaced.Runs[i].ManifestHash = backup.Hash(struct{ Manifest string }{"another"})
+		}
+	}
+	blocked := uuid.New()
+	if err = e.runScheduled(ctx, &replaced, time.Now().UTC(), uuid.New(), snapshot, blocked); err == nil || !strings.Contains(err.Error(), "snapshot manifest differs from the uploaded record") {
+		t.Fatalf("a snapshot unlike its uploaded record was restored: %v", err)
+	}
+	if _, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(blocked), client.VolumeInspectOptions{}); err == nil {
+		t.Fatal("a refused restore created its target")
+	}
+	if err = e.Journal.saveSchedule(s); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = e.Docker.ContainerStart(ctx, c.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -201,23 +219,6 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	value, err := e.pgQuery(ctx, pgClient{container: c.ID}, a, "SELECT payload::text FROM reporting.records")
 	if err != nil || !strings.Contains(string(value), `"a"=>"b"`) {
 		t.Fatal("source records changed during restore")
-	}
-	// A large declared footprint must fail before creating target storage.
-	capacity := s
-	capacity.Runs = append([]backup.Run{}, s.Runs...)
-	for i := range capacity.Runs {
-		if capacity.Runs[i].Manifest != nil {
-			m := *capacity.Runs[i].Manifest
-			m.Bytes = 1 << 39
-			capacity.Runs[i].Manifest = &m
-		}
-	}
-	blocked := uuid.New()
-	if err = e.runScheduled(ctx, &capacity, time.Now().UTC(), uuid.New(), snapshot, blocked); err == nil {
-		t.Fatal("insufficient capacity accepted")
-	}
-	if _, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(blocked), client.VolumeInspectOptions{}); err == nil {
-		t.Fatal("capacity failure created a target")
 	}
 	// Invalid keys and unavailable destinations cannot publish usable records.
 	s, err = e.Journal.schedule(policy.ID)

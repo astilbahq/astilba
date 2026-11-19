@@ -149,9 +149,37 @@ func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid
 		if e := q.SetWorkspaceSettings(r.Context(), db.SetWorkspaceSettingsParams{ID: id, Name: name, RequireMfa: b.RequireMfa}); e != nil {
 			return nil, e
 		}
+		// The two-factor requirement stops or resumes what members without it approved, so the
+		// audit history names a change to it on its own, in either direction.
+		if b.RequireMfa != ws.RequireMFA {
+			action := "workspace.require_mfa"
+			if !b.RequireMfa {
+				action = "workspace.stop_requiring_mfa"
+			}
+			if e := store.Audit(r.Context(), q, *principal(r.Context()), id, action, id); e != nil {
+				return nil, e
+			}
+		}
 		ws.Name = name
 		ws.RequireMFA = b.RequireMfa
 		return workspace(ws), store.Audit(r.Context(), q, *principal(r.Context()), id, "workspace.settings", id)
+	})
+}
+
+// GetMfaRequirement shows owners the standing approvals that act only while the workspace doesn't
+// require two-factor authentication, and whose they are, before they turn the requirement on or
+// off. Owners already see which members have set it up.
+func (s *Server) GetMfaRequirement(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
+	s.scope(w, r, id, store.WorkspaceAccess{Owner: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
+		rows, err := q.MFARequirementApprovals(r.Context(), id)
+		out := api.MfaRequirement{Approvals: []api.MfaRequirementApproval{}}
+		for _, v := range rows {
+			out.Approvals = append(out.Approvals, api.MfaRequirementApproval{
+				Kind: api.MfaRequirementApprovalKind(v.Kind), ApproverId: v.ApproverID, ApproverName: v.ApproverName, ApproverEmail: openapi_types.Email(v.ApproverEmail),
+				ProjectId: v.ProjectID, ProjectName: optional(v.ProjectName), EnvironmentId: v.EnvironmentID, EnvironmentName: optional(v.EnvironmentName), Subject: v.Subject,
+			})
+		}
+		return out, err
 	})
 }
 func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request, id uuid.UUID) {

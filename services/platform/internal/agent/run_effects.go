@@ -160,6 +160,9 @@ func (e *Engine) ResolveScheduledRun(ctx context.Context, policy, run uuid.UUID)
 		return err
 	}
 	s, err := e.Journal.schedule(policy)
+	if errors.Is(err, os.ErrNotExist) {
+		return e.resolveRecoveryRun(ctx, policy, run)
+	}
 	if err != nil {
 		return err
 	}
@@ -195,16 +198,51 @@ func (e *Engine) ResolveScheduledRun(ctx context.Context, policy, run uuid.UUID)
 				if err := e.Journal.putSchedule(tx, s); err != nil {
 					return err
 				}
-				return e.Journal.failRunCommands(tx, policy, run, "Local operator resolved the command's interrupted run after inspection; no success was inferred.")
+				_, err := e.Journal.failRunCommands(tx, policy, run, resolvedRunNote)
+				return err
 			})
 		}
 	}
-	return errors.New("run is not awaiting local inspection")
+	return e.settleRunCommands(policy, run)
+}
+
+const resolvedRunNote = "Local operator resolved the command's interrupted run after inspection; no success was inferred."
+
+// resolveRecoveryRun settles a restore of another server's snapshot that was left to inspect. It
+// has no schedule here: its command's record is all this host holds of it.
+func (e *Engine) resolveRecoveryRun(ctx context.Context, policy, run uuid.UUID) error {
+	cfg, err := e.Journal.Config()
+	if err != nil {
+		return err
+	}
+	list, err := e.Docker.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: runContainers(cfg.ServerID, run)})
+	if err != nil {
+		return err
+	}
+	for _, c := range list.Items {
+		if c.State == "running" {
+			return errors.New("run still has an active container; inspect and stop it before resolving")
+		}
+	}
+	return e.settleRunCommands(policy, run)
+}
+
+// settleRunCommands fails the commands of a run with no schedule entry awaiting inspection, once
+// nothing the run started is still running.
+func (e *Engine) settleRunCommands(policy, run uuid.UUID) error {
+	return e.Journal.db.Update(func(tx *bolt.Tx) error {
+		settled, err := e.Journal.failRunCommands(tx, policy, run, resolvedRunNote)
+		if err == nil && settled == 0 {
+			err = errors.New("run is not awaiting local inspection")
+		}
+		return err
+	})
 }
 
 // failRunCommands records as failed each backup or restore command still awaiting inspection for
-// a run now known to have failed, so its unsettled record no longer holds the host's schedules.
-func (j *Journal) failRunCommands(tx *bolt.Tx, policy, run uuid.UUID, note string) error {
+// a run now known to have failed, so its unsettled record no longer holds the host's schedules. It
+// returns how many it settled.
+func (j *Journal) failRunCommands(tx *bolt.Tx, policy, run uuid.UUID, note string) (int, error) {
 	var settle []Record
 	if err := tx.Bucket([]byte("operations")).ForEach(func(k, _ []byte) error {
 		if j.isCrossHostSentinel(tx, string(k)) || j.isDistributedFence(tx, string(k)) || j.isRecoverySentinel(tx, string(k)) {
@@ -214,25 +252,33 @@ func (j *Journal) failRunCommands(tx *bolt.Tx, policy, run uuid.UUID, note strin
 		if err := j.get(tx, "operations", string(k), &r); err != nil {
 			return err
 		}
-		var b backup.Command
-		if r.Report.State != "needs_attention" || r.Command.Kind != "backup" && r.Command.Kind != "schedule" || r.Command.Backup == nil || json.Unmarshal(*r.Command.Backup, &b) != nil {
+		if r.Report.State != "needs_attention" || r.Command.Backup == nil {
 			return nil
 		}
-		if (b.Action == "backup" || b.Action == "restore") && b.RunID == run && b.Installation.Policy.ID == policy {
-			settle = append(settle, r)
+		switch r.Command.Kind {
+		case "backup", "schedule":
+			var b backup.Command
+			if json.Unmarshal(*r.Command.Backup, &b) == nil && (b.Action == "backup" || b.Action == "restore") && b.RunID == run && b.Installation.Policy.ID == policy {
+				settle = append(settle, r)
+			}
+		case "restore":
+			var v backup.Recovery
+			if json.Unmarshal(*r.Command.Backup, &v) == nil && v.RunID == run && v.Installation.Policy.ID == policy {
+				settle = append(settle, r)
+			}
 		}
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	for _, r := range settle {
 		settleReport(&r, "failed", note)
 		r.Report.Sequence++
 		if err := j.put(tx, "operations", r.Command.Id.String(), r); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	return len(settle), nil
 }
 
 // runContainers selects the containers a run made on this server, which carry its run label.

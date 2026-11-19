@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -80,9 +82,9 @@ func credential(table string, row Row) (string, secretbroker.Item, error) {
 	return field, secretbroker.Item{Kind: kind, ID: id}, nil
 }
 
-// transformCredential opens a row's value for an export, or seals it for an import, through
-// keys for the workspace being exported or created.
-func transformCredential(keys *secretbroker.Session, table string, row Row, export bool) error {
+// transformCredential replaces a row's value with what transform makes of it: the value opened for
+// an export, or sealed for an import, by keys for the workspace being exported or created.
+func transformCredential(table string, row Row, transform func(secretbroker.Item, []byte) ([]byte, error)) error {
 	field, item, e := credential(table, row)
 	if e != nil || field == "" {
 		return e
@@ -95,16 +97,14 @@ func transformCredential(keys *secretbroker.Session, table string, row Row, expo
 	if e != nil {
 		return ErrArchive
 	}
-	if export {
-		value, e = keys.Open(item, value)
-	} else {
-		value, e = keys.Seal(item, value)
-	}
-	if secretbroker.SessionFailure(e) {
-		return e
+	value, e = transform(item, value)
+	// A value that does not open, or would not open once sealed, is the archive's fault; anything
+	// else, such as an ended session or keys not made yet, is not.
+	if errors.Is(e, cryptobox.ErrKey) || errors.Is(e, secretbroker.ErrTooLarge) {
+		return ErrArchive
 	}
 	if e != nil {
-		return ErrArchive
+		return e
 	}
 	setValue(row, field, `\x`+hex.EncodeToString(value))
 	clear(value)
@@ -154,7 +154,7 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 				if err := omitExportLogs(table.Name, row); err != nil {
 					return err
 				}
-				if err := transformCredential(keys, table.Name, row, true); err != nil {
+				if err := transformCredential(table.Name, row, keys.Open); err != nil {
 					return err
 				}
 			}

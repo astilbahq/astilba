@@ -244,7 +244,7 @@ func (w *previewWorker) work(ctx context.Context, git *gitAnswers, copyKeys *pas
 			if err = s.cancelPreviewEnvironment(ctx, tx, ws, record.View.EnvironmentId); err != nil {
 				return err
 			}
-			_, err = tx.Exec(ctx, "UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,note=CASE WHEN state='deleted' THEN note ELSE 'Preview policy needs owner approval.' END,next_check_at=now()+interval '5 minutes' WHERE id=$1", record.View.Id)
+			_, err = tx.Exec(ctx, "UPDATE preview_requests SET state=CASE WHEN state='deleted' THEN state ELSE 'blocked' END,note=CASE WHEN state='deleted' THEN note ELSE 'Preview policy needs owner approval. An owner''s approval ends when they leave, stop being an owner or change their password or two-factor settings, and pauses while the workspace requires two-factor authentication they haven''t set up.' END,next_check_at=now()+interval '5 minutes' WHERE id=$1", record.View.Id)
 			if err != nil {
 				return err
 			}

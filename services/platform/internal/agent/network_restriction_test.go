@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"strings"
 	"testing"
@@ -17,11 +18,11 @@ func TestRestrictiveNetworkRecordsFitJournalAndRecoveryTransport(t *testing.T) {
 	j, plan := testVisualJournal(t)
 	host := hostnetwork.Host{Dir: j.dir}
 	member, peerMember := uuid.New(), uuid.New()
-	identity, err := host.Identity(member)
+	identity, err := host.Identity(context.Background(), member)
 	if err != nil {
 		t.Fatal(err)
 	}
-	peerIdentity, err := host.Identity(peerMember)
+	peerIdentity, err := host.Identity(context.Background(), peerMember)
 	if err != nil {
 		t.Fatal(err)
 	}

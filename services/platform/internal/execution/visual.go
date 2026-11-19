@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -139,6 +140,16 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if err != nil {
 			return err
 		}
+		allowlistReview, err := stagedAllowlists(ctx, db.New(tx), ws, env, in.ServerId, v.Spec)
+		if err != nil {
+			return err
+		}
+		// A standing policy approves host changes, not an allowlist nobody could check. Previews
+		// hold no stagings today, as preview environments and their templates can't be staged
+		// into; this keeps a preview from deploying one unchecked if that changes.
+		if len(allowlistReview) > 0 && hostApproved {
+			return &domain.Error{Code: "invalid_input", Message: "A staged route's client allowlist could not be checked against the ranges this server's containers send traffic from, so the plan needs an owner's review, which a standing policy does not give.", Fields: []string{"routes.allowCidrs"}}
+		}
 		if err = requireServiceOutputs(ctx, tx, ws, in.ServerId, v.Spec); err != nil {
 			return err
 		}
@@ -218,6 +229,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if in.AcceptDrift {
 			plan.Effects = append(plan.Effects, "Accept reported drift: changes made outside Astilba to its managed resources are replaced by this plan instead of stopping it.")
 		}
+		plan.Effects = append(plan.Effects, allowlistReview...)
 		if v.Purpose == "preview" {
 			plan.Recipe = deployment.PreviewRecipe
 			plan.Preview, err = s.previewPlanIdentity(ctx, tx, ws, env)
@@ -230,7 +242,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		}
 
 		if v.Spec.Placement != nil {
-			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement)
+			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement, allowlistReview)
 			return err
 		}
 		if replacement != nil {
@@ -291,7 +303,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if len(raw) > 100000 {
 			return domain.Invalid("specification")
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate,host_review) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, plan.ID, ws, in.ServerId, env, plan.UnitID, v.Revision, op.Id, raw, review && !hostApproved)
+		_, err = tx.Exec(ctx, `INSERT INTO visual_requests(id,workspace_id,server_id,environment_id,unit_id,revision_id,operation_id,candidate,host_review) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, plan.ID, ws, in.ServerId, env, plan.UnitID, v.Revision, op.Id, raw, review && !hostApproved || len(allowlistReview) > 0)
 		out = deployment.Status{ID: plan.ID, OperationID: op.Id, State: string(op.State)}
 		return err
 	}()
@@ -364,7 +376,7 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 			if existing == nil || *existing != id {
 				return domain.Conflict
 			}
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, key))
+			out, err = operationByRequestKey(ctx, tx, ws, key)
 			return err
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -522,57 +534,65 @@ func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid,
 		if err != nil {
 			return err
 		}
-		if v.Server == nil {
-			return domain.Invalid("server")
+		out, err = s.observeVisual(ctx, tx, ws, env, v, volume)
+		return err
+	})
+	return operationFor(p, out), err
+}
+
+// observeVisual asks v's server to report its runtime, or with volume, to delete that volume of
+// the environment's, which no plan or draft may mount.
+func (s *Service) observeVisual(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, v visualEnvironment, volume *uuid.UUID) (api.Operation, error) {
+	if v.Server == nil {
+		return api.Operation{}, domain.Invalid("server")
+	}
+	if _, err := s.visualServer(ctx, tx, ws, *v.Server); err != nil {
+		return api.Operation{}, err
+	}
+	var id uuid.UUID
+	err := tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, "SELECT visual_plan_id FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND visual_plan_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", ws, env).Scan(&id)
+	}
+	if err != nil {
+		return api.Operation{}, err
+	}
+	plan, err := readPlan(ctx, tx, ws, env, id)
+	if err != nil {
+		return api.Operation{}, err
+	}
+	if plan.Distributed != nil {
+		if volume == nil {
+			return s.insertCoordination(ctx, tx, ws, uuid.New(), "observe", plan)
 		}
-		if _, err = s.visualServer(ctx, tx, ws, *v.Server); err != nil {
-			return err
+		plan = plan.PrimaryPlan()
+	}
+	action := "observe"
+	if volume != nil {
+		action = "delete-volume"
+		var protected bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE workspace_id=$1 AND environment_id=$2 AND (plan->>'targetVolumeId'=$3 OR EXISTS(SELECT 1 FROM jsonb_array_elements(plan->'source'->'specification'->'applications') a, jsonb_array_elements(a->'mounts') m WHERE a->>'id'=plan->>'resourceId' AND m->>'volumeId'=$3)) AND (status->>'phase' NOT IN ('planned','rejected','complete','returned') OR (status->>'keepUntil')::timestamptz>now()))`, ws, env, volume.String()).Scan(&protected); err != nil {
+			return api.Operation{}, err
 		}
-		var id uuid.UUID
-		err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = tx.QueryRow(ctx, "SELECT visual_plan_id FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND visual_plan_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", ws, env).Scan(&id)
+		if protected {
+			return api.Operation{}, domain.VolumeInUse
 		}
-		if err != nil {
-			return err
+		var ok bool
+		if err := tx.QueryRow(ctx, "SELECT true FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3 AND id=$4 AND NOT deleted", ws, env, v.Unit, *volume).Scan(&ok); err != nil {
+			return api.Operation{}, err
 		}
-		plan, err := readPlan(ctx, tx, ws, env, id)
-		if err != nil {
-			return err
-		}
-		if plan.Distributed != nil {
-			if volume == nil {
-				out, err = s.insertCoordination(ctx, tx, ws, uuid.New(), "observe", plan)
-				return err
-			}
-			plan = plan.PrimaryPlan()
-		}
-		action := "observe"
-		if volume != nil {
-			action = "delete-volume"
-			var protected bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE workspace_id=$1 AND environment_id=$2 AND (plan->>'targetVolumeId'=$3 OR EXISTS(SELECT 1 FROM jsonb_array_elements(plan->'source'->'specification'->'applications') a, jsonb_array_elements(a->'mounts') m WHERE a->>'id'=plan->>'resourceId' AND m->>'volumeId'=$3)) AND (status->>'phase' NOT IN ('planned','rejected','complete','returned') OR (status->>'keepUntil')::timestamptz>now()))`, ws, env, volume.String()).Scan(&protected); err != nil {
-				return err
-			}
-			if protected {
-				return domain.Conflict
-			}
-			var ok bool
-			if err := tx.QueryRow(ctx, "SELECT true FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3 AND id=$4 AND NOT deleted", ws, env, v.Unit, *volume).Scan(&ok); err != nil {
-				return err
-			}
-			for _, a := range v.Spec.Applications {
+		// Neither the draft nor the plan the server runs may mount it.
+		for _, spec := range []domain.Specification{v.Spec, plan.Specification} {
+			for _, a := range spec.Applications {
 				for _, m := range a.Mounts {
 					if m.VolumeID == *volume {
-						return domain.Conflict
+						return api.Operation{}, domain.VolumeInUse
 					}
 				}
 			}
 		}
-		out, err = s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: action, Plan: plan, VolumeID: volume})
-		return err
-	})
-	return operationFor(p, out), err
+	}
+	return s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: action, Plan: plan, VolumeID: volume})
 }
 
 func rawMessage(raw []byte) *jsontext.Value { v := jsontext.Value(raw); return &v }

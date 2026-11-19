@@ -25,10 +25,19 @@ var rawReaders = map[string]bool{
 	"internal/httpapi.Server.ReceiveGitPush":   true,
 }
 
+// Test fakes of a service outside Astilba, by package. Their handlers stand in for that service
+// and read what Astilba itself sends; testsupport keeps them to tests.
+var fakes = map[string]bool{
+	"internal/pipeline/pipelinetest": true,
+}
+
 func run(pass *analysis.Pass) (any, error) {
 	pkg := pass.Pkg.Path()
 	if i := strings.Index(pkg, "internal/"); i >= 0 {
 		pkg = pkg[i:]
+	}
+	if fakes[pkg] {
+		return nil, nil
 	}
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {

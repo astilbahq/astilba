@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, type TestInfo, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import {
   acknowledgeRelease,
@@ -7,6 +7,11 @@ import {
 } from "./fixtures/agent-releases";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
 import { api } from "./fixtures/ports";
+
+// Repeats of a journey (--repeat-each) share one database, so each names what it creates afresh.
+function named(info: TestInfo, name: string) {
+  return `${name} ${info.project.name}${info.repeatEachIndex ? ` ${info.repeatEachIndex + 1}` : ""}`;
+}
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -17,6 +22,7 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   page,
   browser,
 }, info) => {
+  const project = named(info, "Website");
   await page.emulateMedia({ colorScheme: "light" });
   await login(page);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
@@ -31,15 +37,11 @@ test("real API: create, conflict, secret, keyboard and reflow", async ({
   await expect(
     page.getByLabel("Project name", { exact: true }),
   ).toHaveAccessibleDescription("Enter a project name.");
-  await page
-    .getByLabel("Project name", { exact: true })
-    .fill(`Website ${info.project.name}`);
+  await page.getByLabel("Project name", { exact: true }).fill(project);
   await page
     .getByRole("button", { name: "Create project", exact: true })
     .click();
-  await page
-    .getByRole("link", { name: `Website ${info.project.name} Open project` })
-    .click();
+  await page.getByRole("link", { name: `${project} Open project` }).click();
   await page
     .getByRole("link", { name: "New environment", exact: true })
     .click();
@@ -271,7 +273,7 @@ test("server enrollment is explicit and accessible", async ({ page }, info) => {
   ).toBeVisible();
   await page
     .getByLabel("Server name", { exact: true })
-    .fill(`Runner ${info.project.name}`);
+    .fill(named(info, "Runner"));
   await page.getByLabel("Server role").selectOption("build");
   await page
     .getByLabel("I already prepared the verified agent using the manual guide")
@@ -287,9 +289,7 @@ test("server enrollment is explicit and accessible", async ({ page }, info) => {
   ).toBeVisible();
   await expect(page.getByLabel("Enrollment code")).toHaveValue(/.{43}/);
   await expect(
-    page
-      .getByRole("article")
-      .filter({ hasText: `Runner ${info.project.name}` }),
+    page.getByRole("article").filter({ hasText: named(info, "Runner") }),
   ).toContainText("Awaiting enrollment");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.getByRole("button", { name: "Hide enrollment code" }).click();
@@ -377,7 +377,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
     `/api/v1/workspaces/${ws}/servers`,
     {
       headers,
-      data: { name: `Visual host ${info.project.name}`, role: "deployment" },
+      data: { name: named(info, "Visual host"), role: "deployment" },
     },
   );
   expect(enrollmentResponse.status()).toBe(201);
@@ -421,12 +421,12 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })
-    .fill(`Visual ${info.project.name}`);
+    .fill(named(info, "Visual"));
   await page
     .getByRole("button", { name: "Create project", exact: true })
     .click();
   await page
-    .getByRole("link", { name: `Visual ${info.project.name} Open project` })
+    .getByRole("link", { name: `${named(info, "Visual")} Open project` })
     .click();
   await page
     .getByRole("link", { name: "New environment", exact: true })
@@ -565,7 +565,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   });
   await expect(apply).toBeDisabled();
   await page
-    .getByLabel("Approve the host changes listed in this plan", {
+    .getByLabel("Approve what this plan lists for review", {
       exact: true,
     })
     .check();

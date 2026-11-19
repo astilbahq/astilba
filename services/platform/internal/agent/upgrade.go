@@ -303,7 +303,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err = e.upgradeStep(c, s, "backup"); err != nil {
 		return err
 	}
-	stage, err := os.MkdirTemp(e.Journal.dir, "upgrade-stage-")
+	stage, err := e.Journal.scratchDir(scratchUpgradeStage)
 	if err != nil {
 		return err
 	}
@@ -348,7 +348,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	// Restore the uploaded copy, so the recovery point itself is demonstrated.
-	download, err := os.MkdirTemp(e.Journal.dir, "upgrade-download-")
+	download, err := e.Journal.scratchDir(scratchUpgradeDownload)
 	if err != nil {
 		return err
 	}
@@ -390,12 +390,15 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	m.Image = domain.PostgresImage
-	run := backup.Run{ID: p.ID, TargetID: p.TargetVolumeID}
-	if err = e.restorePostgres(ctx, policy, &run, dir, m, s.Command.Installation.Access.DatabasePassword); err != nil {
+	cleared, err := e.restorePostgres(ctx, policy, a, p.ID, p.TargetVolumeID, dir, m, s.Command.Installation.Access.DatabasePassword)
+	if errors.As(err, new(clusterRefusal)) {
+		return fmt.Errorf("the PostgreSQL 18 restore holds what a backup can't (%s), so the database may have been compromised. The old database is unchanged: return to it and inspect it", clusterReason(err))
+	}
+	if err != nil {
 		return err
 	}
 	e.point("upgrade-restore-effect")
-	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."
+	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."+clearedNote(cleared)
 	return nil
 }
 
@@ -405,6 +408,8 @@ func (e *Engine) removeUpgradeHelpers(ctx context.Context, s upgradeState) error
 		{"astilba-upgrade-preflight-" + p.ID.String(), "upgrade-preflight-v1", domain.Postgres17Image},
 		{"astilba-upgrade-tools-" + p.ID.String(), "upgrade-tools-v1", domain.PostgresImage},
 		{"astilba-restore-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
+		{"astilba-reset-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
+		{"astilba-verify-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
 		{"astilba-upgrade-source-" + p.ID.String(), "upgrade-source-v1", domain.Postgres17Image},
 	} {
 		v, err := e.Docker.ContainerInspect(ctx, entry.name, client.ContainerInspectOptions{})

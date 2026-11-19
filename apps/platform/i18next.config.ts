@@ -10,6 +10,7 @@ export default defineConfig({
       "src/features/projects/**/*.{ts,tsx}",
       "src/features/troubleshooting/**/*.{ts,tsx}",
       "src/features/cross-host-recovery.tsx",
+      "src/features/backup-recovery.tsx",
       "src/features/secret-access/**/*.{ts,tsx}",
       "src/features/environments/{environment-detail,environment-overview,environment-lifecycle,environment-secrets,retirement-status}.tsx",
       "src/components/{password-input,theme-menu,locale-menu}.tsx",

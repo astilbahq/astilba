@@ -104,7 +104,7 @@ func TestNativeCrossHostHelper(t *testing.T) {
 			err = x
 			reply.Status = &backup.Status{PolicyID: s.Installation.Policy.ID, Generation: s.Installation.Policy.Generation, Runs: s.Runs}
 		} else if request.Membership != nil {
-			identity, x := engine.networkHost().Identity(*request.Membership)
+			identity, x := engine.networkHost().Identity(context.Background(), *request.Membership)
 			err = x
 			reply.Identity = &identity
 		} else if request.Inventory {

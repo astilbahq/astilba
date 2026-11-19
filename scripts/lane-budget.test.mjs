@@ -3,9 +3,13 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   budgetSeconds,
+  familyMatcher,
   laneBudget,
+  nameSplit,
   packageTimes,
   recentJobs,
+  splitReport,
+  testTimes,
 } from "./lane-budget.mjs";
 
 const integration =
@@ -150,4 +154,196 @@ test("samples recent runs of the current lanes in which every lane finished", as
       [4, "a", "success", 42],
     ],
   );
+});
+
+test("gives each top-level test the package whose result follows it", () => {
+  const log = [
+    "2026-11-05T11:20:00.0000000Z === RUN   TestFirst",
+    "2026-11-05T11:20:00.0000000Z --- PASS: TestFirst (12.50s)",
+    "2026-11-05T11:20:00.0000000Z     --- PASS: TestFirst/part (12.00s)",
+    "2026-11-05T11:20:00.0000000Z --- FAIL: TestSecond (3.00s)",
+    "2026-11-05T11:20:00.0000000Z --- SKIP: TestThird (0.00s)",
+    `2026-11-05T11:20:00.0000000Z FAIL\t${integration}\t20.000s`,
+    "--- PASS: TestBuilt (1.00s)",
+    "2026-11-05T11:20:00.0000000Z FAIL\tgithub.com/example/broken [build failed]",
+    "--- PASS: TestUntimed (1.00s)",
+    "?   \tgithub.com/example/none\t[no test files]",
+    "--- PASS: TestPlain (2.00s)",
+    "ok  \tgithub.com/example/plain\t2.5s",
+    "--- PASS: TestNoPackage (9.00s)",
+  ].join("\n");
+  assert.deepEqual(testTimes(log), [
+    { package: integration, name: "TestFirst", seconds: 12.5 },
+    { package: integration, name: "TestSecond", seconds: 3 },
+    { package: integration, name: "TestThird", seconds: 0 },
+    { package: "github.com/example/plain", name: "TestPlain", seconds: 2 },
+  ]);
+});
+
+test("reads the family lanes from the Makefile the lanes run", () => {
+  const isFamily = familyMatcher(readFileSync("Makefile", "utf8"));
+  assert.equal(isFamily("TestCrossHostCoordinatedPlacement"), true);
+  assert.equal(isFamily("TestGitImportKeepsItsBranch"), true);
+  assert.equal(isFamily("TestCrossHostCoordinatedPlacementAgain"), false);
+  assert.equal(isFamily("TestOrdinary"), false);
+  assert.throws(
+    () => familyMatcher("APP_OTHER = ^TestA\n"),
+    /APP_FAMILY_TESTS/,
+  );
+});
+
+// One job of a name lane: its integration package took the tests' time plus overhead.
+const lane = (run, tests, overhead = 10, name = integration) => ({
+  run,
+  lane: "any",
+  conclusion: "success",
+  times: [
+    {
+      name,
+      seconds: overhead + tests.reduce((sum, [, seconds]) => sum + seconds, 0),
+    },
+  ],
+  tests: tests.map(([test, seconds]) => ({
+    package: name,
+    name: test,
+    seconds,
+  })),
+});
+const noFamily = () => false;
+
+test("proposes the fewest first-letter lanes within the target, from median times", () => {
+  const tests = [
+    ["TestAlpha", 100],
+    ["TestBeta", 100],
+    ["TestDelta", 150],
+    ["TestEcho", 150],
+    ["TestZulu", 50],
+  ];
+  const jobs = [1, 2, 3].map((run) =>
+    lane(
+      run,
+      // One slow run of each test does not move its median.
+      tests.map(([name, seconds]) => [name, run === 2 ? seconds * 3 : seconds]),
+    ),
+  );
+  const split = nameSplit(jobs, noFamily, 300);
+  assert.equal(split.fits, true);
+  assert.deepEqual(
+    split.lanes.map(({ lane, from, to, seconds }) => [lane, from, to, seconds]),
+    [
+      // C has no tests, so it joins the range after it.
+      ["a-to-b", "A", "B", 210],
+      ["c-to-d", "C", "D", 160],
+      ["e-to-z", "E", "Z", 210],
+    ],
+  );
+  assert.equal(split.lanes[0].package, integration);
+});
+
+test("a test a family lane selects, or a family lane's package, is not split", () => {
+  const jobs = [1, 2, 3].flatMap((run) => [
+    lane(run, [
+      ["TestAlpha", 100],
+      ["TestBeta", 100],
+    ]),
+    lane(run, [
+      ["TestGitOne", 500],
+      ["TestOther", 500],
+    ]),
+  ]);
+  const split = nameSplit(jobs, (name) => name.startsWith("TestGit"), 300);
+  assert.deepEqual(
+    split.lanes.map(({ lane, seconds }) => [lane, seconds]),
+    [["a-to-z", 210]],
+  );
+});
+
+test("a name outside A to Z goes with the last lane, as the last lane runs it", () => {
+  const jobs = [1, 2, 3].map((run) =>
+    lane(run, [
+      ["TestAlpha", 100],
+      ["TestZulu", 100],
+      ["Test_odd", 100],
+    ]),
+  );
+  assert.deepEqual(
+    nameSplit(jobs, noFamily, 220).lanes.map(({ lane, seconds }) => [
+      lane,
+      seconds,
+    ]),
+    [
+      ["a", 110],
+      ["b-to-z", 210],
+    ],
+  );
+});
+
+test("each package is projected alone, with its own overhead", () => {
+  const other = "github.com/example/other";
+  const jobs = [1, 2, 3].flatMap((run) => [
+    lane(run, [
+      ["TestAlpha", 100],
+      ["TestMike", 100],
+    ]),
+    lane(run, [["TestAlpha", 150]], 50, other),
+  ]);
+  const { lanes } = nameSplit(jobs, noFamily, 210);
+  assert.deepEqual(
+    lanes.map(({ lane, seconds, package: name }) => [lane, seconds, name]),
+    [["a-to-z", 210, integration]],
+  );
+  assert.deepEqual(
+    nameSplit(jobs, noFamily, 199).lanes.map(
+      ({ lane, seconds, package: name }) => [lane, seconds, name],
+    ),
+    [
+      ["a", 200, other],
+      ["b-to-z", 110, integration],
+    ],
+  );
+});
+
+test("when one letter alone is past the target, reports it and the fewest closest lanes", () => {
+  const jobs = [1, 2, 3].map((run) =>
+    lane(run, [
+      ["TestAlpha", 100],
+      ["TestBravo", 100],
+      ["TestCharlie", 100],
+      ["TestRecoveryOne", 300],
+      ["TestRecoveryTwo", 300],
+    ]),
+  );
+  const split = nameSplit(jobs, noFamily, 400);
+  assert.equal(split.fits, false);
+  // Four lanes would come no closer than two.
+  assert.deepEqual(
+    split.lanes.map(({ lane, seconds }) => [lane, seconds]),
+    [
+      ["a-to-c", 310],
+      ["d-to-z", 610],
+    ],
+  );
+  assert.match(
+    splitReport(split, 400),
+    /^No split by first letter keeps every package within 400s: the `TestR` tests alone are projected at 610s\./,
+  );
+});
+
+test("reports the split as a table, and nothing without test times", () => {
+  const split = nameSplit(
+    [1, 2, 3].map((run) => lane(run, [["TestAlpha", 100]])),
+    noFamily,
+  );
+  assert.equal(
+    splitReport(split, 400),
+    [
+      "The fewest name lanes that keep every package within 400s, from the same runs' test times:",
+      "",
+      "| Lane | Names | Slowest package | Projected seconds |",
+      "| --- | --- | --- | --- |",
+      `| a-to-z | \`TestA\` to \`TestZ\` | \`${integration}\` | 110 |`,
+    ].join("\n"),
+  );
+  assert.equal(nameSplit([], noFamily), undefined);
+  assert.equal(splitReport(undefined), "");
 });

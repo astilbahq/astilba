@@ -52,6 +52,19 @@ A record that points at an address nobody vouches for any more is a takeover ris
 
 A server fenced by management recovery keeps its records until an owner reviews it. It is still the workspace's server, and its records are only frozen.
 
+### When an approval is older than DNS
+
+Before publishing, Astilba checks the server's records in the zone against the approval. It stops, and the approval ends, when DNS shows the records changed after the addresses were approved:
+
+- **A record of ours holds another address and was changed more than two and a half minutes after the approval.** This happens when management is restored from a backup taken before the owner moved the server. Republishing the backup's addresses could point the server's names at an address someone else now holds. A change within the first two and a half minutes is a job's request landing late; Astilba puts the approved address back.
+- **A record Astilba last saw is gone, and Astilba didn't delete it.** This happens when management is restored from a backup taken before the owner removed an address or revoked the server, as long as Astilba had published the record when the backup was taken. A backup taken before a server's records were first published, or published again after its approval ended or its base changed, or while hosted management was inactive, holds no record to miss. Restoring it publishes its approved addresses unless DNS shows a newer record at the name. It also happens when someone deletes the record by hand in Cloudflare: Astilba asks for a new approval rather than recreating it.
+
+The server's DNS state becomes `review_required` with a note saying why, and Astilba publishes nothing for the server until an owner checks its addresses and approves them again. Within five minutes the zone comparison also removes the records changed after the approval, unless so many go at once that the removal is held for the operator. See [hosting](hosting.md#records-the-database-has-lost). A record still holding an approved address is left in place. Approving again starts afresh: Astilba then publishes the new approval's addresses, whether or not the records it last saw are still there.
+
+The same check runs before a hosted workspace's records are removed because its management is inactive, since they are published again when management resumes.
+
+The database can also lose track of records it made: a restore from an older backup forgets everything after it, and a crash or a request that lands late can leave a record behind. Every five minutes, and at startup, management lists the zone's records carrying this installation's ownership comment and removes those nothing in the database backs. See [hosting](hosting.md#records-the-database-has-lost).
+
 Before Astilba asks the provider to create anything, it records the name in the database. Removal lists that exact name and deletes only A/AAAA records carrying this installation's and server's ownership comment. Records anyone else created at the name, including another installation's, are left alone. Each deletion is written to an audit table before it is sent and confirmed once the provider lists the record as gone. A failed or interrupted removal keeps its database row, and is retried within about a minute until it succeeds, including after a restart.
 
 With manual DNS, Astilba creates nothing and so removes nothing: delete the server's A/AAAA records yourself when you revoke it.

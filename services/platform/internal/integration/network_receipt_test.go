@@ -26,7 +26,7 @@ func fixtureNetworkReceipt(host hostnetwork.Host, c api.ExecutionCommand, curren
 	if err := hostnetwork.Decode(*c.Network, &command); err != nil {
 		return hostnetwork.Receipt{}, err
 	}
-	identity, err := host.Identity(command.MembershipID)
+	identity, err := host.Identity(context.Background(), command.MembershipID)
 	if err != nil {
 		return hostnetwork.Receipt{}, err
 	}
@@ -81,14 +81,14 @@ func TestManagedNetworkLostConfigureReceiptDoesNotBlockRemoval(t *testing.T) {
 	}
 	host := hostnetwork.Host{Dir: t.TempDir()}
 	member := uuid.New()
-	own, err := host.Identity(member)
+	own, err := host.Identity(context.Background(), member)
 	if err != nil {
 		t.Fatal(err)
 	}
 	peers := []hostnetwork.Peer{}
 	for i := 0; i < 2; i++ {
 		membership := uuid.New()
-		key, err := host.Identity(membership)
+		key, err := host.Identity(context.Background(), membership)
 		if err != nil {
 			t.Fatal(err)
 		}

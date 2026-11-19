@@ -44,7 +44,8 @@ export function Secrets({
   const path = { workspaceId, projectId, environmentId: environment.id };
   const retirable = owner && environment.purpose !== "preview";
   const queries = useQueryClient();
-  const action = useAction();
+  // Saving a secret's value needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [message, setMessage] = useState("");
   const [retiring, setRetiring] = useState<{
     target: Retirement;

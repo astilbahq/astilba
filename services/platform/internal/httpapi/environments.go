@@ -457,7 +457,7 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 			}
 			name = v.Name
 		}
-		cipher, e := keys.Seal(item, []byte(value))
+		cipher, e := keys.Seal(ctx, q, item, []byte(value))
 		if e != nil {
 			return nil, e
 		}

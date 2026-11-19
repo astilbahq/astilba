@@ -26,7 +26,8 @@ export function ServerOnboarding({
   releases: Schema["AgentRelease"][];
   onEnrollment: (value: Schema["Enrollment"]) => void;
 }) {
-  const action = useAction();
+  // Adding a server issues its enrollment code, which needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [previewOnly, setPreviewOnly] = useState(false);
   const [role, setRole] = useState<Schema["ServerRole"]>("deployment");
   const [arch, setArch] = useState("amd64");
