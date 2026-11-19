@@ -730,6 +730,25 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Lis
 	return items, nil
 }
 
+const lockEnvironmentDraft = `-- name: LockEnvironmentDraft :one
+SELECT draft_revision_id FROM environments WHERE workspace_id = $1 AND id = $2 FOR NO KEY UPDATE
+`
+
+type LockEnvironmentDraftParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Takes the environment's row lock, as LockEnvironmentForUpdate does, and returns its draft as it
+// stands once the lock is held. A delete of one of the environment's volumes and a draft or plan
+// that uses one are decided under this lock: see store.LockVolumeDecisions.
+func (q *Queries) LockEnvironmentDraft(ctx context.Context, arg LockEnvironmentDraftParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockEnvironmentDraft, arg.WorkspaceID, arg.ID)
+	var draft_revision_id uuid.UUID
+	err := row.Scan(&draft_revision_id)
+	return draft_revision_id, err
+}
+
 const lockEnvironmentForUpdate = `-- name: LockEnvironmentForUpdate :one
 SELECT id FROM environments WHERE workspace_id = $1 AND id = $2 FOR NO KEY UPDATE
 `
@@ -914,4 +933,46 @@ func (q *Queries) VisualRequestHostReview(ctx context.Context, arg VisualRequest
 	var host_review bool
 	err := row.Scan(&host_review)
 	return host_review, err
+}
+
+const volumeDeletions = `-- name: VolumeDeletions :many
+SELECT v.id, v.deleted FROM managed_volumes v
+WHERE v.workspace_id = $1 AND v.environment_id = $2 AND v.id = ANY($3::uuid[])
+    AND (v.deleted OR EXISTS(SELECT 1 FROM execution_operations o
+        WHERE o.workspace_id = v.workspace_id AND o.environment_id = v.environment_id
+            AND o.state IN ('queued','dispatched','running','needs_attention')
+            AND o.command->'visual'->>'action' = 'delete-volume' AND o.command->'visual'->>'volumeId' = v.id::text))
+`
+
+type VolumeDeletionsParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Ids           []uuid.UUID `json:"ids"`
+}
+
+type VolumeDeletionsRow struct {
+	ID      uuid.UUID `json:"id"`
+	Deleted bool      `json:"deleted"`
+}
+
+// Those of the environment's volumes among ids that are deleted, or that a delete-volume operation
+// of the environment's that hasn't ended names. Read it under LockEnvironmentDraft's lock.
+func (q *Queries) VolumeDeletions(ctx context.Context, arg VolumeDeletionsParams) ([]VolumeDeletionsRow, error) {
+	rows, err := q.db.Query(ctx, volumeDeletions, arg.WorkspaceID, arg.EnvironmentID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []VolumeDeletionsRow{}
+	for rows.Next() {
+		var i VolumeDeletionsRow
+		if err := rows.Scan(&i.ID, &i.Deleted); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

@@ -260,9 +260,8 @@ func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatus
 }
 
 const backupRecovery = `-- name: BackupRecovery :one
-SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state,d.state AS discard_state
+SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state
 FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
-LEFT JOIN execution_operations d ON d.workspace_id = r.workspace_id AND d.id = r.discard_operation_id
 WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3 AND r.id = $4
 `
 
@@ -274,19 +273,19 @@ type BackupRecoveryParams struct {
 }
 
 type BackupRecoveryRow struct {
-	ServerID       uuid.UUID   `json:"server_id"`
-	PlanID         uuid.UUID   `json:"plan_id"`
-	Snapshot       string      `json:"snapshot"`
-	TargetVolumeID uuid.UUID   `json:"target_volume_id"`
-	Result         []byte      `json:"result"`
-	State          string      `json:"state"`
-	DiscardState   pgtype.Text `json:"discard_state"`
+	ServerID       uuid.UUID `json:"server_id"`
+	PlanID         uuid.UUID `json:"plan_id"`
+	Snapshot       string    `json:"snapshot"`
+	TargetVolumeID uuid.UUID `json:"target_volume_id"`
+	Result         []byte    `json:"result"`
+	State          string    `json:"state"`
 }
 
-// One restore of a policy's snapshot onto another server, with its operation's state and its latest
-// discard's. A cutover and a discard of its volume are decided one at a time under the workspace
-// write lock; locking this row too would deadlock a discard against the restore's own report, which
-// locks the server first. A restore's result is written once, when its operation ends.
+// One restore of a policy's snapshot onto another server, with its operation's state. A cutover and
+// a discard of its volume are decided one at a time under the environment's row lock, as any delete
+// of a volume and a draft that uses it are (store.LockVolumeDecisions); locking this row too would
+// deadlock a discard against the restore's own report, which locks the server first. A restore's
+// result is written once, when its operation ends.
 func (q *Queries) BackupRecovery(ctx context.Context, arg BackupRecoveryParams) (BackupRecoveryRow, error) {
 	row := q.db.QueryRow(ctx, backupRecovery,
 		arg.WorkspaceID,
@@ -302,7 +301,6 @@ func (q *Queries) BackupRecovery(ctx context.Context, arg BackupRecoveryParams) 
 		&i.TargetVolumeID,
 		&i.Result,
 		&i.State,
-		&i.DiscardState,
 	)
 	return i, err
 }

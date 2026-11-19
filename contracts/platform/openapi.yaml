@@ -8382,11 +8382,15 @@
           "type": "boolean"
         "deleted":
           "type": "boolean"
+        "deleting":
+          "type": "boolean"
+          "description": "A delete of the volume hasn't ended. Until it does, no draft or plan may use the volume. If the delete fails or is cancelled, the volume is kept."
       "required":
         - "id"
         - "name"
         - "inUse"
         - "deleted"
+        - "deleting"
     "ManagedVolumes":
       "type": "array"
       "items":

@@ -299,6 +299,9 @@ func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env,
 	if err := s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, parsed, nil); err != nil {
 		return uuid.Nil, err
 	}
+	if err := store.RefuseDeletedMounts(ctx, db.New(tx), ws, env, parsed); err != nil {
+		return uuid.Nil, err
+	}
 	id := uuid.New()
 	h := sha256.Sum256(canonical)
 	if _, err = store.InsertRevision(ctx, db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: actor, Specification: canonical, ContentHash: h[:]}); err != nil {

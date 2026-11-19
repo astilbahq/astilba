@@ -47,6 +47,9 @@ func (s *Store) SaveDraft(ctx context.Context, tx pgx.Tx, q *db.Queries, p Princ
 			return same, e
 		}
 	}
+	if e := RefuseDeletedMounts(ctx, q, ws, id, spec); e != nil {
+		return db.SpecificationRevision{}, e
+	}
 	newID := uuid.New()
 	h := sha256.Sum256(canonical)
 	rev, e := InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: newID, AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})

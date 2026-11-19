@@ -4152,6 +4152,8 @@ export interface components {
             name: string;
             inUse: boolean;
             deleted: boolean;
+            /** @description A delete of the volume hasn't ended. Until it does, no draft or plan may use the volume. If the delete fails or is cancelled, the volume is kept. */
+            deleting: boolean;
         };
         ManagedVolumes: components["schemas"]["ManagedVolume"][];
         ComposeFile: {
