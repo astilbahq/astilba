@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,8 +341,13 @@ func (c *Client) Run(ctx context.Context) error {
 				if sent[key] >= report.Sequence {
 					continue
 				}
-				// A controller from before restoreImage refuses a report that names it.
-				if !c.postgresReleases.Load() {
+				// A controller from before restoreImage refuses a report that names it. Only a
+				// controller that negotiates schedules, so a run naming one waits to hear which.
+				// The mark is read first, as advertisedReport explains.
+				if negotiated := c.negotiated.Load(); !c.postgresReleases.Load() {
+					if !negotiated && slices.ContainsFunc(report.Status.Runs, func(r api.BackupRun) bool { return r.RestoreImage != nil }) {
+						continue
+					}
 					for i := range report.Status.Runs {
 						report.Status.Runs[i].RestoreImage = nil
 					}
@@ -398,7 +404,11 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			for _, r := range pending {
 				// One rejected report must not silence a restriction admitted beside it.
-				if e = c.call(ctx, "POST", "/agent/v1/report", c.advertisedReport(r.Report), nil, authAgent); e != nil {
+				report, ready := c.advertisedReport(r.Report)
+				if !ready {
+					continue
+				}
+				if e = c.call(ctx, "POST", "/agent/v1/report", report, nil, authAgent); e != nil {
 					continue
 				}
 				if execution.Terminal(r.Report.State) {

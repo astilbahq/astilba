@@ -184,8 +184,8 @@ func TestRestoringALostServersSnapshotOnTheNewPrimary(t *testing.T) {
 	}
 }
 
-// A restore's report must name the snapshot and target it was issued for and carry a manifest the
-// policy admits; only a succeeded restore carries one.
+// A restore's report must name the snapshot and target it was issued for, carry a manifest the
+// policy admits and name no release Astilba never pinned; only a succeeded restore carries one.
 func TestRestoreReportsAreCheckedAgainstTheirCommand(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	l := g.lostFiles(t)
@@ -206,6 +206,9 @@ func TestRestoreReportsAreCheckedAgainstTheirCommand(t *testing.T) {
 		"another policy":    func(_ *api.AgentReport, x *backup.RecoveryResult) { x.Manifest.PolicyID = uuid.New() },
 		"an unbounded role": func(_ *api.AgentReport, x *backup.RecoveryResult) { x.Manifest.Roles = nil },
 		"a failed restore":  func(report *api.AgentReport, _ *backup.RecoveryResult) { report.State = "failed" },
+		"an unknown release": func(_ *api.AgentReport, x *backup.RecoveryResult) {
+			x.RestoreImage = "postgres:18.99-alpine3.23@sha256:" + strings.Repeat("9", 64)
+		},
 	} {
 		result := fixtureRecovery(r)
 		report := api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}}

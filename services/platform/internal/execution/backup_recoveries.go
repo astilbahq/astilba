@@ -513,7 +513,8 @@ func openRecoveryAccess(ctx context.Context, q *db.Queries, keys valueKeys, ws u
 }
 
 // recoveryReport takes a restore command's report. Only a succeeded restore carries its result,
-// which must be the snapshot and target it was issued for and a manifest the policy admits.
+// which must be the snapshot and target it was issued for, a manifest the policy admits and, if it
+// names one, a release Astilba pinned.
 func recoveryReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, r *api.AgentReport) error {
 	if c.Kind != api.ExecutionCommandKindRestore {
 		if r.Restore != nil {
@@ -529,7 +530,7 @@ func recoveryReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.Executio
 	}
 	var v backup.Recovery
 	var result backup.RecoveryResult
-	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil {
+	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil || unknownRestoreImage(result.RestoreImage) {
 		return domain.Invalid("restore")
 	}
 	raw, err := stablejson.Marshal(result)

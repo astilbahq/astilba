@@ -2,15 +2,18 @@ package agent
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 )
@@ -81,5 +84,37 @@ func TestStoppingDuringTheRebuildLeavesItToResume(t *testing.T) {
 	}
 	if record, _, _ := journal.postgresData(volume); record.Image != retired.Image {
 		t.Fatalf("a stopped rebuild advanced the record to %s", record.Image)
+	}
+}
+
+// A recovery result names the release its restore ran in only to a controller that reads it. Until
+// the agent has heard which, a report naming it waits, since an accepted report is not sent again.
+func TestRecoveryReportNamesItsReleaseOnlyWhereItIsRead(t *testing.T) {
+	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: strings.Repeat("a", 64), TargetID: uuid.New(), RestoreImage: domain.PostgresImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := api.BackupRecoveryResult(raw)
+	named := func(v api.AgentReport) string {
+		var result backup.RecoveryResult
+		if json.Unmarshal(*v.Restore, &result) != nil {
+			t.Fatal("the report's result no longer parses")
+		}
+		return result.RestoreImage
+	}
+	c := &Client{}
+	if _, ready := c.advertisedReport(api.AgentReport{Restore: &restore}); ready {
+		t.Fatal("a report naming its release went out before negotiation")
+	}
+	if _, ready := c.advertisedReport(api.AgentReport{State: "succeeded"}); !ready {
+		t.Fatal("a report without a restore waited for negotiation")
+	}
+	c.markNegotiated()
+	if v, ready := c.advertisedReport(api.AgentReport{Restore: &restore}); !ready || named(v) != "" {
+		t.Fatal("a controller from before PostgreSQL releases was sent the release")
+	}
+	c.postgresReleases.Store(true)
+	if v, ready := c.advertisedReport(api.AgentReport{Restore: &restore}); !ready || named(v) != domain.PostgresImage {
+		t.Fatal("a controller that reads the release was not sent it")
 	}
 }

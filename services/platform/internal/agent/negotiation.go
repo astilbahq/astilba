@@ -236,21 +236,29 @@ func (c *Client) heartbeat(ctx context.Context, credential string, status *api.A
 
 // advertisedReport leaves a restore's PostgreSQL release out of a report to a controller from
 // before PostgreSQL releases, whose result schema refuses it. That controller reads the archive's
-// own image as the one that restored, which is all its agents did.
-func (c *Client) advertisedReport(v api.AgentReport) api.AgentReport {
+// own image as the one that restored, which is all its agents did. Only a controller that
+// negotiates sends restores, so a report naming the release is not ready until it has answered:
+// an accepted report is not sent again.
+func (c *Client) advertisedReport(v api.AgentReport) (api.AgentReport, bool) {
+	// hearFeatures stores what management reads before marking negotiation, so reading the mark
+	// first means the release flag read next is the one that negotiation heard.
+	negotiated := c.negotiated.Load()
 	if c.postgresReleases.Load() || v.Restore == nil {
-		return v
+		return v, true
 	}
 	var result backup.RecoveryResult
 	if json.Unmarshal(*v.Restore, &result) != nil || result.RestoreImage == "" {
-		return v
+		return v, true
+	}
+	if !negotiated {
+		return v, false
 	}
 	result.RestoreImage = ""
 	raw, err := stablejson.Marshal(result)
 	if err != nil {
-		return v
+		return v, true
 	}
 	restore := api.BackupRecoveryResult(raw)
 	v.Restore = &restore
-	return v
+	return v, true
 }

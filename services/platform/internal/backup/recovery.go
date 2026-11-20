@@ -6,7 +6,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
 )
 
@@ -71,9 +70,6 @@ func ParseRecoveryResult(raw []byte, policy, environment uuid.UUID, snapshot str
 	var out RecoveryResult
 	if json.Unmarshal(raw, &out) != nil || out.Snapshot != snapshot || out.TargetID != target || out.Manifest.PolicyID != policy || out.Manifest.EnvironmentID != environment {
 		return out, errors.New("invalid restore result")
-	}
-	if _, known := domain.PostgresReleaseOf(out.RestoreImage); out.RestoreImage != "" && !known {
-		return out, errors.New("the restore names a PostgreSQL release Astilba does not know")
 	}
 	return out, out.Manifest.recipeBounded()
 }

@@ -11,10 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// unknownRestoreImage reports a run that names a restore release Astilba never pinned.
-func unknownRestoreImage(r backup.Run) bool {
-	_, ok := domain.PostgresReleaseOf(r.RestoreImage)
-	return r.RestoreImage != "" && !ok
+// unknownRestoreImage reports a restore that names a release Astilba never pinned, which no
+// cutover could open. A restore that names none ran in its archive's release.
+func unknownRestoreImage(image string) bool {
+	_, ok := domain.PostgresReleaseOf(image)
+	return image != "" && !ok
 }
 
 // restoredDatabaseOpens refuses a cutover whose restored data the draft's release cannot open,

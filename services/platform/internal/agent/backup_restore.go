@@ -288,13 +288,11 @@ func (e *Engine) restoreFiles(ctx context.Context, p backup.Policy, run, target 
 }
 func quoteIdentifier(v string) string { return `"` + strings.ReplaceAll(v, `"`, `""`) + `"` }
 
-// postgresRecipe is the policy's database application, if m's archive can be restored for it: made
-// with a PostgreSQL release Astilba has pinned, current or retired, and holding the database and
-// owner the deployment names. backup.RestoreRelease decides which release restores it.
+// postgresRecipe is the policy's database application, if m's archive holds the database and owner
+// the deployment names. backup.RestoreRelease decides whether, and in which release, it restores.
 func postgresRecipe(p backup.Policy, m backup.Manifest) (domain.Application, error) {
-	_, known := domain.PostgresReleaseOf(m.Image)
 	a, err := sourceApp(p)
-	if err != nil || a.Postgres == nil || !known || m.Database != a.Postgres.Database || m.Username != a.Postgres.Username {
+	if err != nil || a.Postgres == nil || m.Database != a.Postgres.Database || m.Username != a.Postgres.Username {
 		return domain.Application{}, errors.New("unsupported restore recipe")
 	}
 	return a, nil

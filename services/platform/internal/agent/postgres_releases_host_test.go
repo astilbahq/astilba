@@ -39,6 +39,11 @@ func TestNativePostgresReleases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A page of two makes every listing of the rebuild span pages, as a database with many
+	// indexes does.
+	page := reindexPage
+	reindexPage = 2
+	t.Cleanup(func() { reindexPage = page })
 	t.Run("backups_from_earlier_releases", func(t *testing.T) { nativePostgresMetadataRestore(t, e, base) })
 	for _, major := range []int{17, 18} {
 		t.Run(fmt.Sprintf("postgres%d_in_place_update", major), func(t *testing.T) {
@@ -173,8 +178,10 @@ RESET ROLE;`); err != nil {
 		t.Fatalf("the release that wrote the data was not recorded: %+v, %v", record, err)
 	}
 	// A transaction that holds the table makes the concurrent rebuild wait; the lock timeout ends
-	// the wait, the update stays, the record keeps the earlier release and the note says so.
-	holder, err := e.Docker.ExecCreate(ctx, updated, client.ExecCreateOptions{Cmd: []string{"psql", "-XAt", "-U", "app", "-d", "app", "-c", "BEGIN; LOCK TABLE records IN ROW EXCLUSIVE MODE; SELECT pg_sleep(20); COMMIT;"}})
+	// the wait, the update stays, the record keeps the earlier release and the note says so. It
+	// holds past the other database's rebuild and the 10-second lock timeout, but ends within the
+	// failed run's own cleanup, which waits for it in turn and so drops the leftover.
+	holder, err := e.Docker.ExecCreate(ctx, updated, client.ExecCreateOptions{Cmd: []string{"psql", "-XAt", "-U", "app", "-d", "app", "-c", "BEGIN; LOCK TABLE records IN ROW EXCLUSIVE MODE; SELECT pg_sleep(16); COMMIT;"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,6 +203,9 @@ RESET ROLE;`); err != nil {
 	}
 	if record, _, _ := e.Journal.postgresData(volume); record.Image != retired.Image {
 		t.Fatalf("an unfinished rebuild advanced the record to %s", record.Image)
+	}
+	if _, left := files(updated, a)["unbounded_ccnew"]; left {
+		t.Error("a failed rebuild kept the leftover it could drop")
 	}
 	for i := 0; i < 300 && locked(); i++ {
 		time.Sleep(100 * time.Millisecond)

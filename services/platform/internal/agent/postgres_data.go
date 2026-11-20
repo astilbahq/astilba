@@ -99,6 +99,10 @@ const (
 	reindexKind    = "postgres-reindex-v1"
 )
 
+// reindexPage is how many names one listing returns, well within its output limit. Tests lower it
+// to page through a few indexes.
+var reindexPage = 1000
+
 // reindexPostgres rebuilds, in each running managed database of the plan, the indexes the
 // releases between the one whose indexes its data holds and the one serving it say to rebuild.
 // Each index is rebuilt concurrently, so the database keeps serving. The update itself has
@@ -246,26 +250,52 @@ func (e *Engine) removeReindexHelper(ctx context.Context, name string, p deploym
 
 // runPostgresReindex runs each query in every database that accepts connections, after dropping
 // the leftovers of an interrupted run. A query returns index OIDs, each rebuilt with REINDEX INDEX
-// CONCURRENTLY in its own session, since it cannot run in a transaction. It returns the
+// CONCURRENTLY in its own session, since it cannot run in a transaction. A rebuild that fails drops
+// what it left, so a half-built index does not slow every write until the next run. It returns the
 // exclusion-constraint indexes the queries skip, named database.index.
 func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a domain.Application, queries []string) ([]string, error) {
-	// Names and statements travel hex-encoded, one per line, so one holding a newline stays one.
+	// lines lists a query's text values in pages, so no one listing outgrows its output limit
+	// however many indexes a database has. Values travel hex-encoded, one per line, so one holding a
+	// newline stays one, and the last value of a page comes back the same way. Paging is by value:
+	// a rebuilt index keeps its name but not its OID.
 	lines := func(database, query string) ([]string, error) {
-		out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
-		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		if err := e.containerExec(ctx, helper, out, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", database, "-c", "SELECT encode(convert_to(v, 'UTF8'), 'hex') FROM ("+query+") AS q(v)"); err != nil {
-			return nil, err
-		}
 		var values []string
-		for encoded := range strings.SplitSeq(strings.TrimSpace(out.b.String()), "\n") {
-			if v, err := hex.DecodeString(encoded); err == nil && len(v) > 0 {
-				values = append(values, string(v))
+		for {
+			after := ""
+			if len(values) > 0 {
+				after = " WHERE v > convert_from(decode('" + hex.EncodeToString([]byte(values[len(values)-1])) + "', 'hex'), 'UTF8') COLLATE \"C\""
+			}
+			out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
+			if err := e.containerExec(ctx, helper, out, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", database, "-c", "SELECT encode(convert_to(v, 'UTF8'), 'hex') FROM ("+query+") AS q(v)"+after+" ORDER BY v COLLATE \"C\" LIMIT "+strconv.Itoa(reindexPage)); err != nil {
+				return nil, err
+			}
+			page := 0
+			for encoded := range strings.SplitSeq(strings.TrimSpace(out.b.String()), "\n") {
+				if v, err := hex.DecodeString(encoded); err == nil && len(v) > 0 {
+					values = append(values, string(v))
+					page++
+				}
+			}
+			if page < reindexPage {
+				return values, nil
 			}
 		}
-		return values, nil
+	}
+	run := func(connection string, statements []string) error {
+		for _, statement := range statements {
+			if err := e.containerExec(ctx, helper, io.Discard, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-c", statement); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	leftovers := func(connection string) ([]string, error) {
+		// inline-sql: runs in a managed customer database through psql, not in the platform database
+		return lines(connection, "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM ("+domain.ReindexLeftovers+") AS i(oid)")
 	}
 	// inline-sql: runs in a managed customer database through psql, not in the platform database
-	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname")
+	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn AND NOT datistemplate")
 	if err != nil {
 		return nil, err
 	}
@@ -273,27 +303,30 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	for _, database := range databases {
 		// psql reads its -d value as a connection string when it holds '='; quote it as one.
 		connection := "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(database) + "'"
-		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		statements, err := lines(connection, "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM ("+domain.ReindexLeftovers+") AS i(oid) ORDER BY 1")
+		statements, err := leftovers(connection)
 		if err != nil {
 			return nil, err
 		}
 		for _, query := range queries {
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			rebuild, err := lines(connection, "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM ("+query+") AS i(oid) ORDER BY 1")
+			rebuild, err := lines(connection, "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM ("+query+") AS i(oid)")
 			if err != nil {
 				return nil, err
 			}
 			statements = append(statements, rebuild...)
 		}
-		for _, statement := range statements {
-			if err = e.containerExec(ctx, helper, io.Discard, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-c", statement); err != nil {
-				return nil, err
+		if err = run(connection, statements); err != nil {
+			// Best effort: a drop that fails as well, or a stopping agent, leaves it to the next run.
+			if ctx.Err() == nil {
+				if dropped, listed := leftovers(connection); listed == nil {
+					_ = run(connection, dropped)
+				}
 			}
+			return nil, err
 		}
 		for _, query := range queries {
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			skipped, err := lines(connection, "SELECT i.oid::regclass::text FROM ("+domain.ExclusionIndexes(query)+") AS i(oid) ORDER BY 1")
+			skipped, err := lines(connection, "SELECT i.oid::regclass::text FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
 			if err != nil {
 				return nil, err
 			}

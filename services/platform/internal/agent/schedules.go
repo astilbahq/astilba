@@ -457,6 +457,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 	if err != nil {
 		r.State = "failed"
 		job := s.Installation.Policy.Method == "container-job" && r.ExitCode != nil
+		var refused restoreRefusal
 		switch timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded); {
 		case ctx.Err() != nil && job:
 			r.Note = "Container job stopped because its command was cancelled or reached its time limit; its owned container was stopped and the exit result recorded."
@@ -468,6 +469,8 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 			r.Note = "Run exceeded its configured timeout. Inspect the outcome before retrying."
 		case errors.As(err, new(clusterRefusal)):
 			r.Note = "Fresh restore refused: the restored database holds what a backup can't (" + clusterReason(err) + "), so the database may have been compromised. Nothing uses its target volume. Inspect the database before relying on its backups."
+		case errors.As(err, &refused):
+			r.Note = "Restore refused: " + refused.Error() + "."
 		case errors.Is(err, errUnsupportedPostgresImage):
 			r.Note = "The database's PostgreSQL image is no longer one Astilba supports, so it was not dumped. Redeploy the database on a supported image, then refresh the policy."
 		default:
@@ -486,10 +489,6 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 				// has now finished.
 				r.State, r.Note, err = "succeeded", "Container job finished; exit result recorded.", nil
 			}
-		}
-		var refused restoreRefusal
-		if errors.As(err, &refused) {
-			r.Note = "Restore refused: " + refused.Error() + "."
 		}
 	}
 	compactManifest(&r)
