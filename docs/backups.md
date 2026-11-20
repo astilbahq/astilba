@@ -135,7 +135,7 @@ The native fixture exercises PostgreSQL records, schema, roles, grants, identity
 `make check-app` covers static checks and focused scheduling/retention tests. `make verify-app` runs the real API/PostgreSQL and Chromium/WebKit journeys. `make verify-agent-host` adds the native backup/restore and offline execution fixtures on both supported architectures in CI. Prepare only an owned disposable host; install the pinned restic tool and pull this additional fixture image:
 
 ```text
-dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
 ```
 
 Garage is a test-only S3 service. The fixture uses generated credentials, loopback exposure and a private test CA; it does not weaken production HTTPS validation. See [Garage's single-node setup](https://garagehq.deuxfleurs.fr/documentation/quick-start/).
