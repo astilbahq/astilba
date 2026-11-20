@@ -254,7 +254,7 @@ func loadExportCapsules(ctx context.Context, tx pgx.Tx, keys *secretbroker.Sessi
 // how a base is used once every one is staged.
 func addRecoveryCheckpoint(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws uuid.UUID, out *recoverySource, d deployment.RecoveryDescriptor, raw, envelope []byte, primary uuid.UUID) error {
 	decoded, err := keys.Open(secretbroker.Checkpoint(d), envelope)
-	if secretbroker.SessionFailure(err) {
+	if secretbroker.SessionFailure(err) || errors.Is(err, secretbroker.ErrKeyNotInBackup) {
 		return err
 	}
 	if err != nil {

@@ -36,7 +36,7 @@ jobs:
           fetch-depth: ${{ github.event_name != 'merge_group' && 2 || 0 }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.18.1
+          node-version: 24.22.3
       - id: plan
         # Pull requests and merge groups run their base's planner, so editing the planner
         # cannot select its own checks. A key the base planner does not know selects the suite.
@@ -69,7 +69,7 @@ jobs:
           cache-dependency-path: services/platform/go.sum
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.18.1
+          node-version: 24.22.3
       - uses: ./.github/actions/install-pnpm
       - run: pnpm install --frozen-lockfile
       - run: make verify-app-build
@@ -92,7 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [remaining, m-to-z, operations, crosshost, preview, network, revoked-host]
+        lane: [a-to-b, c-to-k, l-to-p, q-to-r, s-to-z, operations, crosshost, preview, network, revoked-host]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -109,15 +109,17 @@ jobs:
         uses: ./.github/actions/pull-images
         with:
           images: |
-            postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+            postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
             busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
             traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
-      - name: Pull the pinned Gitea image
-        # Only the operations lane runs the test against a real Gitea.
+      - name: Pull the pinned Gitea and OpenBao images
+        # Only the operations lane runs the tests against a real Gitea and a real OpenBao.
         if: matrix.lane == 'operations'
         uses: ./.github/actions/pull-images
         with:
-          images: gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d
+          images: |
+            gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d
+            openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f
       - run: make verify-app-go-${{ matrix.lane }}
         env:
           PLAT_APP_DOCKER_HOST: unix:///var/run/docker.sock

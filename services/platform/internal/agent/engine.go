@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
@@ -59,6 +60,13 @@ type Engine struct {
 	// networkRefusals is whether management reads a refusal's reason, which it advertises
 	// with Astilba-Agent-Network-Refusals v1. It is unknown until management first answers.
 	networkRefusals atomic.Int32
+	// keyStoreWait is when network commands may next try the key store, after they found it not
+	// working. Until then they leave it alone, rather than call it again every second. It keeps the
+	// monotonic clock reading, so a clock step early in boot doesn't stretch it.
+	keyStoreWait atomic.Pointer[time.Time]
+	// keyStoreLogged is when the agent last logged that the key store isn't working. It logs that at
+	// most once an hour.
+	keyStoreLogged atomic.Pointer[time.Time]
 	// hostChangeReviews is whether management reviews the host changes a plan resolution reports,
 	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
 	// first answers, using the refusal states.
@@ -110,7 +118,7 @@ func (e *Engine) finish(id uuid.UUID, state api.ExecutionState, note string) err
 }
 func settleReport(r *Record, state api.ExecutionState, note string) {
 	r.Report.State = state
-	r.Report.Note = note
+	r.Report.Note = reportNote(note)
 	if state == "succeeded" {
 		for i := range r.Report.Steps {
 			r.Report.Steps[i].State = "done"
@@ -278,8 +286,13 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.Kind == "network" {
 		return e.executeNetwork(ctx, c, r)
 	}
+	// Backups and restores run the journal's copy: values a retry asked for may have reached it
+	// since c was read.
 	if c.Kind == "backup" || c.Kind == "schedule" {
-		return e.executeBackup(ctx, c, r)
+		return e.executeBackup(ctx, r.Command, r)
+	}
+	if c.Kind == "restore" {
+		return e.executeRecovery(ctx, r.Command, r)
 	}
 	if c.Kind == "pipeline" {
 		return e.executePipeline(ctx, c, r)
@@ -442,4 +455,14 @@ func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, 
 		}
 	}()
 	return ctx, func() { close(done); cancel() }
+}
+
+// reportNote keeps a note within the 1024 characters a report may carry, which the controller
+// checks before reading it: a longer one would be refused on every retry.
+func reportNote(note string) string {
+	const limit = 1024
+	if utf8.RuneCountInString(note) <= limit {
+		return note
+	}
+	return string([]rune(note)[:limit-1]) + "…"
 }

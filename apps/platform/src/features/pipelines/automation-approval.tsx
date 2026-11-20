@@ -16,6 +16,8 @@ const pauseReasons = {
   approverRole: "The person who approved it no longer has the role it needs.",
   approverCredentials:
     "The person who approved it changed their password, two-factor settings or recovery codes. That pauses what they approved, in case someone else made the change. They, or someone else with the role it needs, can approve it again.",
+  approverMfa:
+    "This workspace requires two-factor authentication, which the person who approved it hasn’t set up. It resumes if the requirement is turned off. Setting it up changes their credentials, so they, or someone else with the role it needs, approve it again afterwards.",
 } satisfies Record<Exclude<Schema["PolicyApproval"], "current">, string>;
 
 export function pauseReason(approval: Schema["PolicyApproval"]) {

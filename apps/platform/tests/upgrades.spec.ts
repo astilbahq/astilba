@@ -14,6 +14,12 @@ for (const savedEdit of [false, true]) {
       `Upgrade ${info.project.name} ${savedEdit ? "edited" : "current"}`,
       17,
     );
+    const current = (major: number) => {
+      const release = f.releases.find((r) => r.current && r.major === major);
+      if (!release) throw new Error(`no current PostgreSQL ${major}`);
+      return release;
+    };
+    const target = current(18).image;
     const destination = await f.post(`${f.prefix}/backup-destinations`, {
       name: "Upgrade storage",
       kind: "filesystem",
@@ -156,8 +162,7 @@ for (const savedEdit of [false, true]) {
             id: f.pg,
             kind: "service",
             state: "healthy",
-            image:
-              "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e",
+            image: target,
             drift: false,
             note: "",
             logs: "",
@@ -197,7 +202,7 @@ for (const savedEdit of [false, true]) {
       await expect(comparison.getByRole("status")).toContainText(
         "was preserved",
       );
-      await expect(comparison.locator("pre")).toContainText("postgres:18.4");
+      await expect(comparison.locator("pre")).toContainText(target);
       await openEnvironmentSection(page, "Configuration");
       await expect(
         page.getByRole("textbox", { name: "Specification (JSON)" }),
@@ -205,9 +210,11 @@ for (const savedEdit of [false, true]) {
     } else {
       await openEnvironmentSection(page, "Configuration");
       await page.getByText("Advanced specification", { exact: true }).click();
-      await expect(
-        page.getByRole("textbox", { name: "Specification (JSON)" }),
-      ).toHaveValue(/postgres:18\.4/);
+      const specification = page.getByRole("textbox", {
+        name: "Specification (JSON)",
+      });
+      await expect(specification).toBeVisible();
+      expect(await specification.inputValue()).toContain(target);
       await openEnvironmentSection(page, "Configuration");
       await page.getByText("Add a service", { exact: true }).click();
       const add = page.getByRole("form", { name: "Add service" });
@@ -219,7 +226,7 @@ for (const savedEdit of [false, true]) {
         .selectOption("postgres");
       await add
         .getByLabel("PostgreSQL version for a new database")
-        .selectOption("17");
+        .selectOption(current(17).image);
       await add
         .getByLabel("Database password secret (PostgreSQL)")
         .selectOption(f.secret.id);
@@ -235,7 +242,7 @@ for (const savedEdit of [false, true]) {
       const created = stored.specification.applications.find(
         (a: { name: string }) => a.name === "New PostgreSQL 17",
       );
-      expect(created.source.image).toContain("postgres:17.10-");
+      expect(created.source.image).toBe(current(17).image);
       expect(created.mounts[0].target).toBe("/var/lib/postgresql/data");
     }
     const accessibility = await new AxeBuilder({ page })

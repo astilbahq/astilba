@@ -8,5 +8,5 @@ import (
 )
 
 func TestAnalyzer(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), txnetwork.Analyzer, "github.com/astilbahq/astilba/services/platform/internal/admit")
+	analysistest.Run(t, analysistest.TestData(), txnetwork.Analyzer, "github.com/astilbahq/astilba/services/platform/internal/admit", "github.com/astilbahq/astilba/services/platform/internal/providers")
 }

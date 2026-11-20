@@ -57,12 +57,15 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Railpack-Inputs", "v1")
 		w.Header().Set("Astilba-Agent-Safe-Releases", "v1")
 		w.Header().Set("Astilba-Agent-Service-Outputs", "v1")
+		w.Header().Set("Astilba-Agent-Postgres-Releases", "v1")
 		w.Header().Set("Astilba-Agent-Previews", "v1")
 		// v1 delivers the visual retire action for environment retirement.
 		w.Header().Set("Astilba-Agent-Retirement", "v1")
 		// v1 delivers the visual purge action, which deletes a retired environment's volumes.
 		w.Header().Set("Astilba-Agent-Purge", "v1")
 		w.Header().Set("Astilba-Agent-Schedules", "v1")
+		// v1 reads recoveryRestore, an agent that runs the restore command kind.
+		w.Header().Set("Astilba-Agent-Recovery-Restore", "v1")
 		w.Header().Set("Astilba-Agent-Replicas", "v1")
 		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 		w.Header().Set("Astilba-Agent-Maintenance-Continuation", "v1")

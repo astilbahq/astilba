@@ -64,98 +64,111 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 				return domain.Conflict
 			}
 		}
-		// The restored target is initialised by the archive's own PostgreSQL image, so the source the
-		// policy froze and the draft that will run on the target must both run that image.
 		source, err := backup.CutoverVolume(policy, run)
 		if err != nil {
-			return domain.Invalid("restore.compatibility")
-		}
-		var major pgtype.Text
-		if policy.Method == "postgres-logical" {
-			opens := false
-			for _, a := range v.Spec.Applications {
-				if a.ID == policy.ResourceID {
-					opens = backup.OpensRestoredPostgres(a, *run.Manifest) && a.Mounts[0].VolumeID == source
-				}
-			}
-			if !opens {
-				return domain.Invalid("restore.compatibility")
-			}
-			major.String = domain.PostgresMajor(run.Manifest.Image)
-			major.Valid = major.String != ""
-		}
-		q := db.New(tx)
-		recorded, err := q.ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: policy.Plan.UnitID, ID: run.TargetID, PostgresMajor: major})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Conflict
-		}
-		if err != nil {
-			return err
-		}
-		if recorded != major {
-			return domain.Invalid("restore.compatibility")
+			return restoreIncompatible(err)
 		}
 		var boundary *deployment.RestoreCutover
 		if policy.Plan.Local != nil {
 			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID}
 		}
-		if v.Spec.Compose != nil {
-			oldName := ""
-			for _, volume := range v.Spec.Volumes {
-				if volume.ID == source {
-					oldName = volume.Name
-				}
-			}
-			next := "restored-" + run.ID.String()
-			if oldName == "" || run.TargetID != composeproject.ResourceID(v.Unit, "volume", next) {
-				return domain.Conflict
-			}
-			bundle, err := composeproject.RenameVolume(ctx, *v.Spec.Compose, domain.VariableValues(v.Spec.Variables, nil), oldName, next)
-			if err != nil {
-				return domain.Invalid("compose.restoreVolume")
-			}
-			v.Spec.Compose = &bundle
-		} else {
-			found := false
-			for i := range v.Spec.Volumes {
-				if v.Spec.Volumes[i].ID == source {
-					v.Spec.Volumes[i].ID = run.TargetID
-					found = true
-				}
-			}
-			if !found {
-				return domain.Conflict
-			}
-			for i := range v.Spec.Applications {
-				for j := range v.Spec.Applications[i].Mounts {
-					if v.Spec.Applications[i].Mounts[j].VolumeID == source {
-						v.Spec.Applications[i].Mounts[j].VolumeID = run.TargetID
-					}
-				}
-			}
-		}
-
-		raw, _ = stablejson.Marshal(v.Spec)
-		_, canonical, err := domain.ParseSpec(raw)
-		if err != nil {
-			return err
-		}
-		h := sha256.Sum256(canonical)
-		out, err = store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})
-		if err != nil {
-			return err
-		}
-		if boundary != nil {
-			configuration, _ := stablejson.Marshal(boundary)
-			if err = q.InsertBackupCutover(ctx, db.InsertBackupCutoverParams{WorkspaceID: ws, EnvironmentID: env, RevisionID: out.ID, PolicyID: id, SourcePlanID: boundary.SourcePlanID, Configuration: configuration}); err != nil {
-				return err
-			}
-		}
-		_, err = q.AdvanceDraft(ctx, db.AdvanceDraftParams{WorkspaceID: ws, ID: env, DraftRevisionID: in.BaseRevisionId, DraftRevisionID_2: out.ID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Conflict
-		}
+		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, policy, run.ID, run.TargetID, source, run.RestoredImage(), boundary)
 		return err
 	})
+	return out, err
+}
+
+// writeRestoreDraft writes a draft from v's that switches target, holding a verified restore of
+// policy's resource from run, in for source, the volume it replaces, and records boundary with it
+// for a distributed deployment. A logical restore's data was written by the restored image. The
+// target becomes the environment's own volume for the unit the policy's plan names; a deleted or
+// another environment's target is refused.
+func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, env uuid.UUID, v visualEnvironment, policy backup.Policy, run, target, source uuid.UUID, restored string, boundary *deployment.RestoreCutover) (db.SpecificationRevision, error) {
+	// The release that restored the target wrote its data, so the draft that will run on the
+	// target, as the source the policy froze, must open what that release wrote.
+	var major pgtype.Text
+	if policy.Method == "postgres-logical" {
+		if err := restoredDatabaseOpens(v.Spec, policy, restored); err != nil {
+			return db.SpecificationRevision{}, err
+		}
+		if !mountsVolume(v.Spec, policy.ResourceID, source) {
+			return db.SpecificationRevision{}, domain.Invalid("restore.compatibility")
+		}
+		major.String = domain.PostgresMajor(restored)
+		major.Valid = major.String != ""
+	}
+	q := db.New(tx)
+	// The lock a new draft's volumes are checked under comes before the target's row.
+	if err := store.LockVolumeDecisions(ctx, q, ws, env); err != nil {
+		return db.SpecificationRevision{}, err
+	}
+	recorded, err := q.ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: policy.Plan.UnitID, ID: target, PostgresMajor: major})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.SpecificationRevision{}, domain.Conflict
+	}
+	if err != nil {
+		return db.SpecificationRevision{}, err
+	}
+	if recorded != major {
+		return db.SpecificationRevision{}, domain.Invalid("restore.compatibility")
+	}
+	if v.Spec.Compose != nil {
+		oldName := ""
+		for _, volume := range v.Spec.Volumes {
+			if volume.ID == source {
+				oldName = volume.Name
+			}
+		}
+		next := "restored-" + run.String()
+		if oldName == "" || target != composeproject.ResourceID(v.Unit, "volume", next) {
+			return db.SpecificationRevision{}, domain.Conflict
+		}
+		bundle, err := composeproject.RenameVolume(ctx, *v.Spec.Compose, domain.VariableValues(v.Spec.Variables, nil), oldName, next)
+		if err != nil {
+			return db.SpecificationRevision{}, domain.Invalid("compose.restoreVolume")
+		}
+		v.Spec.Compose = &bundle
+	} else {
+		found := false
+		for i := range v.Spec.Volumes {
+			if v.Spec.Volumes[i].ID == source {
+				v.Spec.Volumes[i].ID = target
+				found = true
+			}
+		}
+		if !found {
+			return db.SpecificationRevision{}, domain.Conflict
+		}
+		for i := range v.Spec.Applications {
+			for j := range v.Spec.Applications[i].Mounts {
+				if v.Spec.Applications[i].Mounts[j].VolumeID == source {
+					v.Spec.Applications[i].Mounts[j].VolumeID = target
+				}
+			}
+		}
+	}
+	raw, _ := stablejson.Marshal(v.Spec)
+	parsed, canonical, err := domain.ParseSpec(raw)
+	if err != nil {
+		return db.SpecificationRevision{}, err
+	}
+	if err = store.RefuseDeletedMounts(ctx, q, ws, env, parsed); err != nil {
+		return db.SpecificationRevision{}, err
+	}
+	h := sha256.Sum256(canonical)
+	out, err := store.InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: uuid.New(), AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})
+	if err != nil {
+		return out, err
+	}
+	if boundary != nil {
+		configuration, _ := stablejson.Marshal(boundary)
+		if err = q.InsertBackupCutover(ctx, db.InsertBackupCutoverParams{WorkspaceID: ws, EnvironmentID: env, RevisionID: out.ID, PolicyID: policy.ID, SourcePlanID: boundary.SourcePlanID, Configuration: configuration}); err != nil {
+			return out, err
+		}
+	}
+	_, err = q.AdvanceDraft(ctx, db.AdvanceDraftParams{WorkspaceID: ws, ID: env, DraftRevisionID: v.Revision, DraftRevisionID_2: out.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, domain.Conflict
+	}
 	return out, err
 }

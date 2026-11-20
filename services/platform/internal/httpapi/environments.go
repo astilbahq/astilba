@@ -27,9 +27,12 @@ func project(v db.Project) api.Project {
 func environment(v db.GetEnvironmentRow) api.Environment {
 	purpose := api.EnvironmentPurpose(v.Purpose)
 	withoutHost, purgedWithoutHost := v.RetiredWithoutHost, v.PurgedWithoutHost
+	// Stage 6 is every environment's values under its own key, which destroying the key on purge
+	// then reaches everywhere.
+	everyCopy := v.CustodyStage >= 6
 	return api.Environment{Purpose: &purpose, Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID},
 		State: api.EnvironmentState(v.State), RetiredAt: v.RetiredAt, RetiredBy: v.RetiredBy, RetirementOperationId: v.RetirementOperationID, RetiredWithoutHost: &withoutHost,
-		PurgedAt: v.PurgedAt, PurgedBy: v.PurgedBy, PurgeOperationId: v.PurgeOperationID, PurgedWithoutHost: &purgedWithoutHost}
+		PurgedAt: v.PurgedAt, PurgedBy: v.PurgedBy, PurgeOperationId: v.PurgeOperationID, PurgedWithoutHost: &purgedWithoutHost, PurgeReachesEveryCopy: &everyCopy}
 }
 func revision(v db.SpecificationRevision) api.Revision {
 	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: jsontext.Value(v.Specification)}
@@ -435,7 +438,7 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 		return
 	}
 	versionID := uuid.New()
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID, Environment: env}
 	access := store.WorkspaceAccess{Write: true, Recent: true}
 	keys, e := s.Store.BeginKeys(r.Context(), *principal(r.Context()), access, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: []secretbroker.Item{item}})
 	if e != nil {
@@ -457,7 +460,7 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 			}
 			name = v.Name
 		}
-		cipher, e := keys.Seal(item, []byte(value))
+		cipher, e := keys.Seal(ctx, q, item, []byte(value))
 		if e != nil {
 			return nil, e
 		}

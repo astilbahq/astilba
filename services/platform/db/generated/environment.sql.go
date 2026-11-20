@@ -165,7 +165,7 @@ func (q *Queries) EnvironmentRuntimePlan(ctx context.Context, arg EnvironmentRun
 }
 
 const getEnvironment = `-- name: GetEnvironment :one
-SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host, e.purged_at, e.purged_by, e.purge_operation_id, e.purged_without_host,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
+SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host, e.purged_at, e.purged_by, e.purge_operation_id, e.purged_without_host,d.id AS unit_id,d.runtime,d.server_id,(SELECT stage FROM custody_stage)::integer AS custody_stage FROM environments e JOIN deployment_units d
 ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3
 `
 
@@ -199,6 +199,7 @@ type GetEnvironmentRow struct {
 	UnitID                uuid.UUID  `json:"unit_id"`
 	Runtime               string     `json:"runtime"`
 	ServerID              *uuid.UUID `json:"server_id"`
+	CustodyStage          int32      `json:"custody_stage"`
 }
 
 func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) (GetEnvironmentRow, error) {
@@ -228,6 +229,7 @@ func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) 
 		&i.UnitID,
 		&i.Runtime,
 		&i.ServerID,
+		&i.CustodyStage,
 	)
 	return i, err
 }
@@ -728,6 +730,25 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Lis
 	return items, nil
 }
 
+const lockEnvironmentDraft = `-- name: LockEnvironmentDraft :one
+SELECT draft_revision_id FROM environments WHERE workspace_id = $1 AND id = $2 FOR NO KEY UPDATE
+`
+
+type LockEnvironmentDraftParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Takes the environment's row lock, as LockEnvironmentForUpdate does, and returns its draft as it
+// stands once the lock is held. A delete of one of the environment's volumes and a draft or plan
+// that uses one are decided under this lock: see store.LockVolumeDecisions.
+func (q *Queries) LockEnvironmentDraft(ctx context.Context, arg LockEnvironmentDraftParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockEnvironmentDraft, arg.WorkspaceID, arg.ID)
+	var draft_revision_id uuid.UUID
+	err := row.Scan(&draft_revision_id)
+	return draft_revision_id, err
+}
+
 const lockEnvironmentForUpdate = `-- name: LockEnvironmentForUpdate :one
 SELECT id FROM environments WHERE workspace_id = $1 AND id = $2 FOR NO KEY UPDATE
 `
@@ -834,9 +855,10 @@ func (q *Queries) SpecificationTextSize(ctx context.Context, specification []byt
 }
 
 const unmeasuredSecretVersions = `-- name: UnmeasuredSecretVersions :many
-SELECT workspace_id,id,encrypted_value FROM secret_versions
-WHERE (plaintext_bytes IS NULL OR json_bytes IS NULL) AND erased_at IS NULL AND (workspace_id,id) > ($1::uuid,$2::uuid)
-ORDER BY workspace_id,id LIMIT $3
+SELECT v.workspace_id,v.id,v.encrypted_value,s.environment_id FROM secret_versions v
+JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+WHERE (v.plaintext_bytes IS NULL OR v.json_bytes IS NULL) AND v.erased_at IS NULL AND (v.workspace_id,v.id) > ($1::uuid,$2::uuid)
+ORDER BY v.workspace_id,v.id LIMIT $3
 `
 
 type UnmeasuredSecretVersionsParams struct {
@@ -849,6 +871,7 @@ type UnmeasuredSecretVersionsRow struct {
 	WorkspaceID    uuid.UUID `json:"workspace_id"`
 	ID             uuid.UUID `json:"id"`
 	EncryptedValue []byte    `json:"encrypted_value"`
+	EnvironmentID  uuid.UUID `json:"environment_id"`
 }
 
 // unscoped: the job that measures values goes through every workspace's, a batch at a time.
@@ -861,7 +884,12 @@ func (q *Queries) UnmeasuredSecretVersions(ctx context.Context, arg UnmeasuredSe
 	items := []UnmeasuredSecretVersionsRow{}
 	for rows.Next() {
 		var i UnmeasuredSecretVersionsRow
-		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedValue); err != nil {
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.ID,
+			&i.EncryptedValue,
+			&i.EnvironmentID,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -905,4 +933,46 @@ func (q *Queries) VisualRequestHostReview(ctx context.Context, arg VisualRequest
 	var host_review bool
 	err := row.Scan(&host_review)
 	return host_review, err
+}
+
+const volumeDeletions = `-- name: VolumeDeletions :many
+SELECT v.id, v.deleted FROM managed_volumes v
+WHERE v.workspace_id = $1 AND v.environment_id = $2 AND v.id = ANY($3::uuid[])
+    AND (v.deleted OR EXISTS(SELECT 1 FROM execution_operations o
+        WHERE o.workspace_id = v.workspace_id AND o.environment_id = v.environment_id
+            AND o.state IN ('queued','dispatched','running','needs_attention')
+            AND o.command->'visual'->>'action' = 'delete-volume' AND o.command->'visual'->>'volumeId' = v.id::text))
+`
+
+type VolumeDeletionsParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Ids           []uuid.UUID `json:"ids"`
+}
+
+type VolumeDeletionsRow struct {
+	ID      uuid.UUID `json:"id"`
+	Deleted bool      `json:"deleted"`
+}
+
+// Those of the environment's volumes among ids that are deleted, or that a delete-volume operation
+// of the environment's that hasn't ended names. Read it under LockEnvironmentDraft's lock.
+func (q *Queries) VolumeDeletions(ctx context.Context, arg VolumeDeletionsParams) ([]VolumeDeletionsRow, error) {
+	rows, err := q.db.Query(ctx, volumeDeletions, arg.WorkspaceID, arg.EnvironmentID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []VolumeDeletionsRow{}
+	for rows.Next() {
+		var i VolumeDeletionsRow
+		if err := rows.Scan(&i.ID, &i.Deleted); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

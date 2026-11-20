@@ -169,6 +169,24 @@ type BackupPolicy struct {
 	Status               []byte    `json:"status"`
 	StatusSequence       int64     `json:"status_sequence"`
 	CoordinatedCheckedAt time.Time `json:"coordinated_checked_at"`
+	SnapshotReceipts     []byte    `json:"snapshot_receipts"`
+}
+
+type BackupRecovery struct {
+	ID                 uuid.UUID  `json:"id"`
+	WorkspaceID        uuid.UUID  `json:"workspace_id"`
+	EnvironmentID      uuid.UUID  `json:"environment_id"`
+	PolicyID           uuid.UUID  `json:"policy_id"`
+	OperationID        uuid.UUID  `json:"operation_id"`
+	SourceServerID     uuid.UUID  `json:"source_server_id"`
+	ServerID           uuid.UUID  `json:"server_id"`
+	PlanID             uuid.UUID  `json:"plan_id"`
+	Snapshot           string     `json:"snapshot"`
+	FirstReportedAt    time.Time  `json:"first_reported_at"`
+	TargetVolumeID     uuid.UUID  `json:"target_volume_id"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Result             []byte     `json:"result"`
+	DiscardOperationID *uuid.UUID `json:"discard_operation_id"`
 }
 
 type BuildArtifact struct {
@@ -310,10 +328,11 @@ type CustodyBackendsVersion struct {
 }
 
 type CustodyInstance struct {
-	InstanceID       uuid.UUID `json:"instance_id"`
-	TokenGenerations []int64   `json:"token_generations"`
-	StartedAt        time.Time `json:"started_at"`
-	SeenAt           time.Time `json:"seen_at"`
+	InstanceID       uuid.UUID   `json:"instance_id"`
+	TokenGenerations []int64     `json:"token_generations"`
+	StartedAt        time.Time   `json:"started_at"`
+	SeenAt           time.Time   `json:"seen_at"`
+	Stage            pgtype.Int4 `json:"stage"`
 }
 
 type CustodyStage struct {
@@ -331,6 +350,14 @@ type DeploymentUnit struct {
 	PrimaryUnit   bool       `json:"primary_unit"`
 }
 
+type DnsLatePublication struct {
+	ServerID   uuid.UUID `json:"server_id"`
+	Base       string    `json:"base"`
+	Zone       string    `json:"zone"`
+	Generation int64     `json:"generation"`
+	DueAt      time.Time `json:"due_at"`
+}
+
 type DnsPublication struct {
 	ServerID    uuid.UUID  `json:"server_id"`
 	WorkspaceID uuid.UUID  `json:"workspace_id"`
@@ -343,7 +370,7 @@ type DnsPublication struct {
 
 type DnsRecordRemoval struct {
 	ID          uuid.UUID  `json:"id"`
-	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	WorkspaceID *uuid.UUID `json:"workspace_id"`
 	ServerID    uuid.UUID  `json:"server_id"`
 	Name        string     `json:"name"`
 	Zone        string     `json:"zone"`
@@ -353,6 +380,31 @@ type DnsRecordRemoval struct {
 	Reason      string     `json:"reason"`
 	RequestedAt time.Time  `json:"requested_at"`
 	ConfirmedAt *time.Time `json:"confirmed_at"`
+	HoldID      *uuid.UUID `json:"hold_id"`
+}
+
+type DnsWithdrawalHold struct {
+	ID               uuid.UUID   `json:"id"`
+	Zone             string      `json:"zone"`
+	Records          int32       `json:"records"`
+	Marked           int32       `json:"marked"`
+	OpenedAt         time.Time   `json:"opened_at"`
+	SeenAt           time.Time   `json:"seen_at"`
+	ConfirmedAt      *time.Time  `json:"confirmed_at"`
+	ConfirmedBy      pgtype.Text `json:"confirmed_by"`
+	ConfirmationNote pgtype.Text `json:"confirmation_note"`
+	ClosedAt         *time.Time  `json:"closed_at"`
+	CloseReason      pgtype.Text `json:"close_reason"`
+}
+
+type DnsWithdrawalHoldRecord struct {
+	HoldID      uuid.UUID  `json:"hold_id"`
+	RecordID    string     `json:"record_id"`
+	ServerID    uuid.UUID  `json:"server_id"`
+	WorkspaceID *uuid.UUID `json:"workspace_id"`
+	Name        string     `json:"name"`
+	RecordType  string     `json:"record_type"`
+	Content     string     `json:"content"`
 }
 
 type EmailVerification struct {
@@ -382,6 +434,18 @@ type Environment struct {
 	PurgedBy              *uuid.UUID `json:"purged_by"`
 	PurgeOperationID      *uuid.UUID `json:"purge_operation_id"`
 	PurgedWithoutHost     bool       `json:"purged_without_host"`
+}
+
+type EnvironmentKey struct {
+	WorkspaceID         uuid.UUID  `json:"workspace_id"`
+	EnvironmentID       uuid.UUID  `json:"environment_id"`
+	Generation          int64      `json:"generation"`
+	State               string     `json:"state"`
+	WorkspaceGeneration int64      `json:"workspace_generation"`
+	Wrapped             []byte     `json:"wrapped"`
+	Kcv                 []byte     `json:"kcv"`
+	CreatedAt           time.Time  `json:"created_at"`
+	DestroyedAt         *time.Time `json:"destroyed_at"`
 }
 
 type EnvironmentLayout struct {
@@ -549,6 +613,7 @@ type HostedSubscription struct {
 	NotifiedUntil   *time.Time  `json:"notified_until"`
 	UpdatedAt       time.Time   `json:"updated_at"`
 	NoticeCheckedAt time.Time   `json:"notice_checked_at"`
+	ObservedTicket  int64       `json:"observed_ticket"`
 }
 
 type Installation struct {
@@ -954,6 +1019,13 @@ type Server struct {
 	IdentityHistoryUntil        *time.Time  `json:"identity_history_until"`
 	EnrollmentIssuerID          *uuid.UUID  `json:"enrollment_issuer_id"`
 	EnrollmentIssuerAuthVersion pgtype.Int8 `json:"enrollment_issuer_auth_version"`
+	RevokedAt                   *time.Time  `json:"revoked_at"`
+}
+
+type ServerDnsLease struct {
+	ServerID  uuid.UUID `json:"server_id"`
+	Holder    uuid.UUID `json:"holder"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type ServerDomain struct {
@@ -968,6 +1040,8 @@ type ServerDomain struct {
 	ObservedAt         *time.Time  `json:"observed_at"`
 	Note               string      `json:"note"`
 	Records            []byte      `json:"records"`
+	ApprovedAt         *time.Time  `json:"approved_at"`
+	ObservedZone       string      `json:"observed_zone"`
 }
 
 type ServerMetric struct {
@@ -985,18 +1059,20 @@ type Session struct {
 }
 
 type SourceSubmission struct {
-	ID            uuid.UUID  `json:"id"`
-	WorkspaceID   uuid.UUID  `json:"workspace_id"`
-	EnvironmentID uuid.UUID  `json:"environment_id"`
-	RevisionID    uuid.UUID  `json:"revision_id"`
-	RequestKey    uuid.UUID  `json:"request_key"`
-	ActorID       uuid.UUID  `json:"actor_id"`
-	Configuration []byte     `json:"configuration"`
-	State         string     `json:"state"`
-	Note          string     `json:"note"`
-	Result        []byte     `json:"result"`
-	CreatedAt     time.Time  `json:"created_at"`
-	FinishedAt    *time.Time `json:"finished_at"`
+	ID               uuid.UUID   `json:"id"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	EnvironmentID    uuid.UUID   `json:"environment_id"`
+	RevisionID       uuid.UUID   `json:"revision_id"`
+	RequestKey       uuid.UUID   `json:"request_key"`
+	ActorID          uuid.UUID   `json:"actor_id"`
+	Configuration    []byte      `json:"configuration"`
+	State            string      `json:"state"`
+	Note             string      `json:"note"`
+	Result           []byte      `json:"result"`
+	CreatedAt        time.Time   `json:"created_at"`
+	FinishedAt       *time.Time  `json:"finished_at"`
+	ActorAuthVersion pgtype.Int8 `json:"actor_auth_version"`
+	WithdrawnAt      *time.Time  `json:"withdrawn_at"`
 }
 
 type SpecificationRevision struct {

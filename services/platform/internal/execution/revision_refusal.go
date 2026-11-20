@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
@@ -51,8 +52,15 @@ func refusal(err error) string {
 		return "the configuration would be over the " + strconv.Itoa(domain.SpecificationLimit/1024) + " KiB limit."
 	case errors.As(err, &diagnostic):
 		return "the Compose files could not be changed automatically. Change them in the file editor."
+	case errors.As(err, &invalid) && slices.Contains(invalid.Fields, postgresReleasesField):
+		// The configuration is fine; the server's agent needs updating, and the message says how.
+		return invalid.Message
 	case errors.As(err, &invalid) && invalid.Code == "invalid_input":
 		return "the configuration would be invalid."
+	case errors.Is(err, domain.UsesVolumeBeingDeleted), errors.Is(err, domain.UsesDeletedVolume):
+		// A delete that hasn't ended may still fail and keep the volume, but the job isn't held
+		// until it ends.
+		return "the configuration would mount a volume that is deleted or still being deleted."
 	}
 	return ""
 }

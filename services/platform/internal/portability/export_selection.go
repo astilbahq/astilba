@@ -16,6 +16,8 @@ import (
 //     newest 100 operations;
 //   - per environment, the 20 releases, 50 revisions, 100 pipeline runs and 100 submissions the app lists;
 //   - per preview template, the 100 preview requests the app lists;
+//   - per backup policy, the 100 restores onto another server the app lists, and the restore of
+//     each carried operation;
 //   - the newest 100 audit events and build artifacts;
 //   - every version of each carried secret, as the app lists them;
 //   - the build artifacts those configurations use (archivePinnedArtifacts);
@@ -81,6 +83,7 @@ const exportSeeds = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,id F
 	UNION ALL SELECT 'revision',x.id FROM (SELECT s.id,row_number() OVER (PARTITION BY s.environment_id ORDER BY s.created_at DESC,s.id DESC) n FROM specification_revisions s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1) x WHERE x.n<=50
 	UNION ALL SELECT 'preview',r.id FROM preview_requests r WHERE r.workspace_id=$1 AND r.state<>'deleted'
 	UNION ALL SELECT 'preview',x.id FROM (SELECT r.id,row_number() OVER (PARTITION BY p.environment_id ORDER BY (r.state='deleted'),r.updated_at DESC,r.id) n FROM preview_requests r JOIN preview_policies p ON p.workspace_id=r.workspace_id AND p.id=r.policy_id WHERE r.workspace_id=$1) x WHERE x.n<=100
+	UNION ALL SELECT 'recovery',x.id FROM (SELECT r.id,row_number() OVER (PARTITION BY r.policy_id ORDER BY r.created_at DESC,r.id) n FROM backup_recoveries r JOIN archive_keep k ON k.kind='env' AND k.id=r.environment_id WHERE r.workspace_id=$1) x WHERE x.n<=100
 	UNION ALL SELECT 'artifact',a.id FROM (SELECT id FROM build_artifacts WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100) a
 	UNION ALL SELECT 'audit',a.id FROM (SELECT id FROM audit_events WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100) a
 ) seed ON CONFLICT DO NOTHING`
@@ -140,6 +143,10 @@ const archiveClosure = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,i
 	UNION ALL SELECT 'request',t.plan_id FROM visual_runtime t JOIN archive_keep k ON k.kind='env' AND k.id=t.environment_id WHERE t.workspace_id=$1
 	UNION ALL SELECT 'request',t.plan_id FROM cross_host_runtime t JOIN archive_keep k ON k.kind='env' AND k.id=t.environment_id WHERE t.workspace_id=$1
 	UNION ALL SELECT 'request',c.source_plan_id FROM backup_cutovers c JOIN archive_keep k ON k.kind='env' AND k.id=c.environment_id WHERE c.workspace_id=$1
+	UNION ALL SELECT 'request',r.plan_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='recovery' AND k.id=r.id WHERE r.workspace_id=$1
+	UNION ALL SELECT 'op',r.operation_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='recovery' AND k.id=r.id WHERE r.workspace_id=$1
+	UNION ALL SELECT 'op',r.discard_operation_id FROM backup_recoveries r JOIN archive_keep k ON k.kind='recovery' AND k.id=r.id WHERE r.workspace_id=$1
+	UNION ALL SELECT 'recovery',r.id FROM backup_recoveries r JOIN archive_keep k ON k.kind='op' AND k.id=r.operation_id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'request',n.plan_id FROM network_endpoints n JOIN archive_keep k ON k.kind='endpoint' AND k.id=n.id WHERE n.workspace_id=$1
 	UNION ALL SELECT 'request',r.plan_id FROM preview_requests r JOIN archive_keep k ON k.kind='preview' AND k.id=r.id WHERE r.workspace_id=$1
 	UNION ALL SELECT 'request',d.plan_id FROM pipeline_auto_deployments d JOIN archive_keep k ON k.kind='run' AND k.id=d.id WHERE d.workspace_id=$1
@@ -188,6 +195,7 @@ var archiveFilters = func() map[string]string {
 		"pipeline_auto_deployments": archiveKept("run", "id"),
 		"preview_requests":          archiveKept("preview", "id"),
 		"audit_events":              archiveKept("audit", "id"),
+		"backup_recoveries":         archiveKept("recovery", "id"),
 		"execution_plans":           ` AND id IN (SELECT o.plan_id FROM execution_operations o JOIN archive_keep k ON k.kind='op' AND k.id=o.id)`,
 		"secret_versions":           ` AND secret_id IN (SELECT s.id FROM secrets s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1)`,
 	}

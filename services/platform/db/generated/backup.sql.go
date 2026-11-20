@@ -126,6 +126,51 @@ func (q *Queries) BackupDestinationExists(ctx context.Context, arg BackupDestina
 	return exists, err
 }
 
+const backupDestinationPolicies = `-- name: BackupDestinationPolicies :many
+SELECT (p.configuration->>'destinationId')::uuid AS destination_id, p.id, (p.configuration->>'name')::text AS name,
+    e.project_id, e.id AS environment_id, e.name AS environment_name
+FROM backup_policies p JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id
+WHERE p.workspace_id = $1 AND p.configuration->>'method' <> 'container-job'
+ORDER BY e.name, p.configuration->>'name', p.id
+`
+
+type BackupDestinationPoliciesRow struct {
+	DestinationID   uuid.UUID `json:"destination_id"`
+	ID              uuid.UUID `json:"id"`
+	Name            string    `json:"name"`
+	ProjectID       uuid.UUID `json:"project_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	EnvironmentName string    `json:"environment_name"`
+}
+
+// The policies using a workspace's destinations, with their environments. A container job uses none.
+func (q *Queries) BackupDestinationPolicies(ctx context.Context, workspaceID uuid.UUID) ([]BackupDestinationPoliciesRow, error) {
+	rows, err := q.db.Query(ctx, backupDestinationPolicies, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BackupDestinationPoliciesRow{}
+	for rows.Next() {
+		var i BackupDestinationPoliciesRow
+		if err := rows.Scan(
+			&i.DestinationID,
+			&i.ID,
+			&i.Name,
+			&i.ProjectID,
+			&i.EnvironmentID,
+			&i.EnvironmentName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const backupPolicyAccess = `-- name: BackupPolicyAccess :one
 SELECT encrypted_access,configuration FROM backup_policies
 WHERE workspace_id = $1 AND environment_id = $2 AND server_id = $3 AND id = $4
@@ -212,6 +257,107 @@ func (q *Queries) BackupPolicyStatus(ctx context.Context, arg BackupPolicyStatus
 	var status []byte
 	err := row.Scan(&status)
 	return status, err
+}
+
+const backupRecovery = `-- name: BackupRecovery :one
+SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3 AND r.id = $4
+`
+
+type BackupRecoveryParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+type BackupRecoveryRow struct {
+	ServerID       uuid.UUID `json:"server_id"`
+	PlanID         uuid.UUID `json:"plan_id"`
+	Snapshot       string    `json:"snapshot"`
+	TargetVolumeID uuid.UUID `json:"target_volume_id"`
+	Result         []byte    `json:"result"`
+	State          string    `json:"state"`
+}
+
+// One restore of a policy's snapshot onto another server, with its operation's state. A cutover and
+// a discard of its volume are decided one at a time under the environment's row lock, as any delete
+// of a volume and a draft that uses it are (store.LockVolumeDecisions); locking this row too would
+// deadlock a discard against the restore's own report, which locks the server first. A restore's
+// result is written once, when its operation ends.
+func (q *Queries) BackupRecovery(ctx context.Context, arg BackupRecoveryParams) (BackupRecoveryRow, error) {
+	row := q.db.QueryRow(ctx, backupRecovery,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.PolicyID,
+		arg.ID,
+	)
+	var i BackupRecoveryRow
+	err := row.Scan(
+		&i.ServerID,
+		&i.PlanID,
+		&i.Snapshot,
+		&i.TargetVolumeID,
+		&i.Result,
+		&i.State,
+	)
+	return i, err
+}
+
+const backupRecoveryAccess = `-- name: BackupRecoveryAccess :one
+SELECT p.encrypted_access,p.configuration FROM backup_recoveries r
+JOIN backup_policies p ON p.workspace_id = r.workspace_id AND p.environment_id = r.environment_id AND p.id = r.policy_id
+WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.id = $3
+AND r.operation_id = $4 AND r.server_id = $5 AND r.policy_id = $6
+`
+
+type BackupRecoveryAccessParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+	OperationID   uuid.UUID `json:"operation_id"`
+	ServerID      uuid.UUID `json:"server_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+}
+
+type BackupRecoveryAccessRow struct {
+	EncryptedAccess []byte `json:"encrypted_access"`
+	Configuration   []byte `json:"configuration"`
+}
+
+// A recovery's repository access is released only to the server it was issued to, for the
+// operation it was issued as, while the policy is still the one it froze.
+func (q *Queries) BackupRecoveryAccess(ctx context.Context, arg BackupRecoveryAccessParams) (BackupRecoveryAccessRow, error) {
+	row := q.db.QueryRow(ctx, backupRecoveryAccess,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ID,
+		arg.OperationID,
+		arg.ServerID,
+		arg.PolicyID,
+	)
+	var i BackupRecoveryAccessRow
+	err := row.Scan(&i.EncryptedAccess, &i.Configuration)
+	return i, err
+}
+
+const backupSnapshotReceipts = `-- name: BackupSnapshotReceipts :one
+SELECT snapshot_receipts FROM backup_policies
+WHERE workspace_id = $1 AND environment_id = $2 AND id = $3
+`
+
+type BackupSnapshotReceiptsParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	ID            uuid.UUID `json:"id"`
+}
+
+func (q *Queries) BackupSnapshotReceipts(ctx context.Context, arg BackupSnapshotReceiptsParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, backupSnapshotReceipts, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
+	var snapshot_receipts []byte
+	err := row.Scan(&snapshot_receipts)
+	return snapshot_receipts, err
 }
 
 const claimDueCoordinatedBackupPolicy = `-- name: ClaimDueCoordinatedBackupPolicy :one
@@ -318,6 +464,61 @@ func (q *Queries) DisableEnvironmentBackupPolicies(ctx context.Context, arg Disa
 	return err
 }
 
+const exposedBackupDestinations = `-- name: ExposedBackupDestinations :many
+SELECT DISTINCT d.id
+FROM backup_destinations d
+JOIN backup_policies p ON p.workspace_id = d.workspace_id AND p.configuration->>'destinationId' = d.id::text
+    AND p.configuration->>'method' <> 'container-job'
+JOIN servers s ON s.workspace_id = p.workspace_id AND s.revoked AND (s.id = p.server_id OR EXISTS(
+    SELECT 1 FROM backup_recoveries r WHERE r.workspace_id = p.workspace_id AND r.policy_id = p.id AND r.server_id = s.id))
+WHERE d.workspace_id = $1 AND d.configuration->>'kind' = 's3'
+`
+
+// A destination is exposed while a revoked server holds its storage keys: the server a policy using
+// it is bound to, or one a restore of such a policy was recorded for, whether or not the restore
+// was released to it. Only an S3 destination has keys, and a container job is never given them.
+func (q *Queries) ExposedBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, exposedBackupDestinations, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const finishUndeliveredRecovery = `-- name: FinishUndeliveredRecovery :exec
+UPDATE execution_operations SET state = $1, note = $2::text || CASE WHEN note <> '' THEN ' ' || note ELSE '' END
+WHERE workspace_id = $3 AND id = $4
+`
+
+type FinishUndeliveredRecoveryParams struct {
+	State       string    `json:"state"`
+	Note        string    `json:"note"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+func (q *Queries) FinishUndeliveredRecovery(ctx context.Context, arg FinishUndeliveredRecoveryParams) error {
+	_, err := q.db.Exec(ctx, finishUndeliveredRecovery,
+		arg.State,
+		arg.Note,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const insertBackupCutover = `-- name: InsertBackupCutover :exec
 INSERT INTO backup_cutovers(workspace_id,environment_id,revision_id,policy_id,source_plan_id,configuration)
 VALUES($1,$2,$3,$4,$5,$6)
@@ -362,6 +563,44 @@ func (q *Queries) InsertBackupDestination(ctx context.Context, arg InsertBackupD
 		arg.WorkspaceID,
 		arg.Configuration,
 		arg.EncryptedAccess,
+	)
+	return err
+}
+
+const insertBackupRecovery = `-- name: InsertBackupRecovery :exec
+INSERT INTO backup_recoveries(id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+`
+
+type InsertBackupRecoveryParams struct {
+	ID              uuid.UUID `json:"id"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	PolicyID        uuid.UUID `json:"policy_id"`
+	OperationID     uuid.UUID `json:"operation_id"`
+	SourceServerID  uuid.UUID `json:"source_server_id"`
+	ServerID        uuid.UUID `json:"server_id"`
+	PlanID          uuid.UUID `json:"plan_id"`
+	Snapshot        string    `json:"snapshot"`
+	FirstReportedAt time.Time `json:"first_reported_at"`
+	TargetVolumeID  uuid.UUID `json:"target_volume_id"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+func (q *Queries) InsertBackupRecovery(ctx context.Context, arg InsertBackupRecoveryParams) error {
+	_, err := q.db.Exec(ctx, insertBackupRecovery,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.PolicyID,
+		arg.OperationID,
+		arg.SourceServerID,
+		arg.ServerID,
+		arg.PlanID,
+		arg.Snapshot,
+		arg.FirstReportedAt,
+		arg.TargetVolumeID,
+		arg.CreatedAt,
 	)
 	return err
 }
@@ -413,6 +652,78 @@ func (q *Queries) ListBackupPolicies(ctx context.Context, arg ListBackupPolicies
 			return nil, err
 		}
 		items = append(items, configuration)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBackupRecoveries = `-- name: ListBackupRecoveries :many
+SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note,coalesce(v.deleted,false)::boolean AS target_deleted,
+ r.discard_operation_id,d.state AS discard_state,d.note AS discard_note
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+LEFT JOIN execution_operations d ON d.workspace_id = r.workspace_id AND d.id = r.discard_operation_id
+LEFT JOIN managed_volumes v ON v.workspace_id = r.workspace_id AND v.environment_id = r.environment_id AND v.id = r.target_volume_id
+WHERE r.workspace_id = $1 AND r.environment_id = $2 AND r.policy_id = $3
+ORDER BY r.created_at DESC, r.id LIMIT 100
+`
+
+type ListBackupRecoveriesParams struct {
+	WorkspaceID   uuid.UUID `json:"workspace_id"`
+	EnvironmentID uuid.UUID `json:"environment_id"`
+	PolicyID      uuid.UUID `json:"policy_id"`
+}
+
+type ListBackupRecoveriesRow struct {
+	ID                 uuid.UUID   `json:"id"`
+	OperationID        uuid.UUID   `json:"operation_id"`
+	SourceServerID     uuid.UUID   `json:"source_server_id"`
+	ServerID           uuid.UUID   `json:"server_id"`
+	PlanID             uuid.UUID   `json:"plan_id"`
+	Snapshot           string      `json:"snapshot"`
+	FirstReportedAt    time.Time   `json:"first_reported_at"`
+	TargetVolumeID     uuid.UUID   `json:"target_volume_id"`
+	CreatedAt          time.Time   `json:"created_at"`
+	Result             []byte      `json:"result"`
+	State              string      `json:"state"`
+	Note               string      `json:"note"`
+	TargetDeleted      bool        `json:"target_deleted"`
+	DiscardOperationID *uuid.UUID  `json:"discard_operation_id"`
+	DiscardState       pgtype.Text `json:"discard_state"`
+	DiscardNote        pgtype.Text `json:"discard_note"`
+}
+
+func (q *Queries) ListBackupRecoveries(ctx context.Context, arg ListBackupRecoveriesParams) ([]ListBackupRecoveriesRow, error) {
+	rows, err := q.db.Query(ctx, listBackupRecoveries, arg.WorkspaceID, arg.EnvironmentID, arg.PolicyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBackupRecoveriesRow{}
+	for rows.Next() {
+		var i ListBackupRecoveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OperationID,
+			&i.SourceServerID,
+			&i.ServerID,
+			&i.PlanID,
+			&i.Snapshot,
+			&i.FirstReportedAt,
+			&i.TargetVolumeID,
+			&i.CreatedAt,
+			&i.Result,
+			&i.State,
+			&i.Note,
+			&i.TargetDeleted,
+			&i.DiscardOperationID,
+			&i.DiscardState,
+			&i.DiscardNote,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -519,6 +830,41 @@ func (q *Queries) LockCoordinatedBackupPolicy(ctx context.Context, arg LockCoord
 	return i, err
 }
 
+const lockRecoveryDelivery = `-- name: LockRecoveryDelivery :one
+SELECT o.command,o.state,o.cancel_requested,(o.report_sequence > 0 OR EXISTS(
+    SELECT 1 FROM secret_releases r WHERE r.workspace_id = o.workspace_id AND r.operation_id = o.id))::boolean AS held
+FROM execution_operations o
+WHERE o.workspace_id = $1 AND o.id = $2 AND o.server_id = $3 AND o.kind = 'restore'
+FOR UPDATE OF o
+`
+
+type LockRecoveryDeliveryParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+type LockRecoveryDeliveryRow struct {
+	Command         []byte `json:"command"`
+	State           string `json:"state"`
+	CancelRequested bool   `json:"cancel_requested"`
+	Held            bool   `json:"held"`
+}
+
+// A restore of the polling server, locked to decide its delivery. Held is whether an agent may
+// have it: its values were released to one, or it reported.
+func (q *Queries) LockRecoveryDelivery(ctx context.Context, arg LockRecoveryDeliveryParams) (LockRecoveryDeliveryRow, error) {
+	row := q.db.QueryRow(ctx, lockRecoveryDelivery, arg.WorkspaceID, arg.ID, arg.ServerID)
+	var i LockRecoveryDeliveryRow
+	err := row.Scan(
+		&i.Command,
+		&i.State,
+		&i.CancelRequested,
+		&i.Held,
+	)
+	return i, err
+}
+
 const operationCommandByRequestKey = `-- name: OperationCommandByRequestKey :one
 SELECT command FROM execution_operations WHERE workspace_id = $1 AND request_key = $2
 `
@@ -533,6 +879,50 @@ func (q *Queries) OperationCommandByRequestKey(ctx context.Context, arg Operatio
 	var command []byte
 	err := row.Scan(&command)
 	return command, err
+}
+
+const recordBackupRecoveryResult = `-- name: RecordBackupRecoveryResult :exec
+UPDATE backup_recoveries SET result = $1 WHERE workspace_id = $2 AND operation_id = $3
+`
+
+type RecordBackupRecoveryResultParams struct {
+	Result      []byte    `json:"result"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	OperationID uuid.UUID `json:"operation_id"`
+}
+
+// Reports stop once the operation is terminal, so the succeeded report is the only writer.
+func (q *Queries) RecordBackupRecoveryResult(ctx context.Context, arg RecordBackupRecoveryResultParams) error {
+	_, err := q.db.Exec(ctx, recordBackupRecoveryResult, arg.Result, arg.WorkspaceID, arg.OperationID)
+	return err
+}
+
+const recordBackupSnapshotReceipts = `-- name: RecordBackupSnapshotReceipts :exec
+UPDATE backup_policies p SET snapshot_receipts = COALESCE((
+    SELECT jsonb_object_agg(s.snapshot, COALESCE(p.snapshot_receipts->s.snapshot, to_jsonb(clock_timestamp())))
+    FROM unnest($1::text[]) AS s(snapshot)
+    WHERE p.snapshot_receipts->s.snapshot IS NOT NULL OR s.snapshot = ANY($2::text[])
+), '{}')
+WHERE workspace_id = $3 AND id = $4
+`
+
+type RecordBackupSnapshotReceiptsParams struct {
+	Listed      []string  `json:"listed"`
+	Uploaded    []string  `json:"uploaded"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	PolicyID    uuid.UUID `json:"policy_id"`
+}
+
+// A listed snapshot keeps the time management first received it, one an upload lists gets
+// management's clock now, and one no longer listed loses its receipt.
+func (q *Queries) RecordBackupSnapshotReceipts(ctx context.Context, arg RecordBackupSnapshotReceiptsParams) error {
+	_, err := q.db.Exec(ctx, recordBackupSnapshotReceipts,
+		arg.Listed,
+		arg.Uploaded,
+		arg.WorkspaceID,
+		arg.PolicyID,
+	)
+	return err
 }
 
 const rewrapBackupDestinationAccess = `-- name: RewrapBackupDestinationAccess :exec
@@ -599,6 +989,28 @@ type SaveBackupPolicyStatusParams struct {
 
 func (q *Queries) SaveBackupPolicyStatus(ctx context.Context, arg SaveBackupPolicyStatusParams) error {
 	_, err := q.db.Exec(ctx, saveBackupPolicyStatus, arg.Status, arg.WorkspaceID, arg.ID)
+	return err
+}
+
+const setBackupRecoveryDiscard = `-- name: SetBackupRecoveryDiscard :exec
+UPDATE backup_recoveries SET discard_operation_id = $1
+WHERE workspace_id = $2 AND environment_id = $3 AND id = $4
+`
+
+type SetBackupRecoveryDiscardParams struct {
+	DiscardOperationID *uuid.UUID `json:"discard_operation_id"`
+	WorkspaceID        uuid.UUID  `json:"workspace_id"`
+	EnvironmentID      uuid.UUID  `json:"environment_id"`
+	ID                 uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) SetBackupRecoveryDiscard(ctx context.Context, arg SetBackupRecoveryDiscardParams) error {
+	_, err := q.db.Exec(ctx, setBackupRecoveryDiscard,
+		arg.DiscardOperationID,
+		arg.WorkspaceID,
+		arg.EnvironmentID,
+		arg.ID,
+	)
 	return err
 }
 

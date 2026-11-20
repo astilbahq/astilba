@@ -125,7 +125,7 @@ func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.U
 			return false, err
 		}
 	} else {
-		if err = q.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+		if err = q.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
 			return false, err
 		}
 		c.CancelRequested = true

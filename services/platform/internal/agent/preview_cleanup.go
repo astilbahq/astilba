@@ -165,6 +165,9 @@ func (e *Engine) executePreviewCleanup(ctx context.Context, c api.ExecutionComma
 		if _, err = e.Docker.VolumeRemove(ctx, v.Volume.Name, client.VolumeRemoveOptions{Force: false}); err != nil && !errdefs.IsNotFound(err) {
 			return fail()
 		}
+		if err = e.Journal.forgetPostgresData(vol.ID); err != nil {
+			return err
+		}
 		e.point("preview-volume-removed")
 	}
 	name := deployment.NetworkName(p.Plan.UnitID)

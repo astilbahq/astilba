@@ -64,7 +64,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 			v, err = q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: p.Workspace, EnvironmentID: p.Template, ID: old})
 			if err == nil {
 				var plain []byte
-				plain, err = keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old}, v.EncryptedValue)
+				plain, err = keys.Open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: old, Environment: p.Template}, v.EncryptedValue)
 				value = string(plain)
 				clear(plain)
 			}
@@ -76,7 +76,7 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 		if err = q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: p.Workspace, EnvironmentID: env, ID: sid, Name: "Preview " + old.String()}); err != nil {
 			return err
 		}
-		cipher, err := keys.Seal(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, []byte(value))
+		cipher, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id, Environment: env}, []byte(value))
 		if err != nil {
 			return err
 		}
@@ -94,6 +94,11 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 		return domain.ApplicationHostname(s.Store.ApplicationDomain, p.Workspace, env, app, p.Server)
 	})
 	if err != nil {
+		return err
+	}
+	// A preview's database starts on its major's current release. A preview server whose agent
+	// does not know it refuses here, so the pass rolls the new environment back.
+	if err = requirePostgresReleases(ctx, tx, p.Workspace, p.Server, spec); err != nil {
 		return err
 	}
 	raw, err = stablejson.Marshal(spec)

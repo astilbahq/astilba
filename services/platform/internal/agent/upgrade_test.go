@@ -22,19 +22,37 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func TestUpgradeComparisonPreservesCopyRecords(t *testing.T) {
-	preamble := "-- PostgreSQL database dump\n-- Dumped from database version 17.10\n-- Dumped by pg_dump version 18.4\n\nSET statement_timeout = 0;\n"
+// Archives from an earlier minor or from the upgrade name other versions in their preamble than
+// the verification dump does. Only those comment lines are normalized, never matching data.
+func TestDumpComparisonNormalizesOnlyThePreambleVersions(t *testing.T) {
 	payload := "COPY public.records (value) FROM stdin;\n-- Dumped from database version 17.10\nSET not_a_statement\n\\.\n"
-	var got bytes.Buffer
-	w := upgradeSQLHeader{out: &got}
-	for _, b := range []byte(preamble + payload) {
-		if _, err := w.Write([]byte{b}); err != nil {
-			t.Fatal(err)
+	normalize := func(preamble string) string {
+		var got bytes.Buffer
+		w := dumpVersionHeader{out: &got}
+		for _, b := range []byte(preamble + payload) {
+			if _, err := w.Write([]byte{b}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !w.done || !strings.HasSuffix(got.String(), payload) {
+			t.Fatalf("archive comparison changed database data: %q", got.String())
+		}
+		return got.String()
+	}
+	header := func(from, by string) string {
+		return "--\n-- PostgreSQL database dump\n--\n\n\\restrict AstilbaRestoreVerification\n\n-- Dumped from database version " + from + "\n-- Dumped by pg_dump version " + by + "\n\nSET statement_timeout = 0;\n"
+	}
+	want := normalize(header("18.6", "18.6"))
+	for _, other := range []string{header("17.10", "18.4"), header("18.4", "18.4"), header("18.4", "18.6")} {
+		if normalize(other) != want {
+			t.Fatalf("versions differ after normalizing:\n%s\n%s", normalize(other), want)
 		}
 	}
-	want := strings.Replace(preamble, "from database version 17.10", "from database version 18.4", 1) + payload
-	if got.String() != want || !w.done {
-		t.Fatal("archive comparison changed database data")
+	if strings.Contains(want, "18.6") {
+		t.Fatal("a version survived normalizing")
+	}
+	if normalize(header("18.4", "18.4")+"-- Owner: x\n") == normalize(header("18.4", "18.4")+"-- Owner: y\n") {
+		t.Fatal("normalizing hid a difference outside the version lines")
 	}
 }
 

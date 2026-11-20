@@ -3,18 +3,13 @@ package integration
 import (
 	"context"
 	"encoding/json/v2"
-	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
-	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/google/uuid"
 )
 
@@ -22,55 +17,13 @@ import (
 // submission waits. Management checks the files again before every attempt writes to the
 // repository, and a runner takes no part.
 func TestSubmissionRechecksRuntimeSecretsBeforeWriting(t *testing.T) {
-	f := setup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	b := f.browser(t)
-	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
-	prefix := "/api/v1/workspaces/" + ws.String()
-	head := strings.Repeat("a", 40)
-	var tree gitTree
+	x := newSubmissionFixture(t, ctx)
+	b := x.owner
 	// The provider fails every write until a test lets it, so each submission's first attempt
 	// fails and is retried after River's first backoff.
-	var refusedWrites atomic.Int64
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/team/app.git/info/refs" {
-			w.WriteHeader(403)
-			return
-		}
-		if r.Method != http.MethodGet {
-			refusedWrites.Add(1)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		if tree.answer(w, r) {
-			return
-		}
-		if strings.Contains(r.URL.Path, "/branches/") {
-			if strings.Contains(r.URL.Path, "/branches/astilba/") {
-				w.WriteHeader(404)
-				return
-			}
-			answerBranch(w, "gitea", head)
-			return
-		}
-		answerRepository(w, "gitea", 12, true)
-	}))
-	defer provider.Close()
-	var connection struct {
-		Connection pipeline.Connection `json:"connection"`
-	}
-	b.call("POST", prefix+"/git-connections", map[string]any{"name": "Source", "provider": "gitea", "baseUrl": provider.URL, "repository": "team/app", "api": map[string]string{"username": "writer", "password": "submit-write-canary"}, "clone": map[string]string{"username": "reader", "password": "submit-read-canary"}}, 201, &connection)
-	var project api.Project
-	b.call("POST", prefix+"/projects", map[string]string{"name": "Submissions"}, 201, &project)
-	enrolled, in, token := enrollment(t, f, b, ws, "build")
-	yes := true
-	in.Capabilities.Build = &yes
-	in.Capabilities.BuildNetwork = &yes
-	in.Capabilities.RootlessBuilds = &yes
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	runner := authorityAgent{t, f, token, in}
+	refusedWrites := &x.writes
 
 	inContent := func(canary string) func(*composeproject.Bundle) {
 		return func(bundle *composeproject.Bundle) { bundle.Files[0].Content += "# " + canary + "\n" }
@@ -81,65 +34,13 @@ func TestSubmissionRechecksRuntimeSecretsBeforeWriting(t *testing.T) {
 			bundle.Files = append(bundle.Files, composeproject.File{Path: "config/" + canary + ".env", Content: "MODE=plain\n"})
 		}
 	}
-	// prepare leaves an imported environment with plant's change in its saved draft.
-	prepare := func(t *testing.T, name string, plant func(*composeproject.Bundle), baseline ...composeproject.File) (string, api.Revision) {
-		t.Helper()
-		b := *b
-		b.t = t
-		var env api.Environment
-		b.call("POST", prefix+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": name, "configurationOwner": "compose"}, 201, &env)
-		path := prefix + "/projects/" + project.Id.String() + "/environments/" + env.Id.String()
-		source := pipeline.Source{ConnectionID: connection.Connection.ID, Branch: "main", RunnerID: enrolled.Server.Id, Paths: []string{"compose.yaml"}, Entrypoints: []string{"compose.yaml"}}
-		for _, file := range baseline {
-			source.Paths = append(source.Paths, file.Path)
-		}
-		original := "services:\n  web:\n    image: " + pipelineTestImage + "\n"
-		files := append([]composeproject.File{{Path: "compose.yaml", Content: original}}, baseline...)
-		tree.record(head, files)
-		var imported api.Operation
-		b.call("PUT", path+"/source", map[string]any{"baseRevisionId": env.DraftRevisionId, "configuration": source}, 202, &imported)
-		runner.t = t
-		command := runner.next()
-		if command.Id != imported.Id {
-			t.Fatal("import did not reach the runner")
-		}
-		runner.reportImport(command, head, files)
-		var draft api.Revision
-		b.call("GET", path+"/draft", nil, 200, &draft)
-		var spec domain.Specification
-		if err := json.Unmarshal(draft.Specification, &spec); err != nil {
-			t.Fatal(err)
-		}
-		plant(spec.Compose)
-		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": spec}, 200, &draft)
-		return path, draft
-	}
+	prepare := x.prepare
 	submit := func(t *testing.T, path string, draft api.Revision) api.SourceSubmission {
 		t.Helper()
-		b := *b
-		b.t = t
-		var out api.SourceSubmission
-		b.call("POST", path+"/source/submit", map[string]any{"baseRevisionId": draft.Id, "requestKey": uuid.New()}, 202, &out)
-		return out
+		return x.submit(t, nil, path, draft)
 	}
-	// await waits for the submission's note or state to contain want.
-	await := func(t *testing.T, id uuid.UUID, done func(state, note string) bool) (string, string) {
-		t.Helper()
-		var state, note string
-		for deadline := time.Now().Add(45 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-			if err := f.st.Pool.QueryRow(ctx, "SELECT state,note FROM source_submissions WHERE id=$1", id).Scan(&state, &note); err != nil {
-				t.Fatal(err)
-			}
-			if done(state, note) {
-				return state, note
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("the submission did not settle", state, note)
-			}
-		}
-	}
-	retrying := func(state, note string) bool { return state == "queued" && strings.HasPrefix(note, "Attempt 1 of") }
-	settled := func(state, _ string) bool { return state != "queued" }
+	await := x.await
+	retrying, settled := submissionRetrying, submissionFinished
 
 	// The submission is checked once more before each attempt, so a value that becomes a runtime
 	// secret while it waits never reaches the provider.

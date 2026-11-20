@@ -138,8 +138,7 @@ type Subscription struct {
 	EndedAt  *int64 `json:"ended_at"`
 	Items    struct {
 		Data []struct {
-			Quantity int   `json:"quantity"`
-			End      int64 `json:"current_period_end"`
+			Quantity int `json:"quantity"`
 			Price    struct {
 				ID        string `json:"id"`
 				Recurring *struct {
@@ -161,19 +160,123 @@ func (s Stripe) Subscription(ctx context.Context, id, customer string) (Subscrip
 		return out, ErrProvider
 	}
 	item := out.Items.Data[0]
-	if item.Quantity != 1 || item.Price.ID != s.Price || item.Price.Recurring == nil || item.Price.Recurring.Interval != "month" || item.Price.Recurring.Count != 1 || item.End <= 0 {
+	if item.Quantity != 1 || item.Price.ID != s.Price || item.Price.Recurring == nil || item.Price.Recurring.Interval != "month" || item.Price.Recurring.Count != 1 {
 		return out, ErrProvider
 	}
 	return out, nil
 }
-func (s Subscription) Entitlement() Entitlement {
-	end := time.Unix(s.Items.Data[0].End, 0)
-	if s.EndedAt != nil && time.Unix(*s.EndedAt, 0).Before(end) {
-		end = time.Unix(*s.EndedAt, 0)
+
+// maxPaidPeriod bounds one paid line's service period. The price is monthly, and the
+// longest month plus clock adjustments fits well inside this.
+const maxPaidPeriod = 32 * 24 * time.Hour
+
+// paidInvoiceWindow is how many paid invoices PaidThrough reads. Stripe lists invoices
+// newest-created first ("sorted by creation date, with the most recently created invoices
+// appearing first"), so this page always holds the latest paid periods; older paid invoices
+// can only cover earlier periods.
+const paidInvoiceWindow = 10
+
+// lineWindow bounds the pages of one invoice's lines PaidThrough reads beyond those the
+// invoice embeds.
+const lineWindow = 10
+
+type invoiceLine struct {
+	ID     string `json:"id"`
+	Period struct {
+		Start int64 `json:"start"`
+		End   int64 `json:"end"`
+	} `json:"period"`
+	Parent *struct {
+		Item *struct {
+			Subscription string `json:"subscription"`
+			Proration    bool   `json:"proration"`
+		} `json:"subscription_item_details"`
+	} `json:"parent"`
+}
+
+type invoiceLines struct {
+	Data []invoiceLine `json:"data"`
+	More bool          `json:"has_more"`
+}
+
+type paidInvoices struct {
+	Data []struct {
+		ID       string `json:"id"`
+		Customer string `json:"customer"`
+		Status   string `json:"status"`
+		Parent   *struct {
+			Details *struct {
+				Subscription string `json:"subscription"`
+			} `json:"subscription_details"`
+		} `json:"parent"`
+		Lines invoiceLines `json:"lines"`
+	} `json:"data"`
+}
+
+// PaidThrough returns the end of the latest service period of subscription id that a paid
+// invoice covers, or nil when no invoice of it is paid. Paid is final for a Stripe invoice, so
+// what this returns never moves earlier. A line counts whatever its price: a workspace that
+// paid for a period at an earlier price paid for it. Proration lines adjust a period already
+// billed, and a line whose period is not one month long is not this product's period, so
+// neither counts; skipping a line can only make this earlier. An invoice that is not the one
+// asked for is refused.
+func (s Stripe) PaidThrough(ctx context.Context, id, customer string) (*time.Time, error) {
+	if !validID(id, "sub_") || !validID(customer, "cus_") {
+		return nil, ErrProvider
 	}
-	// Delinquent subscriptions retain only their already paid period. Expiration
-	// is never moved to the webhook delivery time.
-	return Entitlement{Status: s.Status, Until: &end}
+	q := url.Values{"customer": {customer}, "subscription": {id}, "status": {"paid"}, "limit": {strconv.Itoa(paidInvoiceWindow)}}
+	var out paidInvoices
+	if e := s.request(ctx, "GET", "invoices?"+q.Encode(), "", nil, &out); e != nil {
+		return nil, e
+	}
+	var end *time.Time
+	for _, invoice := range out.Data {
+		if !validID(invoice.ID, "in_") || invoice.Customer != customer || invoice.Status != "paid" || invoice.Parent == nil || invoice.Parent.Details == nil || invoice.Parent.Details.Subscription != id {
+			return nil, ErrProvider
+		}
+		lines, e := s.allLines(ctx, invoice.ID, invoice.Lines)
+		if e != nil {
+			return nil, e
+		}
+		for _, line := range lines {
+			if line.Parent == nil || line.Parent.Item == nil || line.Parent.Item.Subscription != id || line.Parent.Item.Proration {
+				continue
+			}
+			start, until := time.Unix(line.Period.Start, 0), time.Unix(line.Period.End, 0)
+			if line.Period.Start <= 0 || !until.After(start) || until.Sub(start) > maxPaidPeriod {
+				continue
+			}
+			if end == nil || until.After(*end) {
+				end = &until
+			}
+		}
+	}
+	return end, nil
+}
+
+// allLines returns every line of an invoice. A listed invoice embeds only the first page of
+// its lines, and Stripe sorts pending invoice items and prorations before subscription lines,
+// so the subscription's line can be on a later page.
+func (s Stripe) allLines(ctx context.Context, invoice string, first invoiceLines) ([]invoiceLine, error) {
+	lines, page := first.Data, first
+	for range lineWindow {
+		if !page.More {
+			return lines, nil
+		}
+		if len(page.Data) == 0 || page.Data[len(page.Data)-1].ID == "" {
+			return nil, ErrProvider
+		}
+		q := url.Values{"limit": {"100"}, "starting_after": {page.Data[len(page.Data)-1].ID}}
+		page = invoiceLines{}
+		if e := s.request(ctx, "GET", "invoices/"+invoice+"/lines?"+q.Encode(), "", nil, &page); e != nil {
+			return nil, e
+		}
+		lines = append(lines, page.Data...)
+	}
+	if page.More {
+		return nil, ErrProvider
+	}
+	return lines, nil
 }
 
 type Event struct {

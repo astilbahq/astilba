@@ -129,7 +129,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			}
 			return false, tx.Commit(ctx)
 		}
-		if err = queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+		if err = queries.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
 			return false, err
 		}
 		c.CancelRequested = true
@@ -221,7 +221,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 				}
 				return false, tx.Commit(ctx)
 			}
-			if err = queries.StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: "Stopped: " + refusal.Message}); err != nil {
+			if err = queries.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: "Stopped: " + refusal.Message}); err != nil {
 				return false, err
 			}
 			c.CancelRequested = true
@@ -299,6 +299,9 @@ func (s *Service) writePipelineRevision(ctx context.Context, tx pgx.Tx, ws, env,
 	if err := s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, parsed, nil); err != nil {
 		return uuid.Nil, err
 	}
+	if err := store.RefuseDeletedMounts(ctx, db.New(tx), ws, env, parsed); err != nil {
+		return uuid.Nil, err
+	}
 	id := uuid.New()
 	h := sha256.Sum256(canonical)
 	if _, err = store.InsertRevision(ctx, db.New(tx), db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: env, ID: id, AuthorID: actor, Specification: canonical, ContentHash: h[:]}); err != nil {
@@ -344,7 +347,7 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 	// next poll stops it.
 	if late && !started && !cancelled && !Terminal(r.State) && slices.ContainsFunc(r.Steps, func(s api.ExecutionStep) bool { return s.Name == pipeline.StartStep }) {
 		const note = "Stopping: the runner's report that it started this pipeline arrived after the pipeline's deadline."
-		if err = db.New(tx).StopPossiblyDeliveredPipeline(ctx, db.StopPossiblyDeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
+		if err = db.New(tx).StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
 			return err
 		}
 		r.Note = boundedNote(strings.TrimSpace(note + " " + r.Note))

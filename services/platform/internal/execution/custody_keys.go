@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 // custodyKeysArgs makes the keys that workspaces and the installation do not have yet: those of
@@ -38,4 +39,22 @@ func (w *custodyKeysWorker) Work(ctx context.Context, _ *river.Job[custodyKeysAr
 		slog.Info("creating keys", "workspacesWithKeys", progress.WithKeys, "workspaces", progress.Workspaces, "installationKey", progress.Installation, "tokenKey", progress.Token)
 	}
 	return river.JobSnooze(time.Second)
+}
+
+// custodyKeysNow runs the key job once more unless a run is already waiting or under way.
+var custodyKeysNow = river.InsertOpts{UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled}}}
+
+// wakeCustodyKeys runs the key job as soon as wanted says a value was refused for want of its key,
+// rather than at the job's next turn, until ctx ends.
+func (s *Service) wakeCustodyKeys(ctx context.Context, wanted <-chan struct{}) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-wanted:
+		}
+		if _, err := s.Queue.Insert(ctx, custodyKeysArgs{}, &custodyKeysNow); err != nil && ctx.Err() == nil {
+			slog.Warn("key job not woken", "error", err.Error())
+		}
+	}
 }

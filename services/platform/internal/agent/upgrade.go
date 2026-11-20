@@ -17,7 +17,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
-	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/containerd/errdefs"
@@ -197,6 +196,14 @@ func (e *Engine) upgradeContainers(ctx context.Context, s upgradeState) error {
 func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *upgradeState) error {
 	p := s.Command.Plan
 	policy := s.Command.Installation.Policy
+	from, err := p.SourceRelease()
+	if err != nil {
+		return err
+	}
+	to, err := p.TargetRelease()
+	if err != nil {
+		return err
+	}
 	if err := e.upgradeStep(c, s, "preflight"); err != nil {
 		return err
 	}
@@ -241,11 +248,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err != nil || n < 0 || n > 1<<40 || freeBytes(e.Journal.dir) < n*2+256<<20 || dockerFreeBytes(ctx, e.Docker) < n*3+256<<20 {
 		return errors.New("insufficient or unknown capacity for dump and fresh database while retaining the old volume")
 	}
-	if _, err = e.Docker.ImageInspect(ctx, domain.PostgresImage); errdefs.IsNotFound(err) {
-		if err = e.pullImageAuth(ctx, domain.PostgresImage, ""); err != nil {
-			return err
-		}
-	} else if err != nil {
+	if err = e.ensureImage(ctx, to.Image); err != nil {
 		return err
 	}
 	if err = e.prepareRepository(ctx, &s.Command.Installation, true); err != nil {
@@ -285,7 +288,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	labels := visualLabels(p.Source, p.ResourceID)
 	labels[labelKind] = "upgrade-source-v1"
 	labels["com.astilba.upgrade"] = p.ID.String()
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: domain.Postgres17Image, Labels: labels, Cmd: []string{"postgres", "-c", "listen_addresses=127.0.0.1"}}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(p.OldVolume()), Target: domain.PostgresMount(domain.Postgres17Image)}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: from.Image, Labels: labels, Cmd: []string{"postgres", "-c", "listen_addresses=127.0.0.1"}}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(p.OldVolume()), Target: from.Mount}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
 	if err != nil {
 		return err
 	}
@@ -303,13 +306,13 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if err = e.upgradeStep(c, s, "backup"); err != nil {
 		return err
 	}
-	stage, err := os.MkdirTemp(e.Journal.dir, "upgrade-stage-")
+	stage, err := e.Journal.scratchDir(scratchUpgradeStage)
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(stage)
 	m := backup.Manifest{Recipe: backup.Recipe, PolicyID: policy.ID, RunID: p.ID, EnvironmentID: p.Source.EnvironmentID, ResourceID: p.ResourceID, Method: "postgres-logical", CreatedAt: time.Now().UTC(), Roles: []backup.Role{}, Extensions: []string{}}
-	if err = e.postgresManifest(ctx, isolated, a, domain.Postgres17Image, &m); err != nil {
+	if err = e.postgresManifest(ctx, isolated, a, from.Image, &m); err != nil {
 		return err
 	}
 	if err = e.upgradeDump(ctx, *s, created.ID, a, stage, &m); err != nil {
@@ -348,7 +351,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 		return err
 	}
 	// Restore the uploaded copy, so the recovery point itself is demonstrated.
-	download, err := os.MkdirTemp(e.Journal.dir, "upgrade-download-")
+	download, err := e.Journal.scratchDir(scratchUpgradeDownload)
 	if err != nil {
 		return err
 	}
@@ -389,23 +392,38 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if _, err = e.volumePath(ctx, policy, p.TargetVolumeID); err != nil {
 		return err
 	}
-	m.Image = domain.PostgresImage
-	run := backup.Run{ID: p.ID, TargetID: p.TargetVolumeID}
-	if err = e.restorePostgres(ctx, policy, &run, dir, m, s.Command.Installation.Access.DatabasePassword); err != nil {
+	cleared, err := e.restorePostgres(ctx, policy, a, p.ID, p.TargetVolumeID, dir, m, to, s.Command.Installation.Access.DatabasePassword)
+	if errors.As(err, new(clusterRefusal)) {
+		return fmt.Errorf("the PostgreSQL 18 restore holds what a backup can't (%s), so the database may have been compromised. The old database is unchanged: return to it and inspect it", clusterReason(err))
+	}
+	if err != nil {
+		return err
+	}
+	if err = e.Journal.savePostgresData(p.TargetVolumeID, postgresData{Image: to.Image}); err != nil {
 		return err
 	}
 	e.point("upgrade-restore-effect")
-	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."
+	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."+clearedNote(cleared)
 	return nil
 }
 
 func (e *Engine) removeUpgradeHelpers(ctx context.Context, s upgradeState) error {
 	p := s.Command.Plan
+	from, err := p.SourceRelease()
+	if err != nil {
+		return err
+	}
+	to, err := p.TargetRelease()
+	if err != nil {
+		return err
+	}
 	for _, entry := range []struct{ name, kind, image string }{
-		{"astilba-upgrade-preflight-" + p.ID.String(), "upgrade-preflight-v1", domain.Postgres17Image},
-		{"astilba-upgrade-tools-" + p.ID.String(), "upgrade-tools-v1", domain.PostgresImage},
-		{"astilba-restore-" + p.ID.String(), "backup-restore-v1", domain.PostgresImage},
-		{"astilba-upgrade-source-" + p.ID.String(), "upgrade-source-v1", domain.Postgres17Image},
+		{"astilba-upgrade-preflight-" + p.ID.String(), "upgrade-preflight-v1", from.Image},
+		{"astilba-upgrade-tools-" + p.ID.String(), "upgrade-tools-v1", to.Image},
+		{"astilba-restore-" + p.ID.String(), "backup-restore-v1", to.Image},
+		{"astilba-reset-" + p.ID.String(), "backup-restore-v1", to.Image},
+		{"astilba-verify-" + p.ID.String(), "backup-restore-v1", to.Image},
+		{"astilba-upgrade-source-" + p.ID.String(), "upgrade-source-v1", from.Image},
 	} {
 		v, err := e.Docker.ContainerInspect(ctx, entry.name, client.ContainerInspectOptions{})
 		if errdefs.IsNotFound(err) {
@@ -555,34 +573,4 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 	}
 	s.Status.KeepUntil = time.Now().UTC().Add(time.Duration(p.RetainDays) * 24 * time.Hour)
 	return nil
-}
-
-// PostgreSQL embeds the source server version in the archive header. Normalize
-// only the bounded SQL preamble; identical-looking COPY data is never touched.
-type upgradeSQLHeader struct {
-	out     io.Writer
-	pending []byte
-	done    bool
-}
-
-func (w *upgradeSQLHeader) Write(b []byte) (int, error) {
-	n := len(b)
-	if w.done {
-		return w.out.Write(b)
-	}
-	w.pending = append(w.pending, b...)
-	if i := bytes.Index(w.pending, []byte("\nSET ")); i >= 0 {
-		header := bytes.ReplaceAll(w.pending[:i], []byte("-- Dumped from database version 17.10"), []byte("-- Dumped from database version 18.4"))
-		if _, err := w.out.Write(header); err != nil {
-			return 0, err
-		}
-		if _, err := w.out.Write(w.pending[i:]); err != nil {
-			return 0, err
-		}
-		w.pending = nil
-		w.done = true
-	} else if len(w.pending) > 8192 {
-		return 0, fmt.Errorf("unexpected archive preamble")
-	}
-	return n, nil
 }

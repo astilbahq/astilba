@@ -150,7 +150,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if len(allowlistReview) > 0 && hostApproved {
 			return &domain.Error{Code: "invalid_input", Message: "A staged route's client allowlist could not be checked against the ranges this server's containers send traffic from, so the plan needs an owner's review, which a standing policy does not give.", Fields: []string{"routes.allowCidrs"}}
 		}
-		if err = requireServiceOutputs(ctx, tx, ws, in.ServerId, v.Spec); err != nil {
+		if err = requireAgentSupport(ctx, tx, ws, in.ServerId, v.Spec); err != nil {
 			return err
 		}
 		if v.Spec.Compose != nil {
@@ -205,7 +205,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 			}
 		}
 		if err = deployment.PostgresVersionChange(previous, v.Spec); err != nil {
-			return domain.Invalid("applications.postgres.upgrade")
+			return &domain.Error{Code: "invalid_input", Message: err.Error() + ".", Fields: []string{"applications.postgres.upgrade"}}
 		}
 		for _, a := range v.Spec.Applications {
 			if a.Postgres == nil {
@@ -240,7 +240,9 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 		if err = s.planArtifacts(ctx, tx, ws, &plan); err != nil {
 			return err
 		}
-
+		if err = refusePlanDeletedVolumes(ctx, tx, ws, env, v.Spec); err != nil {
+			return err
+		}
 		if v.Spec.Placement != nil {
 			out, err = s.createCrossHostPlan(ctx, tx, keys, ws, pid, env, in, v, previousPlan, replacement, allowlistReview)
 			return err
@@ -376,7 +378,7 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 			if existing == nil || *existing != id {
 				return domain.Conflict
 			}
-			out, err = scanOperation(tx.QueryRow(ctx, "SELECT "+opColumns+" FROM execution_operations WHERE workspace_id=$1 AND request_key=$2", ws, key))
+			out, err = operationByRequestKey(ctx, tx, ws, key)
 			return err
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -402,7 +404,7 @@ func (s *Service) applyVisualPlan(ctx context.Context, tx pgx.Tx, ws, pid, env, 
 		if _, err = s.visualServer(ctx, tx, ws, plan.ServerID); err != nil {
 			return err
 		}
-		if err = requireServiceOutputs(ctx, tx, ws, plan.ServerID, plan.Specification); err != nil {
+		if err = requireAgentSupport(ctx, tx, ws, plan.ServerID, plan.Specification); err != nil {
 			return err
 		}
 		if plan.Distributed != nil {
@@ -527,64 +529,4 @@ func (s *Service) Runtime(ctx context.Context, p store.Principal, ws, pid, env u
 	})
 	return out, err
 }
-func (s *Service) ObserveVisual(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID, volume *uuid.UUID) (api.Operation, error) {
-	var out api.Operation
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: volume != nil, Recent: volume != nil}, "deployment.observe", env, func(tx pgx.Tx) error {
-		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
-		if err != nil {
-			return err
-		}
-		if v.Server == nil {
-			return domain.Invalid("server")
-		}
-		if _, err = s.visualServer(ctx, tx, ws, *v.Server); err != nil {
-			return err
-		}
-		var id uuid.UUID
-		err = tx.QueryRow(ctx, "SELECT plan_id FROM visual_runtime WHERE workspace_id=$1 AND environment_id=$2 AND plan_id IS NOT NULL", ws, env).Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = tx.QueryRow(ctx, "SELECT visual_plan_id FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND visual_plan_id IS NOT NULL ORDER BY created_at DESC LIMIT 1", ws, env).Scan(&id)
-		}
-		if err != nil {
-			return err
-		}
-		plan, err := readPlan(ctx, tx, ws, env, id)
-		if err != nil {
-			return err
-		}
-		if plan.Distributed != nil {
-			if volume == nil {
-				out, err = s.insertCoordination(ctx, tx, ws, uuid.New(), "observe", plan)
-				return err
-			}
-			plan = plan.PrimaryPlan()
-		}
-		action := "observe"
-		if volume != nil {
-			action = "delete-volume"
-			var protected bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM supported_upgrades WHERE workspace_id=$1 AND environment_id=$2 AND (plan->>'targetVolumeId'=$3 OR EXISTS(SELECT 1 FROM jsonb_array_elements(plan->'source'->'specification'->'applications') a, jsonb_array_elements(a->'mounts') m WHERE a->>'id'=plan->>'resourceId' AND m->>'volumeId'=$3)) AND (status->>'phase' NOT IN ('planned','rejected','complete','returned') OR (status->>'keepUntil')::timestamptz>now()))`, ws, env, volume.String()).Scan(&protected); err != nil {
-				return err
-			}
-			if protected {
-				return domain.Conflict
-			}
-			var ok bool
-			if err := tx.QueryRow(ctx, "SELECT true FROM managed_volumes WHERE workspace_id=$1 AND environment_id=$2 AND unit_id=$3 AND id=$4 AND NOT deleted", ws, env, v.Unit, *volume).Scan(&ok); err != nil {
-				return err
-			}
-			for _, a := range v.Spec.Applications {
-				for _, m := range a.Mounts {
-					if m.VolumeID == *volume {
-						return domain.Conflict
-					}
-				}
-			}
-		}
-		out, err = s.insertVisual(ctx, tx, ws, uuid.New(), deployment.Payload{Action: action, Plan: plan, VolumeID: volume})
-		return err
-	})
-	return operationFor(p, out), err
-}
-
 func rawMessage(raw []byte) *jsontext.Value { v := jsontext.Value(raw); return &v }

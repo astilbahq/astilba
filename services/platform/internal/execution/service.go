@@ -99,10 +99,16 @@ func New(st *store.Store) (*Service, error) {
 	s.Queue = q
 	return s, err
 }
-func (s *Service) Start(ctx context.Context) error { return s.Queue.Start(ctx) }
-func (s *Service) Stop(ctx context.Context) error  { return s.Queue.Stop(ctx) }
-func hash(s string) []byte                         { h := sha256.Sum256([]byte(s)); return h[:] }
-func Hash(v any) string                            { return stablejson.Hash(v) }
+func (s *Service) Start(ctx context.Context) error {
+	if err := s.Queue.Start(ctx); err != nil {
+		return err
+	}
+	go s.wakeCustodyKeys(ctx, s.Store.Broker.KeysWanted())
+	return nil
+}
+func (s *Service) Stop(ctx context.Context) error { return s.Queue.Stop(ctx) }
+func hash(s string) []byte                        { h := sha256.Sum256([]byte(s)); return h[:] }
+func Hash(v any) string                           { return stablejson.Hash(v) }
 func Terminal(s api.ExecutionState) bool {
 	return s == "succeeded" || s == "failed" || s == "cancelled"
 }
@@ -163,6 +169,11 @@ func serverView(row db.ListServersRow) (api.Server, error) {
 	switch {
 	case row.Revoked:
 		v.Status = "revoked"
+		// A release without the column can leave a time behind on a server it renews.
+		if row.RevokedAt != nil {
+			at := row.RevokedAt.UTC()
+			v.RevokedAt = &at
+		}
 	case v.LastSeen == nil:
 		v.Status = "pending"
 	case time.Since(*v.LastSeen) > OfflineAfter:

@@ -32,7 +32,7 @@ import (
 	"github.com/riverqueue/river/rivermigrate"
 )
 
-const postgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
+const postgresImage = "postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1"
 const effectImage = "busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4"
 
 type processConfig struct {

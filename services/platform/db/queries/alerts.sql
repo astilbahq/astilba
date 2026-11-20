@@ -84,3 +84,6 @@ RETURNING l.id,l.workspace_id,l.alert_id,l.recipient_id,l.channel,l.phase,l.sett
 -- name: FinishAlertDelivery :exec
 -- unscoped: the lease names the delivery, and the attempt count fences a lease that expired and was taken again.
 UPDATE alert_deliveries SET state = @state,next_attempt_at = @next_attempt_at,failure = @failure WHERE id = @id AND state='leased' AND attempts = @attempts;
+
+-- name: FiringAlertResources :many
+SELECT resource_id FROM operational_alerts WHERE workspace_id = @workspace_id AND kind = @kind AND state = 'firing';

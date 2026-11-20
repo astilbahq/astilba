@@ -841,6 +841,27 @@
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/workspaces/{workspaceId}/postgres-releases:
+    get:
+      operationId: listPostgresReleases
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Every PostgreSQL release a managed database can name, oldest first within each major. A new database runs its major's current release; a retired release stays valid for a database that already runs it.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/PostgresRelease'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/client-address:
     get:
       operationId: getClientAddress
@@ -1282,6 +1303,27 @@
           "schema":
             "type": "string"
             "format": "uuid"
+  /api/v1/workspaces/{workspaceId}/mfa-requirement:
+    parameters:
+      - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getMfaRequirement
+      description: >-
+        Owners only. The standing approvals and deferred actions that act only while the workspace doesn't require
+        two-factor authentication, and who gave each, so an owner can review them before changing the requirement.
+        Each one's approver hasn't set up two-factor authentication. While the requirement is off, these are what
+        turning it on would stop; while it is on, what turning it off would let act again.
+      responses:
+        '200':
+          description: What the two-factor requirement stops, or would stop
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MfaRequirement'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/workspaces/{workspaceId}/cross-host-recovery:
     parameters:
       - {name: workspaceId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -4240,6 +4282,255 @@
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/receipts:
+    get:
+      operationId: ListBackupSnapshotReceipts
+      description: When management first received each snapshot the policy's reports list as available, by its own clock, newest first. A server's reported times are its own claims; these are not.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 128
+                items:
+                  $ref: '#/components/schemas/BackupSnapshotReceipt'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries:
+    get:
+      operationId: ListBackupRecoveries
+      description: Restores of this policy's snapshots onto a server other than its own, newest first.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items:
+                  $ref: '#/components/schemas/BackupRecoveryRecord'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: StartBackupRecovery
+      description: >-
+        Restores one of a revoked server's policy snapshots into a new volume on the environment's
+        current primary. Only a snapshot management received from the policy's server can be
+        chosen, and the owner acknowledges that a server compromised before its revocation could
+        have uploaded altered data. Nothing uses the restored volume until a reviewed cutover.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupRecoveryRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/cutover:
+    post:
+      operationId: PrepareRecoveryCutover
+      description: >-
+        Writes a draft that switches a succeeded restore's volume in for the one the deployment's
+        resource uses now. Deploying that draft, through the ordinary plan review, performs the
+        cutover. A distributed deployment is refused.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: recoveryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Revision'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupRecoveryCutoverRequest'
+  /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/target:
+    delete:
+      operationId: DiscardRecoveryTarget
+      description: >-
+        Deletes the volume an ended restore created, on the server it ran on, unless the
+        deployment's draft or the plan the server runs mounts it. A discarded volume can't be cut
+        over.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: environmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: recoveryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover:
     post:
       operationId: PrepareBackupCutover
@@ -5572,6 +5863,11 @@
         serviceOutputs:
           type: boolean
           description: Supports named service output references; advertised only after Astilba-Agent-Service-Outputs v1.
+        postgresReleases:
+          type: array
+          maxItems: 64
+          items: {type: string, maxLength: 512}
+          description: The pinned PostgreSQL images this agent can run, restore and update, and whose restores it reports with restoreImage. Advertised only after Astilba-Agent-Postgres-Releases v1; an agent without it knows only postgres 17.10 and 18.4.
         safeReleases:
           type: boolean
           description: Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1.
@@ -5603,6 +5899,9 @@
         schedules:
           type: boolean
           description: Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1.
+        recoveryRestore:
+          type: boolean
+          description: Runs the restore command kind, which restores a snapshot from a lost server's backup repository. Advertised only after Astilba-Agent-Recovery-Restore v1.
         backups:
           type: boolean
         upgrades:
@@ -5704,6 +6003,10 @@
           description: Immutable reservation for preview workloads.
 
         transferRequired: {type: boolean}
+        revokedAt:
+          type: string
+          format: date-time
+          description: When the revocation in force began, by management's clock. Absent while the server isn't revoked, and for a revocation from before this was recorded.
         "id":
           "type": "string"
           "format": "uuid"
@@ -6154,6 +6457,7 @@
             - upgrade
             - network
             - crosshost
+            - restore
         "action":
           "$ref": "#/components/schemas/TestAction"
         "resourceId":
@@ -6177,7 +6481,12 @@
         pipeline:
           $ref: '#/components/schemas/PipelineCommand'
         backup:
-          $ref: '#/components/schemas/BackupCommand'
+          description: A BackupCommand for the backup and schedule kinds, and a BackupRecovery for the restore kind.
+          x-go-type: jsontext.Value
+          x-go-type-import: {path: encoding/json/jsontext}
+          oneOf:
+            - $ref: '#/components/schemas/BackupCommand'
+            - $ref: '#/components/schemas/BackupRecovery'
         upgrade:
           $ref: '#/components/schemas/UpgradeCommand'
         secretRelease:
@@ -6296,6 +6605,8 @@
           $ref: '#/components/schemas/PipelineResult'
         upgrade:
           $ref: '#/components/schemas/UpgradeStatus'
+        restore:
+          $ref: '#/components/schemas/BackupRecoveryResult'
     Operation:
       "type": "object"
       "additionalProperties": false
@@ -6337,6 +6648,7 @@
             - upgrade
             - network
             - crosshost
+            - restore
         "cancelRequested":
           "type": "boolean"
         "note":
@@ -6460,6 +6772,47 @@
         - "name"
         - "role"
         - "requireMfa"
+    MfaRequirement:
+      type: object
+      additionalProperties: false
+      required: [approvals]
+      properties:
+        approvals: {type: array, items: {$ref: '#/components/schemas/MfaRequirementApproval'}}
+    MfaRequirementApproval:
+      type: object
+      additionalProperties: false
+      required: [kind, approverId, approverName, approverEmail, projectId, projectName, environmentId, environmentName, subject]
+      description: >-
+        A standing approval or deferred action that stops while the workspace requires two-factor authentication and its
+        approver hasn't set it up. A standing approval acts again if the requirement is turned off. A pending automatic
+        deployment or queued source submission that comes due while it is required is refused for good. Setting up
+        two-factor authentication changes the approver's credentials, which ends it: they, or another owner, approve it
+        again afterwards.
+      properties:
+        kind:
+          type: string
+          description: >-
+            `gitSource`: a Git source's automatic imports and deployments. `buildTarget`: a build target's builds,
+            automatic or run by automation, and deployments if it deploys. `automaticDeployment`: an automatic deployment
+            not yet planned. `previewPolicy`: an environment's previews. `previewApproval`: a fork commit approved for a
+            preview, while it is still the pull request's head.
+            `previewCleanup`: a preview cleanup an owner asked for. `invitation`: an invitation
+            not yet accepted. `enrollmentCode`: a server enrollment code not yet used. `sourceSubmission`: a queued source
+            submission. `automationCredential`: an automation credential, which keeps reading but can't write.
+          enum: [gitSource, buildTarget, automaticDeployment, previewPolicy, previewApproval, previewCleanup, invitation, enrollmentCode, sourceSubmission, automationCredential]
+        approverId: {type: string, format: uuid}
+        approverName: {type: string}
+        approverEmail: {type: string, format: email}
+        projectId: {type: string, format: uuid, nullable: true}
+        projectName: {type: string, nullable: true}
+        environmentId: {type: string, format: uuid, nullable: true, description: "The environment it acts in, or a preview's template environment. Null for invitations and enrollment codes."}
+        environmentName: {type: string, nullable: true}
+        subject:
+          type: string
+          description: >-
+            What it is within the environment or workspace: a build target's application name, a preview's pull request
+            number, an invitation's email address, an enrollment code's server name or an automation credential's name.
+            Empty for the others.
     CrossHostRecovery:
       type: object
       additionalProperties: false
@@ -6839,6 +7192,7 @@
         purgedBy: {type: string, format: uuid, nullable: true, description: The owner who requested the purge.}
         purgeOperationId: {type: string, format: uuid, nullable: true, description: The operation that deletes the retained volumes from the server.}
         purgedWithoutHost: {type: boolean, description: The purge finished without contacting the server because the server was revoked. Its volumes may still be there.}
+        purgeReachesEveryCopy: {type: boolean, description: "Whether every environment's values are under its own key (custody stage 6), so purging would leave every copy of the environment's values sealed since then unreadable, wherever it is held. Copies in recovery data captured before its values moved onto its key, and in management database backups, are not reached either way. Otherwise only copies sealed under its key are."}
       "required":
         - "id"
         - "projectId"
@@ -7326,6 +7680,16 @@
       properties:
         level: {type: string, enum: [tested, manual, not_applicable]}
         detail: {type: string}
+    PostgresRelease:
+      type: object
+      additionalProperties: false
+      required: [image, name, major, current, mount]
+      properties:
+        image: {type: string, description: Exact digest-pinned image reference.}
+        name: {type: string, description: 'Version people read, such as 18.6.'}
+        major: {type: integer}
+        current: {type: boolean, description: Whether a new database of this major runs this release.}
+        mount: {type: string, description: Where the image keeps its data volume.}
     CatalogRecipe:
       type: object
       additionalProperties: false
@@ -8054,11 +8418,15 @@
           "type": "boolean"
         "deleted":
           "type": "boolean"
+        "deleting":
+          "type": "boolean"
+          "description": "A delete of the volume hasn't ended. Until it does, no draft or plan may use the volume. If the delete fails or is cancelled, the volume is kept."
       "required":
         - "id"
         - "name"
         - "inUse"
         - "deleted"
+        - "deleting"
     "ManagedVolumes":
       "type": "array"
       "items":
@@ -8653,10 +9021,12 @@
         Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is
         approved again, after a restore, an import, a disconnected repository or its approver's role change.
         `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs.
-        `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only
-        owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an
-        owner to approve it again; a target that only builds automatically, an owner or operator.
-      enum: [current, approvalRequired, approverRemoved, approverRole, approverCredentials]
+        `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since.
+        `approverMfa`: the workspace requires two-factor authentication, which its approver hasn't set up; it runs
+        again if the requirement is turned off, or once it is approved by someone who has set it up. Only owners see
+        `approverCredentials` and `approverMfa`; others see `approvalRequired`. A paused Git source, or a target that
+        deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
+      enum: [current, approvalRequired, approverRemoved, approverRole, approverCredentials, approverMfa]
     ApproveGitSource:
       type: object
       additionalProperties: false
@@ -9210,6 +9580,18 @@
         region:
           type: string
           maxLength: 80
+        exposed:
+          type: boolean
+          description: >-
+            Whether a revoked server holds this S3 destination's storage keys: the server a policy
+            using it is bound to, or one a restore of such a policy was recorded for. It can delete
+            or overwrite any backup they reach until they are revoked at the provider. A new policy
+            on it needs an acknowledgement, and a backup_exposure alert fires for it.
+        policies:
+          type: array
+          maxItems: 100
+          description: The backup policies using this destination.
+          items: {$ref: '#/components/schemas/BackupDestinationPolicy'}
       required:
         - id
         - name
@@ -9218,6 +9600,54 @@
         - endpoint
         - bucket
         - region
+        - exposed
+        - policies
+    BackupInstallationDestination:
+      type: object
+      additionalProperties: false
+      description: A destination's configuration as a server receives it.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 80
+        kind:
+          type: string
+          enum:
+            - filesystem
+            - s3
+        root:
+          type: string
+          maxLength: 512
+        endpoint:
+          type: string
+          maxLength: 512
+        bucket:
+          type: string
+          maxLength: 63
+        region:
+          type: string
+          maxLength: 80
+      required:
+        - id
+        - name
+        - kind
+        - root
+        - endpoint
+        - bucket
+        - region
+    BackupDestinationPolicy:
+      type: object
+      additionalProperties: false
+      required: [id, name, projectId, environmentId, environmentName]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        projectId: {type: string, format: uuid}
+        environmentId: {type: string, format: uuid}
+        environmentName: {type: string}
     BackupAccess:
       type: object
       additionalProperties: false
@@ -9351,6 +9781,12 @@
         baseGeneration:
           type: integer
           format: int64
+        exposureAcknowledged:
+          type: boolean
+          description: >-
+            Required as true to create a policy on an exposed destination: the owner understands
+            that a revoked server can still delete or overwrite its backups until its storage keys
+            are revoked at the provider.
       required:
         - name
         - resourceId
@@ -9558,6 +9994,10 @@
         targetId:
           type: string
           format: uuid
+        restoreImage:
+          type: string
+          maxLength: 512
+          description: The pinned PostgreSQL image whose server filled the restore target. Absent on runs recorded before restores named it, which were filled by the archive's own image.
       required:
         - id
         - policyId
@@ -9574,6 +10014,20 @@
         - exitCode
         - manifest
         - targetId
+    BackupSnapshotReceipt:
+      type: object
+      additionalProperties: false
+      properties:
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        firstReportedAt:
+          type: string
+          format: date-time
+          description: When management first received the snapshot from an upload the policy's server reported, by management's clock.
+      required:
+        - snapshot
+        - firstReportedAt
     BackupStatus:
       type: object
       additionalProperties: false
@@ -9607,7 +10061,7 @@
         policy:
           $ref: '#/components/schemas/BackupPolicy'
         destination:
-          $ref: '#/components/schemas/BackupDestination'
+          $ref: '#/components/schemas/BackupInstallationDestination'
         access:
           $ref: '#/components/schemas/BackupAccess'
         repositoryId:
@@ -9657,6 +10111,134 @@
         - targetId
       x-go-type: jsontext.Value
       x-go-type-import: {path: encoding/json/jsontext}
+    BackupRecovery:
+      type: object
+      additionalProperties: false
+      description: >-
+        Restores a snapshot from a backup policy's repository onto a server other than the
+        policy's own. The installation is the source policy bound to the receiving server and the
+        plan applied there now.
+      properties:
+        installation:
+          $ref: '#/components/schemas/BackupInstallation'
+        runId:
+          type: string
+          format: uuid
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        targetId:
+          type: string
+          format: uuid
+      required: [installation, runId, snapshot, targetId]
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
+    BackupRecoveryResult:
+      type: object
+      additionalProperties: false
+      description: The snapshot a succeeded restore command restored into its target volume, and the manifest it verified the restored data against.
+      properties:
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        targetId:
+          type: string
+          format: uuid
+        manifest:
+          $ref: '#/components/schemas/BackupManifest'
+        restoreImage:
+          type: string
+          maxLength: 512
+          description: The pinned PostgreSQL release that restored a logical snapshot, which the database must be able to open at cutover. An agent sends it only to a controller that negotiated PostgreSQL releases; without it, the archive's own image restored the snapshot.
+      required: [snapshot, targetId, manifest]
+      x-go-type: jsontext.Value
+      x-go-type-import: {path: encoding/json/jsontext}
+    BackupRecoveryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        requestKey:
+          type: string
+          format: uuid
+        acknowledged:
+          type: boolean
+          enum: [true]
+          description: The owner understands that a server compromised before it was revoked could have uploaded altered data, which a restore's checks can't tell from genuine data.
+      required: [snapshot, requestKey, acknowledged]
+    BackupRecoveryRecord:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The restore's run ID, which labels what it creates on the receiving server.
+        operationId:
+          type: string
+          format: uuid
+        sourceServerId:
+          type: string
+          format: uuid
+        serverId:
+          type: string
+          format: uuid
+        planId:
+          type: string
+          format: uuid
+          description: The plan applied on the receiving server when the restore was issued.
+        snapshot:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        firstReportedAt:
+          type: string
+          format: date-time
+          description: When management first received the snapshot, by its own clock.
+        targetId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        state:
+          $ref: '#/components/schemas/ExecutionState'
+        note:
+          type: string
+        restored:
+          type: object
+          nullable: true
+          description: >-
+            Once the restore succeeded, the manifest read out of the snapshot that the restored data
+            matches. The data came from a server that may have been compromised. A restored
+            database's settings files were reset and its cluster checked on a best-effort basis
+            before the restore succeeded, which doesn't make it safe to use.
+          properties:
+            manifest:
+              $ref: '#/components/schemas/BackupManifest'
+          required: [manifest]
+          additionalProperties: false
+        targetDeleted:
+          type: boolean
+          description: Whether the server deleted the restore's volume once it was discarded.
+        discard:
+          type: object
+          nullable: true
+          description: >-
+            The latest discard of the restore's volume. While it is active the volume can't be cut
+            over to or discarded again. A succeeded one deleted it, as targetDeleted shows.
+          properties:
+            operationId:
+              type: string
+              format: uuid
+            state:
+              $ref: '#/components/schemas/ExecutionState'
+            note:
+              type: string
+          required: [operationId, state, note]
+          additionalProperties: false
+      required: [id, operationId, sourceServerId, serverId, planId, snapshot, firstReportedAt, targetId, createdAt, state, note, restored, targetDeleted, discard]
     BackupCommandRequest:
       type: object
       additionalProperties: false
@@ -9679,6 +10261,15 @@
         - action
         - requestKey
         - snapshot
+    BackupRecoveryCutoverRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        baseRevisionId:
+          type: string
+          format: uuid
+      required:
+        - baseRevisionId
     BackupCutoverRequest:
       type: object
       additionalProperties: false
@@ -10026,7 +10617,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held, backup_exposure]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}

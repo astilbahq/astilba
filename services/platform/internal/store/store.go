@@ -10,6 +10,7 @@ import (
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
+	"github.com/astilbahq/astilba/services/platform/internal/recoveryrows"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -392,8 +393,13 @@ func (s *Store) Rewrap(ctx context.Context, operator, reason string) (err error)
 }
 
 func (s *Store) rewrapValues(ctx context.Context, rotation *secretbroker.Rotation) error {
-	return s.Transaction(ctx, func(q *db.Queries) error {
+	return s.TransactionTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if err := q.LockBootstrap(ctx); err != nil {
+			return err
+		}
+		// Recovery's record of rows it restored moves to their content form before their values'
+		// keys move, in the same transaction, so a checkpoint from before the rewrap still merges.
+		if _, err := recoveryrows.RekeyAll(ctx, tx); err != nil {
 			return err
 		}
 		versions, err := q.AllEncryptedVersions(ctx)

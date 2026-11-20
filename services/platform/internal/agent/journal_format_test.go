@@ -364,29 +364,46 @@ func TestLocalStateFirstOpenSurvivesProcessCrash(t *testing.T) {
 	}
 }
 
+// An agent from before sealing, or from before private-link keys were sealed, refuses the journal
+// before it writes anything, the sealed private-link key included.
 func TestPreviousAgentRejectsSealedLocalStateBeforeJournalWrites(t *testing.T) {
 	previous := os.Getenv("PLAT_AGENT_PREVIOUS_BINARY")
 	if previous == "" {
 		t.Skip("requires the actual previous agent binary")
 	}
 	dir, _ := legacyJournal(t, nil)
-	j, err := OpenSealed(context.Background(), dir, func(context.Context) (KeyStore, error) { return InsecureKeyStore(), nil })
+	store := InsecureKeyStore()
+	j, err := OpenSealed(context.Background(), dir, func(context.Context) (KeyStore, error) { return store, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = j.db.Update(func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte("recovery-gc")) }); err != nil {
 		t.Fatal(err)
 	}
+	// The service seals a keyring an earlier agent left in the clear when it rekeys.
+	if err = j.Rekey(context.Background(), store); err != nil || readLocalState(t, dir).Version != StateVersion {
+		t.Fatal("the test proves nothing: the keyring isn't sealed", err)
+	}
+	member := uuid.New()
+	if _, err = (&Engine{Journal: j}).networkHost().Identity(context.Background(), member); err != nil {
+		t.Fatal(err)
+	}
 	j.Close()
 	before, _ := os.ReadFile(filepath.Join(dir, "journal.db"))
 	key, _ := os.ReadFile(filepath.Join(dir, "keyring.json"))
+	networkKey := networkKeyFile(t, dir, member)
+	if !sealedKeyFile(networkKey) {
+		t.Fatal("the test proves nothing: the private-link key isn't sealed")
+	}
 	out, err := exec.Command(previous, "inspect-upgrades", "--state", dir).CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "invalid or unsupported agent local state envelope") {
+	// Agents from before sealing can't parse the envelope; agents that seal only their keyring
+	// refuse its version.
+	if err == nil || !strings.Contains(string(out), "invalid or unsupported agent local state envelope") && !strings.Contains(string(out), "unsupported agent local state version") {
 		t.Fatalf("previous binary did not refuse the sealed keyring: %v %s", err, out)
 	}
 	after, _ := os.ReadFile(filepath.Join(dir, "journal.db"))
 	gotKey, _ := os.ReadFile(filepath.Join(dir, "keyring.json"))
-	if !bytes.Equal(before, after) || !bytes.Equal(key, gotKey) {
+	if !bytes.Equal(before, after) || !bytes.Equal(key, gotKey) || !bytes.Equal(networkKey, networkKeyFile(t, dir, member)) {
 		t.Fatal("previous binary wrote sealed state before refusing it")
 	}
 }

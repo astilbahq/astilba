@@ -89,6 +89,14 @@ func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, ho
 	if err != nil {
 		return s, err
 	}
+	// A preview's database is new storage, so it starts on its major's current release even while
+	// the template's own database stays on a retired one.
+	for i := range s.Applications {
+		if a := &s.Applications[i]; a.Postgres != nil && a.Source.Image != nil {
+			fresh := FreshPostgresImage(*a.Source.Image)
+			a.Source.Image = &fresh
+		}
+	}
 	routes := []Route{}
 	for _, r := range s.Routes {
 		r.Domain = hostname(r.TargetID)

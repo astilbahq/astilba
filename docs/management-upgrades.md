@@ -30,7 +30,15 @@ Upgrade management before the agents. These steps assume
 2. **Read what changed** between the two commits, especially
    `services/platform/db/migrations`, these docs and the agent: notes on agent compatibility
    tell you whether hosts need anything.
-3. **Pick a quiet moment**, with no deployment, backup or other operation running, and none
+3. **Check the custody stage.** The release notes, or `CustodyStage` in
+   `services/platform/db/migrate.go`, say which custody stage the new release completes. The
+   installation must have completed the stage before it, which `custody status` shows as
+   `custody stage`; run it with the image you run now:
+   `docker compose run --rm --no-deps platform custody status`. Stage 4 is the one no release
+   completes by starting: if it shows stage 3, upgrade to the stage 4 release first and run
+   [`custody convert`](hosting.md#converting-values) with it until it shows stage 4. A release
+   further ahead is refused before it changes anything.
+4. **Pick a quiet moment**, with no deployment, backup or other operation running, and none
    waiting for attention: agents still receive those. Stopping management does not wait for
    requests in progress. This shows how many operations are unfinished:
 
@@ -76,7 +84,11 @@ Upgrade management before the agents. These steps assume
    - you can sign in with your second factor;
    - every server shows as connected within a minute;
    - `custody status` lists no pending work once `serve` has created any missing
-     [workspace keys](hosting.md#workspace-keys), which it logs as it goes;
+     [workspace keys](hosting.md#workspace-keys), which it logs as it goes, other than running
+     `custody convert`. Until then, saving a value in a workspace without its key is refused as
+     temporarily busy. When it lists `custody convert`, run
+     [it](hosting.md#converting-values) five minutes after the old version stopped; that item is
+     not a failed check;
    - the log shows no errors: `docker compose logs --since 10m platform`.
 
 If any check fails, roll back now: the longer the new version runs, the more you lose.
@@ -91,8 +103,11 @@ there. A build queued by the newer version can carry a field the old version doe
 as the rootless builder's marker. The old version then refuses that runner's polls and the
 build's results, and can't end the build, so the runner gets no work until you upgrade again.
 Before rolling back, let queued builds finish, or cancel them and wait until each shows as
-ended: a build already sent to a runner ends only after that runner next polls. If the old image
-refuses to start, for whatever reason, restore instead:
+ended: a build already sent to a runner ends only after that runner next polls. A release before
+custody stage 2 cannot open values a release at stage 3 or later sealed, although it starts:
+from such a release, go back only to a stage 2 release or later, and restore to go further (see
+[workspace keys](hosting.md#workspace-keys)). If the old image refuses to start, for whatever
+reason, restore instead:
 
 1. Stop management.
 2. Before you replace the database, see whether the new version sent work to any server. This

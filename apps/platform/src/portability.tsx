@@ -7,7 +7,8 @@ import * as s from "./styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "./ui";
 
 export function WorkspaceExport({ workspaceId }: { workspaceId: string }) {
-  const action = useAction();
+  // An export carries the workspace's secrets, so it needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [saved, setSaved] = useState(false);
   return (
     <section className={s.panel}>
@@ -73,7 +74,8 @@ export function WorkspaceExport({ workspaceId }: { workspaceId: string }) {
 }
 
 export function WorkspaceImport({ hosted }: { hosted: boolean }) {
-  const action = useAction();
+  // An import stores the archive's secrets, so it needs a recent confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const [done, setDone] = useState(false);
   return (
     <details className={s.workspaceUtility}>
@@ -88,13 +90,14 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
       <Form
         action={action}
         label="Import workspace"
-        onSubmit={(data, form) =>
+        onSubmit={(data, form) => {
+          const file = data.get("archive");
+          if (!(file instanceof File) || !file.size || file.size > 33_554_484)
+            return action.reportInvalid(
+              form.elements.namedItem("archive"),
+              "Choose an Astilba archive no larger than 32 MiB.",
+            );
           action.run(async () => {
-            const file = data.get("archive");
-            if (!(file instanceof File) || !file.size || file.size > 33_554_484)
-              throw new Error(
-                "Choose an Astilba archive no larger than 32 MiB.",
-              );
             const bytes = new Uint8Array(await file.arrayBuffer());
             let binary = "";
             for (let at = 0; at < bytes.length; at += 32768)
@@ -110,8 +113,8 @@ export function WorkspaceImport({ hosted }: { hosted: boolean }) {
             );
             form.reset();
             setDone(true);
-          })
-        }
+          });
+        }}
       >
         <Label>
           Encrypted workspace archive

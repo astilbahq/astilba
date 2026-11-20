@@ -18,7 +18,7 @@ func TestCacheArchiveContainsOnlyBoundedOCILayout(t *testing.T) {
 	archive := func(extra *tar.Header) []byte {
 		var b bytes.Buffer
 		w := tar.NewWriter(&b)
-		for _, name := range []string{"cache-out", "cache-out/blobs", "cache-out/blobs/sha256", "cache-out/ingest"} {
+		for _, name := range []string{"cache-out", "cache-out/blobs", "cache-out/blobs/sha256", "cache-out/ingest", "cache-out/ingest-locks"} {
 			if err := w.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeDir, Mode: 0700}); err != nil {
 				t.Fatal(err)
 			}
@@ -29,8 +29,10 @@ func TestCacheArchiveContainsOnlyBoundedOCILayout(t *testing.T) {
 			}
 			_, _ = w.Write([]byte("{}"))
 		}
-		if err := w.WriteHeader(&tar.Header{Name: "cache-out/cache.lock", Typeflag: tar.TypeReg, Mode: 0600}); err != nil {
-			t.Fatal(err)
+		for _, name := range []string{"cache-out/cache.lock", "cache-out/ingest-locks/" + strings.Repeat("c", 64)} {
+			if err := w.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0600}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if extra != nil {
 			if err := w.WriteHeader(extra); err != nil {
@@ -59,6 +61,10 @@ func TestCacheArchiveContainsOnlyBoundedOCILayout(t *testing.T) {
 		{Name: "cache-out/link", Typeflag: tar.TypeSymlink, Linkname: "/workspace/auth"},
 		{Name: "cache-out/blobs/sha256/" + strings.Repeat("b", 64), Typeflag: tar.TypeReg, Size: cacheEntryBytes + 1},
 		{Name: "cache-out/index.json", Typeflag: tar.TypeReg},
+		// Only BuildKit's empty, digest-named locks pass.
+		{Name: "cache-out/ingest-locks/" + strings.Repeat("d", 64), Typeflag: tar.TypeReg, Size: 1},
+		{Name: "cache-out/ingest-locks/notadigest", Typeflag: tar.TypeReg},
+		{Name: "cache-out/ingest-locks/" + strings.Repeat("e", 64), Typeflag: tar.TypeSymlink, Linkname: "/workspace/auth"},
 	} {
 		if err := writeCacheArchive(io.Discard, bytes.NewReader(archive(h))); err == nil {
 			t.Fatal("accepted unsafe cache entry", h.Name)

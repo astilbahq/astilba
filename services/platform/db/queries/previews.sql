@@ -53,6 +53,15 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id;
 -- Discovery waits a cycle while its workspace has a backlog of request jobs.
 UPDATE preview_policies SET next_discovery_at = now() + interval '5 minutes' WHERE workspace_id = @workspace_id AND id = @id;
 
+-- name: PreviewApproverHolds :one
+-- Whether an owner's approval to run previews, or to clean one up, on server still holds: the
+-- check every standing approval makes, and the server is still the preview host it was approved
+-- for, with the controller generation it had then.
+SELECT (policy_approver_holds(@workspace_id::uuid, @actor_id::uuid, @auth_version::bigint, true)
+    AND EXISTS(SELECT 1 FROM servers s WHERE s.workspace_id = @workspace_id::uuid AND s.id = @server_id::uuid
+        AND s.controller_generation = @controller_generation::bigint AND s.preview_only AND s.role = 'combined'
+        AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false)))::boolean;
+
 -- name: PreviewForkApproval :one
 -- A fork commit's approval counts only while the owner who gave it is still one with the same
 -- authentication version; otherwise it reads as no approval.

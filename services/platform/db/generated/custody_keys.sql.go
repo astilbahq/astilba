@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceCustodyStage = `-- name: AdvanceCustodyStage :execrows
@@ -189,7 +190,7 @@ func (q *Queries) InsertWorkspaceKeyWrapping(ctx context.Context, arg InsertWork
 }
 
 const installationKeyWrappings = `-- name: InstallationKeyWrappings :many
-SELECT k.generation,k.kcv,w.wrapped FROM installation_keys k
+SELECT k.generation,k.state,k.sealable,k.kcv,w.wrapped FROM installation_keys k
 LEFT JOIN installation_key_wrappings w ON w.scope = k.scope AND w.generation = k.generation
     AND w.purpose = $1 AND w.backend_id = $2
 WHERE k.scope = $3 AND k.state = ANY($4::text[])
@@ -205,6 +206,8 @@ type InstallationKeyWrappingsParams struct {
 
 type InstallationKeyWrappingsRow struct {
 	Generation int64  `json:"generation"`
+	State      string `json:"state"`
+	Sealable   bool   `json:"sealable"`
 	Kcv        []byte `json:"kcv"`
 	Wrapped    []byte `json:"wrapped"`
 }
@@ -225,7 +228,13 @@ func (q *Queries) InstallationKeyWrappings(ctx context.Context, arg Installation
 	items := []InstallationKeyWrappingsRow{}
 	for rows.Next() {
 		var i InstallationKeyWrappingsRow
-		if err := rows.Scan(&i.Generation, &i.Kcv, &i.Wrapped); err != nil {
+		if err := rows.Scan(
+			&i.Generation,
+			&i.State,
+			&i.Sealable,
+			&i.Kcv,
+			&i.Wrapped,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -245,6 +254,20 @@ func (q *Queries) InstallationScopeHasKeys(ctx context.Context, scope string) (b
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const instancesBelowStageSinceRecorded = `-- name: InstancesBelowStageSinceRecorded :one
+SELECT count(*)::bigint FROM custody_instances i, custody_stage s
+WHERE i.seen_at > s.advanced_at AND (i.stage IS NULL OR i.stage < $1::integer)
+`
+
+// unscoped: instances seen since the custody stage was last recorded whose release completes a
+// stage before @stage, or reports none.
+func (q *Queries) InstancesBelowStageSinceRecorded(ctx context.Context, stage int32) (int64, error) {
+	row := q.db.QueryRow(ctx, instancesBelowStageSinceRecorded, stage)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const keyProgress = `-- name: KeyProgress :one
@@ -274,6 +297,18 @@ func (q *Queries) KeyProgress(ctx context.Context) (KeyProgressRow, error) {
 	return i, err
 }
 
+const lockCustodyStage = `-- name: LockCustodyStage :one
+SELECT stage FROM custody_stage FOR UPDATE
+`
+
+// unscoped: the custody stage, held until the transaction ends so it is not recorded meanwhile.
+func (q *Queries) LockCustodyStage(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, lockCustodyStage)
+	var stage int32
+	err := row.Scan(&stage)
+	return stage, err
+}
+
 const pruneCustodyInstances = `-- name: PruneCustodyInstances :exec
 DELETE FROM custody_instances WHERE seen_at < now() - interval '1 day'
 `
@@ -285,17 +320,36 @@ func (q *Queries) PruneCustodyInstances(ctx context.Context) error {
 }
 
 const recordCustodyInstance = `-- name: RecordCustodyInstance :exec
-INSERT INTO custody_instances(instance_id,token_generations) VALUES($1,$2)
-ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, seen_at = now()
+INSERT INTO custody_instances(instance_id,token_generations,stage) VALUES($1,$2,$3)
+ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, stage = EXCLUDED.stage, seen_at = now()
 `
 
 type RecordCustodyInstanceParams struct {
-	InstanceID       uuid.UUID `json:"instance_id"`
-	TokenGenerations []int64   `json:"token_generations"`
+	InstanceID       uuid.UUID   `json:"instance_id"`
+	TokenGenerations []int64     `json:"token_generations"`
+	Stage            pgtype.Int4 `json:"stage"`
 }
 
+// An instance reports the token key generations it holds, and the custody stage its release
+// completes.
 func (q *Queries) RecordCustodyInstance(ctx context.Context, arg RecordCustodyInstanceParams) error {
-	_, err := q.db.Exec(ctx, recordCustodyInstance, arg.InstanceID, arg.TokenGenerations)
+	_, err := q.db.Exec(ctx, recordCustodyInstance, arg.InstanceID, arg.TokenGenerations, arg.Stage)
+	return err
+}
+
+const revertCustodyStage = `-- name: RevertCustodyStage :exec
+UPDATE custody_stage SET stage = $1, advanced_at = now() WHERE stage = $2
+`
+
+type RevertCustodyStageParams struct {
+	Back    int32 `json:"back"`
+	Current int32 `json:"current"`
+}
+
+// Records an installation as back at @back, from @current, once what @current says stopped being
+// true, while LockCustodyStage holds it.
+func (q *Queries) RevertCustodyStage(ctx context.Context, arg RevertCustodyStageParams) error {
+	_, err := q.db.Exec(ctx, revertCustodyStage, arg.Back, arg.Current)
 	return err
 }
 
@@ -371,6 +425,59 @@ func (q *Queries) ShareCustodyBackendsVersion(ctx context.Context) (int64, error
 	return version, err
 }
 
+const shareSealableInstallationKey = `-- name: ShareSealableInstallationKey :one
+SELECT generation FROM installation_keys WHERE scope = $1 AND generation = $2
+    AND state = 'active' AND sealable FOR SHARE
+`
+
+type ShareSealableInstallationKeyParams struct {
+	Scope      string `json:"scope"`
+	Generation int64  `json:"generation"`
+}
+
+func (q *Queries) ShareSealableInstallationKey(ctx context.Context, arg ShareSealableInstallationKeyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, shareSealableInstallationKey, arg.Scope, arg.Generation)
+	var generation int64
+	err := row.Scan(&generation)
+	return generation, err
+}
+
+const shareSealableWorkspaceKey = `-- name: ShareSealableWorkspaceKey :one
+SELECT generation FROM workspace_keys WHERE workspace_id = $1 AND generation = $2
+    AND state = 'active' AND sealable FOR SHARE
+`
+
+type ShareSealableWorkspaceKeyParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	Generation  int64     `json:"generation"`
+}
+
+// Held until the transaction storing a value sealed under the generation commits, so it cannot
+// stop being the one new values are sealed under before then.
+func (q *Queries) ShareSealableWorkspaceKey(ctx context.Context, arg ShareSealableWorkspaceKeyParams) (int64, error) {
+	row := q.db.QueryRow(ctx, shareSealableWorkspaceKey, arg.WorkspaceID, arg.Generation)
+	var generation int64
+	err := row.Scan(&generation)
+	return generation, err
+}
+
+const tokenIssuingGeneration = `-- name: TokenIssuingGeneration :one
+SELECT COALESCE(max(k.generation), 0)::bigint FROM installation_keys k
+WHERE k.scope = 'token' AND k.state IN ('active', 'retiring') AND k.sealable
+    AND NOT EXISTS(SELECT 1 FROM custody_instances i
+        WHERE i.seen_at > now() - interval '5 minutes' AND NOT k.generation = ANY(i.token_generations))
+`
+
+// The newest token key generation that may seal and that every instance seen in the last five
+// minutes reports holding, or 0 while there is none. An instance seen less often than that has
+// stopped, and loads every generation before it serves again.
+func (q *Queries) TokenIssuingGeneration(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, tokenIssuingGeneration)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const tryLockKeyCreation = `-- name: TryLockKeyCreation :one
 SELECT pg_try_advisory_lock(hashtextextended($1::text, 4281642306))
 `
@@ -408,7 +515,7 @@ func (q *Queries) WorkspaceHasKeys(ctx context.Context, workspaceID uuid.UUID) (
 
 const workspaceKeyWrappings = `-- name: WorkspaceKeyWrappings :many
 
-SELECT k.generation,k.kcv,w.wrapped FROM workspace_keys k
+SELECT k.generation,k.state,k.sealable,k.kcv,w.wrapped FROM workspace_keys k
 LEFT JOIN workspace_key_wrappings w ON w.workspace_id = k.workspace_id AND w.generation = k.generation
     AND w.purpose = $1 AND w.backend_id = $2
 WHERE k.workspace_id = $3 AND k.state = ANY($4::text[])
@@ -424,6 +531,8 @@ type WorkspaceKeyWrappingsParams struct {
 
 type WorkspaceKeyWrappingsRow struct {
 	Generation int64  `json:"generation"`
+	State      string `json:"state"`
+	Sealable   bool   `json:"sealable"`
 	Kcv        []byte `json:"kcv"`
 	Wrapped    []byte `json:"wrapped"`
 }
@@ -446,7 +555,13 @@ func (q *Queries) WorkspaceKeyWrappings(ctx context.Context, arg WorkspaceKeyWra
 	items := []WorkspaceKeyWrappingsRow{}
 	for rows.Next() {
 		var i WorkspaceKeyWrappingsRow
-		if err := rows.Scan(&i.Generation, &i.Kcv, &i.Wrapped); err != nil {
+		if err := rows.Scan(
+			&i.Generation,
+			&i.State,
+			&i.Sealable,
+			&i.Kcv,
+			&i.Wrapped,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

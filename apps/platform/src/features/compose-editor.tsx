@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { client, result, type Schema } from "../api/client";
+import { secretsOptions } from "../api/environment";
 import { Button } from "../components/button";
 import { Label } from "../components/label";
 import { Select } from "../components/select";
@@ -42,16 +43,7 @@ export function ComposeEditor({
   const savedFiles = baseFiles;
   const [proposalBase, setProposalBase] = useState("");
   const mutation = useAction();
-  const secrets = useQuery({
-    queryKey: ["secrets", path],
-    queryFn: () =>
-      result(
-        client.GET(
-          "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets",
-          { params: { path } },
-        ),
-      ),
-  });
+  const secrets = useQuery(secretsOptions(path));
   const serialized = JSON.stringify(spec);
   const serializedRef = useRef(serialized);
   serializedRef.current = serialized;
