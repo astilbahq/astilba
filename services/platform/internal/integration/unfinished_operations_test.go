@@ -338,7 +338,8 @@ SELECT 'platform_execution_v1',jsonb_build_object('id',id),'completed',1,25,now(
 		grows := c[2]-c[1] > 2*(c[1]-c[0])+1 && c[2] > c[0]*1.05+10
 		excepted, isExcepted := historyReader(q, historyReaders)
 		bound, bounded := historyReader(q, boundedReaders)
-		for _, r := range []historyReaderEntry{excepted, bound} {
+		// A statement may be listed more than once, for each index that bounds a part of it.
+		for _, r := range append([]historyReaderEntry{excepted}, matchingReaders(q, boundedReaders)...) {
 			if all, unkeyed := reads(p, r.index, r.key); r.index != "" && (all == 0 || unkeyed > 0) {
 				t.Errorf("%s no longer reads %s with %q in every condition, which bounds what it reads: give it that index and condition back, or bound it another way and change its entry", q, r.index, r.key)
 			}
@@ -418,8 +419,6 @@ var historyReaders = []historyReaderEntry{
 	{"StampOperationControllerGenerations", "", "offline recovery stamps every operation with its host's controller generation; PLAT-323 bounds it", "", ""},
 	{"RaiseServerUpdateGenerations", "", "offline recovery raises each host's generation past every command it ran; PLAT-323 bounds it", "", ""},
 	{"EnvironmentSecretVersionsInUse", "", "it reads every plan the environment has made to find those that can still be applied; PLAT-400 bounds it", "", ""},
-	{"recovery_history.go/recoveryLedger", "", "it reads every applied runtime change in the workspace to find each environment's floor; PLAT-352 bounds it", "", ""},
-	{"recovery_history.go/recoveryWindowStart", "", "it reads every applied runtime change in the workspace to find the window's items; PLAT-352 bounds it", "execution_operations_settled", "ended_at"},
 }
 
 // boundedReaders are statements whose estimate rises with history though they read only part of
@@ -428,15 +427,30 @@ var historyReaders = []historyReaderEntry{
 // generic plan doesn't know, so it guesses the window holds a third of the rows. They are still
 // held to the JIT threshold, and to the index that bounds them: the one returning rows in the
 // LIMIT's order, or the one by end time, every read of which must hold the end time in its
-// condition. Each is listed whole, so its other branches are held only to the plan's other checks.
+// condition. A statement bounded by more than one index is listed once for each, and is held to
+// all of them; its branches no entry names are held only to the plan's other checks.
 var boundedReaders = []historyReaderEntry{
 	{"export_selection.go/exportSelection", "ORDER BY o.created_at DESC,o.id DESC LIMIT 20", "it reaches each environment's 20 newest deployments", "execution_releases", ""},
 	{"releases.go/(*Service).ReleaseHistory", "LIMIT 20", "it reaches the environment's 20 newest deployments", "execution_releases", ""},
 	{"recovery_history.go/recoverySettled", "", "it reads the roots and runtime changes that ended inside the recovery window", "execution_operations_settled", "ended_at"},
+	{"recovery_history.go/recoveryWindowStart", "", "it reads the runtime changes recorded or ended near the recovery window", "execution_operations_applied_times", "GREATEST"},
+	{"recovery_history.go/recoveryWindowStart", "o.kind='crosshost'", "it reads the roots that ended inside the recovery window", "execution_operations_settled", "ended_at"},
+	{"recovery_history.go/recoveryLedger", "unnest(", "it reads each carried environment's runtime changes at and above its floor, which all count inside the recovery window but the floor's own", "execution_operations_applied_history", "generation"},
 	{"base_selection.go/baseSelection", "'restrict'", "it reads the standalone network removals that ended inside the recovery window", "execution_network_restrictions", "ended_at"},
 }
 
-// historyReader is the entry listing a statement, if one does.
+// matchingReaders is every entry listing a statement.
+func matchingReaders(q operationQuery, readers []historyReaderEntry) []historyReaderEntry {
+	out := []historyReaderEntry{}
+	for _, r := range readers {
+		if q.name == r.name && strings.Contains(q.sql, r.fragment) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// historyReader is the first entry listing a statement, if one does.
 func historyReader(q operationQuery, readers []historyReaderEntry) (historyReaderEntry, bool) {
 	for _, r := range readers {
 		if q.name == r.name && strings.Contains(q.sql, r.fragment) {
@@ -533,7 +547,7 @@ func temporaryTables(code []moduleString) []string {
 type moduleString struct{ at, owner, value string }
 
 // moduleStrings is every constant string in the module's code, sqlc's generated code included. A
-// string built from constants, such as recoveryChanges+recoveryFloors+`SELECT …`, is taken whole
+// string built from constants, such as a shared prefix+`SELECT …`, is taken whole
 // where it is used, so a fragment isn't taken alone; a constant used by name is placed where it is
 // declared, and one nothing uses is taken there too.
 func moduleStrings(t *testing.T) []moduleString {

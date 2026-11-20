@@ -29,6 +29,14 @@ func (s *Service) hydrateCrossHost(ctx context.Context, keys valueKeys, c *api.E
 	if !enabled {
 		return domain.Forbidden
 	}
+	if err := requireAgentSupport(ctx, s.Store.Pool, ws, c.ServerId, p.Unit.Plan.Specification); err != nil {
+		return err
+	}
+	if p.Maintenance != nil && p.Maintenance.Target != nil {
+		if err := requireAgentSupport(ctx, s.Store.Pool, ws, c.ServerId, p.Maintenance.Target.Specification); err != nil {
+			return err
+		}
+	}
 	if keys == nil {
 		return nil
 	}
@@ -57,7 +65,7 @@ func (s *Service) hydrateCrossHost(ctx context.Context, keys valueKeys, c *api.E
 			if err != nil {
 				return err
 			}
-			plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, v.EncryptedValue)
+			plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id, Environment: c.EnvironmentId}, v.EncryptedValue)
 			if err != nil {
 				return err
 			}

@@ -13,6 +13,7 @@ import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { DeploymentTarget } from "./deployment-target";
+import { ManagedVolumes } from "./managed-volumes";
 import { PreparedPlan, usePreparedPlan } from "./prepared-plan";
 import { ReleaseHistory } from "./release-history";
 import type { EnvironmentPath } from "./visual-editor";
@@ -54,11 +55,6 @@ export function Deployments({
   });
   const plan = usePreparedPlan(path, revision.id);
   const runtime = useQuery(runtimeOptions(path));
-  const volumes = useQuery({
-    queryKey: ["volumes", path],
-    queryFn: () => result(client.GET(`${root}/volumes`, { params: { path } })),
-    refetchInterval: 5000,
-  });
   const operations = useQuery({
     queryKey: ["operations", path.workspaceId],
     queryFn: () =>
@@ -613,49 +609,15 @@ export function Deployments({
             </div>
           </>
         )}
-        <ul className={s.list}>
-          {volumes.data?.map((volume) => {
-            const used = volume.inUse;
-            return (
-              <li key={volume.id}>
-                {volume.name} ·{" "}
-                {volume.deleted ? "Deleted" : used ? "Attached" : "Retained"}
-                {owner && (
-                  <Button
-                    type="button"
-                    disabled={
-                      used || volume.deleted || dirty || action.isPending
-                    }
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Permanently delete all data in ${volume.name}? This cannot be undone.`,
-                        )
-                      )
-                        action.run(async () => {
-                          await result(
-                            client.DELETE(`${root}/volumes/{volumeId}`, {
-                              params: {
-                                path: { ...path, volumeId: volume.id },
-                              },
-                            }),
-                          );
-                          removeVolume(volume.id);
-                          setMessage(
-                            revision.specification.compose
-                              ? "Data-volume deletion queued. Check its result, then remove the unused volume declaration from your source files before deploying again."
-                              : "Data-volume deletion queued and removal staged. Check the operation result, then save the configuration revision.",
-                          );
-                        });
-                    }}
-                  >
-                    Delete data volume permanently
-                  </Button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <ManagedVolumes
+          path={path}
+          action={action}
+          owner={owner}
+          dirty={dirty}
+          compose={!!revision.specification.compose}
+          removeVolume={removeVolume}
+          setMessage={setMessage}
+        />
       </details>
     </section>
   );

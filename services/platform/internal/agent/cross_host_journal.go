@@ -158,7 +158,7 @@ func (e *Engine) finishCrossHost(c api.ExecutionCommand, command deployment.Cros
 		}
 		r.Report.Crosshost = raw
 		r.Report.State = "succeeded"
-		r.Report.Note = note
+		r.Report.Note = reportNote(note)
 		r.Report.Sequence++
 		if err := e.Journal.put(tx, "operations", c.Id.String(), r); err != nil {
 			return err

@@ -38,6 +38,9 @@ var (
 	// ErrCanaryMismatch is a canary the configured backend cannot open: a different keyring or
 	// provider key, or a database copied under another installation ID.
 	ErrCanaryMismatch = errors.New("the configured key backend cannot open the installation's canary")
+	// ErrBackendRefused is a key backend that will not serve the installation's keys: it refuses
+	// management's sign-in, or holds a key that could leave it, such as an exportable one.
+	ErrBackendRefused = errors.New("the configured key backend refuses to serve the installation's keys")
 	// ErrKeyringMismatch is a keyring that cannot open the values already stored, met before any
 	// canary exists to say so: a database restored or upgraded from before canaries.
 	ErrKeyringMismatch = errors.New("the configured keyring cannot open the installation's stored secrets")
@@ -68,6 +71,13 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 	if pinned != uuid.Nil && pinned != id {
 		return refuse(ErrInstallationMismatch, map[string]string{"configured": pinned.String()})
 	}
+	// A backend that refuses is recorded; one that cannot be reached is tried again at the next start.
+	if err = b.backend.Check(ctx); err != nil {
+		if errors.Is(err, custody.ErrDenied) {
+			return fmt.Errorf("%w: %w", refuse(ErrBackendRefused, map[string]string{"reason": err.Error()}), err)
+		}
+		return err
+	}
 	if err = b.register(ctx, pool, run); err != nil {
 		if errors.Is(err, ErrBackendNotRegistered) {
 			return refuse(err, map[string]string{})
@@ -82,12 +92,19 @@ func (b *Broker) Install(ctx context.Context, pool Pool, pinned uuid.UUID, opera
 		}
 		for _, c := range canaries {
 			class := custody.Class(c.Class)
-			if !operator && !custody.ServingDecrypts(class) {
+			// Each start checks every class it may unwrap under: serving all but rotate, and the
+			// operator every class, or only rotate where a key service's policy allows no more.
+			if !custody.MayUnwrap(b.backend, class, operator) {
 				continue
 			}
 			if err = custody.CheckCanary(ctx, b.backend, class, id, c.Wrapped); err != nil {
-				if errors.Is(err, custody.ErrInvalid) || errors.Is(err, custody.ErrDenied) {
+				switch {
+				case errors.Is(err, custody.ErrInvalid):
 					return nil, refuse(ErrCanaryMismatch, map[string]string{"class": c.Class})
+				// The key service would not let this identity unwrap, as with the serving
+				// identity's credentials given to an operator's command.
+				case errors.Is(err, custody.ErrDenied):
+					return nil, fmt.Errorf("%w: %w", refuse(ErrBackendRefused, map[string]string{"class": c.Class, "reason": err.Error()}), err)
 				}
 				return nil, err
 			}
@@ -130,6 +147,7 @@ var causes = map[error]string{
 	ErrBackendNotRegistered: "backend",
 	ErrCanaryMismatch:       "canary",
 	ErrKeyringMismatch:      "keyring",
+	ErrBackendRefused:       "backend-refused",
 }
 
 // register makes the configured backend the installation's first, or checks it is already one the
@@ -235,7 +253,7 @@ func (b *Broker) checkStored(ctx context.Context, pool Pool, run uuid.UUID) erro
 			break
 		}
 	}
-	if err = b.outcome(ctx, id, outcome); err != nil {
+	if err = b.outcome(ctx, id, outcome, nil); err != nil {
 		return err
 	}
 	if outcome == Failed {
@@ -256,9 +274,14 @@ type keyEvent struct {
 	details    map[string]string
 }
 
+// keyEventWriter is the transaction a key event is recorded in. *db.Queries provides it.
+type keyEventWriter interface {
+	InsertInstallationKeyEvent(ctx context.Context, arg db.InsertInstallationKeyEventParams) error
+}
+
 // event records a key event. It never fails silently: a command that cannot record what it does
 // does not do it.
-func (b *Broker) event(ctx context.Context, q *db.Queries, e keyEvent) error {
+func (b *Broker) event(ctx context.Context, q keyEventWriter, e keyEvent) error {
 	if e.details == nil {
 		e.details = map[string]string{}
 	}
@@ -292,10 +315,15 @@ type Status struct {
 	Unfinished []db.UnfinishedCustodyRunsRow
 	// Keys is how far creating workspace, installation and token keys has got.
 	Keys db.KeyProgressRow
+	// Legacy is, for each kind with stored values, how many there are and how many of them are
+	// still sealed under the installation keyring.
+	Legacy []db.LegacyValueCountsRow
 }
 
-// Status reads the installation's custody and checks every canary, changing nothing.
-func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Status, error) {
+// Status reads the installation's custody and checks every canary, changing nothing. operator says
+// the backend signs in as the operator, not as serving: a key service lets each open only its own
+// classes, so a canary of the other's that it refuses is reported as such, not as one that is wrong.
+func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID, operator bool) (Status, error) {
 	q := db.New(pool)
 	var s Status
 	var err error
@@ -315,11 +343,15 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 		s.Canaries[class] = "missing"
 	}
 	for _, c := range canaries {
+		class := custody.Class(c.Class)
 		state := "ok"
-		if err := custody.CheckCanary(ctx, b.backend, custody.Class(c.Class), s.Installation, c.Wrapped); err != nil {
+		if err := custody.CheckCanary(ctx, b.backend, class, s.Installation, c.Wrapped); err != nil {
 			state = err.Error()
+			if errors.Is(err, custody.ErrDenied) && !custody.MayUnwrap(b.backend, class, operator) {
+				state = notTheirs
+			}
 		}
-		s.Canaries[custody.Class(c.Class)] = state
+		s.Canaries[class] = state
 	}
 	if s.Stage, err = q.CustodyStage(ctx); err != nil {
 		return s, err
@@ -327,9 +359,16 @@ func (b *Broker) Status(ctx context.Context, pool Pool, pinned uuid.UUID) (Statu
 	if s.Keys, err = q.KeyProgress(ctx); err != nil {
 		return s, err
 	}
+	if s.Legacy, err = q.LegacyValueCounts(ctx); err != nil {
+		return s, err
+	}
 	s.Unfinished, err = q.UnfinishedCustodyRuns(ctx)
 	return s, err
 }
+
+// notTheirs is a canary status could not check, because the credentials it runs with may not
+// unwrap under its class: only the other identity's start checks it.
+const notTheirs = "present; the other identity's start checks it"
 
 // Pending lists what an operator still has to do, or what the next start does, in plain words.
 func (s Status) Pending() []string {
@@ -348,7 +387,7 @@ func (s Status) Pending() []string {
 	}
 	for _, class := range custody.Classes {
 		switch state := s.Canaries[class]; state {
-		case "ok":
+		case "ok", notTheirs:
 		case "missing":
 			out = append(out, "the "+string(class)+" canary is missing: the next start makes it")
 		default:
@@ -357,6 +396,21 @@ func (s Status) Pending() []string {
 	}
 	if missing := s.Keys.Workspaces - s.Keys.WithKeys; missing > 0 || !s.Keys.Installation || !s.Keys.Token {
 		out = append(out, fmt.Sprintf("%d of %d workspaces have keys, installation key %s, token key %s: `serve` creates the rest in the background, or run `astilba custody init-keys`", s.Keys.WithKeys, s.Keys.Workspaces, present(s.Keys.Installation), present(s.Keys.Token)))
+	}
+	var legacy, outside int64
+	for _, c := range s.Legacy {
+		legacy += c.Remaining
+		outside += c.Outside
+	}
+	switch {
+	case legacy > 0 && s.Stage >= convertStage:
+		out = append(out, fmt.Sprintf("%d values are sealed under the installation keyring although they were converted: an instance running an older release stored them. Upgrade it, then run `astilba custody convert` again", legacy))
+	case legacy > 0:
+		out = append(out, fmt.Sprintf("%d values are still sealed under the installation keyring: run `astilba custody convert`", legacy))
+	case outside > 0:
+		out = append(out, fmt.Sprintf("%d environment values are under their workspace's key rather than their environment's: run `astilba custody convert`", outside))
+	case s.Stage == sealEnvironmentsStage-1:
+		out = append(out, "every environment's values are under its own key: run `astilba custody convert` to record it")
 	}
 	for _, run := range s.Unfinished {
 		out = append(out, fmt.Sprintf("%s run %s at %s has no finish, and no run since has succeeded: it stopped part way or is running now", run.Kind, run.RunID, run.At.UTC().Format(time.RFC3339)))

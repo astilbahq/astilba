@@ -29,13 +29,14 @@ func (s *Service) sealing(ctx context.Context, p store.Principal, ws uuid.UUID, 
 	return keys, func(stored bool) { keys.Close(ctx, secretbroker.UsedIf(stored)) }, nil
 }
 
-func sealIntegration(keys *secretbroker.Session, item secretbroker.Item, value any) ([]byte, error) {
+// sealIntegration seals an integration's settings in q, the transaction that stores them.
+func sealIntegration(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, item secretbroker.Item, value any) ([]byte, error) {
 	raw, err := stablejson.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
 	defer clear(raw)
-	return keys.Seal(item, raw)
+	return keys.Seal(ctx, q, item, raw)
 }
 
 func openIntegration(keys *secretbroker.Session, item secretbroker.Item, raw []byte, value any) error {
@@ -148,7 +149,7 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		if err != nil {
 			return err
 		}
-		encrypted, err := sealIntegration(session, item, access)
+		encrypted, err := sealIntegration(ctx, q, session, item, access)
 		if err != nil {
 			return err
 		}
@@ -205,7 +206,7 @@ func (s *Service) CreateRegistry(ctx context.Context, p store.Principal, ws uuid
 		if count >= 100 {
 			return domain.Conflict
 		}
-		encrypted, err := sealIntegration(keys, item, access)
+		encrypted, err := sealIntegration(ctx, q, keys, item, access)
 		if err != nil {
 			return err
 		}
@@ -263,7 +264,7 @@ func (s *Service) CreateBuildSecret(ctx context.Context, p store.Principal, ws u
 		if count >= 100 {
 			return domain.Conflict
 		}
-		cipher, err := keys.Seal(item, []byte(value))
+		cipher, err := keys.Seal(ctx, q, item, []byte(value))
 		if err != nil {
 			return err
 		}

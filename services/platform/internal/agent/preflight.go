@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/moby/moby/client"
@@ -136,6 +137,13 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.Retirement = &visual
 	h.Capabilities.Purge = &visual
 	h.Capabilities.ServiceOutputs = &visual
+	if visual {
+		releases := []string{}
+		for _, r := range domain.PostgresReleases() {
+			releases = append(releases, r.Image)
+		}
+		h.Capabilities.PostgresReleases = &releases
+	}
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual
 	switch {
@@ -158,6 +166,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	backups := visual && resticErr == nil && strings.HasPrefix(string(restic), "restic "+backup.ResticVersion+" ")
 	h.Capabilities.Backups = &backups
 	h.Capabilities.Schedules = &backups
+	h.Capabilities.RecoveryRestore = &backups
 	h.Capabilities.Upgrades = &backups
 
 	if err != nil {

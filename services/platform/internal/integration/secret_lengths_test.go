@@ -20,6 +20,11 @@ import (
 // measuring job stores them.
 func TestPlanningMeasuresSecretsWithoutOpeningThem(t *testing.T) {
 	f := setup(t)
+	// The workers measure every version without lengths once, when they start, and again only
+	// after six hours. Let that pass finish before the test clears any lengths: it would otherwise
+	// measure a version between the clearing and the plan, which then opens nothing. After it, the
+	// test calls MeasureSecretLengths itself, and nothing measures in the background.
+	lengthsSettled(t, f.st)
 	ctx := context.Background()
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
@@ -63,8 +68,7 @@ func TestPlanningMeasuresSecretsWithoutOpeningThem(t *testing.T) {
 			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/report", token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Observation: (*jsontext.Value)(&raw)}, 204, nil)
 		}
 	}
-	// Planning opens values for the account that plans; the measuring job, which may also run at
-	// any time, records itself.
+	// Planning opens values for the account that plans; the measuring job records itself.
 	inspected := func() int {
 		t.Helper()
 		var n int

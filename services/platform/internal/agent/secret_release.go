@@ -5,26 +5,34 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/google/uuid"
 )
 
 // acceptReleased journals a polled command and settles its secret release. A command that
 // brings its values is acknowledged once it is journaled, so management does not send them
 // again; one that comes without them is accepted only when the journal already holds it, and
-// otherwise the values it lost are asked for again.
+// otherwise the values it lost are asked for again. So are the values of a command retried after
+// it gave them up while it waited for attention (awaitValues).
 func (c *Client) acceptReleased(ctx context.Context, command api.ExecutionCommand) error {
 	release := command.SecretRelease
 	if release != nil && !release.Values {
 		if _, err := c.Journal.Record(command.Id); errors.Is(err, os.ErrNotExist) {
-			notice := api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: command.Id, Epoch: release.Epoch, Reason: api.JournalMissing}}}
-			return c.call(ctx, "POST", "/agent/v1/releases", notice, nil, authAgent)
+			return c.requestRedelivery(ctx, command.Id, release.Epoch)
 		} else if err != nil {
 			return err
 		}
 	}
-	if _, err := c.acceptPolledCommand(command); err != nil {
+	record, err := c.acceptPolledCommand(command)
+	if err != nil {
 		return err
+	}
+	if release != nil && !release.Values && record.ValuesWanted && !record.Command.CancelRequested {
+		// The journal holds the command but not its values: the redelivery a lost record asks
+		// for. Management's release checks decide again whether they may go.
+		return c.requestRedelivery(ctx, command.Id, release.Epoch)
 	}
 	if release != nil && release.Values {
 		ref := api.SecretReleaseRef{OperationId: command.Id, Epoch: release.Epoch, Digest: release.Digest}
@@ -36,6 +44,54 @@ func (c *Client) acceptReleased(ctx context.Context, command api.ExecutionComman
 	// sent again on the next poll if this one fails.
 	_ = c.acknowledgeReleases(ctx)
 	return nil
+}
+
+// requestRedelivery tells management that this instance's journal does not hold a command's values,
+// so its next poll releases them again if they may still go.
+func (c *Client) requestRedelivery(ctx context.Context, id uuid.UUID, epoch int64) error {
+	notice := api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: id, Epoch: epoch, Reason: api.JournalMissing}}}
+	return c.call(ctx, "POST", "/agent/v1/releases", notice, nil, authAgent)
+}
+
+const (
+	valuesWantedNote  = "Waiting for management to release this command's repository access again. The agent removes it while a command waits for attention."
+	valuesExpiredNote = "Cancelled. This command no longer holds its repository access, which the agent removes while a command waits for attention, and management releases it again only before the command's deadline. Start it again."
+)
+
+// awaitValues reports whether a command must wait for the values it reads but does not hold, as
+// after it gave them up while it waited for attention, and asks for them: acceptReleased then
+// requests them from management on each delivery until one brings them. Past its deadline,
+// management releases nothing, so the command is cancelled instead.
+func (e *Engine) awaitValues(c api.ExecutionCommand, r Record, held bool) (bool, error) {
+	switch {
+	case held:
+		return false, nil
+	case time.Now().After(c.Deadline):
+		return true, e.finish(c.Id, "cancelled", valuesExpiredNote)
+	case r.ValuesWanted:
+		return true, nil
+	}
+	return true, e.Journal.Mutate(c.Id, func(r *Record) {
+		r.ValuesWanted = true
+		r.Report.Note = valuesWantedNote
+	})
+}
+
+// valuesDeadline is the earliest deadline of a command waiting for its values, when the executor
+// looks at it again whether or not a delivery has woken it: with management out of reach, the
+// command still ends then, and with it the wait it puts on local schedules.
+func (j *Journal) valuesDeadline() (time.Time, bool) {
+	pending, err := j.Pending()
+	if err != nil {
+		return time.Time{}, false
+	}
+	var at time.Time
+	for _, r := range pending {
+		if r.ValuesWanted && (at.IsZero() || r.Command.Deadline.Before(at)) {
+			at = r.Command.Deadline
+		}
+	}
+	return at, !at.IsZero()
 }
 
 // acknowledgementBatch is the most releases one notice may acknowledge.

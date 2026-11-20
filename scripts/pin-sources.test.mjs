@@ -6,9 +6,12 @@ import {
   findGoTools,
   findImages,
   findReleases,
+  beyondTrack,
+  offTrackRelease,
   newestInLine,
   offTrack,
   parseTracks,
+  retiredKey,
   trackedFiles,
 } from "./pin-sources.mjs";
 
@@ -63,6 +66,35 @@ test("tracks name a pattern and a reason, and nothing else", () => {
     assert.throws(() => parseTracks({ images: { x: bad } }), message);
 });
 
+test("a retired pin is keyed image@digest, with a reason", () => {
+  const key = `postgres@sha256:${"a".repeat(64)}`;
+  const tracks = parseTracks({ retired: { [key]: "Replaced." } });
+  assert.equal(
+    tracks.retired.get(
+      retiredKey({ image: "postgres", digest: `sha256:${"a".repeat(64)}` }),
+    ),
+    "Replaced.",
+  );
+  assert.equal(parseTracks({}).retired.size, 0);
+  for (const [bad, message] of [
+    [{ "postgres:18.4": "Replaced." }, /must be image@sha256:digest/],
+    [{ [key]: " " }, /needs a reason/],
+    [{ [key]: 1 }, /needs a reason/],
+  ])
+    assert.throws(() => parseTracks({ retired: bad }), message);
+});
+
+test("every retired pin in the repository is still pinned", () => {
+  const tracks = parseTracks(
+    JSON.parse(
+      readFileSync(resolve(root, ".github/pinned-releases.json"), "utf8"),
+    ),
+  );
+  const pinned = new Set(findImages(trackedFiles(root)).map(retiredKey));
+  for (const key of tracks.retired.keys())
+    assert.ok(pinned.has(key), `${key} is retired but no longer pinned`);
+});
+
 test("every track in the repository names a pin and is followed by it", () => {
   // The same files the report reads.
   const tracked = trackedFiles(root);
@@ -93,4 +125,60 @@ test("every track in the repository names a pin and is followed by it", () => {
     assert.ok(pinned.length, `${name} is not pinned`);
     for (const [, version] of pinned) offTrack(version, track);
   }
+});
+
+test("only a release the track would take in the pin's form counts beyond it", () => {
+  const alpine = /-alpine3\.23$/;
+  assert.equal(
+    beyondTrack("18.7-alpine3.23", "18.7-alpine3.24", alpine),
+    false,
+  );
+  assert.equal(beyondTrack("18.7-alpine3.23", "18.8-alpine3.24", alpine), true);
+  assert.equal(
+    beyondTrack("1.30.6-alpine3.24", "1.31.8-alpine3.24", stable),
+    false,
+  );
+  assert.equal(
+    beyondTrack("1.30.6-alpine3.24", "1.32.1-alpine3.24", stable),
+    true,
+  );
+  assert.equal(
+    beyondTrack("18.7-alpine3.23", "18.8-alpine3.24", undefined),
+    false,
+  );
+});
+
+test("a track that has run dry is noticed, and one that has not is quiet", () => {
+  const alpine = /-alpine3\.23$/;
+  const both = [
+    "18.7-alpine3.23",
+    "18.7-alpine3.24",
+    "18.8-alpine3.23",
+    "18.8-alpine3.24",
+  ];
+  const newer = newestInLine("18.7-alpine3.23", both, alpine);
+  assert.equal(newer, "18.8-alpine3.23");
+  assert.equal(
+    offTrackRelease("18.7-alpine3.23", both, alpine, newer),
+    undefined,
+  );
+  const dry = ["18.7-alpine3.23", "18.7-alpine3.24", "18.8-alpine3.24"];
+  assert.equal(
+    offTrackRelease(
+      "18.7-alpine3.23",
+      dry,
+      alpine,
+      newestInLine("18.7-alpine3.23", dry, alpine),
+    ),
+    "18.8-alpine3.24",
+  );
+  assert.equal(
+    offTrackRelease(
+      "1.30.6-alpine3.24",
+      ["1.30.7-alpine3.24", "1.31.8-alpine3.24"],
+      stable,
+      "1.30.7-alpine3.24",
+    ),
+    undefined,
+  );
 });

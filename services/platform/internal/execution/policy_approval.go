@@ -14,12 +14,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// policyApproval says why a policy does or doesn't run now. role and current are the approver's
-// role in the workspace and authentication version, nil when they left; approved is the version
-// they approved with, nil once withdrawn; owner is whether the policy needs an owner rather than
-// any member who can write; paused is a pause the policy itself records, such as a Git source
-// waiting for approval after a restore. Only owners learn that an approver's credentials changed.
-func policyApproval(role *string, current, approved *int64, owner, paused bool, viewer string) api.PolicyApproval {
+// policyApproval says why a policy does or doesn't run now, in the order policy_approver_holds
+// checks. role and current are the approver's role in the workspace and authentication version,
+// nil when they left; approved is the version they approved with, nil once withdrawn; owner is
+// whether the policy needs an owner rather than any member who can write; paused is a pause the
+// policy itself records, such as a Git source waiting for approval after a restore; mfa is whether
+// the approver meets the workspace's two-factor requirement. Only owners, who see which members
+// have set up two-factor authentication, learn that an approver's credentials changed or that they
+// lack it.
+func policyApproval(role *string, current, approved *int64, owner, paused, mfa bool, viewer string) api.PolicyApproval {
 	switch {
 	case role == nil:
 		return api.ApproverRemoved
@@ -27,11 +30,12 @@ func policyApproval(role *string, current, approved *int64, owner, paused bool, 
 		return api.ApproverRole
 	case approved == nil || paused:
 		return api.ApprovalRequired
+	case viewer != "owner" && (current == nil || *current != *approved || !mfa):
+		return api.ApprovalRequired
 	case current == nil || *current != *approved:
-		if viewer != "owner" {
-			return api.ApprovalRequired
-		}
 		return api.ApproverCredentials
+	case !mfa:
+		return api.ApproverMfa
 	}
 	return api.Current
 }

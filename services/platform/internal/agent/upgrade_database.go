@@ -89,17 +89,21 @@ func (e *Engine) knownUpgradeWriters(ctx context.Context, db pgClient, a domain.
 
 // upgradePreflight checks the live source database from a helper in its network namespace, so
 // nothing runs in the source and removing the helper ends whatever a stopped check left running.
-// The helper runs the source's own PostgreSQL 17 image, which the host already has: PostgreSQL 18
+// The helper runs the source's own PostgreSQL 17 release, which the host already has: PostgreSQL 18
 // is pulled only once the checks pass. It returns the database's size in bytes, as PostgreSQL
 // prints it.
 func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source string, a domain.Application) ([]byte, error) {
-	helper, err := e.postgresHelper(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-preflight-v1"), source, domain.Postgres17Image, s.Command.Installation.Access.DatabasePassword)
+	from, err := s.Command.Plan.SourceRelease()
+	if err != nil {
+		return nil, err
+	}
+	helper, err := e.postgresHelper(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-preflight-v1"), source, from.Image, s.Command.Installation.Access.DatabasePassword)
 	if err != nil {
 		return nil, err
 	}
 	defer e.removeHelper(helper)
 	m := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}}
-	if err = e.postgresManifest(ctx, helper, a, domain.Postgres17Image, &m); err != nil {
+	if err = e.postgresManifest(ctx, helper, a, from.Image, &m); err != nil {
 		return nil, err
 	}
 	if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
@@ -119,7 +123,11 @@ func upgradeHelperLabels(s upgradeState, a domain.Application, kind string) map[
 }
 
 func (e *Engine) upgradeDump(ctx context.Context, s upgradeState, source string, a domain.Application, stage string, m *backup.Manifest) error {
-	helper, err := e.postgresHelper(ctx, "astilba-upgrade-tools-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-tools-v1"), source, domain.PostgresImage, s.Command.Installation.Access.DatabasePassword)
+	target, err := s.Command.Plan.TargetRelease()
+	if err != nil {
+		return err
+	}
+	helper, err := e.postgresHelper(ctx, "astilba-upgrade-tools-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-tools-v1"), source, target.Image, s.Command.Installation.Access.DatabasePassword)
 	if err != nil {
 		return err
 	}

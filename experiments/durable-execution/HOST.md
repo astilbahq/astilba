@@ -19,7 +19,7 @@ Copy this repository into the VM rather than mounting the host checkout. Inside 
 ```sh
 sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstrap.sh
 
-sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
 # For the terminal session proxy tests in make verify-agent-host.
@@ -53,7 +53,7 @@ Compose command strings escape container-side variables with `$$`; otherwise Com
 
 ## Versions and results
 
-Pinned runtime: Go 1.27.4, Docker Engine/CLI 29.9.2 (API 1.56), Compose 5.6.1, Traefik 3.7.19, PostgreSQL 18.4 on Alpine 3.23 and BusyBox 1.37.0. Bootstrap checks SHA-256 for the tool archives and binaries. Image references pin the multi-platform manifest digest. Docker archive hashes were calculated from official HTTPS downloads; Compose and Go hashes were checked against their official release metadata.
+Pinned runtime: Go 1.27.4, Docker Engine/CLI 29.9.2 (API 1.56), Compose 5.6.1, Traefik 3.7.19, PostgreSQL 18.7 on Alpine 3.23 and BusyBox 1.37.0. Bootstrap checks SHA-256 for the tool archives and binaries. Image references pin the multi-platform manifest digest. Docker archive hashes were calculated from official HTTPS downloads; Compose and Go hashes were checked against their official release metadata.
 
 Local native arm64 validation passed on 22 October 2026: Ubuntu 24.04.5, kernel 6.8.0-142-generic, systemd 255.4-1ubuntu8.17, Go 1.27.3, Traefik 3.7.16 and the rest of the pinned runtime above. All six host scenarios passed under the race detector in 43 seconds. This run used the dedicated Lima VM, not a Docker container on macOS.
 

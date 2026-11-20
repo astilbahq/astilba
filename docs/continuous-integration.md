@@ -15,7 +15,7 @@ check is a final `always()` gate, so it is reported on every run.
 | `git-providers.yml`        | Git provider verification        | GitLab/Gitea and source-preserving Compose edits                                                                                  |
 | `ci.yml`                   | Native verification              | Selected amd64 and arm64 host suites: fresh bootstrap, Docker, builds, PostgreSQL restore, systemd agent, deployment and recovery |
 | `canvas.yml`               | Canvas browser verification      | Type/lint/build, domain tests and Chromium/WebKit journeys                                                                        |
-| `application.yml`          | Application verification         | `make verify-app-build` and seven parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
+| `application.yml`          | Application verification         | `make verify-app-build` and ten parallel Go race lanes, image smoke test, corresponding-source archive and selected vulnerability scan                             |
 | `application-browsers.yml` | Application browser verification | Every Chromium/WebKit dashboard journey against a real API/PostgreSQL fixture                                                     |
 | `workshop.yml`             | Workshop verification            | Standalone Storybook scenarios and accessibility audits in both browsers                                                          |
 
@@ -166,8 +166,9 @@ public source.
 `PLAT_AGENT_TESTS` overrides the test pattern. The default runs
 `TestNativeReleaseCommandTransport`, `TestNativeCompletionWaitsForAWritersHealthCheck`,
 `TestNativeLateCompletionReleasesTheReservation`, `TestNativeLateCompletionKeepsAnUnconfirmedReservation`, `TestNativeLateRestoreLeavesTheSourceToResume`, `TestNativeLateRetirementAndCompletionReleaseTheReservation`, `TestNativeLatePublicationLeavesTheHostToAbort`,
-`TestNativeTroubleshootingTarget` and the native session tests in `troubleshooting_session_host_test.go`. These need nothing
-beyond root, the pinned image above and Docker with a supported runc; only
+`TestNativeTroubleshootingTarget`, the native session tests in `troubleshooting_session_host_test.go`
+and `TestNativePostgresReleases`, which pulls every PostgreSQL release the agent knows. These need nothing
+beyond root, the pinned images and Docker with a supported runc; only
 `docker pull` needs a registry. `scripts/native-agent-colima.sh` lists them by
 name, so add a new test only after checking that it needs no more. Interrupting a
 run removes the binary, but a test may stop without its cleanup: recreate the
@@ -176,6 +177,8 @@ profile if fixtures remain. The rest must be asked for by name:
 | Test | Also needs |
 | --- | --- |
 | `TestNativeBackupOfStoppedWriter`, `TestNativeRefusedReservationOfStoppedWriterCompletes`, `TestNativeBackupOfWriterFailingItsHealthCheck`, `TestNativeBackupOfWriterFailingItsReadiness`, `TestNativeReservationRefusesChangedConfiguration`, `TestNativePauseRefusesAWriterStoppedSinceReserving`, `TestNativeWriterAlreadyFailingThatCannotRestart`, `TestNativeAcceptingAWriterThatCannotStart`, `TestNativeAcceptingAWriterThatDoesNotComeBack` | Nothing more, but they wait out readiness probes for about a minute and a half in all |
+| `TestNativeRecoveryRestore` | `/opt/astilba-platform-tools/restic` and the pinned Garage and PostgreSQL images |
+| `TestNativeRestoreHoldsTheClusterToItsDump` | The pinned PostgreSQL 18 image |
 | `TestNativeComposeDeployment` | Publishes a loopback host port; the pinned Compose plugin and PostgreSQL image |
 | `TestNativePipeline` | `/opt/astilba-plat5/bin/zot` and Git `http-backend`; writes `/etc/docker/certs.d`; nftables 1.0.9 and AppArmor with `apparmor_parser`; creates a host namespace and veth pair for its private fixtures |
 | `TestNativePullRefusesBlobsUnlikeTheirDescriptors`, `TestNativePullWatchStopsAPullBeyondItsMeasure`, `TestNativePullPutsAMultiPlatformImageInDocker` | Write `/etc/docker/certs.d`. The watch test serves a 1.5 GiB layer and makes Docker take about 1 GiB of its storage before the agent stops the pull, leaving the partial download in containerd's ingest directory |
@@ -192,14 +195,16 @@ bootstraps. Native verification remains the required check.
 
 ## Application Go verification
 
-Application verification runs eight jobs in parallel: `make verify-app-build`
+Application verification runs eleven jobs in parallel: `make verify-app-build`
 (application checks, agent/CLI and dashboard builds and packaging, followed by
-the image smoke test and source archive) and seven Go race lanes: `crosshost` for
-the coordinated placement journey, `preview` for preview checkpoint recovery,
-`network` for the private network generation tests named by `APP_NETWORK_TESTS`,
-`revoked-host` for moving off a revoked server (`APP_REVOKED_HOST_TESTS`),
-`operations` for tests named by `APP_OPERATIONS_TESTS`, `m-to-z` for other tests
-whose names start `TestM` to `TestZ` and `remaining` for everything else.
+the image smoke test and source archive) and ten Go race lanes. Five family lanes
+take named groups of tests: `crosshost` for the coordinated placement journey,
+`preview` for preview checkpoint recovery, `network` for the private network
+generation tests named by `APP_NETWORK_TESTS`, `revoked-host` for moving off a
+revoked server (`APP_REVOKED_HOST_TESTS`) and `operations` for tests named by
+`APP_OPERATIONS_TESTS`. Five name lanes split every other test by the letter after
+`Test`: `a-to-b`, `c-to-k`, `l-to-p`, `q-to-r` and `s-to-z`, which also takes any
+name outside those letters.
 Each retains race detection, uncached execution and a fifteen-minute process
 timeout, and any failure fails the Application verification gate. Locally,
 `make verify-app-core` runs the build target and then the lanes concurrently.
@@ -214,14 +219,14 @@ fixture under the race detector. Preview recovery has a separate process budget 
 coordinated placement; both are isolated from the remaining tests.
 
 The Makefile selects tests by name. `-run` reaches only the packages on its own
-command line, while `remaining` applies its `-skip` to every package, so a name
-it skips must be selected in that package too; `operations` and `m-to-z` run
-against `./...` for that reason. `make check-ci` runs `scripts/app-lanes.mjs`, which
-fails when a test in the platform module is selected by no lane or by more than one,
-when a selection matches no test, or when `verify-app-core` and the workflow's matrix
-differ from the lanes. A new test needs no lane change: it lands in `remaining` or
-`m-to-z` by its name's first letter, or in `operations` if its name has one of that
-lane's prefixes.
+command line, while `s-to-z` applies its `-skip` to every package, so a name it
+skips must be selected in that package too; `operations` and the other name lanes
+run against `./...` for that reason. `make check-ci` runs `scripts/app-lanes.mjs`,
+which fails when a test in the platform module is selected by no lane or by more than
+one, when a selection matches no test, when `verify-app-core` and the workflow's
+matrix differ from the lanes, or when a lane named for letters runs a name outside
+them. A new test needs no lane change: it lands in a name lane by its name's first
+letter, or in `operations` if its name has one of that lane's prefixes.
 
 The lanes run `go test -v`, so the job log has each test's time, in `--- PASS`
 lines. One commit's package time has differed by 28% between hosted runners, so a
@@ -229,7 +234,12 @@ single run says little about a lane.
 
 `lane-budget.yml` runs `make check-lane-budget` daily and on demand. It reads the
 last five main runs of the current lanes and reports a lane whose package has a
-median above 600 seconds, listing the times in its job summary. Run by hand, that fails
+median above 600 seconds, listing the times in its job summary. Below them it
+proposes the fewest name lanes that keep every package within 400 seconds, which a
+runner 28% slower still meets. It splits the tests no family selects (by
+`APP_FAMILY_TESTS`) by the letter after `Test`, and projects each package's time
+from the medians of its tests in those runs plus its median time outside them. A
+letter with no tests joins the range after it. Run by hand, that fails
 the command; in the workflow the job fails only when it cannot check or report, since
 the issue is the notice. While a lane is over it
 keeps one issue open with the latest times, comments when another package goes over,
@@ -238,12 +248,14 @@ describes. It is not a required check, so runner variance cannot remove a pull r
 queue. The integration package also adds a warning to any run past that budget, so
 the pull request that crosses it shows it in its own checks. When a lane is past its
 budget, first look for time every test shares, because the fixture is the only place
-one change reaches every test. Then move the letter boundary and rename the lane to
-match, move a test family to another lane, or add a lane by adding a variable, its
-rule and the workflow's matrix. A lane of one test, such as `crosshost`, can only
-come down by shortening or splitting that test. Moving tests between existing lanes
-takes three main runs to show, because earlier runs stay in the sample; adding a lane
-starts a new sample, and a lane with fewer than three runs neither fails the check nor
+one change reaches every test. Then apply the proposed split: give each name lane its
+letters and the name the proposal gives it, adding or removing a variable, its rule,
+its place in `verify-app-core` and the workflow's matrix as needed. When one letter
+alone is past 400 seconds, the proposal says so: move a test family to a lane of its
+own instead. A lane of one test, such as `crosshost`, can only
+come down by shortening or splitting that test. Moving a family between existing lanes
+takes three main runs to show, because earlier runs stay in the sample; adding or
+renaming a lane, as a new split does, starts a new sample, and a lane with fewer than three runs neither fails the check nor
 closes the issue. Locally, `GITHUB_TOKEN` must allow reading Actions, and nothing is
 opened.
 
@@ -416,7 +428,15 @@ with a pattern every release on its track matches and the reason, and only those
 count. nginx follows its stable releases, whose minor version is even, so a mainline
 release such as 1.31.8 is not an update to 1.30.6. Railpack's builder and runtime images
 and its mise follow the release Railpack itself pins, so they move only with Railpack. A pin off its own track is reported as
-a check that failed, and `make check-ci` fails if a track names nothing pinned. Go tools are
+a check that failed, and `make check-ci` fails if a track names nothing pinned. A newer
+release in the line but off the track is listed in the run's summary, so a track that has
+run dry, such as an Alpine line upstream stopped building, is noticed. Its
+`retired` list names image pins kept on purpose after a newer release replaced them, keyed
+`image@sha256:digest` with the reason, such as a PostgreSQL release that existing databases and
+backups still name ([PostgreSQL releases](supported-upgrades.md#postgresql-releases)). The
+report still reads a retired pin's manifest against its digest, and lists it for information,
+but neither offers it newer releases nor scans it. `make check-ci` fails if a retired entry
+names nothing pinned. Go tools are
 compared through the Go module proxy, and release binaries through GitHub's releases
 without drafts or pre-releases.
 
@@ -609,10 +629,11 @@ one-sentence explanation:
 | `dberror` | A branch on the error from a value-returning sqlc method or a row scan never looks at it, so an outage reads as a refusal or a missing row. Use `store.IfMissing` or return the error. | #122, #147 |
 | `wsclose` | Code outside `internal/terminal` calls `(*websocket.Conn).Close`, which a peer stalled inside a frame can hold forever. Use `terminal.Close`. | #117, #118, #131 |
 | `jsonguard` | Code imports `encoding/json` outside the files [JSON encoding](json-encoding.md#remaining-v1-use) gives a reason for, or calls a plain `encoding/json/v2` writer outside a named third-party function. A stored or peer value written that way would move a digest when read back. Its two lists are the decisions recorded in [JSON encoding](json-encoding.md), not suppressions. | The `encoding/json/v2` adoption |
-| `txnetwork` | A function holding a transaction calls a Git provider or GitHub, directly or through a function in its package, so a tenant's slow server holds the transaction's locks and connection. Ask between passes with `providerCall`. | Holding a server's row across provider calls, after #157 |
+| `txnetwork` | A function holding a transaction or a pinned pool connection calls a Git provider, GitHub, Stripe or the DNS provider, directly or through a function in its package, so a slow provider holds the transaction's locks and connection. Ask between passes with nothing held: `providerCall` in `internal/execution`, a `question` in `internal/billing`, or a lease as DNS jobs do. | Holding a server's row across provider calls, after #157; Stripe and DNS, PLAT-159 |
 | `jsontag` | A struct field read from JSON, directly or through a package's own HTTP response helper, has no json tag naming its member. `encoding/json/v2` matches names exactly, so the field would stay zero with no error. | The JSON v2 shadow decoder, before #151 |
 | `operationview` | An exported function in `internal/execution` that takes a `store.Principal` returns an `api.Operation`, or a slice of them, other than through `operationFor` or `operationsFor` called with its own principal, or a function elsewhere takes a principal and returns one. An operation's note can quote the environment's configuration, which those withhold from a credential without `environment:read`. | PLAT-285 |
-| `requestbody` | Code reads `(*http.Request).Body`, or calls a method that reads it as a form such as `FormValue`, outside `httpapi.decode`, other than to bound it with `http.MaxBytesReader` or in a webhook that checks a signature over the raw bytes. The body would skip decode's refusal of unknown members and its check for NUL, which PostgreSQL cannot store ([JSON encoding](json-encoding.md#text-postgresql-cannot-store)). | PLAT-312 |
+| `requestbody` | Code reads `(*http.Request).Body`, or calls a method that reads it as a form such as `FormValue`, outside `httpapi.decode`, other than to bound it with `http.MaxBytesReader`, in a webhook that checks a signature over the raw bytes, or in `pipelinetest`'s fake Git provider, which `testsupport` keeps to tests. The body would skip decode's refusal of unknown members and its check for NUL, which PostgreSQL cannot store ([JSON encoding](json-encoding.md#text-postgresql-cannot-store)). | PLAT-312 |
+| `testsupport` | A non-test file imports a test-support package, `internal/pipeline/pipelinetest`, `internal/secretbroker/brokertest` or `internal/custody/custodytest`, other than from another test-support package. `requestbody`, `jsonguard` and `secretkeys` exempt these fakes because only tests run them, so a product import would inherit those exemptions. | PLAT-406 |
 | `revisioninsert` | Code outside `internal/store` calls `(*db.Queries).InsertRevision`. `store.InsertRevision` refuses a specification over the size limit, measured as the table's check measures it, before the check can fail and abort the transaction. | PLAT-286 |
 | `workspaceinsert` | Code other than `store.CreateWorkspace` calls `(*db.Queries).InsertWorkspace`. The constructor stores the workspace's keys, made by `Broker.Create` before the transaction, with the workspace, so no new workspace is without them. | PLAT-245 |
 
@@ -621,12 +642,11 @@ These catch the shapes the defects took, so a clean run does not rule a defect o
 the same block. `jsontag` follows one level of helper, in the same package, that handles an
 `*http.Response`. `txnetwork` follows direct calls within one package, so it misses a method
 value and a call through an interface or a function value, which includes the fetch of a
-`withProviderCalls` nested in a transaction. A transaction in a struct field, a `db.DBTX`
-parameter and a pinned connection don't count as held. It treats a goroutine or a function
-literal passed elsewhere that never names the transaction as running after it. A transaction
-counts as held until the function returns, even past its own block, so a call after a commit
-belongs in the caller. It does not cover Stripe, which still has these calls under the
-workspace lock.
+`withProviderCalls` nested in a transaction. A transaction in a struct field and a `db.DBTX`
+parameter don't count as held. It treats a goroutine or a function literal passed elsewhere
+that never names the transaction as running after it. A transaction or connection counts as
+held until the function returns, even past its own block or a release, so a call after a
+commit belongs in the caller.
 
 There is no suppression comment: each failure has a direct fix, and an analyzer
 that needs exceptions should change or go. Add one only for a defect that recurs,
@@ -835,6 +855,7 @@ or secret:
 | The runner's own Docker, in Go, Application, Application browsers, Git providers and the pin report | `.github/actions/docker-hub-mirror` adds it to `/etc/docker/daemon.json` and restarts Docker |
 | The native lanes' fixture daemon, `astilba-plat4-docker.service` | `experiments/durable-execution/host/bootstrap.sh` writes `/etc/astilba-plat4/daemon.json`, the only configuration that daemon reads |
 | BuildKit in `TestBuildArtifacts` | Its `buildkitd.toml` |
+| The agent's own builder, in `TestNativePipeline` and the other build tests | The agent copies the daemon's Docker Hub mirrors into BuildKit's configuration, as on a customer's server; see [Docker Hub mirrors](git-builds.md#docker-hub-mirrors) |
 
 Docker and BuildKit use a mirror only for Docker Hub images. Every image is pinned by digest,
 and both check what the mirror serves against it, so the mirror can't change an image. When
@@ -845,10 +866,8 @@ containerd store and on BuildKit 0.34.1:
 - With Docker Hub's addresses refused, pulls and a `FROM` build succeed through the mirror,
   and the pulled image has the same name and `RepoDigests` as one pulled from Docker Hub.
 - With a mirror that answers 404, answers 429 or refuses connections, both read Docker Hub.
-
-The agent's own builder, in `TestNativePipeline` and the other build tests, still reads its
-`FROM` images from Docker Hub itself: it writes BuildKit's configuration without the daemon's
-mirrors. That is a few requests per lane.
+- With `auth.docker.io` refused, `TestNativeBuildNetwork` passes with the mirror and fails
+  without it on Docker Hub's anonymous token.
 
 `.github/actions/pull-images` refuses a Docker Hub image when the daemon doesn't list
 `https://mirror.gcr.io/` as a mirror, so a new job that pulls without the mirror step fails
@@ -864,8 +883,8 @@ Some checks need Docker Hub itself:
 
 No native test breaks the mirror on purpose: Docker and BuildKit would then read Docker Hub
 itself, which is what CI must not depend on, so their fallback was checked by hand as above.
-Apart from the agent's own builder, the native tests don't use Docker Hub's anonymous token
-exchange either when the mirror serves an image. Unit tests against fake registries cover both in the agent's own image reads:
+When the mirror serves an image, the native tests don't use Docker Hub's anonymous token
+exchange either. Unit tests against fake registries cover both in the agent's own image reads:
 `TestPullReadsThroughAnAnonymousToken`, `TestPullFallsBackPastAMirrorLackingAnEntry` and
 `TestPullFallsBackPastAFailingMirror`, for a mirror that answers 429 or can't be reached.
 

@@ -73,6 +73,11 @@ func (s *Service) purge(ctx context.Context, tx pgx.Tx, p store.Principal, ws, p
 	if err != nil {
 		return err
 	}
+	// A writer holds the environment's key and then its value; the purge takes them in that order
+	// too, so the two wait for each other rather than deadlock.
+	if err = q.LockEnvironmentKeys(ctx, db.LockEnvironmentKeysParams{WorkspaceID: ws, EnvironmentID: env}); err != nil {
+		return err
+	}
 	if e.Name != confirmName {
 		return domain.Invalid("confirmName")
 	}
@@ -155,7 +160,12 @@ func (s *Service) purge(ctx context.Context, tx pgx.Tx, p store.Principal, ws, p
 		}
 		next.State, next.PurgeOperationID = "purging", &op.Id
 	}
-	return q.SetEnvironmentPurge(ctx, next)
+	if err = q.SetEnvironmentPurge(ctx, next); err != nil {
+		return err
+	}
+	// Destroying the environment's key leaves every copy of its values unreadable: those in
+	// recovery checkpoints, on hosts, and anywhere else the ciphertext was kept.
+	return s.Store.Broker.DestroyEnvironmentKeys(ctx, q, ws, env, "environment purged")
 }
 
 // finalizePurge records a host's confirmed deletion of the volumes its purge command named. The

@@ -40,12 +40,17 @@ export async function managedDatabase(
     name: "Database password",
     value: "browser-database-canary",
   });
+  const releases: {
+    image: string;
+    major: number;
+    current: boolean;
+    mount: string;
+  }[] = await (await page.request.get(`${prefix}/postgres-releases`)).json();
+  const release = releases.find((r) => r.current && r.major === version);
+  if (!release) throw new Error(`no current PostgreSQL ${version} release`);
   const pg = crypto.randomUUID(),
     volume = crypto.randomUUID(),
-    image =
-      version === 17
-        ? "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4"
-        : "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e";
+    image = release.image;
   const specification = {
     version: 1,
     variables: [],
@@ -63,10 +68,7 @@ export async function managedDatabase(
         mounts: [
           {
             volumeId: volume,
-            target:
-              version === 17
-                ? "/var/lib/postgresql/data"
-                : "/var/lib/postgresql",
+            target: release.mount,
             readOnly: false,
           },
         ],
@@ -108,6 +110,7 @@ export async function managedDatabase(
             backups: true,
             schedules: true,
             upgrades: true,
+            postgresReleases: releases.map((r) => r.image),
             ...acknowledgesReleases,
           },
           preflight: {
@@ -206,6 +209,7 @@ export async function managedDatabase(
     path,
     pg,
     image,
+    releases,
     draft,
     agentHeaders,
     poll,

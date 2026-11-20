@@ -1,12 +1,18 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-remaining verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-m-to-z verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities report-pins check-lane-budget dev dev-wipe
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-a-to-b verify-app-go-c-to-k verify-app-go-l-to-p verify-app-go-q-to-r verify-app-go-s-to-z verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities report-pins check-lane-budget dev dev-wipe
 
 APP_COORDINATION_TESTS = ^TestCrossHostCoordinatedPlacement$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
-APP_OPERATIONS_TESTS = ^Test(Troubleshooting|ManagedNetwork|Maintenance|Automation|Git)
+APP_OPERATIONS_TESTS = ^Test(Troubleshooting|ManagedNetwork|Maintenance|Automation|Git|OpenBao)
 APP_NETWORK_TESTS = ^(TestAgentCannotSpendNetworkGeneration|TestRevocationSurvivesSpentGeneration|TestReceiptClaimsStayWithinMargin|TestRecoveryRefusesGenerationsNeverIssued|TestRecoveryKeepsRestoredGenerationHistory|TestUnaccountedReceiptDoesNotConflictWithItsHostsExport|TestRestoredManagementRecoversAHostAhead|TestHostileClaimsAfterRestoreMoveNothing|TestUnfencedHostAheadRecoversThroughFencing|TestRefusedRemovalFallsBackToTheWholeManifest|TestReAddedMemberReceivesItsWholeManifest|TestSweepWaitsForAManifestOnItsWay|TestRevokedMemberHoldsTheNetworkOnlyThroughItsPeers|TestRevokedMemberReadsPendingWhileAnythingIs|TestRenewedMemberWaitsForItsHostUntilRevokedAgain|TestRemovedMemberHoldsTheNetworkUntilItAnswersOrIsRevoked|TestImportedRevokedMemberWaitsOnlyForTheRemainingHosts|TestRestoredRevokedMemberWaitsOnlyForTheRemainingHosts|TestRecoveryNeedsNothingFromARevokedServer|TestRecoveryRefusesAnotherMachinesExportForARevokedServer|TestRecoveryIgnoresARevokedServersExportedOutcome|TestRouteConflictHoldsAMemberOnlyForItsGeneration|TestRepeatedRouteConflictsHoldBackOnlyTheRefusingHost|TestRevocationReachesARefusingHostWithNoRecord|TestMisdescribingHostLimitsOnlyItsOwnRemoval|TestReplayedDescriptionDoesNotSpendTheNetworkGeneration|TestRemovingAMemberThatNeverJoinedReleasesTheNetwork|TestAcknowledgedRemovalCannotStandInForJoining|TestUnpreparedHostIsHeldUntilItReportsReady|TestMemberWithAnotherMembersKeyIsAskedAgainOnlyWhenTheNetworkChanges|TestLongOperationHistoryKeepsCrossHostDeploymentAndExport|TestRecoveryReadsABaseCapturedBeforeHistoryWasBounded|TestBusyWorkspaceStaysWithinTheArchiveLimits|TestCrossHostDeploymentShortensAWindowThatDoesNotSeal|TestRecoveredHistoryTravelsInLaterBases|TestFrequentCoordinatedBackupsShortenTheWindow|TestUnpreparedHoldDoesNotDependOnTheNote|TestMemberNotedByTheKeyMigrationIdentifiesAgain|TestReceiptlessNetworkFailureWaitsForTheWorkspaceLock|TestRecoveryReleasesNetworkSweepHolds)$$
-APP_REVOKED_HOST_TESTS = ^(TestEnvironmentMovesOffARevokedSecondary|TestEnvironmentConsolidatesOffARevokedSecondary|TestRevocationReleasesAHeldDeployment|TestDeploymentFinishesWithoutAHostRevokedAfterPublication|TestRevokingAPrimaryReleasesItsSecondaries|TestRevocationEndsStandaloneWorkForGood|TestRevokedConsumerStopsABackupBeforeItStarts|TestRevokedPrimaryResumesItsConsumers|TestRevokedPrimaryEndsAnUpgradeWaitingForTheOwner|TestRevocationStopsAReleaseCommandThatHasNotStarted|TestRefreshShowsARevokedHostAsUnknown|TestBackupSurvivesLosingAConsumerAfterIt|TestRevocationDuringCheckpointClosesIt|TestRevokedPrimaryEndsACancelledUpgrade|TestPlanLeavingAServerBehindNeedsItStillRevoked|TestRevokedHostWithNothingLeftLosesItsRuntimeRecord|TestRecoveryKeepsWorkARevocationSettled|TestRevocationReleasesAHostHeldInPreparation|TestPublishedDeploymentSurvivesLosingItsPrimaryBeforeTheNextPass|TestRevokedConsumerStopsABackupNotYetSent|TestReplacingARevokedPrimaryStartsItsVolumesEmpty|TestSecondaryTakesOverFromARevokedPrimary|TestReplacementCanBeRetriedOnTheSameServer|TestReplacementNeedsThePrimaryStillRevoked|TestReplacementPreparesTheNewPrimarysIngress|TestReplacementLeavesALoneIngressAlone|TestReplacementMovesOnWhenItsTargetIsRevokedToo|TestReplacementKeepsADeclaredVolumeNothingMounts|TestReplacementOntoAFormerSecondaryKeepsOneUnit|TestStaleReplacementDoesNotUndoANewerOne|TestRecoveryKeepsAReplacedPrimaryDetached|TestRecoveryContinuesWithoutARevokedSecondary|TestRecoveryIgnoresWhatARevokedParticipantClaims|TestRecoveryIgnoresWhatARevokedHostStillRuns|TestRecoveryRestoresARevokedPrimarysRootFromManagement|TestRecoveryExplainsALostRevokedPrimaryRoot|TestRecoveryUsesARevokedPrimarysCapsulesManagementLacks|TestRecoveryExtendsARevokedPrimarysRootOnlyAsManagementSealedIt|TestRecoveryFitsAParticipantsProofOfProgressBeyondTheBackup|TestRecoveryResumesAnInterruptedReplacement)$$
+APP_REVOKED_HOST_TESTS = ^(TestEnvironmentMovesOffARevokedSecondary|TestEnvironmentConsolidatesOffARevokedSecondary|TestRevocationReleasesAHeldDeployment|TestDeploymentFinishesWithoutAHostRevokedAfterPublication|TestRevokingAPrimaryReleasesItsSecondaries|TestRevocationEndsStandaloneWorkForGood|TestRevokedConsumerStopsABackupBeforeItStarts|TestRevokedPrimaryResumesItsConsumers|TestRevokedPrimaryEndsAnUpgradeWaitingForTheOwner|TestRevocationStopsAReleaseCommandThatHasNotStarted|TestRefreshShowsARevokedHostAsUnknown|TestBackupSurvivesLosingAConsumerAfterIt|TestRevocationDuringCheckpointClosesIt|TestRevokedPrimaryEndsACancelledUpgrade|TestPlanLeavingAServerBehindNeedsItStillRevoked|TestRevokedHostWithNothingLeftLosesItsRuntimeRecord|TestRecoveryKeepsWorkARevocationSettled|TestRevocationReleasesAHostHeldInPreparation|TestPublishedDeploymentSurvivesLosingItsPrimaryBeforeTheNextPass|TestRevokedConsumerStopsABackupNotYetSent|TestReplacingARevokedPrimaryStartsItsVolumesEmpty|TestSecondaryTakesOverFromARevokedPrimary|TestReplacementCanBeRetriedOnTheSameServer|TestReplacementNeedsThePrimaryStillRevoked|TestReplacementPreparesTheNewPrimarysIngress|TestReplacementLeavesALoneIngressAlone|TestReplacementMovesOnWhenItsTargetIsRevokedToo|TestReplacementKeepsADeclaredVolumeNothingMounts|TestReplacementOntoAFormerSecondaryKeepsOneUnit|TestStaleReplacementDoesNotUndoANewerOne|TestRecoveryKeepsAReplacedPrimaryDetached|TestRecoveryContinuesWithoutARevokedSecondary|TestRecoveryIgnoresWhatARevokedParticipantClaims|TestRecoveryIgnoresWhatARevokedHostStillRuns|TestRecoveryRestoresARevokedPrimarysRootFromManagement|TestRecoveryExplainsALostRevokedPrimaryRoot|TestRecoveryUsesARevokedPrimarysCapsulesManagementLacks|TestRecoveryExtendsARevokedPrimarysRootOnlyAsManagementSealedIt|TestRecoveryFitsAParticipantsProofOfProgressBeyondTheBackup|TestRecoveryResumesAnInterruptedReplacement|TestRestoringALostServersSnapshotOnTheNewPrimary|TestRestoreReportsAreCheckedAgainstTheirCommand|TestRestoreIsReleasedOnlyWhileItsConditionsHold|TestRestoringNeedsRecentAuthentication|TestRestoreNeedsTheVolumeStillDeclared|TestRestoringOntoAnEnvironmentAcrossServers|TestRestoreAnAgentLostIsStoppedAfterItsDeadline|TestCuttingOverToARestoredVolume|TestDiscardingARestoredVolume|TestAnExposedDestinationNeedsAnAcknowledgement|TestARestoresServerKeepsItsDestinationExposed|TestACutoverAndADiscardExcludeEachOther|TestARestoresDiscardTravelsWithItsWorkspace)$$
 APP_FAMILY_TESTS = $(APP_COORDINATION_TESTS)|$(APP_PREVIEW_RECOVERY_TESTS)|$(APP_OPERATIONS_TESTS)|$(APP_NETWORK_TESTS)|$(APP_REVOKED_HOST_TESTS)
-APP_M_TO_Z_TESTS = ^Test[M-Z]
+# The name lanes split the tests no family selects by the letter after Test, and the
+# last takes whatever the others leave. `make check-lane-budget` proposes these ranges
+# from measured test times.
+APP_A_TO_B_TESTS = ^Test[A-B]
+APP_C_TO_K_TESTS = ^Test[C-K]
+APP_L_TO_P_TESTS = ^Test[L-P]
+APP_Q_TO_R_TESTS = ^Test[Q-R]
 NATIVE_GO = sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/opt/astilba-plat4/bin:/usr/sbin:/usr/bin:/sbin:/bin CGO_ENABLED=1
 NATIVE_AGENT_GO = $(NATIVE_GO) PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -v
 
@@ -35,7 +41,7 @@ verify-build:
 	cd experiments/durable-execution && sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/usr/bin:/bin CGO_ENABLED=1 PLAT4_HOST_TEST=1 PLAT4_ARCH="$(PLAT4_ARCH)" PLAT5_HOST_TEST=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=12m -v -run '^Test(BuildArtifacts|PostgresRestore)$$' .
 
 check-ci:
-	node --test scripts/ci-plan.test.mjs scripts/docker-hub-mirror.test.mjs scripts/native-lanes.test.mjs scripts/app-lanes.test.mjs scripts/lane-budget.test.mjs scripts/vulnerability-scan.test.mjs scripts/pin-report.test.mjs scripts/pin-sources.test.mjs scripts/report-issue.test.mjs scripts/scheduled-report.test.mjs scripts/schedule-watch.test.mjs scripts/fetch-attempts.test.mjs scripts/install-pnpm.test.mjs scripts/pin-alignment.test.mjs scripts/go-release-age.test.mjs scripts/release-age.test.mjs scripts/npm-release-changes.test.mjs scripts/public-suffix-list.test.mjs
+	node --test scripts/ci-plan.test.mjs scripts/docker-hub-mirror.test.mjs scripts/native-lanes.test.mjs scripts/app-lanes.test.mjs scripts/lane-budget.test.mjs scripts/vulnerability-scan.test.mjs scripts/pin-report.test.mjs scripts/image-registry.test.mjs scripts/pin-sources.test.mjs scripts/report-issue.test.mjs scripts/scheduled-report.test.mjs scripts/schedule-watch.test.mjs scripts/fetch-attempts.test.mjs scripts/install-pnpm.test.mjs scripts/pin-alignment.test.mjs scripts/go-release-age.test.mjs scripts/release-age.test.mjs scripts/npm-release-changes.test.mjs scripts/public-suffix-list.test.mjs
 	node scripts/native-lanes.mjs
 	node scripts/app-lanes.mjs
 	node scripts/pin-alignment.mjs
@@ -74,19 +80,28 @@ verify-app: verify-app-core
 	pnpm --filter @astilba/dashboard storybook:test
 
 verify-app-core: verify-app-build
-	$(MAKE) -j7 verify-app-go-remaining verify-app-go-m-to-z verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-revoked-host
+	$(MAKE) -j10 verify-app-go-a-to-b verify-app-go-c-to-k verify-app-go-l-to-p verify-app-go-q-to-r verify-app-go-s-to-z verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-revoked-host
 
 verify-app-build: check-app
 	pnpm agent:build
 	pnpm cli:build
 	pnpm --filter @astilba/dashboard build
 
-verify-app-go-remaining:
-	cd services/platform && go test -race -count=1 -v -timeout=15m -skip '$(APP_FAMILY_TESTS)|$(APP_M_TO_Z_TESTS)' ./...
+# These select across every package, because the -skip of s-to-z reaches every package.
+verify-app-go-a-to-b:
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_A_TO_B_TESTS)' -skip '$(APP_FAMILY_TESTS)' ./...
 
-# These select across every package, because the -skip above also reaches every package.
-verify-app-go-m-to-z:
-	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_M_TO_Z_TESTS)' -skip '$(APP_FAMILY_TESTS)' ./...
+verify-app-go-c-to-k:
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_C_TO_K_TESTS)' -skip '$(APP_FAMILY_TESTS)' ./...
+
+verify-app-go-l-to-p:
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_L_TO_P_TESTS)' -skip '$(APP_FAMILY_TESTS)' ./...
+
+verify-app-go-q-to-r:
+	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_Q_TO_R_TESTS)' -skip '$(APP_FAMILY_TESTS)' ./...
+
+verify-app-go-s-to-z:
+	cd services/platform && go test -race -count=1 -v -timeout=15m -skip '$(APP_FAMILY_TESTS)|$(APP_A_TO_B_TESTS)|$(APP_C_TO_K_TESTS)|$(APP_L_TO_P_TESTS)|$(APP_Q_TO_R_TESTS)' ./...
 
 verify-app-go-operations:
 	cd services/platform && go test -race -count=1 -v -timeout=15m -run '$(APP_OPERATIONS_TESTS)' ./...
@@ -114,8 +129,8 @@ verify-agent-host:
 	$(MAKE) verify-agent-host-upgrade
 
 verify-agent-host-core:
-	cd services/platform && $(NATIVE_GO) ASTILBA_NATIVE_NETWORK=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=5m -v -run '^TestNativeManagedLinks$$' ./internal/hostnetwork
-	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|CrossHostTakeover|Pipeline|PullRefusesBlobsUnlikeTheirDescriptors|PullWatchStopsAPullBeyondItsMeasure|PullPutsAMultiPlatformImageInDocker|ComposePullPolicyKeepsRunningContainers|BuilderConfinement|BuildNetwork|ReleaseCommandTransport|RouteBackendConversion|LargeEnvironmentsLeaveRoomForOthers|FailedPublishKeepsOtherTraffic|UpgradedHostKeepsItsRoutes|FailedReconciliationReplacesAChangedProxy|UnpullableProxyImageKeepsServing|InterruptedHostChangeRecreatesTheProxyOnce|FailedPublishRestoresTheProxyGateway|FailedReleaseKeepsAChangedProxyUntrusted|TakeoverMovesTheProxyOntoTheGateway|TakeoverLeavesAReadyProxyRunning|TakeoverWithoutRoutesStartsAPortlessProxy|FailedTakeoverKeepsThePreviousRoutes|InterruptedTakeoverIsPutBack|TakeoverOnAFullHostChangesNothing|CompletionWaitsForAWritersHealthCheck|BackupOfStoppedWriter|CoordinatedBackupStops|InterruptedBackupInstallRunsAgain|RefusedReservationOfStoppedWriterCompletes|BackupOfWriterFailingItsHealthCheck|BackupOfWriterFailingItsReadiness|ReservationRefusesChangedConfiguration|PauseRefusesAWriterStoppedSinceReserving|WriterAlreadyFailingThatCannotRestart|AcceptingAWriterThatCannotStart|AcceptingAWriterThatDoesNotComeBack|LateCompletionReleasesTheReservation|LateCompletionKeepsAnUnconfirmedReservation|LateRestoreLeavesTheSourceToResume|LateRetirementAndCompletionReleaseTheReservation|LatePublicationLeavesTheHostToAbort|PreviewEnvironment|TroubleshootingTarget|TroubleshootingSession|TroubleshootingShellExit|TroubleshootingIdleLimit|TroubleshootingRefusals|TroubleshootingCrashCleanup|TroubleshootingEndsSurvivors|TroubleshootingStalledInput|TroubleshootingNoShell|TroubleshootingShellChoice|JournalSealedToTheMachine)$$' ./internal/agent
+	cd services/platform && $(NATIVE_GO) ASTILBA_NATIVE_NETWORK=1 ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=5m -v -run '^TestNative(ManagedLinks|NetworkKeySealedToTheMachine)$$' ./internal/hostnetwork
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNative((Compose|CrossHost)Deployment|CrossHostTakeover|Pipeline|PullRefusesBlobsUnlikeTheirDescriptors|PullWatchStopsAPullBeyondItsMeasure|PullPutsAMultiPlatformImageInDocker|ComposePullPolicyKeepsRunningContainers|BuilderConfinement|BuildNetwork|ReleaseCommandTransport|RouteBackendConversion|LargeEnvironmentsLeaveRoomForOthers|FailedPublishKeepsOtherTraffic|UpgradedHostKeepsItsRoutes|FailedReconciliationReplacesAChangedProxy|UnpullableProxyImageKeepsServing|InterruptedHostChangeRecreatesTheProxyOnce|FailedPublishRestoresTheProxyGateway|FailedReleaseKeepsAChangedProxyUntrusted|OwnerAllowlistTurnsAwayOtherUnits|TakeoverMovesTheProxyOntoTheGateway|TakeoverLeavesAReadyProxyRunning|TakeoverWithoutRoutesStartsAPortlessProxy|FailedTakeoverKeepsThePreviousRoutes|InterruptedTakeoverIsPutBack|TakeoverOnAFullHostChangesNothing|CompletionWaitsForAWritersHealthCheck|BackupOfStoppedWriter|CoordinatedBackupStops|RecoveryRestore|RestoreHoldsTheClusterToItsDump|CrashLeavesNoRepositoryAccessOrStaging|InterruptedBackupInstallRunsAgain|RefusedReservationOfStoppedWriterCompletes|BackupOfWriterFailingItsHealthCheck|BackupOfWriterFailingItsReadiness|ReservationRefusesChangedConfiguration|PauseRefusesAWriterStoppedSinceReserving|WriterAlreadyFailingThatCannotRestart|AcceptingAWriterThatCannotStart|AcceptingAWriterThatDoesNotComeBack|LateCompletionReleasesTheReservation|LateCompletionKeepsAnUnconfirmedReservation|LateRestoreLeavesTheSourceToResume|LateRetirementAndCompletionReleaseTheReservation|LatePublicationLeavesTheHostToAbort|PreviewEnvironment|TroubleshootingTarget|TroubleshootingSession|TroubleshootingShellExit|TroubleshootingIdleLimit|TroubleshootingRefusals|TroubleshootingCrashCleanup|TroubleshootingEndsSurvivors|TroubleshootingStalledInput|TroubleshootingNoShell|TroubleshootingShellChoice|JournalSealedToTheMachine|PostgresReleases)$$' ./internal/agent
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=10m -run '^TestNativeTroubleshooting(Service|Proxies)$$' ./internal/integration
 
 verify-agent-host-recovery:
@@ -137,9 +152,10 @@ verify-agent-colima:
 # The local stack: management, dashboard and an enrolled agent in a disposable Colima VM.
 # See docs/local-development.md.
 PLAT_DEV_COLIMA_PROFILE ?= astilba-dev
+PLAT_DEV_CUSTODY ?= file
 
 dev:
-	pnpm dev --vm '$(value PLAT_DEV_COLIMA_PROFILE)'
+	pnpm dev --vm '$(value PLAT_DEV_COLIMA_PROFILE)' --custody '$(value PLAT_DEV_CUSTODY)'
 
 dev-wipe:
 	pnpm dev --vm '$(value PLAT_DEV_COLIMA_PROFILE)' --wipe

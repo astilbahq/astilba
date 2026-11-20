@@ -16,8 +16,7 @@ import (
 
 // BuilderImage is BuildKit's rootless image. The agent runs it as an unprivileged host user in
 // a user namespace; see the builder in internal/agent/builder.go.
-const BuilderImage = "moby/buildkit:v0.34.1-rootless@sha256:f68752a5a94acfcdad2d07867b7075601a421638e17fc5f28efc1c814d0c4f89"
-const BuilderVersion = "v0.34.1"
+const BuilderImage = "moby/buildkit:v0.35.0-rootless@sha256:5987568f92dafbfb679879de59c1cd8d26597f5f6635c314e166164e2615870c"
 
 // BuildNetworkV1 marks a build that must run behind the agent's build network policy.
 const BuildNetworkV1 = "v1"

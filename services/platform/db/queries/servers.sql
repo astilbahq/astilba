@@ -1,5 +1,5 @@
 -- name: ListServers :many
-SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
+SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
 FROM servers WHERE workspace_id = @workspace_id ORDER BY name,id LIMIT 100;
 
 -- name: CountServers :one
@@ -8,7 +8,7 @@ SELECT count(*) FROM servers WHERE workspace_id = @workspace_id;
 -- name: InsertServer :one
 INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,enrollment_issuer_id,enrollment_issuer_auth_version,preview_only)
 VALUES(@id,@workspace_id,@name,@role,@enrollment_hash,@enrollment_expires,@enrollment_issuer_id::uuid,@enrollment_issuer_auth_version::bigint,@preview_only)
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only;
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at;
 
 -- name: RenewServerEnrollment :one
 -- Revoking a preview host released its previews without anything confirming their removal, so it
@@ -16,13 +16,15 @@ RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_request
 -- containers. Every other renewal keeps the same machine.
 UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enrollment_expires,
     enrollment_issuer_id = @enrollment_issuer_id::uuid,enrollment_issuer_auth_version = @enrollment_issuer_auth_version::bigint,
-    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,rotate_key_requested=false,
+    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,revoked_at=NULL,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = @workspace_id AND id = @id
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only;
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at;
 
 -- name: RevokeServer :execrows
-UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
+-- Revoking a revoked server again keeps the time its revocation began, or none when it began
+-- before times were recorded.
+UPDATE servers SET revoked=true,revoked_at=CASE WHEN revoked THEN revoked_at ELSE clock_timestamp() END,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AdvanceServerUpdateGeneration :one
@@ -33,7 +35,7 @@ RETURNING capabilities,update_generation;
 -- name: PrepareServerTransfer :one
 UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enrollment_expires,
     enrollment_issuer_id = @enrollment_issuer_id::uuid,enrollment_issuer_auth_version = @enrollment_issuer_auth_version::bigint,
-    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false
+    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false,revoked_at=NULL
 WHERE workspace_id = @workspace_id AND id = @id AND awaiting_transfer
 RETURNING controller_generation;
 
@@ -233,3 +235,10 @@ UPDATE servers SET build_egress=$3 WHERE workspace_id=$1 AND id=$2 AND NOT revok
 UPDATE servers SET enrollment_hash=NULL,enrollment_expires=NULL,enrollment_issuer_id=NULL,enrollment_issuer_auth_version=NULL
 WHERE workspace_id = @workspace_id AND enrollment_issuer_id = @issuer_id::uuid AND enrollment_hash IS NOT NULL
 RETURNING id;
+
+-- name: GetServerContainerRanges :one
+-- What the server's agent last reported about the ranges its containers send traffic from:
+-- whether it reports them at all, and the ranges, absent when it could not read them.
+SELECT COALESCE((capabilities->>'containerRanges')::boolean, false)::boolean AS supported,
+       (preflight->'containerRanges')::jsonb AS ranges
+FROM servers WHERE workspace_id = @workspace_id AND id = @id;

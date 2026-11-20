@@ -4,7 +4,7 @@
 -- name: WorkspaceKeyWrappings :many
 -- The workspace's generations in the given states, each with its wrapping for one purpose and
 -- backend, or none when it has no such wrapping.
-SELECT k.generation,k.kcv,w.wrapped FROM workspace_keys k
+SELECT k.generation,k.state,k.sealable,k.kcv,w.wrapped FROM workspace_keys k
 LEFT JOIN workspace_key_wrappings w ON w.workspace_id = k.workspace_id AND w.generation = k.generation
     AND w.purpose = @purpose AND w.backend_id = @backend_id
 WHERE k.workspace_id = @workspace_id AND k.state = ANY(@states::text[])
@@ -13,11 +13,21 @@ ORDER BY k.generation;
 -- name: InstallationKeyWrappings :many
 -- The installation's generations of one scope in the given states, each with its wrapping for one
 -- purpose and backend, or none.
-SELECT k.generation,k.kcv,w.wrapped FROM installation_keys k
+SELECT k.generation,k.state,k.sealable,k.kcv,w.wrapped FROM installation_keys k
 LEFT JOIN installation_key_wrappings w ON w.scope = k.scope AND w.generation = k.generation
     AND w.purpose = @purpose AND w.backend_id = @backend_id
 WHERE k.scope = @scope AND k.state = ANY(@states::text[])
 ORDER BY k.generation;
+
+-- name: ShareSealableWorkspaceKey :one
+-- Held until the transaction storing a value sealed under the generation commits, so it cannot
+-- stop being the one new values are sealed under before then.
+SELECT generation FROM workspace_keys WHERE workspace_id = @workspace_id AND generation = @generation
+    AND state = 'active' AND sealable FOR SHARE;
+
+-- name: ShareSealableInstallationKey :one
+SELECT generation FROM installation_keys WHERE scope = @scope AND generation = @generation
+    AND state = 'active' AND sealable FOR SHARE;
 
 -- name: CustodyBackendsVersion :one
 SELECT version FROM custody_backends_version;
@@ -77,8 +87,19 @@ SELECT (SELECT count(*) FROM workspaces)::bigint AS workspaces,
 UPDATE custody_stage SET stage = stage + 1, advanced_at = now() WHERE stage = @completed;
 
 -- name: RecordCustodyInstance :exec
-INSERT INTO custody_instances(instance_id,token_generations) VALUES(@instance_id,@token_generations)
-ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, seen_at = now();
+-- An instance reports the token key generations it holds, and the custody stage its release
+-- completes.
+INSERT INTO custody_instances(instance_id,token_generations,stage) VALUES(@instance_id,@token_generations,@stage)
+ON CONFLICT (instance_id) DO UPDATE SET token_generations = EXCLUDED.token_generations, stage = EXCLUDED.stage, seen_at = now();
+
+-- name: TokenIssuingGeneration :one
+-- The newest token key generation that may seal and that every instance seen in the last five
+-- minutes reports holding, or 0 while there is none. An instance seen less often than that has
+-- stopped, and loads every generation before it serves again.
+SELECT COALESCE(max(k.generation), 0)::bigint FROM installation_keys k
+WHERE k.scope = 'token' AND k.state IN ('active', 'retiring') AND k.sealable
+    AND NOT EXISTS(SELECT 1 FROM custody_instances i
+        WHERE i.seen_at > now() - interval '5 minutes' AND NOT k.generation = ANY(i.token_generations));
 
 -- name: PruneCustodyInstances :exec
 -- An instance unseen for a day has stopped.
@@ -101,3 +122,18 @@ ORDER BY scope,generation,purpose;
 -- name: RewrapInstallationKeyWrapping :execrows
 UPDATE installation_key_wrappings SET wrapped = @wrapped
 WHERE scope = @scope AND generation = @generation AND purpose = @purpose AND backend_id = @backend_id AND wrapped = @previous;
+
+-- name: InstancesBelowStageSinceRecorded :one
+-- unscoped: instances seen since the custody stage was last recorded whose release completes a
+-- stage before @stage, or reports none.
+SELECT count(*)::bigint FROM custody_instances i, custody_stage s
+WHERE i.seen_at > s.advanced_at AND (i.stage IS NULL OR i.stage < @stage::integer);
+
+-- name: LockCustodyStage :one
+-- unscoped: the custody stage, held until the transaction ends so it is not recorded meanwhile.
+SELECT stage FROM custody_stage FOR UPDATE;
+
+-- name: RevertCustodyStage :exec
+-- Records an installation as back at @back, from @current, once what @current says stopped being
+-- true, while LockCustodyStage holds it.
+UPDATE custody_stage SET stage = @back, advanced_at = now() WHERE stage = @current;

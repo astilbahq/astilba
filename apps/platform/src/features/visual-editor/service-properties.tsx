@@ -8,6 +8,7 @@ import { Select } from "../../components/select";
 import { Textarea } from "../../components/textarea";
 import * as s from "../../styles";
 import { Field, Form, text, type useAction } from "../../ui";
+import { availableUpdate, type PostgresRelease } from "../postgres-releases";
 import { OutputEditor } from "../service-outputs";
 
 type Spec = Schema["Specification"];
@@ -24,6 +25,7 @@ export function ServiceProperties({
   onPositionChange,
   update,
   stage,
+  postgresReleases,
   onRemove,
   className,
   header,
@@ -38,6 +40,7 @@ export function ServiceProperties({
   onPositionChange: (position: Schema["Position"]) => void;
   update: (app: App) => void;
   stage: (spec: Spec) => void;
+  postgresReleases: PostgresRelease[];
   onRemove: () => void;
   className: string;
   header: ReactNode;
@@ -176,6 +179,11 @@ export function ServiceProperties({
                   Changing database initialization credentials does not alter
                   credentials in an existing data volume.
                 </small>
+                <PostgresVersion
+                  app={app}
+                  releases={postgresReleases}
+                  update={update}
+                />
               </>
             ) : (
               <>
@@ -455,5 +463,43 @@ export function ServiceProperties({
         </p>
       )}
     </section>
+  );
+}
+
+// A database on a retired release keeps running it until its owner stages the update. The
+// later release opens the same data in place; the plan review names the restart.
+function PostgresVersion({
+  app,
+  releases,
+  update,
+}: {
+  app: App;
+  releases: PostgresRelease[];
+  update: (app: App) => void;
+}) {
+  const running = releases.find((r) => r.image === app.source.image);
+  const next = availableUpdate(releases, app.source.image);
+  if (!running) return null;
+  return (
+    <div className={s.stack}>
+      <p>PostgreSQL {running.name}</p>
+      {next && (
+        <>
+          <p>
+            PostgreSQL {running.name} is retired. Update to {next.name}: a
+            deployed database restarts on its existing data, and the plan review
+            lists any follow-up maintenance.
+          </p>
+          <Button
+            type="button"
+            onClick={() =>
+              update({ ...app, source: { kind: "image", image: next.image } })
+            }
+          >
+            Stage update to PostgreSQL {next.name}
+          </Button>
+        </>
+      )}
+    </div>
   );
 }

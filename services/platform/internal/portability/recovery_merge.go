@@ -2,8 +2,6 @@ package portability
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -13,6 +11,8 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/recoveryrows"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -46,12 +46,7 @@ func recoveryStateHash(a Archive) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return recoveryRowHash(b), nil
-}
-
-func recoveryRowHash(raw []byte) string {
-	h := sha256.Sum256(stablejson.Normalize(raw))
-	return hex.EncodeToString(h[:])
+	return recoveryrows.Hash(b), nil
 }
 
 // recoveryMergeOrder applies a table's rows in an order its unique indexes accept one row at a
@@ -151,10 +146,28 @@ func RecoveryImmutable(name string) bool {
 
 // MergeRecovery is used only inside the offline recovery transaction after its
 // process, owner and expected-state guards. It never disables immutable triggers
-// or deletes history. Ciphertext is preserved with its original key identity.
-func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) error {
+// or deletes history. Each value it writes keeps its data, with its data key moved
+// by session, a recover session for the workspace, onto the generation of the
+// workspace's key that new values are sealed under: a restored row never lands
+// under a generation on its way out.
+func MergeRecovery(ctx context.Context, tx pgx.Tx, session *secretbroker.Session, a Archive, owner uuid.UUID) error {
+	return MergeRecoveryErasing(ctx, tx, session, a, owner, nil)
+}
+
+// MergeRecoveryErasing is MergeRecovery that restores erased the secret versions of erase, the
+// environments whose keys the restored database never had and whose loss the operator accepted.
+func MergeRecoveryErasing(ctx context.Context, tx pgx.Tx, session *secretbroker.Session, a Archive, owner uuid.UUID, erase map[uuid.UUID]bool) error {
 	links := map[string]map[string]jsontext.Value{"environments": {}, "execution_operations": {}}
 	appliedOperations := map[string]jsontext.Value{}
+	// A restored value moves onto its environment's key.
+	environments, err := environmentsOf(a)
+	if err != nil {
+		return err
+	}
+	loss, err := newAcceptedLoss(session, a, erase)
+	if err != nil {
+		return err
+	}
 	for _, t := range tables {
 		rows, err := recoveryMergeOrder(t.Name, a.Tables[t.Name])
 		if err != nil {
@@ -185,7 +198,9 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 				return err
 			}
 			if found && RecoveryImmutable(t.Name) {
-				if recoveryRowHash(existing) == recoveryRowHash(original) {
+				// Rows compare on their content, so a value whose key moved since the checkpoint,
+				// by a rewrap, a conversion or a recovery, still matches it.
+				if recoveryrows.ContentHash(t.Name, existing) == recoveryrows.ContentHash(t.Name, original) {
 					continue
 				}
 				// Erasing its value is the only change a secret version takes, and it is never undone:
@@ -199,11 +214,15 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 						continue
 					}
 				}
-				attributed, err := db.New(tx).RecoveryRowAttribution(ctx, db.RecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryRowHash(original)})
+				// A restored row is recorded by the checkpoint row's hash as stored, which an archive
+				// never changes, and by the restored row's hash as stored, which the release before
+				// this one reads too. Before a value's key moves, its record moves to the row's
+				// content form, which still matches afterwards.
+				attributed, err := db.New(tx).RecoveryRowAttribution(ctx, db.RecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryrows.Hash(original)})
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					return err
 				}
-				if attributed != recoveryRowHash(existing) {
+				if attributed != recoveryrows.Hash(existing) && attributed != recoveryrows.ContentHash(t.Name, existing) {
 					return fmt.Errorf("recovery conflicts with immutable %s", t.Name)
 				}
 				continue
@@ -263,6 +282,9 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					setValue(row, "runtime_operation_id", nil)
 				}
 			}
+			if err = rehomeCredential(ctx, db.New(tx), session, t.Name, row, environments, loss); err != nil {
+				return err
+			}
 			raw, err := stablejson.Marshal(row)
 			if err != nil {
 				return err
@@ -283,7 +305,7 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 					return err
 				}
 				// Cleanup can remove a recovered row without removing its attribution.
-				if err = db.New(tx).UpsertRecoveryRowAttribution(ctx, db.UpsertRecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryRowHash(original), AttributedHash: recoveryRowHash(stored)}); err != nil {
+				if err = db.New(tx).UpsertRecoveryRowAttribution(ctx, db.UpsertRecoveryRowAttributionParams{WorkspaceID: a.Workspace, TableName: t.Name, SourceHash: recoveryrows.Hash(original), AttributedHash: recoveryrows.Hash(stored)}); err != nil {
 					return err
 				}
 			}
@@ -320,4 +342,64 @@ func MergeRecovery(ctx context.Context, tx pgx.Tx, a Archive, owner uuid.UUID) e
 	}
 	// A checkpoint from before archive version 8 brings volumes without the major they record.
 	return backfillPostgresMajors(ctx, db.New(tx), a.Workspace)
+}
+
+// errErasureAccepted is a value under an environment key the restored database never had, which
+// the operator accepted recovery restores erased.
+var errErasureAccepted = errors.New("the operator accepted erasing this value")
+
+// acceptedLoss is the environments whose keys the restored database never had and whose values
+// under them the operator accepted recovery restores erased, with the newest lost generation of
+// each whose key recovery has yet to replace.
+type acceptedLoss struct {
+	erase      map[uuid.UUID]bool
+	unreplaced map[uuid.UUID]int64
+}
+
+// newAcceptedLoss reads from the archive the newest generation each environment of erase lost.
+func newAcceptedLoss(session *secretbroker.Session, a Archive, erase map[uuid.UUID]bool) (*acceptedLoss, error) {
+	loss := &acceptedLoss{erase: erase, unreplaced: map[uuid.UUID]int64{}}
+	if len(erase) == 0 {
+		return loss, nil
+	}
+	values, err := EnvironmentSealedValues(session, a)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range values {
+		if erase[v.Environment] {
+			loss.unreplaced[v.Environment] = max(loss.unreplaced[v.Environment], v.Generation)
+		}
+	}
+	return loss, nil
+}
+
+// rehomeCredential moves a recovered row's value onto the generation keys seal under, in q, the
+// transaction that writes the row. A secret version whose environment's key a purge destroyed opens
+// nowhere again: it is restored erased, as the purge left it, as is one under a key the restored
+// database never had, for an environment the operator accepted that of. Before any value of such
+// an environment moves, its key is replaced above the generations it lost, so neither this
+// recovery nor a writer after it makes one at a lost generation.
+func rehomeCredential(ctx context.Context, q secretbroker.Fence, keys *secretbroker.Session, table string, row Row, environments secretEnvironments, loss *acceptedLoss) error {
+	err := transformCredential(table, row, environments, func(item secretbroker.Item, value []byte) ([]byte, error) {
+		if lost, ok := loss.unreplaced[item.Environment]; ok {
+			if err := keys.ReplaceLostEnvironmentKey(ctx, q, item.Environment, lost); err != nil && !errors.Is(err, secretbroker.ErrKeyDestroyed) {
+				return nil, err
+			}
+			delete(loss.unreplaced, item.Environment)
+		}
+		moved, err := keys.Rehome(ctx, q, item, value)
+		if errors.Is(err, secretbroker.ErrKeyNotInBackup) && loss.erase[item.Environment] {
+			return nil, errErasureAccepted
+		}
+		return moved, err
+	})
+	if !errors.Is(err, secretbroker.ErrKeyDestroyed) && !errors.Is(err, errErasureAccepted) {
+		return err
+	}
+	if table == "secret_versions" {
+		setValue(row, "encrypted_value", nil)
+		setValue(row, "erased_at", time.Now().UTC())
+	}
+	return nil
 }

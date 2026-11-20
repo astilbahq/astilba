@@ -128,6 +128,37 @@ func (q *Queries) DuePreviewRequests(ctx context.Context) ([]DuePreviewRequestsR
 	return items, nil
 }
 
+const previewApproverHolds = `-- name: PreviewApproverHolds :one
+SELECT (policy_approver_holds($1::uuid, $2::uuid, $3::bigint, true)
+    AND EXISTS(SELECT 1 FROM servers s WHERE s.workspace_id = $1::uuid AND s.id = $4::uuid
+        AND s.controller_generation = $5::bigint AND s.preview_only AND s.role = 'combined'
+        AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false)))::boolean
+`
+
+type PreviewApproverHoldsParams struct {
+	WorkspaceID          uuid.UUID `json:"workspace_id"`
+	ActorID              uuid.UUID `json:"actor_id"`
+	AuthVersion          int64     `json:"auth_version"`
+	ServerID             uuid.UUID `json:"server_id"`
+	ControllerGeneration int64     `json:"controller_generation"`
+}
+
+// Whether an owner's approval to run previews, or to clean one up, on server still holds: the
+// check every standing approval makes, and the server is still the preview host it was approved
+// for, with the controller generation it had then.
+func (q *Queries) PreviewApproverHolds(ctx context.Context, arg PreviewApproverHoldsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, previewApproverHolds,
+		arg.WorkspaceID,
+		arg.ActorID,
+		arg.AuthVersion,
+		arg.ServerID,
+		arg.ControllerGeneration,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const previewForkApproval = `-- name: PreviewForkApproval :one
 SELECT CASE WHEN held THEN approved_head ELSE '' END::text AS head,
     CASE WHEN held THEN approved_repository ELSE 0 END::bigint AS repository,

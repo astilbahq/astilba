@@ -29,6 +29,53 @@ var (
 	ErrTooLarge = cryptobox.ErrTooLarge
 )
 
+// ErrKeysChanged is a session whose holder's keys changed after it began: it holds no key yet
+// for a value sealed since, or the generation it seals under has been replaced. It is ErrNeedKeys,
+// and an attempt that begins again succeeds.
+var ErrKeysChanged error = keysChanged{}
+
+type keysChanged struct{}
+
+var keysChangedBusy = &domain.Error{Code: "temporarily_busy", Message: "The keys this needs changed while it was in progress. Try again."}
+
+func (keysChanged) Error() string   { return keysChangedBusy.Message }
+func (keysChanged) Unwrap() []error { return []error{keysChangedBusy, ErrNeedKeys} }
+
+// ErrNoSealableKey is a holder whose only key generation may no longer be sealed under, until a
+// new generation replaces it.
+var ErrNoSealableKey = &domain.Error{Code: "temporarily_busy", Message: "New values cannot be saved until a new key replaces the current one. Try again later."}
+
+// ErrKeyNotInBackup is a value a recovery cannot open because the restored database never had the
+// key it is sealed under, its workspace's or its environment's: the backup was taken before that
+// key existed, and what was sealed under it opens only with it. errors.Is matches it for either
+// key, and the error says which is missing and what the operator can do. It is a value the session
+// cannot open, as cryptobox.ErrKey is.
+var ErrKeyNotInBackup error = keyNotInBackup{}
+
+// keyNotInBackup names the environment whose key is missing, or none for the workspace's.
+type keyNotInBackup struct{ environment uuid.UUID }
+
+func (e keyNotInBackup) Error() string {
+	if e.environment == uuid.Nil {
+		return "this management database holds no key for the workspace: it was restored from a backup taken before the workspace's key existed, so it cannot open what the hosts sealed under that key; restore a management backup taken after the workspace's key was made"
+	}
+	return "this management database lacks the key that environment " + e.environment.String() + "'s secret values are sealed under: it was restored from a backup taken before that key existed, so it cannot open them; run recovery again to list every environment whose key is missing, then either restore a management backup taken after their first secrets were saved, or run recovery with --accept-erased-environments naming exactly those environments to restore their values erased"
+}
+func (keyNotInBackup) Is(target error) bool { _, ok := target.(keyNotInBackup); return ok }
+func (keyNotInBackup) Unwrap() error        { return cryptobox.ErrKey }
+
+// ErrKeyMissing is a recovery into a workspace with no key. Recovery runs with the installation
+// offline, where nothing makes keys, so the operator makes them before recovering again.
+var ErrKeyMissing = errors.New("the workspace has no key yet: run `astilba custody init-keys`, then recover again")
+
+// ErrKeyDestroyed is a value sealed under an environment's key that purging the environment, or
+// ending its preview, destroyed. Nothing opens it again: callers treat it as erased.
+var ErrKeyDestroyed = errors.New("the environment's key was destroyed when the environment was purged or its preview ended, so its value is erased")
+
+// ErrKeyPending is a holder still waiting for its first key, which the key job is making. How far
+// that job has got across the installation is for operators, in its log and custody status.
+var ErrKeyPending = &domain.Error{Code: "temporarily_busy", Message: "The key for saving this is being created. Try again shortly."}
+
 // SessionFailure reports an error that came from the session itself, not from the value: the
 // session ended, or was never given the value. Callers pass it on rather than reporting a
 // missing key or a damaged value.
@@ -66,6 +113,7 @@ type Queries interface {
 	AbandonSecretAccess(ctx context.Context, olderThanSeconds float64) (int64, error)
 	WorkspaceKeyWrappings(ctx context.Context, arg db.WorkspaceKeyWrappingsParams) ([]db.WorkspaceKeyWrappingsRow, error)
 	InstallationKeyWrappings(ctx context.Context, arg db.InstallationKeyWrappingsParams) ([]db.InstallationKeyWrappingsRow, error)
+	EnvironmentKeys(ctx context.Context, workspaceID uuid.UUID) ([]db.EnvironmentKeysRow, error)
 }
 
 type Broker struct {
@@ -77,6 +125,29 @@ type Broker struct {
 	// installation and pool are set by Install, which an operator's command needs first.
 	installation uuid.UUID
 	pool         Pool
+	keysWanted   chan struct{}
+}
+
+// instanceCounter counts instances seen lately by the stage their release completes.
+type instanceCounter interface {
+	InstancesBelowStage(ctx context.Context, stage int32) (int64, error)
+}
+
+// sealsUnderEnvironments reports whether every instance seen in the last five minutes runs a
+// release that opens values sealed under environment keys, read in q, so a value may be sealed
+// under one. Until then an environment's values are sealed under its workspace's key, which every
+// release opens, and converting moves them once none is left.
+func sealsUnderEnvironments(ctx context.Context, q instanceCounter) (bool, error) {
+	older, err := q.InstancesBelowStage(ctx, readEnvironmentsStage)
+	return older == 0, err
+}
+
+// SealsUnderEnvironments is sealsUnderEnvironments for the installation as it is now.
+func (b *Broker) SealsUnderEnvironments(ctx context.Context) (bool, error) {
+	if b.pool == nil {
+		return false, errors.New("custody is not installed")
+	}
+	return sealsUnderEnvironments(ctx, db.New(b.pool))
 }
 
 // New takes queries that do not run in a caller's transaction: each record commits on its own.
@@ -84,7 +155,26 @@ func New(q Queries, backend custody.Legacy, log *slog.Logger) *Broker {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Broker{q: q, backend: backend, budgets: newBudgets(), log: log, now: time.Now}
+	return &Broker{q: q, backend: backend, budgets: newBudgets(), log: log, now: time.Now, keysWanted: make(chan struct{}, 1)}
+}
+
+// KeysWanted signals each time a value is refused because its holder has no key yet, so the key
+// job can run now rather than at its next turn.
+func (b *Broker) KeysWanted() <-chan struct{} { return b.keysWanted }
+
+func (b *Broker) wantKeys() {
+	select {
+	case b.keysWanted <- struct{}{}:
+	default:
+	}
+}
+
+// NewDetached is New for a broker whose installation's records are kept somewhere other than a
+// database, as a unit test's are: q also stores its keys. It cannot make keys.
+func NewDetached(q Queries, backend custody.Legacy, installation uuid.UUID, log *slog.Logger) *Broker {
+	b := New(q, backend, log)
+	b.installation = installation
+	return b
 }
 
 // Begin checks the request, records it, and only then returns a session holding the keys: the
@@ -96,28 +186,33 @@ func (b *Broker) Begin(ctx context.Context, r Request) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !b.budgets.take(budgetKeys(r)) {
+	if !b.budgets.take(b.now(), budgetKeys(r)) {
 		return nil, domain.RateLimited
 	}
-	scope, wrapped, err := b.wrappedKeys(ctx, r)
+	return b.begin(ctx, r, rule)
+}
+
+// begin records an admitted request, then unwraps the keys its session holds.
+func (b *Broker) begin(ctx context.Context, r Request, rule rule) (*Session, error) {
+	held, err := b.wrappedKeys(ctx, r)
 	if err != nil {
 		return nil, err
 	}
 	id := uuid.New()
-	if err = b.record(ctx, id, r, generationsOf(wrapped)); err != nil {
+	if err = b.record(ctx, id, r, generationsOf(held)); err != nil {
 		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
 		// The record is written, so it ends now rather than being swept as abandoned later.
-		b.outcome(ctx, id, Refused)
+		b.outcome(ctx, id, Refused, nil)
 		return nil, err
 	}
-	keys, err := b.unwrap(ctx, scope, r.Workspace, string(r.Purpose), wrapped)
+	keys, sealing, requests, err := b.unwrap(ctx, held, r.Workspace, string(r.Purpose))
 	if err != nil {
-		b.outcome(ctx, id, Failed)
+		b.outcome(ctx, id, Failed, requests)
 		return nil, err
 	}
-	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: keys}
+	s := &Session{broker: b, id: id, request: r, rule: rule, deadline: b.now().Add(rule.limit), ring: b.backend.Keyring(), keys: keys, sealing: sealing, keyless: held.keyless, environments: held.environments, requests: requests}
 	b.log.Info("secret access", "access", id, "workspace", r.Workspace, "purpose", r.Purpose, "principal", r.Principal.Kind, "items", len(r.Items), "kinds", len(r.Kinds), "backend", b.backend.ID())
 	return s, nil
 }
@@ -236,10 +331,19 @@ func (b *Broker) record(ctx context.Context, id uuid.UUID, r Request, held []int
 // optionalText is an empty string as NULL.
 func optionalText(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
 
-func (b *Broker) outcome(ctx context.Context, id uuid.UUID, outcome Outcome) error {
+// outcome records how an access ended, with the key service's IDs for the requests its keys took,
+// so each can be found in the provider's own audit log.
+func (b *Broker) outcome(ctx context.Context, id uuid.UUID, outcome Outcome, requests []string) error {
+	if requests == nil {
+		requests = []string{}
+	}
+	ids, err := stablejson.Marshal(requests)
+	if err != nil {
+		return err
+	}
 	write, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	return b.q.InsertSecretAccessOutcome(write, db.InsertSecretAccessOutcomeParams{AccessID: id, Outcome: string(outcome), ProviderRequestIds: []byte("[]")})
+	return b.q.InsertSecretAccessOutcome(write, db.InsertSecretAccessOutcomeParams{AccessID: id, Outcome: string(outcome), ProviderRequestIds: ids})
 }
 
 // Sweep records as abandoned every access whose session must have ended without saying how.

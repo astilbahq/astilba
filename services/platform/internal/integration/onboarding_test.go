@@ -123,6 +123,7 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 				id = r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 			}
 			v["id"] = id
+			v["modified_on"] = time.Now().UTC().Format(time.RFC3339Nano)
 			records[id] = v
 			result = v
 			if lost {

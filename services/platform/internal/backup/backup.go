@@ -102,6 +102,10 @@ type Manifest struct {
 	SHA256        string    `json:"sha256"`
 	Bytes         int64     `json:"bytes"`
 }
+
+// Extensions are the only extensions a database the recipe backs up may hold.
+var Extensions = []string{"hstore", "plpgsql"}
+
 type Run struct {
 	ManifestHash string     `json:"manifestHash"`
 	ID           uuid.UUID  `json:"id"`
@@ -119,6 +123,10 @@ type Run struct {
 	ExitCode     *int       `json:"exitCode"`
 	Manifest     *Manifest  `json:"manifest"`
 	TargetID     uuid.UUID  `json:"targetId"`
+	// RestoreImage is the PostgreSQL image whose server filled the restore target, which may be a
+	// later release of the archive's major. Runs before it was recorded restored with the
+	// archive's own image.
+	RestoreImage string `json:"restoreImage,omitempty"`
 }
 type Status struct {
 	Enabled    bool      `json:"enabled"`

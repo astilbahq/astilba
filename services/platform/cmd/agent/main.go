@@ -114,7 +114,9 @@ func run() error {
 		return stablejson.Encode(os.Stdout, map[string]bool{"supported": (hostnetwork.Host{Dir: *dir}).Supported(ctx)})
 	}
 	if command == "network-restore" {
-		return (hostnetwork.Host{Dir: *dir}).Restore(ctx)
+		// Restore opens the sealed keys it finds and never seals one: the agent service decides
+		// when the state directory's format changes.
+		return (hostnetwork.Host{Dir: *dir, Keys: agent.OnDemandKeyStore(agent.SystemKeyStore)}).Restore(ctx)
 	}
 	docker, e := client.New(client.WithHost(*host))
 	if e != nil {
@@ -405,7 +407,9 @@ func run() error {
 	c.Observe = func(ctx context.Context) api.AgentHeartbeat {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return preflight(ctx)
+		h := preflight(ctx)
+		engine.ReportContainerRanges(ctx, &h)
+		return h
 	}
 	var updated atomic.Bool
 	engine.VerifyInstalledUpdate = func(r api.AgentRelease) error {

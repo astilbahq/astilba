@@ -47,6 +47,9 @@ func (s *Store) SaveDraft(ctx context.Context, tx pgx.Tx, q *db.Queries, p Princ
 			return same, e
 		}
 	}
+	if e := RefuseDeletedMounts(ctx, q, ws, id, spec); e != nil {
+		return db.SpecificationRevision{}, e
+	}
 	newID := uuid.New()
 	h := sha256.Sum256(canonical)
 	rev, e := InsertRevision(ctx, q, db.InsertRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: newID, AuthorID: p.Account.ID, Specification: canonical, ContentHash: h[:]})
@@ -66,7 +69,7 @@ func InsertSecretValue(ctx context.Context, q *db.Queries, keys *secretbroker.Se
 	if err := q.InsertSecret(ctx, db.InsertSecretParams{WorkspaceID: ws, EnvironmentID: env, ID: secret, Name: name}); err != nil {
 		return err
 	}
-	encrypted, err := keys.Seal(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: version}, []byte(value))
+	encrypted, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: version, Environment: env}, []byte(value))
 	if err != nil {
 		return err
 	}

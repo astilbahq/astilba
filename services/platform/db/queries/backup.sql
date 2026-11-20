@@ -119,3 +119,89 @@ RETURNING postgres_major;
 
 -- name: OperationCommandByRequestKey :one
 SELECT command FROM execution_operations WHERE workspace_id = @workspace_id AND request_key = @request_key;
+
+-- name: RecordBackupSnapshotReceipts :exec
+-- A listed snapshot keeps the time management first received it, one an upload lists gets
+-- management's clock now, and one no longer listed loses its receipt.
+UPDATE backup_policies p SET snapshot_receipts = COALESCE((
+    SELECT jsonb_object_agg(s.snapshot, COALESCE(p.snapshot_receipts->s.snapshot, to_jsonb(clock_timestamp())))
+    FROM unnest(@listed::text[]) AS s(snapshot)
+    WHERE p.snapshot_receipts->s.snapshot IS NOT NULL OR s.snapshot = ANY(@uploaded::text[])
+), '{}')
+WHERE workspace_id = @workspace_id AND id = @policy_id;
+
+-- name: BackupSnapshotReceipts :one
+SELECT snapshot_receipts FROM backup_policies
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id;
+
+-- name: InsertBackupRecovery :exec
+INSERT INTO backup_recoveries(id,workspace_id,environment_id,policy_id,operation_id,source_server_id,server_id,plan_id,snapshot,first_reported_at,target_volume_id,created_at)
+VALUES(@id,@workspace_id,@environment_id,@policy_id,@operation_id,@source_server_id,@server_id,@plan_id,@snapshot,@first_reported_at,@target_volume_id,@created_at);
+
+-- name: BackupRecoveryAccess :one
+-- A recovery's repository access is released only to the server it was issued to, for the
+-- operation it was issued as, while the policy is still the one it froze.
+SELECT p.encrypted_access,p.configuration FROM backup_recoveries r
+JOIN backup_policies p ON p.workspace_id = r.workspace_id AND p.environment_id = r.environment_id AND p.id = r.policy_id
+WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.id = @id
+AND r.operation_id = @operation_id AND r.server_id = @server_id AND r.policy_id = @policy_id;
+
+-- name: RecordBackupRecoveryResult :exec
+-- Reports stop once the operation is terminal, so the succeeded report is the only writer.
+UPDATE backup_recoveries SET result = @result WHERE workspace_id = @workspace_id AND operation_id = @operation_id;
+
+-- name: LockRecoveryDelivery :one
+-- A restore of the polling server, locked to decide its delivery. Held is whether an agent may
+-- have it: its values were released to one, or it reported.
+SELECT o.command,o.state,o.cancel_requested,(o.report_sequence > 0 OR EXISTS(
+    SELECT 1 FROM secret_releases r WHERE r.workspace_id = o.workspace_id AND r.operation_id = o.id))::boolean AS held
+FROM execution_operations o
+WHERE o.workspace_id = @workspace_id AND o.id = @id AND o.server_id = @server_id AND o.kind = 'restore'
+FOR UPDATE OF o;
+
+-- name: FinishUndeliveredRecovery :exec
+UPDATE execution_operations SET state = @state, note = @note::text || CASE WHEN note <> '' THEN ' ' || note ELSE '' END
+WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: ListBackupRecoveries :many
+SELECT r.id,r.operation_id,r.source_server_id,r.server_id,r.plan_id,r.snapshot,r.first_reported_at,r.target_volume_id,r.created_at,r.result,o.state,o.note,coalesce(v.deleted,false)::boolean AS target_deleted,
+ r.discard_operation_id,d.state AS discard_state,d.note AS discard_note
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+LEFT JOIN execution_operations d ON d.workspace_id = r.workspace_id AND d.id = r.discard_operation_id
+LEFT JOIN managed_volumes v ON v.workspace_id = r.workspace_id AND v.environment_id = r.environment_id AND v.id = r.target_volume_id
+WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.policy_id = @policy_id
+ORDER BY r.created_at DESC, r.id LIMIT 100;
+
+-- name: BackupRecovery :one
+-- One restore of a policy's snapshot onto another server, with its operation's state. A cutover and
+-- a discard of its volume are decided one at a time under the environment's row lock, as any delete
+-- of a volume and a draft that uses it are (store.LockVolumeDecisions); locking this row too would
+-- deadlock a discard against the restore's own report, which locks the server first. A restore's
+-- result is written once, when its operation ends.
+SELECT r.server_id,r.plan_id,r.snapshot,r.target_volume_id,r.result,o.state
+FROM backup_recoveries r JOIN execution_operations o ON o.workspace_id = r.workspace_id AND o.id = r.operation_id
+WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND r.policy_id = @policy_id AND r.id = @id;
+
+-- name: SetBackupRecoveryDiscard :exec
+UPDATE backup_recoveries SET discard_operation_id = @discard_operation_id
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id;
+
+-- name: ExposedBackupDestinations :many
+-- A destination is exposed while a revoked server holds its storage keys: the server a policy using
+-- it is bound to, or one a restore of such a policy was recorded for, whether or not the restore
+-- was released to it. Only an S3 destination has keys, and a container job is never given them.
+SELECT DISTINCT d.id
+FROM backup_destinations d
+JOIN backup_policies p ON p.workspace_id = d.workspace_id AND p.configuration->>'destinationId' = d.id::text
+    AND p.configuration->>'method' <> 'container-job'
+JOIN servers s ON s.workspace_id = p.workspace_id AND s.revoked AND (s.id = p.server_id OR EXISTS(
+    SELECT 1 FROM backup_recoveries r WHERE r.workspace_id = p.workspace_id AND r.policy_id = p.id AND r.server_id = s.id))
+WHERE d.workspace_id = @workspace_id AND d.configuration->>'kind' = 's3';
+
+-- name: BackupDestinationPolicies :many
+-- The policies using a workspace's destinations, with their environments. A container job uses none.
+SELECT (p.configuration->>'destinationId')::uuid AS destination_id, p.id, (p.configuration->>'name')::text AS name,
+    e.project_id, e.id AS environment_id, e.name AS environment_name
+FROM backup_policies p JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id
+WHERE p.workspace_id = @workspace_id AND p.configuration->>'method' <> 'container-job'
+ORDER BY e.name, p.configuration->>'name', p.id;

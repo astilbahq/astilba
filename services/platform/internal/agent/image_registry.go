@@ -100,17 +100,13 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 		images[len(images)-1] = image
 		return nil
 	}
-	if domain == "docker.io" && config != nil {
-		for _, mirror := range config.Mirrors {
-			u, err := url.Parse(mirror)
-			if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-				continue
-			}
+	if domain == "docker.io" {
+		for _, mirror := range dockerHubMirrors(config) {
 			repository := path
-			if prefix := strings.Trim(u.Path, "/"); prefix != "" {
-				repository = prefix + "/" + path
+			if mirror.prefix != "" {
+				repository = mirror.prefix + "/" + path
 			}
-			if err = add(u.Host, repository, u.Scheme == "http", u.Scheme == "http", nil); err != nil {
+			if err = add(mirror.host, repository, mirror.plainHTTP, mirror.plainHTTP, nil); err != nil {
 				return nil, err
 			}
 		}
@@ -129,6 +125,31 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 		}
 	}
 	return images, nil
+}
+
+// dockerHubMirror is one of Docker Hub's mirrors in the daemon's configuration: its host, the
+// path its repositories sit under, if any, and whether it is read over plain HTTP.
+type dockerHubMirror struct {
+	host, prefix string
+	plainHTTP    bool
+}
+
+// dockerHubMirrors are the Docker Hub mirrors in the daemon's configuration, in the order Docker
+// tries them, leaving out any without a host or with a scheme other than HTTP or HTTPS. Both the
+// agent's own image reads and its builders use them.
+func dockerHubMirrors(config *registrytypes.ServiceConfig) []dockerHubMirror {
+	if config == nil {
+		return nil
+	}
+	var mirrors []dockerHubMirror
+	for _, mirror := range config.Mirrors {
+		u, err := url.Parse(mirror)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+			continue
+		}
+		mirrors = append(mirrors, dockerHubMirror{host: u.Host, prefix: strings.Trim(u.Path, "/"), plainHTTP: u.Scheme == "http"})
+	}
+	return mirrors
 }
 
 // dockerProxy is the proxy Docker reaches registries through: the daemon's, as its info gives

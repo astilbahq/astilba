@@ -239,7 +239,7 @@ test("owner retires a secret, then deletes a retired environment's retained data
     "It keeps no data volumes, so nothing is deleted from its server.",
   );
   await expect(purge).toContainText(
-    "Backups at the workspace’s backup destination are kept.",
+    "Backups at the workspace’s backup destination are kept, with the password that restores them, until the destination’s retention removes them.",
   );
   const purgeName = purge.getByLabel("Environment name", { exact: true });
   const confirmPurge = purge.getByRole("button", {
