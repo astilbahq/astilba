@@ -14,8 +14,8 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// errUnsupportedPostgresImage refuses a database whose image is not one of Astilba's pinned
-// PostgreSQL images, such as a retired pin: its helper would have to run that image.
+// errUnsupportedPostgresImage refuses a database whose image is not a PostgreSQL release Astilba
+// has pinned, current or retired: its helper would have to run that image.
 var errUnsupportedPostgresImage = errors.New("the database's PostgreSQL image is not one Astilba supports")
 
 // pgClient is where the agent runs PostgreSQL's client tools. It is a container the agent owns:
@@ -33,7 +33,7 @@ type pgClient struct {
 // behind stops by itself but never before the work it serves. The credential goes only in each
 // command's environment, never in the helper's configuration. The caller removes the helper.
 func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[string]string, source, image, password string) (pgClient, error) {
-	if image != domain.PostgresImage && image != domain.Postgres17Image {
+	if _, ok := domain.PostgresReleaseOf(image); !ok {
 		return pgClient{}, errUnsupportedPostgresImage
 	}
 	if password == "" {

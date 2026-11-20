@@ -119,7 +119,7 @@ func TestInterruptedSealedRekeyIsFinishedByTheNext(t *testing.T) {
 			if len(keys.Keys) != 1 || keys.Keys[held.Active] != nil || openableCanaries(t, dir, keys) != 0 {
 				t.Fatal("the next rekey left a replaced key")
 			}
-			if state := readLocalState(t, dir); state.Version != sealedStateVersion || state.Keyring != nil {
+			if state := readLocalState(t, dir); state.Version != StateVersion || state.Keyring != nil {
 				t.Fatal("a rekey unsealed the keyring")
 			}
 		})
@@ -146,13 +146,13 @@ func TestRekeyThatFailsAfterSealingLeavesTheJournalSealed(t *testing.T) {
 	}); !errors.Is(err, synced) {
 		t.Fatal("the rekey didn't fail", err)
 	}
-	if readLocalState(t, j.dir).Version != sealedStateVersion {
+	if readLocalState(t, j.dir).Version != StateVersion {
 		t.Fatal("the test proves nothing: the keyring isn't sealed on disk")
 	}
-	if j.KeyStore() != store || j.StateVersion() != sealedStateVersion {
+	if j.KeyStore() != store || j.StateVersion() != StateVersion {
 		t.Fatal("the journal forgot that its keyring is sealed on disk")
 	}
-	if err = j.Rekey(context.Background(), nil); err != nil || readLocalState(t, j.dir).Version != sealedStateVersion {
+	if err = j.Rekey(context.Background(), nil); err != nil || readLocalState(t, j.dir).Version != StateVersion {
 		t.Fatal("the next rekey wrote the keyring in the clear", err)
 	}
 }

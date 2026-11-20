@@ -137,7 +137,8 @@ func Recipes() []Recipe {
 	pg.Secrets = []Secret{{ID: password, ServiceID: pg.Specification.Applications[0].ID, Name: "password", Format: "token"}}
 	pg.Support.Backup = Support{"tested", "PostgreSQL logical backup using the existing encrypted off-server backup policy."}
 	pg.Support.Restore = Support{"tested", "Logical restore into fresh storage with a verified application check."}
-	pg.Support.Upgrade = Support{"tested", "Only the existing PostgreSQL 17.10 → 18.4 workflow; later major versions require a new recipe."}
+	current, _ := domain.CurrentPostgres(18)
+	pg.Support.Upgrade = Support{"tested", "Runs PostgreSQL " + current.Name() + ". A later PostgreSQL 18 release replaces an earlier one in place, and a PostgreSQL 17 database moves to 18 through the supported upgrade. Later major versions require a new recipe."}
 	cache := Recipe{ID: "valkey-cache", Name: "Valkey cache", Description: "A private, disposable Redis-compatible cache. Data is intentionally not persisted.", Documentation: "https://valkey.io/topics/persistence/", Prerequisites: []string{private, "Unauthenticated within this deployment unit. Use only for data that can be rebuilt; startup is not a readiness guarantee."}, Specification: template("valkey-cache", "Valkey cache", "worker", ValkeyImage, 6379, "", ""), Support: base}
 	cache.Specification.Applications[0].Outputs[1].Scheme = "redis"
 	cache.Specification.Applications[0].Command = []string{"valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"}

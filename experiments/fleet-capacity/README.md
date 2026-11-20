@@ -1,12 +1,12 @@
 # Fleet capacity measurement
 
-Measures the load connected agents put on the management application. It runs the real server binary against PostgreSQL 18.4 and drives it with synthetic agents over the public HTTP contract. It imports no application code and adds none. Results and the sizing built on them are in [RESULTS.md](RESULTS.md).
+Measures the load connected agents put on the management application. It runs the real server binary against PostgreSQL 18.7 and drives it with synthetic agents over the public HTTP contract. It imports no application code and adds none. Results and the sizing built on them are in [RESULTS.md](RESULTS.md).
 
 ## What it runs
 
 `measure` starts three labelled containers on an explicitly named Docker context, then removes only what carries its run label:
 
-- PostgreSQL 18.4 at the repository's pinned digest, with `pg_stat_statements`. A `netem` delay on its replies stands in for the network between a task and a managed database; each run records the resulting ping.
+- PostgreSQL 18.7 at the repository's pinned digest, with `pg_stat_statements`. A `netem` delay on its replies stands in for the network between a task and a managed database; each run records the resulting ping.
 - The application, built from `services/platform` without dashboard assets, in non-development mode behind a declared trusted proxy.
 - The generator, whose agents copy the cadence of `internal/agent/client.go`: a poll loop with 250 ms between responses, a heartbeat every 15 s, metrics every 60 s and a report loop every 2 s. A delivered command is re-polled as the real agent does until it is terminal.
 

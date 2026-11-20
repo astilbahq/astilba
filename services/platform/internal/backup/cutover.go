@@ -8,13 +8,21 @@ import (
 )
 
 // CutoverVolume validates a verified physical restore for a volume-only switch.
-// A logical archive may verify under its original major while remaining
-// incompatible with the currently deployed PostgreSQL data layout.
 func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 	// Run history retains the verified archive's hash but omits its potentially
 	// large role/extension lists. The compact manifest cannot reproduce that hash.
-	if !r.Verified || r.State != "succeeded" || r.TargetID == uuid.Nil || r.PolicyID != p.ID || r.Manifest == nil || !SnapshotID(r.ManifestHash) || r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID || r.Manifest.Method != p.Method {
+	if !r.Verified || r.State != "succeeded" || r.PolicyID != p.ID || r.Manifest == nil || !SnapshotID(r.ManifestHash) {
 		return uuid.Nil, errors.New("the restored run does not match the source policy")
+	}
+	return RestoredVolume(p, r.TargetID, *r.Manifest, r.RestoredImage())
+}
+
+// RestoredVolume is the volume of p's plan that target, holding a verified restore of the archive
+// m describes, switches in for. A logical restore's data was written by the release whose image
+// is restored, which the frozen source must be able to open.
+func RestoredVolume(p Policy, target uuid.UUID, m Manifest, restored string) (uuid.UUID, error) {
+	if target == uuid.Nil || m.PolicyID != p.ID || m.EnvironmentID != p.EnvironmentID || m.ResourceID != p.ResourceID || m.Method != p.Method {
+		return uuid.Nil, errors.New("the restored archive does not match the source policy")
 	}
 	old := p.ResourceID
 	switch p.Method {
@@ -24,8 +32,8 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 			if a.ID != p.ResourceID || a.Postgres == nil {
 				continue
 			}
-			if !OpensRestoredPostgres(a, *r.Manifest) {
-				return uuid.Nil, errors.New("the restored PostgreSQL image and physical layout differ from the frozen target")
+			if err := OpensRestoredPostgres(a, restored); err != nil {
+				return uuid.Nil, err
 			}
 			old, found = a.Mounts[0].VolumeID, true
 		}
@@ -37,16 +45,65 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 		return uuid.Nil, errors.New("this policy has no supported volume cutover")
 	}
 	for _, v := range p.Plan.Specification.Volumes {
-		if v.ID == r.TargetID {
+		if v.ID == target {
 			return uuid.Nil, errors.New("the restored target is already part of the source")
 		}
 	}
 	return old, nil
 }
 
-// OpensRestoredPostgres reports whether a PostgreSQL application runs the image a logical restore
-// initialised its target with, mounted where that image keeps its data. A data directory one major
-// initialised cannot be opened by another.
-func OpensRestoredPostgres(a domain.Application, m Manifest) bool {
-	return a.Postgres != nil && a.Source.Image != nil && m.Image == *a.Source.Image && len(a.Mounts) == 1 && a.Mounts[0].Target == domain.PostgresMount(m.Image)
+// RestoredImage is the PostgreSQL image that filled a logical restore target. A run from an agent
+// that predates the release rule restored in the archive's own image.
+func (r Run) RestoredImage() string {
+	if r.RestoreImage != "" {
+		return r.RestoreImage
+	}
+	if r.Manifest == nil {
+		return ""
+	}
+	return r.Manifest.Image
+}
+
+// RestoredImage is the PostgreSQL image that filled a recovery's target, as for a run.
+func (r RecoveryResult) RestoredImage() string {
+	if r.RestoreImage != "" {
+		return r.RestoreImage
+	}
+	return r.Manifest.Image
+}
+
+// OpensRestoredPostgres says whether a managed database may serve the data a logical restore in
+// the restored image wrote: its release must open data that release wrote, mounted where it
+// keeps it.
+func OpensRestoredPostgres(a domain.Application, restored string) error {
+	written, ok := domain.PostgresReleaseOf(restored)
+	if !ok {
+		return errors.New("the restored PostgreSQL release is unknown")
+	}
+	if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
+		return errors.New("the restored database is not a managed PostgreSQL service")
+	}
+	serving, ok := domain.PostgresReleaseOf(*a.Source.Image)
+	if !ok || a.Mounts[0].Target != serving.Mount {
+		return errors.New("the restored PostgreSQL image and physical layout differ from the frozen target")
+	}
+	return serving.OpensDataFrom(written)
+}
+
+// RestoreRelease is the release a logical PostgreSQL restore of the archive runs for the policy:
+// the database's own release, which then serves the data. It refuses an archive that release
+// cannot restore, such as one from another major.
+func RestoreRelease(p Policy, archive Manifest) (domain.PostgresRelease, error) {
+	for _, a := range p.Plan.Specification.Applications {
+		if a.ID != p.ResourceID || a.Postgres == nil || a.Source.Image == nil {
+			continue
+		}
+		serving, ok := domain.PostgresReleaseOf(*a.Source.Image)
+		source, known := domain.PostgresReleaseOf(archive.Image)
+		if !ok || !known {
+			return domain.PostgresRelease{}, errors.New("this backup or database uses a PostgreSQL release Astilba does not know")
+		}
+		return serving, serving.RestoresArchiveFrom(source)
+	}
+	return domain.PostgresRelease{}, errors.New("the policy has no managed PostgreSQL source")
 }

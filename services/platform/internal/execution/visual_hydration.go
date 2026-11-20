@@ -33,7 +33,7 @@ func (s *Service) hydrateVisual(ctx context.Context, keys valueKeys, c *api.Exec
 	if err := s.Store.Pool.QueryRow(ctx, "SELECT workspace_id FROM servers WHERE id=$1", c.ServerId).Scan(&ws); err != nil {
 		return err
 	}
-	if err := requireServiceOutputs(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan.Specification); err != nil {
+	if err := requireAgentSupport(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan.Specification); err != nil {
 		return err
 	}
 	if err := requireReplicas(ctx, s.Store.Pool, ws, c.ServerId, payload.Plan); err != nil {
@@ -76,7 +76,7 @@ func (s *Service) hydrateVisual(ctx context.Context, keys valueKeys, c *api.Exec
 		if err != nil {
 			return err
 		}
-		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, v.EncryptedValue)
+		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id, Environment: c.EnvironmentId}, v.EncryptedValue)
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func (s *Service) validateVisualSecrets(ctx context.Context, tx pgx.Tx, keys val
 			continue
 		}
 		// A version the measuring job has not reached yet is opened to measure it.
-		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id}, secret.EncryptedValue)
+		plain, err := keys.open(secretbroker.Item{Kind: secretbroker.SecretVersion, ID: id, Environment: env}, secret.EncryptedValue)
 		if err != nil {
 			return err
 		}

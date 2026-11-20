@@ -53,7 +53,7 @@ func (j *Journal) rekey(ctx context.Context, store KeyStore, point func(string) 
 	}
 	err := j.rotate(ctx, point)
 	// Once a sealed keyring has replaced the file, the journal stays sealed whatever failed after.
-	if err != nil && adopting && j.formatVersion.Load() != sealedStateVersion {
+	if err != nil && adopting && !sealedVersion(j.formatVersion.Load()) {
 		j.store = nil
 	}
 	return err

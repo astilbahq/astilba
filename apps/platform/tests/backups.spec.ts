@@ -2,6 +2,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { openEnvironmentSection } from "./environment-section";
 import { managedDatabase } from "./fixtures/managed-database";
+import {
+  confirmIdentityWithPassword,
+  lapseRecentConfirmation,
+} from "./fixtures/step-up";
 
 test("a section's late responses settle before its controls are used", async ({
   page,
@@ -29,6 +33,79 @@ test("a section's late responses settle before its controls are used", async ({
   await expect(
     page.getByRole("form", { name: "Create backup policy" }),
   ).toBeVisible();
+});
+
+test("a lapsed identity confirmation is asked for before a backup policy's credentials are sent", async ({
+  page,
+  request,
+}, info) => {
+  const { ws, project, env, pg, prefix, post } = await managedDatabase(
+    page,
+    request,
+    `Stale ${info.project.name}`,
+  );
+  const destination = await post(`${prefix}/backup-destinations`, {
+    name: "Stale session disk",
+    kind: "filesystem",
+    root: "/srv/backups",
+    endpoint: "",
+    bucket: "",
+    region: "",
+    access: { accessKey: "", secretKey: "", password: "" },
+  });
+  const refused = await lapseRecentConfirmation(page, /\/backup-policies$/);
+  await page.goto(
+    `/?workspace=${ws}&project=${project.id}&environment=${env.id}`,
+  );
+  await openEnvironmentSection(page, "Deployments");
+  await page
+    .getByText("Create backup policy or container job", { exact: true })
+    .click();
+  const form = page.getByRole("form", { name: "Create backup policy" });
+  await form.getByLabel("Policy name").fill("Confirmed backup");
+  await form.getByLabel("Source resource").selectOption(pg);
+  await form.getByLabel("Backup destination").selectOption(destination.id);
+  const password = form.getByLabel(
+    "Repository password (keep a recovery copy)",
+  );
+  await password.fill("browser-stale-session-canary");
+  await form.getByLabel("Daily time", { exact: true }).fill("02:30");
+  const create = form.getByRole("button", { name: "Create policy" });
+  // Declining leaves the form as it was and sends nothing.
+  await create.click();
+  const dialog = page.getByRole("alertdialog", {
+    name: "Confirm your identity",
+  });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(password).toHaveValue("browser-stale-session-canary");
+  await expect(
+    page
+      .getByRole("region", { name: "Backups and scheduled jobs", exact: true })
+      .getByRole("alert"),
+  ).toHaveCount(0);
+  // Confirming creates the policy as submitted.
+  await create.click();
+  await confirmIdentityWithPassword(page);
+  await expect(
+    page.getByRole("region", { name: "Policy Confirmed backup", exact: true }),
+  ).toBeVisible();
+  // The confirmation came first, so the stale session never sent the credentials.
+  expect(refused).toEqual([]);
+  // A policy's commands, which hand its credentials to the server, ask first as well.
+  const commands = await lapseRecentConfirmation(page, /\/commands$/);
+  await page.reload();
+  await openEnvironmentSection(page, "Deployments");
+  const policy = page.getByRole("region", {
+    name: "Policy Confirmed backup",
+    exact: true,
+  });
+  await policy.getByRole("button", { name: "Install schedule" }).click();
+  await confirmIdentityWithPassword(page);
+  await expect(policy.getByRole("status")).toHaveText(
+    "Action queued. Check operation history and the run result.",
+  );
+  expect(commands).toEqual([]);
 });
 
 test("general schedule settings retain invalid drafts and save cron and interval generations", async ({

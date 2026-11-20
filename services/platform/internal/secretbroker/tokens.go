@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // TokenKind is a self-issued token sealed under the resident token key. Only the kinds below
@@ -38,12 +39,16 @@ const (
 // customer values, and needing the key service on every sign-in page would add nothing to the
 // record, so these keys stay resident: the installation keyring, and every token key generation
 // not retired, each recorded in the installation's key history as it is loaded. Tokens are issued
-// under the keyring until values are sealed as v2.
+// under the newest generation every running instance holds, and under the keyring until there is
+// one.
 type Tokens struct {
 	broker   *Broker
 	ring     *cryptobox.Keyring
 	instance uuid.UUID
-	wake     chan struct{}
+	// stage is the custody stage this instance's release completes, which it reports with the
+	// generations it holds.
+	stage int32
+	wake  chan struct{}
 
 	mu   sync.RWMutex
 	keys map[int64][]byte
@@ -51,21 +56,40 @@ type Tokens struct {
 	// could not be unwrapped. A token under either may open after the next load.
 	seen   int64
 	failed map[int64]bool
+	// issuing is the generation new tokens are sealed under, or 0 for the keyring.
+	issuing int64
 }
 
-// Tokens records the resident keys, then loads them. Like Begin, it must not run inside a
-// transaction.
-func (b *Broker) Tokens(ctx context.Context) (*Tokens, error) {
-	t := &Tokens{broker: b, ring: b.backend.Keyring(), instance: uuid.New(), wake: make(chan struct{}, 1), keys: map[int64][]byte{}, failed: map[int64]bool{}}
-	id := uuid.New()
-	if err := b.record(ctx, id, Request{Purpose: Token, Principal: System("token-keys")}, []int64{0}); err != nil {
+// Tokens records the resident keys, then loads them. stage is the custody stage the running
+// release completes. Like Begin, it must not run inside a transaction.
+//
+// The access record's ID is the instance's: the installation's key history records under it each
+// token key generation the instance loads, for its whole life, with the key service's ID for each
+// unwrap. Those events are where the requests are recorded, so the record's outcome names none.
+func (b *Broker) Tokens(ctx context.Context, stage int32) (*Tokens, error) {
+	t := &Tokens{broker: b, ring: b.backend.Keyring(), instance: uuid.New(), stage: stage, wake: make(chan struct{}, 1), keys: map[int64][]byte{}, failed: map[int64]bool{}}
+	if err := b.record(ctx, t.instance, Request{Purpose: Token, Principal: System("token-keys")}, []int64{0}); err != nil {
 		return nil, err
 	}
-	// The keys are now resident for this process's life, which is the record's whole story.
-	if err := b.outcome(ctx, id, Released); err != nil {
-		return nil, err
+	err := t.load(ctx)
+	if err == nil {
+		// Stage 6 could have stopped being true while no instance of this release ran.
+		err = b.correctEnvironmentsStage(ctx, true)
 	}
-	if err := t.load(ctx); err != nil {
+	if err == nil {
+		// The keys are now resident for this process's life, which is the rest of the record's
+		// story.
+		err = b.outcome(ctx, t.instance, Released, nil)
+	} else if recordErr := b.outcome(ctx, t.instance, Failed, nil); recordErr != nil {
+		err = errors.Join(err, recordErr)
+	}
+	if err != nil {
+		t.mu.Lock()
+		for _, key := range t.keys {
+			clear(key)
+		}
+		t.keys = nil
+		t.mu.Unlock()
 		return nil, err
 	}
 	return t, nil
@@ -112,19 +136,40 @@ func (t *Tokens) load(ctx context.Context) error {
 		if !live[g] {
 			clear(key)
 			delete(t.keys, g)
+			if t.issuing == g {
+				t.issuing = 0
+			}
 			continue
 		}
 		generations = append(generations, g)
 	}
 	t.mu.Unlock()
 	slices.Sort(generations)
-	if err = q.RecordCustodyInstance(ctx, db.RecordCustodyInstanceParams{InstanceID: t.instance, TokenGenerations: append([]int64{}, generations...)}); err != nil {
-		failures = append(failures, err)
+	if err = q.RecordCustodyInstance(ctx, db.RecordCustodyInstanceParams{InstanceID: t.instance, TokenGenerations: append([]int64{}, generations...), Stage: pgtype.Int4{Int32: t.stage, Valid: true}}); err != nil {
+		return errors.Join(append(failures, err)...)
 	}
+	if err = t.broker.correctEnvironmentsStage(ctx, false); err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	// Issuing moves to a generation only once every instance running holds it, this one included,
+	// so any of them opens what another issues. One that starts later loads every generation
+	// before it serves.
+	issuing, err := q.TokenIssuingGeneration(ctx)
+	if err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	t.mu.Lock()
+	if _, held := t.keys[issuing]; !held {
+		issuing = 0
+	}
+	t.issuing = issuing
+	t.mu.Unlock()
 	return errors.Join(failures...)
 }
 
-// unwrap records a token key generation's loading, then unwraps it and checks it.
+// unwrap records a token key generation's loading, then unwraps it and checks it, then records
+// how that went with the key service's ID for the request, also when it failed. A key whose
+// opening cannot be recorded is let go of, and tried again at the next load.
 func (t *Tokens) unwrap(ctx context.Context, q *db.Queries, row db.InstallationKeyWrappingsRow) ([]byte, error) {
 	b := t.broker
 	if row.Wrapped == nil {
@@ -135,12 +180,25 @@ func (t *Tokens) unwrap(ctx context.Context, q *db.Queries, row db.InstallationK
 	}
 	class, _ := custody.ClassFor(custody.ScopeToken, "token")
 	opened, err := b.backend.Unwrap(ctx, class, row.Wrapped, custody.Context{Installation: b.installation, Scope: custody.ScopeToken, Generation: row.Generation, Purpose: "token"})
+	if err == nil && !custody.CheckKey(opened.Key, row.Kcv) {
+		clear(opened.Key)
+		err = ErrKeyCheck
+	}
+	result := keyEvent{run: t.instance, kind: "token-key-opened", scope: custody.ScopeInstallation, generation: row.Generation, details: map[string]string{"key": string(custody.ScopeToken)}}
+	if err != nil {
+		result.kind, result.details["reason"] = "token-key-not-opened", err.Error()
+	}
+	if opened.ProviderRequestID != "" {
+		result.details["provider_requests"] = opened.ProviderRequestID
+	}
+	if recordErr := b.event(ctx, q, result); recordErr != nil {
+		if err == nil {
+			clear(opened.Key)
+		}
+		return nil, errors.Join(err, recordErr)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if !custody.CheckKey(opened.Key, row.Kcv) {
-		clear(opened.Key)
-		return nil, ErrKeyCheck
 	}
 	return opened.Key, nil
 }
@@ -177,11 +235,17 @@ func (t *Tokens) Run(ctx context.Context) {
 	}
 }
 
+// Seal issues a token under the generation every running instance holds.
 func (t *Tokens) Seal(kind TokenKind, plaintext []byte) ([]byte, error) {
 	if kind.identity == "" {
 		return nil, ErrNotAllowed
 	}
-	return t.ring.Seal(plaintext, kind.identity)
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.issuing == 0 {
+		return t.ring.Seal(plaintext, kind.identity)
+	}
+	return cryptobox.SealUnder(t.keys[t.issuing], cryptobox.ScopeToken, t.issuing, plaintext, kind.identity)
 }
 
 // Open opens a token sealed under the keyring or under a token key generation. ErrTokenKeyNotLoaded

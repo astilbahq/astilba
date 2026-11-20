@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -136,14 +137,22 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	status := backup.Status{PolicyID: policy.ID, Generation: 1, Next: time.Now().Add(time.Hour), Runs: []backup.Run{}}
 	now := time.Now()
 	target := uuid.New()
-	manifest := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg, Method: "postgres-logical", Image: image}
-	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
-	// A verified restore of an archive another PostgreSQL major wrote: its target was initialised
-	// with that major, which the deployed database cannot open.
-	older := manifest
-	older.Image = domain.Postgres17Image
+	// A backup an earlier 18 release took, restored by the database's own, later release.
+	var retired18 string
+	for _, r := range domain.PostgresReleases() {
+		if r.Major() == 18 && r.Retired() {
+			retired18 = r.Image
+		}
+	}
+	manifest := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg, Method: "postgres-logical", Image: retired18}
+	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, RestoreImage: image, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
+	// A verified restore an agent from before the release rule made of an archive another
+	// PostgreSQL major wrote: its target was initialised with that major, which the deployed
+	// database cannot open.
+	major17 := manifest
+	major17.Image = domain.Postgres17Image
 	crossMajor := run
-	crossMajor.ID, crossMajor.TargetID, crossMajor.Verified, crossMajor.Manifest, crossMajor.ManifestHash = uuid.New(), uuid.New(), true, &older, backup.Hash(older)
+	crossMajor.ID, crossMajor.TargetID, crossMajor.Verified, crossMajor.RestoreImage, crossMajor.Manifest, crossMajor.ManifestHash = uuid.New(), uuid.New(), true, "", &major17, backup.Hash(major17)
 	status.Runs = append(status.Runs, run, crossMajor)
 	send := func(seq int64, want int) {
 		raw, _ := stablejson.Marshal(status)
@@ -166,8 +175,27 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	uploadRecord.ID = upload.RunID
 	uploadRecord.TargetID = uuid.Nil
 	status.Runs = append(status.Runs, uploadRecord)
+	// A PostgreSQL 17 backup of this PostgreSQL 18 database, as one from before the upgrade.
+	older := uploadRecord
+	older.ID, older.TargetID, older.Snapshot, older.RestoreImage = uuid.New(), uuid.New(), strings.Repeat("c", 64), domain.Postgres17Image
+	olderManifest := *older.Manifest
+	olderManifest.Image = domain.Postgres17Image
+	older.Manifest = &olderManifest
+	status.Runs = append(status.Runs, older)
+	reported := status.Runs[0]
+	status.Runs[0].RestoreImage = "postgres:18.7-alpine3.23"
+	send(2, 400)
+	status.Runs[0] = reported
 	send(2, 204)
 	b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: upload.RunID}, 409, nil)
+	refused := string(b.call("POST", commandPath, api.BackupCommandRequest{Action: "restore", RequestKey: uuid.New(), Snapshot: older.Snapshot}, 400, nil))
+	if !strings.Contains(refused, "Restore refused: this backup was taken on PostgreSQL 17") || !strings.Contains(refused, "restore it into a PostgreSQL 17 database instead") {
+		t.Fatalf("a restore across majors was not refused with its reason: %s", refused)
+	}
+	refused = string(b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: older.ID}, 400, nil))
+	if !strings.Contains(refused, "restore.compatibility") || !strings.Contains(refused, "cannot open data PostgreSQL 17") {
+		t.Fatalf("data another major wrote was offered for cutover: %s", refused)
+	}
 	var next api.Revision
 	b.call("POST", cutover, api.BackupCutoverRequest{BaseRevisionId: draft.Id, RunId: run.ID}, 200, &next)
 	var restored domain.Specification
@@ -199,4 +227,72 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	viewer.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": invite, "name": "Viewer", "password": f.password}, 200, &session)
 	viewer.csrf = session.CsrfToken
 	viewer.call("POST", commandPath, api.BackupCommandRequest{Action: "backup", RequestKey: uuid.New(), Snapshot: ""}, 403, nil)
+}
+
+// Backup destinations and policies hold storage credentials, and a policy's commands hand them to
+// its server, so each needs recent authentication. A stale session is refused before anything is
+// stored, sealed, queued or audited, and before management is given any keys; once the owner
+// confirms their identity, the same requests succeed.
+func TestBackupCredentialsNeedRecentAuthentication(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	p := newReportingPolicy(t, f, b, ws, "Stale")
+	prefix := "/api/v1/workspaces/" + ws.String()
+	environment := strings.TrimSuffix(p.path, "/backup-policies/"+p.policy.ID.String())
+	password := "repository-password-fixture"
+	created := api.BackupPolicyRequest{Name: "Second backup", ResourceId: p.policy.ResourceID, DestinationId: p.policy.DestinationID, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 3, Minute: 0, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
+	updated := created
+	updated.Name, updated.Retain, updated.BaseGeneration = p.policy.Name, 3, p.policy.Generation
+	requests := []struct {
+		method, path string
+		body         any
+		status       int
+	}{
+		{"POST", prefix + "/backup-destinations", map[string]any{"name": "Second bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "stale-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201},
+		{"POST", environment + "/backup-policies", created, 201},
+		{"PUT", p.path, updated, 200},
+		{"POST", p.path + "/commands", api.BackupCommandRequest{Action: "install", RequestKey: uuid.New()}, 202},
+	}
+	ctx := context.Background()
+	effects := func() (n [3]int) {
+		t.Helper()
+		for i, query := range []string{
+			"SELECT count(*) FROM execution_operations WHERE workspace_id=$1",
+			"SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action LIKE 'backup.%'",
+			"SELECT count(*) FROM secret_access WHERE workspace_id=$1",
+		} {
+			if err := f.st.Pool.QueryRow(ctx, query, ws).Scan(&n[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return n
+	}
+	before := effects()
+
+	f.auth.Now = func() time.Time { return time.Now().Add(16 * time.Minute) }
+	for _, r := range requests {
+		status, body := b.request(r.method, r.path, r.body)
+		var problem struct {
+			Code string `json:"code"`
+		}
+		if status != http.StatusForbidden || json.Unmarshal(body, &problem) != nil || problem.Code != domain.RecentRequired.Code {
+			t.Fatalf("a stale session's %s %s = %d %s, want %s", r.method, r.path, status, body, domain.RecentRequired.Code)
+		}
+	}
+	if after := effects(); after != before {
+		t.Fatalf("refused requests left operations, audit records or key access %v, before %v", after, before)
+	}
+	var destinations []backup.Destination
+	b.call("GET", prefix+"/backup-destinations", nil, 200, &destinations)
+	var policies []backup.Policy
+	b.call("GET", environment+"/backup-policies", nil, 200, &policies)
+	if len(destinations) != 1 || len(policies) != 1 || policies[0].Generation != p.policy.Generation || policies[0].Retain != p.policy.Retain {
+		t.Fatalf("refused requests changed the workspace's backups: %+v %+v", destinations, policies)
+	}
+
+	b.reauthenticate(map[string]string{"password": f.password}, 200)
+	for _, r := range requests {
+		b.call(r.method, r.path, r.body, r.status, nil)
+	}
 }

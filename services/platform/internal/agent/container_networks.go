@@ -214,17 +214,11 @@ func (e *Engine) occupiedRanges(ctx context.Context) (managed, routes, docker []
 	// A reserved host joins the plan's managed network in the links phase. Until then the
 	// reservation is its only record of that prefix, so any network made meanwhile, such as
 	// the candidate's own, must keep out of it.
-	reserved, err := e.Journal.crossHost()
+	reserved, err := e.reservedManagedPrefix()
 	if err != nil {
 		return nil, nil, nil, errHostRangesUnknown
 	}
-	if reserved.ParentID != uuid.Nil && reserved.Unit.Plan.Local != nil {
-		prefix, err := hostnetwork.Prefix(reserved.Unit.Plan.Local.Network.Prefix)
-		if err != nil {
-			return nil, nil, nil, errHostRangesUnknown
-		}
-		managed = append(managed, prefix)
-	}
+	managed = append(managed, reserved...)
 	list, err := e.Docker.NetworkList(ctx, client.NetworkListOptions{})
 	if err != nil {
 		return nil, nil, nil, err
@@ -242,6 +236,20 @@ func (e *Engine) occupiedRanges(ctx context.Context) (managed, routes, docker []
 		return slices.ContainsFunc(docker, func(d netip.Prefix) bool { return d.Bits() <= r.Bits() && d.Contains(r.Addr()) })
 	})
 	return managed, routes, docker, nil
+}
+
+// reservedManagedPrefix is the prefix of the managed network a host reserved for a cross-host
+// candidate has yet to join, if any.
+func (e *Engine) reservedManagedPrefix() ([]netip.Prefix, error) {
+	reserved, err := e.Journal.crossHost()
+	if err != nil || reserved.ParentID == uuid.Nil || reserved.Unit.Plan.Local == nil {
+		return nil, err
+	}
+	prefix, err := hostnetwork.Prefix(reserved.Unit.Plan.Local.Network.Prefix)
+	if err != nil {
+		return nil, err
+	}
+	return []netip.Prefix{prefix}, nil
 }
 
 // freeSubnets returns the lowest count subnets of the given size inside pool that overlap

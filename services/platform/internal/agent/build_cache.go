@@ -180,6 +180,10 @@ func writeCacheArchive(dst io.Writer, src io.Reader) error {
 		if name == "cache-out/cache.lock" && h.Typeflag == tar.TypeReg && h.Size == 0 {
 			continue
 		}
+		// BuildKit 0.35's content store also leaves an empty lock file per ingested digest.
+		if name == "cache-out/ingest-locks" && h.Typeflag == tar.TypeDir || strings.HasPrefix(name, "cache-out/ingest-locks/") && pipeline.ValidCacheID(strings.TrimPrefix(name, "cache-out/ingest-locks/")) && h.Typeflag == tar.TypeReg && h.Size == 0 {
+			continue
+		}
 		rel := strings.TrimPrefix(name, "cache-out/")
 		directory := name == "cache-out" || name != rel && (rel == "blobs" || rel == "blobs/sha256")
 		file := rel == "oci-layout" || rel == "index.json" || strings.HasPrefix(rel, "blobs/sha256/") && pipeline.ValidCacheID(strings.TrimPrefix(rel, "blobs/sha256/"))

@@ -52,6 +52,10 @@ func (s *Server) GetBackupStatus(w http.ResponseWriter, r *http.Request, ws, pid
 	v, e := s.Execution.BackupStatus(r.Context(), *principal(r.Context()), ws, pid, env, id)
 	s.executionResponse(w, r, 200, v, e)
 }
+func (s *Server) ListBackupSnapshotReceipts(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
+	v, e := s.Execution.BackupSnapshotReceipts(r.Context(), *principal(r.Context()), ws, pid, env, id)
+	s.executionResponse(w, r, 200, v, e)
+}
 func (s *Server) RunBackupCommand(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
 	b, e := decode[api.BackupCommandRequest](r)
 	if e != nil {
@@ -59,6 +63,19 @@ func (s *Server) RunBackupCommand(w http.ResponseWriter, r *http.Request, ws, pi
 		return
 	}
 	v, e := s.Execution.BackupCommand(r.Context(), *principal(r.Context()), ws, pid, env, id, b)
+	s.executionResponse(w, r, 202, v, e)
+}
+func (s *Server) ListBackupRecoveries(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
+	v, e := s.Execution.BackupRecoveries(r.Context(), *principal(r.Context()), ws, pid, env, id)
+	s.executionResponse(w, r, 200, v, e)
+}
+func (s *Server) StartBackupRecovery(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
+	b, e := decode[api.BackupRecoveryRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.StartBackupRecovery(r.Context(), *principal(r.Context()), ws, pid, env, id, b)
 	s.executionResponse(w, r, 202, v, e)
 }
 func (s *Server) PrepareBackupCutover(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID) {
@@ -69,6 +86,19 @@ func (s *Server) PrepareBackupCutover(w http.ResponseWriter, r *http.Request, ws
 	}
 	v, e := s.Execution.PrepareBackupCutover(r.Context(), *principal(r.Context()), ws, pid, env, id, b)
 	s.executionResponse(w, r, 200, revision(v), e)
+}
+func (s *Server) PrepareRecoveryCutover(w http.ResponseWriter, r *http.Request, ws, pid, env, id, recovery uuid.UUID) {
+	b, e := decode[api.BackupRecoveryCutoverRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.PrepareRecoveryCutover(r.Context(), *principal(r.Context()), ws, pid, env, id, recovery, b)
+	s.executionResponse(w, r, 200, revision(v), e)
+}
+func (s *Server) DiscardRecoveryTarget(w http.ResponseWriter, r *http.Request, ws, pid, env, id, recovery uuid.UUID) {
+	v, e := s.Execution.DiscardRecoveryTarget(r.Context(), *principal(r.Context()), ws, pid, env, id, recovery)
+	s.executionResponse(w, r, 201, v, e)
 }
 func (s *Server) ReportSchedule(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.ScheduleReport](r)

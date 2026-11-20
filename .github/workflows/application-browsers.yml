@@ -35,7 +35,7 @@ jobs:
           fetch-depth: ${{ github.event_name != 'merge_group' && 2 || 0 }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.18.1
+          node-version: 24.22.3
       - id: plan
         # Pull requests and merge groups run their base's planner, so editing the planner
         # cannot select its own checks. A key the base planner does not know selects the suite.
@@ -74,7 +74,7 @@ jobs:
           cache-dependency-path: services/platform/go.sum
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.18.1
+          node-version: 24.22.3
       - uses: ./.github/actions/install-pnpm
       - run: pnpm install --frozen-lockfile
       - name: Read Docker Hub through its mirror
@@ -85,7 +85,7 @@ jobs:
         with:
           images: |
             mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
-            postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+            postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
       - name: Start preinstalled browsers
         id: browsers
         run: |

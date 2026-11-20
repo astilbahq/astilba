@@ -86,7 +86,7 @@ func (s *Service) StartGitHub(ctx context.Context, p store.Principal, ws uuid.UU
 			if e != nil {
 				return e
 			}
-			secret, e := sealIntegration(opened, grantItem(id), githubAuthorizationSecret{Verifier: verifier})
+			secret, e := sealIntegration(ctx, q, opened, grantItem(id), githubAuthorizationSecret{Verifier: verifier})
 			if e != nil {
 				return e
 			}
@@ -236,7 +236,7 @@ func (s *Service) CompleteGitHub(ctx context.Context, p store.Principal, session
 	return out, err
 }
 func recordGitHubExchange(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, ws, id uuid.UUID, status string, secret githubAuthorizationSecret, user githubapp.User) (GitHubAuthorization, error) {
-	cipher, e := sealIntegration(keys, grantItem(id), secret)
+	cipher, e := sealIntegration(ctx, db.New(tx), keys, grantItem(id), secret)
 	if e != nil {
 		return GitHubAuthorization{}, e
 	}
@@ -377,7 +377,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		if e != nil {
 			return e
 		}
-		empty, e := sealIntegration(opened, secretbroker.Item{Kind: secretbroker.Git, ID: id}, pipeline.Access{})
+		empty, e := sealIntegration(ctx, q, opened, secretbroker.Item{Kind: secretbroker.Git, ID: id}, pipeline.Access{})
 		if e != nil {
 			return e
 		}
@@ -403,7 +403,7 @@ func (s *Service) ConnectGitHub(ctx context.Context, p store.Principal, ws, gran
 		if e != nil {
 			return e
 		}
-		erased, e := sealIntegration(opened, grantItem(grant), githubAuthorizationSecret{})
+		erased, e := sealIntegration(ctx, q, opened, grantItem(grant), githubAuthorizationSecret{})
 		if e != nil {
 			return e
 		}

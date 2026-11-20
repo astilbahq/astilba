@@ -422,6 +422,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/postgres-releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listPostgresReleases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/client-address": {
         parameters: {
             query?: never;
@@ -722,6 +738,25 @@ export interface paths {
         };
         get: operations["getWorkspace"];
         put: operations["updateWorkspace"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/mfa-requirement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        /** @description Owners only. The standing approvals and deferred actions that act only while the workspace doesn't require two-factor authentication, and who gave each, so an owner can review them before changing the requirement. Each one's approver hasn't set up two-factor authentication. While the requirement is off, these are what turning it on would stop; while it is on, what turning it off would let act again. */
+        get: operations["getMfaRequirement"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1975,6 +2010,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description When management first received each snapshot the policy's reports list as available, by its own clock, newest first. A server's reported times are its own claims; these are not. */
+        get: operations["ListBackupSnapshotReceipts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Restores of this policy's snapshots onto a server other than its own, newest first. */
+        get: operations["ListBackupRecoveries"];
+        put?: never;
+        /** @description Restores one of a revoked server's policy snapshots into a new volume on the environment's current primary. Only a snapshot management received from the policy's server can be chosen, and the owner acknowledges that a server compromised before its revocation could have uploaded altered data. Nothing uses the restored volume until a reviewed cutover. */
+        post: operations["StartBackupRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/cutover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Writes a draft that switches a succeeded restore's volume in for the one the deployment's resource uses now. Deploying that draft, through the ordinary plan review, performs the cutover. A distributed deployment is refused. */
+        post: operations["PrepareRecoveryCutover"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/recoveries/{recoveryId}/target": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Deletes the volume an ended restore created, on the server it ran on, unless the deployment's draft or the plan the server runs mounts it. A discarded volume can't be cut over. */
+        delete: operations["DiscardRecoveryTarget"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies/{policyId}/cutover": {
         parameters: {
             query?: never;
@@ -2865,6 +2969,8 @@ export interface components {
             compose?: boolean;
             /** @description Supports named service output references; advertised only after Astilba-Agent-Service-Outputs v1. */
             serviceOutputs?: boolean;
+            /** @description The pinned PostgreSQL images this agent can run, restore and update, and whose restores it reports with restoreImage. Advertised only after Astilba-Agent-Postgres-Releases v1; an agent without it knows only postgres 17.10 and 18.4. */
+            postgresReleases?: string[];
             /** @description Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1. */
             safeReleases?: boolean;
             /** @description Supports replica recipe 3 and complete instance groups. Advertised only after Astilba-Agent-Replicas v1. */
@@ -2884,6 +2990,8 @@ export interface components {
             rootlessBuilds?: boolean;
             /** @description Supports general schedule formats and bounded job cleanup. Advertised only after Astilba-Agent-Schedules v1. */
             schedules?: boolean;
+            /** @description Runs the restore command kind, which restores a snapshot from a lost server's backup repository. Advertised only after Astilba-Agent-Recovery-Restore v1. */
+            recoveryRestore?: boolean;
             backups?: boolean;
             upgrades?: boolean;
             /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
@@ -2899,10 +3007,23 @@ export interface components {
             keyProtection?: "tpm" | "host_key" | "unsealed" | "setup_required" | "seal_failed";
             /** @description Why the agent's key store is unavailable, as the agent logs it. Advertised only after Astilba-Agent-Keys v1. */
             keyStoreProblem?: string;
+            /** @description Reports in preflight.containerRanges every range containers on the host can send traffic from, when it can read them all. Advertised only after Astilba-Agent-Container-Ranges v1. */
+            containerRanges?: boolean;
+        };
+        ContainerRange: {
+            /** @description A masked IPv4 or IPv6 prefix, such as 10.252.0.0/14. */
+            prefix: string;
+            /**
+             * @description Where the range comes from: the agent's network pool, Docker's default bridge, another Docker network, one of the daemon's default address pools, or a managed network the host holds.
+             * @enum {string}
+             */
+            source: "networkPool" | "defaultBridge" | "dockerNetwork" | "addressPool" | "managedNetwork";
         };
         HostPreflight: {
             crossHostInventory?: components["schemas"]["CrossHostInventory"];
             certificateContactConfigured?: boolean;
+            /** @description Every range containers on the host can send traffic from, with ranges inside another left out. Sent only with capabilities.containerRanges, and only when the agent read them all. */
+            containerRanges?: components["schemas"]["ContainerRange"][];
             ready: boolean;
             osRelease: string;
             dockerVersion: string;
@@ -2918,6 +3039,11 @@ export interface components {
             /** @description Immutable reservation for preview workloads. */
             previewOnly?: boolean;
             transferRequired?: boolean;
+            /**
+             * Format: date-time
+             * @description When the revocation in force began, by management's clock. Absent while the server isn't revoked, and for a revocation from before this was recorded.
+             */
+            revokedAt?: string;
             /** Format: uuid */
             id: string;
             name: string;
@@ -3137,7 +3263,7 @@ export interface components {
             generation: number;
             planHash: string;
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost" | "restore";
             action: components["schemas"]["TestAction"];
             /** Format: uuid */
             resourceId: string;
@@ -3148,7 +3274,8 @@ export interface components {
             cancelRequested: boolean;
             visual?: components["schemas"]["VisualPayload"];
             pipeline?: components["schemas"]["PipelineCommand"];
-            backup?: components["schemas"]["BackupCommand"];
+            /** @description A BackupCommand for the backup and schedule kinds, and a BackupRecovery for the restore kind. */
+            backup?: components["schemas"]["BackupCommand"] | components["schemas"]["BackupRecovery"];
             upgrade?: components["schemas"]["UpgradeCommand"];
             secretRelease?: components["schemas"]["SecretRelease"];
         };
@@ -3202,6 +3329,7 @@ export interface components {
             observation?: components["schemas"]["VisualObservation"];
             pipeline?: components["schemas"]["PipelineResult"];
             upgrade?: components["schemas"]["UpgradeStatus"];
+            restore?: components["schemas"]["BackupRecoveryResult"];
         };
         Operation: {
             /** Format: uuid */
@@ -3214,7 +3342,7 @@ export interface components {
             generation: number;
             state: components["schemas"]["ExecutionState"];
             /** @enum {string} */
-            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost";
+            kind: "test" | "update" | "visual" | "pipeline" | "backup" | "schedule" | "upgrade" | "network" | "crosshost" | "restore";
             cancelRequested: boolean;
             /** @description Free text from management, the host or the build runner, such as why the operation failed. It can quote the environment's configuration, so an automation credential without environment:read gets a fixed note saying the details were withheld in its place. */
             note: string;
@@ -3270,6 +3398,33 @@ export interface components {
             name: string;
             role: components["schemas"]["Role"];
             requireMfa: boolean;
+        };
+        MfaRequirement: {
+            approvals: components["schemas"]["MfaRequirementApproval"][];
+        };
+        /** @description A standing approval or deferred action that stops while the workspace requires two-factor authentication and its approver hasn't set it up. A standing approval acts again if the requirement is turned off. A pending automatic deployment or queued source submission that comes due while it is required is refused for good. Setting up two-factor authentication changes the approver's credentials, which ends it: they, or another owner, approve it again afterwards. */
+        MfaRequirementApproval: {
+            /**
+             * @description `gitSource`: a Git source's automatic imports and deployments. `buildTarget`: a build target's builds, automatic or run by automation, and deployments if it deploys. `automaticDeployment`: an automatic deployment not yet planned. `previewPolicy`: an environment's previews. `previewApproval`: a fork commit approved for a preview, while it is still the pull request's head. `previewCleanup`: a preview cleanup an owner asked for. `invitation`: an invitation not yet accepted. `enrollmentCode`: a server enrollment code not yet used. `sourceSubmission`: a queued source submission. `automationCredential`: an automation credential, which keeps reading but can't write.
+             * @enum {string}
+             */
+            kind: "gitSource" | "buildTarget" | "automaticDeployment" | "previewPolicy" | "previewApproval" | "previewCleanup" | "invitation" | "enrollmentCode" | "sourceSubmission" | "automationCredential";
+            /** Format: uuid */
+            approverId: string;
+            approverName: string;
+            /** Format: email */
+            approverEmail: string;
+            /** Format: uuid */
+            projectId: string | null;
+            projectName: string | null;
+            /**
+             * Format: uuid
+             * @description The environment it acts in, or a preview's template environment. Null for invitations and enrollment codes.
+             */
+            environmentId: string | null;
+            environmentName: string | null;
+            /** @description What it is within the environment or workspace: a build target's application name, a preview's pull request number, an invitation's email address, an enrollment code's server name or an automation credential's name. Empty for the others. */
+            subject: string;
         };
         CrossHostRecovery: {
             /**
@@ -3449,6 +3604,8 @@ export interface components {
             purgeOperationId?: string | null;
             /** @description The purge finished without contacting the server because the server was revoked. Its volumes may still be there. */
             purgedWithoutHost?: boolean;
+            /** @description Whether every environment's values are under its own key (custody stage 6), so purging would leave every copy of the environment's values sealed since then unreadable, wherever it is held. Copies in recovery data captured before its values moved onto its key, and in management database backups, are not reached either way. Otherwise only copies sealed under its key are. */
+            purgeReachesEveryCopy?: boolean;
         };
         ApplicationSource: {
             /** @enum {string} */
@@ -3627,6 +3784,17 @@ export interface components {
             /** @enum {string} */
             level: "tested" | "manual" | "not_applicable";
             detail: string;
+        };
+        PostgresRelease: {
+            /** @description Exact digest-pinned image reference. */
+            image: string;
+            /** @description Version people read, such as 18.6. */
+            name: string;
+            major: number;
+            /** @description Whether a new database of this major runs this release. */
+            current: boolean;
+            /** @description Where the image keeps its data volume. */
+            mount: string;
         };
         /** @description A curated catalog entry. A `service` recipe has one service; an `app` template has several, connected to each other. Its specification uses placeholder identities, which staging replaces. */
         CatalogRecipe: {
@@ -4013,6 +4181,8 @@ export interface components {
             name: string;
             inUse: boolean;
             deleted: boolean;
+            /** @description A delete of the volume hasn't ended. Until it does, no draft or plan may use the volume. If the delete fails or is cancelled, the volume is kept. */
+            deleting: boolean;
         };
         ManagedVolumes: components["schemas"]["ManagedVolume"][];
         ComposeFile: {
@@ -4217,10 +4387,10 @@ export interface components {
             failedAt: string;
         };
         /**
-         * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since; only owners see this reason, others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
+         * @description Whether automatic work runs on a current approval. `current`: it does. `approvalRequired`: it is paused until it is approved again, after a restore, an import, a disconnected repository or its approver's role change. `approverRemoved`: its approver left the workspace. `approverRole`: its approver no longer has the role it needs. `approverCredentials`: its approver changed their password, two-factor settings or recovery codes since. `approverMfa`: the workspace requires two-factor authentication, which its approver hasn't set up; it runs again if the requirement is turned off, or once it is approved by someone who has set it up. Only owners see `approverCredentials` and `approverMfa`; others see `approvalRequired`. A paused Git source, or a target that deploys, needs an owner to approve it again; a target that only builds automatically, an owner or operator.
          * @enum {string}
          */
-        PolicyApproval: "current" | "approvalRequired" | "approverRemoved" | "approverRole" | "approverCredentials";
+        PolicyApproval: "current" | "approvalRequired" | "approverRemoved" | "approverRole" | "approverCredentials" | "approverMfa";
         ApproveGitSource: {
             /** @description The hash returned with the source, so the approval covers exactly the configuration shown. */
             sourceHash: string;
@@ -4463,6 +4633,32 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
+            /** @description Whether a revoked server holds this S3 destination's storage keys: the server a policy using it is bound to, or one a restore of such a policy was recorded for. It can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement, and a backup_exposure alert fires for it. */
+            exposed: boolean;
+            /** @description The backup policies using this destination. */
+            policies: components["schemas"]["BackupDestinationPolicy"][];
+        };
+        /** @description A destination's configuration as a server receives it. */
+        BackupInstallationDestination: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            kind: "filesystem" | "s3";
+            root: string;
+            endpoint: string;
+            bucket: string;
+            region: string;
+        };
+        BackupDestinationPolicy: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            projectId: string;
+            /** Format: uuid */
+            environmentId: string;
+            environmentName: string;
         };
         BackupAccess: {
             databasePassword?: string;
@@ -4507,6 +4703,8 @@ export interface components {
             password: string;
             /** Format: int64 */
             baseGeneration: number;
+            /** @description Required as true to create a policy on an exposed destination: the owner understands that a revoked server can still delete or overwrite its backups until its storage keys are revoked at the provider. */
+            exposureAcknowledged?: boolean;
         };
         BackupPolicy: {
             /** @description Writer-stopping schedule is executed by management across all placement units. */
@@ -4585,6 +4783,16 @@ export interface components {
             manifest: components["schemas"]["BackupManifest"] | null;
             /** Format: uuid */
             targetId: string;
+            /** @description The pinned PostgreSQL image whose server filled the restore target. Absent on runs recorded before restores named it, which were filled by the archive's own image. */
+            restoreImage?: string;
+        };
+        BackupSnapshotReceipt: {
+            snapshot: string;
+            /**
+             * Format: date-time
+             * @description When management first received the snapshot from an upload the policy's server reported, by management's clock.
+             */
+            firstReportedAt: string;
         };
         BackupStatus: {
             enabled: boolean;
@@ -4598,7 +4806,7 @@ export interface components {
         };
         BackupInstallation: {
             policy: components["schemas"]["BackupPolicy"];
-            destination: components["schemas"]["BackupDestination"];
+            destination: components["schemas"]["BackupInstallationDestination"];
             access: components["schemas"]["BackupAccess"];
             repositoryId: string;
             /** Format: date-time */
@@ -4619,12 +4827,87 @@ export interface components {
             /** Format: uuid */
             targetId: string;
         };
+        /** @description Restores a snapshot from a backup policy's repository onto a server other than the policy's own. The installation is the source policy bound to the receiving server and the plan applied there now. */
+        BackupRecovery: {
+            installation: components["schemas"]["BackupInstallation"];
+            /** Format: uuid */
+            runId: string;
+            snapshot: string;
+            /** Format: uuid */
+            targetId: string;
+        };
+        /** @description The snapshot a succeeded restore command restored into its target volume, and the manifest it verified the restored data against. */
+        BackupRecoveryResult: {
+            snapshot: string;
+            /** Format: uuid */
+            targetId: string;
+            manifest: components["schemas"]["BackupManifest"];
+            /** @description The pinned PostgreSQL release that restored a logical snapshot, which the database must be able to open at cutover. An agent sends it only to a controller that negotiated PostgreSQL releases; without it, the archive's own image restored the snapshot. */
+            restoreImage?: string;
+        };
+        BackupRecoveryRequest: {
+            snapshot: string;
+            /** Format: uuid */
+            requestKey: string;
+            /**
+             * @description The owner understands that a server compromised before it was revoked could have uploaded altered data, which a restore's checks can't tell from genuine data.
+             * @enum {boolean}
+             */
+            acknowledged: true;
+        };
+        BackupRecoveryRecord: {
+            /**
+             * Format: uuid
+             * @description The restore's run ID, which labels what it creates on the receiving server.
+             */
+            id: string;
+            /** Format: uuid */
+            operationId: string;
+            /** Format: uuid */
+            sourceServerId: string;
+            /** Format: uuid */
+            serverId: string;
+            /**
+             * Format: uuid
+             * @description The plan applied on the receiving server when the restore was issued.
+             */
+            planId: string;
+            snapshot: string;
+            /**
+             * Format: date-time
+             * @description When management first received the snapshot, by its own clock.
+             */
+            firstReportedAt: string;
+            /** Format: uuid */
+            targetId: string;
+            /** Format: date-time */
+            createdAt: string;
+            state: components["schemas"]["ExecutionState"];
+            note: string;
+            /** @description Once the restore succeeded, the manifest read out of the snapshot that the restored data matches. The data came from a server that may have been compromised. A restored database's settings files were reset and its cluster checked on a best-effort basis before the restore succeeded, which doesn't make it safe to use. */
+            restored: {
+                manifest: components["schemas"]["BackupManifest"];
+            } | null;
+            /** @description Whether the server deleted the restore's volume once it was discarded. */
+            targetDeleted: boolean;
+            /** @description The latest discard of the restore's volume. While it is active the volume can't be cut over to or discarded again. A succeeded one deleted it, as targetDeleted shows. */
+            discard: {
+                /** Format: uuid */
+                operationId: string;
+                state: components["schemas"]["ExecutionState"];
+                note: string;
+            } | null;
+        };
         BackupCommandRequest: {
             /** @enum {string} */
             action: "install" | "check" | "backup" | "restore" | "disable";
             /** Format: uuid */
             requestKey: string;
             snapshot: string;
+        };
+        BackupRecoveryCutoverRequest: {
+            /** Format: uuid */
+            baseRevisionId: string;
         };
         BackupCutoverRequest: {
             /** Format: uuid */
@@ -4830,7 +5113,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held" | "backup_exposure";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */
@@ -6127,6 +6410,37 @@ export interface operations {
             };
         };
     };
+    listPostgresReleases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every PostgreSQL release a managed database can name, oldest first within each major. A new database runs its major's current release; a retired release stays valid for a database that already runs it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostgresRelease"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getClientAddress: {
         parameters: {
             query?: never;
@@ -6787,6 +7101,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Workspace"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMfaRequirement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the two-factor requirement stops, or would stop */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaRequirement"];
                 };
             };
             /** @description Error */
@@ -9902,6 +10247,186 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BackupStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ListBackupSnapshotReceipts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupSnapshotReceipt"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ListBackupRecoveries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupRecoveryRecord"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    StartBackupRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupRecoveryRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    PrepareRecoveryCutover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+                recoveryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupRecoveryCutoverRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    DiscardRecoveryTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                projectId: string;
+                environmentId: string;
+                policyId: string;
+                recoveryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
                 };
             };
             /** @description Error */

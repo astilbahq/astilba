@@ -118,9 +118,9 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 			}
 			c.CancelRequested = cancel
-			// A stop carries no values. Hydration finishes a pipeline no runner holds, and adds no
-			// credentials to one it might.
-			if cancel && c.Kind != "pipeline" {
+			// A stop carries no values. Hydration finishes a pipeline or restore no agent holds, and
+			// adds no credentials to one it might.
+			if cancel && c.Kind != "pipeline" && c.Kind != "restore" {
 				return &c, nil
 			}
 			if carriesValues(c) {
@@ -301,6 +301,9 @@ func (s *Service) applyReport(ctx context.Context, git *gitAnswers, received tim
 		if err = s.visualReport(ctx, tx, c, &r); err != nil {
 			return err
 		}
+	}
+	if err = recoveryReport(ctx, tx, a.Workspace, c, &r); err != nil {
+		return err
 	}
 	if err = s.crossHostReport(ctx, tx, a.Workspace, c, &r); err != nil {
 		return err
