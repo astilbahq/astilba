@@ -19,10 +19,10 @@ func unknownRestoreImage(r backup.Run) bool {
 
 // restoredDatabaseOpens refuses a cutover whose restored data the draft's release cannot open,
 // such as data PostgreSQL 17 wrote under a PostgreSQL 18 database.
-func restoredDatabaseOpens(spec domain.Specification, p backup.Policy, run backup.Run) error {
+func restoredDatabaseOpens(spec domain.Specification, p backup.Policy, restored string) error {
 	for _, a := range spec.Applications {
 		if a.ID == p.ResourceID {
-			if err := backup.OpensRestoredPostgres(a, run); err != nil {
+			if err := backup.OpensRestoredPostgres(a, restored); err != nil {
 				return restoreIncompatible(err)
 			}
 			return nil

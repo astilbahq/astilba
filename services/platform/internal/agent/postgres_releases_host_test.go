@@ -116,25 +116,25 @@ CREATE INDEX plain ON records(value);
 CREATE INDEX tagged ON records(tag);
 CREATE INDEX unbounded_ccnew ON records(code);
 UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'unbounded_ccnew'::regclass;`
-	if _, err := e.pgQuery(ctx, old, a, fixture); err != nil {
+	if _, err := e.pgQuery(ctx, pgClient{container: old}, a, fixture); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pgQuery(ctx, old, a, `CREATE ROLE tenant`); err != nil {
+	if _, err := e.pgQuery(ctx, pgClient{container: old}, a, `CREATE ROLE tenant`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pgQuery(ctx, old, a, `CREATE DATABASE "a=b" OWNER tenant`); err != nil {
+	if _, err := e.pgQuery(ctx, pgClient{container: old}, a, `CREATE DATABASE "a=b" OWNER tenant`); err != nil {
 		t.Fatal(err)
 	}
 	other := a
 	otherDatabase := *a.Postgres
 	otherDatabase.Database = "dbname='a=b'"
 	other.Postgres = &otherDatabase
-	if _, err := e.pgQuery(ctx, old, other, fixture); err != nil {
+	if _, err := e.pgQuery(ctx, pgClient{container: old}, other, fixture); err != nil {
 		t.Fatal(err)
 	}
 	// The database's owner, not a superuser, plants closer matches for the functions the rebuild
 	// calls. The superuser session must never run them.
-	if _, err := e.pgQuery(ctx, old, other, `SET ROLE tenant;
+	if _, err := e.pgQuery(ctx, pgClient{container: old}, other, `SET ROLE tenant;
 CREATE FUNCTION public.format(text, regclass) RETURNS text LANGUAGE sql AS $$ SELECT 'ALTER ROLE tenant SUPERUSER' $$;
 CREATE FUNCTION public.unnest(oidvector) RETURNS SETOF oid LANGUAGE sql AS $$ SELECT oid FROM pg_opclass $$;
 RESET ROLE;`); err != nil {
@@ -143,7 +143,7 @@ RESET ROLE;`); err != nil {
 	indexes := "('unbounded', 'sized', 'plain', 'tagged', 'nested', 'listed', 'fixed', 'records_slot_excl', 'unbounded_ccnew')"
 	files := func(container string, application domain.Application) map[string]string {
 		t.Helper()
-		raw, err := e.pgQuery(ctx, container, application, "SELECT string_agg(relname || '=' || relfilenode, ',' ORDER BY relname) FROM pg_class WHERE relname IN "+indexes)
+		raw, err := e.pgQuery(ctx, pgClient{container: container}, application, "SELECT string_agg(relname || '=' || relfilenode, ',' ORDER BY relname) FROM pg_class WHERE relname IN "+indexes)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,7 +182,7 @@ RESET ROLE;`); err != nil {
 		t.Fatal(err)
 	}
 	locked := func() bool {
-		raw, _ := e.pgQuery(ctx, updated, a, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'BEGIN; LOCK TABLE records%'")
+		raw, _ := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'BEGIN; LOCK TABLE records%'")
 		return strings.TrimSpace(string(raw)) != "0"
 	}
 	for i := 0; i < 50 && !locked(); i++ {
@@ -215,7 +215,7 @@ RESET ROLE;`); err != nil {
 			}
 		}
 	}
-	raw, err := e.pgQuery(ctx, updated, a, "SELECT current_setting('server_version_num') || '|' || (SELECT value FROM records WHERE code = 'a')")
+	raw, err := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT current_setting('server_version_num') || '|' || (SELECT value FROM records WHERE code = 'a')")
 	if err != nil || strings.TrimSpace(string(raw)) != fmt.Sprint(current.Version)+"|retained" {
 		t.Fatalf("the updated database lost its data: %q, %v", raw, err)
 	}
@@ -238,7 +238,7 @@ RESET ROLE;`); err != nil {
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
 		t.Fatalf("the rebuilt storage records %+v", record)
 	}
-	if raw, err := e.pgQuery(ctx, updated, a, "SELECT rolsuper FROM pg_roles WHERE rolname = 'tenant'"); err != nil || strings.TrimSpace(string(raw)) != "f" {
+	if raw, err := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT rolsuper FROM pg_roles WHERE rolname = 'tenant'"); err != nil || strings.TrimSpace(string(raw)) != "f" {
 		t.Fatalf("a database owner's function ran as superuser: %q, %v", raw, err)
 	}
 }

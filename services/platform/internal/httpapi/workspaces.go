@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -10,7 +11,9 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -75,11 +78,14 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := uuid.New()
+	keys, e := s.Store.Broker.Create(r.Context(), secretbroker.Request{Workspace: id, Principal: p.Secrets()})
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	defer keys.Close(r.Context(), secretbroker.Used)
 	e = s.Store.Transaction(r.Context(), func(q *db.Queries) error {
-		if e := q.InsertWorkspace(r.Context(), db.InsertWorkspaceParams{ID: id, Name: name}); e != nil {
-			return e
-		}
-		if e := q.InsertMembership(r.Context(), db.InsertMembershipParams{WorkspaceID: id, AccountID: p.Account.ID, Role: "owner"}); e != nil {
+		if e := store.CreateWorkspace(r.Context(), q, keys, name, p.Account.ID); e != nil {
 			return e
 		}
 		if e := store.Audit(r.Context(), q, p, id, "workspace.create", id); e != nil {
@@ -98,6 +104,25 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	s.scope(w, r, id, store.WorkspaceAccess{}, func(_ *db.Queries, ws store.Workspace) (any, error) { return workspace(ws), nil })
+}
+
+// GetCrossHostRecovery shows owners and operators the newest recovery checkpoint and how old a
+// management backup cross-host recovery can use with it. It is its own read so that sessions and
+// workspace lists don't look up checkpoints.
+func (s *Server) GetCrossHostRecovery(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
+	s.scope(w, r, id, store.WorkspaceAccess{}, func(q *db.Queries, ws store.Workspace) (any, error) {
+		if !domain.CanWrite(ws.Role) {
+			return nil, domain.Forbidden
+		}
+		base, err := q.NewestRecoveryBase(r.Context(), id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return api.CrossHostRecovery{}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return api.CrossHostRecovery{CheckpointAt: &base.CapturedAt, WindowStart: base.WindowStart, ShortWindow: portability.ShortRecoveryWindow(base.CapturedAt, base.WindowStart)}, nil
+	})
 }
 func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	b, e := decode[api.WorkspaceSettings](r)
@@ -124,9 +149,37 @@ func (s *Server) UpdateWorkspace(w http.ResponseWriter, r *http.Request, id uuid
 		if e := q.SetWorkspaceSettings(r.Context(), db.SetWorkspaceSettingsParams{ID: id, Name: name, RequireMfa: b.RequireMfa}); e != nil {
 			return nil, e
 		}
+		// The two-factor requirement stops or resumes what members without it approved, so the
+		// audit history names a change to it on its own, in either direction.
+		if b.RequireMfa != ws.RequireMFA {
+			action := "workspace.require_mfa"
+			if !b.RequireMfa {
+				action = "workspace.stop_requiring_mfa"
+			}
+			if e := store.Audit(r.Context(), q, *principal(r.Context()), id, action, id); e != nil {
+				return nil, e
+			}
+		}
 		ws.Name = name
 		ws.RequireMFA = b.RequireMfa
 		return workspace(ws), store.Audit(r.Context(), q, *principal(r.Context()), id, "workspace.settings", id)
+	})
+}
+
+// GetMfaRequirement shows owners the standing approvals that act only while the workspace doesn't
+// require two-factor authentication, and whose they are, before they turn the requirement on or
+// off. Owners already see which members have set it up.
+func (s *Server) GetMfaRequirement(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
+	s.scope(w, r, id, store.WorkspaceAccess{Owner: true}, func(q *db.Queries, _ store.Workspace) (any, error) {
+		rows, err := q.MFARequirementApprovals(r.Context(), id)
+		out := api.MfaRequirement{Approvals: []api.MfaRequirementApproval{}}
+		for _, v := range rows {
+			out.Approvals = append(out.Approvals, api.MfaRequirementApproval{
+				Kind: api.MfaRequirementApprovalKind(v.Kind), ApproverId: v.ApproverID, ApproverName: v.ApproverName, ApproverEmail: openapi_types.Email(v.ApproverEmail),
+				ProjectId: v.ProjectID, ProjectName: optional(v.ProjectName), EnvironmentId: v.EnvironmentID, EnvironmentName: optional(v.EnvironmentName), Subject: v.Subject,
+			})
+		}
+		return out, err
 	})
 }
 func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request, id uuid.UUID) {

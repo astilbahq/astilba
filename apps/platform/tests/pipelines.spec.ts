@@ -2,7 +2,12 @@ import { createHmac } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import type { Schema } from "../src/api/client";
+import { railpackInputs, railpackVersion } from "../src/api/generated/railpack";
 import { openEnvironmentSection } from "./environment-section";
+import {
+  acknowledgeRelease,
+  acknowledgesReleases,
+} from "./fixtures/agent-releases";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
 import { api, gitProvider } from "./fixtures/ports";
 
@@ -49,7 +54,9 @@ test("repository setup, Git service, queued build and cancellation use the real 
         buildNetwork: true,
         rootlessBuilds: true,
         buildControls: true,
-        railpackVersion: "0.43.0",
+        ...acknowledgesReleases,
+        railpackVersion,
+        railpackInputs: railpackInputs.arm64,
       },
       preflight: {
         ready: true,
@@ -66,6 +73,7 @@ test("repository setup, Git service, queued build and cancellation use the real 
   expect(enrolled.status()).toBe(200);
   expect(enrolled.headers()["astilba-agent-features"]).toBe("build-controls");
   expect(enrolled.headers()["astilba-agent-railpack"]).toBe("v1");
+  expect(enrolled.headers()["astilba-agent-railpack-inputs"]).toBe("v1");
   await page.getByRole("button", { name: "New project", exact: true }).click();
   await page
     .getByLabel("Project name", { exact: true })
@@ -246,6 +254,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
       })
     ).json()
   ).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    railpack,
+  );
   expect(railpack.pipeline.build.builder).toBe("railpack");
   expect(railpack.pipeline.build.dockerfile).toBe("");
   expect(railpack.pipeline.build.railpack).toEqual({
@@ -335,6 +349,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
   });
   expect(poll.status()).toBe(200);
   const command = (await poll.json()).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    command,
+  );
   expect(command.kind).toBe("pipeline");
   expect(command.pipeline.commit).toBe("a".repeat(40));
   expect(command.pipeline.build.budget).toEqual({
@@ -396,6 +416,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
       })
     ).json()
   ).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    completed,
+  );
   const digest = `sha256:${"b".repeat(64)}`;
   const succeeded = await request.post(`${api}/agent/v1/report`, {
     headers: agentHeaders,
@@ -490,6 +516,12 @@ test("repository setup, Git service, queued build and cancellation use the real 
       })
     ).json()
   ).command;
+  await acknowledgeRelease(
+    request,
+    `${api}/agent/v1/releases`,
+    agentHeaders,
+    initial,
+  );
   expect(
     (
       await request.post(`${api}/agent/v1/report`, {

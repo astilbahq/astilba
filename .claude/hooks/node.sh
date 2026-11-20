@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs a hook script under the repository's pinned Node.
-version=24.18.1
+version=24.22.3
 script="$(dirname "$0")/$1"
 if command -v fnm >/dev/null 2>&1 && fnm exec --using="$version" -- node --version >/dev/null 2>&1; then
   exec fnm exec --using="$version" -- node "$script"

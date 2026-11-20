@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/mail"
 	"net/netip"
 	"os"
@@ -64,7 +65,7 @@ func run() error {
 	}
 	command := os.Args[1]
 	if command == "describe" {
-		return stablejson.Encode(os.Stdout, agentrelease.Identity{Version: version, MinimumVersion: releaseMinimumVersion(), Commit: commit, Protocol: 1, Arch: runtime.GOARCH, KeyAuth: 1})
+		return stablejson.Encode(os.Stdout, agentrelease.Identity{Version: version, MinimumVersion: releaseMinimumVersion(), Commit: commit, Protocol: 1, Arch: runtime.GOARCH, KeyAuth: 1, StateVersion: agent.StateVersion})
 	}
 	if command == "release-keygen" || command == "release-manifest" || command == "release-sign" {
 		return releaseCommand(command, os.Args[2:])
@@ -82,6 +83,8 @@ func run() error {
 	dockerCLI := flags.String("docker-cli", "docker", "Docker CLI with the supported Compose plugin")
 	acmeEmail := flags.String("acme-email", "", "certificate contact email, applied only by owner-reviewed host changes")
 	networkPool := flags.String("network-pool", "", "private IPv4 range for the networks the agent creates, instead of "+agent.DefaultNetworkPool.String())
+	imageLoadGiB := flags.Int64("image-load-gib", agent.DefaultImageLoadBytes>>30, "most GiB loading a local build's image, or pulling a deployment's, may write to Docker's storage")
+	imageReserveGiB := flags.Int64("image-load-reserve-gib", agent.DefaultImageLoadReserveBytes>>30, "GiB of Docker's storage that loading a local build's image, or pulling a deployment's, must leave free")
 	resticCLI := flags.String("restic-cli", "restic", "pinned restic executable")
 	backupRoots := flags.String("backup-roots", "", "comma-separated operator-approved filesystem roots")
 	policyID := flags.String("policy", "", "backup policy UUID for local reconciliation")
@@ -92,6 +95,9 @@ func run() error {
 	executable := flags.String("executable", "/usr/local/bin/astilba-agent", "installed executable")
 	if e := flags.Parse(os.Args[2:]); e != nil {
 		return e
+	}
+	if *imageLoadGiB < 1 || *imageLoadGiB > 1024 || *imageReserveGiB < 1 || *imageReserveGiB > 1024 {
+		return errors.New("--image-load-gib and --image-load-reserve-gib must be whole GiB from 1 to 1024")
 	}
 	if !strings.HasPrefix(*host, "unix:///") {
 		return errors.New("Docker must be an explicitly selected local Unix socket")
@@ -108,7 +114,9 @@ func run() error {
 		return stablejson.Encode(os.Stdout, map[string]bool{"supported": (hostnetwork.Host{Dir: *dir}).Supported(ctx)})
 	}
 	if command == "network-restore" {
-		return (hostnetwork.Host{Dir: *dir}).Restore(ctx)
+		// Restore opens the sealed keys it finds and never seals one: the agent service decides
+		// when the state directory's format changes.
+		return (hostnetwork.Host{Dir: *dir, Keys: agent.OnDemandKeyStore(agent.SystemKeyStore)}).Restore(ctx)
 	}
 	docker, e := client.New(client.WithHost(*host))
 	if e != nil {
@@ -120,6 +128,9 @@ func run() error {
 		var h api.AgentHeartbeat
 		if j == nil {
 			h = agent.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
+			if note := agent.SealedJournalNote(ctx, *dir, agent.SystemKeyStore); note != "" {
+				h.Preflight.Notes = append(h.Preflight.Notes, note)
+			}
 		} else {
 			h = j.Preflight(ctx, docker, version, *dir, *dockerCLI, *resticCLI)
 		}
@@ -130,7 +141,27 @@ func run() error {
 	if command == "preflight" {
 		return stablejson.Encode(os.Stdout, preflight(ctx))
 	}
-	j, e = agent.Open(*dir)
+	if command == "enroll" || command == "transfer" {
+		// The service's sandbox can't create systemd's host key, so enrollment does, outside it,
+		// before the journal opens, so that a new journal's keyring is sealed from the start.
+		if err := agent.SetupSystemKeyStore(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
+		}
+	}
+	// A journal sealed to this machine opens only once its key store does, which can take a while
+	// early in boot. The service waits for it rather than failing; a command run by hand reports why.
+	for {
+		j, e = agent.OpenSealed(ctx, *dir, agent.SystemKeyStore)
+		if command != "run" || !errors.Is(e, agent.ErrSealedJournal) {
+			break
+		}
+		slog.Warn("the agent is waiting for its key store to open its journal", "error", e)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(time.Minute):
+		}
+	}
 	if e != nil {
 		return e
 	}
@@ -262,11 +293,7 @@ func run() error {
 		c.Observe = func(ctx context.Context) api.AgentHeartbeat {
 			return preflight(ctx)
 		}
-		// The service's sandbox can't create systemd's host key, so enrollment does, outside it.
-		if err := agent.SetupSystemKeyStore(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, "Could not set up systemd credentials, so the agent can't seal a key here:", err)
-		}
-		c.OpenKeys = agent.SystemKeyStore
+		c.Keys, c.OpenKeys = j.KeyStore(), agent.SystemKeyStore
 		c.OpenKeyStore(ctx)
 		if e = c.Enroll(ctx, string(token)); e != nil {
 			return e
@@ -338,7 +365,7 @@ func run() error {
 			return e
 		}
 		defer f.Close()
-		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: releaseMinimumVersion()})
+		return agent.Install(ctx, release, cfg.PublicKey, f, *executable, agent.Running{Keyed: j.HoldsKey(cfg), MinimumVersion: releaseMinimumVersion(), StateVersion: j.StateVersion()})
 	}
 	if command == "resolve-run" {
 		policy, err := uuid.Parse(*policyID)
@@ -355,7 +382,7 @@ func run() error {
 	if command != "run" {
 		return errors.New("unknown command")
 	}
-	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ",")}
+	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ","), ImageLoadBytes: *imageLoadGiB << 30, ImageLoadReserveBytes: *imageReserveGiB << 30}
 	// A pool that can't work is refused at start, not at the first deployment.
 	if *networkPool != "" {
 		// An unparsable value is the zero prefix, which validation refuses.
@@ -368,7 +395,7 @@ func run() error {
 	c := agent.NewClient(j, engine)
 	// Run opens the key store in the background, and again while it is unavailable, so a store
 	// that isn't ready never stops the agent's local work.
-	c.OpenKeys = agent.SystemKeyStore
+	c.Keys, c.OpenKeys = j.KeyStore(), agent.SystemKeyStore
 	collector := &agent.MetricCollector{Journal: j}
 	c.Metrics = func(ctx context.Context) api.MetricReport {
 		cfg, err := j.Config()
@@ -380,7 +407,9 @@ func run() error {
 	c.Observe = func(ctx context.Context) api.AgentHeartbeat {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return preflight(ctx)
+		h := preflight(ctx)
+		engine.ReportContainerRanges(ctx, &h)
+		return h
 	}
 	var updated atomic.Bool
 	engine.VerifyInstalledUpdate = func(r api.AgentRelease) error {

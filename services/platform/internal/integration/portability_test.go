@@ -16,6 +16,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -43,7 +44,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	connection := pipeline.Connection{ID: uuid.New(), Name: "Repository", Provider: "github", BaseURL: "https://github.com", Repository: "example/application", RepositoryID: 42, Private: true}
 	access := pipeline.Access{API: pipeline.Credential{Password: "git-token-canary"}, Webhook: "webhook-canary"}
 	rawAccess, _ := stablejson.Marshal(access)
-	cipher, e := f.st.Keys.Seal(rawAccess, pipeline.EncryptionIdentity(ws, connection.ID, "git"))
+	cipher, e := keysOf(f.st).Seal(rawAccess, pipeline.EncryptionIdentity(ws, connection.ID, "git"))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -59,7 +60,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	passphrase := "unique archive passphrase for fixture"
 	var encrypted api.WorkspaceArchive
 	browser.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &encrypted)
-	if bytes.Contains(encrypted.Archive, []byte("portable-secret-canary")) || bytes.Contains(encrypted.Archive, []byte(f.st.Keys.Active)) {
+	if bytes.Contains(encrypted.Archive, []byte("portable-secret-canary")) || bytes.Contains(encrypted.Archive, []byte(keysOf(f.st).Active)) {
 		t.Fatal("archive exposes contents")
 	}
 	if _, e := portability.Open(context.Background(), "incorrect archive passphrase", encrypted.Archive); e == nil {
@@ -90,7 +91,7 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e != nil || string(value) != "portable-secret-canary" {
 		t.Fatal("secret was not unwrapped into encrypted archive")
 	}
-	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job", "server_domains", "dns_installation", "dns_publications", "dns_record_removals"} {
+	for _, forbidden := range []string{"accounts", "memberships", "sessions", "hosted_subscriptions", "river_job", "server_domains", "installation", "dns_publications", "dns_record_removals"} {
 		if _, ok := archive.Tables[forbidden]; ok {
 			t.Fatal("installation-private table exported", forbidden)
 		}
@@ -109,11 +110,13 @@ func TestEncryptedWorkspaceExportPreservesIdentityWithoutInstallationKeys(t *tes
 	if e = destination.st.Pool.QueryRow(context.Background(), "SELECT encrypted_value,author_id FROM secret_versions WHERE id=$1", secret.Id).Scan(&importedCipher, &author); e != nil {
 		t.Fatal(e)
 	}
-	recovered, e := destination.st.Keys.Open(importedCipher, store.SecretIdentity(ws, secret.Id))
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}
+	recovered, e := inspectValue(t, destination.st, destination.owner, ws, item, importedCipher)
 	if e != nil || string(recovered) != "portable-secret-canary" || author != destination.owner {
 		t.Fatalf("secret or author was not transferred: %v", e)
 	}
-	if _, e = f.st.Keys.Open(importedCipher, store.SecretIdentity(ws, secret.Id)); e == nil {
+	// The import sealed it under the destination's own key for the workspace, not the source's.
+	if _, e = inspectValue(t, f.st, f.owner, ws, item, importedCipher); e == nil {
 		t.Fatal("import retained source wrapping keys")
 	}
 	var status string
@@ -268,7 +271,7 @@ func TestManagementRecoveryFencesQueuedCommandsBeforeAgentReconnect(t *testing.T
 	if e != nil {
 		t.Fatal(e)
 	}
-	command, e := f.execution.Poll(context.Background(), identity)
+	command, e := pollReleased(f.execution, context.Background(), identity)
 	if e != nil || command == nil || command.Id != next.Id || command.ControllerGeneration == nil || *command.ControllerGeneration != 1 {
 		t.Fatalf("new controller command not fenced: %+v %v", command, e)
 	}
@@ -385,7 +388,7 @@ func TestOfflineRecoveryMergePreservesImmutableHistory(t *testing.T) {
 		if err = store.RequireOffline(ctx, tx); err != nil {
 			return err
 		}
-		if err = portability.MergeRecovery(ctx, tx, a, owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, destination.st, a.Workspace), a, owner); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)

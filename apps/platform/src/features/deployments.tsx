@@ -13,7 +13,9 @@ import { Textarea } from "../components/textarea";
 import * as s from "../styles";
 import { ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { DeploymentTarget } from "./deployment-target";
+import { ManagedVolumes } from "./managed-volumes";
 import { PreparedPlan, usePreparedPlan } from "./prepared-plan";
+import { ReleaseHistory } from "./release-history";
 import type { EnvironmentPath } from "./visual-editor";
 
 const root =
@@ -53,16 +55,6 @@ export function Deployments({
   });
   const plan = usePreparedPlan(path, revision.id);
   const runtime = useQuery(runtimeOptions(path));
-  const releases = useQuery({
-    queryKey: ["releases", path, revision.id],
-    queryFn: () => result(client.GET(`${root}/releases`, { params: { path } })),
-    refetchInterval: 10000,
-  });
-  const volumes = useQuery({
-    queryKey: ["volumes", path],
-    queryFn: () => result(client.GET(`${root}/volumes`, { params: { path } })),
-    refetchInterval: 5000,
-  });
   const operations = useQuery({
     queryKey: ["operations", path.workspaceId],
     queryFn: () =>
@@ -78,18 +70,18 @@ export function Deployments({
       `/api/v1/workspaces/${workspaceId}/projects/${projectId}/environments/${environmentId}/events`,
     );
     events.addEventListener("changed", () => {
-      // Includes the saved revision, which decides whether a prepared plan is still shown.
+      const environment = { workspaceId, projectId, environmentId };
+      // Saved and applied revisions decide which plan shows and which backups are recommended.
       void queries.invalidateQueries({
-        queryKey: draftOptions({ workspaceId, projectId, environmentId })
-          .queryKey,
+        queryKey: draftOptions(environment).queryKey,
         exact: true,
       });
-      void queries.invalidateQueries({
-        queryKey: ["runtime", { workspaceId, projectId, environmentId }],
-      });
-      void queries.invalidateQueries({
-        queryKey: ["operations", workspaceId],
-      });
+      for (const queryKey of [
+        ["runtime", environment],
+        ["operations", workspaceId],
+        ["catalog-stagings", environment],
+      ])
+        void queries.invalidateQueries({ queryKey });
     });
     return () => events.close();
   }, [workspaceId, projectId, environmentId, queries]);
@@ -265,81 +257,35 @@ export function Deployments({
           }
         />
       </section>
-      <section className={s.panel} aria-label="Release history">
-        <h2>Release history</h2>
-        <p className={s.muted}>
-          Rollback creates a new draft for review. Preparing its deployment plan
-          checks the retained image. Release commands are not copied, and
-          database data is never rolled back.
-        </p>
-        <ErrorNotice error={releases.error} />
-        {releases.isPending && <p role="status">Loading release history…</p>}
-        {releases.data?.length === 0 && (
-          <p>Successfully applied deployments will appear here.</p>
-        )}
-        {releases.data?.map((entry) => (
-          <details key={entry.planId}>
-            <summary>
-              Revision {entry.revisionId.slice(0, 8)} ·{" "}
-              {new Date(entry.createdAt).toLocaleString()}
-            </summary>
-            <ul>
-              {entry.applications.map((app) => (
-                <li key={app.id}>
-                  <strong>{app.name}</strong>
-                  <code className={s.code}>{app.image}</code>
-                  <p>{app.note}</p>
-                  {app.changes.length > 0 && (
-                    <p>Changed settings: {app.changes.join(", ")}.</p>
-                  )}
-                  {write && (
-                    <Button
-                      type="button"
-                      disabled={!app.eligible || dirty || action.isPending}
-                      onClick={() =>
-                        action.run(async () => {
-                          const next = await result(
-                            client.POST(`${root}/releases/{planId}/rollback`, {
-                              params: {
-                                path: { ...path, planId: entry.planId },
-                              },
-                              body: {
-                                baseRevisionId: revision.id,
-                                applicationId: app.id,
-                              },
-                            }),
-                          );
-                          await publishDraft(queries, path, next, revision.id);
-                          loadRevision(next);
-                          setRequireRelease(true);
-                          setReleaseCommand("");
-                          // Its message already asks for a new plan.
-                          plan.clear();
-                          setMessage(
-                            "Rollback draft created. Review its effective configuration and prepare a new deployment plan; nothing has been deployed.",
-                          );
-                          await queries.invalidateQueries({
-                            queryKey: ["revisions", path],
-                          });
-                          await queries.invalidateQueries({
-                            queryKey: [
-                              "environments",
-                              path.workspaceId,
-                              path.projectId,
-                            ],
-                          });
-                        })
-                      }
-                    >
-                      Create rollback draft for {app.name}
-                    </Button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </details>
-        ))}
-      </section>
+      <ReleaseHistory
+        path={path}
+        revisionId={revision.id}
+        write={write}
+        disabled={dirty || action.isPending}
+        onRollback={(planId, applicationId) =>
+          action.run(async () => {
+            const next = await result(
+              client.POST(`${root}/releases/{planId}/rollback`, {
+                params: { path: { ...path, planId } },
+                body: { baseRevisionId: revision.id, applicationId },
+              }),
+            );
+            await publishDraft(queries, path, next, revision.id);
+            loadRevision(next);
+            setRequireRelease(true);
+            setReleaseCommand("");
+            // Its message already asks for a new plan.
+            plan.clear();
+            setMessage(
+              "Rollback draft created. Review its effective configuration and prepare a new deployment plan; nothing has been deployed.",
+            );
+            await queries.invalidateQueries({ queryKey: ["revisions", path] });
+            await queries.invalidateQueries({
+              queryKey: ["environments", path.workspaceId, path.projectId],
+            });
+          })
+        }
+      />
       <section className={s.panel}>
         <div className={s.spread}>
           <h2>Runtime observations</h2>
@@ -663,49 +609,15 @@ export function Deployments({
             </div>
           </>
         )}
-        <ul className={s.list}>
-          {volumes.data?.map((volume) => {
-            const used = volume.inUse;
-            return (
-              <li key={volume.id}>
-                {volume.name} ·{" "}
-                {volume.deleted ? "Deleted" : used ? "Attached" : "Retained"}
-                {owner && (
-                  <Button
-                    type="button"
-                    disabled={
-                      used || volume.deleted || dirty || action.isPending
-                    }
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Permanently delete all data in ${volume.name}? This cannot be undone.`,
-                        )
-                      )
-                        action.run(async () => {
-                          await result(
-                            client.DELETE(`${root}/volumes/{volumeId}`, {
-                              params: {
-                                path: { ...path, volumeId: volume.id },
-                              },
-                            }),
-                          );
-                          removeVolume(volume.id);
-                          setMessage(
-                            revision.specification.compose
-                              ? "Data-volume deletion queued. Check its result, then remove the unused volume declaration from your source files before deploying again."
-                              : "Data-volume deletion queued and removal staged. Check the operation result, then save the configuration revision.",
-                          );
-                        });
-                    }}
-                  >
-                    Delete data volume permanently
-                  </Button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <ManagedVolumes
+          path={path}
+          action={action}
+          owner={owner}
+          dirty={dirty}
+          compose={!!revision.specification.compose}
+          removeVolume={removeVolume}
+          setMessage={setMessage}
+        />
       </details>
     </section>
   );

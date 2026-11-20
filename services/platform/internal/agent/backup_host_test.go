@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -77,7 +78,7 @@ func nativePostgresMetadataRestore(t *testing.T, e *Engine, base deployment.Plan
 			}
 			dumped := start(volumes[0], fixture.dumped)
 			db := quoteIdentifier(fixture.database)
-			if _, err := e.pgQuery(ctx, dumped, a, `CREATE ROLE backup_reader NOLOGIN;
+			if _, err := e.pgQuery(ctx, pgClient{container: dumped}, a, `CREATE ROLE backup_reader NOLOGIN;
 CREATE SCHEMA reporting;
 CREATE TABLE reporting.records(value text, code bpchar);
 INSERT INTO reporting.records VALUES ('retained', 'a ');
@@ -93,7 +94,9 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 			}
 			dir := t.TempDir()
 			m := backup.Manifest{}
-			if err := e.dumpPostgres(ctx, source, dir, &m); err != nil {
+			dumpCtx, stop := context.WithTimeout(ctx, 5*time.Minute)
+			defer stop()
+			if err := e.dumpPostgres(dumpCtx, backup.Installation{Policy: source, Access: backup.Access{DatabasePassword: "metadata-fixture-password"}}, uuid.New(), dir, &m); err != nil {
 				t.Fatal(err)
 			}
 			if m.Image != fixture.dumped {
@@ -108,11 +111,11 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 			if err != nil || release.Image != fixture.restored {
 				t.Fatalf("restores in %s: %v", release.Image, err)
 			}
-			if err := e.restorePostgres(ctx, target, &backup.Run{ID: uuid.New(), TargetID: volumes[1]}, dir, m, "metadata-fixture-password", release, false); err != nil {
+			if _, err := e.restorePostgres(ctx, target, a, uuid.New(), volumes[1], dir, m, release, "metadata-fixture-password"); err != nil {
 				t.Fatal(err)
 			}
 			restored := start(volumes[1], fixture.restored)
-			got, err := e.pgQuery(ctx, restored, a, `SELECT
+			got, err := e.pgQuery(ctx, pgClient{container: restored}, a, `SELECT
 current_setting('server_version_num'),
 current_setting('search_path'),
 (SELECT value FROM reporting.records WHERE code = 'a'),
@@ -127,9 +130,23 @@ NOT EXISTS (SELECT 1 FROM pg_database, LATERAL aclexplode(coalesce(datacl,acldef
 	}
 }
 
-func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func(backup.Command) Record) {
+func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command func(backup.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
+	deliver := func(c api.ExecutionCommand) api.AgentReport {
+		t.Helper()
+		if err := e.Execute(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		r, err := e.Journal.Record(c.Id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = e.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
+			t.Fatal(err)
+		}
+		return r.Report
+	}
 	e.ResticCLI = "/opt/astilba-platform-tools/restic"
 	nativePostgresStartup(t, e, p)
 	root := t.TempDir()
@@ -143,11 +160,13 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.pgQuery(ctx, c.ID, a, `CREATE ROLE backup_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reporting; CREATE TABLE reporting.records(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload hstore NOT NULL); INSERT INTO reporting.records(payload) VALUES ('a=>b'); ALTER TABLE reporting.records OWNER TO backup_reader; GRANT USAGE ON SCHEMA reporting TO backup_reader; CREATE TABLE large_records AS SELECT repeat('x',70*1024*1024) AS payload`); err != nil {
+	if _, err = e.pgQuery(ctx, pgClient{container: c.ID}, a, `CREATE ROLE backup_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reporting; CREATE TABLE reporting.records(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload hstore NOT NULL); INSERT INTO reporting.records(payload) VALUES ('a=>b'); ALTER TABLE reporting.records OWNER TO backup_reader; GRANT USAGE ON SCHEMA reporting TO backup_reader; CREATE TABLE large_records AS SELECT repeat('x',70*1024*1024) AS payload`); err != nil {
 		t.Fatal(err)
 	}
 	in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "External recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "native-repository-password-canary"}}
-	finish(backup.Command{Action: "install", Installation: in, RunID: uuid.New(), TargetID: uuid.New()})
+	if r := deliver(command(backup.Command{Action: "install", Installation: in, RunID: uuid.New(), TargetID: uuid.New()})); r.State != "succeeded" {
+		t.Fatalf("install ended %s: %s", r.State, r.Note)
+	}
 	// Stop this policy before its temporary repository is removed; later
 	// journeys exercise the same journal's scheduler.
 	t.Cleanup(func() {
@@ -201,35 +220,36 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	if v, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || restored.Manifest == nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(restored.Manifest.Image) || v.Volume.Labels[labelPostgresMajor] == "" {
 		t.Fatalf("the restore target does not record its PostgreSQL major: %v", err)
 	}
+	// A snapshot that no longer holds the manifest its upload recorded is refused before any effect.
+	replaced := s
+	replaced.Runs = append([]backup.Run{}, s.Runs...)
+	for i := range replaced.Runs {
+		if replaced.Runs[i].Snapshot == snapshot {
+			replaced.Runs[i].ManifestHash = backup.Hash(struct{ Manifest string }{"another"})
+		}
+	}
+	blocked := uuid.New()
+	if err = e.runScheduled(ctx, &replaced, time.Now().UTC(), uuid.New(), snapshot, blocked); err == nil || !strings.Contains(err.Error(), "snapshot manifest differs from the uploaded record") {
+		t.Fatalf("a snapshot unlike its uploaded record was restored: %v", err)
+	}
+	if _, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(blocked), client.VolumeInspectOptions{}); err == nil {
+		t.Fatal("a refused restore created its target")
+	}
+	if err = e.Journal.saveSchedule(s); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = e.Docker.ContainerStart(ctx, c.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	for n := 0; n < 60; n++ {
-		if _, err = e.dataOutput(ctx, c.ID, "pg_isready", "-U", a.Postgres.Username, "-d", a.Postgres.Database); err == nil {
+		if _, err = e.dataOutput(ctx, pgClient{container: c.ID}, "pg_isready", "-U", a.Postgres.Username, "-d", a.Postgres.Database); err == nil {
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	value, err := e.pgQuery(ctx, c.ID, a, "SELECT payload::text FROM reporting.records")
+	value, err := e.pgQuery(ctx, pgClient{container: c.ID}, a, "SELECT payload::text FROM reporting.records")
 	if err != nil || !strings.Contains(string(value), `"a"=>"b"`) {
 		t.Fatal("source records changed during restore")
-	}
-	// A large declared footprint must fail before creating target storage.
-	capacity := s
-	capacity.Runs = append([]backup.Run{}, s.Runs...)
-	for i := range capacity.Runs {
-		if capacity.Runs[i].Manifest != nil {
-			m := *capacity.Runs[i].Manifest
-			m.Bytes = 1 << 39
-			capacity.Runs[i].Manifest = &m
-		}
-	}
-	blocked := uuid.New()
-	if err = e.runScheduled(ctx, &capacity, time.Now().UTC(), uuid.New(), snapshot, blocked); err == nil {
-		t.Fatal("insufficient capacity accepted")
-	}
-	if _, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(blocked), client.VolumeInspectOptions{}); err == nil {
-		t.Fatal("capacity failure created a target")
 	}
 	// Invalid keys and unavailable destinations cannot publish usable records.
 	s, err = e.Journal.schedule(policy.ID)
@@ -300,9 +320,10 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	e.ResticCLI = interrupted
 	expiring, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = e.runScheduled(expiring, &s, time.Now().UTC(), uuid.New(), "", uuid.Nil)
+	expired := errors.Is(expiring.Err(), context.DeadlineExceeded)
 	cancel()
 	e.ResticCLI = originalRestic
-	if !errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || !expired {
 		t.Fatalf("upload did not expire: %v", err)
 	}
 	rawReceipt, receiptErr := os.ReadFile(receipt)
@@ -316,13 +337,13 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, finish func
 	if err != nil {
 		t.Fatal(err)
 	}
-	uncertain := s.Runs[len(s.Runs)-1]
-	if uncertain.State != "needs_attention" || uncertain.Snapshot != "" {
-		t.Fatal("expired upload became usable or retryable without inspection")
+	// restic was killed and waited for, and the run's dump helper was removed, so nothing of it
+	// is left running: it failed, and its uncatalogued snapshot is not a usable record.
+	if expired := s.Runs[len(s.Runs)-1]; expired.State != "failed" || expired.Snapshot != "" {
+		t.Fatalf("expired upload became usable or held the host: %+v", expired)
 	}
-	if err = e.ResolveScheduledRun(ctx, policy.ID, uncertain.ID); err != nil {
-		t.Fatal(err)
-	}
+	nativeQueuedRunNow(t, e, in, command, deliver)
+	nativeStoppedDump(t, e, in, c.ID, a, command)
 	reports, err := e.Journal.ScheduleReports()
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +373,7 @@ func nativePostgresStartup(t *testing.T, e *Engine, p deployment.Plan) {
 	if err = e.waitPostgresStartup(ctx, created.ID, "fixture", "fixture"); err != nil {
 		t.Fatal(err)
 	}
-	value, err := e.dataOutput(ctx, created.ID, "psql", "-XAt", "-U", "fixture", "-d", "fixture", "-c", "SELECT value FROM initialization_finished")
+	value, err := e.dataOutput(ctx, pgClient{container: created.ID}, "psql", "-XAt", "-U", "fixture", "-d", "fixture", "-c", "SELECT value FROM initialization_finished")
 	if err != nil || strings.TrimSpace(string(value)) != "1" {
 		t.Fatal("readiness accepted the temporary initialization server")
 	}
@@ -496,7 +517,8 @@ func TestSkippedHistoryAndAdmissionClock(t *testing.T) {
 	now := s.Installation.Next
 	_ = e.tickSchedules(context.Background(), func() time.Time { return now })
 	s, _ = j.schedule(p.ID)
-	if s.Runs[len(s.Runs)-1].State != "needs_attention" {
+	// Admitted, then failed before any effect: this engine has no Docker.
+	if last := s.Runs[len(s.Runs)-1]; last.ID != backup.RunID(p, now) || last.State != "failed" {
 		t.Fatal("a timely job could not be admitted after bounded skipped history")
 	}
 }

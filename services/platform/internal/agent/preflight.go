@@ -36,6 +36,8 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.CredentialFreeVisualCancel = &credentialFreeCancel
 	machineBoundRotation := true
 	h.Capabilities.MachineBoundRotation = &machineBoundRotation
+	acknowledgesReleases := true
+	h.Capabilities.AcknowledgesReleases = &acknowledgesReleases
 	raw, _ := os.ReadFile("/etc/os-release")
 	var id, release string
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -52,11 +54,16 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	}
 	runtimeReady := false
 	if docker != nil {
-		v, e := docker.ServerVersion(ctx, client.ServerVersionOptions{})
-		if e == nil {
+		v, versionErr := docker.ServerVersion(ctx, client.ServerVersionOptions{})
+		if versionErr == nil {
 			h.Capabilities.Docker = true
 			h.Preflight.DockerVersion = v.Version
 			runtimeReady = troubleshootingRuntime(v.Components)
+		}
+		if info, e := docker.Info(ctx, client.InfoOptions{}); e == nil {
+			if note := imageStoreNote(info.Info.DriverStatus, v.APIVersion, versionErr == nil); note != "" {
+				h.Preflight.Notes = append(h.Preflight.Notes, note)
+			}
 		}
 		list, e := docker.ContainerList(ctx, client.ContainerListOptions{All: true, Limit: 1001})
 		if e == nil {
@@ -121,11 +128,14 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	if build {
 		version := pipeline.RailpackVersion
 		h.Capabilities.RailpackVersion = &version
+		inputs := pipeline.RailpackFor(runtime.GOARCH).Digest()
+		h.Capabilities.RailpackInputs = &inputs
 	}
 	h.Capabilities.SafeReleases = &visual
 	h.Capabilities.Replicas = &visual
 	h.Capabilities.Previews = &visual
 	h.Capabilities.Retirement = &visual
+	h.Capabilities.Purge = &visual
 	h.Capabilities.ServiceOutputs = &visual
 	if visual {
 		releases := []string{}
@@ -156,6 +166,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	backups := visual && resticErr == nil && strings.HasPrefix(string(restic), "restic "+backup.ResticVersion+" ")
 	h.Capabilities.Backups = &backups
 	h.Capabilities.Schedules = &backups
+	h.Capabilities.RecoveryRestore = &backups
 	h.Capabilities.Upgrades = &backups
 
 	if err != nil {

@@ -70,15 +70,20 @@ func TestImportRefusesACredentialThatCouldNotBeOpened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seal := func(item secretbroker.Item, value []byte) ([]byte, error) {
+		return keys.Seal(context.Background(), brokertest.Fence{}, item, value)
+	}
+	secret := uuid.New()
+	environments := secretEnvironments{secret: uuid.New()}
 	row := func(size int) Row {
 		value := `\\x` + hex.EncodeToString([]byte(strings.Repeat("x", size)))
-		r := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "encrypted_value": jsontext.Value(`"` + value + `"`)}
+		r := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "secret_id": jsontext.Value(`"` + secret.String() + `"`), "encrypted_value": jsontext.Value(`"` + value + `"`), "erased_at": jsontext.Value("null")}
 		return r
 	}
-	if err = transformCredential(keys, "secret_versions", row(1024), false); err != nil {
+	if err = transformCredential("secret_versions", row(1024), environments, seal); err != nil {
 		t.Fatal("refused an ordinary credential", err)
 	}
-	if err = transformCredential(keys, "secret_versions", row(2<<20), false); !errors.Is(err, ErrArchive) {
+	if err = transformCredential("secret_versions", row(2<<20), environments, seal); !errors.Is(err, ErrArchive) {
 		t.Fatal("accepted an oversize credential", err)
 	}
 }

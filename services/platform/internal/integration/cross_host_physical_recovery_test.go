@@ -108,7 +108,7 @@ func testNativePhysicalRecovery(t *testing.T, upgradeRecovery bool) {
 			t.Fatal("physical host preflight", err, heartbeat.Preflight.Notes)
 		}
 		in.Capabilities, in.Preflight = heartbeat.Capabilities, heartbeat.Preflight
-		if _, err := source.execution.Enroll(ctx, in, "test"); err != nil {
+		if _, err := source.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 			t.Fatal(err)
 		}
 		identity, err := source.execution.Authenticate(ctx, in.ServerId, *in.Credential)
@@ -252,7 +252,7 @@ chmod +x /tmp/www/cgi-bin/health
 			if err != nil || heartbeat.Preflight.CrossHostInventory == nil {
 				t.Fatal("refresh physical capacity", err)
 			}
-			if _, err := source.execution.Heartbeat(ctx, identities[i], heartbeat); err != nil {
+			if _, err := source.execution.Heartbeat(ctx, identities[i], acknowledgingHeartbeat(heartbeat)); err != nil {
 				t.Fatal(err)
 			}
 			members[i].UnboundedInventoryHash = heartbeat.Preflight.CrossHostInventory.UnboundedInventoryHash
@@ -342,19 +342,7 @@ chmod +x /tmp/www/cgi-bin/health
 	if upgradeRecovery {
 		physicalPGQuery(t, ctx, hosts[0], pg, "CREATE TABLE recovery_canary(value text PRIMARY KEY); INSERT INTO recovery_canary VALUES ('source-before-upgrade')")
 	}
-	tx, err := source.st.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	backupRaw, err := portability.CaptureRecovery(ctx, tx, ws)
-	tx.Rollback(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	savedArchive, err := portability.DecodeRecovery(backupRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
+	savedArchive := captureRecoveryOrderingSnapshot(t, source, ws)
 	var target deployment.Plan
 	var operation api.Operation
 	var oldFrame api.ExecutionCommand
@@ -450,49 +438,25 @@ chmod +x /tmp/www/cgi-bin/health
 		}
 		exports = append(exports, dir)
 	}
-	management := func(archive portability.Archive) (*fixture, uuid.UUID) {
+	// management is a management database restored from a backup taken when archive was captured.
+	management := func(t *testing.T, archive portability.Archive) (*fixture, uuid.UUID) {
+		t.Helper()
 		dst := setup(t)
 		owner := dst.browser(t).login("owner@example.test", dst.password).User.Id
 		dst.server.Close()
 		if err := dst.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, dst.st, source.st.Keys)
-		if _, err := dst.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Restored backup')`, ws); err != nil {
-			t.Fatal(err)
-		}
+		restoredWorkspace(t, source.st, dst.st, ws, "Restored backup")
 		if _, err := dst.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, owner); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := dst.st.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		if err := portability.MergeRecovery(ctx, tx, archive, owner); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
+		restoredSnapshot(t, dst, archive)
 		return dst, owner
 	}
 	if upgradeRecovery {
 		t.Run("conflicting_owner_approval", func(t *testing.T) {
-			tx, err := source.st.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			raw, err := portability.CaptureRecovery(ctx, tx, ws)
-			tx.Rollback(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			archive, err := portability.DecodeRecovery(raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			dst, owner := management(archive)
+			dst, owner := management(t, captureRecoveryOrderingSnapshot(t, source, ws))
 			changed, err := dst.st.Pool.Exec(ctx, `UPDATE cross_host_approvals SET expected_phase='planned' WHERE workspace_id=$1 AND parent_id=$2 AND action='cutover'`, ws, operation.Id)
 			if err != nil || changed.RowsAffected() != 1 {
 				t.Fatal("conflicting approval fixture", err)
@@ -527,7 +491,7 @@ chmod +x /tmp/www/cgi-bin/health
 	}
 	for _, outcome := range negativeOutcomes {
 		t.Run(outcome+"_completion_proof", func(t *testing.T) {
-			dst, owner := management(savedArchive)
+			dst, owner := management(t, savedArchive)
 			altered := alterRecoveryCompletion(t, exports[1], operation.Id, outcome)
 			in := execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner, HostExports: []string{exports[0], altered}}
 			preview, err := dst.execution.RecoverCrossHost(ctx, in)
@@ -546,7 +510,7 @@ chmod +x /tmp/www/cgi-bin/health
 	}
 	if !upgradeRecovery {
 		t.Run("wrong_ingress_unit_hash", func(t *testing.T) {
-			dst, owner := management(savedArchive)
+			dst, owner := management(t, savedArchive)
 			altered := copyRecoveryExport(t, exports[0])
 			raw, err := os.ReadFile(filepath.Join(altered, "host.json"))
 			if err != nil {
@@ -579,7 +543,7 @@ chmod +x /tmp/www/cgi-bin/health
 			}
 		})
 	}
-	dst, owner := management(savedArchive)
+	dst, owner := management(t, savedArchive)
 	in := execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner, HostExports: exports}
 	preview, err := dst.execution.RecoverCrossHost(ctx, in)
 	if err != nil {
@@ -634,7 +598,7 @@ chmod +x /tmp/www/cgi-bin/health
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := current.Enroll(ctx, input, "test"); err != nil {
+		if _, err := current.Enroll(ctx, acknowledging(input), "test"); err != nil {
 			t.Fatal("enroll recovered host", i, err)
 		}
 		host.mu.Lock()
@@ -838,7 +802,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 		if time.Since(last) > 15*time.Second {
 			heartbeat, err := host.Preflight(ctx)
 			if err == nil {
-				_, err = service.Heartbeat(ctx, identity, heartbeat)
+				_, err = service.Heartbeat(ctx, identity, acknowledgingHeartbeat(heartbeat))
 			}
 			if err != nil {
 				if ctx.Err() == nil {
@@ -849,7 +813,7 @@ func runPhysicalRecoveryHost(t *testing.T, ctx context.Context, service *executi
 			last = time.Now()
 		}
 		poll, cancel := context.WithTimeout(ctx, time.Second)
-		command, err := service.Poll(poll, identity)
+		command, err := pollReleased(service, poll, identity)
 		pollErr := poll.Err()
 		cancel()
 		if err != nil {

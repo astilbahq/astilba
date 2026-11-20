@@ -1,7 +1,9 @@
-// Package txnetwork reports a Git provider or GitHub call, or a request to the secret broker
-// for keys, made with a transaction in hand, where a tenant's slow server or the key service
-// would hold that transaction's locks and connection. The broker also commits a record of its
-// own before it gives keys out, which a caller's transaction must not contain.
+// Package txnetwork reports a call to a Git provider, GitHub, Stripe or the DNS provider, or a
+// request to the secret broker for keys, made with a transaction or a pinned pool connection in
+// hand, where a slow provider or the key service would hold that transaction's locks and
+// connection: a tenant's slow Git server, or Stripe or the DNS provider, which every tenant
+// shares. The broker also commits a record of its own before it gives keys out, which a
+// caller's transaction must not contain.
 package txnetwork
 
 import (
@@ -15,28 +17,35 @@ import (
 
 var Analyzer = &analysis.Analyzer{
 	Name: "txnetwork",
-	Doc:  "reports a Git provider or GitHub call, or a secret broker session begun, directly or through a function in the same package, from a function holding a transaction",
+	Doc:  "reports a Git provider, GitHub, Stripe or DNS provider call, or a secret broker session begun, directly or through a function in the same package, from a function holding a transaction or pinned pool connection",
 	Run:  run,
 }
 
 const (
 	txType       = "github.com/jackc/pgx/v5.Tx"
+	connType     = "github.com/jackc/pgx/v5/pgxpool.Conn"
 	queriesType  = "github.com/astilbahq/astilba/services/platform/db/generated.Queries"
 	providerType = "github.com/astilbahq/astilba/services/platform/internal/pipeline.Provider"
 	clientType   = "github.com/astilbahq/astilba/services/platform/internal/githubapp.Client"
 	brokerType   = "github.com/astilbahq/astilba/services/platform/internal/secretbroker.Broker"
 	storeType    = "github.com/astilbahq/astilba/services/platform/internal/store.Store"
+	stripeType   = "github.com/astilbahq/astilba/services/platform/internal/hosting.Stripe"
+	dnsType      = "github.com/astilbahq/astilba/services/platform/internal/applicationdns.Cloudflare"
 )
 
 // brokerMethods are the Broker methods that record and give out keys, and storeKeyMethods the
 // Store methods that admit a caller in a transaction of their own and then do the same.
 var (
-	brokerMethods   = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true}
+	brokerMethods   = map[string]bool{"Begin": true, "BeginRotation": true, "Tokens": true, "Create": true, "InitKeys": true}
 	storeKeyMethods = map[string]bool{"Admit": true, "BeginKeys": true}
 )
 
-// offlineClientMethods are the Client methods that only compute or check a value locally.
-var offlineClientMethods = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true}
+// offlineClientMethods are the Client methods that only compute or check a value locally, and
+// offlineProviderMethods the Provider methods that only set one.
+var (
+	offlineClientMethods   = map[string]bool{"FixtureAPI": true, "InstallURL": true, "AuthorizeURL": true, "VerifyWebhook": true, "Forget": true}
+	offlineProviderMethods = map[string]bool{"OnRejected": true}
+)
 
 type function struct {
 	signature *ast.FuncType
@@ -91,7 +100,7 @@ func run(pass *analysis.Pass) (any, error) {
 		inspectOwn(fn.body, func(n ast.Node) {
 			if call, ok := n.(*ast.CallExpr); ok && call.Pos() > held && !reported[call] && contacts(call) {
 				reported[call] = true
-				pass.Reportf(call.Pos(), "this contacts a Git provider, GitHub or the secret broker with a transaction in hand, holding its locks and connection; ask between passes with a providerCall, or begin keys before the transaction")
+				pass.Reportf(call.Pos(), "this contacts a Git provider, GitHub, Stripe, the DNS provider or the secret broker with a transaction or pinned connection in hand, holding its locks and connection; ask between passes with nothing held, or begin keys before the transaction")
 			}
 		})
 	}
@@ -121,15 +130,16 @@ func inspectOwn(body *ast.BlockStmt, visit func(ast.Node)) {
 	})
 }
 
-// transactionFrom finds where a function first has a transaction: from its start if it is
-// given one or captures one, and otherwise once it obtains one, so that a call made before
-// opening a transaction, as the GitHub reconcile worker does, is correct. A literal naming an
-// outer transaction or queries has them from its first line. Queries otherwise count only as
-// a parameter, because a local may be pool-backed, and a field holds nothing here: the store's
-// Queries are pool-backed, and a struct holding a transaction is not looked into.
+// transactionFrom finds where a function first has a transaction or a pinned pool connection:
+// from its start if it is given one or captures one, and otherwise once it obtains one, so that
+// a call made before opening a transaction, as the GitHub reconcile worker does, is correct. A
+// connection counts until the function returns, released or not. A literal naming an outer
+// transaction, connection or queries has them from its first line. Queries otherwise count
+// only as a parameter, because a local may be pool-backed, and a field holds nothing here: the
+// store's Queries are pool-backed, and a struct holding a transaction is not looked into.
 func transactionFrom(pass *analysis.Pass, fn function) token.Pos {
 	for _, parameter := range fn.signature.Params.List {
-		if typeName(pass.TypesInfo.TypeOf(parameter.Type)) == txType || queries(pass.TypesInfo.TypeOf(parameter.Type)) {
+		if holds(pass.TypesInfo.TypeOf(parameter.Type)) || queries(pass.TypesInfo.TypeOf(parameter.Type)) {
 			return fn.body.Lbrace
 		}
 	}
@@ -173,20 +183,32 @@ func transactionFrom(pass *analysis.Pass, fn function) token.Pos {
 	return from
 }
 
-// captured reports an outer transaction or queries named from inside a literal.
+// captured reports an outer transaction, connection or queries named from inside a literal.
 func captured(pass *analysis.Pass, id *ast.Ident, signature token.Pos) bool {
 	v, ok := pass.TypesInfo.ObjectOf(id).(*types.Var)
-	return ok && !v.IsField() && v.Pos() < signature && v.Parent() != pass.Pkg.Scope() && (typeName(v.Type()) == txType || queries(v.Type()))
+	return ok && !v.IsField() && v.Pos() < signature && v.Parent() != pass.Pkg.Scope() && (holds(v.Type()) || queries(v.Type()))
 }
 
 func isTransaction(pass *analysis.Pass, id *ast.Ident) bool {
 	v, ok := pass.TypesInfo.ObjectOf(id).(*types.Var)
-	return ok && !v.IsField() && typeName(v.Type()) == txType
+	return ok && !v.IsField() && holds(v.Type())
+}
+
+// holds reports a transaction, or a connection taken out of the pool.
+func holds(t types.Type) bool {
+	return typeName(t) == txType || pointerTo(t) == connType
 }
 
 func queries(t types.Type) bool {
-	pointer, ok := t.(*types.Pointer)
-	return ok && typeName(pointer.Elem()) == queriesType
+	return pointerTo(t) == queriesType
+}
+
+func pointerTo(t types.Type) string {
+	pointer, ok := types.Unalias(t).(*types.Pointer)
+	if !ok {
+		return ""
+	}
+	return typeName(pointer.Elem())
 }
 
 func typeName(t types.Type) string {
@@ -206,13 +228,16 @@ func networkMethod(callee types.Object) bool {
 	if receiver == nil {
 		return false
 	}
-	pointer, ok := receiver.Type().(*types.Pointer)
-	if !ok {
-		return false
+	named := typeName(receiver.Type())
+	if named == "" {
+		named = pointerTo(receiver.Type())
 	}
-	switch typeName(pointer.Elem()) {
-	case providerType:
+	switch named {
+	case stripeType, dnsType:
+		// Every method of the Stripe and DNS clients asks the provider.
 		return true
+	case providerType:
+		return !offlineProviderMethods[fn.Name()]
 	case clientType:
 		return !offlineClientMethods[fn.Name()]
 	case brokerType:

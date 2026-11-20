@@ -17,15 +17,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Service) previewCleanupAuthority(ctx context.Context, tx pgx.Tx, p previewPolicy, r previewRecord) error {
+// previewCleanupAuthority checks the authority to send a preview's cleanup to host, the host it runs
+// on. The policy's approval is bound to the policy's host, so it covers only a preview running
+// there; elsewhere the cleanup waits for an owner to ask for it, which binds it to that host.
+func (s *Service) previewCleanupAuthority(ctx context.Context, tx pgx.Tx, p previewPolicy, r previewRecord, host uuid.UUID) error {
 	if !r.Cleanup {
+		if host != p.Server {
+			return domain.Forbidden
+		}
 		return s.previewOwnerAuthority(ctx, tx, p)
 	}
 	if r.CleanupActor == nil || r.CleanupAuth == nil || r.CleanupController == nil {
 		return domain.Forbidden
 	}
-	var valid bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM memberships m JOIN accounts a ON a.id=m.account_id JOIN servers s ON s.workspace_id=m.workspace_id WHERE m.workspace_id=$1 AND m.account_id=$2 AND m.role='owner' AND a.auth_version=$3 AND s.id=$4 AND s.controller_generation=$5 AND s.preview_only AND s.role='combined' AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false))`, p.Workspace, *r.CleanupActor, *r.CleanupAuth, p.Server, *r.CleanupController).Scan(&valid)
+	valid, err := db.New(tx).PreviewApproverHolds(ctx, db.PreviewApproverHoldsParams{WorkspaceID: p.Workspace, ActorID: *r.CleanupActor, AuthVersion: *r.CleanupAuth, ServerID: host, ControllerGeneration: *r.CleanupController})
 	if err != nil {
 		return err
 	}
@@ -41,11 +46,15 @@ func (s *Service) reconcilePreviewCleanup(ctx context.Context, tx pgx.Tx, p prev
 	if r.View.State == "deleted" {
 		return nil
 	}
-	if err := s.previewCleanupAuthority(ctx, tx, p, r); err != nil {
+	host, err := db.New(tx).PreviewHost(ctx, db.PreviewHostParams{WorkspaceID: p.Workspace, EnvironmentID: r.View.EnvironmentId, PolicyHost: p.Server})
+	if err != nil {
+		return err
+	}
+	if err := s.previewCleanupAuthority(ctx, tx, p, r, host); err != nil {
 		if !errors.Is(err, domain.Forbidden) {
 			return err
 		}
-		return s.previewState(ctx, tx, id, "blocked", "Cleanup needs renewed owner approval or a verified agent transfer.", 5*time.Minute)
+		return s.previewState(ctx, tx, id, "blocked", "Cleanup needs renewed owner approval or a verified agent transfer. An owner's approval ends when they leave, stop being an owner or change their password or two-factor settings, and pauses while the workspace requires two-factor authentication they haven't set up.", 5*time.Minute)
 	}
 	if err := s.cancelPreviewEnvironment(ctx, tx, p.Workspace, r.View.EnvironmentId); err != nil {
 		return err
@@ -83,7 +92,7 @@ func (s *Service) reconcilePreviewCleanup(ctx context.Context, tx pgx.Tx, p prev
 	if r.Config == nil {
 		return domain.Invalid("preview.configuration")
 	}
-	plan := deployment.Plan{ID: uuid.New(), ServerID: p.Server, EnvironmentID: *r.View.EnvironmentId, UnitID: v.Unit, RevisionID: v.Revision, Recipe: deployment.PreviewRecipe, Specification: v.Spec, Preview: &domain.PreviewIdentity{RequestID: id, Generation: r.View.Generation, Limits: r.Config.Limits}, Images: map[string]string{}, HostChanges: true, ExpiresAt: time.Now().UTC().Add(30 * time.Minute)}.WithHash()
+	plan := deployment.Plan{ID: uuid.New(), ServerID: host, EnvironmentID: *r.View.EnvironmentId, UnitID: v.Unit, RevisionID: v.Revision, Recipe: deployment.PreviewRecipe, Specification: v.Spec, Preview: &domain.PreviewIdentity{RequestID: id, Generation: r.View.Generation, Limits: r.Config.Limits}, Images: map[string]string{}, HostChanges: true, ExpiresAt: time.Now().UTC().Add(30 * time.Minute)}.WithHash()
 	op, err := s.insertVisual(ctx, tx, p.Workspace, uuid.New(), deployment.Payload{Action: "preview-cleanup", Plan: plan})
 	if err != nil {
 		return err
@@ -97,18 +106,11 @@ func (s *Service) reconcilePreviewCleanup(ctx context.Context, tx pgx.Tx, p prev
 // Used for normal reports and authenticated transfer receipts. Immutable command
 // identity, rather than a caller-supplied resource list, determines the cleanup.
 func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) error {
-	var p deployment.Payload
-	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != "preview-cleanup" || p.Plan.Preview == nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId || p.Plan.Validate(false) != nil {
-		return domain.Forbidden
-	}
 	// A revocation ended this cleanup and released its preview, so a receipt the revoked host
 	// kept is answered without changing what the owner was told.
-	known, err := db.New(tx).OperationReportState(ctx, db.OperationReportStateParams{WorkspaceID: ws, ID: c.Id})
-	if err != nil {
+	p, settled, err := removalCommand(ctx, tx, ws, c, "preview-cleanup")
+	if err != nil || settled {
 		return err
-	}
-	if known.ReportSequence == settledReportSequence {
-		return nil
 	}
 	var purpose string
 	if err := tx.QueryRow(ctx, "SELECT purpose FROM environments WHERE workspace_id=$1 AND id=$2", ws, c.EnvironmentId).Scan(&purpose); err != nil {
@@ -156,8 +158,10 @@ func (s *Service) finalizePreviewCleanup(ctx context.Context, tx pgx.Tx, ws uuid
 	if err := db.New(tx).DeleteEnvironmentSecrets(ctx, db.DeleteEnvironmentSecretsParams{WorkspaceID: ws, EnvironmentID: c.EnvironmentId}); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, "UPDATE preview_requests SET state='deleted',note='Preview resources and owned data were removed.',released_by_revocation=false,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day' WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND generation=$4", ws, p.Plan.Preview.RequestID, c.EnvironmentId, p.Plan.Preview.Generation)
-	return err
+	if _, err = tx.Exec(ctx, "UPDATE preview_requests SET state='deleted',note='Preview resources and owned data were removed.',released_by_revocation=false,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day' WHERE workspace_id=$1 AND id=$2 AND environment_id=$3 AND generation=$4", ws, p.Plan.Preview.RequestID, c.EnvironmentId, p.Plan.Preview.Generation); err != nil {
+		return err
+	}
+	return s.Store.Broker.DestroyEnvironmentKeys(ctx, db.New(tx), ws, c.EnvironmentId, "preview removed")
 }
 func (s *Service) acceptPreviewCleanupProofs(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID, receipts *[]api.PreviewCleanupReceipt) error {
 	if receipts == nil {
@@ -251,18 +255,23 @@ func (s *Service) previewCommandAllowed(ctx context.Context, tx pgx.Tx, git *git
 	if err != nil {
 		return false, err
 	}
-	if c.ServerId != p.Server {
-		return false, nil
-	}
 	if cleanup {
-		if r.View.State != "deleting" || r.View.OperationId == nil || *r.View.OperationId != c.Id {
+		host, err := db.New(tx).PreviewHost(ctx, db.PreviewHostParams{WorkspaceID: ws, EnvironmentID: r.View.EnvironmentId, PolicyHost: p.Server})
+		if err != nil {
+			return false, err
+		}
+		if c.ServerId != host || r.View.State != "deleting" || r.View.OperationId == nil || *r.View.OperationId != c.Id {
 			return false, nil
 		}
-		err = s.previewCleanupAuthority(ctx, tx, p, r)
+		err = s.previewCleanupAuthority(ctx, tx, p, r, host)
 		if errors.Is(err, domain.Forbidden) {
 			return false, nil
 		}
 		return err == nil, err
+	}
+	// Builds and deployments run only on the policy's host.
+	if c.ServerId != p.Server {
+		return false, nil
 	}
 	if err = s.previewAuthority(ctx, tx, p); err != nil {
 		if errors.Is(err, domain.Forbidden) || errors.Is(err, store.SubscriptionRequired) {

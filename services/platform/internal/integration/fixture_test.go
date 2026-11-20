@@ -48,6 +48,10 @@ const postgresImage = "postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e
 
 var databaseURL string
 
+// testDatabase runs a command in the test database's container, as a restore test takes and
+// restores a backup there with PostgreSQL's own tools.
+var testDatabase func(args ...string) ([]byte, error)
+
 // A test's database copies this one, because migrating and checking a new database for
 // each of hundreds of fixtures costs minutes of a lane's time budget. A copy matches what
 // running the migrations again would give once setupStore replaces any value they make up.
@@ -113,8 +117,11 @@ func TestMain(m *testing.M) {
 	owner := uuid.NewString()
 	password, _ := randtoken.New()
 	name := "astilba-p1-test-" + owner
-	// Nothing is published: the tests reach the database through the Docker API.
-	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--env", "POSTGRES_PASSWORD="+password, postgresImage)
+	// Nothing is published: the tests reach the database through the Docker API. Docker gives a
+	// container 64 MB of /dev/shm unless told otherwise, and PostgreSQL's dynamic shared memory
+	// lives there. Each test's database is dropped when it ends, which keeps that use flat;
+	// --shm-size is headroom for a suite that keeps growing, as the browser workflows' 1g is.
+	out, e := run("run", "--detach", "--name", name, "--label", "com.astilba.p1-test="+owner, "--shm-size", "1g", "--env", "POSTGRES_PASSWORD="+password, postgresImage)
 	if e != nil {
 		fmt.Fprintln(os.Stderr, "cannot start disposable test database", string(out))
 		os.Exit(1)
@@ -142,6 +149,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	databaseURL = "postgres://postgres:" + password + "@" + forward.Addr() + "/postgres?sslmode=disable"
+	testDatabase = func(args ...string) ([]byte, error) {
+		return run(append([]string{"exec", name}, args...)...)
+	}
 	pool, e := pgxpool.New(context.Background(), databaseURL)
 	if e != nil {
 		cleanup()
@@ -190,10 +200,12 @@ func warnPastBudget(took time.Duration) {
 }
 
 type fixture struct {
-	st        *store.Store
-	auth      *auth.Service
-	server    *httptest.Server
-	mail      chan string
+	st     *store.Store
+	auth   *auth.Service
+	server *httptest.Server
+	mail   chan string
+	// notices holds the account security notices sent, apart from other mail.
+	notices   chan string
 	password  string
 	owner     uuid.UUID
 	execution *execution.Service
@@ -214,19 +226,161 @@ func testStore(t *testing.T, pool *pgxpool.Pool, keys *cryptobox.Keyring, hosted
 	return st
 }
 
+// workersStarted holds the workers each test store started, which read its broker and keyring in
+// the background until they stop.
+var workersStarted sync.Map
+
+// keysSettled waits, for a store whose workers run, until the key job they run at start has
+// finished; nothing then reads the broker or its keyring in the background for ten minutes. A test
+// that changes a live store's keyring or broker waits first: a real process never changes either,
+// as a new keyring takes a restart.
+func keysSettled(t *testing.T, st *store.Store) {
+	t.Helper()
+	startJobSettled(t, st, "platform_custody_keys_v1")
+}
+
+// lengthsSettled waits, for a store whose workers run, until the job that measures secret lengths
+// has made its pass at start; it runs again only after six hours. A test that clears a version's
+// lengths to see what planning does with one waits first, or the pass may measure the version
+// between the clearing and the plan.
+func lengthsSettled(t *testing.T, st *store.Store) {
+	t.Helper()
+	startJobSettled(t, st, "platform_secret_lengths_v1")
+}
+
+// startJobSettled waits until the workers' start-up run of a periodic job has completed, or the
+// workers have stopped. The workers enqueue that run once their client is elected leader, which
+// takes a few seconds after the fixture starts, so a test cannot assume it has not happened yet.
+func startJobSettled(t *testing.T, st *store.Store, kind string) {
+	t.Helper()
+	workers, ok := workersStarted.Load(st)
+	if !ok {
+		return
+	}
+	stopped := workers.(*execution.Service).Queue.Stopped()
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		var done bool
+		if err := st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind=$1 AND state='completed')`, kind).Scan(&done); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-stopped:
+			// Stopping waits for running jobs, and nothing starts another.
+			return
+		default:
+		}
+		if done {
+			return
+		}
+	}
+	var jobs string
+	_ = st.Pool.QueryRow(context.Background(), `SELECT coalesce(string_agg(state::text || ' attempt ' || attempt || ' ' || coalesce(errors::text, ''), '; '), 'none') FROM river_job WHERE kind=$1`, kind).Scan(&jobs)
+	t.Fatalf("the %s job the workers run at start did not finish: %s", kind, jobs)
+}
+
 // useKeys gives a store a keyring, as configuring another keyring and restarting does: the
 // broker and the paths not yet moved to it both use the new one.
 func useKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
 	t.Helper()
+	keysSettled(t, st)
 	backend, e := custody.NewFile(keys)
 	if e != nil {
 		t.Fatal(e)
 	}
 	st.Broker = secretbroker.New(db.New(st.Pool), backend, nil)
-	st.Keys = keys
+	// As every command does at start, with an operator's checks so tests may rewrap.
+	if e = st.Broker.Install(context.Background(), st.Pool, uuid.Nil, true); e != nil {
+		t.Fatal(e)
+	}
+	storeKeys.Store(st, keys)
 }
 
-func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
+// restoredKeys gives a store another installation's keyring, as restoring that installation's
+// database beside its keyring does: the custody the store set up under its own keyring is not
+// part of what was restored.
+func restoredKeys(t *testing.T, st *store.Store, keys *cryptobox.Keyring) {
+	t.Helper()
+	keysSettled(t, st)
+	if _, err := st.Pool.Exec(context.Background(), "DELETE FROM custody_backends"); err != nil {
+		t.Fatal(err)
+	}
+	useKeys(t, st, keys)
+}
+
+// restoredWorkspace makes destination stand in for a restored backup of source that holds the
+// workspace ws: it takes source's installation ID and keyring, which key wrappings are bound to,
+// and gets the workspace, named name, with source's keys for it.
+func restoredWorkspace(t *testing.T, source, destination *store.Store, ws uuid.UUID, name string) {
+	t.Helper()
+	ctx := context.Background()
+	installation, err := db.New(source.Pool).InstallationID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = destination.Pool.Exec(ctx, `UPDATE installation SET id=$1`, installation); err != nil {
+		t.Fatal(err)
+	}
+	restoredKeys(t, destination, keysOf(source))
+	if _, err = destination.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,$2)`, ws, name); err != nil {
+		t.Fatal(err)
+	}
+	var generation int64
+	var kcv []byte
+	if err := source.Pool.QueryRow(ctx, `SELECT generation,kcv FROM workspace_keys WHERE workspace_id=$1 AND state='active'`, ws).Scan(&generation, &kcv); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destination.Pool.Exec(ctx, `INSERT INTO workspace_keys(workspace_id,generation,state,kcv) VALUES($1,$2,'active',$3)`, ws, generation, kcv); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := source.Pool.Query(ctx, `SELECT purpose,backend_id,wrapped FROM workspace_key_wrappings WHERE workspace_id=$1 AND generation=$2`, ws, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var purpose, backend string
+		var wrapped []byte
+		if err = rows.Scan(&purpose, &backend, &wrapped); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = destination.Pool.Exec(ctx, `INSERT INTO workspace_key_wrappings(workspace_id,generation,purpose,backend_id,wrapped) VALUES($1,$2,$3,$4,$5)`, ws, generation, purpose, backend, wrapped); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// secretIdentity is the identity a secret version's value is sealed under, for tests that open
+// it with the keyring directly.
+func secretIdentity(workspace, id uuid.UUID) string {
+	return "secret:v1:" + workspace.String() + ":" + id.String()
+}
+
+// storeKeys holds each test store's keyring, which only tests read directly.
+var storeKeys sync.Map
+
+// keysOf is the keyring a test store's broker uses, for a test that checks what was stored.
+func keysOf(st *store.Store) *cryptobox.Keyring {
+	keys, _ := storeKeys.Load(st)
+	return keys.(*cryptobox.Keyring)
+}
+
+// recoverKeys is a recover session for a merge a test runs itself, closed when the test ends.
+func recoverKeys(t testing.TB, st *store.Store, ws uuid.UUID) *secretbroker.Session {
+	t.Helper()
+	keys, err := st.Broker.Begin(context.Background(), secretbroker.Request{Workspace: ws, Purpose: secretbroker.Recover, Principal: secretbroker.Operator("test-merge"), Kinds: secretbroker.RecoveryKinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { keys.Close(context.Background(), secretbroker.Used) })
+	return keys
+}
+
+// freshDatabase is a new, migrated database, configured as management configures its own, with
+// its own installation ID and no key backend yet.
+func freshDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("disposable PostgreSQL integration requires verify")
@@ -244,27 +398,75 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+name+" TEMPLATE "+migratedDatabase); e != nil {
 		t.Fatal(e)
 	}
-	// Configured as management configures its own.
+	dropDatabaseAfter(t, name)
+	pool := openDatabase(t, name)
+	// The one value a migration makes up. Each installation has its own.
+	if _, e = pool.Exec(ctx, "UPDATE installation SET id=gen_random_uuid()"); e != nil {
+		t.Fatal(e)
+	}
+	return pool
+}
+
+// dropDatabaseAfter drops the database name when the test ends. PostgreSQL keeps cumulative
+// statistics for every table and index of every database in shared memory, and only dropping a
+// database frees them; a suite that leaves each test's database behind outgrows /dev/shm near the
+// end of a long run. Call it before opening a pool on the database, as cleanups run in reverse
+// and the pool must be closed first. Dropping forces off a connection a background goroutine
+// has not yet released, which a test cannot see.
+func dropDatabaseAfter(t *testing.T, name string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		admin, e := pgxpool.New(ctx, databaseURL)
+		if e != nil {
+			t.Errorf("cannot connect to drop %s: %v", name, e)
+			return
+		}
+		defer admin.Close()
+		if _, e = admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); e != nil {
+			t.Errorf("cannot drop %s: %v", name, e)
+		}
+	})
+}
+
+// openDatabase is a pool on the database name, configured as management configures its own.
+func openDatabase(t *testing.T, name string) *pgxpool.Pool {
+	t.Helper()
 	poolConfig, e := store.PoolConfig(databaseDSN(name))
 	if e != nil {
 		t.Fatal(e)
 	}
-	pool, e := pgxpool.NewWithConfig(ctx, poolConfig)
+	pool, e := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(pool.Close)
+	return pool
+}
+
+func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
+	t.Helper()
+	keys, _ := cryptobox.New("test")
+	return setupFixture(t, freshDatabase(t), bootstrap, hosted, keys)
+}
+
+// setupDatabase is a fixture serving the existing database name, such as one restored from a
+// backup, with the keyring of the installation it belongs to.
+func setupDatabase(t *testing.T, name string, bootstrap, hosted bool, keys *cryptobox.Keyring) *fixture {
+	t.Helper()
+	return setupFixture(t, openDatabase(t, name), bootstrap, hosted, keys)
+}
+
+func setupFixture(t *testing.T, pool *pgxpool.Pool, bootstrap, hosted bool, keys *cryptobox.Keyring) *fixture {
+	t.Helper()
+	ctx := context.Background()
 	// Every coordinated phase management issued in the test is one the agent runs.
 	t.Cleanup(func() {
 		if unrun := unrunPhases(t, pool); len(unrun) > 0 {
 			t.Errorf("management issued coordinated phases the agent refuses: %v", unrun)
 		}
 	})
-	// The one value a migration makes up. Each installation has its own.
-	if _, e = pool.Exec(ctx, "UPDATE dns_installation SET id=gen_random_uuid()"); e != nil {
-		t.Fatal(e)
-	}
-	keys, _ := cryptobox.New("test")
 	st := testStore(t, pool, keys, hosted)
 	if hosted {
 		st.Hosting.ServerLimit = 100
@@ -285,12 +487,17 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 		}
 	}
 
-	mail, address := smtpFixture(t)
+	mail, notices, address := smtpFixture(t)
 	sender, e := mailer.New(mailer.Config{Address: address, From: "Astilba <accounts@example.test>", Mode: "plain", Development: true})
 	if e != nil {
 		t.Fatal(e)
 	}
-	tokens, e := st.Broker.Tokens(ctx)
+	// The installation's keys exist before the server starts, as they do once the release before
+	// has run: its token keys are then loaded at start and issue tokens straight away.
+	if more, e := st.Broker.InitKeys(ctx, func() bool { return true }); e != nil || more {
+		t.Fatal(more, e)
+	}
+	tokens, e := st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -306,6 +513,7 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	if e = apiServer.Execution.Start(workerCtx); e != nil {
 		t.Fatal(e)
 	}
+	workersStarted.Store(st, apiServer.Execution)
 	t.Cleanup(func() {
 		workerCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -317,17 +525,22 @@ func setupStore(t *testing.T, bootstrap, hosted bool) *fixture {
 	server := httptest.NewServer(handler)
 	apiServer.Origin = server.URL
 	apiServer.Execution.ResetMail.Origin = server.URL
+	apiServer.Execution.SecurityNotice.Origin = server.URL
 	t.Cleanup(server.Close)
-	return &fixture{st, service, server, mail, fixturePassword, owner, apiServer.Execution, apiServer, log}
+	return &fixture{st, service, server, mail, notices, fixturePassword, owner, apiServer.Execution, apiServer, log}
 }
-func smtpFixture(t *testing.T) (chan string, string) {
+
+// securityNoticeMarker is in every account security notice, which smtpFixture keeps apart.
+const securityNoticeMarker = "your workspace owners."
+
+func smtpFixture(t *testing.T) (chan string, chan string, string) {
 	t.Helper()
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	messages := make(chan string, 10)
+	messages, notices := make(chan string, 10), make(chan string, 32)
 	go func() {
 		for {
 			conn, e := listener.Accept()
@@ -356,7 +569,11 @@ func smtpFixture(t *testing.T) (chan string, string) {
 						if e != nil {
 							return
 						}
-						messages <- string(body)
+						if strings.Contains(string(body), securityNoticeMarker) {
+							notices <- string(body)
+						} else {
+							messages <- string(body)
+						}
 						reply("250 queued")
 					case strings.HasPrefix(line, "QUIT"):
 						reply("221 bye")
@@ -368,7 +585,7 @@ func smtpFixture(t *testing.T) (chan string, string) {
 			}()
 		}
 	}()
-	return messages, listener.Addr().String()
+	return messages, notices, listener.Addr().String()
 }
 
 type browser struct {
@@ -419,6 +636,21 @@ func (f *fixture) browser(t *testing.T) *browser {
 }
 func (b *browser) call(method, path string, body any, status int, out any) []byte {
 	b.t.Helper()
+	got, data := b.request(method, path, body)
+	if got != status {
+		b.t.Fatalf("%s %s: status %d want %d: %s", method, path, got, status, data)
+	}
+	if out != nil {
+		if e := json.Unmarshal(data, out); e != nil {
+			b.t.Fatal(e)
+		}
+	}
+	return data
+}
+
+// request sends one call and returns whatever status it gets.
+func (b *browser) request(method, path string, body any) (int, []byte) {
+	b.t.Helper()
 	var raw []byte
 	if body != nil {
 		raw, _ = stablejson.Marshal(body)
@@ -438,15 +670,7 @@ func (b *browser) call(method, path string, body any, status int, out any) []byt
 	}
 	defer response.Body.Close()
 	data, _ := io.ReadAll(response.Body)
-	if response.StatusCode != status {
-		b.t.Fatalf("%s %s: status %d want %d: %s", method, path, response.StatusCode, status, data)
-	}
-	if out != nil {
-		if e = json.Unmarshal(data, out); e != nil {
-			b.t.Fatal(e)
-		}
-	}
-	return data
+	return response.StatusCode, data
 }
 func (b *browser) login(email, password string) api.Session {
 	var v api.Session
@@ -518,4 +742,16 @@ func stayRecentlyAuthenticated(t *testing.T, f *fixture, b *browser, mfaSecret s
 		b.csrf = session.CsrfToken
 		confirmedAt = time.Now()
 	}
+}
+
+// inviteMember has owner invite email to the workspace at prefix with role, and returns the
+// signed-in browser of the account that accepts, named after its role.
+func inviteMember(t *testing.T, f *fixture, owner *browser, prefix, email, role string) *browser {
+	t.Helper()
+	owner.call("POST", prefix+"/invitations", map[string]string{"email": email, "role": role}, 201, nil)
+	b := f.browser(t)
+	var accepted api.Session
+	b.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromLinkMail(t, f, "/invitation"), "name": role, "password": f.password}, 200, &accepted)
+	b.csrf = accepted.CsrfToken
+	return b
 }

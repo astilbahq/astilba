@@ -21,6 +21,7 @@ import { client, result, type Schema } from "../api/client";
 import {
   layoutOptions,
   publishLayout,
+  secretsOptions,
   type EnvironmentPath,
 } from "../api/environment";
 import { Button } from "../components/button";
@@ -63,6 +64,8 @@ export function VisualEditor({
   dirty,
   onLayoutDirty,
   onSelectService,
+  revisionId,
+  load,
 }: {
   path: EnvironmentPath;
   spec: Spec;
@@ -71,6 +74,10 @@ export function VisualEditor({
   dirty: boolean;
   onLayoutDirty: (v: boolean) => void;
   onSelectService?: (name: string) => void;
+  // The saved draft the editor started from, and how to replace the editor's draft with a
+  // revision the server saved, such as one a catalog staging made.
+  revisionId?: string;
+  load?: (revision: Schema["Revision"]) => boolean;
 }) {
   const { theme } = useContext(ThemeContext);
   const { t } = useTranslation("environment");
@@ -119,16 +126,7 @@ export function VisualEditor({
   const queries = useQueryClient();
   const layout = useQuery(layoutOptions(path));
   const postgresReleases = usePostgresReleases(path.workspaceId);
-  const secrets = useQuery({
-    queryKey: ["secrets", path],
-    queryFn: () =>
-      result(
-        client.GET(
-          "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets",
-          { params: { path } },
-        ),
-      ),
-  });
+  const secrets = useQuery(secretsOptions(path));
   useEffect(() => {
     if (layout.data && positions === undefined) {
       setPositions(layout.data.positions);
@@ -533,12 +531,13 @@ export function VisualEditor({
           />
         )}
       </div>
-      {configure && (
+      {configure && revisionId && load && (
         <ServiceCatalog
           path={path}
-          spec={spec}
           secrets={secrets.data ?? []}
-          stage={stage}
+          revisionId={revisionId}
+          dirty={dirty}
+          load={load}
         />
       )}
       {configure && (

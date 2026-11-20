@@ -4,6 +4,8 @@ package hostnetwork
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +101,11 @@ func TestNativeManagedLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 		h := Host{Dir: dir}
+		// Host a seals its private-link key, as an agent does once its journal is sealed; host b
+		// holds its key in the clear, as an earlier agent did.
+		if key == "a" {
+			h.Keys = newMachine(t)
+		}
 		for _, tool := range []string{"wg", "ip", "nft"} {
 			path := filepath.Join(dir, tool)
 			script := "#!/bin/sh\n/usr/sbin/ip netns exec " + ns[key] + " " + tool + " \"$@\" 2>>" + filepath.Join(dir, "tool-errors") + "\nstatus=$?\nif [ $status -ne 0 ]; then echo \"" + tool + " $*\" >>" + filepath.Join(dir, "tool-errors") + "; fi\nexit $status\n"
@@ -127,11 +135,11 @@ func TestNativeManagedLinks(t *testing.T) {
 	mb.Address = "10.251.0.2"
 	ma.MembershipID = uuid.New()
 	mb.MembershipID = uuid.New()
-	ka, err := a.Identity(ma.MembershipID)
+	ka, err := a.Identity(context.Background(), ma.MembershipID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	kb, err := b.Identity(mb.MembershipID)
+	kb, err := b.Identity(context.Background(), mb.MembershipID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,6 +164,16 @@ func TestNativeManagedLinks(t *testing.T) {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("fixture NAT %s: %s %v", key, out, err)
 		}
+	}
+	// Only Identity makes a key: applying a manifest for a membership without one changes nothing
+	// and makes none, which would give the host an identity no peer knows.
+	unknown := ma
+	unknown.MembershipID = uuid.New()
+	if err = a.Apply(ctx, unknown, nil, false); err == nil {
+		t.Fatal("a membership without a key applied")
+	}
+	if _, err = os.Lstat(filepath.Join(a.Dir, "network", unknown.MembershipID.String()+".key")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("applying made a private-link key", err)
 	}
 	// Inject a lost response after atomic create+ownership marker. Retry must recognize its
 	// owned interface and finish its alias without adopting unrelated state.
@@ -240,6 +258,51 @@ func TestNativeManagedLinks(t *testing.T) {
 	if out, err := request("u"); err != nil || !strings.Contains(string(out), "private-endpoint-canary") {
 		t.Fatal("restored link unavailable", err)
 	}
+	// When the boot restore couldn't put a link back, as when the key store wasn't working yet,
+	// the agent service does. It leaves links already in place alone.
+	in("a", "ip", "link", "delete", ma.Interface())
+	inPlace, err := os.Stat(filepath.Join(b.Dir, "network", mb.NetworkID.String()+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []Host{a, b} {
+		if err = h.RestoreMissing(ctx, nil); err != nil {
+			t.Fatal("restore of missing links", err)
+		}
+	}
+	if out, err := request("u"); err != nil || !strings.Contains(string(out), "private-endpoint-canary") {
+		t.Fatal("link restored by the agent service unavailable", err)
+	}
+	// Applying again would replace the snapshot and reset the link's WireGuard sessions.
+	if after, err := os.Stat(filepath.Join(b.Dir, "network", mb.NetworkID.String()+".json")); err != nil || !os.SameFile(inPlace, after) || !after.ModTime().Equal(inPlace.ModTime()) {
+		t.Fatal("a link already in place was applied again", err)
+	}
+	// A link that is up holds its key, so changing it, as removing a peer does, needs no key store.
+	held, err := a.Snapshot(ma.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := a
+	broken.Keys = unsealable{}
+	if err = broken.Apply(ctx, held.Manifest, held.Bridges, false); err != nil {
+		t.Fatal("applying a link that is up waited on the key store", err)
+	}
+	// The live key stands in only for the key file that names it: without that file, the host's
+	// identity no longer matches what it applies.
+	keyFile := filepath.Join(a.Dir, "network", ma.MembershipID.String()+".key")
+	if err = os.Rename(keyFile, keyFile+".aside"); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Apply(ctx, held.Manifest, held.Bridges, false); err == nil {
+		t.Fatal("a link applied without the key file that names its key")
+	}
+	if err = os.Rename(keyFile+".aside", keyFile); err != nil {
+		t.Fatal(err)
+	}
+	// WireGuard took the sealed key through a pipe: nothing in the state directory holds it.
+	if holdsKey(t, a.Dir, privateKeyOf(t, a, ma.MembershipID)) {
+		t.Fatal("applying a sealed private-link key left it in the clear on disk")
+	}
 	// A container network can come up inside the prefix after the host joined, as its bridge
 	// route shows. It stops new authority, but not removals: a revoked grant must not stay
 	// reachable while an operator finds that network.
@@ -269,6 +332,14 @@ func TestNativeManagedLinks(t *testing.T) {
 		t.Fatal("restriction fault did not occur")
 	}
 	b.NFT = originalNFT
+	// The agent service finishes a restriction left half applied, over the container network a
+	// restriction doesn't wait on: the link holds its prefix already.
+	if err = b.RestoreMissing(ctx, nil); err != nil {
+		t.Fatal("the restore couldn't finish a restriction left half applied", err)
+	}
+	if _, err = request("u"); err == nil {
+		t.Fatal("revoked grant remained reachable after the restore finished its restriction")
+	}
 	if err = b.Apply(ctx, next, bb, true); err != nil {
 		t.Fatal("same restriction retry", err)
 	}
@@ -299,6 +370,111 @@ func TestNativeManagedLinks(t *testing.T) {
 	if err = b.Apply(ctx, next, bb, false); !errors.Is(err, ErrGenerationConflict) {
 		t.Fatal("the older controller's manifest was accepted after the newer one", err)
 	}
+	// Removing authority never calls the key store. With a link that doesn't hold its key, a
+	// restriction still takes effect: the reduced intent and firewall are in place and the link
+	// goes down. It comes back, reduced, once restored with its key, whose opening is done before
+	// the restore takes the host lock.
+	in("a", "sh", "-c", "wg genkey | wg set "+ma.Interface()+" private-key /dev/stdin")
+	prior, err := a.Snapshot(ma.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reduced := prior.Manifest
+	reduced.Generation++
+	reduced.Exports = nil
+	store := &counting{machine: a.Keys.(machine)}
+	restricting := a
+	restricting.Keys = store
+	if err = restricting.Apply(ctx, reduced, prior.Bridges, true); err != nil || store.calls != 0 {
+		t.Fatal("a restriction called the key store", err, store.calls)
+	}
+	if held, err := a.Snapshot(ma.NetworkID); err != nil || Hash(held.Manifest) != Hash(reduced) || held.AppliedHash == Hash(reduced) {
+		t.Fatal("a restriction without its key didn't hold the reduced intent for the link to come back to", err)
+	}
+	if out := in("a", "ip", "link", "show", "dev", ma.Interface()); strings.Contains(string(out), ",UP") {
+		t.Fatalf("a link without its key stayed up: %s", out)
+	}
+	prepared := Prepare(store)
+	restoring := a
+	restoring.Keys = prepared
+	if err = restoring.OpenMissingKeys(ctx, nil); err != nil || store.calls == 0 {
+		t.Fatal("the restore didn't open the missing link's key ahead of time", err)
+	}
+	prepared.Replay()
+	before := store.calls
+	if err = restoring.RestoreMissing(ctx, nil); err != nil || store.calls != before {
+		t.Fatal("the restore called the key store under the host lock, or failed", err, store.calls-before)
+	}
+	if held, err := a.Snapshot(ma.NetworkID); err != nil || held.AppliedHash != Hash(reduced) || !a.holds(ctx, reduced) {
+		t.Fatal("the link came back without its reduced intent", err)
+	}
+	// A configure that drops a peer from a link that was down has no route to remove: the kernel
+	// dropped it with the link.
+	in("a", "ip", "link", "set", "dev", ma.Interface(), "down")
+	dropped := reduced
+	dropped.Generation++
+	dropped.Peers, dropped.Egress, dropped.Exports = []Peer{}, nil, nil
+	if err = a.Apply(ctx, dropped, prior.Bridges, false); err != nil {
+		t.Fatal("dropping a peer from a link that was down failed", err)
+	}
+	// A restore that would add a route is checked afresh. A configure that saved its intent and then
+	// failed isn't put back over a container network that appeared since.
+	expand := restored
+	expand.Generation++
+	stranger, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	expand.Peers = append(slices.Clone(restored.Peers), Peer{ServerID: uuid.New(), MembershipID: uuid.New(), Address: "10.251.0.9", PublicKey: publicKeyOf(stranger), Endpoint: "192.0.2.9:51820"})
+	originalWG := b.WG
+	failWG := filepath.Join(root, "wg-once")
+	b.WG = filepath.Join(root, "interrupt-wg")
+	script = fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = 'setconf' ] && [ ! -e %s ]; then touch %s; exit 1; fi\nexec %s \"$@\"\n", failWG, failWG, originalWG)
+	if err = os.WriteFile(b.WG, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Apply(ctx, expand, bb, false); err == nil {
+		t.Fatal("configure fault did not occur")
+	}
+	b.WG = originalWG
+	in("b", "ip", "link", "add", "overlap", "type", "bridge")
+	in("b", "ip", "address", "add", "10.251.0.128/25", "dev", "overlap")
+	in("b", "ip", "link", "set", "overlap", "up")
+	if err = b.RestoreMissing(ctx, nil); !errors.As(err, &conflict) {
+		t.Fatal("a restore that adds a route skipped the route check", err)
+	}
+	if out := in("b", "ip", "route", "show", "10.251.0.9"); strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("a refused restore routed its new peer: %s", out)
+	}
+	// A restriction from that saved intent keeps its unrouted peer, and the restore still finishes it
+	// when it is left half applied: a restriction doesn't wait on the container network.
+	revoking := expand
+	revoking.Generation++
+	revoking.Peers = expand.Peers[len(expand.Peers)-1:]
+	revoking.Exports, revoking.Egress = nil, nil
+	failNFT := filepath.Join(root, "nft-again")
+	b.NFT = filepath.Join(root, "interrupt-nft-again")
+	script = fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = '-f' ] && [ ! -e %s ]; then touch %s; exit 1; fi\nexec %s \"$@\"\n", failNFT, failNFT, originalNFT)
+	if err = os.WriteFile(b.NFT, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Apply(ctx, revoking, bb, true); err == nil {
+		t.Fatal("restriction fault did not occur")
+	}
+	// The first restore that tries to finish it fails too, and the next still finishes it.
+	failRestore := filepath.Join(root, "nft-restore")
+	script = fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = '-f' ] && [ ! -e %s ]; then touch %s; exit 1; fi\nexec %s \"$@\"\n", failRestore, failRestore, originalNFT)
+	if err = os.WriteFile(b.NFT, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.RestoreMissing(ctx, nil); err == nil {
+		t.Fatal("restore fault did not occur")
+	}
+	b.NFT = originalNFT
+	if err = b.RestoreMissing(ctx, nil); err != nil {
+		t.Fatal("the restore didn't finish a restriction over a container network", err)
+	}
+	if held, err := b.Snapshot(revoking.NetworkID); err != nil || held.AppliedHash != Hash(revoking) {
+		t.Fatal("the half-applied restriction wasn't finished", err)
+	}
+	in("b", "ip", "link", "delete", "overlap")
 	for _, key := range []string{"a", "b"} {
 		raw := in(key, "nft", "-j", "list", "table", "ip", "fixture")
 		if !jsontext.Value(raw).IsValid() {

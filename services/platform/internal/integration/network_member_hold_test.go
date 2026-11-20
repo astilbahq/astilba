@@ -129,7 +129,7 @@ func TestReceiptlessNetworkFailureWaitsForTheWorkspaceLock(t *testing.T) {
 	var c *api.ExecutionCommand
 	for until := time.Now().Add(20 * time.Second); c == nil; {
 		poll, done := context.WithTimeout(n.ctx, aheadPollWait)
-		got, err := n.f.execution.Poll(poll, a.identity)
+		got, err := pollReleased(n.f.execution, poll, a.identity)
 		done()
 		if err != nil && !waitForFixturePollLease(n.ctx, err) && poll.Err() == nil {
 			t.Fatal(err)

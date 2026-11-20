@@ -6,10 +6,12 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
@@ -147,11 +149,11 @@ func (g *gitAnswers) gitAccess(ctx context.Context, id uuid.UUID, st gitState, w
 	s := g.service
 	b := st.binding
 	if err := s.GitHub.Validate(ctx, b.InstallationID, b.RepositoryID, b.Generation, st.connection.Repository, st.connection.Private); err != nil {
-		return pipeline.Access{}, err
+		return pipeline.Access{}, appFailure(err)
 	}
 	token, err := s.GitHub.Mint(ctx, b.InstallationID, b.RepositoryID, write)
 	if err != nil {
-		return pipeline.Access{}, err
+		return pipeline.Access{}, appFailure(err)
 	}
 	credential := pipeline.Credential{Username: "x-access-token", Password: token}
 	return pipeline.Access{API: credential, Clone: credential}, nil
@@ -165,11 +167,42 @@ func (g *gitAnswers) provider(ctx context.Context, id uuid.UUID, st gitState, pr
 	if preview && st.binding != nil {
 		token, err := g.service.GitHub.MintPreview(ctx, st.binding.InstallationID, st.binding.RepositoryID)
 		if err != nil {
-			return nil, err
+			return nil, appFailure(err)
 		}
 		access.API = pipeline.Credential{Username: "x-access-token", Password: token}
 	}
-	return pipeline.NewProvider(st.connection, access.API, g.service.Policy)
+	return g.service.newProvider(st.connection, access.API, st.binding != nil)
+}
+
+// newProvider is pipeline.NewProvider for management's own calls. When the GitHub App minted
+// the credential, a 401 drops it from the App's cache, so the next call mints another rather
+// than reuse one GitHub no longer accepts.
+func (s *Service) newProvider(c pipeline.Connection, credential pipeline.Credential, minted bool) (*pipeline.Provider, error) {
+	provider, err := pipeline.NewProvider(c, credential, s.Policy)
+	if err == nil && minted {
+		provider.OnRejected(func() { s.GitHub.Forget(credential.Password) })
+	}
+	return provider, err
+}
+
+// errGitHubBusy says GitHub is limiting the App's requests for a while, so the same request can
+// succeed later.
+var errGitHubBusy = &domain.Error{Code: "temporarily_busy", Message: "GitHub is limiting how fast Astilba's GitHub App can make requests. Try again in a minute."}
+
+// errGitHubTokenRejected says GitHub stopped accepting the App's cached token, which is
+// dropped, so the next request mints another.
+var errGitHubTokenRejected = &domain.Error{Code: "temporarily_busy", Message: "GitHub did not accept Astilba's token for this repository, so Astilba replaced it. Try again."}
+
+// appFailure says plainly when a GitHub App call failed in a way that passes: under GitHub's
+// rate limits, or with a token GitHub stopped accepting. GitHub's error stays behind it.
+func appFailure(err error) error {
+	if _, limited := githubapp.Limited(err); limited {
+		return fmt.Errorf("%w: %w", errGitHubBusy, err)
+	}
+	if errors.Is(err, githubapp.ErrTokenRejected) {
+		return fmt.Errorf("%w: %w", errGitHubTokenRejected, err)
+	}
+	return err
 }
 
 // sourceBlobsMargin is what a background job keeps to record its answers and admit other work.
@@ -212,12 +245,17 @@ type gitAnswers struct {
 	connections map[uuid.UUID]*connectionAnswers
 	// keys open stored values for whoever the run is for.
 	keys runKeys
+	// secretChecks holds the runtime-secret check's answers, by secretCheckKey.
+	secretChecks map[[32]byte]error
+	// createdEnvironments are environments a pass created, whose secret versions only its own
+	// transaction can read. A later pass creates its own under new IDs.
+	createdEnvironments map[uuid.UUID]bool
 }
 
 // withGit runs a transaction body that can ask Git providers questions through its
 // gitAnswers. Body must open its transaction itself, and must not commit before asking.
 func (s *Service) withGit(ctx context.Context, ws uuid.UUID, keys runKeys, body func(*gitAnswers) error) error {
-	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys}
+	git := &gitAnswers{service: s, ws: ws, connections: map[uuid.UUID]*connectionAnswers{}, keys: keys, secretChecks: map[[32]byte]error{}, createdEnvironments: map[uuid.UUID]bool{}}
 	defer keys.close(ctx)
 	return withProviderCalls(ctx, func() error { return body(git) })
 }
@@ -334,25 +372,55 @@ func cloneRefusal(err error) (*domain.Error, bool) {
 // errCloneCanPush refuses a stored clone credential that the Git server would let push.
 var errCloneCanPush = &domain.Error{Code: "invalid_input", Message: "The connection's clone credential can push to the repository. Runners build code that may be hostile, so give the connection a read-only clone credential, such as a deploy token with only read_repository or a token with only read access to repository contents.", Fields: []string{"clone.canPush"}}
 
-// cloneAccess asks for the only credential a runner receives. A GitHub App's is minted with read
-// access to the one repository's contents. A stored one is first put to the Git server, which
-// answers whether it may push without anything being pushed, and is refused if it may.
-func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID) (gitAnswer[pipeline.Credential], error) {
-	access, err := g.access(ctx, tx, id, false)
-	if err != nil || access.Err != nil {
-		return gitAnswer[pipeline.Credential]{Err: access.Err, Setup: access.Setup, Connection: access.Connection}, err
-	}
+// runnerCloneMargin is how long a runner's GitHub token outlasts its pipeline's deadline, the
+// latest the runner may start it, for the runner to prepare and fetch the source.
+const runnerCloneMargin = 25 * time.Minute
+
+// cloneAccess asks for the only credential a runner receives, for pipeline run delivered now,
+// which may start until deadline. A zero deadline, as at admission, asks only whether one can be
+// had, for a copy that never leaves management. A GitHub App's is the run's own token, with read
+// access to the one repository's contents, lasting until runnerCloneMargin after the deadline
+// (MintRunnerClone); at admission it is management's own cached token, so nothing is minted for
+// a copy no runner receives. A stored one is first put to the Git server, which answers whether
+// it may push without anything being pushed, and is refused if it may.
+func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id, run uuid.UUID, deadline time.Time) (gitAnswer[pipeline.RunnerAccess], error) {
 	known, err := g.current(ctx, tx, id)
 	if err != nil {
-		return gitAnswer[pipeline.Credential]{}, err
+		return gitAnswer[pipeline.RunnerAccess]{}, err
 	}
-	answer := gitAnswer[pipeline.Credential]{Value: access.Value.Clone, Connection: known.state.connection}
-	if known.state.binding != nil {
-		return answer, nil
+	if known.state.binding != nil || known.state.unusable != nil {
+		delivery := !deadline.IsZero()
+		question := "clone"
+		if delivery {
+			question = "clone/runner"
+		}
+		return askGit(ctx, tx, g, id, question, func(ctx context.Context, st gitState) gitAnswer[pipeline.RunnerAccess] {
+			b := st.binding
+			if err := g.service.GitHub.Validate(ctx, b.InstallationID, b.RepositoryID, b.Generation, st.connection.Repository, st.connection.Private); err != nil {
+				return gitAnswer[pipeline.RunnerAccess]{Err: appFailure(err), Setup: true}
+			}
+			var token string
+			// Admission's copy holds an expiry as delivery's will, so it is checked at the same size.
+			expires := time.Now().Add(time.Hour)
+			if delivery {
+				token, expires, err = g.service.GitHub.MintRunnerClone(ctx, g.ws, run, b.InstallationID, b.RepositoryID, deadline.Add(runnerCloneMargin))
+			} else {
+				token, err = g.service.GitHub.Mint(ctx, b.InstallationID, b.RepositoryID, false)
+			}
+			if err != nil {
+				return gitAnswer[pipeline.RunnerAccess]{Err: appFailure(err), Setup: true}
+			}
+			return gitAnswer[pipeline.RunnerAccess]{Value: pipeline.RunnerAccess{Clone: pipeline.Credential{Username: "x-access-token", Password: token}, CloneExpires: &expires}}
+		})
 	}
+	access, err := g.access(ctx, tx, id, false)
+	if err != nil || access.Err != nil {
+		return gitAnswer[pipeline.RunnerAccess]{Err: access.Err, Setup: access.Setup, Connection: access.Connection}, err
+	}
+	answer := gitAnswer[pipeline.RunnerAccess]{Value: pipeline.RunnerAccess{Clone: access.Value.Clone}, Connection: known.state.connection}
 	// A runner fetches anonymously without a password, so nothing else of the credential is sent.
 	if access.Value.Clone.Password == "" {
-		answer.Value = pipeline.Credential{}
+		answer.Value = pipeline.RunnerAccess{}
 		return answer, nil
 	}
 	push, err := askGit(ctx, tx, g, id, "clone/push", func(ctx context.Context, st gitState) gitAnswer[bool] {
@@ -368,16 +436,16 @@ func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id uuid.UUID) (
 		return gitAnswer[bool]{Value: can, Err: err}
 	})
 	if err != nil {
-		return gitAnswer[pipeline.Credential]{}, err
+		return gitAnswer[pipeline.RunnerAccess]{}, err
 	}
 	if errors.Is(push.Err, pipeline.ErrCredentialRejected) {
-		return gitAnswer[pipeline.Credential]{Err: errCloneRejected, Setup: true, Connection: answer.Connection}, nil
+		return gitAnswer[pipeline.RunnerAccess]{Err: errCloneRejected, Setup: true, Connection: answer.Connection}, nil
 	}
 	if push.Err != nil {
-		return gitAnswer[pipeline.Credential]{Err: push.Err, Setup: push.Setup, Connection: answer.Connection}, nil
+		return gitAnswer[pipeline.RunnerAccess]{Err: push.Err, Setup: push.Setup, Connection: answer.Connection}, nil
 	}
 	if push.Value {
-		return gitAnswer[pipeline.Credential]{Err: errCloneCanPush, Setup: true, Connection: answer.Connection}, nil
+		return gitAnswer[pipeline.RunnerAccess]{Err: errCloneCanPush, Setup: true, Connection: answer.Connection}, nil
 	}
 	return answer, nil
 }
@@ -442,17 +510,30 @@ func (g *gitAnswers) pullRequest(ctx context.Context, tx pgx.Tx, id uuid.UUID, n
 	})
 }
 
-// mergedAt asks whether any of these reviews merged as exactly this commit.
+// mergedAt asks whether any of these reviews merged as exactly this commit. A review the provider
+// no longer has, as a GitLab owner can delete one, leaves the others to answer; its not-found
+// answer stands only when the provider has none of them.
 func (g *gitAnswers) mergedAt(ctx context.Context, tx pgx.Tx, id uuid.UUID, reviews []int, head string) (gitAnswer[bool], error) {
 	return askProvider(ctx, tx, g, id, false, fmt.Sprintf("merged/%s/%v", head, reviews), func(ctx context.Context, p *pipeline.Provider) (bool, error) {
+		var gone error
+		missing := 0
 		for _, number := range reviews {
 			merged, err := p.MergedCommit(ctx, number)
+			var status *pipeline.ProviderError
+			if errors.As(err, &status) && status.Status == http.StatusNotFound {
+				gone = err
+				missing++
+				continue
+			}
 			if err != nil {
 				return false, err
 			}
 			if merged == head {
 				return true, nil
 			}
+		}
+		if missing == len(reviews) && gone != nil {
+			return false, gone
 		}
 		return false, nil
 	})

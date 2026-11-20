@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -50,7 +51,40 @@ func captureRecoveryOrderingSnapshot(t *testing.T, f *fixture, ws uuid.UUID) por
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A management backup taken then would hold the environments' keys as they were, which a
+	// checkpoint does not.
+	rows, err := tx.Query(context.Background(), `SELECT environment_id,generation,workspace_generation,wrapped,kcv FROM environment_keys WHERE workspace_id=$1 AND state='active'`, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var keys []snapshotKey
+	for rows.Next() {
+		var k snapshotKey
+		if err = rows.Scan(&k.environment, &k.generation, &k.workspaceGeneration, &k.wrapped, &k.kcv); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	snapshotKeys.Store(snapshotName(archive), keys)
 	return archive
+}
+
+// snapshotKey is an environment key as a snapshot's management backup would hold it.
+type snapshotKey struct {
+	environment                     uuid.UUID
+	generation, workspaceGeneration int64
+	wrapped, kcv                    []byte
+}
+
+// snapshotKeys holds each captured snapshot's environment keys, by snapshotName.
+var snapshotKeys sync.Map
+
+func snapshotName(a portability.Archive) string {
+	return a.Workspace.String() + "@" + a.CreatedAt.Format(time.RFC3339Nano)
 }
 
 func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before, after portability.Archive, delivery recoveryOrderingDelivery, enrollments []api.AgentEnrollment, plans *sync.Map, draftAt, targetAt time.Time, oldGeneration, newGeneration int64, extras ...recoveryOrderingExtra) {
@@ -180,29 +214,32 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		if err := destination.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, destination.st, source.st.Keys)
-		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Ordering recovery')`, ws); err != nil {
-			t.Fatal(err)
-		}
+		restoredWorkspace(t, source.st, destination.st, ws, "Ordering recovery")
 		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, destination.owner); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := destination.st.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = portability.MergeRecovery(ctx, tx, snapshot, destination.owner); err != nil {
-			tx.Rollback(ctx)
-			t.Fatal("restore management snapshot", err)
-		}
-		if err = tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO troubleshooting_policies(workspace_id,environment_id,enabled,owners_only,generation,updated_by) SELECT workspace_id,id,true,false,1,$2 FROM environments WHERE workspace_id=$1`, ws, destination.owner); err != nil {
+		restoredSnapshot(t, destination, snapshot)
+		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO troubleshooting_policies(workspace_id,environment_id,enabled,owners_only,generation,updated_by) SELECT workspace_id,id,true,false,1,$2 FROM environments WHERE workspace_id=$1`, ws, destination.owner); err != nil {
 			t.Fatal(err)
 		}
 		input := execution.RecoveryImport{WorkspaceID: ws, OwnerID: destination.owner, HostExports: exports}
 		preview, err := destination.execution.RecoverCrossHost(ctx, input)
+		var missing *execution.RecoveryKeysMissing
+		if errors.As(err, &missing) {
+			// An environment made after the backup, such as a preview's replacement, has no key in
+			// it, and the operator accepts that its values come back erased. One whose key the
+			// backup holds is never named.
+			held, _ := snapshotKeys.Load(snapshotName(snapshot))
+			for _, env := range missing.Environments {
+				for _, k := range held.([]snapshotKey) {
+					if k.environment == env.ID {
+						t.Fatal("recovery named an environment whose key the backup holds", env)
+					}
+				}
+				input.AcceptErasedEnvironments = append(input.AcceptErasedEnvironments, env.ID)
+			}
+			preview, err = destination.execution.RecoverCrossHost(ctx, input)
+		}
 		if err != nil {
 			return fmt.Errorf("preview: %w", err)
 		}
@@ -264,4 +301,44 @@ func verifyRecoveryOrdering(t *testing.T, source *fixture, ws uuid.UUID, before,
 		}
 	}
 
+}
+
+// restoredSnapshot restores snapshot into destination as a management backup taken then holds
+// it: with its environments' keys as they were when it was captured, which a backup holds and a
+// checkpoint does not, so the values sealed under them open.
+func restoredSnapshot(t *testing.T, destination *fixture, snapshot portability.Archive) {
+	t.Helper()
+	ctx := context.Background()
+	merge := func(a portability.Archive) {
+		t.Helper()
+		tx, err := destination.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, destination.st, a.Workspace), a, destination.owner); err != nil {
+			tx.Rollback(ctx)
+			t.Fatal("restore management snapshot", err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The environments first, then their keys, then the values sealed under them.
+	environments := snapshot
+	environments.Tables = maps.Clone(snapshot.Tables)
+	delete(environments.Tables, "secret_versions")
+	merge(environments)
+	held, ok := snapshotKeys.Load(snapshotName(snapshot))
+	if !ok {
+		t.Fatal("the snapshot was not captured with its environment keys")
+	}
+	keys := held.([]snapshotKey)
+	var err error
+	for _, k := range keys {
+		if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO environment_keys(workspace_id,environment_id,generation,state,workspace_generation,wrapped,kcv)
+SELECT $1,$2,$3,'active',$4,$5,$6 WHERE EXISTS (SELECT 1 FROM environments WHERE workspace_id=$1 AND id=$2 AND state NOT IN ('purging','purged'))`, snapshot.Workspace, k.environment, k.generation, k.workspaceGeneration, k.wrapped, k.kcv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merge(snapshot)
 }

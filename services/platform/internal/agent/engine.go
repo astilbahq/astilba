@@ -8,6 +8,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"io"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,17 +38,35 @@ type Engine struct {
 	ACMEEmail             string
 	ResticCLI             string
 	BackupRoots           []string
+	// ImageLoadBytes and ImageLoadReserveBytes are the host owner's limits on loading a local
+	// build's image or pulling a deployment's, see image_archive.go and image_pull.go; the
+	// defaults when zero.
+	ImageLoadBytes        int64
+	ImageLoadReserveBytes int64
 	TroubleshootingIdle   time.Duration
 	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
 	mu          sync.Mutex
+	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
+	layerCostsOnce sync.Once
+	measuredLayers *layerCosts
+	// checkedSiblings are index entries the agent found harmless for loads.
+	checkedOnce     sync.Once
+	checkedSiblings *checkedManifests
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
 	// networkRefusals is whether management reads a refusal's reason, which it advertises
 	// with Astilba-Agent-Network-Refusals v1. It is unknown until management first answers.
 	networkRefusals atomic.Int32
+	// keyStoreWait is when network commands may next try the key store, after they found it not
+	// working. Until then they leave it alone, rather than call it again every second. It keeps the
+	// monotonic clock reading, so a clock step early in boot doesn't stretch it.
+	keyStoreWait atomic.Pointer[time.Time]
+	// keyStoreLogged is when the agent last logged that the key store isn't working. It logs that at
+	// most once an hour.
+	keyStoreLogged atomic.Pointer[time.Time]
 	// hostChangeReviews is whether management reviews the host changes a plan resolution reports,
 	// which it advertises with Astilba-Agent-Host-Changes v1. It is unknown until management
 	// first answers, using the refusal states.
@@ -66,6 +85,12 @@ func (e *Engine) point(p string) {
 	if e.Point != nil {
 		e.Point(p)
 	}
+}
+
+// reached reports whether any execution of the command recorded step. A command run again moves
+// its checkpoint back through its earlier steps, but the steps it recorded are kept.
+func (r Record) reached(step string) bool {
+	return slices.ContainsFunc(r.Report.Steps, func(s api.ExecutionStep) bool { return s.Name == step })
 }
 func Name(c api.ExecutionCommand) string { return "astilba-probe-" + c.ResourceId.String() }
 func (e *Engine) checkpoint(id uuid.UUID, name string) error {
@@ -89,15 +114,16 @@ func (e *Engine) checkpoint(id uuid.UUID, name string) error {
 	return err
 }
 func (e *Engine) finish(id uuid.UUID, state api.ExecutionState, note string) error {
-	return e.Journal.Mutate(id, func(r *Record) {
-		r.Report.State = state
-		r.Report.Note = reportNote(note)
-		if state == "succeeded" {
-			for i := range r.Report.Steps {
-				r.Report.Steps[i].State = "done"
-			}
+	return e.Journal.Mutate(id, func(r *Record) { settleReport(r, state, note) })
+}
+func settleReport(r *Record, state api.ExecutionState, note string) {
+	r.Report.State = state
+	r.Report.Note = reportNote(note)
+	if state == "succeeded" {
+		for i := range r.Report.Steps {
+			r.Report.Steps[i].State = "done"
 		}
-	})
+	}
 }
 
 // finishPhase records a coordinated phase's outcome, unless the agent is stopping: it reruns
@@ -226,7 +252,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return err
 	}
 	for _, s := range schedules {
-		if (len(s.Writers) > 0 || hasUncertainRun(s.Runs)) && !networkRestriction(c) {
+		if (len(s.Writers) > 0 || hasUncertainRun(s)) && !networkRestriction(c) {
 			return e.finish(c.Id, "needs_attention", "An interrupted local schedule requires inspection and resolve-run before another host operation.")
 		}
 	}
@@ -260,8 +286,13 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.Kind == "network" {
 		return e.executeNetwork(ctx, c, r)
 	}
+	// Backups and restores run the journal's copy: values a retry asked for may have reached it
+	// since c was read.
 	if c.Kind == "backup" || c.Kind == "schedule" {
-		return e.executeBackup(ctx, c, r)
+		return e.executeBackup(ctx, r.Command, r)
+	}
+	if c.Kind == "restore" {
+		return e.executeRecovery(ctx, r.Command, r)
 	}
 	if c.Kind == "pipeline" {
 		return e.executePipeline(ctx, c, r)
@@ -292,8 +323,11 @@ func (e *Engine) inspect(ctx context.Context, c api.ExecutionCommand) (client.Co
 	if err != nil {
 		return v, false, err
 	}
+	// A probe is ours by its name, which only the agent gives a container, and its four labels.
+	// Labels alone prove nothing, since an image's own LABELs reach its containers. The image
+	// is not part of it: a probe started before the test image moved stays managed after it.
 	labels := v.Container.Config.Labels
-	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.ResourceId.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != "probe-v1" || v.Container.Config.Image != c.Image {
+	if labels[labelServer] != c.ServerId.String() || labels[labelResource] != c.ResourceId.String() || labels[labelEnvironment] != c.EnvironmentId.String() || labels[labelKind] != "probe-v1" {
 		return v, true, errors.New("resource ownership mismatch")
 	}
 	return v, true, nil
@@ -399,8 +433,9 @@ func (e *Engine) inspectOrRemove(ctx context.Context, c api.ExecutionCommand) er
 	return e.finish(c.Id, "succeeded", "Managed probe removed. No networks or volumes were removed.")
 }
 
-func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand) (context.Context, func()) {
-	ctx, cancel := context.WithDeadline(parent, c.Deadline)
+// commandContext ends at end, or once the command's owner cancels it.
+func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, end time.Time) (context.Context, func()) {
+	ctx, cancel := context.WithDeadline(parent, end)
 	done := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(200 * time.Millisecond)

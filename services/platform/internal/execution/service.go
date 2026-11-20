@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
@@ -45,6 +46,8 @@ type Service struct {
 	Troubleshooting bool
 	// ResetMail shares this River client, since each client must know every job kind it may rescue.
 	ResetMail *auth.ResetMailWorker
+	// SecurityNotice emails account holders about changes to how their account signs in.
+	SecurityNotice *auth.SecurityNoticeWorker
 	// ForkFencing clears a server's credential when management sees proof that a second holder has
 	// its key. Off, the proof only raises the owner's alert.
 	ForkFencing bool
@@ -79,6 +82,9 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &previewSweepWorker{service: s})
 	river.AddWorker(workers, &troubleshootingSweepWorker{service: s})
 	river.AddWorker(workers, &secretAccessSweepWorker{service: s})
+	river.AddWorker(workers, &secretAccessExpiryWorker{service: s})
+	river.AddWorker(workers, &secretLengthsWorker{service: s})
+	river.AddWorker(workers, &custodyKeysWorker{service: s})
 	river.AddWorker(workers, &worker{service: s})
 	river.AddWorker(workers, &refreshWorker{service: s})
 	river.AddWorker(workers, &submissionWorker{service: s})
@@ -87,14 +93,22 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, &githubReconcileWorker{service: s})
 	s.ResetMail = &auth.ResetMailWorker{}
 	river.AddWorker(workers, s.ResetMail)
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}}, JobTimeout: 10 * time.Second})
+	s.SecurityNotice = &auth.SecurityNoticeWorker{}
+	river.AddWorker(workers, s.SecurityNotice)
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretAccessExpiryArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(6*time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretLengthsArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(10*time.Minute), func() (river.JobArgs, *river.InsertOpts) { return custodyKeysArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}, auth.SecurityMailQueue: {MaxWorkers: 2}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }
-func (s *Service) Start(ctx context.Context) error { return s.Queue.Start(ctx) }
-func (s *Service) Stop(ctx context.Context) error  { return s.Queue.Stop(ctx) }
-func hash(s string) []byte                         { h := sha256.Sum256([]byte(s)); return h[:] }
-func Hash(v any) string                            { return stablejson.Hash(v) }
+func (s *Service) Start(ctx context.Context) error {
+	if err := s.Queue.Start(ctx); err != nil {
+		return err
+	}
+	go s.wakeCustodyKeys(ctx, s.Store.Broker.KeysWanted())
+	return nil
+}
+func (s *Service) Stop(ctx context.Context) error { return s.Queue.Stop(ctx) }
+func hash(s string) []byte                        { h := sha256.Sum256([]byte(s)); return h[:] }
+func Hash(v any) string                           { return stablejson.Hash(v) }
 func Terminal(s api.ExecutionState) bool {
 	return s == "succeeded" || s == "failed" || s == "cancelled"
 }
@@ -155,6 +169,11 @@ func serverView(row db.ListServersRow) (api.Server, error) {
 	switch {
 	case row.Revoked:
 		v.Status = "revoked"
+		// A release without the column can leave a time behind on a server it renews.
+		if row.RevokedAt != nil {
+			at := row.RevokedAt.UTC()
+			v.RevokedAt = &at
+		}
 	case v.LastSeen == nil:
 		v.Status = "pending"
 	case time.Since(*v.LastSeen) > OfflineAfter:
@@ -317,9 +336,20 @@ type Identity struct {
 	Kind  string
 	// Credential is the server's identity this request authenticated as: the bearer's hash, or the
 	// hash of the key the token was issued for.
-	Credential                 []byte
-	Lineage                    uuid.UUID
-	CredentialFreeVisualCancel bool
+	Credential []byte
+	Lineage    uuid.UUID
+	// AcknowledgesReleases is an agent that acknowledges the secret releases it holds, and so may
+	// receive them.
+	AcknowledgesReleases bool
+}
+
+// instance names what holds a release: the agent's key, whose journal outlives its token
+// sessions, or its bearer credential.
+func (a Identity) instance() string {
+	if a.Kind == identityToken {
+		return "key:" + hex.EncodeToString(a.Credential)
+	}
+	return "credential:" + hex.EncodeToString(a.Credential)
 }
 
 // lineage scopes credential checks to a token's session; a bearer has none.
@@ -342,7 +372,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return v, keyNotCurrent
 		}
-		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.CredentialFreeVisualCancel = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.CredentialFreeVisualCancel
+		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.AcknowledgesReleases = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.AcknowledgesReleases
 		return v, err
 	}
 	if len(token) != 43 {
@@ -350,7 +380,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 	}
 	row, err := s.Store.Queries.AuthenticateAgent(ctx, db.AuthenticateAgentParams{ServerID: id, CredentialHash: hash(token)})
 	v.Kind, v.Credential = identityBearer, hash(token)
-	v.Workspace, v.Role, v.Previous, v.CredentialFreeVisualCancel = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.CredentialFreeVisualCancel
+	v.Workspace, v.Role, v.Previous, v.AcknowledgesReleases = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.AcknowledgesReleases
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}

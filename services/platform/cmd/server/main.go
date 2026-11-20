@@ -22,8 +22,8 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/config"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
-	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
@@ -32,6 +32,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/astilbahq/astilba/services/platform/internal/webassets"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,10 +46,14 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("usage: astilba keygen|migrate|bootstrap|rewrap|invite|grant-management|prepare-recovery|recover-cross-host|serve")
+		return errors.New("usage: astilba keygen|migrate|bootstrap|custody|dns|invite|grant-management|prepare-recovery|recover-cross-host|reset-mfa|serve")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// It runs before configuration loads: it makes the credentials that configuration names.
+	if len(os.Args) > 2 && os.Args[1] == "custody" && os.Args[2] == "init-transit" {
+		return initTransitCommand(ctx, os.Stdout, os.Args[3:])
+	}
 	if os.Args[1] == "keygen" {
 		f := flag.NewFlagSet("keygen", flag.ContinueOnError)
 		file := f.String("out", "", "new private keyring file")
@@ -70,17 +75,15 @@ func run() error {
 		return e
 	}
 	if os.Args[1] == "migrate" {
-		return dbmigrate.Up(ctx, c.DatabaseURL)
+		if e = dbmigrate.Up(ctx, c.DatabaseURL); e != nil {
+			return e
+		}
+		return setSecretAccessRetention(ctx, c)
 	}
 	if e = dbmigrate.Check(ctx, c.DatabaseURL); e != nil {
 		return e
 	}
-	var keys *cryptobox.Keyring
-	if c.KeyringJSON != "" {
-		keys, e = cryptobox.Parse([]byte(c.KeyringJSON))
-	} else {
-		keys, e = cryptobox.Load(c.Keyring)
-	}
+	keys, e := cryptobox.Load(c.Keyring)
 	if e != nil {
 		return e
 	}
@@ -97,19 +100,40 @@ func run() error {
 		return errors.New("cannot configure database")
 	}
 	defer pool.Close()
-	backend, e := custody.NewFile(keys)
+	backend, e := keyBackend(c, keys)
 	if e != nil {
 		return e
 	}
 	st := store.New(pool, secretbroker.New(db.New(pool), backend, slog.Default()), c.Hosted)
-	st.Keys = keys
 	st.Hosting = c.Hosting
 	st.LogRetention = c.LogRetention
 	st.ApplicationDomain = c.ApplicationDNS.Base
+	if os.Args[1] == "custody" {
+		return custodyCommand(ctx, c, pool, st, os.Args[2:])
+	}
+	if os.Args[1] == "dns" {
+		return dnsCommand(ctx, pool, os.Args[2:])
+	}
+	// A command that uses keys first checks they and the database belong to one installation.
+	// Serving checks its database first, to say why it cannot reach it.
+	install := func() error {
+		if err := c.RequirePinnedInstallation(); err != nil {
+			return err
+		}
+		return st.Broker.Install(ctx, pool, c.InstallationID, false)
+	}
 	switch os.Args[1] {
 	case "recover-cross-host":
+		if e = install(); e != nil {
+			return e
+		}
 		return recoverCrossHostCommand(ctx, st, os.Args[2:])
+	case "reset-mfa":
+		return resetMFACommand(ctx, st, c.SMTP, os.Args[2:])
 	case "invite":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("invite", flag.ContinueOnError)
 		email := f.String("email", "", "beta invitee email")
 		if e = f.Parse(os.Args[2:]); e != nil {
@@ -124,6 +148,9 @@ func run() error {
 		}
 		return (&auth.Service{Store: st, Mail: mail, Now: time.Now}).InviteHosted(ctx, *email, c.Origin)
 	case "prepare-recovery":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("prepare-recovery", flag.ContinueOnError)
 		server := f.String("server", "", "restored server UUID")
 		generation := f.Int64("controller-generation", 0, "generation greater than the host's current controller")
@@ -136,6 +163,9 @@ func run() error {
 		}
 		return st.PrepareRecovery(ctx, id, *generation)
 	case "grant-management":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("grant-management", flag.ContinueOnError)
 		ws := f.String("workspace", "", "workspace UUID")
 		until := f.String("until", "", "RFC3339 expiration")
@@ -152,10 +182,10 @@ func run() error {
 			return domain.Invalid("until")
 		}
 		return st.GrantManagement(ctx, id, end, *limit)
-	case "rewrap":
-		// Until operators have records of their own, the command names itself.
-		return st.Rewrap(ctx, "astilba-rewrap")
 	case "bootstrap":
+		if e = install(); e != nil {
+			return e
+		}
 		f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 		email := f.String("email", "", "owner email")
 		name := f.String("name", "", "owner name")
@@ -212,6 +242,9 @@ func run() error {
 		if e = st.CheckConnectionLimit(ctx); e != nil {
 			return e
 		}
+		if e = install(); e != nil {
+			return e
+		}
 		go st.LogPoolUse(ctx)
 		if e = c.ValidateServer(); e != nil {
 			return e
@@ -227,10 +260,11 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		tokens, e := st.Broker.Tokens(ctx)
+		tokens, e := st.Broker.Tokens(ctx, dbmigrate.CustodyStage)
 		if e != nil {
 			return e
 		}
+		go tokens.Run(ctx)
 		service := &auth.Service{Store: st, Passwords: passwords, Mail: mail, Now: time.Now, Tokens: tokens}
 		api, cleanup := httpapi.New(st, service, c.Origin, c.Development, slog.Default())
 		api.TrustedProxies = c.TrustedProxies
@@ -317,6 +351,34 @@ func run() error {
 		if e = api.Execution.Start(ctx); e != nil {
 			return e
 		}
+		// Compared with the database once at startup, which is what follows a restore from an
+		// older backup, and then every few minutes. It queues jobs, so it starts after the workers.
+		go func() {
+			sweep := func() {
+				run, cancel := context.WithTimeout(ctx, execution.ZoneSweepInterval-time.Minute)
+				defer cancel()
+				err := api.Execution.SweepZone(run)
+				switch {
+				case err == nil || ctx.Err() != nil:
+				case errors.Is(err, applicationdns.ErrZoneTooLarge):
+					// Lasting: records the sweep would withdraw stay in the zone until the operator acts.
+					slog.Error("application DNS zone sweep refused a zone too large to compare; records Astilba no longer backs, or newer than their server's approval, are not withdrawn. See docs/hosting.md#records-the-database-has-lost", "error", err)
+				default:
+					slog.Warn("application DNS zone sweep failed", "error", err)
+				}
+			}
+			sweep()
+			ticker := time.NewTicker(execution.ZoneSweepInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sweep()
+				}
+			}
+		}()
 		defer func() {
 			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -337,4 +399,15 @@ func run() error {
 	default:
 		return errors.New("unknown command")
 	}
+}
+
+// setSecretAccessRetention is part of migrating: the setting belongs to the role that owns the
+// schema, so serving never writes it.
+func setSecretAccessRetention(ctx context.Context, c config.Config) error {
+	conn, e := pgx.Connect(ctx, c.DatabaseURL)
+	if e != nil {
+		return e
+	}
+	defer conn.Close(ctx)
+	return db.New(conn).SetSecretAccessRetention(ctx, c.SecretAccessRetentionDays)
 }

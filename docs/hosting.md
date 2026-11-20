@@ -34,7 +34,8 @@ an owner-only environment file outside source control:
 | --- | --- |
 | `ASTILBA_DATABASE_URL` | PostgreSQL connection URL; use verified TLS for a remote database. |
 | `ASTILBA_KEYRING` | Path to a mounted owner-only keyring, readable by UID 65532. |
-| `ASTILBA_KEYRING_JSON` | Alternative keyring JSON supplied directly by a secret manager or container environment. Configure exactly one keyring source. |
+| `ASTILBA_INSTALLATION_ID` | The installation's ID, which `astilba custody status` shows after `astilba migrate`. Required when hosted, and recommended everywhere: a database that belongs to another installation is then refused. See [key custody](#key-custody). |
+| `ASTILBA_KEY_BACKEND` | Optional. The key service keys are read from: `file`, the keyring file, is the default; `transit` is OpenBao or Vault Transit, set up as [key custody with Transit](key-custody-transit.md) describes. |
 | `ASTILBA_ORIGIN` | Exact public HTTPS origin, without a path or trailing slash. |
 | `ASTILBA_LISTEN` | Listener, normally `0.0.0.0:8080` inside the container. |
 | `ASTILBA_DATABASE_POOL_SIZE` | Optional. Connections each process may hold, 4 to 1000. Defaults to 12. See [database connections](#database-connections). |
@@ -52,7 +53,8 @@ previously encrypted data.
 
 1. Provision an empty PostgreSQL database and the keyring. Do not expose the database publicly.
 2. With the same image and configuration as the server, run `astilba migrate`.
-   Migrations are explicit; normal startup refuses an incompatible schema.
+   Migrations are explicit; normal startup refuses an incompatible schema. Then run
+   `astilba custody status` and set `ASTILBA_INSTALLATION_ID` to the installation ID it shows.
 3. Run `astilba bootstrap --email owner@example.com --name Owner --workspace Personal`.
    Provide the password on stdin or with `--password-file` pointing to an owner-only file.
 4. Configure an HTTPS reverse proxy for the public origin, forwarding to the
@@ -68,8 +70,161 @@ previously encrypted data.
 
 To move to a newer version later, follow [upgrading management](management-upgrades.md).
 
+### Key custody
+
+Workspace keys are wrapped by the keyring file, or by OpenBao or Vault Transit keys that never
+leave the key service, which records each use in its own audit log. See [key custody with
+Transit](key-custody-transit.md) for the second.
+
+The keyring is a file. Management doesn't read a keyring from its environment, where anything
+that can read the environment would find it beside the database URL. `ASTILBA_KEYRING_JSON` was
+removed, and setting it stops management from starting.
+
+Each installation has an ID, made by `astilba migrate`, which every key wrapping is bound to.
+`astilba custody status` shows it. Set `ASTILBA_INSTALLATION_ID` to it: then a database that
+belongs to another installation is refused, such as a copy restored for testing. A restore of the
+same installation keeps its ID.
+
+Every command that uses keys checks them before it starts:
+
+- the first start registers its key backend, and wraps a canary under each key class. If the
+  database already holds values sealed under the keyring, as after upgrading or restoring a backup
+  from before canaries, it first opens one of each kind, recorded once for the installation as a
+  rewrap is, and refuses a keyring that cannot;
+- later starts open the canaries, so a keyring other than the installation's is refused, as is a
+  database whose installation ID was changed;
+- a refused start is recorded, with its cause.
+
+`astilba custody` reports on and changes the installation's keys. Each change it makes is
+recorded in the installation's key history. The history holds the operator's name and reason. The
+[secret access record](#operational-bounds-and-retention) of a run is one for the whole
+installation and names only the run.
+`--operator` can be a role, such as `on-call`, rather than a person. Every event is kept, but its
+operator and reason are blanked once it is older than the secret access retention period, 400
+days by default. A database trigger refuses any other change to an event, and its removal. That
+is defence in depth against mistakes, not proof against whoever owns the database, who can
+remove the trigger.
+
+| Command | What it does |
+| --- | --- |
+| `astilba custody status [--as-operator]` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, how many values recording stage 4 reads, and any pending work. It changes nothing. With a [Transit](key-custody-transit.md) backend, add `--as-operator` when it runs with the operator's credentials. |
+| `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
+| `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the newest key: the keyring's active key, or with [Transit](key-custody-transit.md) each class's newest key version, rewrapped inside the key service. It records its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
+| `astilba custody init-transit --dev --address <URL> --token-file <file> --out <dir>` | Sets up a local OpenBao dev server for the local stack's `--custody openbao` profile. It refuses anything but `--dev`, a loopback address, and a server whose cluster is named `astilba-dev`, as the local stack's is; set up a real key service as [key custody with Transit](key-custody-transit.md) describes. |
+| `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
+| `astilba custody convert --operator <name or role> [--reason <text>]` | Moves every value still sealed under the keyring onto its workspace's key, or a second factor onto the installation key, and records custody stage 4 once none is left. See [converting values](#converting-values). |
+
+With Transit, `rewrap` and `convert` run with the operator's credentials, and `init-keys` with serving's; started with the other identity's, they are refused.
+
+`custody status` lists a command that recorded a start and no finish, unless a run of it that
+started since has succeeded: it stopped part way, or is running. The custody stage counts how far the installation
+has moved through key custody changes. `astilba migrate`, and every other command, refuses a
+release more than one stage ahead of the installation, so a release that starts a stage says so
+in its notes.
+
+#### Workspace keys
+
+Each workspace has a key of its own. The installation has an installation key, for second
+factors, and token keys, for the device and password reset tokens management issues to itself.
+Each key is random and is stored only wrapped: once for each purpose it serves, such as sealing
+or delivering, under the backend's key for that purpose's class. A key check value stored beside
+it shows whether a wrapping opens to the right key before any value is opened with it.
+
+By custody stage 2 every key exists, and values sealed under them open; a new installation makes
+its keys when it first starts. From stage 3, every new value is sealed under its workspace's key,
+or a second factor under the installation key, and tokens are issued under a token key. Values
+stored before then stay under the keyring until [converted](#converting-values), which completes
+stage 4. From stage 5, a release also opens values sealed under an environment's own key, which
+that key's workspace key wraps, and a stage 5 release records stage 5 when it starts. This
+release seals each environment's secret values under the environment's key, made when its first
+value is saved, so that purging the environment destroys the key and every copy of them with it.
+Backup policy credentials stay under the workspace's key, so the environment's backups that
+purging keeps can still be restored. It seals under environment keys only while every instance
+seen in the last five minutes runs a stage 5 release or later; beside an older one, values stay
+under their workspace's key until converted. Converting them completes stage 6. This release needs stage 5:
+`migrate`, `serve` and every other command refuse it on an installation that hasn't completed
+stage 5, so run the stage 5 release until `custody status` shows stage 5 first. Going back to a
+stage 5 release is a redeploy: it opens everything this one seals. Going back further needs the
+backup taken before upgrading to this release, since an earlier release cannot open values under
+environment keys, so never run one beside this one.
+
+- **New workspaces** get their key in the transaction that creates them.
+- **Existing workspaces** without a key, such as one created by an earlier release after a
+  rollback, get theirs from `serve`, in the background, which also creates any missing
+  installation and token keys. Its log shows progress, and so does `custody status`; `custody
+  init-keys` does the same work in the foreground. Until a workspace has its key, saving a value
+  in it is refused as temporarily busy, and the refusal starts the job at once; everything else
+  works, and other workspaces save as usual. The job's log and `custody status` show how many
+  workspaces have keys.
+- **Saving a value** holds the key it is sealed under until the value is stored, so the key stays
+  the one new values are sealed under in the meantime.
+- **Recovery** moves each value it restores onto the workspace's current key, keeping the value
+  itself.
+- **Rewrap** wraps every key again, and leaves values sealed under them as they are.
+- **Recovery checkpoints** taken before a value's key moved still merge: recovery compares a
+  stored value by its data, which moving its key keeps. A release before this one compares the
+  stored bytes instead, so after rolling back to one, a checkpoint older than the latest rewrap or
+  key move no longer merges.
+- **Deleting a workspace** deletes its keys, so nothing sealed under them opens again.
+- **Token keys** stay in each instance's memory. Instances look for new ones every minute, and
+  record which they hold. Tokens are issued under a token key only once every instance seen in the
+  last five minutes holds it, and under the keyring until then. An instance that starts loads
+  every token key before it serves.
+
+Database triggers let a key's state move only forward, keep the seal wrapping only for the key
+new values are sealed under, and refuse to delete a key except with its workspace. As with key
+events, that guards against mistakes, not against whoever owns the database.
+
 The served `/source/NOTICE.txt` identifies the corresponding source. Keep the
 matching source archive available with every distributed or hosted version.
+
+#### Converting values
+
+Once every instance runs this release, and five minutes after the last older one stopped, run
+`custody convert` once, at a quiet time:
+
+```sh
+docker compose run --rm --no-deps platform custody convert --operator "$(whoami)"
+```
+
+With Transit, give the command the operator's credentials rather than serving's, as for
+`custody rewrap`.
+
+- It moves each value still sealed under the keyring onto its workspace's key, each secret value
+  onto its environment's key, and a second factor onto the installation key. Only the value's key is wrapped again; the value itself is kept, so recovery
+  data captured before still matches it.
+- It works in batches, one workspace at a time, and is safe to stop, run again, or run beside
+  running instances. A value saved while it runs is kept, and the next run converts it if it needs
+  to be. A workspace another run is converting, or that has no key to move onto yet, is skipped
+  and named.
+- Recovery checkpoints are never converted, since hosts hold them bound to their exact bytes.
+  They keep opening with the keyring, as do tokens issued before stage 3 until they expire, so
+  keep the keyring.
+- It records custody stage 6 once no value is sealed under the keyring, every environment's
+  values are under its own key, and every instance seen in the last five minutes runs a stage 6
+  release or later. Stage 6 can stop being true: an instance of a stage 5 release, such as after
+  rolling back and forward again, stores environment values under their workspace's key. An
+  instance of this release that sees one running since stage 6 was recorded, or finds such values
+  when it starts, records stage 5 again and logs it; run `custody convert` again to move them. An instance counts as seen until five
+  minutes after it stops, so a run sooner than that finishes the values and says to run it again.
+  For the last check it waits for a running rewrap, then holds the tables that store values
+  against writes while it reads every stored value; `custody status` shows how many there are.
+  Saving a value, signing in with a second factor and changing an integration wait meanwhile: in
+  testing, the check read 100,000 values in about 15 ms and a million in about 60 ms with the
+  tables in memory, and reading them from disk takes longer. It takes the tables one at a time and
+  waits at most two seconds for each, while writers to the tables it already holds wait too. If a
+  wait runs out, it lets go of every table, tries twice more, then stops without recording the
+  stage; run it again at a quieter time.
+- It exits non-zero unless nothing is left to convert and stage 6 is recorded, and says what is
+  left.
+- Rolling back after it, to a stage 5 release, needs no restore: that release opens converted
+  values.
+- An instance of a release before stage 3 that starts afterwards can still store a value under
+  the keyring. `custody status` counts such values by kind; run `custody convert` again to move
+  them. A later release that stops reading the keyring checks again first.
+
+The key history records each run, with the operator and reason, and each batch it stored. Each
+workspace with a value to convert gets an access record, which names the run, not the operator.
 
 ### Database connections
 
@@ -233,6 +388,9 @@ No per-address limit stops a flood from hundreds of addresses, each staying with
 That delays or refuses sign-in on browsers without the cookie, with a 503, for as long as it
 runs, while live sessions and known browsers keep working. Stop it upstream, with a CDN or
 firewall that can challenge or block that traffic.
+
+An account holder locked out by a lost authenticator, or by one someone else enrolled, needs the
+operator's `astilba reset-mfa`. See [account takeover or lost authenticator](incident-response.md#account-takeover-or-lost-authenticator).
 
 ### When password reset mail fails
 
@@ -469,6 +627,7 @@ tls:
 
 Set `ASTILBA_HOSTED=true`, plus all of:
 
+- `ASTILBA_INSTALLATION_ID`: the installation ID from `astilba custody status`. See [key custody](#key-custody).
 - `ASTILBA_HOSTED_COHORT_LIMIT`: total admitted and reserved workspace invitations.
 - `ASTILBA_HOSTED_SERVER_LIMIT`: allowance applied to new hosted workspaces.
 - `ASTILBA_HOSTED_SUPPORT`: published support hours and scope.
@@ -490,14 +649,19 @@ Stripe is optional. For paid Checkout, configure `ASTILBA_STRIPE_SECRET`,
 monthly price with quantity one and configure the Stripe customer portal. Pin the
 webhook endpoint to API version `2026-09-30.endive`, matching the client, at
 `/hooks/stripe`. Subscribe to `checkout.session.completed`,
-`customer.subscription.updated` and `customer.subscription.deleted`.
+`customer.subscription.updated`, `customer.subscription.deleted` and `invoice.paid`.
 
 The operator creates and verifies the Stripe product/price outside the application.
 Use test mode first. Checkout reserves one durable intent per workspace and reuses
 it after network failure. Completion is reconciled before an expired intent is
 replaced. Webhooks verify their timestamped raw-body signature, deduplicate events
 and retrieve the current subscription instead of trusting event delivery order.
-Unrecognized customers and subscriptions never grant access. New checkout success
+Unrecognized customers and subscriptions never grant access. Management is extended only by
+a paid invoice: it lasts until the end of the latest period a paid invoice covers, plus 24
+hours for Stripe to charge the next renewal. A renewal that fails, or whose collection is
+paused, keeps the period already paid for and nothing more. Ending the subscription ends
+management at the time it ends. An `invoice.paid` event that arrives before its checkout is
+applied is answered 409, so Stripe delivers it again. New checkout success
 and cancellation return to the workspace onboarding route. The URL is a navigation
 hint; setup completes only when the server reports active management access. If
 Stripe is not configured, onboarding explains how to contact the operator.
@@ -614,6 +778,88 @@ record Astilba made there, for live and revoked servers alike. Delete them yours
 their comment starts with `astilba:` followed by the installation's ID. At startup,
 management logs a warning with the number of names it can no longer clean up.
 
+### Records the database has lost
+
+The database is Astilba's only record of which names it published. It can lose some: a restore
+from an older [management backup](management-backups.md) forgets every server enrolled or
+approved after the backup, and a crash, or a provider request that lands after its job gave up,
+can leave a record the database doesn't know about. Such a record may point at an address the
+server no longer holds, which someone else could then be given.
+
+So with automatic Cloudflare DNS, management compares the zone with the database at startup,
+which covers a restore, and every five minutes after. It lists the zone's records whose comment
+starts with `astilba:` and this installation's ID, and reads the server and base from each one's
+comment and name. Then, for each name:
+
+- **The record is newer than its server's approval.** It is at the name of the server's last
+  approval, holds an address the approval doesn't, and Cloudflare says it changed more than two
+  and a half minutes after the approval. That's what a restore leaves when the owner moved the
+  server after the backup. The approval ends, so the older addresses are never published again,
+  and the record is removed, audited with reason `approval_outdated`. An owner approves the
+  server's addresses again. See
+  [server onboarding](server-onboarding.md#when-an-approval-is-older-than-dns).
+- **The database records it.** Nothing changes here: the rules in
+  [removing generated records](#removing-generated-records) apply, so a server fenced by
+  recovery keeps its records.
+- **The database lost it, and the server's approval for that name is current.** The name is
+  recorded again and the server's records are reconciled with the approval. Approved records are
+  never removed by the comparison.
+- **Anything else.** The record is unbacked and is removed. That includes servers the database
+  has never heard of, servers no longer approved, and names under a base other than
+  `ASTILBA_APPLICATION_DOMAIN`. Each deletion is audited first, with reason `unbacked`.
+
+A DNS job checks the same before it publishes, and also ends the approval when a record it last
+saw is gone without the database having deleted it, such as after a restore from a backup taken
+before the server was revoked. That needs the backup to hold the record the job last saw: one
+taken before the server's records were first published, or published again after its approval
+ended or its base changed, or while hosted management was inactive, holds none. The comparison can't check it, because a listing can miss a record. Removal because a hosted workspace's management is inactive checks the same first, since
+the approval is published again when management resumes. The records a job last saw are forgotten
+when the approval ends this way or its base changes, and kept when the provider fails, so a
+failed job never hides a missing record.
+
+The margin of two and a half minutes covers a job's request that lands late, and the database
+host's clock running up to a minute behind Cloudflare's. Keep the database host's clock
+synchronised.
+
+Records whose comment carries another installation's ID, records without the comment, and records
+Astilba never makes are never removed. Records Astilba never makes are anything other than A or
+AAAA, names that aren't the commented server's, and comments that match this installation's only
+when case is ignored. Management logs a warning counting them.
+
+The comparison reads at most 30,000 of this installation's records. A zone holding more isn't
+compared at all, and management logs an error every five minutes.
+
+#### When many records would go at once
+
+If one comparison would remove more than 10 records, unbacked or newer than their approval
+together, and more than a fifth of this installation's records it listed, it removes none of them
+and holds them instead. Approvals it finds outdated end all the same. That covers a fault in the
+comparison, and a management that shouldn't be acting on this zone at all, such as a restore
+drill given the live zone's credentials. A genuine restore from an older backup can trip it too.
+While records are held, management logs an error every five minutes. On a self-hosted
+installation, each workspace whose servers have held records also gets a
+[`dns_withdrawal_held` alert](operational-alerts.md). Held records may resolve to addresses
+Astilba no longer controls, so review them promptly:
+
+```sh
+astilba dns withdrawals
+astilba dns confirm-withdrawals --hold HOLD_ID --count N --operator NAME --note REASON
+```
+
+`withdrawals` shows each hold: how many records it holds per workspace, a sample of names and
+addresses, and the exact command to confirm it. `--count` must match the number of records the
+hold holds. If the comparison has since found a record the hold doesn't hold, the hold is
+replaced, and the command asks you to look again. The next comparison, within five minutes,
+removes the confirmed records it still finds should go. Records found later are judged afresh. A
+confirmed hold closes once all its records are removed. Otherwise the confirmation lapses after a
+day. A hold whose records fall back under the threshold, because some were backed
+again or deleted by hand, closes on its own and the rest are removed as usual.
+
+The threshold covers only this comparison between the zone and the database. Removals the
+database itself decides on, such as a revoked server's, are never held.
+
+Never give a restore drill the DNS settings: see [restore drills](management-backups.md#restore-drills).
+
 ### The pinned list
 
 Astilba checks against its own copy of the list in
@@ -669,19 +915,16 @@ each time. An imported workspace shows the same lists as its source, except that
 environments retired before the export aren't listed, and older entries can't be opened by ID.
 Audit history beyond the newest 100 stays in the source installation's database.
 
-A cross-host recovery checkpoint carries the operation history recovery needs:
-- unfinished work;
-- every operation that applied or removed a runtime;
-- every standalone private network removal;
-- every operation another archived record names;
-- the newest 100 operations.
-
-It keeps the newest 100 audit events, and the revisions the app lists or a record names.
-Checkpoints are compressed with zstd, which holds about two and a half times the history gzip
-did. Deployment history is still carried, so a busy workspace can still reach the checkpoint
-limits, and its cross-host deployments then fail before any host changes. A workspace
-recovered from a management backup doesn't get back the housekeeping, revisions or audit
-events recorded after the backup that the checkpoint left out.
+A cross-host recovery checkpoint carries the workspace's configuration, unfinished work, the
+newest 100 operations and audit events, the revisions the app lists or a record names, and a
+compact record of the runtime changes committed in the 90 days before it was captured. Its size
+follows the configuration, not the workspace's age. A busy workspace whose history doesn't fit
+gets a shorter window, and management warns while it is under 35 days. Checkpoints are compressed
+with zstd. Cross-host recovery can use a management backup taken after the newest checkpoint's
+window opened, which the Workspace page shows; [Recovering management from an older
+backup](cross-host-placement.md#the-recovery-window) says what comes back. A workspace recovered
+from a backup doesn't get back the housekeeping, releases, revisions, build runs or audit events
+recorded after the backup that the checkpoint left out.
 
 Work that Git webhooks start runs in a background queue of its own, with four workers
 per replica: source refreshes, draft submissions, pull-request previews and GitHub App
@@ -717,6 +960,18 @@ stops alert evaluation for the workspace too, so only the log shows it.
 Each class of retention cleanup commits separately, so one that fails does not stop the
 others, and logs `retention cleanup failed` with the class. The preview sweep takes every workspace's oldest due work before any
 workspace's second, and its jobs run in the Git queue described above, sharing it by workspace.
+
+Secret access records note every time management was given the keys to a workspace's stored
+values: who it was for, why, which items by ID, and how it ended. Workspace owners see them on
+the workspace page and through `GET /api/v1/workspaces/{workspaceId}/secret-access`. Key
+maintenance across the installation, a rewrap or the keyring check before an installation's first
+canaries, is one record for the whole installation rather than one per workspace. Workspace pages
+don't show it; the installation's [key history](#key-custody) does. Records are not part of
+workspace exports. `ASTILBA_SECRET_ACCESS_RETENTION_DAYS` sets how long they are
+kept, from 30 to 3650 days with a default of 400; hosted installations keep 400. `astilba
+migrate` writes the value into the database, so a change takes effect at the next migrate, and
+serving never changes it. An hourly job removes expired records, up to 5,000 a run. The same
+job blanks the operator and reason of [installation key events](#key-custody) past that period.
 
 `ASTILBA_LOG_RETENTION_DAYS` controls terminal operation diagnostics and build log
 retention, defaulting to 30 days. Cleanup processes at most 100 records from each
@@ -768,10 +1023,18 @@ encrypt and upload the database nightly to storage the server cannot erase, with
 alert when it fails, and the full restore procedure.
 
 Restore with the matching application version, or a newer one after `astilba migrate`,
-into a clean database and private keyring mount. Cross-host recovery reads the checkpoints the
+into a clean database and private keyring mount. With automatic DNS, the restored management
+removes, as soon as it starts, the records of servers enrolled or approved after the backup. It
+never publishes again an address the owner replaced after the backup: that server's approval
+ends, and an owner approves its addresses again. See
+[records the database has lost](#records-the-database-has-lost). Cross-host recovery reads the checkpoints the
 hosts hold, so run it with the release that sealed the newest of them or a newer one, even when
 the backup is older. Restore the backup, migrate to that release, then recover. An older release
-refuses those checkpoints. Keep the restored management process stopped while fencing every
+refuses those checkpoints. Recovery starts from the workspaces the backup holds and opens their
+checkpoints with each workspace's own key, which only management's database keeps. A workspace
+created after the backup can't be recovered from its hosts' capsules, so take a backup after
+creating a workspace; recovery refuses such a workspace, and one whose key the backup lacks, and
+says which. Keep the restored management process stopped while fencing every
 restored server:
 
 ```sh
@@ -842,4 +1105,4 @@ schedule generations must match the destination's records; disagreement stops
 enrollment. Take a fresh export or reconcile the source state when possible.
 An incomplete or stale backup is not permission to overwrite the host's journal.
 
-Workspace exports use archive version 8, which adds environment retirement and each volume's PostgreSQL major to version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Versions 1–7 remain importable; their environments import as active, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a retirement. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).
+Workspace exports use archive version 15, which adds restores of a lost server's snapshots onto another server (each backup policy's newest 100, and the restore of each operation the export carries) to version 13's record of when each server's revocation began and when management first received each backup snapshot, and to version 11's record of which preview requests revoking their preview host released, version 9's environment purges, retired secrets and erased secret values, version 8's environment retirement and PostgreSQL majors, version 7's draft submissions and version 6's committed runtime outcomes, replica specifications, runtime inventories, schedules and lifecycle metadata. Cross-host recovery checkpoints use version 16, with version 15's tables; versions 14, 12 and 10 are checkpoints with version 13's, version 11's and version 9's, and no export uses any of them. Versions 1–13 remain importable. Nothing in versions 1–13 records a restore onto another server, nothing in versions 1–11 records when a revocation began or when a snapshot was first reported, nothing in versions 1–9 is recorded as released by revocation, and nothing in versions 1–8 is purged or erased. Their environments import as active or retired as recorded, and versions before 6 leave runtime provenance unknown. Older controllers reject a newer version rather than discard what it carries, such as a purge. See [Retiring an environment](environment-retirement.md#exports-and-recovery). Imported preview policies and fork/cleanup grants are disabled; review resources and transfer agents before renewed owner approval. See [Pull-request previews](pull-request-previews.md), [application scaling](application-scaling.md) and [cross-host recovery](cross-host-placement.md).

@@ -120,7 +120,7 @@ func (n *aheadNetwork) round(t *testing.T) {
 			continue
 		}
 		poll, done := context.WithTimeout(n.ctx, aheadPollWait)
-		c, err := n.f.execution.Poll(poll, h.identity)
+		c, err := pollReleased(n.f.execution, poll, h.identity)
 		expired := poll.Err()
 		done()
 		if err != nil {
@@ -163,7 +163,7 @@ func (n *aheadNetwork) round(t *testing.T) {
 		}
 		// As the agent does, a host that never joined acknowledges a removal without applying it.
 		if command.Manifest != nil && h.held.NetworkID == uuid.Nil && (command.Manifest.Disabled || h.forgeRemoval && command.Action == "configure") {
-			identity, err := h.store.Identity(command.MembershipID)
+			identity, err := h.store.Identity(context.Background(), command.MembershipID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func (n *aheadNetwork) round(t *testing.T) {
 			continue
 		}
 		if h.conflict && (command.Action == "configure" || h.conflictRemovals) {
-			identity, err := h.store.Identity(command.MembershipID)
+			identity, err := h.store.Identity(context.Background(), command.MembershipID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -352,7 +352,7 @@ func (n *aheadNetwork) transfer(t *testing.T, h *aheadHost) {
 	input := h.input
 	input.Token, input.Credential, input.ControllerGeneration = ticket.Token, &credential, &generation
 	input.Inventory = &api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}}
-	if _, err = n.f.execution.Enroll(n.ctx, input, "test"); err != nil {
+	if _, err = n.f.execution.Enroll(n.ctx, acknowledging(input), "test"); err != nil {
 		t.Fatal(err)
 	}
 	if h.identity, err = n.f.execution.Authenticate(n.ctx, h.id, credential); err != nil {
@@ -546,7 +546,7 @@ func TestHostileClaimsAfterRestoreMoveNothing(t *testing.T) {
 					t.Fatal(err)
 				}
 				poll, done := context.WithTimeout(n.ctx, aheadPollWait)
-				delivered, err := n.f.execution.Poll(poll, a.identity)
+				delivered, err := pollReleased(n.f.execution, poll, a.identity)
 				expired := poll.Err()
 				done()
 				if err != nil {

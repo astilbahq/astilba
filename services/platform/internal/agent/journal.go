@@ -2,7 +2,7 @@ package agent
 
 import (
 	"bytes"
-	"encoding/json/jsontext"
+	"context"
 	"encoding/json/v2"
 	"errors"
 	"os"
@@ -64,21 +64,46 @@ type Record struct {
 	Report       api.AgentReport
 	Checkpoint   string
 	Acknowledged bool
-	AcceptedAt   *time.Time                 `json:",omitempty"`
-	Railpack     *pipeline.PreparedRailpack `json:",omitempty"`
+	AcceptedAt   *time.Time `json:",omitempty"`
+	// StartedAt is when this host first took the command up under its execution lock, after any
+	// wait for the host. The client accepts a command when it polls, before that wait.
+	StartedAt *time.Time                 `json:",omitempty"`
+	Railpack  *pipeline.PreparedRailpack `json:",omitempty"`
+	// ValuesWanted says the running command waits for management to release its values again.
+	ValuesWanted bool `json:",omitempty"`
 }
 type Journal struct {
-	db             *bolt.DB
-	keys           *cryptobox.Keyring
-	dir            string
-	recoveryMu     sync.Mutex
-	formatVersion  atomic.Int64
+	db *journalDB
+	// keys seals and opens records. A rekey replaces it rather than changing it.
+	keys          atomic.Pointer[cryptobox.Keyring]
+	dir           string
+	recoveryMu    sync.Mutex
+	formatVersion atomic.Int64
+	// stateMu serializes changes to keyring.json and to the keys the journal holds.
+	stateMu sync.Mutex
+	// sealing says the journal seals its keyring to this machine's key store once one works. store
+	// is that store once it has, and from then on. Both are guarded by stateMu.
+	sealing bool
+	store   KeyStore
+	// networkStore is store once private-link keys may be sealed to it, read without stateMu.
+	networkStore atomic.Pointer[keyStoreRef]
+	// rekeyedAt is the transaction that last re-sealed every record.
+	rekeyedAt      atomic.Uint64
 	startupUpdates map[uuid.UUID]bool
 }
 
-func Open(dir string) (*Journal, error) { return openJournal(dir, nil) }
+// Open opens a journal whose keyring is never sealed, for tests and development. It refuses one
+// that is.
+func Open(dir string) (*Journal, error) { return openJournal(context.Background(), dir, nil, nil) }
 
-func openJournal(dir string, point func(string) error) (*Journal, error) {
+// OpenSealed opens the journal with this machine's key store, which store opens. A keyring sealed to
+// it needs the store; one in the clear is sealed to it now if the store works, or else once a rekey
+// finds that it does.
+func OpenSealed(ctx context.Context, dir string, store func(context.Context) (KeyStore, error)) (*Journal, error) {
+	return openJournal(ctx, dir, store, nil)
+}
+
+func openJournal(ctx context.Context, dir string, store func(context.Context) (KeyStore, error), point func(string) error) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -91,8 +116,9 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 		return nil, err
 	}
 	fail := func(err error) (*Journal, error) { db.Close(); return nil, err }
-	j := &Journal{db: db, dir: dir}
-	if err = j.openLocalKeys(point); err != nil {
+	sweepScratch(dir)
+	j := &Journal{db: &journalDB{DB: db}, dir: dir}
+	if err = j.openLocalKeys(ctx, store, point); err != nil {
 		return fail(err)
 	}
 	// Only a clean close vouches that nothing wrote since: not an earlier agent, which forgets
@@ -118,7 +144,7 @@ func openJournal(dir string, point func(string) error) (*Journal, error) {
 		if err := j.dropSubmissionCredentials(tx); err != nil {
 			return err
 		}
-		if err := j.redactFinished(tx); err != nil {
+		if err := j.redactUnneeded(tx); err != nil {
 			return err
 		}
 		if !clean {
@@ -189,30 +215,6 @@ func (j *Journal) dropSubmissionCredentials(tx *bolt.Tx) error {
 	return j.put(tx, "identity", done, true)
 }
 
-// withoutSubmissionAccess drops the access block from a runner submission. Agents refuse them, but
-// an older management, as after a rollback, still sends one hydrated with a write credential.
-func withoutSubmissionAccess(c api.ExecutionCommand) (api.ExecutionCommand, bool, error) {
-	if c.Kind != "pipeline" || c.Pipeline == nil {
-		return c, false, nil
-	}
-	var fields map[string]jsontext.Value
-	var action string
-	if json.Unmarshal(*c.Pipeline, &fields) != nil || json.Unmarshal(fields["action"], &action) != nil || action != "submit" {
-		return c, false, nil
-	}
-	if _, held := fields["access"]; !held {
-		return c, false, nil
-	}
-	delete(fields, "access")
-	raw, err := stablejson.Marshal(fields)
-	if err != nil {
-		return c, false, err
-	}
-	message := jsontext.Value(raw)
-	c.Pipeline = &message
-	return c, true, nil
-}
-
 // seedForgotten raises each forgotten ceiling to its counter, because any command up to it may have
 // been forgotten without a record.
 func (j *Journal) seedForgotten(tx *bolt.Tx) error {
@@ -250,7 +252,7 @@ func (j *Journal) get(tx *bolt.Tx, bucket, key string, out any) error {
 	if b == nil {
 		return os.ErrNotExist
 	}
-	plain, e := j.keys.Open(b, bucket+":"+key)
+	plain, e := j.keys.Load().Open(b, bucket+":"+key)
 	if e != nil {
 		return e
 	}
@@ -266,13 +268,13 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "upgrades" || bucket == "releases" || bucket == "cross-host" || bucket == "retained-pools" || bucket == "recovery-authority" {
 		limit = 524288
 	}
-	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {
+	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "restore" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {
 		limit = 524288
 	}
 	if len(raw) > limit {
 		return errors.New("journal record limit exceeded")
 	}
-	data, e := j.keys.Seal(raw, bucket+":"+key)
+	data, e := j.keys.Load().Seal(raw, bucket+":"+key)
 	if e != nil {
 		return e
 	}
@@ -377,6 +379,13 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 		}
 		a.Backup, b.Backup = nil, nil
 	}
+	if a.Kind == "restore" && b.Kind == "restore" {
+		var ap, bp backup.Recovery
+		if a.Backup == nil || b.Backup == nil || json.Unmarshal(*a.Backup, &ap) != nil || json.Unmarshal(*b.Backup, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
+			return false
+		}
+		a.Backup, b.Backup = nil, nil
+	}
 	if a.Kind == "pipeline" && b.Kind == "pipeline" {
 		var ap, bp pipeline.Command
 		if a.Pipeline == nil || b.Pipeline == nil || json.Unmarshal(*a.Pipeline, &ap) != nil || json.Unmarshal(*b.Pipeline, &bp) != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
@@ -388,6 +397,9 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 	}
 	a.CancelRequested = false
 	b.CancelRequested = false
+	// Whether a delivery brought its values says how it travelled, not what the command is: the
+	// journal keeps the values it was first given.
+	a.SecretRelease, b.SecretRelease = nil, nil
 	aj, _ := stablejson.Marshal(a)
 	bj, _ := stablejson.Marshal(b)
 	return bytes.Equal(aj, bj)
@@ -457,6 +469,7 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 				return errors.New("command identity changed")
 			}
 			existing.Command.CancelRequested = existing.Command.CancelRequested || c.CancelRequested
+			takeReleasedValues(&existing, c)
 			out = existing
 			return j.put(tx, "operations", c.Id.String(), out)
 		} else if !errors.Is(e, os.ErrNotExist) {

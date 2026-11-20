@@ -9,11 +9,13 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/lint/requestbody"
 	"github.com/astilbahq/astilba/services/platform/internal/lint/revisioninsert"
 	"github.com/astilbahq/astilba/services/platform/internal/lint/secretkeys"
+	"github.com/astilbahq/astilba/services/platform/internal/lint/testsupport"
 	"github.com/astilbahq/astilba/services/platform/internal/lint/txnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/lint/workspaceinsert"
 	"github.com/astilbahq/astilba/services/platform/internal/lint/wsclose"
 	"golang.org/x/tools/go/analysis/multichecker"
 )
 
 func main() {
-	multichecker.Main(dberror.Analyzer, jsonguard.Analyzer, jsontag.Analyzer, operationview.Analyzer, requestbody.Analyzer, revisioninsert.Analyzer, secretkeys.Analyzer, txnetwork.Analyzer, wsclose.Analyzer)
+	multichecker.Main(dberror.Analyzer, jsonguard.Analyzer, jsontag.Analyzer, operationview.Analyzer, requestbody.Analyzer, revisioninsert.Analyzer, secretkeys.Analyzer, testsupport.Analyzer, txnetwork.Analyzer, workspaceinsert.Analyzer, wsclose.Analyzer)
 }

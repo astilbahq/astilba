@@ -27,6 +27,34 @@ export const runtimeOptions = (path: EnvironmentPath) =>
     refetchInterval: 5000,
   });
 
+// The environment's managed volumes, including the ones it keeps while retired. The deployment
+// panel, the retirement banner and the purge confirmation share this list.
+export const volumesOptions = (path: EnvironmentPath) =>
+  queryOptions({
+    queryKey: ["volumes", path],
+    queryFn: ({ signal }) =>
+      result(client.GET(`${root}/volumes`, { params: { path }, signal })),
+  });
+
+// A preview template's pull-request previews, deleted ones included. The Previews section and the
+// purge confirmation, which waits for every one to be deleted, share this list.
+export const previewsOptions = (path: EnvironmentPath) =>
+  queryOptions({
+    queryKey: ["previews", path],
+    queryFn: ({ signal }) =>
+      result(client.GET(`${root}/previews`, { params: { path }, signal })),
+    refetchInterval: 5000,
+  });
+
+// The environment's secrets. The visual and Compose editors share this list, and the catalog
+// refreshes it after staging an entry that generates one.
+export const secretsOptions = (path: EnvironmentPath) =>
+  queryOptions({
+    queryKey: ["secrets", path],
+    queryFn: ({ signal }) =>
+      result(client.GET(`${root}/secrets`, { params: { path }, signal })),
+  });
+
 export const layoutOptions = (path: EnvironmentPath) =>
   queryOptions({
     queryKey: ["layout", path],

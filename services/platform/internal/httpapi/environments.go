@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net/http"
@@ -27,9 +26,13 @@ func project(v db.Project) api.Project {
 }
 func environment(v db.GetEnvironmentRow) api.Environment {
 	purpose := api.EnvironmentPurpose(v.Purpose)
-	withoutHost := v.RetiredWithoutHost
+	withoutHost, purgedWithoutHost := v.RetiredWithoutHost, v.PurgedWithoutHost
+	// Stage 6 is every environment's values under its own key, which destroying the key on purge
+	// then reaches everywhere.
+	everyCopy := v.CustodyStage >= 6
 	return api.Environment{Purpose: &purpose, Id: v.ID, ProjectId: v.ProjectID, Name: v.Name, ConfigurationOwner: api.EnvironmentConfigurationOwner(v.ConfigurationOwner), DraftRevisionId: v.DraftRevisionID, AppliedRevisionId: v.AppliedRevisionID, DeploymentUnit: api.DeploymentUnit{Id: v.UnitID, Runtime: api.Docker, ServerId: v.ServerID},
-		State: api.EnvironmentState(v.State), RetiredAt: v.RetiredAt, RetiredBy: v.RetiredBy, RetirementOperationId: v.RetirementOperationID, RetiredWithoutHost: &withoutHost}
+		State: api.EnvironmentState(v.State), RetiredAt: v.RetiredAt, RetiredBy: v.RetiredBy, RetirementOperationId: v.RetirementOperationID, RetiredWithoutHost: &withoutHost,
+		PurgedAt: v.PurgedAt, PurgedBy: v.PurgedBy, PurgeOperationId: v.PurgeOperationID, PurgedWithoutHost: &purgedWithoutHost, PurgeReachesEveryCopy: &everyCopy}
 }
 func revision(v db.SpecificationRevision) api.Revision {
 	return api.Revision{Id: v.ID, AuthorId: v.AuthorID, CreatedAt: v.CreatedAt, Hash: hex.EncodeToString(v.ContentHash), Specification: jsontext.Value(v.Specification)}
@@ -208,49 +211,9 @@ func (s *Server) UpdateDraft(w http.ResponseWriter, r *http.Request, ws, pid, id
 		if e != nil {
 			return e
 		}
-		if e := s.Store.ValidateApplicationRoutes(ctx, tx, ws, id, spec, nil); e != nil {
-			return e
-		}
-		var applied domain.Specification
-		if env.AppliedRevisionID != nil {
-			v, e := q.GetRevision(ctx, db.GetRevisionParams{WorkspaceID: ws, EnvironmentID: id, ID: *env.AppliedRevisionID})
-			if e != nil {
-				return e
-			}
-			if e = json.Unmarshal(v.Specification, &applied); e != nil {
-				return e
-			}
-		}
-		if e = domain.ValidateNewDraft(spec, applied); e != nil {
-			return e
-		}
-		for _, secretID := range domain.SecretReferences(spec) {
-			if _, e := q.GetSecretVersion(ctx, db.GetSecretVersionParams{WorkspaceID: ws, EnvironmentID: id, ID: secretID}); e != nil {
-				return store.IfMissing(e, domain.Invalid("specification.secretVersionId"))
-			}
-		}
-		// Saving the draft unchanged adds no revision. The kept revision shows who saved it and when,
-		// so only a principal that may read the environment gets it, as on a conflict.
-		if reader {
-			same, e := q.GetRevisionHolding(ctx, db.GetRevisionHoldingParams{WorkspaceID: ws, EnvironmentID: id, ID: env.DraftRevisionID, Specification: canonical})
-			if e == nil {
-				out = revision(same)
-				return nil
-			}
-			if !errors.Is(e, pgx.ErrNoRows) {
-				return e
-			}
-		}
-		newID := uuid.New()
-		rev, e := insertRevision(r, q, ws, id, newID, canonical)
-		if e != nil {
-			return e
-		}
-		if _, e := q.AdvanceDraft(ctx, db.AdvanceDraftParams{WorkspaceID: ws, ID: id, DraftRevisionID: b.BaseRevisionId, DraftRevisionID_2: newID}); e != nil {
-			return e
-		}
+		rev, e := s.Store.SaveDraft(ctx, tx, q, *principal(ctx), env, spec, canonical)
 		out = revision(rev)
-		return store.Audit(ctx, q, *principal(ctx), ws, "draft.save", newID)
+		return e
 	})
 	if current != nil {
 		s.respond(w, 409, api.Error{Code: "conflict", Message: domain.Conflict.Message, RequestId: r.Context().Value(requestIDKey).(string), CurrentRevision: current})
@@ -442,14 +405,32 @@ func (s *Server) UpdateLayout(w http.ResponseWriter, r *http.Request, ws, pid, i
 	})
 }
 func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request, ws, pid, id uuid.UUID) {
-	s.envScope(w, r, ws, pid, id, store.WorkspaceAccess{}, func(q *db.Queries, _ db.GetEnvironmentRow) (any, error) {
+	s.scope(w, r, ws, store.WorkspaceAccess{}, func(q *db.Queries, member store.Workspace) (any, error) {
+		if _, e := q.GetEnvironment(r.Context(), db.GetEnvironmentParams{WorkspaceID: ws, ProjectID: pid, ID: id}); e != nil {
+			return nil, e
+		}
 		rows, e := q.ListSecrets(r.Context(), db.ListSecretsParams{WorkspaceID: ws, EnvironmentID: id})
 		out := []api.SecretVersion{}
 		for _, v := range rows {
-			out = append(out, api.SecretVersion{Id: v.VersionID, SecretId: v.ID, Name: v.Name, CreatedAt: v.CreatedAt})
+			version := api.SecretVersion{Id: v.VersionID, SecretId: v.ID, Name: v.Name, CreatedAt: v.CreatedAt}
+			// Only a member who can replace a short value is told of it: to a reader, it says the
+			// value can be guessed.
+			if domain.CanWrite(member.Role) && v.PlaintextBytes.Valid {
+				version.TooShortToCheck = tooShortToCheck(int(v.PlaintextBytes.Int32))
+			}
+			out = append(out, version)
 		}
 		return out, e
 	})
+}
+
+// tooShortToCheck is SecretVersion.tooShortToCheck for a value of n bytes: present only when true.
+func tooShortToCheck(n int) *bool {
+	if !domain.SecretTooShortToSearch(n) {
+		return nil
+	}
+	short := true
+	return &short
 }
 func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id uuid.UUID, name, value string, newSecret bool) {
 	if len(value) == 0 || len(value) > 65536 {
@@ -457,7 +438,7 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 		return
 	}
 	versionID := uuid.New()
-	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID}
+	item := secretbroker.Item{Kind: secretbroker.SecretVersion, ID: versionID, Environment: env}
 	access := store.WorkspaceAccess{Write: true, Recent: true}
 	keys, e := s.Store.BeginKeys(r.Context(), *principal(r.Context()), access, false, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Seal, Items: []secretbroker.Item{item}})
 	if e != nil {
@@ -479,16 +460,17 @@ func (s *Server) secret(w http.ResponseWriter, r *http.Request, ws, pid, env, id
 			}
 			name = v.Name
 		}
-		cipher, e := keys.Seal(item, []byte(value))
+		cipher, e := keys.Seal(ctx, q, item, []byte(value))
 		if e != nil {
 			return nil, e
 		}
 		sealed = true
-		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID})
+		plain, encoded := store.SecretLengths([]byte(value))
+		v, e := q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: id, ID: versionID, EncryptedValue: cipher, AuthorID: principal(ctx).Account.ID, PlaintextBytes: plain, JsonBytes: encoded})
 		if e != nil {
 			return nil, e
 		}
-		return api.SecretVersion{Id: v.ID, SecretId: id, Name: name, CreatedAt: v.CreatedAt}, store.Audit(ctx, q, *principal(ctx), ws, "secret.version", versionID)
+		return api.SecretVersion{Id: v.ID, SecretId: id, Name: name, CreatedAt: v.CreatedAt, TooShortToCheck: tooShortToCheck(len(value))}, store.Audit(ctx, q, *principal(ctx), ws, "secret.version", versionID)
 	})
 }
 func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {

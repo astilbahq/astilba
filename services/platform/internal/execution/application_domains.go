@@ -7,12 +7,15 @@ import (
 	"sort"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -30,7 +33,7 @@ type domainWorker struct {
 	service *Service
 }
 
-func (w *domainWorker) Timeout(*river.Job[domainArgs]) time.Duration { return time.Minute }
+func (w *domainWorker) Timeout(*river.Job[domainArgs]) time.Duration { return dnsWork }
 
 // NextRetry keeps retries within the sweep's one-minute cadence. River's default backoff
 // would leave a revoked server's records published for hours after a short provider outage.
@@ -69,8 +72,11 @@ func (s *Service) domainConfiguration(ctx context.Context, tx pgx.Tx, ws, id uui
 		return v, nil
 	}
 	if e == nil && (storedBase != base || approved == nil || *approved != controller || transfer) {
+		// An approval that ended says why, such as revocation or DNS records newer than it.
+		if v.State != "review_required" || v.Note == "" {
+			v.Note = "An owner must review and approve these addresses before DNS automation can resume."
+		}
 		v.State = "review_required"
-		v.Note = "An owner must review and approve these addresses before DNS automation can resume."
 	}
 	return v, e
 }
@@ -118,8 +124,12 @@ func (s *Service) ConfigureServerDomain(ctx context.Context, p store.Principal, 
 		if s.DNS != nil {
 			state = "pending"
 		}
+		// The records the last job observed name the server's records under the base they were
+		// observed at, so they are forgotten when the base changes: under the new one, the old
+		// records' absence says nothing about the zone.
 		var generation int64
-		e = tx.QueryRow(ctx, `INSERT INTO server_domains(server_id,workspace_id,base,ipv4,ipv6,approved_controller,state) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(server_id) DO UPDATE SET base=$3,ipv4=$4,ipv6=$5,generation=server_domains.generation+1,approved_controller=$6,state=$7,observed_at=NULL,note='' RETURNING generation`, id, ws, current.Base, ipv4, ipv6, controller, state).Scan(&generation)
+		e = tx.QueryRow(ctx, `INSERT INTO server_domains(server_id,workspace_id,base,ipv4,ipv6,approved_controller,state,approved_at) VALUES($1,$2,$3,$4,$5,$6,$7,clock_timestamp()) ON CONFLICT(server_id) DO UPDATE SET base=$3,ipv4=$4,ipv6=$5,generation=server_domains.generation+1,approved_controller=$6,state=$7,observed_at=NULL,note='',approved_at=clock_timestamp(),
+			records=CASE WHEN server_domains.base=$3 THEN server_domains.records ELSE '{}' END,observed_zone=CASE WHEN server_domains.base=$3 THEN server_domains.observed_zone ELSE '' END RETURNING generation`, id, ws, current.Base, ipv4, ipv6, controller, state).Scan(&generation)
 		if e != nil {
 			return e
 		}
@@ -152,18 +162,24 @@ func (s *Service) SuggestDomain(ctx context.Context, p store.Principal, ws, pid,
 		if v.Server != nil && *v.Server != id {
 			return domain.Conflict
 		}
-		out.Dns, e = s.domainConfiguration(ctx, tx, ws, id)
-		if e != nil {
-			return e
-		}
-		if out.Dns.State == "disabled" || out.Dns.State == "unconfigured" || out.Dns.State == "review_required" {
-			return domain.Invalid("server.domain")
-		}
-		out.Hostname = domain.ApplicationHostname(s.Store.ApplicationDomain, ws, env, app, id)
+		out.Hostname, out.Dns, e = s.generatedHostname(ctx, tx, ws, env, app, id)
 		out.ServerId = id
-		return nil
+		return e
 	})
 	return out, e
+}
+
+// generatedHostname is the generated application domain of the app on the server, which must
+// be the environment's server; the caller checks that. Its addresses must be in use.
+func (s *Service) generatedHostname(ctx context.Context, tx pgx.Tx, ws, env, app, server uuid.UUID) (string, api.ServerDomain, error) {
+	config, e := s.domainConfiguration(ctx, tx, ws, server)
+	if e != nil {
+		return "", config, e
+	}
+	if config.State == "disabled" || config.State == "unconfigured" || config.State == "review_required" {
+		return "", config, domain.Invalid("server.domain")
+	}
+	return domain.ApplicationHostname(s.Store.ApplicationDomain, ws, env, app, server), config, nil
 }
 func (s *Service) CheckDomain(ctx context.Context, p store.Principal, ws, id uuid.UUID, hostname string) (api.DomainCheck, error) {
 	out := api.DomainCheck{Hostname: hostname, Addresses: []string{}, State: "unverified", CheckedAt: time.Now().UTC(), Note: "DNS does not establish domain ownership, certificate readiness or application reachability. CDN/proxy addresses cannot be verified against this server."}
@@ -239,68 +255,106 @@ func (s *Service) SweepDomains(ctx context.Context) error {
 	}
 	return tx.Commit(ctx)
 }
+
+// reconcileDomain converges the provider on what the database says now, holding the server's
+// DNS lease rather than a transaction or connection while it asks the provider.
 func (s *Service) reconcileDomain(ctx context.Context, a domainArgs) error {
 	if s.DNS == nil {
 		return nil
 	}
-	conn, e := s.Store.Pool.Acquire(ctx)
+	lease, taken, e := s.takeDNSLease(ctx, a.Server)
 	if e != nil {
 		return e
 	}
-	defer conn.Release()
-	var locked bool
-	if e = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtextextended($1,32))", a.Server.String()).Scan(&locked); e != nil {
-		return e
-	}
-	if !locked {
+	if !taken {
 		return river.JobSnooze(time.Second)
 	}
-	defer func() {
-		unlock, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if _, err := conn.Exec(unlock, "SELECT pg_advisory_unlock(hashtextextended($1,32))", a.Server.String()); err != nil {
-			conn.Conn().Close(unlock)
-		}
-	}()
+	// A name a job may have published after losing its lease is recorded first, so this job
+	// withdraws it should it have to go.
+	e = s.adoptLatePublications(ctx, lease)
 	// Withdrawal converges on what the database says now, whichever job runs it.
-	withdrawn := s.withdrawStalePublications(ctx, conn, a.Server)
-	var ws, installation uuid.UUID
-	var base, ipv4, ipv6 string
-	e = conn.QueryRow(ctx, `SELECT d.workspace_id,d.base,d.ipv4,d.ipv6,i.id FROM server_domains d JOIN servers s ON s.id=d.server_id CROSS JOIN dns_installation i WHERE d.server_id=$1 AND d.generation=$2 AND d.approved_controller=$3 AND s.controller_generation=$3 AND NOT s.revoked AND NOT s.awaiting_transfer AND d.base=$4`, a.Server, a.Generation, a.Controller, s.Store.ApplicationDomain).Scan(&ws, &base, &ipv4, &ipv6, &installation)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return withdrawn
+	if e == nil {
+		e = s.withdrawStalePublications(ctx, lease)
 	}
+	target, claimed := s.claimPublication(ctx, lease, a)
+	e = errors.Join(e, claimed)
+	if target != nil {
+		e = errors.Join(e, s.publish(ctx, lease, a, target))
+	}
+	unanswered := errors.Is(e, applicationdns.ErrUnanswered)
+	if errors.Is(e, errDNSLeaseLost) {
+		e = errors.Join(e, s.recheckAfterLostLease(ctx, a, target, unanswered))
+	}
+	// A request that got no answer may still reach the provider. Its lease then runs out on its
+	// own, which keeps the next job from looking before that request lands.
+	if !unanswered {
+		s.releaseDNSLease(lease)
+	}
+	return e
+}
+
+// claimPublication returns the addresses the job may publish, recording the name first, or nil
+// when it may publish none. It holds the server's DNS lock, so no revocation commits between
+// the check and the record: recording a publication ends a revocation's withdrawal.
+func (s *Service) claimPublication(ctx context.Context, lease dnsLease, a domainArgs) (*db.DNSPublicationTargetRow, error) {
+	var claimed *db.DNSPublicationTargetRow
+	e := s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
+		q := db.New(tx)
+		target, e := q.DNSPublicationTarget(ctx, db.DNSPublicationTargetParams{ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}, Base: s.Store.ApplicationDomain})
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		e = s.Store.ManagementAdmission(ctx, tx, target.WorkspaceID)
+		if errors.Is(e, store.SubscriptionRequired) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		if e = s.recordPublication(ctx, q, target.WorkspaceID, a.Server, target.Base); e != nil {
+			return e
+		}
+		claimed = &target
+		return nil
+	})
 	if e != nil {
-		return errors.Join(withdrawn, e)
+		return nil, e
 	}
-	// Hosted entitlement is checked without keeping a transaction open over DNS.
-	tx, e := conn.Begin(ctx)
+	return claimed, nil
+}
+
+// publish asks the provider for the claimed addresses, then records what it observed. When the
+// provider's records show the approval is older than the zone, it publishes nothing and ends the
+// approval instead.
+func (s *Service) publish(ctx context.Context, lease dnsLease, a domainArgs, target *db.DNSPublicationTargetRow) error {
+	name := dnsName(target.Base, a.Server)
+	judge, e := s.approvalJudge(ctx, storedApproval{target.Ipv4, target.Ipv6, target.ApprovedAt}, target.Records, target.ObservedZone)
 	if e != nil {
-		return errors.Join(withdrawn, e)
+		return e
 	}
-	e = s.Store.ManagementAdmission(ctx, tx, ws)
-	_ = tx.Rollback(ctx)
-	if errors.Is(e, store.SubscriptionRequired) {
-		return withdrawn
+	records, providerErr := s.DNS.Reconcile(ctx, name, dnsMarker(target.InstallationID, a.Server), target.Ipv4, target.Ipv6, judge, s.auditDeletion(ctx, target.WorkspaceID, a.Server, name, withdrawAddress))
+	if errors.Is(providerErr, errApprovalOutdated) {
+		return s.endOutdatedApproval(ctx, lease, a)
 	}
-	if e != nil {
-		return errors.Join(withdrawn, e)
-	}
-	if e = s.recordPublication(ctx, conn, ws, a.Server, base); e != nil {
-		return errors.Join(withdrawn, e)
-	}
-	name := dnsName(base, a.Server)
-	records, providerErr := s.DNS.Reconcile(ctx, name, dnsMarker(installation, a.Server), ipv4, ipv6, s.auditDeletion(ctx, conn, ws, a.Server, name, withdrawAddress))
 	state, note := "applied", "Provider records observed. DNS propagation, TLS and application reachability are separate checks."
 	if providerErr != nil {
 		state, note = "failed", providerErr.Error()
-	} else if e = s.confirmDeletions(ctx, conn, a.Server, name, records); e != nil {
-		return errors.Join(withdrawn, e)
 	}
 	raw, _ := stablejson.Marshal(records)
 	if records == nil {
 		raw = []byte(`{}`)
 	}
-	_, e = conn.Exec(ctx, `UPDATE server_domains SET state=$4,note=$5,observed_at=clock_timestamp(),records=$6 WHERE server_id=$1 AND generation=$2 AND approved_controller=$3`, a.Server, a.Generation, a.Controller, state, note, raw)
-	return errors.Join(withdrawn, providerErr, e)
+	e = s.underDNSLease(ctx, lease, func(ctx context.Context, tx pgx.Tx) error {
+		q := db.New(tx)
+		if providerErr == nil {
+			if e := s.confirmDeletions(ctx, q, a.Server, name, records); e != nil {
+				return e
+			}
+		}
+		return q.ObserveServerDomain(ctx, db.ObserveServerDomainParams{State: state, Note: note, Observed: providerErr == nil, Records: raw, Zone: s.DNS.Zone, ServerID: a.Server, Generation: a.Generation, Controller: pgtype.Int8{Int64: a.Controller, Valid: true}})
+	})
+	return errors.Join(providerErr, e)
 }

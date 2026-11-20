@@ -1,0 +1,165 @@
+import type { Meta, StoryObj } from "@storybook/tanstack-react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
+import {
+  ShellPreview,
+  session,
+  workspace,
+  examples,
+  environments,
+  projectHandlers,
+} from "../../workshop/app-preview";
+import {
+  resetRevokedServerBackups,
+  revokedServerBackupHandlers,
+} from "../../workshop/backup-recovery-fixtures";
+import { scenario } from "../../workshop/fixtures";
+
+const meta = {
+  title: "Pages/Environment backups",
+  component: ShellPreview,
+  args: {
+    initialPath: `/?workspace=${workspace.id}&project=${examples[0].id}&environment=${environments[0].id}`,
+  },
+  beforeEach: resetRevokedServerBackups,
+  parameters: scenario(
+    session,
+    ...revokedServerBackupHandlers(),
+    ...projectHandlers(),
+  ),
+} satisfies Meta<typeof ShellPreview>;
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+async function discardFirstRestore(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await userEvent.click(
+    await canvas.findByRole("tab", { name: "Deployments" }),
+  );
+  const [discard] = await canvas.findAllByRole("button", {
+    name: "Discard restored volume",
+  });
+  await userEvent.click(discard);
+  const dialog = await within(canvasElement.ownerDocument.body).findByRole(
+    "alertdialog",
+  );
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Discard volume" }),
+  );
+  return { canvas, dialog: within(dialog) };
+}
+
+// A policy whose server was revoked offers its recorded snapshots for a restore onto the
+// replacement, and its destination is marked as exposed.
+export const RevokedServerBackups: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("tab", { name: "Deployments" }),
+    );
+    await expect(
+      await canvas.findByRole("region", {
+        name: "Restore from a revoked server",
+      }),
+    ).toBeVisible();
+    // Every receipt is offered, and none is chosen for the owner.
+    await expect(
+      await canvas.findAllByRole("radio", {
+        name: /Recorded by Astilba/,
+        checked: false,
+      }),
+    ).toHaveLength(2);
+    // A confirmed discard hides the restore's actions; its running status takes their focus.
+    await discardFirstRestore(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(/^Discarding the volume\./)).toHaveFocus(),
+    );
+    await expect(
+      canvas.queryByRole("button", { name: "Prepare cutover draft" }),
+    ).not.toBeInTheDocument();
+  },
+};
+
+// Another owner's discard started first: the refusal stays in the open dialog, and closing it
+// hands focus to the restore's status, as its actions have gone.
+export const RefusedDiscard: Story = {
+  parameters: scenario(
+    session,
+    ...revokedServerBackupHandlers({ refuseDiscard: true }),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const { canvas, dialog } = await discardFirstRestore(canvasElement);
+    // The refusal the server names reads from the catalogue, and the dialog offers no second attempt.
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      "This volume is already being discarded.",
+    );
+    await waitFor(() =>
+      expect(
+        dialog.getByRole("button", { name: "Discard volume" }),
+      ).toHaveAttribute("aria-disabled", "true"),
+    );
+    await expect(
+      canvas.getByText(/^Discarding the volume\./),
+    ).toBeInTheDocument();
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(canvas.getByText(/^Discarding the volume\./)).toHaveFocus(),
+    );
+    await expect(
+      canvas.queryByRole("button", { name: "Prepare cutover draft" }),
+    ).not.toBeInTheDocument();
+  },
+};
+
+// The reload after an accepted discard fails: the restore still shows the discard and holds its
+// volume, and the next load, by when the discard has failed, replaces it with the server's record.
+export const DiscardOutlivesAFailedReload: Story = {
+  parameters: scenario(
+    session,
+    ...revokedServerBackupHandlers({ failReload: true }),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const { canvas } = await discardFirstRestore(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(/^Discarding the volume\./)).toHaveFocus(),
+    );
+    await expect(
+      canvas.queryByRole("button", { name: "Prepare cutover draft" }),
+    ).not.toBeInTheDocument();
+    await expect(
+      await canvas.findByText(
+        /wasn't discarded: The server couldn't delete the volume\./,
+        undefined,
+        { timeout: 8000 },
+      ),
+    ).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "Prepare cutover draft" }),
+    ).toBeVisible();
+  },
+};
+
+// The discard starts but its reply is lost: the dialog keeps the error, and says why it offers no
+// second attempt.
+export const LostDiscardReply: Story = {
+  parameters: scenario(
+    session,
+    ...revokedServerBackupHandlers({ loseReply: true }),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const { dialog } = await discardFirstRestore(canvasElement);
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      "The platform couldn't be reached.",
+    );
+    await waitFor(() =>
+      expect(dialog.getByRole("status")).toHaveTextContent(
+        /^Discarding the volume\./,
+      ),
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Discard volume" }),
+    ).toHaveAttribute("aria-disabled", "true");
+  },
+};

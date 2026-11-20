@@ -20,11 +20,6 @@ import (
 // server. docs/environment-retirement.md describes what it removes and keeps.
 const retireAction = "retire"
 
-func retirementCommand(c api.ExecutionCommand) bool {
-	var p deployment.Payload
-	return c.Kind == "visual" && c.Visual != nil && json.Unmarshal(*c.Visual, &p) == nil && p.Action == retireAction
-}
-
 // requireActive refuses a change to an environment that is retiring or retired. Callers read the
 // state under the workspace lock, which retirement and restore also hold.
 func requireActive(state string) error {
@@ -86,24 +81,14 @@ func (s *Service) retire(ctx context.Context, tx pgx.Tx, p store.Principal, ws, 
 		if plan, next.RetiredWithoutHost, err = retirementPlan(ctx, tx, ws, env, e); err != nil {
 			return err
 		}
-		server, err := q.RetirementServer(ctx, db.RetirementServerParams{WorkspaceID: ws, ID: *e.ServerID})
+		revoked, err := lifecycleServer(ctx, q, ws, *e.ServerID, holds.ServerBusy, func(c api.AgentCapabilities) *bool { return c.Retirement }, domain.RetirementAgentUpdate)
 		if err != nil {
 			return err
 		}
-		if server.Revoked {
+		if revoked {
 			// Nothing can be delivered to a revoked server, and revocation never stopped what it runs.
 			// The controller keeps what it last knew about that runtime, because nothing confirmed a change.
 			contact, next.RetiredWithoutHost = false, true
-		} else {
-			var capabilities api.AgentCapabilities
-			switch {
-			case server.AwaitingTransfer:
-				return domain.RetirementRefused(domain.RetirementServerTransfer)
-			case json.Unmarshal(server.Capabilities, &capabilities) != nil || capabilities.Retirement == nil || !*capabilities.Retirement:
-				return domain.RetirementRefused(domain.RetirementAgentUpdate)
-			case holds.ServerBusy:
-				return domain.RetirementRefused(domain.RetirementServerBusy)
-			}
 		}
 	}
 	if err = s.retireDependents(ctx, tx, p, ws, env); err != nil {
@@ -117,6 +102,27 @@ func (s *Service) retire(ctx context.Context, tx pgx.Tx, p store.Principal, ws, 
 		next.State, next.RetirementOperationID = "retiring", &op.Id
 	}
 	return q.SetEnvironmentRetirement(ctx, next)
+}
+
+// lifecycleServer admits a retire or purge command to the environment's server: one waiting for a
+// verified agent transfer, one whose agent cannot run it (outdated names the refusal) or one busy
+// with another operation is refused. A revoked server can be sent nothing, which it reports
+// instead, so the change finishes without it.
+func lifecycleServer(ctx context.Context, q *db.Queries, ws, id uuid.UUID, busy bool, supports func(api.AgentCapabilities) *bool, outdated string) (revoked bool, err error) {
+	server, err := q.RetirementServer(ctx, db.RetirementServerParams{WorkspaceID: ws, ID: id})
+	if err != nil || server.Revoked {
+		return server.Revoked, err
+	}
+	var capabilities api.AgentCapabilities
+	switch {
+	case server.AwaitingTransfer:
+		return false, domain.RetirementRefused(domain.RetirementServerTransfer)
+	case json.Unmarshal(server.Capabilities, &capabilities) != nil || supports(capabilities) == nil || !*supports(capabilities):
+		return false, domain.RetirementRefused(outdated)
+	case busy:
+		return false, domain.RetirementRefused(domain.RetirementServerBusy)
+	}
+	return false, nil
 }
 
 // retirementPlan is what the retirement command removes from the server of the environment's unit:
@@ -231,18 +237,11 @@ func (s *Service) retireDependents(ctx context.Context, tx pgx.Tx, p store.Princ
 // finalizeRetirement publishes a host's confirmed removal, from a report or a recovered checkpoint.
 // The command's own identity, not anything the host says, decides what is released.
 func (s *Service) finalizeRetirement(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) error {
-	var p deployment.Payload
-	if c.Visual == nil || json.Unmarshal(*c.Visual, &p) != nil || p.Action != retireAction || p.Plan.Preview != nil || p.Digest() != c.PlanHash || p.Plan.ServerID != c.ServerId || p.Plan.EnvironmentID != c.EnvironmentId || p.Plan.UnitID != c.ResourceId || p.Plan.Validate(false) != nil {
-		return domain.Forbidden
-	}
-	q := db.New(tx)
-	known, err := q.OperationReportState(ctx, db.OperationReportStateParams{WorkspaceID: ws, ID: c.Id})
-	if err != nil {
+	_, settled, err := removalCommand(ctx, tx, ws, c, retireAction)
+	if err != nil || settled {
 		return err
 	}
-	if known.ReportSequence == settledReportSequence {
-		return nil
-	}
+	q := db.New(tx)
 	if err = recordRuntimeOutcome(ctx, tx, ws, c.EnvironmentId, c.Id, portability.RuntimeOutcome{Kind: "removed"}); err != nil {
 		return err
 	}
@@ -263,7 +262,7 @@ func (s *Service) finalizeRetirement(ctx context.Context, tx pgx.Tx, ws uuid.UUI
 
 // finalizeRemoval publishes a recovered removal by the command that made it.
 func (s *Service) finalizeRemoval(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) error {
-	if retirementCommand(c) {
+	if lifecycleAction(c) == retireAction {
 		return s.finalizeRetirement(ctx, tx, ws, c)
 	}
 	return s.finalizePreviewCleanup(ctx, tx, ws, c)

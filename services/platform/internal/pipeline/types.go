@@ -16,8 +16,7 @@ import (
 
 // BuilderImage is BuildKit's rootless image. The agent runs it as an unprivileged host user in
 // a user namespace; see the builder in internal/agent/builder.go.
-const BuilderImage = "moby/buildkit:v0.34.1-rootless@sha256:f68752a5a94acfcdad2d07867b7075601a421638e17fc5f28efc1c814d0c4f89"
-const BuilderVersion = "v0.34.1"
+const BuilderImage = "moby/buildkit:v0.35.0-rootless@sha256:5987568f92dafbfb679879de59c1cd8d26597f5f6635c314e166164e2615870c"
 
 // BuildNetworkV1 marks a build that must run behind the agent's build network policy.
 const BuildNetworkV1 = "v1"
@@ -50,6 +49,10 @@ type Access struct {
 // builds untrusted code, so management makes every write to a repository itself.
 type RunnerAccess struct {
 	Clone Credential `json:"clone"`
+	// CloneExpires is when a minted clone credential, such as a GitHub App's, stops working; a
+	// stored one has none. A runner only ever refuses to use the credential after it: the time
+	// grants nothing.
+	CloneExpires *time.Time `json:"cloneExpires,omitempty"`
 }
 type Registry struct {
 	ID         uuid.UUID `json:"id"`
@@ -348,3 +351,16 @@ func EncryptionIdentity(ws, id uuid.UUID, kind string) string {
 }
 
 func (c Command) IsBuild() bool { return c.Action == "build" || c.Action == "build-preview" }
+
+// StartStep is the first step a runner reports for a pipeline, once it has started it. Management
+// allows a pipeline whose start it heard of before the deadline to run for its lifetime past it.
+const StartStep = "runner"
+
+// Lifetime is how long after it is issued a pipeline may start, its deadline, and how long it may
+// run once its runner starts it. A build's is its budget's assignment lifetime.
+func (c Command) Lifetime() time.Duration {
+	if c.IsBuild() && c.Build != nil {
+		return time.Duration(c.Build.Limits().Minutes) * time.Minute
+	}
+	return 30 * time.Minute
+}

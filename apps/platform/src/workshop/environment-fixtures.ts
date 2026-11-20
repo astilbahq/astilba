@@ -149,8 +149,10 @@ export function environmentHandlers() {
       "volumes",
       "builds",
       "build-rejections",
+      "build-waits",
       "upgrades",
       "backup-policies",
+      "catalog-stagings",
       "previews",
     ].map((suffix) =>
       http.get(`${environmentRoot}/${suffix}`, () => HttpResponse.json([])),

@@ -22,15 +22,25 @@ SELECT r.id,r.workspace_id FROM preview_requests r JOIN due ON due.id=r.id
 WHERE r.state<>'deleted' AND r.next_check_at<=now()
 ORDER BY due.turn,due.next_check_at,due.id LIMIT 20 FOR UPDATE OF r SKIP LOCKED;
 
+-- name: PreviewHost :one
+-- The host a request's preview runs on: where allocation placed its environment's unit. That was
+-- its policy's host then, and a policy can't change host while it has an allocated preview, but
+-- offline recovery can keep a copy of the policy naming a host the policy has left since. A request
+-- without an environment has nothing on any host and answers to its policy's host.
+-- RequestPolicyPreviewCleanup picks the same host for each request.
+SELECT COALESCE((SELECT u.server_id FROM deployment_units u WHERE u.workspace_id = @workspace_id AND u.environment_id = sqlc.narg(environment_id)::uuid AND u.primary_unit),@policy_host::uuid)::uuid AS server_id;
+
 -- name: ReleaseRevokedHostPreviews :many
--- A policy runs every preview on its reserved host, and once that host is revoked nothing it says
--- can be accepted, so these could never be confirmed removed and would hold their slots for good.
--- Only allocated previews hold a slot. Management's runtime records stay as last known, but
--- ServerControllerInventory no longer expects them on the host.
+-- Once a host is revoked nothing it says can be accepted, so the previews it runs could never be
+-- confirmed removed and would hold their slots for good. Only allocated previews hold a slot. A
+-- preview runs where allocation placed its environment's unit, on its policy's host, and a policy
+-- can't change host while it has one. Matching the unit rather than the policy also holds when
+-- offline recovery keeps a copy of the policy that names a host the policy has since left.
+-- Management's runtime records stay as last known, but ServerControllerInventory no longer expects
+-- them on the host.
 UPDATE preview_requests r SET state='deleted',note = @note,released_by_revocation=true,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day'
-FROM preview_policies p
-WHERE p.workspace_id=r.workspace_id AND p.id=r.policy_id AND r.workspace_id = @workspace_id AND p.server_id = @server_id
-    AND r.environment_id IS NOT NULL AND r.state<>'deleted'
+WHERE r.workspace_id = @workspace_id AND r.environment_id IS NOT NULL AND r.state<>'deleted'
+    AND EXISTS(SELECT 1 FROM deployment_units u WHERE u.workspace_id=r.workspace_id AND u.environment_id=r.environment_id AND u.server_id = @server_id::uuid)
 RETURNING r.environment_id::uuid AS environment_id;
 
 -- name: WithdrawRevokedHostPreviewApprovals :exec
@@ -43,6 +53,15 @@ WHERE workspace_id = @workspace_id AND server_id = @server_id;
 -- Discovery waits a cycle while its workspace has a backlog of request jobs.
 UPDATE preview_policies SET next_discovery_at = now() + interval '5 minutes' WHERE workspace_id = @workspace_id AND id = @id;
 
+-- name: PreviewApproverHolds :one
+-- Whether an owner's approval to run previews, or to clean one up, on server still holds: the
+-- check every standing approval makes, and the server is still the preview host it was approved
+-- for, with the controller generation it had then.
+SELECT (policy_approver_holds(@workspace_id::uuid, @actor_id::uuid, @auth_version::bigint, true)
+    AND EXISTS(SELECT 1 FROM servers s WHERE s.workspace_id = @workspace_id::uuid AND s.id = @server_id::uuid
+        AND s.controller_generation = @controller_generation::bigint AND s.preview_only AND s.role = 'combined'
+        AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false)))::boolean;
+
 -- name: PreviewForkApproval :one
 -- A fork commit's approval counts only while the owner who gave it is still one with the same
 -- authentication version; otherwise it reads as no approval.
@@ -51,3 +70,17 @@ SELECT CASE WHEN held THEN approved_head ELSE '' END::text AS head,
     CASE WHEN held THEN approved_generation ELSE 0 END::bigint AS generation
 FROM preview_requests, LATERAL (SELECT policy_approver_holds(workspace_id,approved_by,approved_auth_version,true) AS held) approval
 WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: DeleteEndedPreviewSecretVersions :exec
+-- A preview environment's copies of its template's secret values are kept only while an open request
+-- names it: its cleanup or release deletes them as it ends the request. Recovery can end a request
+-- whose restored copy was open, and merging never deletes, so it removes the copies this way.
+DELETE FROM secret_versions v USING secrets s, environments e
+WHERE s.workspace_id = @workspace_id AND v.workspace_id=s.workspace_id AND v.secret_id=s.id
+    AND e.workspace_id=s.workspace_id AND e.id=s.environment_id AND e.purpose='preview'
+    AND NOT EXISTS(SELECT 1 FROM preview_requests r WHERE r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.state<>'deleted');
+
+-- name: DeleteEndedPreviewSecrets :exec
+DELETE FROM secrets s USING environments e
+WHERE s.workspace_id = @workspace_id AND e.workspace_id=s.workspace_id AND e.id=s.environment_id AND e.purpose='preview'
+    AND NOT EXISTS(SELECT 1 FROM preview_requests r WHERE r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.state<>'deleted');

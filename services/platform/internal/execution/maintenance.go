@@ -65,7 +65,7 @@ func (s *Service) maintenanceEffectAllowed(ctx context.Context, tx pgx.Tx, ws uu
 	}
 	var phase string
 	var raw []byte
-	if err := tx.QueryRow(ctx, `SELECT h.phase,o.command FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id WHERE h.workspace_id=$1 AND h.id=$2 AND o.state NOT IN ('succeeded','failed','cancelled')`, ws, *c.ParentId).Scan(&phase, &raw); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT h.phase,o.command FROM cross_host_operations h JOIN execution_operations o ON o.id=h.id WHERE h.workspace_id=$1 AND h.id=$2 AND o.state IN ('queued','dispatched','running','needs_attention')`, ws, *c.ParentId).Scan(&phase, &raw); err != nil {
 		return false, err
 	}
 	var root api.ExecutionCommand
@@ -260,16 +260,26 @@ func (s *Service) insertMaintenanceChild(ctx context.Context, tx pgx.Tx, ws uuid
 	}
 	c := maintenanceChildPayload(parent, phase, m, u)
 	c.Id, c.ParentId, c.Generation = key, &parent.Id, generation
-	c.Deadline = time.Now().Add(30 * time.Minute)
-	if c.Kind == "upgrade" {
-		c.Deadline = time.Now().Add(2 * time.Hour)
-	}
+	c.Deadline = time.Now().Add(maintenanceChildLifetime(c, m))
 	if parent.RecoveryCheckpoint == nil {
 		return domain.Invalid("recovery.checkpoint")
 	}
 	c.RecoveryCheckpoint = parent.RecoveryCheckpoint
 	_, err := s.insert(ctx, tx, ws, uuid.New(), nil, c)
 	return err
+}
+
+// maintenanceChildLifetime is how long a child may start or run. A backup lives past its run's
+// own timeout, so a long upload fails by that timeout and the parent resumes the writers, rather
+// than reaching a deadline whose outcome someone must inspect on the host.
+func maintenanceChildLifetime(c api.ExecutionCommand, m *coordinatedMaintenance) time.Duration {
+	switch {
+	case c.Kind == "upgrade":
+		return 2 * time.Hour
+	case (c.Kind == "backup" || c.Kind == "schedule") && m.Effect.Backup != nil:
+		return m.Effect.Backup.Lifetime()
+	}
+	return 30 * time.Minute
 }
 
 // leaveUnstartedEffect moves a parent on from a data effect that will not start, and returns
@@ -335,7 +345,7 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, keys *pa
 		return tx.Commit(ctx)
 	}
 	if cancelled && strings.HasPrefix(phase, "maintenance-run:") {
-		if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled')`, parent.Id); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention')`, parent.Id); err != nil {
 			return err
 		}
 	}
@@ -369,11 +379,11 @@ func (s *Service) coordinateMaintenance(ctx context.Context, tx pgx.Tx, keys *pa
 	initial := m.Effect.Upgrade == nil || maintenanceAction(phase) == "" || maintenanceAction(phase) == "prepare"
 	if (cancelled || initial && time.Now().After(parent.Deadline)) && beforeEffect {
 		var pending bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled'))`, parent.Id).Scan(&pending); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM execution_operations WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention'))`, parent.Id).Scan(&pending); err != nil {
 			return err
 		}
 		if pending {
-			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state NOT IN ('succeeded','failed','cancelled')`, parent.Id); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE execution_operations SET cancel_requested=true WHERE parent_id=$1 AND state IN ('queued','dispatched','running','needs_attention')`, parent.Id); err != nil {
 				return err
 			}
 			return wait("running", "Waiting for known host outcomes before resuming maintenance writers.")

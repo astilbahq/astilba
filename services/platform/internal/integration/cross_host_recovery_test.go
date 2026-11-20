@@ -92,7 +92,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		in.Capabilities.ServiceOutputs, in.Capabilities.SafeReleases = &yes, &yes
 		inventory := hostnetwork.StableInventory(nil)
 		in.Preflight.CrossHostInventory = &api.CrossHostInventory{IngressReady: &yes, CpuMillis: 4000, MemoryMiB: 8192, UnboundedInventoryHash: inventory}
-		if _, err := source.execution.Enroll(ctx, in, "test"); err != nil {
+		if _, err := source.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 			t.Fatal(err)
 		}
 		identity, err := source.execution.Authenticate(ctx, in.ServerId, strings.SplitN(token, ".", 2)[1])
@@ -351,10 +351,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err := destination.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, destination.st, source.st.Keys)
-		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Older management backup')`, ws); err != nil {
-			t.Fatal(err)
-		}
+		restoredWorkspace(t, source.st, destination.st, ws, "Older management backup")
 		if _, err := destination.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, owner); err != nil {
 			t.Fatal(err)
 		}
@@ -364,7 +361,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(ctx)
-			if err = portability.MergeRecovery(ctx, tx, savedArchive, owner); err != nil {
+			if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, destination.st, savedArchive.Workspace), savedArchive, owner); err != nil {
 				t.Fatal("restore saved management domain snapshot", err)
 			}
 			for _, raw := range savedCheckpoints {
@@ -397,15 +394,12 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err := fork.execution.Stop(ctx); err != nil {
 			t.Fatal(err)
 		}
-		useKeys(t, fork.st, source.st.Keys)
+		restoredWorkspace(t, source.st, fork.st, ws, "Restored source history")
 		originalOwner, err := source.st.Queries.AccountByID(ctx, source.owner)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err = fork.st.Pool.Exec(ctx, `INSERT INTO accounts(id,email,name,password_hash) VALUES($1,$2,$3,$4)`, originalOwner.ID, originalOwner.Email, originalOwner.Name, originalOwner.PasswordHash); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = fork.st.Pool.Exec(ctx, `INSERT INTO workspaces(id,name) VALUES($1,'Restored source history')`, ws); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = fork.st.Pool.Exec(ctx, `INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,'owner')`, ws, source.owner); err != nil {
@@ -433,7 +427,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = portability.MergeRecovery(ctx, tx, forkBase, source.owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, fork.st, forkBase.Workspace), forkBase, source.owner); err != nil {
 			tx.Rollback(ctx)
 			t.Fatal(err)
 		}
@@ -605,11 +599,9 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 		if _, err = destination.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state) VALUES($1,$2,$3,$4,$5,$6,'network','queued')`, restriction.Id, ws, restriction.ServerId, restriction.Generation, requestKey, restrictionRaw); err != nil {
 			t.Fatal(err)
 		}
-		input := execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner, HostExports: combined}
-		preview, err := destination.execution.RecoverCrossHost(ctx, input)
-		if err != nil || len(preview.Parents) != 2 || len(preview.Handovers) != 4 {
-			t.Fatal("inspect disjoint parent bases", err, preview)
-		}
+		// The newest checkpoint is this branch's, which never saw the first parent. Its hosts still
+		// run it, so recovery refuses them by name; revoked and left out, the rest recover.
+		input, preview := recoverWithoutAnotherManagementsHosts(t, ctx, destination, execution.RecoveryImport{WorkspaceID: ws, OwnerID: owner}, operation.Id, operationB.Id, enrollments[:2], combined[:2], combined[2:])
 		input.ExpectedState = preview.StateHash
 		applied, err := destination.execution.RecoverCrossHost(ctx, input)
 		if err != nil || !applied.Applied {
@@ -631,7 +623,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if err = portability.MergeRecovery(ctx, tx, preIdentify, owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, older.st, preIdentify.Workspace), preIdentify, owner); err != nil {
 			t.Fatal(err)
 		}
 		if err = tx.Commit(ctx); err != nil {
@@ -732,7 +724,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if err = portability.MergeRecovery(ctx, tx, beforeApply, owner); err != nil {
+		if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, older.st, beforeApply.Workspace), beforeApply, owner); err != nil {
 			t.Fatal(err)
 		}
 		if err = tx.Commit(ctx); err != nil {
@@ -1033,10 +1025,10 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			wrongInventory := inventory
 			wrongInventory.Units = map[string]string{uuid.NewString(): strings.Repeat("a", 64)}
 			wrong.Inventory = &wrongInventory
-			if _, err = current.Enroll(ctx, wrong, "test"); !errors.Is(err, domain.Conflict) {
+			if _, err = current.Enroll(ctx, acknowledging(wrong), "test"); !errors.Is(err, domain.Conflict) {
 				t.Fatal("incompatible inventory admitted", err)
 			}
-			if _, err = current.Enroll(ctx, input, "test"); err != nil {
+			if _, err = current.Enroll(ctx, acknowledging(input), "test"); err != nil {
 				var stagedRaw []byte
 				if probeErr := destination.st.Pool.QueryRow(ctx, `SELECT inventory FROM cross_host_recovery_servers WHERE server_id=$1`, input.ServerId).Scan(&stagedRaw); probeErr != nil {
 					t.Fatal(probeErr)
@@ -1076,7 +1068,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 			}
 			if i == 0 {
 				poll, done := context.WithTimeout(ctx, 500*time.Millisecond)
-				command, err := current.Poll(poll, identity)
+				command, err := pollReleased(current, poll, identity)
 				done()
 				if command != nil || err != nil && !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatal("work dispatched before every participant proved its inventory", command, err)
@@ -1130,7 +1122,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 
 	for i, identity := range identities {
 		poll, done := context.WithTimeout(ctx, 20*time.Second)
-		command, err := current.Poll(poll, identity)
+		command, err := pollReleased(current, poll, identity)
 		done()
 		if err != nil || command == nil {
 			t.Fatal("recovery open missing", err)
@@ -1163,7 +1155,7 @@ func TestNativeCrossHostOlderBackupRecovery(t *testing.T) {
 	})
 	for _, identity := range identities {
 		poll, done := context.WithTimeout(ctx, 20*time.Second)
-		command, err := current.Poll(poll, identity)
+		command, err := pollReleased(current, poll, identity)
 		done()
 		if err != nil || command == nil {
 			t.Fatal("frozen reservation did not resume", err)

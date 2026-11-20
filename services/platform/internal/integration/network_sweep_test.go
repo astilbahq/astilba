@@ -57,7 +57,7 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 			}
 			for _, ws := range pending {
 				_, in, _ := enrollment(t, f, b, ws, "deployment")
-				if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+				if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 					t.Fatal(err)
 				}
 				if ws == first {
@@ -72,11 +72,11 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 				var prior []hostnetwork.Manifest
 				for _, address := range []string{"10.251.0.2", "10.251.0.3", "10.251.0.4"} {
 					_, in, _ := enrollment(t, f, b, first, "deployment")
-					if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+					if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 						t.Fatal(err)
 					}
 					membership := uuid.New()
-					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(membership)
+					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(context.Background(), membership)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -96,7 +96,7 @@ func TestManagedNetworkSweepYieldsBlockedAndCompletedWorkspaces(t *testing.T) {
 					}
 				}
 				if tc.identified {
-					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(uuid.New())
+					identity, err := (hostnetwork.Host{Dir: t.TempDir()}).Identity(context.Background(), uuid.New())
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -25,6 +25,7 @@ The management application and host agent are fully self-hostable, without an As
 - [Resource history](docs/operational-visibility.md) and [operational alerts](docs/operational-alerts.md)
 - [Self-hosting, management backup and controller transfer](docs/hosting.md)
 - [Management backups](docs/management-backups.md) and [upgrades](docs/management-upgrades.md)
+- [Key custody with OpenBao or Vault Transit](docs/key-custody-transit.md)
 
 - [Product brief](docs/platform-product-brief.md)
 - [Architecture](docs/platform-architecture.md)
@@ -40,7 +41,7 @@ The management application and host agent are fully self-hostable, without an As
 
 ## Verify
 
-Use Go 1.27.4, Node 24.18.1, pnpm 11.28.11 and a disposable Docker engine. Pull the digest-pinned images and set `PLAT2_DOCKER_HOST` as described in the [durable experiment instructions](experiments/durable-execution/README.md#reproduce). Set `PLAT_APP_DOCKER_HOST` to the same disposable daemon for application database and browser tests. Also pull the two [Git provider images](experiments/git-compose/README.md#reproduce) and set `PLAT7_DOCKER_HOST` to a disposable local daemon with at least 6 GiB memory, then run:
+Use Go 1.27.4, Node 24.22.3, pnpm 11.28.11 and a disposable Docker engine. Pull the digest-pinned images and set `PLAT2_DOCKER_HOST` as described in the [durable experiment instructions](experiments/durable-execution/README.md#reproduce). Set `PLAT_APP_DOCKER_HOST` to the same disposable daemon for application database and browser tests. Also pull the two [Git provider images](experiments/git-compose/README.md#reproduce) and set `PLAT7_DOCKER_HOST` to a disposable local daemon with at least 6 GiB memory, then run:
 
 ```sh
 pnpm install --frozen-lockfile

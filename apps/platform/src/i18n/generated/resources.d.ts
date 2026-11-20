@@ -248,6 +248,9 @@ export default interface Resources {
     "stepUp": {
       "authenticatorDescription": "Security-sensitive actions need a recent confirmation. Enter the six-digit code from your authenticator app.",
       "cancel": "Cancel",
+      "changeAuthenticatorDescription": "Changing how you sign in needs your current credential. Enter the six-digit code from your authenticator app.",
+      "changePasswordDescription": "Changing how you sign in needs your current credential. Enter your current password.",
+      "changeRecoveryDescription": "Changing how you sign in needs your current credential. Enter one of your saved recovery codes. Each code works once.",
       "code": "Authentication code",
       "confirm": "Confirm",
       "password": "Password",
@@ -294,6 +297,76 @@ export default interface Resources {
       "workspaceInvalid": "Enter a workspace name without line breaks or control characters.",
       "workspaceRequired": "Enter a workspace name.",
       "workspaceTooLong": "Use {{count}} character or fewer for the workspace name." | "Use {{count}} characters or fewer for the workspace name."
+    }
+  },
+  "backup-recovery": {
+    "exposed": {
+      "acknowledge": "I understand that the revoked server can delete or overwrite this policy's backups until its keys are revoked at the provider.",
+      "policy": "A revoked server was given this destination's storage keys. It can still delete or overwrite these backups until you revoke the keys at your storage provider. For backups it can't reach, add a destination with new keys and create a policy on it.",
+      "warning": "A revoked server was given this destination's storage keys. It can still delete or overwrite anything written here until you revoke them at your storage provider."
+    },
+    "method": {
+      "postgresLogical": "PostgreSQL logical backup",
+      "quiescedFiles": "file volume"
+    },
+    "picker": {
+      "acknowledge": "I understand that a snapshot this server uploaded could contain altered data that the restore's checks can't detect.",
+      "claimed": "The server says this backup started on {{date}}.",
+      "legend": "Snapshot to restore",
+      "loadFailed": "Snapshots couldn't be loaded.",
+      "loading": "Loading snapshots…",
+      "none": "Astilba recorded no snapshot from this server that is still available. A snapshot the server never reported can only be restored by hand, as the backups guide describes.",
+      "recorded": "Recorded by Astilba on {{date}}",
+      "recordedBefore": "Recorded by Astilba on {{date}}, {{duration}} before the revocation",
+      "restore": "Restore into a new volume",
+      "started": "Restore started. Nothing uses the new volume until you prepare and deploy a cutover.",
+      "unverified": "{{size}}, {{method}}, {{image}}. Unverified until restored."
+    },
+    "restores": {
+      "cancel": "Cancel",
+      "cutoverConflict": "Cutover saved. Your newer edits were kept; resolve the revision conflict before you deploy.",
+      "cutoverDirty": "Save or discard your configuration changes before you prepare a cutover.",
+      "cutoverHint": "A cutover switches the deployment to this snapshot's data. Writes made since the snapshot aren't included. Review the downtime before you apply the deployment.",
+      "cutoverSaved": "Cutover saved as a draft. Prepare and review a deployment plan to switch storage.",
+      "discard": "Discard restored volume",
+      "discardAttention": "The discard needs attention: {{note}}",
+      "discardConfirm": "Discard volume",
+      "discardDescription": "This deletes volume {{volume}}, which the restore created on the environment's current server. It can't be undone, and the restore can't be cut over afterwards.",
+      "discardFailed": "Volume {{volume}} wasn't discarded: {{note}}",
+      "discardPending": "Discarding the volume. It is deleted once the server confirms.",
+      "discardTitle": "Discard the restored volume?",
+      "discarded": "Its volume was discarded.",
+      "discarding": "Discarding…",
+      "item": "Snapshot {{snapshot}}, recorded on {{date}}: {{state}}.",
+      "loadFailed": "Restores couldn't be loaded.",
+      "prepareCutover": "Prepare cutover draft",
+      "preparing": "Preparing…",
+      "refused": {
+        "discardActive": "This volume is already being discarded.",
+        "restoreServer": "The environment no longer runs on the server this restore was made on, so its volume can't be discarded.",
+        "volumeDeleted": "This volume is already deleted.",
+        "volumeInUse": "The draft, the deployed plan or a database upgrade still uses this volume."
+      },
+      "state": {
+        "cancelled": "cancelled",
+        "dispatched": "sent to the server",
+        "failed": "failed",
+        "needsAttention": "needs attention",
+        "queued": "queued",
+        "running": "running",
+        "succeeded": "restored",
+        "waitingForAgent": "waiting for the server"
+      },
+      "target": "Restored into volume {{volume}}.",
+      "title": "Restores"
+    },
+    "revoked": {
+      "frozen": "Nothing backs up to or prunes this policy's repository any more. For ongoing backups, create a policy on the environment's current server: it gets a new repository with its own key.",
+      "history": "The runs below are as the revoked server reported them, including whether a restore was verified. Nothing has checked them.",
+      "since": "{{server}} was revoked on {{date}}. If it was compromised before then, snapshots it uploaded after that could contain altered data. Choose one recorded before you think the compromise began. A restore is checked, but the checks can't tell a tampered snapshot from a genuine one.",
+      "sinceUnknown": "{{server}} is revoked, and when its revocation began wasn't recorded. If it was compromised, snapshots it uploaded could contain altered data. Choose one recorded before you think the compromise began. A restore is checked, but the checks can't tell a tampered snapshot from a genuine one.",
+      "title": "Restore from a revoked server",
+      "unknownServer": "This policy's server"
     }
   },
   "common": {
@@ -394,8 +467,8 @@ export default interface Resources {
       "cancel": "Cancel",
       "confirmHint": "Type <name/> to confirm.",
       "confirmLabel": "Environment name",
-      "forbidden": "Only workspace owners can retire or restore environments.",
-      "mfa": "Set up two-factor authentication in Account security before retiring or restoring an environment.",
+      "forbidden": "Only workspace owners can retire or restore environments, or delete their retained data.",
+      "mfa": "Set up two-factor authentication in Account security, then try again.",
       "nameMismatch": "The name does not match this environment’s current name. Check it and try again.",
       "operationState": {
         "cancelled": "cancelled",
@@ -407,18 +480,54 @@ export default interface Resources {
         "succeeded": "finished",
         "waiting_for_agent": "waiting for the server’s agent"
       },
+      "previewStates": {
+        "approval_required": "waiting for approval",
+        "blocked": "blocked",
+        "building": "building",
+        "closing": "closing",
+        "deleted": "deleted",
+        "deleting": "deleting",
+        "deploying": "deploying",
+        "failed": "failed",
+        "queued": "queued",
+        "ready": "running"
+      },
+      "purge": "Delete retained data",
+      "purgeDialogDescription": "This cannot be undone, and the environment cannot be restored afterwards. When you delete its retained data:",
+      "purgeDialogTitle": "Delete the retained data of <name/>?",
+      "purgeEffects": {
+        "backups": "Backups at the workspace’s backup destination are kept, with the password that restores them, until the destination’s retention removes them.",
+        "copies": "Every value is under the environment’s own key, so copies of them in recovery data, on its servers and anywhere else can no longer be read. An environment cloned from this one with its secrets keeps its own copies, which stay readable. Recovery data captured before the installation moved its values onto its key, and management database backups taken before, keep them until they are removed or expire, and a workspace export someone downloaded keeps them.",
+        "copiesSomeKept": "Copies of values sealed under the environment’s own key can no longer be read. An environment cloned from this one with its secrets keeps its own copies, which stay readable. The installation has not moved every value onto its environment’s key yet, so copies of the others, in recovery data and on its servers, stay readable, as do management database backups taken before, until they expire, and workspace exports someone downloaded.",
+        "kept": "Its configuration, revisions and history are kept, read-only.",
+        "noPreviews": "None of its previews holds copies of its secrets.",
+        "noVolumes": "It keeps no data volumes, so nothing is deleted from its server.",
+        "preview": "Request #{{number}}: {{state}}",
+        "previewWithNote": "Request #{{number}}: {{state}}. {{note}}",
+        "previews": "Its previews hold copies of its secrets, so each must be deleted first. Wait for its cleanup, or choose Remove preview and data on it under Previews:",
+        "revoked": "If its server has been revoked, it is not contacted, and these volumes stay on it.",
+        "secrets": "The values of its secrets are erased, for every version.",
+        "volumes": "Its server is asked to delete these data volumes:"
+      },
+      "purgeStarted": "Deleting retained data. Its secret values are erased, and its server is deleting its volumes.",
+      "purged": "Retained data deleted.",
+      "purgedWithoutHost": "Secret values erased. Its server was revoked, so its volumes were not deleted.",
+      "purging": "Deleting…",
       "recentAuth": "Confirm your identity, then try again.",
       "refusal": {
         "activeOperation": "Another operation is running for this environment. Wait for it to finish or cancel it, then try again.",
         "agentUpdate": "Update this server’s agent before retiring environments on it.",
         "crossHost": "This environment runs on more than one server. Consolidate it onto its primary server and deploy it without a placement, then try again.",
         "cutover": "A backup restore cutover is waiting to be deployed. Deploy it or replace the draft, then try again.",
+        "previews": "Some of this template’s previews are not deleted yet. Each is listed above with what it is waiting for.",
+        "purgeAgentUpdate": "Update this server’s agent before deleting retained data on it.",
         "replacement": "This environment’s replacement deployment did not finish, and the server it replaced is no longer revoked, so both may run it. Finish the replacement deployment or revoke the former server, then try again.",
         "serverBusy": "Another operation is running on this environment’s server. Try again when it finishes.",
         "serverTransfer": "This environment’s server is waiting for a verified agent transfer. Complete the transfer, then try again.",
         "state": "This environment’s state has changed, so this can no longer be done. The page now shows its current state.",
         "unknown": "This environment cannot be changed right now. Check its current state, then try again.",
-        "upgrade": "A database upgrade holds this environment’s data. Finish or return the upgrade and wait for its retention period to end, then try again."
+        "upgrade": "A database upgrade holds this environment’s data. Finish or return the upgrade and wait for its retention period to end, then try again.",
+        "volumes": "The volumes this environment keeps have changed. Check the updated list, then confirm again."
       },
       "restore": "Restore environment",
       "restoreDialogDescription": "Restoring makes this environment active again as configuration only:",
@@ -449,10 +558,30 @@ export default interface Resources {
       "retiring": "Retiring…",
       "retryRetirement": "Retry retirement",
       "status": {
+        "backupsKept": "Backups at the workspace’s backup destination are kept.",
         "operation": "Removal from the server: {{state}}",
         "operationFailed": "The state of the removal could not be loaded.",
         "operationLoading": "Checking removal from the server…",
-        "ownersOnly": "Only workspace owners can restore it.",
+        "ownersOnly": "Only workspace owners can restore it or delete its retained data.",
+        "previewsFailed": "This template’s previews could not be loaded.",
+        "previewsLoading": "Loading this template’s previews…",
+        "purgeOperation": "Deletion from the server: {{state}}",
+        "purgeOperationFailed": "The state of the deletion could not be loaded.",
+        "purgeOperationLoading": "Checking deletion from the server…",
+        "purgeRequestedBy": "<person/> asked to delete its retained data on {{date}}.",
+        "purgeRequestedByOwner": "An owner asked to delete its retained data on {{date}}.",
+        "purgeRequestedByYou": "You asked to delete its retained data on {{date}}.",
+        "purgeRetryHint": "Deletion did not finish. Delete retained data again to queue it again.",
+        "purgedDescription": "It is read-only and cannot be restored. Its data volumes were deleted from its server, and its secret values were erased.",
+        "purgedNoVolumesDescription": "It is read-only and cannot be restored. It kept no data volumes, and its secret values were erased.",
+        "purgedTitle": "This environment’s retained data is deleted",
+        "purgedWithoutHost": "Its server had been revoked, so that server was not contacted. The volumes below may still be on it and must be removed there by hand.",
+        "purgedWithoutHostDescription": "It is read-only and cannot be restored. Its secret values were erased.",
+        "purgedWithoutHostTitle": "This environment’s secret values are erased, but its volumes were not deleted",
+        "purgingDescription": "It is read-only and cannot be restored. Its secret values are erased, and its server is deleting its kept volumes.",
+        "purgingTitle": "This environment’s retained data is being deleted",
+        "purgingVolumesTitle": "Volumes being deleted",
+        "remainingVolumesTitle": "Volumes that may remain on the server",
         "requestedBy": "<person/> retired it on {{date}}.",
         "requestedByOwner": "An owner retired it on {{date}}.",
         "requestedByYou": "You retired it on {{date}}.",
@@ -469,7 +598,7 @@ export default interface Resources {
       },
       "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
       "unavailable": "This environment is no longer available. It may have been deleted, or you may no longer have access to it.",
-      "verifyEmail": "Verify your email address in Account security before retiring or restoring an environment."
+      "verifyEmail": "Verify your email address in Account security, then try again."
     },
     "loadFailed": "Configuration could not be loaded",
     "loadRecovery": "Your environment is still available. Try loading its configuration again.",
@@ -495,6 +624,57 @@ export default interface Resources {
     "runtime": "Runtime",
     "savedRevision": "Saved revision",
     "savedServices": "Services in the saved configuration. Observations describe the last reported runtime state.",
+    "secrets": {
+      "cancel": "Cancel",
+      "created": "Version created {{date}}",
+      "description": "Values are write-only. Reference a version ID in your specification with <field/>.",
+      "earlierTooShortToCheck": "Too short to check.",
+      "earlierVersions": "{{count}} earlier version of {{name}}" | "{{count}} earlier versions of {{name}}",
+      "hint": "Reusing a name adds a version. You’ll be asked to confirm your identity before saving.",
+      "name": "Secret name",
+      "refusal": {
+        "forbidden": "Only workspace owners can retire secrets.",
+        "inUse": "This secret is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses one of its versions. Replace it there, then try again.",
+        "inactive": "This environment is no longer active, so its secrets cannot be changed. The page now shows its current state.",
+        "mfa": "Set up two-factor authentication in Account security, then try again.",
+        "recentAuth": "Confirm your identity, then try again.",
+        "subscription": "An active workspace subscription is required. Open Workspace to finish setup.",
+        "unavailable": "This secret is no longer available. It may have been retired already.",
+        "unknown": "This secret cannot be retired right now. Check the environment’s current state, then try again.",
+        "verifyEmail": "Verify your email address in Account security, then try again.",
+        "versionInUse": "This version is still in use. The draft, the running deployment, a deployment plan, an operation or a database upgrade uses it. Replace it there, then try again.",
+        "versionUnavailable": "This version is no longer available. It may have been retired already."
+      },
+      "retire": "Retire secret",
+      "retireDialogDescription": "Retiring a secret cannot be undone. When you retire it:",
+      "retireDialogInUse": "A secret cannot be retired while the draft, the running deployment, a deployment plan, an operation or a database upgrade uses one of its versions.",
+      "retireDialogTitle": "Retire <name/>?",
+      "retireEffects": {
+        "name": "It leaves this list, and its name can be used for a new secret.",
+        "revisions": "Earlier revisions that use it can no longer be deployed.",
+        "values": "The value of every version is erased."
+      },
+      "retireNamed": "Retire secret {{name}}",
+      "retireVersion": "Retire version",
+      "retireVersionDialogDescription": "Retiring version {{id}} cannot be undone. When you retire it:",
+      "retireVersionDialogInUse": "A version cannot be retired while the draft, the running deployment, a deployment plan, an operation or a database upgrade uses it.",
+      "retireVersionDialogTitle": "Retire this version of <name/>?",
+      "retireVersionEffects": {
+        "current": "The secret keeps its current version and its other versions.",
+        "revisions": "Earlier revisions that use this version can no longer be deployed.",
+        "value": "Its value is erased, and files you submit and public build arguments are no longer checked against it."
+      },
+      "retireVersionNamed": "Retire version {{id}} of {{name}}",
+      "retired": "Secret {{name}} retired. The values of all its versions are erased.",
+      "retiring": "Retiring…",
+      "save": "Save secret version",
+      "saved": "Secret version saved. Its value cannot be read back.",
+      "savedTooShort": "Secret version saved. Its value cannot be read back. It is shorter than 12 bytes, so files you submit and public build arguments are not checked for it. Use 12 or more characters to have them checked.",
+      "title": "Secrets",
+      "tooShortToCheck": "Too short to check: this value is shorter than 12 bytes, so files you submit and public build arguments are not checked for it. Save a value of 12 or more characters to have them checked.",
+      "value": "Secret value",
+      "versionRetired": "Version {{id}} of {{name}} retired. Its value is erased."
+    },
     "sections": "Environment sections",
     "server": "Server",
     "serviceCount": "{{count}} service" | "{{count}} services",
@@ -586,6 +766,9 @@ export default interface Resources {
       "open": "Open environment",
       "preview": "Pull-request preview",
       "previewTemplate": "Pull-request preview template",
+      "purgedState": "Retained data deleted",
+      "purgedWithoutHostState": "Secret values erased, volumes not deleted",
+      "purgingState": "Retained data being deleted",
       "readOnly": "You have view-only access. A workspace owner or member can create environments.",
       "retired": "Retired environments ({{total}})",
       "retiredState": "Retired",
@@ -605,6 +788,102 @@ export default interface Resources {
     "readOnly": "You have view-only access. A workspace owner or member can create projects.",
     "retry": "Try again",
     "title": "Projects"
+  },
+  "secret-access": {
+    "allOfKind": {
+      "alertWebhook": "The alert webhook",
+      "backupDestination": "All backup destinations",
+      "backupPolicy": "All backup policies",
+      "buildSecret": "All build secrets",
+      "git": "All Git connections",
+      "githubAuthorization": "All GitHub authorizations",
+      "recoveryCheckpoint": "All recovery checkpoints",
+      "registry": "All registry credentials",
+      "secretVersion": "All secrets",
+      "totp": "All authenticators",
+      "totpPending": "All authenticators being set up"
+    },
+    "caption": "Secret access records, newest first",
+    "column": {
+      "items": "Items",
+      "outcome": "Outcome",
+      "principal": "For",
+      "purpose": "What was opened",
+      "reason": "Reason",
+      "when": "When"
+    },
+    "description": "Each time management opened this workspace’s stored secrets and credentials: why, for whom, and how it ended.",
+    "empty": "No secret access has been recorded in this workspace.",
+    "item": {
+      "allOther": "All items of kind {{kind}}",
+      "more": "and {{count}} more" | "and {{count}} more",
+      "named": "{{name}} ({{kind}})",
+      "none": "None listed",
+      "unnamed": "{{kind}} {{id}}"
+    },
+    "kind": {
+      "alertWebhook": "Alert webhook",
+      "backupDestination": "Backup destination",
+      "backupPolicy": "Backup policy",
+      "buildSecret": "Build secret",
+      "git": "Git connection",
+      "githubAuthorization": "GitHub authorization",
+      "recoveryCheckpoint": "Recovery checkpoint",
+      "registry": "Registry credential",
+      "secretVersion": "Secret",
+      "totp": "Authenticator",
+      "totpPending": "Authenticator being set up"
+    },
+    "loadFailed": "Secret access records could not be loaded.",
+    "loadMore": "Load more",
+    "loadMoreFailed": "More records could not be loaded.",
+    "loading": "Loading secret access records…",
+    "loadingMore": "Loading more…",
+    "outcome": {
+      "abandoned": "Abandoned",
+      "failed": "Failed",
+      "refused": "Refused",
+      "released": "Released",
+      "unknown": "Unknown",
+      "used": "Used"
+    },
+    "principal": {
+      "account": "Account {{id}}",
+      "automation": "Automation {{id}}",
+      "installation": "Installation maintenance",
+      "instance": "Instance {{instance}}",
+      "server": "Server {{id}}",
+      "system": "Management"
+    },
+    "purpose": {
+      "authenticate": "Checking a two-factor code",
+      "copy": "Copying secrets",
+      "deliver": "Delivering to a server",
+      "export": "Exporting the workspace",
+      "inspect": "Checking stored values",
+      "operate": "Using a credential",
+      "recover": "Recovering the workspace",
+      "rotate": "Rotating encryption keys",
+      "seal": "Storing new values",
+      "token": "Loading the token signing key"
+    },
+    "reason": {
+      "decision": "Deciding what to deliver",
+      "firstRelease": "First delivery to this server",
+      "installationKeyMaintenance": "Installation key maintenance",
+      "redelivery": "The server asked for the values again",
+      "rewrap": "Encryption key change",
+      "signIn": "Sign-in",
+      "standard": "No further detail",
+      "startUp": "Management starting up",
+      "unacknowledged": "An earlier delivery was not confirmed",
+      "write": "New or changed values"
+    },
+    "region": "Secret access records",
+    "retention": "Records are kept for 400 days by default and are not included in workspace exports.",
+    "retry": "Try again",
+    "shown": "Showing {{count}} record." | "Showing {{count}} records.",
+    "title": "Secret access"
   },
   "troubleshooting": {
     "closeReason": {
@@ -711,5 +990,18 @@ export default interface Resources {
     "target": "{{service}}, instance {{instance}}",
     "title": "Terminal sessions",
     "you": "You"
+  },
+  "workspace": {
+    "crossHostRecovery": {
+      "checkpoint": "Newest checkpoint: {{date}}.",
+      "description": "A deployment across servers leaves a recovery checkpoint on them. Recovering that work after losing management needs a management backup taken inside the newest checkpoint’s window.",
+      "loadFailed": "Cross-host recovery could not be loaded.",
+      "loading": "Loading cross-host recovery…",
+      "none": "No checkpoint yet. The first deployment across servers takes one.",
+      "short": "This window is shorter than the 35 days of management backups the documentation suggests keeping, because this workspace’s applied history is busy. Keep a backup newer than {{date}}.",
+      "title": "Cross-host recovery",
+      "whole": "This checkpoint was taken by an earlier release and carries all applied history, so it doesn’t limit which management backup recovery can use.",
+      "window": "Recovery can use a management backup taken after {{date}}."
+    }
   }
 }

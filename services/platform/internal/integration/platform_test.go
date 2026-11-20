@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"io"
 	"log/slog"
@@ -21,7 +22,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
-	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 )
@@ -94,7 +94,7 @@ func TestTenantRevisionsAndSecrets(t *testing.T) {
 	if strings.Contains(string(cipher), "sensitive-canary") {
 		t.Fatal("secret stored plaintext")
 	}
-	plain, e := f.st.Keys.Open(cipher, store.SecretIdentity(ws, secret.Id))
+	plain, e := inspectValue(t, f.st, f.owner, ws, secretbroker.Item{Kind: secretbroker.SecretVersion, ID: secret.Id, Environment: env.Id}, cipher)
 	if e != nil || string(plain) != "sensitive-canary" {
 		t.Fatal("cannot decrypt", e)
 	}
@@ -139,7 +139,7 @@ func TestCredentialAndInvitationLifecycle(t *testing.T) {
 		t.Fatal(e)
 	}
 	var codes api.RecoveryCodes
-	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": f.password}}, 200, &codes)
 	b.csrf = codes.Session.CsrfToken
 	if len(codes.Codes) != 10 {
 		t.Fatal("missing recovery codes")
@@ -351,7 +351,7 @@ func TestInvitationPreservesExpiredRecentAuthentication(t *testing.T) {
 	if session.RecentAuth {
 		t.Fatal("invitation upgraded authentication freshness")
 	}
-	b.call("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}, 403, nil)
+	b.saveWorkspace(session.Workspaces[0], 403)
 }
 func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 	f := setup(t)
@@ -370,13 +370,19 @@ func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 		run  func() error
 	}{
 		{"password", func() error {
-			_, e := f.auth.ChangePassword(ctx, p, "replacement password here")
+			_, e := f.auth.ChangePassword(ctx, p, auth.Credential{Password: f.password}, "replacement password here")
 			return e
 		}},
-		{"disable MFA", func() error { _, e := f.auth.DisableMFA(ctx, p); return e }},
-		{"recovery", func() error { _, _, e := f.auth.RegenerateRecovery(ctx, p); return e }},
+		{"disable MFA", func() error { _, e := f.auth.DisableMFA(ctx, p, auth.Credential{Password: f.password}); return e }},
+		{"recovery", func() error {
+			_, _, e := f.auth.RegenerateRecovery(ctx, p, auth.Credential{Password: f.password})
+			return e
+		}},
 		{"enrollment", func() error { _, _, e := f.auth.BeginMFA(ctx, p); return e }},
-		{"confirmation", func() error { _, _, e := f.auth.ConfirmMFA(ctx, p, "123456"); return e }},
+		{"confirmation", func() error {
+			_, _, e := f.auth.ConfirmMFA(ctx, p, auth.Credential{Password: f.password}, "123456")
+			return e
+		}},
 		{"invitation", func() error {
 			_, e := f.auth.AcceptInvitation(ctx, token, "", "", auth.Source{Key: "test", Network: "test"}, &p)
 			return e

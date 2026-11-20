@@ -17,6 +17,17 @@ const (
 // applying it would change on the host.
 const UnreportedHostChangesEffect = "Review host changes: this server's agent does not report what this plan would change on the host. Update the agent so approved permissions carry forward again."
 
+// UnreportedContainerRangesEffect and UnreadContainerRangesEffect explain a plan reviewed because
+// a route keeps the client allowlist a catalog staging gave it, which keeps the application's
+// first account to its owner, and management could not check it against the ranges the server's
+// containers send traffic from.
+const (
+	UnreportedContainerRangesEffect = "Review client allowlist: this server's agent has not reported the ranges its containers send traffic from, so a staged route's allowlist was not checked against them. An agent that predates the report needs updating; a newly enrolled one reports them once it runs."
+	UnresolvedStagingEffect         = "Review client allowlists: a catalog staging in this environment could not be read, so the routes it created, and their allowlists, were not checked against the ranges this server's containers send traffic from."
+	UnconfirmedStagingEffect        = "Review client allowlists: this environment was cloned from one whose catalog staging could not be read, so which routes keep a staged allowlist could not be confirmed, and they were not checked against the ranges this server's containers send traffic from."
+	UnreadContainerRangesEffect     = "Review client allowlist: this server's agent could not read the ranges its containers send traffic from, so a staged route's allowlist was not checked against its network pool, Docker's networks and address pools, or its managed networks."
+)
+
 // effectLength is the longest plan effect the API describes.
 const effectLength = 300
 

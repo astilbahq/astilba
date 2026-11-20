@@ -30,7 +30,7 @@ Each application gets a per-unit Compose projection with local instances, no cop
 
 Keep one active environment mutation. A durable parent operation reserves the environment and all involved servers, and records immutable child commands and phase receipts. Child execution retains assigned-server authentication, monotonic generations, local journal acceptance and idempotent report sequence. Removals are delivered ahead of other commands, so a host can take one sent after a deployment's links command, at a later generation, before it takes the links command. It then ends the links command unrun, the deployment aborts and releases its hosts, and the owner can apply again. After an unclean agent stop, or once an earlier agent has opened its journal, the host can't tell that it never ran a links command it took a removal ahead of, so it refuses it. Cancelling the deployment then ends it, and the deployment aborts and releases its hosts. Do not implement coordination by bypassing existing active-environment or host serialization guards. A migration must explicitly relate children to the parent; ordinary operations cannot enter the reserved environment/hosts. Deterministic lock ordering prevents opposing placements from deadlocking. Before acknowledging prepare, each agent durably records the parent ID, environment, controller generation, participating units, frozen manifest hash and phase. This local barrier survives child acknowledgement/restart and blocks ordinary command acceptance, due schedules, writer resumption, updates and controller transfer until the same parent supplies an authenticated durable completion/abort receipt. Unknown outcomes retain the barrier. An operator may inspect and reconcile the frozen parent locally; there is no timeout-based barrier release. The current agent-local key envelope makes previous agents refuse journal opening before initialization, pruning, replay or maintenance effects. Legacy active journals must finish with their previous compatible agent before migration; migration preserves pending signed agent updates and idle distributed-runtime fences. This changes neither the recovery capsule format nor the independent network boot-restore helper. See the [agent upgrade boundary](agent.md#explicit-updates).
 
-Use prepare, publish and retire phases. Prepare complete new pools on all targets while old pools serve. Each host verifies resources/image ownership, rejects image-declared volumes, applies resource limits, starts candidates, verifies local readiness and authorized private endpoints, and acknowledges a durable prepared receipt. All prepare commands are frozen together; the primary completes preparation before consumer units are first dispatched, so primary-owned bindings exist before consumers probe them. Failed or cancelled primary preparation cancels only consumer commands that have never been dispatched. A queued consumer prepare restored after its parent has advanced is also cancelled without dispatch; uncertain or already-started work retains its recovery barrier. A release command runs once on the designated candidate host, with uncertainty fenced. Only after every required receipt is known may the ingress host publish the frozen complete backend vector under its existing registry lock, verify the switch and acknowledge it. Only after verified publication may old pools drain and stop. Removed network grants are retired after their users are removed. Mark the revision applied only when all required receipts match; otherwise expose mixed/needs-attention state and retain known serving pools. Partial candidate setup may be cleaned only with exact ownership checks and a frozen cleanup receipt.
+Use prepare, publish and retire phases. Prepare complete new pools on all targets while old pools serve. Each host verifies resources/image ownership, rejects image-declared volumes, applies resource limits, starts candidates, verifies local readiness and authorized private endpoints, and acknowledges a durable prepared receipt. A host that can't pull an image fails its preparation, and the deployment aborts, unless it had already begun starting candidates, when it needs attention. All prepare commands are frozen together; the primary completes preparation before consumer units are first dispatched, so primary-owned bindings exist before consumers probe them. Failed or cancelled primary preparation cancels only consumer commands that have never been dispatched. A queued consumer prepare restored after its parent has advanced is also cancelled without dispatch; uncertain or already-started work retains its recovery barrier. A release command runs once on the designated candidate host, with uncertainty fenced. Only after every required receipt is known may the ingress host publish the frozen complete backend vector under its existing registry lock, verify the switch and acknowledge it. Only after verified publication may old pools drain and stop. Removed network grants are retired after their users are removed. Mark the revision applied only when all required receipts match; otherwise expose mixed/needs-attention state and retain known serving pools. Partial candidate setup may be cleaned only with exact ownership checks and a frozen cleanup receipt.
 
 Each unit retains its two most recent stopped application pools. Their containers keep old images referenced. Retirement records exact Docker IDs before stopping containers, and replay preserves those identities after a process restart. Eviction refuses a pool that was restarted, paused or replaced; it never removes volumes. Retained pools are recovery evidence, not automatic database rollback.
 
@@ -78,11 +78,11 @@ The deployment panel says when the environment's primary was revoked. Choose a h
 - makes the chosen server the primary. If it already holds this environment's unit, that unit takes the role, so the host keeps a single unit. Otherwise the server gets a new unit. The former primary's unit is detached and never reused, so its old volumes on that host can't come back by accident
 - starts the volumes the revision declares empty, with the same identities, and drops the others
 - moves the route claims, so point custom domains at the new server, and change generated domains, which name their server
-- leaves the environment's backup policies with the revoked server, where they can't run. Create new ones.
+- leaves the environment's backup policies with the revoked server, where they can't run. Create new ones for later backups.
 
 The plan applies only while the old primary is still revoked. If the deployment doesn't finish, the environment is already on its way to that server, and the panel continues there. Other servers are refused while that server is healthy, because the first attempt may have left containers and volumes on it. If it's revoked too, choose any healthy server.
 
-To get the data back, restore a snapshot by hand, as [Backups](backups.md#recovery-without-the-management-database) describes, into the new empty volumes. Filesystem backup destinations on the revoked server are lost with it.
+To get the data back, restore one of the revoked server's S3 snapshots onto the new primary, as [Backups](backups.md#restoring-a-lost-servers-snapshot) describes. Filesystem backup destinations on the revoked server are lost with it.
 
 The new server needs an agent from this release. An older agent refuses the plan before changing anything. Deploying back onto a renewed former primary fails, because its old volumes are labelled for the detached unit. Replace that host rather than reuse it.
 
@@ -103,6 +103,8 @@ The server's agent must advertise `primaryIngress` (`Astilba-Agent-Primary-Ingre
 Cross-host binding introduces remote writers. Existing backup/upgrade quiescence must use the same durable parent barrier to stop and confirm every active writer across units, preserving stop/restart receipts and unknown-outcome fences. No supported upgrade, restore cutover or quiescing backup may proceed with an unreachable writer. Logical database dumps may retain their existing consistency guarantee when no stop is needed. Installed schedules must not silently run a local-only maintenance procedure after distribution; network-independent jobs remain local, but cross-host quiescing maintenance needs an explicit supported policy or is rejected before installation. Every participant must explicitly advertise `maintenanceContinuation` before a new maintenance parent or reservation is created. Freeze every resumption child together, but deliver queued consumer `resume-source` and `resume-target` commands only after the primary succeeds in that exact parent phase. Already-dispatched children retain reconciliation delivery. Primary failure, cancellation or uncertainty keeps consumers stopped and surfaces `needs_attention` before all-child completion. Terminal outcomes remain terminal.
 
 A maintenance command's admission deadline decides whether its host may start a new effect, never whether its reservation ends. Resumption and completion change no data and nothing can issue them again, so an agent reconciles them through its stateful reservation and recovery checks however late they arrive, without replacing the original command or deadline. Lateness is not evidence: completion releases a reservation only once it has confirmed the writers, and otherwise holds it for `astilba-agent retry` or `accept-unready-writers`. A data effect does not start after its deadline. A backup, restore or upgrade action that misses its deadline has changed nothing, which is a known outcome, so the parent resumes the source writers on every host and completes as failed, leaving the owner to request it again, or, once a prepare has run, returns the upgrade to the owner to approve again. Should a host have begun restoring, its journal refuses to resume the source, so the reservation holds and no outcome is assumed.
+
+A backup leaf's lifetime is its run's timeout plus ten minutes. It may start until that long after management issues it, and runs for up to that long from when its agent starts it, so a long upload fails by its timeout and the parent resumes the writers, even when the leaf started late. A backup leaf stopped while its agent runs on, by the owner's cancel or by its timeout, settles by what its run did and whether its cleanup was confirmed, as [Backups](backups.md) describes. Stopped before its first effect, or after it with nothing of the run left running, the leaf ends cancelled or failed with its run failed, so the parent resumes the source writers and completes as failed. If a container labelled with the run can't be removed, the leaf needs attention, as its run does, and the hosts stay reserved with their writers stopped. Inspect the primary for containers with the run's `com.astilba.run` label and remove them, then run `astilba-agent reject-cross-host-effect --operation LEAF_UUID` there: it records the leaf and its run as failed, and the parent then resumes the writers on every host. A restore phase that fails its checks before it records its cutover intent has stopped nothing more than the pause did, so it fails and the parent resumes the source.
 
 Maintenance leaves an application as it found it rather than refusing it, because a backup or restore is most wanted when an application is down, and a refused one protects nothing. An instance already stopped when its host pauses stays stopped; once the reservation is released, starting it by hand is not drift, though the next maintenance refuses once until management has observed the change. Starting it while the reservation is held is refused until it is stopped again. A restored database is the exception: it starts, because serving it is what the cutover is for. A running instance failing its Docker health check or plan readiness when its host reserves is stopped and restarted like any other writer, or left running if it is a database, but neither resumption nor completion waits for it, and it stays stopped if it cannot restart, so it does not keep other hosts' writers stopped. Probing happens at reservation because a later probe could blame a writer for a dependency another host has paused. Failing to run a probe at all refuses the reservation instead. The completion note counts the instances excused from readiness, and the receipt reports their state.
 
@@ -136,6 +138,62 @@ that sealed the newest checkpoint or a newer one, even when the management backu
 Checkpoint sizes and retained histories are bounded; an incomplete or incompatible
 evidence set refuses recovery.
 
+### The recovery window
+
+A base doesn't carry every operation the workspace ever ran. It carries the workspace's
+configuration, unfinished work, the newest 100 operations and audit events, and a compact
+record of applied history: every runtime change committed in the 90 days before the base was
+captured, plus the change each environment had when that window opened. So a base's size
+follows the workspace's configuration, not its age.
+
+- **Which backup recovery can use.** Use a management backup taken after the newest
+  checkpoint's window opened. An older one is refused, with the dates, when it holds a runtime
+  older than the window or shows live an environment retired before it: the newest checkpoint
+  can't show that such a backup is its ancestor rather than a diverged copy. One whose runtimes
+  haven't changed since still recovers. Use a more recent backup. There is no override.
+- **A shorter window.** When a busy workspace's history doesn't fit a base, the window starts
+  later, so it holds only the newest runtime changes and ended cross-host roots that fit. Frequent
+  coordinated backups count as well as deployments: backing up less often lengthens the window. Management logs a warning, and raises the
+  `recovery_window` alert, while the window is shorter than 35 days, the backup retention
+  [management backups](management-backups.md) suggests. The Workspace page shows the newest
+  checkpoint's time and its window.
+- **Margins.** A change recorded just before the window opens may commit just after, so the
+  window is read with a day's margin, and a week's for an operation from before recorded times.
+- **What comes back.** Recovery restores configuration, unfinished work, the newest 100
+  operations and audit events, the final state of runtime changes and cross-host roots, and
+  anything they name. Other releases, revisions and build runs from between the backup and the
+  failure are lost. An operation the backup holds unfinished gets the final state the newest
+  checkpoint records for it; one it records nothing for is fenced as cancelled, as before.
+- **Retired environments.** A base carries every standard environment, retired or not, and
+  each preview environment whose runtime is applied or changed inside its window. A backup that
+  shows a runtime applied for a preview environment retired before the window opened is refused
+  with the dates.
+
+Recovery merges only the newest checkpoint, N: the one no other supplied checkpoint lists as
+superseded, captured last. N carries every unfinished root with everything it names, so an older
+checkpoint adds nothing to merge, and an older copy of a row N dropped would overwrite the
+backup's newer one. A base lists every base a host may still hold that its management captured
+or recovered before it, which vouches that they are its ancestors. Recovery sets those aside and
+names them in its preview. Any other older checkpoint, such as one from a management that
+diverged, is compared with N first: one whose applied history N doesn't continue, or doesn't
+reach back to, is refused, naming that checkpoint. An interrupted root's own checkpoint still
+supplies its frozen plan, its continuation and its environment's runtime. Work another
+management started is refused, as diverged. When servers report running a cross-host deployment
+that N doesn't carry unfinished, a management N's doesn't descend from started it, as when a
+management restored from a backup ran other work on other servers, or it has ended and their
+report is stale. A server releases a deployment in the same step as the report that lets
+management finish it, so one that N records as finished, as a finished row or in its history, is
+never resumed. A server N shows revoked is not asked. Either way only the servers' unsigned
+reports say it still runs, so recovery refuses before it changes anything, naming the deployment
+and its servers. To proceed, revoke those servers in the restored management and leave their
+exports out. Recovery then continues without them, and afterwards you enrol them again and
+redeploy what they ran.
+
+Checkpoints with a recovery window are a format a release before this one can't read, so once
+hosts hold them, run cross-host recovery with a current release. Checkpoints sealed before it
+still recover, alone or mixed with newer ones; they carry every applied change, so their history
+counts as whole.
+
 Stop the old and destination management processes and all participating agents.
 Preserve their journals, host keys and current workload containers. Restore the
 management database and its original keyring, and ensure the importing account
@@ -168,6 +226,18 @@ management knowledge, cancellation, revocation and deletion state. Conflicting
 machine identities, epochs, plans or proofs require inspection rather than a
 counter reset. Missing imported records are attributed to the importing owner.
 
+An environment's secret values are sealed under its own key, which is made when its first
+secret is saved. If the management backup was taken before that, it has no key for them, and
+recovery stops: it names each such environment, with its project, and changes nothing. Restore
+a management backup taken after their first secrets were saved, or repeat the command with
+`--accept-erased-environments ENV_UUID,…` naming exactly the environments it named, to restore
+those secret values erased, and keep the same acceptance on the command that applies it with
+`--expected-state` and on any repeat of that. An acceptance that names any other environment, or
+leaves one out, is refused. The report's `erasedValues` lists each erased value by project, environment and
+secret name, never its value, so that an owner can enter it again, and the audit log records
+the acceptance as `workspace.recover_erased_environment_values` for each environment. Values a
+recovery restored erased stay erased, and a later recovery does not stop for them again.
+
 Start destination management and use its normal authenticated transfer workflow
 for each server. On each stopped agent, supply its matching handover JSON through
 `transfer --recovery-handover FILE`, together with the normal management origin,
@@ -187,7 +257,7 @@ status `attention`; once target writes are possible, returning to the source is
 forbidden. Explicit target reconciliation preserves that boundary. The globally
 applied revision changes only after all hosts confirm their target resumption.
 
-Recovery needs an export from every enrolled server except a revoked one, which may be gone or untrusted. Revoke a server in the restored management before recovering if you can't trust it or reach it. An export supplied for a revoked server must still match its machine, but nothing it claims counts: not its proofs, inventory, roots, private links or generation claims, which it could make up. Only its sealed capsules can count, for an interrupted root it was primary of, beyond the checkpoints management kept, because management sealed them and the server can only replay them. An export that can't be read at all still stops recovery, so leave it out; a revoked server's export is never required. Recovery keeps the revocation until an owner lifts it, keeps the server out of the network whichever membership record it selects, and ends its work as revoking it does, including any standalone removal still waiting on it.
+Recovery needs an export from every enrolled server except a revoked one, which may be gone or untrusted. Revoke a server in the restored management before recovering if you can't trust it or reach it. An export supplied for a revoked server must still match its machine, but nothing it claims counts: not its proofs, inventory, roots, private links or generation claims, which it could make up. Only its sealed capsules can count, for an interrupted root it was primary of, beyond the checkpoints management kept, because management sealed them and the server can only replay them. An export that can't be read at all still stops recovery, so leave it out; a revoked server's export is never required. Recovery keeps the revocation until an owner lifts it, keeps the server out of the network whichever membership record it selects, and ends its work as revoking it does, including any standalone removal still waiting on it. Recovery also does everything else revoking does, for every server it carries as revoked, because the records it keeps can be from before the revocation, or from a renewal the revocation overrides: it releases the server's previews and deletes their secret copies, and withdraws its domain. It releases the previews the revoked server runs, by where each was placed, so a preview of a policy since moved to another host is left alone. Of a preview policy's two copies, recovery keeps the one naming the host its open previews run on, so their cleanup goes where they are. Where they don't decide it, the copy with the higher generation wins, and on a tie the restored database's.
 
 A revoked server that took part in an interrupted root gets no authority back. The root opens once the remaining participants prove themselves, and they end it as they would after any revocation, following the table in [Moving off a revoked server](#moving-off-a-revoked-server). When the revoked server was the root's primary, whose export normally carries the root's checkpoints, recovery uses the checkpoints management sealed for it instead. If the revoked server's export holds later checkpoints, recovery takes them too, but only in order, each following the last, and only while each opens under management's key, so the server can replay progress management recorded but can't invent, reorder or withhold any below what management kept. Where it holds two different checkpoints for the same step, recovery takes neither. If the root is newer than anything management kept, include the revoked server's export if you can, since its sealed capsules are then the only copy of the root. Without them nothing holds its frozen plan, and recovery refuses with what to do: revoke the root's other servers too, leave out their exports, then deploy the environment to healthy servers.
 
@@ -253,7 +323,10 @@ Recovery orders runtime changes by the operation that actually committed them,
 not revision creation time or the execution counter used by reads and prepares.
 Each operation records an applied immutable plan or confirmed removal; the current
 runtime retains that operation even when cleanup removes its projection. Recovery
-checks each original authenticated base before combining histories. It identifies an
+checks each original authenticated base against the newest before using it. A base's applied
+history records each change in explicit fields, so a later release reads it the same way, and
+recovery keeps the entries whose rows it didn't restore, so a later base still carries them. It
+identifies an
 operation by a fixed, versioned list of its command's fields as stored, leaving out those that
 change after it is created (cancellation, controller transfer and its attached checkpoint), so a
 checkpoint sealed by one release is compared the same way by a later one. A primary that fails a checkpoint

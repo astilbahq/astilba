@@ -18,6 +18,8 @@ type passKeys struct {
 	session *secretbroker.Session
 	err     error
 	used    bool
+	// retire ends a session that ran out of time; by default it records whether it was used.
+	retire func(ctx context.Context, session *secretbroker.Session, used bool)
 }
 
 func (s *Service) passKeys(r secretbroker.Request) *passKeys {
@@ -32,7 +34,9 @@ func (k *passKeys) get() (*secretbroker.Session, error) {
 	if k.session != nil && k.session.Live() {
 		return k.session, nil
 	}
-	return nil, &providerCall{fetch: k.begin}
+	// Calls a pass joins may each ask for the session, so the call begins one only when none is
+	// live by then.
+	return nil, &providerCall{fetch: func(ctx context.Context) { _, _ = k.ensure(ctx) }}
 }
 
 // ensure is get for code that runs between passes, with nothing held, such as a provider call:
@@ -46,7 +50,11 @@ func (k *passKeys) ensure(ctx context.Context) (*secretbroker.Session, error) {
 
 func (k *passKeys) begin(ctx context.Context) {
 	if k.session != nil {
-		k.session.Close(ctx, secretbroker.UsedIf(k.used))
+		if k.retire != nil {
+			k.retire(ctx, k.session, k.used)
+		} else {
+			k.session.Close(ctx, secretbroker.UsedIf(k.used))
+		}
 	}
 	k.session, k.err = k.service.Store.Broker.Begin(ctx, k.request)
 	k.used = false
@@ -69,6 +77,9 @@ type valueKeys interface {
 	open(item secretbroker.Item, cipher []byte) ([]byte, error)
 	// openBetweenPasses is for code that holds nothing, such as a provider call.
 	openBetweenPasses(ctx context.Context, item secretbroker.Item, cipher []byte) ([]byte, error)
+	// openIn is open for a value q, the pass's transaction, stored, perhaps under an environment
+	// key it made, which no session holds until the transaction commits.
+	openIn(ctx context.Context, q secretbroker.EnvironmentKeyReader, item secretbroker.Item, cipher []byte) ([]byte, error)
 	close(ctx context.Context)
 }
 
@@ -86,6 +97,18 @@ func (k *passKeys) openBetweenPasses(ctx context.Context, item secretbroker.Item
 		return nil, &keysUnavailable{err}
 	}
 	return k.opened(session, item, cipher)
+}
+
+func (k *passKeys) openIn(ctx context.Context, q secretbroker.EnvironmentKeyReader, item secretbroker.Item, cipher []byte) ([]byte, error) {
+	session, err := k.get()
+	if err != nil {
+		return nil, err
+	}
+	plain, err := session.OpenIn(ctx, q, item, cipher)
+	if err == nil {
+		k.use()
+	}
+	return plain, err
 }
 
 func (k *passKeys) opened(session *secretbroker.Session, item secretbroker.Item, cipher []byte) ([]byte, error) {

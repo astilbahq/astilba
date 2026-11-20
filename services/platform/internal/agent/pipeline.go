@@ -150,21 +150,20 @@ func (e *Engine) pipelineContainer(ctx context.Context, c api.ExecutionCommand, 
 			return err
 		}
 		host.NetworkMode = container.NetworkMode(buildNetworkName)
-		nameservers := []string{}
-		for _, r := range resolvers {
-			nameservers = append(nameservers, strconv.Quote(r.String()))
+		info, err := e.Docker.Info(ctx, client.InfoOptions{})
+		if err != nil {
+			return errors.New("cannot read Docker's registry settings for the builder")
 		}
-		config.Env = append(config.Env, "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock", "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2), "ASTILBA_NAMESERVERS="+strings.Join(nameservers, ", "))
+		registryHost := ""
 		if p.Registry != nil {
-			config.Env = append(config.Env, "ASTILBA_REGISTRY_HOST="+strings.Split(p.Registry.Repository, "/")[0])
+			registryHost = strings.Split(p.Registry.Repository, "/")[0]
 		}
+		config.Env = append(config.Env, "BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock", "ASTILBA_GC_MIB="+strconv.Itoa(limits.StateMiB/2), "ASTILBA_BUILDKITD_CONFIG="+builderConfig(registryHost, dockerHubMirrors(info.Info.RegistryConfig), resolvers))
 		// RUN steps share the build container's network, which the policy filters on the host.
 		// BuildKit replaces Docker's loopback resolver for them, so it is given the host's.
 		// rootlesskit creates the user namespace and keeps that network, so the policy holds.
 		config.Entrypoint = []string{"sh", "-ec"}
-		config.Cmd = []string{`mkdir -p /run/buildkit; : > /run/buildkit/buildkitd.toml
-if [ -n "$ASTILBA_REGISTRY_HOST" ]; then printf '[registry."%s"]\n  http = false\n  insecure = false\n' "$ASTILBA_REGISTRY_HOST" >> /run/buildkit/buildkitd.toml; fi
-if [ -n "$ASTILBA_NAMESERVERS" ]; then printf '[dns]\n  nameservers = [%s]\n' "$ASTILBA_NAMESERVERS" >> /run/buildkit/buildkitd.toml; fi
+		config.Cmd = []string{`mkdir -p /run/buildkit; printf '%s' "$ASTILBA_BUILDKITD_CONFIG" > /run/buildkit/buildkitd.toml
 exec rootlesskit --net=host buildkitd --config /run/buildkit/buildkitd.toml --root /var/lib/buildkit --addr unix:///run/buildkit/buildkitd.sock --oci-worker-net host --oci-worker-gc --oci-worker-gc-keepstorage "$ASTILBA_GC_MIB"`}
 	}
 	made, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: pipelineName(c), Config: config, HostConfig: host})
@@ -309,8 +308,8 @@ func (e *Engine) buildPipeline(ctx context.Context, c api.ExecutionCommand, p pi
 			return result, err
 		}
 		n, err := strconv.ParseUint(strings.TrimSpace(string(size)), 10, 64)
-		if err != nil || n > 512<<20 || dockerFreeBytes(ctx, e.Docker) < (4<<30)+4*int64(n) {
-			return result, errors.New("local image exceeds reserved host storage")
+		if err != nil || n > localImageArchiveBytes {
+			return result, fmt.Errorf("The built image was not loaded: its archive is larger than %d MiB. Make the image smaller, for example with a multi-stage build. Existing workloads are unchanged.", localImageArchiveBytes>>20)
 		}
 		if err = e.loadPipelineImage(ctx, c, int64(n)); err != nil {
 			return result, err
@@ -384,55 +383,7 @@ func pipelineLogTail(logs string) string {
 	}
 	return logs[start:]
 }
-func (e *Engine) loadPipelineImage(ctx context.Context, c api.ExecutionCommand, size int64) error {
-	cli := e.DockerCLI
-	if cli == "" {
-		cli = "docker"
-	}
-	cmd := exec.CommandContext(ctx, cli, "exec", pipelineName(c), "cat", "/workspace/image.tar")
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "DOCKER_HOST=" + e.Docker.DaemonHost()}
-	if v := os.Getenv("DOCKER_CONFIG"); v != "" {
-		cmd.Env = append(cmd.Env, "DOCKER_CONFIG="+v)
-	}
-	stream, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err = cmd.Start(); err != nil {
-		return err
-	}
-	response, err := e.Docker.ImageLoad(ctx, &measuredReader{r: stream, remaining: size})
-	if err == nil {
-		_, err = io.Copy(io.Discard, response)
-		_ = response.Close()
-	}
-	if err != nil {
-		_ = cmd.Process.Kill()
-	}
-	wait := cmd.Wait()
-	return errors.Join(err, wait)
-}
 
-// measuredReader reads exactly remaining bytes, and fails if r has more.
-type measuredReader struct {
-	r         io.Reader
-	remaining int64
-}
-
-func (m *measuredReader) Read(p []byte) (int, error) {
-	if m.remaining == 0 {
-		if n, _ := m.r.Read(make([]byte, 1)); n > 0 {
-			return 0, errors.New("the image archive grew after it was measured")
-		}
-		return 0, io.EOF
-	}
-	n, err := m.r.Read(p[:min(int64(len(p)), m.remaining)])
-	m.remaining -= int64(n)
-	if err == io.EOF && m.remaining > 0 {
-		err = io.ErrUnexpectedEOF
-	}
-	return n, err
-}
 func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	var p pipeline.Command
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil || p.Digest() != c.PlanHash {
@@ -446,7 +397,15 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	if e.Docker == nil {
 		return e.finish(c.Id, "failed", "Docker is unavailable.")
 	}
-	ctx, stopCommand := e.commandContext(ctx, c)
+	// Time the pipeline waited for this host, behind a backup say, doesn't shorten it: it runs
+	// for its lifetime from when it was first taken up. Management allows a started pipeline the
+	// same bound.
+	started, err := e.Journal.startWork(c.Id)
+	if err != nil {
+		return err
+	}
+	r.StartedAt = started
+	ctx, stopCommand := e.commandContext(ctx, c, r.workEnd(p.Lifetime()))
 	defer stopCommand()
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)
@@ -456,7 +415,7 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 	if e.cancelled(c.Id) || ctx.Err() != nil {
 		return e.finishPipeline(c, "cancelled", "Build/source assignment was cancelled or expired.")
 	}
-	if err := e.checkpoint(c.Id, "runner"); err != nil {
+	if err := e.checkpoint(c.Id, pipeline.StartStep); err != nil {
 		return err
 	}
 	if err := e.pipelineContainer(ctx, c, p); err != nil {
@@ -469,7 +428,6 @@ func (e *Engine) executePipeline(ctx context.Context, c api.ExecutionCommand, r 
 		return e.pipelineFailure(ctx, c, err)
 	}
 	var result pipeline.Result
-	var err error
 	switch p.Action {
 	case "import":
 		result, err = e.importPipeline(ctx, c, p)

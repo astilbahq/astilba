@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -41,6 +42,9 @@ type Running struct {
 	// MinimumVersion is the minimum version of the release this agent runs. It never installs
 	// an older release.
 	MinimumVersion string
+	// StateVersion is the format a release must read to run on the agent's journal. It only installs
+	// a release that reads it: an earlier one would refuse to start.
+	StateVersion int
 }
 
 // Install only replaces the agent executable. It never stops a workload or edits Docker.
@@ -103,6 +107,10 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 	if running.Keyed && identity.KeyAuth < 1 {
 		return errors.New("this agent authenticates with a key, and this release can't; install a release that can")
 	}
+	// Releases from before the field read every format up to the keyed one, which Keyed covers.
+	if running.StateVersion > keyedStateVersion && identity.StateVersion < running.StateVersion {
+		return fmt.Errorf("this agent's state is in format %d, and this release reads formats up to %d, so it couldn't open the sealed journal keyring or private-link keys; install a release that can", running.StateVersion, identity.StateVersion)
+	}
 	backup := temp.Name() + ".previous"
 	if e = os.Link(executable, backup); e != nil {
 		return e
@@ -149,5 +157,5 @@ func RemoteUpdate(ctx context.Context, c *Client, r api.AgentRelease, executable
 	if response.StatusCode != 200 {
 		return errors.New("artifact unavailable")
 	}
-	return Install(ctx, r, key, response.Body, executable, Running{Keyed: c.Journal.HoldsKey(cfg), MinimumVersion: minimumVersion})
+	return Install(ctx, r, key, response.Body, executable, Running{Keyed: c.Journal.HoldsKey(cfg), MinimumVersion: minimumVersion, StateVersion: c.Journal.InstallStateVersion()})
 }

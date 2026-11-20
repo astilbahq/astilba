@@ -9,6 +9,7 @@ import (
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -22,20 +23,33 @@ func decodeArchive(raw []byte) (Archive, error) {
 
 func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	var archive Archive
-	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > ArchiveVersion || archive.Workspace == uuid.Nil {
+	newest := ArchiveVersion
+	if recovery {
+		newest = RecoveryArchiveVersion
+	}
+	if json.Unmarshal(raw, &archive, json.RejectUnknownMembers(true)) != nil || archive.Version < 1 || archive.Version > newest || archive.Workspace == uuid.Nil {
 		return archive, ErrArchive
 	}
-	if archive.Version == 1 {
+	// Only a recovery base carries a recovery section, and only recovery reads one. Its tables are an
+	// export version's.
+	version, base := recoveryBaseTables[archive.Version]
+	if !base {
+		version = archive.Version
+	}
+	if (archive.Recovery != nil) != base || base && !recovery {
+		return archive, ErrArchive
+	}
+	if version == 1 {
 		if err := normalizeLegacyArchive(&archive); err != nil {
 			return archive, err
 		}
 	}
-	if archive.Version < 5 {
+	if version < 5 {
 		if err := normalizePreNetworkArchive(&archive); err != nil {
 			return archive, err
 		}
 	}
-	if archive.Version < 6 {
+	if version < 6 {
 		for _, row := range archive.Tables["environments"] {
 			if _, exists := row["runtime_operation_id"]; exists {
 				return archive, ErrArchive
@@ -53,13 +67,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		}
 	}
 	// Version 7 carries the submissions management makes. An older archive has only runners'.
-	if archive.Version < 7 {
+	if version < 7 {
 		if _, exists := archive.Tables["source_submissions"]; exists {
 			return archive, ErrArchive
 		}
 		archive.Tables["source_submissions"] = []Row{}
 	}
-	if archive.Version < 8 {
+	if version < 8 {
 		// An environment from before retirement is active, and nothing recorded which PostgreSQL
 		// major initialised a volume: its next deployment records it.
 		fields := map[string]map[string]any{
@@ -77,6 +91,64 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 		}
 	}
+	if version < 9 {
+		// Nothing was purged, retired or erased before version 9.
+		fields := map[string]map[string]any{
+			"environments":    {"purged_at": nil, "purged_by": nil, "purge_operation_id": nil, "purged_without_host": false},
+			"secrets":         {"retired_at": nil},
+			"secret_versions": {"erased_at": nil},
+		}
+		for table, values := range fields {
+			for _, row := range archive.Tables[table] {
+				for field, value := range values {
+					if _, exists := row[field]; exists {
+						return archive, ErrArchive
+					}
+					setValue(row, field, value)
+				}
+			}
+		}
+	}
+	if version < 11 {
+		// Nothing recorded which requests revocation released. Their notes go without it.
+		for _, row := range archive.Tables["preview_requests"] {
+			if _, exists := row["released_by_revocation"]; exists {
+				return archive, ErrArchive
+			}
+			setValue(row, "released_by_revocation", false)
+		}
+	}
+	if version < 13 {
+		// Nothing recorded when a revocation began or when a snapshot was first reported. A server
+		// revoked then shows no time, and its snapshots stay on the manual route (docs/backups.md).
+		fields := map[string]map[string]any{"servers": {"revoked_at": nil}, "backup_policies": {"snapshot_receipts": map[string]any{}}}
+		for table, values := range fields {
+			for _, row := range archive.Tables[table] {
+				for field, value := range values {
+					if _, exists := row[field]; exists {
+						return archive, ErrArchive
+					}
+					setValue(row, field, value)
+				}
+			}
+		}
+	}
+	// Version 15 carries restores onto another server. None was made before it.
+	if version < 15 {
+		if _, exists := archive.Tables["backup_recoveries"]; exists {
+			return archive, ErrArchive
+		}
+		archive.Tables["backup_recoveries"] = []Row{}
+	}
+	// Version 17 carries each restore's latest discard. None was recorded before it.
+	if version < 17 {
+		for _, row := range archive.Tables["backup_recoveries"] {
+			if _, exists := row["discard_operation_id"]; exists {
+				return archive, ErrArchive
+			}
+			setValue(row, "discard_operation_id", nil)
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -87,7 +159,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	if e != nil || name != archive.Name {
 		return archive, ErrArchive
 	}
-	count := 0
+	count := archive.Recovery.Records()
 	for _, table := range tables {
 		rows, ok := archive.Tables[table.Name]
 		if !ok || rows == nil {
@@ -96,7 +168,7 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		columns := strings.Split(table.Columns, ",")
 		for _, row := range rows {
 			count++
-			if count > 10000 || len(row) != len(columns) {
+			if count > maxArchiveRecords || len(row) != len(columns) {
 				return archive, ErrArchive
 			}
 			for _, column := range columns {
@@ -112,6 +184,16 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			// one was not written by an export, and its insert would fail.
 			if _, found := domain.NULField(row, ""); found {
 				return archive, ErrArchive
+			}
+			switch table.Name {
+			case "backup_policies":
+				if _, e = backup.ParseReceipts(row["snapshot_receipts"]); e != nil {
+					return archive, ErrArchive
+				}
+			case "backup_recoveries":
+				if e = checkRecoveryResult(row); e != nil {
+					return archive, ErrArchive
+				}
 			}
 			// A recovery checkpoint is management's own record and must stay restorable. Any
 			// other archive gets what an export would have written, so retention, which
@@ -137,7 +219,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	refs := []struct{ table, column, target string }{
 		{"environments", "runtime_operation_id", "execution_operations"},
 		{"environments", "retirement_operation_id", "execution_operations"},
+		{"environments", "purge_operation_id", "execution_operations"},
 		{"backup_cutovers", "source_plan_id", "visual_requests"},
+		{"backup_recoveries", "operation_id", "execution_operations"},
+		{"backup_recoveries", "discard_operation_id", "execution_operations"},
+		{"backup_recoveries", "plan_id", "visual_requests"},
+		{"backup_recoveries", "source_server_id", "servers"},
+		{"backup_recoveries", "server_id", "servers"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
 		{"network_members", "network_id", "workspace_networks"},
@@ -184,6 +272,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			if e != nil || !ids[id] {
 				return archive, ErrArchive
 			}
+		}
+	}
+	if archive.Recovery != nil {
+		if e = validateRecoveryHistory(archive); e != nil {
+			return archive, e
 		}
 	}
 	return archive, nil
@@ -244,11 +337,12 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if e := s.admitImportTransaction(ctx, p, invitation); e != nil {
 		return out, e
 	}
-	keys, e := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: archive.Workspace, Purpose: secretbroker.Seal, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds, NewWorkspace: true})
+	created, e := s.Store.Broker.Create(ctx, secretbroker.Request{Workspace: archive.Workspace, Principal: p.Secrets(), Kinds: secretbroker.CredentialKinds})
 	if e != nil {
 		return out, e
 	}
-	defer func() { keys.Close(ctx, secretbroker.Done(failure)) }()
+	defer func() { created.Close(ctx, secretbroker.Done(failure)) }()
+	keys := created.Session()
 	tx, e := s.Store.Pool.Begin(ctx)
 	if e != nil {
 		return out, e
@@ -276,12 +370,11 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if !p.Recent() {
 		return out, domain.RecentRequired
 	}
-	if e = q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: archive.Workspace, Name: archive.Name}); e != nil {
+	if e = store.CreateWorkspace(ctx, q, created, archive.Name, p.Account.ID); e != nil {
 		return out, store.Normalize(e)
 	}
-	if e = q.InsertMembership(ctx, db.InsertMembershipParams{WorkspaceID: archive.Workspace, AccountID: p.Account.ID, Role: "owner"}); e != nil {
-		return out, e
-	}
+	// Values are sealed under the key just stored, which this transaction holds.
+	seal := func(item secretbroker.Item, value []byte) ([]byte, error) { return keys.Seal(ctx, q, item, value) }
 	if e = q.SetMFAPolicy(ctx, db.SetMFAPolicyParams{ID: archive.Workspace, RequireMfa: archive.RequireMFA}); e != nil {
 		return out, e
 	}
@@ -293,6 +386,11 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	applied := map[string]jsontext.Value{}
 	appliedOperations := map[string]jsontext.Value{}
 	visualPlans := map[string]jsontext.Value{}
+	// Each value is sealed for its environment, so purging the environment reaches it.
+	environments, e := environmentsOf(archive)
+	if e != nil {
+		return out, e
+	}
 	for _, table := range tables {
 		for _, row := range archive.Tables[table.Name] {
 			for _, actor := range []string{"author_id", "actor_id", "policy_actor"} {
@@ -350,9 +448,12 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				if e != nil {
 					return out, e
 				}
-				// The account that retired it is not in this installation; the importer answers for it.
-				if string(row["retired_by"]) != "null" {
-					setValue(row, "retired_by", p.Account.ID)
+				// The account that retired or purged it is not in this installation; the importer
+				// answers for it.
+				for _, field := range []string{"retired_by", "purged_by"} {
+					if string(row[field]) != "null" {
+						setValue(row, field, p.Account.ID)
+					}
 				}
 				applied[id] = row["applied_revision_id"]
 				appliedOperations[id] = row["runtime_operation_id"]
@@ -391,7 +492,7 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 				}
 				setValue(row, "configuration", config)
 			}
-			if e = transformCredential(keys, table.Name, row, false); e != nil {
+			if e = transformCredential(table.Name, row, environments, seal); e != nil {
 				return out, e
 			}
 			raw, e := stablejson.Marshal(row)
@@ -447,63 +548,6 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	return out, nil
 }
 
-func normalizeLegacyArchive(a *Archive) error {
-	if len(a.Tables) != len(legacyTables) {
-		return ErrArchive
-	}
-	for _, t := range legacyTables {
-		rows, ok := a.Tables[t.Name]
-		if !ok || rows == nil {
-			return ErrArchive
-		}
-		columns := strings.Split(t.Columns, ",")
-		for _, row := range rows {
-			if len(row) != len(columns) {
-				return ErrArchive
-			}
-			for _, column := range columns {
-				if _, ok := row[column]; !ok {
-					return ErrArchive
-				}
-			}
-			if t.Name == "environments" {
-				setValue(row, "purpose", "standard")
-			}
-			if t.Name == "servers" {
-				setValue(row, "preview_only", false)
-			}
-		}
-	}
-	a.Tables["preview_policies"] = []Row{}
-	a.Tables["preview_requests"] = []Row{}
-	a.Version = 2
-	return nil
-}
-
-func normalizePreNetworkArchive(a *Archive) error {
-	for _, table := range tables {
-		if strings.HasPrefix(table.Name, "network_") || table.Name == "workspace_networks" || strings.HasPrefix(table.Name, "cross_host_") || table.Name == "backup_cutovers" {
-			if _, ok := a.Tables[table.Name]; ok {
-				return ErrArchive
-			}
-			a.Tables[table.Name] = []Row{}
-		}
-	}
-	for _, row := range a.Tables["deployment_units"] {
-		if _, ok := row["primary_unit"]; ok {
-			return ErrArchive
-		}
-		setValue(row, "primary_unit", true)
-	}
-	for _, row := range a.Tables["execution_operations"] {
-		if _, ok := row["parent_id"]; ok {
-			return ErrArchive
-		}
-		setValue(row, "parent_id", nil)
-	}
-	return nil
-}
-
 // checkReleasedRoutes refuses an archive in which an environment whose server confirmed its
 // retirement still claims a hostname or port. That retirement released them for other
 // environments, and nothing but a reviewed deployment after a restore claims them again. A
@@ -516,7 +560,8 @@ func checkReleasedRoutes(a Archive) error {
 		if json.Unmarshal(row["state"], &state) != nil || json.Unmarshal(row["retired_without_host"], &withoutHost) != nil {
 			return ErrArchive
 		}
-		if state == "retired" && !withoutHost {
+		// A purge follows a confirmed retirement, which released them.
+		if (state == "retired" || state == "purging" || state == "purged") && !withoutHost {
 			id, err := rowString(row, "id")
 			if err != nil {
 				return err

@@ -1,4 +1,5 @@
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
+import { acknowledgeRelease, acknowledgesReleases } from "./agent-releases";
 import { signInAsOwner } from "./owner-sign-in";
 import { api } from "./ports";
 
@@ -110,6 +111,7 @@ export async function managedDatabase(
             schedules: true,
             upgrades: true,
             postgresReleases: releases.map((r) => r.image),
+            ...acknowledgesReleases,
           },
           preflight: {
             ready: true,
@@ -130,6 +132,12 @@ export async function managedDatabase(
     expect(res.status()).toBe(200);
     const value = await res.json();
     expect(value.command).toBeTruthy();
+    await acknowledgeRelease(
+      request,
+      "/agent/v1/releases",
+      agentHeaders,
+      value.command,
+    );
     return value.command;
   };
   const report = async (

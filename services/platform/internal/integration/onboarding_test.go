@@ -44,7 +44,7 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 	other, _, _ := enrollment(t, f, b, ws, "deployment")
 	yes := true
 	input.Capabilities.Visual = &yes
-	if _, e := f.execution.Enroll(ctx, input, "test"); e != nil {
+	if _, e := f.execution.Enroll(ctx, acknowledging(input), "test"); e != nil {
 		t.Fatal(e)
 	}
 	prefix := "/api/v1/workspaces/" + ws.String()
@@ -123,6 +123,7 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 				id = r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 			}
 			v["id"] = id
+			v["modified_on"] = time.Now().UTC().Format(time.RFC3339Nano)
 			records[id] = v
 			result = v
 			if lost {
@@ -180,7 +181,7 @@ func TestApplicationDomainScopeAndRecovery(t *testing.T) {
 	input.Token = ticket.Token
 	input.ControllerGeneration = &ticket.Generation
 	input.Inventory = &api.ControllerInventory{Units: map[string]string{}, Schedules: map[string]int64{}}
-	if _, e = f.execution.Enroll(ctx, input, "test"); e != nil {
+	if _, e = f.execution.Enroll(ctx, acknowledging(input), "test"); e != nil {
 		t.Fatal(e)
 	}
 	if e = f.execution.SweepDomains(ctx); e != nil {

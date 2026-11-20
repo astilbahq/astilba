@@ -36,11 +36,12 @@ func seedFirstSecretPage(t *testing.T, f *fixture, ws, env uuid.UUID) {
 	}
 	for i := range 64 {
 		id := uuid.UUID{15: byte(i + 1)}
-		cipher, err := f.st.Keys.Seal([]byte("first-page-decoy"), store.SecretIdentity(ws, id))
+		cipher, err := keysOf(f.st).Seal([]byte("first-page-decoy"), secretIdentity(ws, id))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: id, EncryptedValue: cipher, AuthorID: f.owner}); err != nil {
+		plain, encoded := store.SecretLengths([]byte("first-page-decoy"))
+		if _, err = q.InsertSecretVersion(ctx, db.InsertSecretVersionParams{WorkspaceID: ws, SecretID: secret, ID: id, EncryptedValue: cipher, AuthorID: f.owner, PlaintextBytes: plain, JsonBytes: encoded}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -197,6 +198,20 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 	heartbeat()
 	create(400)
 	version = pipeline.RailpackVersion
+	// A runner on another release can run other pins under the same Railpack version, as
+	// when management is upgraded first; it is refused with both digests named.
+	pins := pipeline.RailpackFor("arm64")
+	previous := pins
+	previous.HelperImage = "docker.io/library/alpine:3.23@sha256:" + strings.Repeat("0", 64)
+	digest := previous.Digest()
+	in.Capabilities.RailpackInputs = &digest
+	heartbeat()
+	var refusal api.Error
+	b.call("POST", path+"/builds", map[string]any{"baseRevisionId": draft.Id, "applicationId": app, "requestKey": uuid.New(), "configuration": cfg}, 400, &refusal)
+	if refusal.Fields == nil || len(*refusal.Fields) != 1 || (*refusal.Fields)[0] != "runner.railpackUpgradeRequired" || !strings.Contains(refusal.Message, pins.Digest()) || !strings.Contains(refusal.Message, digest) {
+		t.Fatal("a runner on other Railpack pins was not refused with both digests", refusal)
+	}
+	digest = pins.Digest()
 	heartbeat()
 	op = create(202)
 	c = poll()
@@ -216,7 +231,7 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 			t.Fatal("summary was not rejected by assigned-input validation", rejection)
 		}
 	}
-	in.Capabilities.RailpackVersion = nil
+	in.Capabilities.RailpackVersion, in.Capabilities.RailpackInputs = nil, nil
 	heartbeat()
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
 	b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
@@ -227,7 +242,25 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 		t.Fatal("downgraded runner cancellation was not credential-free")
 	}
 	report(c, "cancelled", pipeline.Result{})
-	in.Capabilities.RailpackVersion = &version
+	in.Capabilities.RailpackVersion, in.Capabilities.RailpackInputs = &version, &digest
+	heartbeat()
+	// A build queued for this runner before it moved to other pins, as when the runner is
+	// updated first, fails before delivery with both digests named, rather than holding the
+	// runner's later commands until it expires.
+	queued := create(202)
+	digest = previous.Digest()
+	heartbeat()
+	var idle api.AgentPoll
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 200, &idle)
+	if idle.Command != nil {
+		t.Fatal("a build for other Railpack pins reached the runner")
+	}
+	var stopped api.Operation
+	b.call("GET", path+"/operations/"+queued.Id.String(), nil, 200, &stopped)
+	if stopped.State != "failed" || !strings.Contains(stopped.Note, pins.Digest()) || !strings.Contains(stopped.Note, digest) {
+		t.Fatal("a build for other Railpack pins was not stopped with both digests", stopped.State, stopped.Note)
+	}
+	digest = pins.Digest()
 	heartbeat()
 	push(strings.Repeat("1", 40))
 	c = poll()

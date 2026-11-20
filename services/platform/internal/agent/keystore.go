@@ -4,25 +4,86 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 )
 
-// KeyStore seals the agent's private keys, and outstanding enrollment codes, to this machine, so
-// that a copy of the state directory alone can't authenticate as the agent.
+// KeyStore seals the agent's private keys, outstanding enrollment codes, the journal's keyring and
+// the host's private-link keys to this machine. So a copy of the state directory alone can't
+// authenticate as the agent, read its journal or join its private network. Each value is sealed
+// under a name, and unsealing it under another name fails, so one sealed value can't stand in for
+// another.
 type KeyStore interface {
-	Seal(ctx context.Context, plain []byte) ([]byte, error)
-	Unseal(ctx context.Context, sealed []byte) ([]byte, error)
+	Seal(ctx context.Context, name string, plain []byte) ([]byte, error)
+	Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error)
 	Protection() api.AgentCapabilitiesKeyProtection
+}
+
+// A KeyStore seals the host's private-link keys too.
+var _ hostnetwork.Sealer = KeyStore(nil)
+
+// OnDemandKeyStore opens the store that open returns the first time it seals or unseals a value,
+// and keeps it once it opens. A command that finds nothing sealed never waits on the store or
+// fails for it. A store that doesn't open isn't tried again: the boot restore it serves would
+// otherwise wait on it once for every sealed key, and the agent service restores what it can't.
+func OnDemandKeyStore(open func(context.Context) (KeyStore, error)) hostnetwork.Sealer {
+	return &onDemandStore{open: open}
+}
+
+type onDemandStore struct {
+	open   func(context.Context) (KeyStore, error)
+	mu     sync.Mutex
+	store  KeyStore
+	failed error
+}
+
+func (s *onDemandStore) opened(ctx context.Context) (KeyStore, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil && s.failed == nil {
+		store, err := s.open(ctx)
+		if err != nil {
+			s.failed = fmt.Errorf("%w: %w", hostnetwork.ErrKeyStoreUnavailable, err)
+		}
+		s.store = store
+	}
+	if s.failed != nil {
+		return nil, s.failed
+	}
+	return s.store, nil
+}
+
+func (s *onDemandStore) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	store, err := s.opened(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.Seal(ctx, name, plain)
+}
+
+func (s *onDemandStore) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	store, err := s.opened(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return store.Unseal(ctx, name, sealed)
 }
 
 // errKeyStoreSetup says sealing needs a one-time setup the running service can't do itself.
 var errKeyStoreSetup = errors.New("systemd credential host key is missing; run `sudo systemd-creds setup` once")
 
-const credentialName = "astilba-agent-key"
+// The names values are sealed under. The agent key's name also covers enrollment codes, which
+// earlier agents sealed under it.
+const (
+	credentialName        = "astilba-agent-key"
+	journalCredentialName = "astilba-agent-journal-keyring"
+)
 
 // SystemKeyStore seals with systemd-creds. With a TPM it binds to the chip alone: no PCRs, since
 // systemd 255 otherwise binds to PCR 7, which Secure Boot and firmware updates change. Without one
@@ -48,11 +109,14 @@ func SystemKeyStore(ctx context.Context) (KeyStore, error) {
 
 func probe(ctx context.Context, store KeyStore) error {
 	plain := []byte("astilba key store probe")
-	sealed, err := store.Seal(ctx, plain)
+	sealed, err := store.Seal(ctx, credentialName, plain)
 	if err != nil {
 		return err
 	}
-	read, err := store.Unseal(ctx, sealed)
+	read, err := store.Unseal(ctx, credentialName, sealed)
+	if errors.Is(err, hostnetwork.ErrKeyStoreUnavailable) {
+		return err
+	}
 	if err != nil || !bytes.Equal(read, plain) {
 		return errors.New("systemd-creds could not read back what it sealed")
 	}
@@ -81,8 +145,8 @@ func (s systemdCreds) Protection() api.AgentCapabilitiesKeyProtection {
 	return api.HostKey
 }
 
-func (s systemdCreds) Seal(ctx context.Context, plain []byte) ([]byte, error) {
-	args := []string{"encrypt", "--name=" + credentialName}
+func (s systemdCreds) Seal(ctx context.Context, name string, plain []byte) ([]byte, error) {
+	args := []string{"encrypt", "--name=" + name}
 	if s.tpm {
 		args = append(args, "--with-key=tpm2", "--tpm2-pcrs=")
 	} else {
@@ -91,8 +155,8 @@ func (s systemdCreds) Seal(ctx context.Context, plain []byte) ([]byte, error) {
 	return capture(ctx, plain, "systemd-creds", append(args, "-", "-")...)
 }
 
-func (s systemdCreds) Unseal(ctx context.Context, sealed []byte) ([]byte, error) {
-	return capture(ctx, sealed, "systemd-creds", "decrypt", "--name="+credentialName, "-", "-")
+func (s systemdCreds) Unseal(ctx context.Context, name string, sealed []byte) ([]byte, error) {
+	return capture(ctx, sealed, "systemd-creds", "decrypt", "--name="+name, "-", "-")
 }
 
 func capture(ctx context.Context, in []byte, name string, args ...string) ([]byte, error) {
@@ -103,7 +167,11 @@ func capture(ctx context.Context, in []byte, name string, args ...string) ([]byt
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return nil, errors.New("systemd-creds could not seal or unseal the agent key")
+		// A call that ran out of time says nothing about the value: the store isn't working.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: systemd-creds didn't answer in time", hostnetwork.ErrKeyStoreUnavailable)
+		}
+		return nil, errors.New("systemd-creds could not seal or unseal the value")
 	}
 	return out.Bytes(), nil
 }
@@ -112,3 +180,6 @@ func run(ctx context.Context, in []byte, name string, args ...string) error {
 	_, err := capture(ctx, in, name, args...)
 	return err
 }
+
+// KeyCredentialName is the name the agent key is sealed under, for tests that read the key back.
+const KeyCredentialName = credentialName

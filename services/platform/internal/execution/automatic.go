@@ -95,7 +95,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		return err
 	}
 	if !approved {
-		return stop("The owner who approved automatic deployment no longer approves it: they left, are no longer an owner, or changed their password or two-factor settings. An owner can approve the policy again and deploy this build.")
+		return stop("The owner who approved automatic deployment no longer approves it: they left, are no longer an owner, changed their password or two-factor settings, or haven't set up the two-factor authentication the workspace requires. An owner can approve the policy again and deploy this build.")
 	}
 	if err = tx.QueryRow(ctx, "SELECT project_id FROM environments WHERE workspace_id=$1 AND id=$2", ws, env).Scan(&pid); err != nil {
 		return err
@@ -111,12 +111,18 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if v.Revision != revision || v.Server == nil || v.Applied == nil {
 		return stop("The draft changed, or this environment needs its first reviewed deployment.")
 	}
-	var policy bool
-	if err = tx.QueryRow(ctx, `SELECT CASE WHEN r.configuration->>'action'='import' THEN COALESCE((g.configuration->>'autoDeploy')::boolean,false) ELSE COALESCE((b.configuration->>'autoDeploy')::boolean,false) AND b.input_hash=r.configuration->>'inputHash' AND b.requested_commit=r.configuration->>'commit' END FROM pipeline_runs r LEFT JOIN git_sources g ON g.workspace_id=r.workspace_id AND g.environment_id=r.environment_id LEFT JOIN build_targets b ON b.workspace_id=r.workspace_id AND b.environment_id=r.environment_id AND b.application_id=r.application_id WHERE r.id=$1`, job.Args.ID).Scan(&policy); err != nil {
+	// An import's deployment also needs the source to hold that import still: binding the source
+	// again forgets it, even when the new binding's import then fails and leaves the draft as it was.
+	var policy, imported bool
+	if err = tx.QueryRow(ctx, `SELECT CASE WHEN r.configuration->>'action'='import' THEN COALESCE((g.configuration->>'autoDeploy')::boolean,false) ELSE COALESCE((b.configuration->>'autoDeploy')::boolean,false) AND b.input_hash=r.configuration->>'inputHash' AND b.requested_commit=r.configuration->>'commit' END,
+ r.configuration->>'action'<>'import' OR COALESCE(g.imported_commit=r.configuration->>'commit',false) FROM pipeline_runs r LEFT JOIN git_sources g ON g.workspace_id=r.workspace_id AND g.environment_id=r.environment_id LEFT JOIN build_targets b ON b.workspace_id=r.workspace_id AND b.environment_id=r.environment_id AND b.application_id=r.application_id WHERE r.id=$1`, job.Args.ID).Scan(&policy, &imported); err != nil {
 		return err
 	}
 	if !policy {
 		return stop("Automatic deployment was disabled.")
+	}
+	if !imported {
+		return stop("The Git source was bound again since this import, so it is not deployed automatically.")
 	}
 	var raw []byte
 	if err = tx.QueryRow(ctx, "SELECT configuration FROM pipeline_runs WHERE id=$1", job.Args.ID).Scan(&raw); err != nil {
@@ -129,7 +135,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	// A busy environment waits before anything asks its provider, so waiting costs no call and
 	// opens no credential.
 	var busy bool
-	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state NOT IN ('succeeded','failed','cancelled'))", ws, env).Scan(&busy); err != nil {
+	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND state IN ('queued','dispatched','running','needs_attention'))", ws, env).Scan(&busy); err != nil {
 		return err
 	}
 	if busy {
@@ -176,7 +182,7 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 		if err != nil {
 			return err
 		}
-		status, err := w.service.createVisualPlan(ctx, nested, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
+		status, err := w.service.createVisualPlan(ctx, nested, git.keys.inspect, ws, pid, env, api.VisualPlanRequest{BaseRevisionId: revision, ServerId: *v.Server}, false)
 		if err != nil {
 			_ = nested.Rollback(ctx)
 			if _, ok := err.(*domain.Error); ok {
@@ -236,11 +242,8 @@ func (w *automaticWorker) work(ctx context.Context, git *gitAnswers, job *river.
 	if err != nil {
 		return err
 	}
-	if review && slices.Contains(candidate.Effects, deployment.UnreportedHostChangesEffect) {
-		return stop("Not deployed: this server's agent does not report what deployments would change on its host, so every deployment that keeps host permissions needs an owner's review. Update the agent; automatic deployment then resumes with the next push.")
-	}
 	if review {
-		return stop("Not deployed: this change also changes its server's host configuration. Prepare and apply a deployment plan to review and approve it; automatic deployment then resumes with the next push.")
+		return stop(automaticStopForReview(candidate.Effects))
 	}
 	nested, err := tx.Begin(ctx)
 	if err != nil {
@@ -557,4 +560,16 @@ func planImages(p deployment.Plan) map[string]string {
 		}
 	}
 	return out
+}
+
+// automaticStopForReview says why automatic deployment stopped at a plan that needs an owner's
+// review, and what lets it resume.
+func automaticStopForReview(effects []string) string {
+	switch {
+	case slices.Contains(effects, deployment.UnreportedHostChangesEffect):
+		return "Not deployed: this server's agent does not report what deployments would change on its host, so every deployment that keeps host permissions needs an owner's review. Update the agent; automatic deployment then resumes with the next push."
+	case slices.Contains(effects, deployment.UnreportedContainerRangesEffect), slices.Contains(effects, deployment.UnreadContainerRangesEffect), slices.Contains(effects, deployment.UnresolvedStagingEffect), slices.Contains(effects, deployment.UnconfirmedStagingEffect):
+		return "Not deployed: a route staged from the service catalog keeps a client allowlist that could not be checked against the ranges this server's containers send traffic from, so each deployment needs an owner's review. Prepare and apply a deployment plan."
+	}
+	return "Not deployed: this change also changes its server's host configuration. Prepare and apply a deployment plan to review and approve it; automatic deployment then resumes with the next push."
 }

@@ -23,6 +23,19 @@ uploaded, so a compromised server cannot destroy that history. On AWS, B2 and Mi
 read or list them either; on Cloudflare R2 it can, so there age encryption is what keeps them
 private. Either way only a [restore drill](#restore-drills) shows that a backup works.
 
+## What a backup covers
+
+A backup holds the database as it was when it ran, including each environment's own key, which
+that environment's secret values are sealed under. An environment's key is made when its first
+secret is saved, so a backup taken before then has none for it. Restoring the database alone
+loses whatever came after the backup anyway, but when you then recover a workspace from its
+servers' checkpoints, as [cross-host recovery](cross-host-placement.md#recovering-management-from-an-older-backup)
+describes, the checkpoints hold that environment's secret values and the restored database cannot
+open them. Recovery then stops and names the environment: you restore a newer backup, or accept
+that those values come back erased, to be entered again. Take a backup after an environment's
+first secret is saved: the nightly timer takes one by the next morning, or run one at once as
+[Install](#install) shows.
+
 ## What you need
 
 - An age identity for restores, kept off the management server. Make two, one for daily use
@@ -121,7 +134,9 @@ sha256sum /etc/astilba/keyring.json
 ```
 
 Keep every keyring that a retained backup was taken with. A database restored with the wrong
-keyring starts, but cannot decrypt secrets, two-factor credentials or recovery envelopes.
+keyring doesn't start: the installation's canaries don't open or, for a backup taken before
+canaries existed, its stored values don't, and the refusal is recorded. A restore keeps the
+installation ID, so `ASTILBA_INSTALLATION_ID` stays the same.
 
 ## Restore
 
@@ -173,7 +188,11 @@ which the manifest records.
    ```
 
 5. **Choose the image.** The manifest's `sourceRevision` is the image that took the backup. A
-   newer image also works once migrated; an older one refuses to start. Run
+   newer image also works once migrated, unless it is more than one
+   [custody stage](hosting.md#key-custody) ahead of the backup: then restore with the release in
+   between first. Don't use an older one: some refuse to start, and one
+   from before [custody stage 2](hosting.md#workspace-keys) starts but cannot open values a later
+   release sealed. Run
    `astilba migrate` with the image you choose, which does nothing when the schema already
    matches.
 
@@ -181,14 +200,27 @@ which the manifest records.
    and follow [installation backup and recovery](hosting.md#installation-backup-and-recovery)
    to fence each one first. If you'll recover cross-host work, use an image at least as new as
    the one that last ran management: hosts' recovery checkpoints can only be read by the release
-   that sealed them or a newer one.
+   that sealed them or a newer one. For cross-host recovery, use a backup taken after the newest
+   checkpoint's window opened, which the Workspace page shows, normally 90 days before the
+   checkpoint: an older one is refused if it holds a runtime the window doesn't reach ([the
+   recovery window](cross-host-placement.md#the-recovery-window)). Keeping backups for 35 days
+   stays well inside it.
 
 7. **Start and check.** Start `astilba serve`, sign in with your second factor, and check that
    the workspaces, servers and recent history are what you expect. A second factor that works
-   shows the keyring matches. Then delete the decrypted files.
+   shows the keyring matches. Then delete the decrypted files. With automatic DNS, a server
+   whose addresses changed after the backup shows its DNS as needing review, and its generated
+   names stop resolving: management doesn't publish the backup's older addresses again. Ask
+   its owners to check the addresses and approve them again
+   ([why](server-onboarding.md#when-an-approval-is-older-than-dns)).
 
 Anything written after the backup is lost, because there is no point-in-time recovery: the
 backup interval is how much you can lose.
+
+**Take a backup after creating a workspace.** Cross-host recovery restores only workspaces the
+backup holds, using the workspace's own key, which only management's database keeps. Until a
+backup holds a new workspace, its hosts' recovery capsules can't bring it back if management is
+lost.
 
 ## Restore drills
 
@@ -197,7 +229,10 @@ run a drill on the management host: the restore steps name the real database con
 drill copy holds the same Git, provider and webhook credentials as the real installation, so it
 must not be able to use them. Give it an environment file of its own that holds only the
 database password, keyring path, origin and image, with no SMTP, DNS provider or GitHub App
-settings. Put it and its database only on a Docker network created with `internal: true`,
+settings. A drill given the DNS settings would act on the live zone as the installation it was
+restored from: at startup it [removes every record](hosting.md#records-the-database-has-lost)
+the backup doesn't know, which includes everything the real installation published after it,
+and the records of every server whose addresses changed after it. Put it and its database only on a Docker network created with `internal: true`,
 which has no route off the host, and publish no ports. With PostgreSQL as a Compose service
 called `database`, an override does this:
 

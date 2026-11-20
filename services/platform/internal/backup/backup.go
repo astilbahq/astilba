@@ -102,6 +102,10 @@ type Manifest struct {
 	SHA256        string    `json:"sha256"`
 	Bytes         int64     `json:"bytes"`
 }
+
+// Extensions are the only extensions a database the recipe backs up may hold.
+var Extensions = []string{"hstore", "plpgsql"}
+
 type Run struct {
 	ManifestHash string     `json:"manifestHash"`
 	ID           uuid.UUID  `json:"id"`

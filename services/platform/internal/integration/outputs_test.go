@@ -24,7 +24,7 @@ func TestOutputAuthorityCloneAndAgentCompatibility(t *testing.T) {
 	prefix := "/api/v1/workspaces/" + ws.String()
 	var recipes []catalog.Recipe
 	b.call("GET", prefix+"/service-catalog", nil, 200, &recipes)
-	if len(recipes) != 5 {
+	if len(recipes) != 6 {
 		t.Fatal("catalog unavailable to workspace member")
 	}
 	b.call("GET", "/api/v1/workspaces/"+uuid.NewString()+"/service-catalog", nil, 404, nil)

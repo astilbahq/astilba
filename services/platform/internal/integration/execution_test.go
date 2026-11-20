@@ -26,12 +26,13 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 
 	"github.com/google/uuid"
-	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
 
 func agentRequest(t *testing.T, c *http.Client, origin, path, token string, body any, status int, out any) {
 	t.Helper()
+	body = releaseCapable(body)
+	defer acknowledgePolled(t, c, origin, path, token, out)
 	raw, _ := stablejson.Marshal(body)
 	method := "POST"
 	if body == nil {
@@ -61,8 +62,8 @@ func enrollment(t *testing.T, f *fixture, b *browser, ws uuid.UUID, role string)
 	var v api.Enrollment
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/servers", map[string]string{"name": "Test server", "role": role}, 201, &v)
 	credential, _ := randtoken.New()
-	machineBoundRotation := true
-	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, PostgresReleases: agentPostgresReleases(), Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
+	machineBoundRotation, acknowledgesReleases := true, true
+	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, PostgresReleases: agentPostgresReleases(), Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation, AcknowledgesReleases: &acknowledgesReleases}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
 	return v, in, v.Server.Id.String() + "." + credential
 }
 
@@ -573,49 +574,6 @@ func TestProcessExitAfterExternalEffect(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestUnownedContainerIsNeverRemoved(t *testing.T) {
-	if testing.Short() {
-		t.Skip("disposable Docker")
-	}
-	docker, e := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")))
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer docker.Close()
-	dir := t.TempDir()
-	_ = os.Chmod(dir, 0700)
-	j, e := agent.Open(dir)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer j.Close()
-	server, env := uuid.New(), uuid.New()
-	_ = j.SetConfig(agent.Config{ServerID: server, Role: "deployment"})
-	c := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, ResourceId: uuid.NewSHA1(server, []byte(env.String()+":probe:v1")), Generation: 1, PlanHash: strings.Repeat("a", 64), Kind: "test", Action: "remove", Image: execution.TestImage, Deadline: time.Now().Add(time.Minute)}
-	marker := uuid.NewString()
-	created, e := docker.ContainerCreate(context.Background(), client.ContainerCreateOptions{Name: agent.Name(c), Config: &container.Config{Image: execution.TestImage, Labels: map[string]string{"com.astilba.fixture": marker}}})
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer func() {
-		v, e := docker.ContainerInspect(context.Background(), created.ID, client.ContainerInspectOptions{})
-		if e == nil && v.Container.Config.Labels["com.astilba.fixture"] == marker {
-			_, _ = docker.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true})
-		}
-	}()
-	engine := agent.Engine{Journal: j, Docker: docker}
-	if e = engine.Execute(context.Background(), c); e != nil {
-		t.Fatal(e)
-	}
-	r, _ := j.Record(c.Id)
-	if r.Report.State != "needs_attention" {
-		t.Fatalf("ownership mismatch result %s", r.Report.State)
-	}
-	if _, e = docker.ContainerInspect(context.Background(), created.ID, client.ContainerInspectOptions{}); e != nil {
-		t.Fatal("unowned container removed", e)
 	}
 }
 

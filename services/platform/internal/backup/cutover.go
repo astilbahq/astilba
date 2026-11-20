@@ -8,13 +8,21 @@ import (
 )
 
 // CutoverVolume validates a verified physical restore for a volume-only switch.
-// A logical archive may verify under its original major while remaining
-// incompatible with the currently deployed PostgreSQL data layout.
 func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 	// Run history retains the verified archive's hash but omits its potentially
 	// large role/extension lists. The compact manifest cannot reproduce that hash.
-	if !r.Verified || r.State != "succeeded" || r.TargetID == uuid.Nil || r.PolicyID != p.ID || r.Manifest == nil || !SnapshotID(r.ManifestHash) || r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID || r.Manifest.Method != p.Method {
+	if !r.Verified || r.State != "succeeded" || r.PolicyID != p.ID || r.Manifest == nil || !SnapshotID(r.ManifestHash) {
 		return uuid.Nil, errors.New("the restored run does not match the source policy")
+	}
+	return RestoredVolume(p, r.TargetID, *r.Manifest, r.RestoredImage())
+}
+
+// RestoredVolume is the volume of p's plan that target, holding a verified restore of the archive
+// m describes, switches in for. A logical restore's data was written by the release whose image
+// is restored, which the frozen source must be able to open.
+func RestoredVolume(p Policy, target uuid.UUID, m Manifest, restored string) (uuid.UUID, error) {
+	if target == uuid.Nil || m.PolicyID != p.ID || m.EnvironmentID != p.EnvironmentID || m.ResourceID != p.ResourceID || m.Method != p.Method {
+		return uuid.Nil, errors.New("the restored archive does not match the source policy")
 	}
 	old := p.ResourceID
 	switch p.Method {
@@ -24,7 +32,7 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 			if a.ID != p.ResourceID || a.Postgres == nil {
 				continue
 			}
-			if err := OpensRestoredPostgres(a, r); err != nil {
+			if err := OpensRestoredPostgres(a, restored); err != nil {
 				return uuid.Nil, err
 			}
 			old, found = a.Mounts[0].VolumeID, true
@@ -37,14 +45,15 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 		return uuid.Nil, errors.New("this policy has no supported volume cutover")
 	}
 	for _, v := range p.Plan.Specification.Volumes {
-		if v.ID == r.TargetID {
+		if v.ID == target {
 			return uuid.Nil, errors.New("the restored target is already part of the source")
 		}
 	}
 	return old, nil
 }
 
-// RestoredImage is the PostgreSQL image that filled a logical restore target.
+// RestoredImage is the PostgreSQL image that filled a logical restore target. A run from an agent
+// that predates the release rule restored in the archive's own image.
 func (r Run) RestoredImage() string {
 	if r.RestoreImage != "" {
 		return r.RestoreImage
@@ -55,10 +64,19 @@ func (r Run) RestoredImage() string {
 	return r.Manifest.Image
 }
 
-// OpensRestoredPostgres says whether a managed database may serve the data a logical restore
-// wrote: its release must open data the restoring release wrote, mounted where it keeps it.
-func OpensRestoredPostgres(a domain.Application, r Run) error {
-	written, ok := domain.PostgresReleaseOf(r.RestoredImage())
+// RestoredImage is the PostgreSQL image that filled a recovery's target, as for a run.
+func (r RecoveryResult) RestoredImage() string {
+	if r.RestoreImage != "" {
+		return r.RestoreImage
+	}
+	return r.Manifest.Image
+}
+
+// OpensRestoredPostgres says whether a managed database may serve the data a logical restore in
+// the restored image wrote: its release must open data that release wrote, mounted where it
+// keeps it.
+func OpensRestoredPostgres(a domain.Application, restored string) error {
+	written, ok := domain.PostgresReleaseOf(restored)
 	if !ok {
 		return errors.New("the restored PostgreSQL release is unknown")
 	}

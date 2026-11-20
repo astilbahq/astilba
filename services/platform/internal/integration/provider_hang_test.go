@@ -30,6 +30,8 @@ type heldGitea struct {
 	repository atomic.Int64
 	pullHead   atomic.Value
 	pullClosed atomic.Bool
+	// secondPull opens pull request 8 beside 7, from the same head.
+	secondPull atomic.Bool
 	onRequest  atomic.Pointer[func(path string)]
 
 	mu       sync.Mutex
@@ -98,8 +100,14 @@ func newHeldGitea(t *testing.T) *heldGitea {
 			answerBranch(w, "gitea", head)
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
 			answerPull(w, 7, pullState, 12, pullHead, 99)
+		case h.secondPull.Load() && strings.HasSuffix(r.URL.Path, "/pulls/8"):
+			answerPull(w, 8, pullState, 12, pullHead, 99)
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
-			_ = stablejson.Encode(w, []map[string]int{{"number": 7}})
+			pulls := []map[string]int{{"number": 7}}
+			if h.secondPull.Load() {
+				pulls = append(pulls, map[string]int{"number": 8})
+			}
+			_ = stablejson.Encode(w, pulls)
 		default:
 			answerRepository(w, "gitea", repository, false)
 		}
@@ -390,7 +398,7 @@ type polled struct {
 func (h *hungBuild) pollAsync(ctx context.Context) <-chan polled {
 	out := make(chan polled, 1)
 	go func() {
-		command, err := h.f.execution.Poll(ctx, h.identity)
+		command, err := pollReleased(h.f.execution, ctx, h.identity)
 		out <- polled{command, err}
 	}()
 	return out
@@ -546,7 +554,7 @@ func TestDeliveryGivesUpOnAConnectionThatKeepsChanging(t *testing.T) {
 	before := h.provider.requests("/repos/team/app")
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	command, err := h.f.execution.Poll(ctx, h.identity)
+	command, err := pollReleased(h.f.execution, ctx, h.identity)
 	if !errors.Is(err, domain.Conflict) || carriesCredential(command) || h.deliveryStarted(t, op.Id) {
 		t.Fatal("a connection that never settled reached delivery", err)
 	}
@@ -570,7 +578,7 @@ func TestDeliveryStopsWhenTheProviderFailsAfterHanging(t *testing.T) {
 	if outcome.err == nil || carriesCredential(outcome.command) || h.deliveryStarted(t, op.Id) {
 		t.Fatal("a failed provider check still delivered", outcome.err)
 	}
-	if c, err := h.f.execution.Poll(ctx, h.identity); err != nil || !carriesCredential(c) {
+	if c, err := pollReleased(h.f.execution, ctx, h.identity); err != nil || !carriesCredential(c) {
 		t.Fatal("delivery did not recover with the provider", err)
 	}
 }
@@ -580,7 +588,7 @@ func (h *hungBuild) deliver(t *testing.T, config pipeline.BuildConfig) *api.Exec
 	op := h.createBuild(t, config)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	command, err := h.f.execution.Poll(ctx, h.identity)
+	command, err := pollReleased(h.f.execution, ctx, h.identity)
 	if err != nil || command == nil || command.Id != op.Id {
 		t.Fatal("build was not delivered", command, err)
 	}

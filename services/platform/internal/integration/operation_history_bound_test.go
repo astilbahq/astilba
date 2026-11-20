@@ -2,16 +2,15 @@ package integration
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"path"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -86,11 +85,13 @@ func TestLongOperationHistoryKeepsCrossHostDeploymentAndExport(t *testing.T) {
 func TestRecoveryReadsABaseCapturedBeforeHistoryWasBounded(t *testing.T) {
 	var seeded []uuid.UUID
 	r := newClaimRecoveryCaptured(t, 7, func(ctx context.Context, tx pgx.Tx, ws uuid.UUID) ([]byte, error) {
-		// What CaptureRecovery wrote before it was bounded: every row of every archived table.
+		// What CaptureRecovery wrote before it was bounded: every row of every archived table, in
+		// the format of its time.
 		archive, _, err := portability.InspectRecovery(ctx, tx, ws)
 		if err != nil {
 			return nil, err
 		}
+		archive.Recovery = nil
 		return stablejson.Marshal(archive)
 	}, func(f *fixture, _ *browser, ws, _ uuid.UUID) {
 		server := claimUUID(t, f, `SELECT server_id FROM execution_operations WHERE workspace_id=$1 AND kind='visual' LIMIT 1`, ws)
@@ -123,12 +124,10 @@ func TestRecoveryReadsABaseCapturedBeforeHistoryWasBounded(t *testing.T) {
 	}
 }
 
-// A recovery base used to be gzipped, and gzip can't find a plan the base repeats further back than
-// 32 KiB, so cross-host history filled the 1 MiB envelope long before the archive's record limit,
-// after a few weeks in a busy distributed workspace, and its cross-host deployments stopped. Bases
-// are now zstd-compressed with a window covering the whole base, which holds about 2.5 times the
-// history in the same envelope.
-func TestCrossHostHistoryGzipCouldNotSealStillDeploys(t *testing.T) {
+// A base's applied history is mostly random identifiers, which compress poorly, so a busy
+// workspace's window can fit the archive's limits and still not seal. The deployment then shortens
+// the window by how far the envelope overflowed and seals again, rather than failing.
+func TestCrossHostDeploymentShortensAWindowThatDoesNotSeal(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	a, b := g.hosts[0], g.hosts[1]
 	e := g.primaryEnvironment(t, a)
@@ -138,50 +137,51 @@ func TestCrossHostHistoryGzipCouldNotSealStillDeploys(t *testing.T) {
 	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT o.runtime_plan_id FROM environments e JOIN execution_operations o ON o.id=e.runtime_operation_id WHERE e.id=$1`, env).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
-	// Each copy of the applied plan gets IDs and hashes of its own, as each real deployment does.
-	seed := func(count int) {
-		t.Helper()
-		if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at)
-SELECT gen_random_uuid(),p.workspace_id,$2,p.environment_id,(SELECT max(generation) FROM execution_operations WHERE environment_id=p.environment_id)+i,gen_random_uuid(),
-	regexp_replace(regexp_replace(p.plan::text,'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',gen_random_uuid()::text,'g'),'[0-9a-f]{64}',md5(random()::text)||md5(random()::text),'g')::jsonb,
-	'visual','succeeded',1,'applied',p.id,now()-interval '1 day'+i*interval '1 millisecond'
-FROM visual_plans p, generate_series(1,$3::int) i WHERE p.id=$1`, plan, a.id, count); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE environments SET execution_generation=(SELECT max(generation) FROM execution_operations WHERE environment_id=$1) WHERE id=$1`, env); err != nil {
-			t.Fatal(err)
-		}
+	// Configuration that random content keeps from compressing, which a shorter window doesn't
+	// shrink: the environment's newest 50 revisions. The line the sealer fits must find it.
+	if _, err := g.f.st.Pool.Exec(g.ctx, `INSERT INTO specification_revisions(workspace_id,environment_id,id,author_id,specification,content_hash,created_at)
+SELECT r.workspace_id,r.environment_id,gen_random_uuid(),r.author_id,jsonb_build_object('version',1,'filler',f.text),decode(md5(f.text),'hex'),now()-interval '1 day'+i*interval '1 second'
+FROM specification_revisions r JOIN environments e ON e.workspace_id=r.workspace_id AND e.draft_revision_id=r.id, generate_series(1,50) i,
+LATERAL (SELECT string_agg(md5(random()::text||i||j),'') AS text FROM generate_series(1,250) j) f WHERE e.id=$1`, env); err != nil {
+		t.Fatal(err)
 	}
-	// gzipSealed reports whether the workspace's base, gzipped as before, would still seal.
-	gzipSealed := func() bool {
-		t.Helper()
-		tx, err := g.f.st.Pool.Begin(g.ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(g.ctx)
-		raw, err := portability.CaptureRecovery(g.ctx, tx, g.ws)
-		if err != nil {
-			t.Fatal("the base no longer fits the archive's own limits", err)
-		}
-		var compressed bytes.Buffer
-		writer := gzip.NewWriter(&compressed)
-		writer.Write(raw)
-		writer.Close()
-		envelope, err := g.f.st.Keys.Seal(compressed.Bytes(), "gzip-envelope-probe")
-		return err == nil && len(envelope) <= deployment.RecoveryEnvelopeLimit
+	// Each change is a command of its own, recorded and ended inside the window. The trigger would
+	// date their end now, as for rows that arrive ended, so it is off while they are written.
+	tx, err := g.f.st.Pool.Begin(g.ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for gzipSealed() {
-		seed(200)
+	defer tx.Rollback(g.ctx)
+	if _, err = tx.Exec(g.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(g.ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at,ended_at)
+SELECT n.id,p.workspace_id,$2,p.environment_id,(SELECT max(generation) FROM execution_operations WHERE environment_id=p.environment_id)+i,gen_random_uuid(),jsonb_build_object('id',n.id,'planHash',md5(random()::text)),
+	'visual','succeeded',1,'applied',p.id,t,t,t
+FROM visual_plans p, (SELECT gen_random_uuid() AS id,i FROM generate_series(1,9500) i) n, LATERAL (SELECT now()-interval '30 days'+i*interval '1 second' AS t) at WHERE p.id=$1`, plan, a.id); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(g.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE environments SET execution_generation=(SELECT max(generation) FROM execution_operations WHERE environment_id=$1) WHERE id=$1`, env); err != nil {
+		t.Fatal(err)
 	}
 	g.applied(t, &e, g.place(t, &e, a.id, b.id))
+	var seconds int64
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT extract(epoch FROM captured_at-window_start)::bigint FROM recovery_bases WHERE workspace_id=$1 ORDER BY captured_at DESC LIMIT 1`, g.ws).Scan(&seconds); err != nil {
+		t.Fatal(err)
+	}
+	if window := time.Duration(seconds) * time.Second; window >= 30*24*time.Hour || window <= 0 {
+		t.Fatal("the deployment's base kept a window that couldn't seal: ", window)
+	}
 }
 
-// Recovery checks a newer base against the exact runtime an older one applied, so a base still
-// carries every deployment that applied a runtime. A workspace with enough of them still reaches
-// the archive's record limit, and its cross-host deployments and export stop. This pins that limit
-// until bases carry a compact record of applied history instead.
-func TestDeploymentHistoryStillReachesTheArchiveLimit(t *testing.T) {
+// A recovery base used to carry every operation that applied a runtime, so a workspace with
+// enough deployments reached the archive's record limit and its cross-host deployments stopped. A
+// base now carries a window of applied history: changes older than 90 days stay out, and when the
+// window's own changes don't fit, the window starts later, so a busy workspace keeps a base.
+func TestBusyWorkspaceStaysWithinTheArchiveLimits(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
 	b := f.browser(t)
@@ -191,7 +191,7 @@ func TestDeploymentHistoryStillReachesTheArchiveLimit(t *testing.T) {
 	var environment api.Environment
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Web"}, 201, &environment)
 	_, in, _ := enrollment(t, f, b, ws, "deployment")
-	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+	if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
 		t.Fatal(err)
 	}
 	plan := uuid.New()
@@ -205,29 +205,367 @@ func TestDeploymentHistoryStillReachesTheArchiveLimit(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO visual_plans(id,workspace_id,environment_id,plan) VALUES($1,$2,$3,'{}')`, plan, ws, environment.Id); err != nil {
 		t.Fatal(err)
 	}
-	applied := func(count int) {
+	// applied seeds count deployments that each applied a runtime and ended age ago, a millisecond
+	// apart. The trigger would date their end now, as for a row that arrives ended, so it is off
+	// while they are written.
+	applied := func(count int, age time.Duration) {
 		t.Helper()
-		if _, err := f.st.Pool.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at)
-SELECT gen_random_uuid(),$1,$2,$3,COALESCE((SELECT max(generation) FROM execution_operations WHERE environment_id=$3),0)+i,gen_random_uuid(),'{}','visual','succeeded',1,'applied',$4,now()-interval '1 day'+i*interval '1 millisecond'
-FROM generate_series(1,$5::int) i`, ws, in.ServerId, environment.Id, plan, count); err != nil {
-			t.Fatal(err)
-		}
-	}
-	capture := func() error {
 		tx, err := f.st.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		_, err = portability.CaptureRecovery(ctx, tx, ws)
-		return err
+		if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,runtime_outcome,runtime_plan_id,created_at,runtime_recorded_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,COALESCE((SELECT max(generation) FROM execution_operations WHERE environment_id=$3),0)+i,gen_random_uuid(),'{}','visual','succeeded',1,'applied',$4,t,t,t
+FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-$6::interval+i*interval '1 millisecond' AS t) at`, ws, in.ServerId, environment.Id, plan, count, age.String()); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
-	applied(9000)
-	if err := capture(); err != nil {
-		t.Fatal("9,000 applied deployments no longer fit a recovery base: ", err)
+	capture := func() (portability.RecoveryCapture, portability.Archive) {
+		t.Helper()
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
+		if err != nil {
+			t.Fatal("the workspace no longer fits a recovery base: ", err)
+		}
+		archive, err := portability.DecodeRecovery(captured.Raw)
+		if err != nil {
+			t.Fatal("the recovery base doesn't read back: ", err)
+		}
+		return captured, archive
 	}
-	applied(1100)
-	if err := capture(); !errors.Is(err, portability.ErrArchive) {
-		t.Fatal("10,100 applied deployments fit a recovery base, so the archive limit this test pins has moved: ", err)
+	day := 24 * time.Hour
+	// A change recorded half a day before the window opens may have committed after it did, so
+	// the window counts it, and starts from the one before.
+	applied(9000, 120*day)
+	applied(1, 100*day)
+	applied(1, 90*day+12*time.Hour)
+	applied(2000, 10*day)
+	captured, archive := capture()
+	if window := captured.CapturedAt.Sub(captured.WindowStart); window != portability.RecoveryWindowTarget {
+		t.Fatal("a workspace whose history fits got a shorter window: ", window)
 	}
+	ledger := archive.Recovery.Applied
+	if len(ledger) != 2002 || ledger[0].Generation != 9002 || ledger[1].Generation != 9003 {
+		t.Fatalf("the base carries %d applied changes from generation %d, not the 2,002 from the change before the window opened", len(ledger), ledger[0].Generation)
+	}
+	if archive.Recovery.Environments[0].Floor != 9002 || len(archive.Tables["execution_operations"]) > 200 {
+		t.Fatal("the base carries applied history as operation rows, or starts it at the wrong change")
+	}
+
+	applied(12000, 5*day)
+	captured, archive = capture()
+	if window := captured.CapturedAt.Sub(captured.WindowStart); window >= 6*day || window <= 0 {
+		t.Fatal("a busy workspace's window didn't shrink to the changes that fit: ", window)
+	}
+	if records := archive.Recovery.Records(); records < 8000 || records > 10000 {
+		t.Fatalf("the shortened window holds %d records", records)
+	}
+	// A base that can hold no change from the last day would start its window after its capture;
+	// it is refused rather than sealed unreadable.
+	applied(1, time.Hour)
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, 0, nil); !errors.Is(err, portability.ErrArchive) {
+		t.Fatal("a window starting after its capture was sealed: ", err)
+	}
+	tx.Rollback(ctx)
+	passphrase := "busy workspace archive passphrase"
+	var encrypted api.WorkspaceArchive
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/export", map[string]string{"passphrase": passphrase}, 200, &encrypted)
+}
+
+// A recovery keeps the applied history it took from a base without the rows, and later bases carry
+// it, so a second recovery, from a backup taken inside the first one's gap, still finds that
+// backup's runtime. The database's own origin reads it too.
+func TestRecoveredHistoryTravelsInLaterBases(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var project api.Project
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects", map[string]string{"name": "Recovered"}, 201, &project)
+	var environment api.Environment
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Web"}, 201, &environment)
+	plan := uuid.New()
+	kept := portability.AppliedEntry{Environment: environment.Id, Operation: uuid.New(), Generation: 7, Identity: "v2:" + strings.Repeat("ab", 32), Outcome: "applied", RuntimePlan: &plan, State: "succeeded", Sequence: 1, RecordedAt: time.Now().Add(-10 * 24 * time.Hour).UTC().Truncate(time.Microsecond), Exact: true}
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err = portability.StoreRecoveredHistory(ctx, tx, ws, &portability.RecoveryHistory{Applied: []portability.AppliedEntry{kept}}); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := portability.DecodeRecovery(captured.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carries := func(entries []portability.AppliedEntry) bool {
+		want, _ := stablejson.Marshal(kept)
+		return slices.ContainsFunc(entries, func(e portability.AppliedEntry) bool {
+			got, _ := stablejson.Marshal(e)
+			return bytes.Equal(got, want)
+		})
+	}
+	if !carries(archive.Recovery.Applied) {
+		t.Fatal("a later base left out the applied history a recovery kept without its row")
+	}
+	inspected, _, err := portability.InspectRecovery(ctx, tx, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !carries(inspected.Recovery.Applied) {
+		t.Fatal("the database's own applied history left out what a recovery kept")
+	}
+}
+
+// A coordinated backup is a cross-host root that records no runtime, so a base names each one
+// that ended inside its window in its settled list. Frequent backups shorten the window to fit,
+// as frequent deployments do, rather than refusing the base.
+func TestFrequentCoordinatedBackupsShortenTheWindow(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var project api.Project
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects", map[string]string{"name": "Backed up"}, 201, &project)
+	var environment api.Environment
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": "Web"}, 201, &environment)
+	_, in, _ := enrollment(t, f, b, ws, "deployment")
+	if _, err := f.execution.Enroll(ctx, in, "test"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	// Ended ten minutes apart over the last 80 days, as hourly backups of six environments would.
+	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,$3,i,gen_random_uuid(),'{}','crosshost','succeeded',0,t,t
+FROM generate_series(1,11000) i, LATERAL (SELECT now()-interval '80 days'+i*interval '10 minutes' AS t) at`, ws, in.ServerId, environment.Id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = origin`); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
+	if err != nil {
+		t.Fatal("frequent coordinated backups refused the base: ", err)
+	}
+	archive, err := portability.DecodeRecovery(captured.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window := captured.CapturedAt.Sub(captured.WindowStart); window >= 80*24*time.Hour || len(archive.Recovery.Settled) < 5000 {
+		t.Fatalf("the window covers %s with %d settled roots", window, len(archive.Recovery.Settled))
+	}
+}
+
+// The coordinator captures a recovery base on every cross-host root, in up to six passes and
+// three seals, and each pass reads the window's applied history. It used to read every runtime
+// change the workspace ever made to find each environment's floor and the window's cut, so the
+// cost grew with the workspace's age. It now reads the changes near the window, and looks up each
+// environment's floor once: a workspace with a hundred times the older history, and a hundred
+// times the applied history an earlier recovery kept from long ago, costs a capture nothing more.
+func TestRecoveryCaptureReadsOnlyTheWindow(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	var project api.Project
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects", map[string]string{"name": "Long-lived"}, 201, &project)
+	environments, plans := []uuid.UUID{}, []uuid.UUID{}
+	for _, name := range []string{"Web", "Worker", "Jobs"} {
+		var environment api.Environment
+		b.call("POST", "/api/v1/workspaces/"+ws.String()+"/projects/"+project.Id.String()+"/environments", map[string]string{"name": name}, 201, &environment)
+		environments, plans = append(environments, environment.Id), append(plans, uuid.New())
+	}
+	_, in, _ := enrollment(t, f, b, ws, "deployment")
+	if _, err := f.execution.Enroll(ctx, acknowledging(in), "test"); err != nil {
+		t.Fatal(err)
+	}
+	// seed writes history as the times trigger would have dated it, with the trigger and the
+	// plans' requests left out.
+	seed := func(statement string, args ...any) {
+		t.Helper()
+		tx, err := f.st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec(ctx, statement, args...); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, table := range []string{"execution_operations", "recovered_runtime_history"} {
+			if _, err = f.st.Pool.Exec(ctx, `ANALYZE `+table); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed(`INSERT INTO visual_plans(id,workspace_id,environment_id,plan) SELECT p,$1,e,'{}' FROM unnest($2::uuid[],$3::uuid[]) x(e,p)`, ws, environments, plans)
+	// The last month: twenty deployments in each environment, and the host's network commands.
+	const recent = 20
+	seed(`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,runtime_outcome,runtime_plan_id,runtime_recorded_at,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,($3::uuid[])[1+i%3],1000000+i,gen_random_uuid(),'{"visual":{"action":"deploy"}}','visual','succeeded',1,true,'applied',($4::uuid[])[1+i%3],at+interval '1 minute',at,at+interval '1 minute'
+FROM generate_series(1,$5::int) i, LATERAL (SELECT now()-interval '30 days'+i*interval '1 hour' AS at) t`, ws, in.ServerId, environments, plans, 3*recent)
+	seed(`INSERT INTO execution_operations(id,workspace_id,server_id,generation,request_key,command,kind,state,report_sequence,alert_observed,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,2000000+i,gen_random_uuid(),'{"network":{"action":"configure"}}','network','succeeded',1,true,at,at+interval '1 minute'
+FROM generate_series(1,300) i, LATERAL (SELECT now()-interval '10 days'+i*interval '30 minutes' AS at) t`, ws, in.ServerId)
+	// older seeds the operations numbered from to through, of a hundred thousand three minutes apart
+	// that ended a hundred days ago: a quarter of them deployments that each applied a runtime, with
+	// the generations they took. A recovery kept an entry for each of those changes, as it keeps its
+	// base's whole ledger, and the database has their rows. It also kept, five months ago and after
+	// every older change, the entries numbered from first to last of three thousand without their
+	// rows, in the first two environments.
+	const old, kept = 100000, 3000
+	older := func(from, to, first, last int) {
+		t.Helper()
+		seed(`INSERT INTO execution_operations(id,workspace_id,server_id,environment_id,generation,request_key,command,kind,state,report_sequence,alert_observed,runtime_outcome,runtime_plan_id,runtime_recorded_at,created_at,ended_at)
+SELECT gen_random_uuid(),$1,$2,CASE WHEN kind<>'network' THEN env END,i,gen_random_uuid(),
+	CASE kind WHEN 'network' THEN '{"network":{"action":"configure"}}' WHEN 'visual' THEN '{"visual":{"action":"deploy"}}' ELSE '{}' END::jsonb,
+	kind,state,1,true,CASE WHEN applied THEN 'applied' END,CASE WHEN applied THEN plan END,CASE WHEN applied THEN at+interval '1 minute' END,at,at+interval '1 minute'
+FROM generate_series($5::int,$6::int) i,
+	LATERAL (SELECT ($3::uuid[])[1+i%3] AS env,($4::uuid[])[1+i%3] AS plan,(ARRAY['network','visual','backup','pipeline'])[1+i/3%4] AS kind,(ARRAY['succeeded','failed','cancelled'])[1+i/12%3] AS state,
+		now()-interval '100 days'-($7::int-i)*interval '3 minutes' AS at) k,
+	LATERAL (SELECT kind='visual' AND state='succeeded' AS applied) a`, ws, in.ServerId, environments, plans, from, to, old)
+		seed(`INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
+SELECT $1,op,env,500000+i,at,jsonb_build_object('environment',env,'operation',op,'generation',500000+i,'identity','v2:'||repeat('ab',32),'outcome','applied','runtimePlan',plan,
+	'revision',NULL,'planHash','','state','succeeded','sequence',1,'controller',0,'recordedAt',at,'exact',true)
+FROM generate_series($4::int,$5::int) i, LATERAL (SELECT gen_random_uuid() AS op,($2::uuid[])[1+i%3] AS env,($3::uuid[])[1+i%3] AS plan,now()-interval '150 days'+i*interval '1 second' AS at) k
+WHERE i%3<>2`, ws, environments, plans, first, last)
+		seed(`INSERT INTO recovered_runtime_history(workspace_id,operation_id,environment_id,generation,recorded_at,entry)
+SELECT o.workspace_id,o.id,o.environment_id,o.generation,o.runtime_recorded_at,jsonb_build_object('environment',o.environment_id,'operation',o.id,'generation',o.generation,'identity','v2:'||repeat('ab',32),
+	'outcome','applied','runtimePlan',o.runtime_plan_id,'revision',NULL,'planHash','','state','succeeded','sequence',1,'controller',0,'recordedAt',o.runtime_recorded_at,'exact',true)
+FROM execution_operations o WHERE o.workspace_id=$1 AND o.runtime_outcome IS NOT NULL AND o.generation BETWEEN $2 AND $3`, ws, from, to)
+	}
+	// capture captures a base on one connection, as a coordinator captures one pass after another,
+	// and counts the rows and index entries it read from the operations and the applied history
+	// recoveries kept, by relation.
+	conn, err := f.st.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	capture := func() (int64, map[string]int64, portability.Archive) {
+		t.Helper()
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		read := func() map[string]int64 {
+			rows, err := tx.Query(ctx, `SELECT c.relname,pg_stat_get_xact_tuples_returned(c.oid) FROM pg_class c
+WHERE c.oid IN ('execution_operations'::regclass,'recovered_runtime_history'::regclass)
+	OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN ('execution_operations'::regclass,'recovered_runtime_history'::regclass))`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]int64{}
+			for rows.Next() {
+				var relation string
+				var n int64
+				if err = rows.Scan(&relation, &n); err != nil {
+					t.Fatal(err)
+				}
+				counts[relation] = n
+			}
+			if err = rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			return counts
+		}
+		before := read()
+		captured, err := portability.CaptureRecoveryBase(ctx, tx, ws, portability.RecoveryWindowTarget, portability.AllChanges, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total, counts := int64(0), read()
+		for relation, n := range counts {
+			if counts[relation] = n - before[relation]; counts[relation] == 0 {
+				delete(counts, relation)
+			}
+			total += counts[relation]
+		}
+		archive, err := portability.DecodeRecovery(captured.Raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if window := captured.CapturedAt.Sub(captured.WindowStart); window != portability.RecoveryWindowTarget {
+			t.Fatal("the window is shorter than its target: ", window)
+		}
+		// The first two environments' floors are the newest entry the recovery kept for each without
+		// its row: 500000+i for the largest i with i%3 equal to the environment's index. The third's
+		// is its newest older deployment. The ledger is the floor and the month's deployments.
+		floors := map[uuid.UUID]int64{}
+		for _, e := range archive.Recovery.Environments {
+			floors[e.Environment] = e.Floor
+		}
+		for i, env := range environments {
+			want := int64(500000 + kept - (kept-i)%3)
+			if i == 2 {
+				want = claimCounter(t, f, `SELECT max(generation) FROM execution_operations WHERE workspace_id=$1 AND environment_id=$2 AND runtime_outcome IS NOT NULL AND generation<1000000`, ws, env)
+			}
+			if floors[env] != want {
+				t.Fatalf("environment %d starts its history at generation %d, not %d, the change it had when the window opened", i, floors[env], want)
+			}
+		}
+		if len(archive.Recovery.Applied) != 3*recent+len(environments) {
+			t.Fatalf("the base carries %d applied changes, not the %d deployments inside the window and each environment's floor", len(archive.Recovery.Applied), 3*recent)
+		}
+		return total, counts, archive
+	}
+	// A thousand older operations and three hundred kept entries without rows, then the rest, each
+	// part older than the last.
+	older(old-999, old, kept-299, kept)
+	little, littleCounts, _ := capture()
+	older(1, old-1000, 1, kept-300)
+	long, longCounts, _ := capture()
+	if long > little {
+		t.Fatalf("a capture read %d rows and index entries with %d older operations and %d older entries (%v), and %d with %d and %d (%v)", little, 1000, 300, littleCounts, long, old, kept, longCounts)
+	}
+	// The window's cut, the floors and the ledger each read the window's changes, and the floors
+	// and the ledger each environment's floor: the applied history read is a few times the
+	// window's, where the hundred thousand older operations hold over eight thousand older changes.
+	// It stays so as a coordinator captures again and again on one connection.
+	window := int64(3*recent + len(environments))
+	for range 6 {
+		_, counts, _ := capture()
+		history := int64(0)
+		for relation, n := range counts {
+			if strings.HasPrefix(relation, "execution_operations_applied_") || strings.HasPrefix(relation, "recovered_runtime_history") {
+				history += n
+			}
+		}
+		if history > 5*window {
+			t.Fatalf("a capture read %d entries of applied history, more than five times the %d inside its window and at its floors: %v", history, window, counts)
+		}
+	}
+	t.Logf("a capture read %d rows and index entries with %d older operations, and %d with %d: %v", little, 1000, long, old, longCounts)
 }

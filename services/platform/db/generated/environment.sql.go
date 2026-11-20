@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceDraft = `-- name: AdvanceDraft :one
@@ -53,7 +54,7 @@ func (q *Queries) AdvanceEnvironmentExecutionGeneration(ctx context.Context, arg
 }
 
 const allEncryptedVersions = `-- name: AllEncryptedVersions :many
-SELECT workspace_id,id,encrypted_value FROM secret_versions FOR UPDATE
+SELECT workspace_id,id,encrypted_value FROM secret_versions WHERE erased_at IS NULL FOR UPDATE
 `
 
 type AllEncryptedVersionsRow struct {
@@ -164,7 +165,7 @@ func (q *Queries) EnvironmentRuntimePlan(ctx context.Context, arg EnvironmentRun
 }
 
 const getEnvironment = `-- name: GetEnvironment :one
-SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host,d.id AS unit_id,d.runtime,d.server_id FROM environments e JOIN deployment_units d
+SELECT e.workspace_id, e.project_id, e.id, e.name, e.configuration_owner, e.draft_revision_id, e.created_at, e.execution_generation, e.applied_revision_id, e.purpose, e.runtime_operation_id, e.state, e.retired_at, e.retired_by, e.retirement_operation_id, e.retired_without_host, e.purged_at, e.purged_by, e.purge_operation_id, e.purged_without_host,d.id AS unit_id,d.runtime,d.server_id,(SELECT stage FROM custody_stage)::integer AS custody_stage FROM environments e JOIN deployment_units d
 ON d.workspace_id=e.workspace_id AND d.environment_id=e.id AND d.primary_unit WHERE e.workspace_id=$1 AND e.project_id=$2 AND e.id=$3
 `
 
@@ -191,9 +192,14 @@ type GetEnvironmentRow struct {
 	RetiredBy             *uuid.UUID `json:"retired_by"`
 	RetirementOperationID *uuid.UUID `json:"retirement_operation_id"`
 	RetiredWithoutHost    bool       `json:"retired_without_host"`
+	PurgedAt              *time.Time `json:"purged_at"`
+	PurgedBy              *uuid.UUID `json:"purged_by"`
+	PurgeOperationID      *uuid.UUID `json:"purge_operation_id"`
+	PurgedWithoutHost     bool       `json:"purged_without_host"`
 	UnitID                uuid.UUID  `json:"unit_id"`
 	Runtime               string     `json:"runtime"`
 	ServerID              *uuid.UUID `json:"server_id"`
+	CustodyStage          int32      `json:"custody_stage"`
 }
 
 func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) (GetEnvironmentRow, error) {
@@ -216,9 +222,14 @@ func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) 
 		&i.RetiredBy,
 		&i.RetirementOperationID,
 		&i.RetiredWithoutHost,
+		&i.PurgedAt,
+		&i.PurgedBy,
+		&i.PurgeOperationID,
+		&i.PurgedWithoutHost,
 		&i.UnitID,
 		&i.Runtime,
 		&i.ServerID,
+		&i.CustodyStage,
 	)
 	return i, err
 }
@@ -324,7 +335,7 @@ func (q *Queries) GetRevisionHolding(ctx context.Context, arg GetRevisionHolding
 }
 
 const getSecret = `-- name: GetSecret :one
-SELECT workspace_id, environment_id, id, name FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3
+SELECT workspace_id, environment_id, id, name, retired_at FROM secrets WHERE workspace_id=$1 AND environment_id=$2 AND id=$3 AND retired_at IS NULL
 `
 
 type GetSecretParams struct {
@@ -341,13 +352,14 @@ func (q *Queries) GetSecret(ctx context.Context, arg GetSecretParams) (Secret, e
 		&i.EnvironmentID,
 		&i.ID,
 		&i.Name,
+		&i.RetiredAt,
 	)
 	return i, err
 }
 
 const getSecretVersion = `-- name: GetSecretVersion :one
-SELECT v.workspace_id, v.secret_id, v.id, v.encrypted_value, v.author_id, v.created_at FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
-WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3
+SELECT v.workspace_id, v.secret_id, v.id, v.encrypted_value, v.author_id, v.created_at, v.plaintext_bytes, v.json_bytes, v.erased_at FROM secret_versions v JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id
+WHERE v.workspace_id=$1 AND s.environment_id=$2 AND v.id=$3 AND v.erased_at IS NULL
 `
 
 type GetSecretVersionParams struct {
@@ -356,6 +368,7 @@ type GetSecretVersionParams struct {
 	ID            uuid.UUID `json:"id"`
 }
 
+// An erased version has no value, so every reader finds it missing.
 func (q *Queries) GetSecretVersion(ctx context.Context, arg GetSecretVersionParams) (SecretVersion, error) {
 	row := q.db.QueryRow(ctx, getSecretVersion, arg.WorkspaceID, arg.EnvironmentID, arg.ID)
 	var i SecretVersion
@@ -366,6 +379,9 @@ func (q *Queries) GetSecretVersion(ctx context.Context, arg GetSecretVersionPara
 		&i.EncryptedValue,
 		&i.AuthorID,
 		&i.CreatedAt,
+		&i.PlaintextBytes,
+		&i.JsonBytes,
+		&i.ErasedAt,
 	)
 	return i, err
 }
@@ -386,7 +402,7 @@ func (q *Queries) InsertDeploymentUnit(ctx context.Context, arg InsertDeployment
 }
 
 const insertEnvironment = `-- name: InsertEnvironment :one
-INSERT INTO environments(workspace_id,project_id,id,name,draft_revision_id,configuration_owner,purpose) VALUES($1,$2,$3,$4,$5,COALESCE(NULLIF($6::text,''),'dashboard'),COALESCE(NULLIF($7::text,''),'standard')) RETURNING workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose, runtime_operation_id, state, retired_at, retired_by, retirement_operation_id, retired_without_host
+INSERT INTO environments(workspace_id,project_id,id,name,draft_revision_id,configuration_owner,purpose) VALUES($1,$2,$3,$4,$5,COALESCE(NULLIF($6::text,''),'dashboard'),COALESCE(NULLIF($7::text,''),'standard')) RETURNING workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose, runtime_operation_id, state, retired_at, retired_by, retirement_operation_id, retired_without_host, purged_at, purged_by, purge_operation_id, purged_without_host
 `
 
 type InsertEnvironmentParams struct {
@@ -427,6 +443,10 @@ func (q *Queries) InsertEnvironment(ctx context.Context, arg InsertEnvironmentPa
 		&i.RetiredBy,
 		&i.RetirementOperationID,
 		&i.RetiredWithoutHost,
+		&i.PurgedAt,
+		&i.PurgedBy,
+		&i.PurgeOperationID,
+		&i.PurgedWithoutHost,
 	)
 	return i, err
 }
@@ -510,15 +530,18 @@ func (q *Queries) InsertSecret(ctx context.Context, arg InsertSecretParams) erro
 }
 
 const insertSecretVersion = `-- name: InsertSecretVersion :one
-INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id) VALUES($1,$2,$3,$4,$5) RETURNING id,created_at
+INSERT INTO secret_versions(workspace_id,secret_id,id,encrypted_value,author_id,plaintext_bytes,json_bytes)
+VALUES($1,$2,$3,$4,$5,$6::integer,$7::integer) RETURNING id,created_at
 `
 
 type InsertSecretVersionParams struct {
-	WorkspaceID    uuid.UUID `json:"workspace_id"`
-	SecretID       uuid.UUID `json:"secret_id"`
-	ID             uuid.UUID `json:"id"`
-	EncryptedValue []byte    `json:"encrypted_value"`
-	AuthorID       uuid.UUID `json:"author_id"`
+	WorkspaceID    uuid.UUID   `json:"workspace_id"`
+	SecretID       uuid.UUID   `json:"secret_id"`
+	ID             uuid.UUID   `json:"id"`
+	EncryptedValue []byte      `json:"encrypted_value"`
+	AuthorID       uuid.UUID   `json:"author_id"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
+	JsonBytes      pgtype.Int4 `json:"json_bytes"`
 }
 
 type InsertSecretVersionRow struct {
@@ -533,6 +556,8 @@ func (q *Queries) InsertSecretVersion(ctx context.Context, arg InsertSecretVersi
 		arg.ID,
 		arg.EncryptedValue,
 		arg.AuthorID,
+		arg.PlaintextBytes,
+		arg.JsonBytes,
 	)
 	var i InsertSecretVersionRow
 	err := row.Scan(&i.ID, &i.CreatedAt)
@@ -540,7 +565,7 @@ func (q *Queries) InsertSecretVersion(ctx context.Context, arg InsertSecretVersi
 }
 
 const listEnvironments = `-- name: ListEnvironments :many
-SELECT workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose, runtime_operation_id, state, retired_at, retired_by, retirement_operation_id, retired_without_host FROM environments WHERE workspace_id=$1 AND project_id=$2 ORDER BY created_at,id
+SELECT workspace_id, project_id, id, name, configuration_owner, draft_revision_id, created_at, execution_generation, applied_revision_id, purpose, runtime_operation_id, state, retired_at, retired_by, retirement_operation_id, retired_without_host, purged_at, purged_by, purge_operation_id, purged_without_host FROM environments WHERE workspace_id=$1 AND project_id=$2 ORDER BY created_at,id
 `
 
 type ListEnvironmentsParams struct {
@@ -574,6 +599,10 @@ func (q *Queries) ListEnvironments(ctx context.Context, arg ListEnvironmentsPara
 			&i.RetiredBy,
 			&i.RetirementOperationID,
 			&i.RetiredWithoutHost,
+			&i.PurgedAt,
+			&i.PurgedBy,
+			&i.PurgeOperationID,
+			&i.PurgedWithoutHost,
 		); err != nil {
 			return nil, err
 		}
@@ -656,8 +685,9 @@ func (q *Queries) ListRevisions(ctx context.Context, arg ListRevisionsParams) ([
 }
 
 const listSecrets = `-- name: ListSecrets :many
-SELECT s.id,s.name,v.id AS version_id,v.created_at FROM secrets s JOIN secret_versions v
-ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2 ORDER BY s.name,v.created_at DESC
+SELECT s.id,s.name,v.id AS version_id,v.created_at,v.plaintext_bytes FROM secrets s JOIN secret_versions v
+ON v.workspace_id=s.workspace_id AND v.secret_id=s.id WHERE s.workspace_id=$1 AND s.environment_id=$2
+AND s.retired_at IS NULL AND v.erased_at IS NULL ORDER BY s.name,v.created_at DESC,v.id DESC
 `
 
 type ListSecretsParams struct {
@@ -666,12 +696,14 @@ type ListSecretsParams struct {
 }
 
 type ListSecretsRow struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	VersionID uuid.UUID `json:"version_id"`
-	CreatedAt time.Time `json:"created_at"`
+	ID             uuid.UUID   `json:"id"`
+	Name           string      `json:"name"`
+	VersionID      uuid.UUID   `json:"version_id"`
+	CreatedAt      time.Time   `json:"created_at"`
+	PlaintextBytes pgtype.Int4 `json:"plaintext_bytes"`
 }
 
+// Retired secrets and erased versions are kept for the specifications that name them, not listed.
 func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]ListSecretsRow, error) {
 	rows, err := q.db.Query(ctx, listSecrets, arg.WorkspaceID, arg.EnvironmentID)
 	if err != nil {
@@ -686,6 +718,7 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Lis
 			&i.Name,
 			&i.VersionID,
 			&i.CreatedAt,
+			&i.PlaintextBytes,
 		); err != nil {
 			return nil, err
 		}
@@ -695,6 +728,25 @@ func (q *Queries) ListSecrets(ctx context.Context, arg ListSecretsParams) ([]Lis
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockEnvironmentDraft = `-- name: LockEnvironmentDraft :one
+SELECT draft_revision_id FROM environments WHERE workspace_id = $1 AND id = $2 FOR NO KEY UPDATE
+`
+
+type LockEnvironmentDraftParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Takes the environment's row lock, as LockEnvironmentForUpdate does, and returns its draft as it
+// stands once the lock is held. A delete of one of the environment's volumes and a draft or plan
+// that uses one are decided under this lock: see store.LockVolumeDecisions.
+func (q *Queries) LockEnvironmentDraft(ctx context.Context, arg LockEnvironmentDraftParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockEnvironmentDraft, arg.WorkspaceID, arg.ID)
+	var draft_revision_id uuid.UUID
+	err := row.Scan(&draft_revision_id)
+	return draft_revision_id, err
 }
 
 const lockEnvironmentForUpdate = `-- name: LockEnvironmentForUpdate :one
@@ -713,6 +765,28 @@ func (q *Queries) LockEnvironmentForUpdate(ctx context.Context, arg LockEnvironm
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const measureSecretVersion = `-- name: MeasureSecretVersion :exec
+UPDATE secret_versions SET plaintext_bytes = $1::integer, json_bytes = $2::integer
+WHERE workspace_id = $3 AND id = $4 AND erased_at IS NULL
+`
+
+type MeasureSecretVersionParams struct {
+	PlaintextBytes int32     `json:"plaintext_bytes"`
+	JsonBytes      int32     `json:"json_bytes"`
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+}
+
+func (q *Queries) MeasureSecretVersion(ctx context.Context, arg MeasureSecretVersionParams) error {
+	_, err := q.db.Exec(ctx, measureSecretVersion,
+		arg.PlaintextBytes,
+		arg.JsonBytes,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
 }
 
 const putLayout = `-- name: PutLayout :one
@@ -780,6 +854,52 @@ func (q *Queries) SpecificationTextSize(ctx context.Context, specification []byt
 	return size, err
 }
 
+const unmeasuredSecretVersions = `-- name: UnmeasuredSecretVersions :many
+SELECT v.workspace_id,v.id,v.encrypted_value,s.environment_id FROM secret_versions v
+JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+WHERE (v.plaintext_bytes IS NULL OR v.json_bytes IS NULL) AND v.erased_at IS NULL AND (v.workspace_id,v.id) > ($1::uuid,$2::uuid)
+ORDER BY v.workspace_id,v.id LIMIT $3
+`
+
+type UnmeasuredSecretVersionsParams struct {
+	AfterWorkspace uuid.UUID `json:"after_workspace"`
+	AfterID        uuid.UUID `json:"after_id"`
+	Batch          int32     `json:"batch"`
+}
+
+type UnmeasuredSecretVersionsRow struct {
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+	EncryptedValue []byte    `json:"encrypted_value"`
+	EnvironmentID  uuid.UUID `json:"environment_id"`
+}
+
+// unscoped: the job that measures values goes through every workspace's, a batch at a time.
+func (q *Queries) UnmeasuredSecretVersions(ctx context.Context, arg UnmeasuredSecretVersionsParams) ([]UnmeasuredSecretVersionsRow, error) {
+	rows, err := q.db.Query(ctx, unmeasuredSecretVersions, arg.AfterWorkspace, arg.AfterID, arg.Batch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UnmeasuredSecretVersionsRow{}
+	for rows.Next() {
+		var i UnmeasuredSecretVersionsRow
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.ID,
+			&i.EncryptedValue,
+			&i.EnvironmentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const visualPlanHostReview = `-- name: VisualPlanHostReview :one
 SELECT host_review FROM visual_plans WHERE workspace_id=$1 AND environment_id=$2 AND id=$3
 `
@@ -813,4 +933,46 @@ func (q *Queries) VisualRequestHostReview(ctx context.Context, arg VisualRequest
 	var host_review bool
 	err := row.Scan(&host_review)
 	return host_review, err
+}
+
+const volumeDeletions = `-- name: VolumeDeletions :many
+SELECT v.id, v.deleted FROM managed_volumes v
+WHERE v.workspace_id = $1 AND v.environment_id = $2 AND v.id = ANY($3::uuid[])
+    AND (v.deleted OR EXISTS(SELECT 1 FROM execution_operations o
+        WHERE o.workspace_id = v.workspace_id AND o.environment_id = v.environment_id
+            AND o.state IN ('queued','dispatched','running','needs_attention')
+            AND o.command->'visual'->>'action' = 'delete-volume' AND o.command->'visual'->>'volumeId' = v.id::text))
+`
+
+type VolumeDeletionsParams struct {
+	WorkspaceID   uuid.UUID   `json:"workspace_id"`
+	EnvironmentID uuid.UUID   `json:"environment_id"`
+	Ids           []uuid.UUID `json:"ids"`
+}
+
+type VolumeDeletionsRow struct {
+	ID      uuid.UUID `json:"id"`
+	Deleted bool      `json:"deleted"`
+}
+
+// Those of the environment's volumes among ids that are deleted, or that a delete-volume operation
+// of the environment's that hasn't ended names. Read it under LockEnvironmentDraft's lock.
+func (q *Queries) VolumeDeletions(ctx context.Context, arg VolumeDeletionsParams) ([]VolumeDeletionsRow, error) {
+	rows, err := q.db.Query(ctx, volumeDeletions, arg.WorkspaceID, arg.EnvironmentID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []VolumeDeletionsRow{}
+	for rows.Next() {
+		var i VolumeDeletionsRow
+		if err := rows.Scan(&i.ID, &i.Deleted); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

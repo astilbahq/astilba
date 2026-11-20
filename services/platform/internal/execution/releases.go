@@ -6,6 +6,8 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -96,6 +98,16 @@ type releaseTarget struct {
 	Image    string    `json:"image"`
 	Eligible bool      `json:"eligible"`
 	Note     string    `json:"note"`
+	// OlderSecretVersions are what a rollback draft would name that is not its secret's current
+	// version: the runtime-secret check searches for them only once the draft names them.
+	OlderSecretVersions []olderSecretVersion `json:"olderSecretVersions"`
+}
+
+type olderSecretVersion struct {
+	SecretID  uuid.UUID `json:"secretId"`
+	VersionID uuid.UUID `json:"versionId"`
+	Name      string    `json:"name"`
+	Retired   bool      `json:"retired"`
 }
 type releaseHistory struct {
 	PlanID       uuid.UUID       `json:"planId"`
@@ -166,19 +178,32 @@ func (s *Service) ReleaseHistory(ctx context.Context, p store.Principal, ws, pid
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		var plans []deployment.Plan
 		for rows.Next() {
 			var raw []byte
 			var entry releaseHistory
 			if err = rows.Scan(&raw, &entry.CreatedAt); err != nil {
+				rows.Close()
 				return err
 			}
 			var old deployment.Plan
 			if err = json.Unmarshal(raw, &old); err != nil {
+				rows.Close()
 				return err
 			}
 			entry.PlanID, entry.RevisionID = old.ID, old.RevisionID
-			entry.Applications = []releaseTarget{}
+			out, plans = append(out, entry), append(plans, old)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		older, err := olderSecretVersions(ctx, tx, ws, env, plans)
+		if err != nil {
+			return err
+		}
+		for i, old := range plans {
+			out[i].Applications = []releaseTarget{}
 			for _, app := range old.Specification.Applications {
 				_, compatible := rollbackPlan(current, old, app.ID)
 				eligible := supported && compatible == nil && deployment.Hash(v.Spec) == deployment.Hash(current.Specification)
@@ -186,13 +211,45 @@ func (s *Service) ReleaseHistory(ctx context.Context, p store.Principal, ws, pid
 				if eligible {
 					note = "Create a rollback draft, then prepare a plan to check image availability and review effective configuration. No database rollback."
 				}
-				entry.Applications = append(entry.Applications, releaseTarget{Changes: releaseChanges(current, old, app.ID), ID: app.ID, Name: app.Name, Image: old.Images[app.ID.String()], Eligible: eligible, Note: note})
+				out[i].Applications = append(out[i].Applications, releaseTarget{Changes: releaseChanges(current, old, app.ID), ID: app.ID, Name: app.Name, Image: old.Images[app.ID.String()], Eligible: eligible, Note: note, OlderSecretVersions: older(app)})
 			}
-			out = append(out, entry)
 		}
-		return rows.Err()
+		return nil
 	})
 	return out, err
+}
+
+// olderSecretVersions returns, for an application of one of plans, the versions a rollback draft
+// for it would name that are not their secret's current version. It reads where each version
+// stands, never a value.
+func olderSecretVersions(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, plans []deployment.Plan) (func(domain.Application) []olderSecretVersion, error) {
+	references := func(app domain.Application) []uuid.UUID {
+		return domain.SecretReferences(domain.Specification{Applications: []domain.Application{app}})
+	}
+	var ids []uuid.UUID
+	for _, plan := range plans {
+		for _, app := range plan.Specification.Applications {
+			ids = append(ids, references(app)...)
+		}
+	}
+	rows, err := db.New(tx).SecretVersionStandings(ctx, db.SecretVersionStandingsParams{WorkspaceID: ws, EnvironmentID: env, Ids: ids})
+	if err != nil {
+		return nil, err
+	}
+	standing := make(map[uuid.UUID]db.SecretVersionStandingsRow, len(rows))
+	for _, row := range rows {
+		standing[row.ID] = row
+	}
+	return func(app domain.Application) []olderSecretVersion {
+		out := []olderSecretVersion{}
+		for _, id := range references(app) {
+			if row, ok := standing[id]; ok && !row.Current {
+				out = append(out, olderSecretVersion{SecretID: row.SecretID, VersionID: id, Name: row.Name, Retired: row.Erased})
+			}
+		}
+		slices.SortFunc(out, func(a, b olderSecretVersion) int { return strings.Compare(a.Name, b.Name) })
+		return out
+	}, nil
 }
 func (s *Service) RollbackRelease(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.RollbackRelease) (api.Revision, error) {
 	var out api.Revision

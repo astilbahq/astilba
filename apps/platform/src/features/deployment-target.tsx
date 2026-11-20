@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { client, result, type Schema } from "../api/client";
+import { volumesOptions } from "../api/environment";
 import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
 import { Select } from "../components/select";
@@ -29,16 +30,7 @@ export function DeploymentTarget({
   const compose = !!specification.compose;
   const declared = specification.volumes?.map((volume) => volume.id) ?? [];
   // The deployment panel already loads this list, so the query is shared.
-  const volumes = useQuery({
-    queryKey: ["volumes", path],
-    queryFn: () =>
-      result(
-        client.GET(
-          "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/volumes",
-          { params: { path } },
-        ),
-      ),
-  }).data;
+  const volumes = useQuery(volumesOptions(path)).data;
   const replacement = useQuery({
     queryKey: ["primary-replacement", path],
     queryFn: () =>

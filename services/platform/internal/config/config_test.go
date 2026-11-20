@@ -3,7 +3,10 @@ package config
 import (
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestTrustedProxyConfiguration(t *testing.T) {
@@ -162,5 +165,142 @@ func TestEmailLinkOriginValidation(t *testing.T) {
 		if err := c.ValidateOrigin(); (err == nil) != tc.allowed {
 			t.Fatalf("origin %q allowed=%v error=%v", tc.origin, tc.allowed, err)
 		}
+	}
+}
+
+// Access records are kept 400 days unless a self-hosted installation says otherwise.
+func TestSecretAccessRetention(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	t.Setenv("ASTILBA_HOSTED", "false")
+	for _, tc := range []struct {
+		value string
+		want  int32
+		bad   bool
+	}{
+		{value: "", want: 400},
+		{value: "30", want: 30},
+		{value: "3650", want: 3650},
+		{value: "29", bad: true},
+		{value: "3651", bad: true},
+		{value: "a year", bad: true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("ASTILBA_SECRET_ACCESS_RETENTION_DAYS", tc.value)
+			c, err := Load()
+			if (err != nil) != tc.bad || (!tc.bad && c.SecretAccessRetentionDays != tc.want) {
+				t.Fatalf("retention %d, error %v", c.SecretAccessRetentionDays, err)
+			}
+		})
+	}
+}
+
+// Hosted keeps access records for 400 days whatever the environment says.
+func TestHostedSecretAccessRetention(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	t.Setenv("ASTILBA_HOSTED", "true")
+	t.Setenv("ASTILBA_HOSTED_COHORT_LIMIT", "10")
+	t.Setenv("ASTILBA_HOSTED_SUPPORT", "support@example.test")
+	t.Setenv("ASTILBA_HOSTED_SERVER_LIMIT", "10")
+	for value, bad := range map[string]bool{"": false, "400": false, "399": true, "3650": true} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("ASTILBA_SECRET_ACCESS_RETENTION_DAYS", value)
+			c, err := Load()
+			if (err != nil) != bad || (!bad && c.SecretAccessRetentionDays != 400) {
+				t.Fatalf("retention %d, error %v", c.SecretAccessRetentionDays, err)
+			}
+		})
+	}
+}
+
+// The keyring is a file, the key backend is the keyring file, and hosting pins the installation.
+func TestCustodyConfiguration(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_HOSTED", "false")
+	t.Setenv("ASTILBA_KEY_BACKEND", "")
+	t.Setenv("ASTILBA_INSTALLATION_ID", "")
+	t.Setenv("ASTILBA_KEYRING_JSON", `{"active":"primary","keys":{}}`)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ASTILBA_KEYRING_JSON is no longer read") {
+		t.Fatalf("environment keyring: %v", err)
+	}
+	t.Setenv("ASTILBA_KEYRING_JSON", "")
+	c, err := Load()
+	if err != nil || c.KeyBackend != "file" || c.InstallationID != uuid.Nil || c.RequirePinnedInstallation() != nil {
+		t.Fatalf("defaults: %+v %v", c, err)
+	}
+	for _, bad := range []struct{ name, value string }{
+		{"ASTILBA_KEY_BACKEND", "transit"}, // without its address
+		{"ASTILBA_KEY_BACKEND", "awskms"},
+		{"ASTILBA_INSTALLATION_ID", "not-a-uuid"},
+		{"ASTILBA_INSTALLATION_ID", uuid.Nil.String()},
+	} {
+		t.Run(bad.name+"="+bad.value, func(t *testing.T) {
+			t.Setenv(bad.name, bad.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+	id := uuid.New()
+	t.Setenv("ASTILBA_INSTALLATION_ID", id.String())
+	if c, err = Load(); err != nil || c.InstallationID != id {
+		t.Fatalf("pinned: %v %v", c.InstallationID, err)
+	}
+	t.Setenv("ASTILBA_KEYRING", "")
+	if _, err = Load(); err == nil {
+		t.Fatal("no keyring accepted")
+	}
+}
+
+func TestTransitConfiguration(t *testing.T) {
+	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
+	t.Setenv("ASTILBA_KEYRING", "keyring.json")
+	t.Setenv("ASTILBA_HOSTED", "false")
+	t.Setenv("ASTILBA_KEY_BACKEND", "transit")
+	clean := map[string]string{"ASTILBA_TRANSIT_ADDR": "https://bao.internal:8200", "ASTILBA_TRANSIT_ROLE_ID_FILE": "/run/astilba/role-id", "ASTILBA_TRANSIT_SECRET_ID_FILE": "/run/astilba/secret-id"}
+	for _, name := range []string{"ASTILBA_TRANSIT_MOUNT", "ASTILBA_TRANSIT_NAMESPACE", "ASTILBA_TRANSIT_CA_FILE", "ASTILBA_TRANSIT_AUTH", "ASTILBA_TRANSIT_AUTH_MOUNT", "ASTILBA_TRANSIT_JWT_FILE", "ASTILBA_TRANSIT_JWT_ROLE", "ASTILBA_TRANSIT_TOKEN", "ASTILBA_TRANSIT_SECRET_ID", "ASTILBA_TRANSIT_ROLE_ID", "VAULT_TOKEN", "BAO_TOKEN"} {
+		t.Setenv(name, "")
+	}
+	for name, value := range clean {
+		t.Setenv(name, value)
+	}
+	c, err := Load()
+	if err != nil || c.KeyBackend != "transit" || c.Transit.Auth != "approle" || c.Transit.Address != clean["ASTILBA_TRANSIT_ADDR"] || c.Transit.SecretIDFile != clean["ASTILBA_TRANSIT_SECRET_ID_FILE"] {
+		t.Fatalf("approle: %+v %v", c.Transit, err)
+	}
+	for _, bad := range [][2]string{
+		{"ASTILBA_TRANSIT_ADDR", ""},
+		// A credential in the environment is refused, never used.
+		{"ASTILBA_TRANSIT_SECRET_ID", "s.123"},
+		{"VAULT_TOKEN", "hvs.123"},
+		{"BAO_TOKEN", "s.123"},
+	} {
+		t.Run(bad[0]+"="+bad[1], func(t *testing.T) {
+			t.Setenv(bad[0], bad[1])
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+	t.Setenv("ASTILBA_TRANSIT_AUTH", "jwt")
+	t.Setenv("ASTILBA_TRANSIT_ROLE_ID_FILE", "")
+	t.Setenv("ASTILBA_TRANSIT_SECRET_ID_FILE", "")
+	t.Setenv("ASTILBA_TRANSIT_JWT_FILE", "/var/run/secrets/astilba/token")
+	t.Setenv("ASTILBA_TRANSIT_JWT_ROLE", "astilba-serving")
+	if c, err = Load(); err != nil || c.Transit.Auth != "jwt" || c.Transit.JWTRole != "astilba-serving" || c.Transit.JWTFile != "/var/run/secrets/astilba/token" {
+		t.Fatalf("jwt: %+v %v", c.Transit, err)
+	}
+}
+
+func TestHostingRequiresAPinnedInstallation(t *testing.T) {
+	if (Config{Hosted: true}).RequirePinnedInstallation() == nil {
+		t.Fatal("hosted without an installation ID")
+	}
+	if (Config{Hosted: true, InstallationID: uuid.New()}).RequirePinnedInstallation() != nil {
+		t.Fatal("pinned hosted refused")
 	}
 }

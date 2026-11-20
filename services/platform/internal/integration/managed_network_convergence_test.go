@@ -63,7 +63,7 @@ func TestManagedNetworkPartialRestrictionConvergesAfterHostIdle(t *testing.T) {
 					last = time.Now()
 				}
 				poll, done := context.WithTimeout(hostCtx, time.Second)
-				c, err := f.execution.Poll(poll, identity)
+				c, err := pollReleased(f.execution, poll, identity)
 				expired := poll.Err()
 				done()
 				if err != nil {

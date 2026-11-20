@@ -56,7 +56,7 @@ func answerNetworkUntilRevoked(ctx context.Context, t *testing.T, f *fixture, id
 			heartbeat = time.Now()
 		}
 		poll, done := context.WithTimeout(ctx, time.Second)
-		c, err := f.execution.Poll(poll, identity)
+		c, err := pollReleased(f.execution, poll, identity)
 		expired := poll.Err()
 		done()
 		if errors.Is(err, domain.Unauthenticated) {

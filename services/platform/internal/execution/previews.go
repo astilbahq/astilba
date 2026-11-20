@@ -191,7 +191,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if err = domain.ValidatePreviewTemplate(v.Spec, cfg.App); err != nil {
 			return err
 		}
-		if _, err = runnerEligible(ctx, tx, ws, cfg.Build.RunnerID, cfg.Build.Architecture, true, cfg.Build.UsesRailpack()); err != nil {
+		if _, err = runnerEligible(ctx, tx, ws, cfg.Build.RunnerID, cfg.Build.Architecture, true, cfg.Build.RailpackPins(), false); err != nil {
 			return err
 		}
 		if _, err = s.visualServer(ctx, tx, ws, cfg.Build.RunnerID); err != nil {
@@ -221,10 +221,10 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 		if head.Err != nil {
 			return head.failure(domain.Invalid("preview.branch"))
 		}
-		if err = s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
+		if err = s.validateVisualSecrets(ctx, tx, git.keys.inspect, ws, env, v.Spec); err != nil {
 			return err
 		}
-		if _, err = s.buildInputs(ctx, tx, git.keys.inspect, ws, env, cfg.Build); err != nil {
+		if _, err = s.buildInputs(ctx, tx, git, ws, env, cfg.Build); err != nil {
 			return err
 		}
 		id, gen := uuid.New(), int64(1)
@@ -245,8 +245,7 @@ func (s *Service) SavePreviewPolicy(ctx context.Context, p store.Principal, ws, 
 	return out, err
 }
 func (s *Service) previewOwnerAuthority(ctx context.Context, tx pgx.Tx, p previewPolicy) error {
-	var valid bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts a JOIN memberships m ON m.account_id=a.id JOIN servers s ON s.workspace_id=m.workspace_id WHERE a.id=$1 AND a.auth_version=$2 AND m.workspace_id=$3 AND m.role='owner' AND s.id=$4 AND s.controller_generation=$5 AND s.preview_only AND s.role='combined' AND NOT s.revoked AND NOT s.awaiting_transfer AND COALESCE((s.capabilities->>'previews')::boolean,false))`, p.Actor, p.AuthVersion, p.Workspace, p.Server, p.Controller).Scan(&valid)
+	valid, err := db.New(tx).PreviewApproverHolds(ctx, db.PreviewApproverHoldsParams{WorkspaceID: p.Workspace, ActorID: p.Actor, AuthVersion: p.AuthVersion, ServerID: p.Server, ControllerGeneration: p.Controller})
 	if err != nil {
 		return err
 	}
@@ -324,10 +323,10 @@ func (s *Service) previewCommandBoundary(ctx context.Context, tx pgx.Tx, ws uuid
 	return nil
 }
 func (s *Service) cancelPreviewWork(ctx context.Context, tx pgx.Tx, ws, policy uuid.UUID) error {
-	if _, err := tx.Exec(ctx, `UPDATE preview_requests r SET resume_after_cancel=r.resume_after_cancel OR EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id=r.workspace_id AND o.environment_id=r.environment_id AND o.state NOT IN ('succeeded','failed','cancelled')) WHERE r.workspace_id=$1 AND r.policy_id=$2 AND r.state<>'deleted'`, ws, policy); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE preview_requests r SET resume_after_cancel=r.resume_after_cancel OR EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id=r.workspace_id AND o.environment_id=r.environment_id AND o.state IN ('queued','dispatched','running','needs_attention')) WHERE r.workspace_id=$1 AND r.policy_id=$2 AND r.state<>'deleted'`, ws, policy); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE execution_operations o SET cancel_requested=true WHERE o.workspace_id=$2 AND o.state NOT IN ('succeeded','failed','cancelled') AND o.environment_id IN (SELECT environment_id FROM preview_requests WHERE policy_id=$1) AND NOT COALESCE(o.command->'visual'->>'action'='preview-cleanup',false)`, policy, ws)
+	_, err := tx.Exec(ctx, `UPDATE execution_operations o SET cancel_requested=true WHERE o.workspace_id=$2 AND o.state IN ('queued','dispatched','running','needs_attention') AND o.environment_id IN (SELECT environment_id FROM preview_requests WHERE policy_id=$1) AND NOT COALESCE(o.command->'visual'->>'action'='preview-cleanup',false)`, policy, ws)
 	return err
 }
 
@@ -430,10 +429,15 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 			}
 		case "cleanup":
 			var controller int64
-			// A host waiting for a verified agent transfer already carries the controller generation the
-			// transfer completes with, so the request waits for it rather than being refused. The
-			// cleanup reconcile checks the authority before anything is sent.
-			if err = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE workspace_id=$1 AND id=$2 AND NOT revoked", ws, policy.Server).Scan(&controller); err != nil {
+			// The cleanup is bound to the host the preview runs on. A host waiting for a verified agent
+			// transfer already carries the controller generation the transfer completes with, so the
+			// request waits for it rather than being refused. The cleanup reconcile checks the authority
+			// before anything is sent.
+			var host uuid.UUID
+			if host, err = db.New(tx).PreviewHost(ctx, db.PreviewHostParams{WorkspaceID: ws, EnvironmentID: out.EnvironmentId, PolicyHost: policy.Server}); err != nil {
+				return err
+			}
+			if err = tx.QueryRow(ctx, "SELECT controller_generation FROM servers WHERE workspace_id=$1 AND id=$2 AND NOT revoked", ws, host).Scan(&controller); err != nil {
 				return err
 			}
 			_, err = tx.Exec(ctx, "UPDATE preview_requests SET cleanup_requested=true,cleanup_at=now(),next_check_at=now(),cleanup_actor=$2,cleanup_auth_version=$3,cleanup_controller=$4 WHERE id=$1", id, p.Account.ID, p.Account.AuthVersion, controller)

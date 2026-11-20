@@ -14,10 +14,10 @@ import (
 	"github.com/pquerna/otp/totp"
 )
 
-// Each of these changes needs only a recent session, so if one refreshed the
-// session's limits, repeating it would keep recent authentication true forever
-// and carry the session past its absolute lifetime.
-func TestAccountChangesRotateWithoutRenewingSessionLimits(t *testing.T) {
+// Each of these changes takes a current credential, as confirming identity does, so it
+// restarts recent authentication. Unlike signing in, it keeps the session's absolute
+// lifetime, so repeating changes cannot carry the session past it.
+func TestAccountChangesRotateWithinTheSessionLifetime(t *testing.T) {
 	f := setup(t)
 	signedIn := time.Now()
 	at := func(elapsed time.Duration) time.Time {
@@ -30,13 +30,15 @@ func TestAccountChangesRotateWithoutRenewingSessionLimits(t *testing.T) {
 	owner.login("owner@example.test", f.password)
 	token, deadline := storedSession(t, f, owner)
 
+	var recovery []string
+	var secret string
 	changes := []struct {
 		name   string
 		change func(now time.Time)
 	}{
 		{"change password", func(time.Time) {
 			var session api.Session
-			owner.call("POST", "/api/v1/auth/password", map[string]string{"password": "replacement password here"}, 200, &session)
+			owner.call("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": f.password}}, 200, &session)
 			owner.csrf = session.CsrfToken
 		}},
 		{"confirm MFA", func(now time.Time) {
@@ -47,17 +49,19 @@ func TestAccountChangesRotateWithoutRenewingSessionLimits(t *testing.T) {
 				t.Fatal(err)
 			}
 			var codes api.RecoveryCodes
-			owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]string{"code": code}, 200, &codes)
+			owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": "replacement password here"}}, 200, &codes)
 			owner.csrf = codes.Session.CsrfToken
+			recovery, secret = codes.Codes, enrollment.Secret
 		}},
 		{"regenerate recovery codes", func(time.Time) {
 			var codes api.RecoveryCodes
-			owner.call("POST", "/api/v1/auth/mfa/recovery-codes", nil, 200, &codes)
+			owner.call("POST", "/api/v1/auth/mfa/recovery-codes", map[string]any{"current": map[string]string{"code": recovery[0]}}, 200, &codes)
 			owner.csrf = codes.Session.CsrfToken
+			recovery = codes.Codes
 		}},
-		{"disable MFA", func(time.Time) {
+		{"disable MFA", func(now time.Time) {
 			var session api.Session
-			owner.call("POST", "/api/v1/auth/mfa/disable", nil, 200, &session)
+			owner.call("POST", "/api/v1/auth/mfa/disable", map[string]any{"current": map[string]string{"code": codeAt(t, secret, now)}}, 200, &session)
 			owner.csrf = session.CsrfToken
 		}},
 	}
@@ -77,13 +81,15 @@ func TestAccountChangesRotateWithoutRenewingSessionLimits(t *testing.T) {
 		token = rotated
 	}
 
-	// Every change above ran within fifteen minutes of this instant, so any refresh
-	// would still count as recent here.
+	// The last change ran four minutes after signing in, and restarted the window.
 	at(15*time.Minute + time.Second)
-	if owner.session().RecentAuth {
-		t.Fatal("an account change refreshed recent authentication")
+	if !owner.session().RecentAuth {
+		t.Fatal("an account change did not restart recent authentication")
 	}
-	owner.call("POST", "/api/v1/auth/mfa/enroll", nil, 403, nil)
+	at(19*time.Minute + time.Second)
+	if owner.session().RecentAuth {
+		t.Fatal("recent authentication outlasted its window")
+	}
 
 	var confirmed api.Session
 	owner.call("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": "replacement password here"}, 200, &confirmed)

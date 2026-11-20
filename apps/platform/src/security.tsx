@@ -3,12 +3,13 @@ import { useContext } from "react";
 import { client, result, type Schema } from "./api/client";
 import { membersOptions } from "./api/members";
 import { Button } from "./components/button";
-import { Checkbox } from "./components/checkbox";
-import { Input } from "./components/input";
 import { Label } from "./components/label";
 import { Select } from "./components/select";
+import { CrossHostRecovery } from "./features/cross-host-recovery";
+import { SecretAccess } from "./features/secret-access/secret-access";
 import { SessionHistory } from "./features/troubleshooting/session-history";
 import { useAuditActionText } from "./features/troubleshooting/session-text";
+import { WorkspaceSettings } from "./features/workspace-settings";
 import { WorkspaceSubscription } from "./hosting";
 import { WorkspaceExport } from "./portability";
 import * as s from "./styles";
@@ -56,6 +57,7 @@ export function Members() {
         <h1>A place for your team.</h1>
       </div>
       <WorkspaceSubscription workspaceId={id} owner={ws?.role === "owner"} />
+      {ws && ws.role !== "viewer" && <CrossHostRecovery workspaceId={id} />}
       {ws?.role === "owner" && <WorkspaceExport workspaceId={id} />}
       <ErrorNotice
         error={
@@ -68,45 +70,7 @@ export function Members() {
         </p>
       ) : (
         <>
-          <section className={s.panel} key={id}>
-            <h2>Workspace settings</h2>
-            <Form
-              action={action}
-              onSubmit={(d) =>
-                action.run(async () => {
-                  await result(
-                    client.PUT("/api/v1/workspaces/{workspaceId}", {
-                      params: { path: { workspaceId: id } },
-                      body: {
-                        name: text(d, "name"),
-                        requireMfa: d.get("requireMfa") === "on",
-                      },
-                    }),
-                  );
-                  await refresh();
-                })
-              }
-            >
-              <Label>
-                Name
-                <Input
-                  name="name"
-                  defaultValue={ws.name}
-                  required
-                  maxLength={80}
-                />
-              </Label>
-              <Label className={s.row}>
-                <Checkbox name="requireMfa" defaultChecked={ws.requireMfa} />
-                Require two-factor authentication for changes
-              </Label>
-              <small>
-                You’ll be asked to confirm your identity before changing these
-                settings.
-              </small>
-              <BusyButton busy={action.isPending}>Save settings</BusyButton>
-            </Form>
-          </section>
+          <WorkspaceSettings key={id} workspace={ws} onSaved={refresh} />
           <div className={s.columns}>
             <section className={s.panel}>
               <h2>Members</h2>
@@ -269,6 +233,7 @@ export function Members() {
             </div>
           </section>
           <SessionHistory workspaceId={id} />
+          <SecretAccess workspaceId={id} />
         </>
       )}
     </div>

@@ -2,7 +2,10 @@ import type { ComponentProps } from "react";
 import { cx } from "../../styled-system/css";
 import { button, type ButtonVariantProps } from "../../styled-system/recipes";
 
-export type ButtonProps = ComponentProps<"button"> & ButtonVariantProps;
+// focusableWhenDisabled keeps focus on a button that disables itself while it works.
+export type ButtonProps = ComponentProps<"button"> &
+  ButtonVariantProps &
+  Pick<BaseButton.Props, "focusableWhenDisabled">;
 
 export function Button({
   variant,

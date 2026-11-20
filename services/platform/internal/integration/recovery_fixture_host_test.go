@@ -43,7 +43,7 @@ func runRecoveryFixtureHost(t *testing.T, workers context.Context, service *exec
 			lastHeartbeat = time.Now()
 		}
 		poll, done := context.WithTimeout(workers, time.Second)
-		c, err := service.Poll(poll, identity)
+		c, err := pollReleased(service, poll, identity)
 		pollErr := poll.Err()
 		done()
 		if err != nil {
@@ -64,7 +64,7 @@ func runRecoveryFixtureHost(t *testing.T, workers context.Context, service *exec
 				t.Error("invalid network command")
 				return
 			}
-			key, err := host.Identity(command.MembershipID)
+			key, err := host.Identity(context.Background(), command.MembershipID)
 			if err != nil {
 				t.Error(err)
 				return

@@ -7,3 +7,4 @@ func (*Client) FixtureAPI() string    { return "" }
 func (*Client) InstallURL() string    { return "" }
 func (*Client) AuthorizeURL() string  { return "" }
 func (*Client) VerifyWebhook() error  { return nil }
+func (*Client) Forget(string)         {}

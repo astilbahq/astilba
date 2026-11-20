@@ -1,9 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useContext, useState } from "react";
+import { backupDestinationsOptions } from "../api/backups";
 import { client, result, type Schema } from "../api/client";
+import { projectsOptions } from "../api/projects";
 import { Button } from "../components/button";
 import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
+import { Link } from "../components/link";
 import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
@@ -21,6 +24,10 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   backup_problem: "Backup operation needs review",
   network_problem: "Private network updates are failing",
   identity_conflict: "Another copy of a server's agent key is in use",
+  recovery_window: "Cross-host recovery window is shorter than 35 days",
+  dns_withdrawal_held:
+    "DNS records may resolve to addresses Astilba no longer controls: the operator must review them with `astilba dns withdrawals`",
+  backup_exposure: "A revoked server holds a backup destination's storage keys",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);
@@ -54,6 +61,19 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
         }),
       ),
   });
+  // An exposure alert names a destination, so its name and policies come from the destinations,
+  // and each policy's project from the projects.
+  const exposure = !!inbox.data?.alerts.some(
+    (a) => a.kind === "backup_exposure",
+  );
+  const destinations = useQuery({
+    ...backupDestinationsOptions(workspace.id),
+    enabled: exposure,
+  });
+  const projects = useQuery({
+    ...projectsOptions(workspace.id),
+    enabled: exposure,
+  });
   return (
     <>
       <section className={s.panel} aria-label="Operational inbox">
@@ -78,7 +98,9 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
           Missing observations do not mean recovery. Resolved and event history
           is retained for 30 days, up to 1,000 entries per workspace.
         </p>
-        <ErrorNotice error={inbox.error ?? action.error} />
+        <ErrorNotice
+          error={inbox.error ?? action.error ?? destinations.error}
+        />
         {inbox.isPending ? (
           <p role="status">Loading alerts…</p>
         ) : !inbox.data?.alerts.length ? (
@@ -106,6 +128,17 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                 <p>
                   Resource: <code>{alert.resourceId}</code>
                 </p>
+                {alert.kind === "backup_exposure" && (
+                  <ExposedDestination
+                    workspaceId={workspace.id}
+                    firing={alert.state === "firing"}
+                    loading={destinations.isPending}
+                    destination={destinations.data?.find(
+                      (d) => d.id === alert.resourceId,
+                    )}
+                    projects={projects.data}
+                  />
+                )}
                 <p>
                   Observed{" "}
                   <time dateTime={alert.openedAt}>
@@ -256,7 +289,9 @@ function SettingsForm({
   settings: Schema["AlertSettings"];
   onSaved: (saved: boolean) => void;
 }) {
-  const action = useAction();
+  // The settings hold the webhook's URL and signing secret, so saving them needs a recent
+  // confirmation of identity.
+  const action = useAction({ recentAuth: true });
   const queries = useQueryClient();
   const [hook, setHook] = useState(settings.webhookEnabled);
   return (
@@ -322,5 +357,60 @@ function SettingsForm({
         Save notification delivery
       </BusyButton>
     </Form>
+  );
+}
+
+// The destination an exposure alert names, and the policies using its keys. While the alert fires,
+// the revoked server can delete or overwrite their backups until the keys are revoked at the
+// storage provider.
+function ExposedDestination({
+  workspaceId,
+  firing,
+  loading,
+  destination,
+  projects,
+}: {
+  workspaceId: string;
+  firing: boolean;
+  loading: boolean;
+  destination?: Schema["BackupDestination"];
+  projects?: Schema["Project"][];
+}) {
+  if (loading) return <p>Loading the destination…</p>;
+  if (!destination) return null;
+  return (
+    <>
+      <p>
+        Destination: {destination.name}.
+        {firing &&
+          " A revoked server can delete or overwrite its backups until you revoke its keys at your storage provider. Add a destination with new keys for backups it can't reach."}
+      </p>
+      {!!destination.policies.length && (
+        <>
+          <p>Policies using it:</p>
+          <ul>
+            {destination.policies.map((policy) => {
+              const project = projects?.find((p) => p.id === policy.projectId);
+              return (
+                <li key={policy.id}>
+                  <Link
+                    to="/"
+                    search={{
+                      workspace: workspaceId,
+                      project: policy.projectId,
+                      environment: policy.environmentId,
+                    }}
+                  >
+                    {policy.name}
+                  </Link>{" "}
+                  ({project ? `${project.name}, ` : ""}
+                  {policy.environmentName})
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </>
   );
 }

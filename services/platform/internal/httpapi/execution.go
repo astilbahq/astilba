@@ -53,13 +53,19 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Build-Network", "v1")
 		w.Header().Set("Astilba-Agent-Rootless-Builds", "v1")
 		w.Header().Set("Astilba-Agent-Railpack", "v1")
+		// v1 reads railpackInputs, the digest of the Railpack pins an agent runs.
+		w.Header().Set("Astilba-Agent-Railpack-Inputs", "v1")
 		w.Header().Set("Astilba-Agent-Safe-Releases", "v1")
 		w.Header().Set("Astilba-Agent-Service-Outputs", "v1")
 		w.Header().Set("Astilba-Agent-Postgres-Releases", "v1")
 		w.Header().Set("Astilba-Agent-Previews", "v1")
 		// v1 delivers the visual retire action for environment retirement.
 		w.Header().Set("Astilba-Agent-Retirement", "v1")
+		// v1 delivers the visual purge action, which deletes a retired environment's volumes.
+		w.Header().Set("Astilba-Agent-Purge", "v1")
 		w.Header().Set("Astilba-Agent-Schedules", "v1")
+		// v1 reads recoveryRestore, an agent that runs the restore command kind.
+		w.Header().Set("Astilba-Agent-Recovery-Restore", "v1")
 		w.Header().Set("Astilba-Agent-Replicas", "v1")
 		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 		w.Header().Set("Astilba-Agent-Maintenance-Continuation", "v1")
@@ -74,6 +80,10 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set(agentidentity.KeysHeader, "v1")
 		// v1 reviews the host changes a plan resolution reports.
 		w.Header().Set("Astilba-Agent-Host-Changes", "v1")
+		// v1 releases a command's secrets once per agent instance, until it acknowledges them.
+		w.Header().Set("Astilba-Agent-Secret-Releases", "v1")
+		// v1 reads preflight.containerRanges, which staging and planning check client allowlists against.
+		w.Header().Set("Astilba-Agent-Container-Ranges", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768
@@ -302,6 +312,13 @@ func (s *Server) ReportAgent(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.AgentReport](r)
 	if e == nil {
 		e = s.Execution.Report(r.Context(), agentIdentity(r.Context()), b)
+	}
+	s.executionResponse(w, r, 204, nil, e)
+}
+func (s *Server) NoticeSecretReleases(w http.ResponseWriter, r *http.Request) {
+	b, e := decode[api.SecretReleaseNotice](r)
+	if e == nil {
+		e = s.Execution.NoticeSecretReleases(r.Context(), agentIdentity(r.Context()), b)
 	}
 	s.executionResponse(w, r, 204, nil, e)
 }

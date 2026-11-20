@@ -31,7 +31,7 @@ make verify-host PLAT4_ARCH=arm64
 
 Use `PLAT4_ARCH=amd64` on a native amd64 VM. The test rejects a mismatched binary/daemon architecture, non-Ubuntu hosts, rootless Docker and containers without systemd as PID 1. Cross-compilation and emulated containers do not establish a host result. CI runs the same test separately on GitHub's `ubuntu-24.04` and `ubuntu-24.04-arm` VMs. The required `Verify` job also requires the existing durability and transport checks to pass.
 
-The dedicated `astilba-plat4-docker.service` owns its binaries, Unix socket and data directory. All test resources carry run/project labels; cleanup verifies ownership before deleting them. There is no Docker prune. Application and database ports are unpublished; fixture ingress binds only to loopback. Dispose of the VM after testing.
+The dedicated `astilba-plat4-docker.service` owns its binaries, Unix socket, data directory and configuration, `/etc/astilba-plat4/daemon.json`, which reads Docker Hub through `mirror.gcr.io` (see "Docker Hub mirror" in `docs/continuous-integration.md`). All test resources carry run/project labels; cleanup verifies ownership before deleting them. There is no Docker prune. Application and database ports are unpublished; fixture ingress binds only to loopback. Dispose of the VM after testing.
 
 ## Contracts exercised
 

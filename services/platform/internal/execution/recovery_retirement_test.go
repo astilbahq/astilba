@@ -23,6 +23,20 @@ func recoveryEnvironmentRow(state string, operation *uuid.UUID, withoutHost bool
 		recoverySet(row, "retired_at", time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC))
 		recoverySet(row, "retired_by", uuid.New())
 	}
+	recoverySet(row, "purged_at", nil)
+	recoverySet(row, "purged_by", nil)
+	recoverySet(row, "purge_operation_id", nil)
+	recoverySet(row, "purged_without_host", false)
+	return row
+}
+
+// recoveryPurgedRow is an environment retired by retirement and then purging or purged by purge.
+func recoveryPurgedRow(state string, retirement, purge *uuid.UUID, generation int64) portability.Row {
+	row := recoveryEnvironmentRow(state, retirement, false, generation)
+	recoverySet(row, "purged_at", time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC))
+	recoverySet(row, "purged_by", uuid.New())
+	recoverySet(row, "purge_operation_id", purge)
+	recoverySet(row, "purged_without_host", false)
 	return row
 }
 
@@ -99,6 +113,80 @@ func TestRecoveryTakesOnlyANewerRetirement(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A purge erased the environment's secret values and is never undone, so recovery takes a
+// checkpoint's purge whenever management has not got as far, and never takes back a retirement or
+// an active environment over one. Two purges, one asked for again after the other failed, are
+// ordered by their operations' generations.
+func TestRecoveryNeverUndoesAPurge(t *testing.T) {
+	retirement, purge, again := uuid.New(), uuid.New(), uuid.New()
+	// The retirement raised the environment's generation to 4, the purge to 5 and the second purge to 6.
+	operations := recoveryOperationRows(t, map[uuid.UUID]int64{retirement: 4, purge: 5, again: 6})
+	for _, tc := range []struct {
+		name            string
+		prior, incoming portability.Row
+		takeIncoming    bool
+	}{
+		{"local database from before the purge", recoveryEnvironmentRow("retired", &retirement, false, 4), recoveryPurgedRow("purged", &retirement, &purge, 5), true},
+		{"local database from before the retirement", recoveryEnvironmentRow("active", nil, false, 3), recoveryPurgedRow("purging", &retirement, &purge, 5), true},
+		{"checkpoint from before the purge", recoveryPurgedRow("purged", &retirement, &purge, 5), recoveryEnvironmentRow("retired", &retirement, false, 4), false},
+		{"checkpoint of an active environment", recoveryPurgedRow("purging", &retirement, &purge, 5), recoveryEnvironmentRow("active", nil, false, 9), false},
+		{"the same purge completed since", recoveryPurgedRow("purging", &retirement, &purge, 5), recoveryPurgedRow("purged", &retirement, &purge, 5), true},
+		{"the same purge already completed locally", recoveryPurgedRow("purged", &retirement, &purge, 5), recoveryPurgedRow("purging", &retirement, &purge, 5), false},
+		{"checkpoint purging again after a failed purge", recoveryPurgedRow("purging", &retirement, &purge, 5), recoveryPurgedRow("purging", &retirement, &again, 6), true},
+		{"local purge asked for again since the checkpoint", recoveryPurgedRow("purging", &retirement, &again, 6), recoveryPurgedRow("purged", &retirement, &purge, 5), false},
+		{"checkpoint purged without its server after a failed purge", recoveryPurgedRow("purging", &retirement, &purge, 5), recoveryPurgedRow("purged", &retirement, nil, 5), true},
+		{"local purge finished without its server", recoveryPurgedRow("purged", &retirement, nil, 5), recoveryPurgedRow("purging", &retirement, &purge, 5), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selected := maps.Clone(tc.prior)
+			if err := recoveryRetirementKnowledge(selected, tc.prior, tc.incoming, operations); err != nil {
+				t.Fatal(err)
+			}
+			source := tc.prior
+			if tc.takeIncoming {
+				source = tc.incoming
+			}
+			for _, field := range recoveryRetirementFields {
+				if string(selected[field]) != string(source[field]) {
+					t.Fatalf("%s is %s, want %s", field, selected[field], source[field])
+				}
+			}
+			again := maps.Clone(selected)
+			if err := recoveryRetirementKnowledge(again, selected, tc.incoming, operations); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range recoveryRetirementFields {
+				if string(again[field]) != string(selected[field]) {
+					t.Fatalf("replaying the merge changed %s", field)
+				}
+			}
+		})
+	}
+}
+
+// A secret's retirement freed its name and erased its values, so recovery takes a checkpoint's
+// retirement of a secret management holds live, and never takes back one management holds.
+func TestRecoveryNeverUndoesASecretRetirement(t *testing.T) {
+	live, retired := portability.Row{}, portability.Row{}
+	recoverySet(live, "retired_at", nil)
+	recoverySet(retired, "retired_at", time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC))
+	for _, tc := range []struct {
+		name            string
+		prior, incoming portability.Row
+		want            portability.Row
+	}{
+		{"checkpoint retired it", live, retired, retired},
+		{"management retired it", retired, live, retired},
+		{"neither", live, live, live},
+	} {
+		selected := maps.Clone(tc.prior)
+		recoverySecretKnowledge(selected, tc.prior, tc.incoming)
+		if string(selected["retired_at"]) != string(tc.want["retired_at"]) {
+			t.Errorf("%s: retired_at %s", tc.name, selected["retired_at"])
+		}
 	}
 }
 

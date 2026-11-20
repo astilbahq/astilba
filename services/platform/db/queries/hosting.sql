@@ -77,3 +77,18 @@ WHERE workspace_id=(SELECT h.workspace_id FROM hosted_subscriptions h
         AND h.notice_checked_at < @pass_started::timestamptz
     ORDER BY h.notice_checked_at,h.management_until LIMIT 1 FOR UPDATE SKIP LOCKED)
 RETURNING workspace_id;
+
+-- name: TakeObservationTicket :one
+-- Taken before Stripe is asked, so tickets order answers by the earliest moment each could describe.
+SELECT nextval('hosted_observation_tickets')::bigint;
+
+-- name: HostedWorkspaceOfCustomer :one
+-- unscoped: a Stripe invoice event names only the customer, and each workspace has its own.
+SELECT workspace_id FROM hosted_subscriptions WHERE customer_id = @customer_id;
+
+-- name: HeldSubscription :one
+-- checkout_open: a checkout intent not yet completed, which could still be applied however
+-- long ago it expired, since a session completed in time can be delivered later.
+SELECT s.subscription_id,s.status,COALESCE(NOT c.completed,false)::boolean AS checkout_open
+FROM hosted_subscriptions s LEFT JOIN hosted_checkouts c USING(workspace_id)
+WHERE s.workspace_id = @workspace_id;

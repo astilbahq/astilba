@@ -13,6 +13,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
 	bolt "go.etcd.io/bbolt"
@@ -87,13 +88,15 @@ func (j *Journal) recordNewPostgresStorage(p deployment.Plan, volume uuid.UUID) 
 }
 
 // reindexBudget bounds a database's rebuild. A lock wait gives up quickly, because REINDEX
-// CONCURRENTLY waits for every older transaction, and one left open would hold the host.
+// CONCURRENTLY waits for every older transaction, and one left open would hold the host. Each
+// session resolves names only in pg_catalog: it runs as the cluster's superuser in databases
+// other roles may own, so a function an owner adds to public, such as a closer match for
+// format(), must never run with its privileges. A client's options outrank database and role
+// settings. Its client is checked every second, so removing the helper ends a waiting rebuild.
 const (
-	reindexApplication = "astilba-reindex"
-	// Sessions resolve names only in pg_catalog and name themselves, so a cancellation finds them.
-	reindexOptions      = "PGOPTIONS=-c search_path=pg_catalog,pg_temp"
-	reindexBudget       = time.Hour
-	reindexSessionLimit = "SET lock_timeout = '10s';\nSET statement_timeout = '30min';\n"
+	reindexBudget  = time.Hour
+	reindexOptions = "PGOPTIONS=-c search_path=pg_catalog,pg_temp -c lock_timeout=10s -c statement_timeout=30min -c client_connection_check_interval=1000"
+	reindexKind    = "postgres-reindex-v1"
 )
 
 // reindexPostgres rebuilds, in each running managed database of the plan, the indexes the
@@ -197,7 +200,9 @@ func oldestPostgres(major int) domain.PostgresRelease {
 }
 
 // rebuildPostgresIndexes rebuilds one database's indexes, returning the exclusion-constraint
-// indexes left to the owner, or why it did not finish.
+// indexes left to the owner, or why it did not finish. It runs from a helper in the database's
+// network namespace, as backups do, so nothing runs in the database container and removing the
+// helper ends whatever the rebuild left running.
 func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, a domain.Application, serving domain.PostgresRelease, queries []string) ([]string, error) {
 	// The container runs the plan's resolved reference to the release's digest.
 	v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(a.ID), client.ContainerInspectOptions{})
@@ -206,73 +211,94 @@ func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, 
 	}
 	budget, cancel := context.WithTimeout(ctx, reindexBudget)
 	defer cancel()
-	exclusions, err := e.runPostgresReindex(budget, v.Container.ID, a, queries)
-	if err != nil && budget.Err() != nil {
-		// The docker client ending does not stop psql or its backend in the container.
-		e.cancelPostgresReindex(v.Container.ID, a)
+	name := "astilba-reindex-" + a.ID.String()
+	if err = e.removeReindexHelper(budget, name, p); err != nil {
+		return nil, err
 	}
-	return exclusions, err
+	labels := visualLabels(p, a.ID)
+	labels[labelKind] = reindexKind
+	helper, err := e.postgresHelper(budget, name, labels, v.Container.ID, serving.Image, postgresPassword(v.Container.Config.Env))
+	if err != nil {
+		return nil, err
+	}
+	defer e.removeHelper(helper)
+	helper.env = append(slices.DeleteFunc(slices.Clone(helper.env), func(v string) bool { return strings.HasPrefix(v, "PGOPTIONS=") }), reindexOptions)
+	return e.runPostgresReindex(budget, helper, a, queries)
 }
 
-// cancelPostgresReindex cancels the rebuild's own sessions, found by their application name.
-func (e *Engine) cancelPostgresReindex(container string, a domain.Application) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	// inline-sql: runs in a managed customer database through psql, not in the platform database
-	_ = e.dataTool(ctx, nil, io.Discard, "exec", "-e", reindexOptions, container, "psql", "-XAt", "-U", a.Postgres.Username, "-d", a.Postgres.Database, "-c", "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = '"+reindexApplication+"' AND pid <> pg_backend_pid()")
+// removeReindexHelper removes the helper an earlier rebuild of this unit left when its agent
+// stopped, which would otherwise hold the name. A container of that name that isn't one refuses
+// the rebuild.
+func (e *Engine) removeReindexHelper(ctx context.Context, name string, p deployment.Plan) error {
+	v, err := e.Docker.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
+	if errdefs.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !upgradeOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelKind] != reindexKind {
+		return errors.New("a container that isn't this unit's index rebuild holds its name")
+	}
+	e.removeHelper(pgClient{container: v.Container.ID})
+	return nil
 }
 
 // runPostgresReindex runs each query in every database that accepts connections, after dropping
-// the leftovers of an interrupted run. A query returns index OIDs; psql turns each into REINDEX
-// INDEX CONCURRENTLY, which cannot run in a transaction. It returns the exclusion-constraint
-// indexes the queries skip, named database.index.
-func (e *Engine) runPostgresReindex(ctx context.Context, container string, a domain.Application, queries []string) ([]string, error) {
-	// Every session runs as the cluster's superuser in databases other roles may own, so it
-	// resolves names only in pg_catalog: a function an owner adds to public, such as a closer
-	// match for format(), must never run with these privileges. A connection's own options
-	// outrank database and role settings.
-	psql := func(input bool, database string, args ...string) []string {
-		out := []string{"exec", "-e", reindexOptions, "-e", "PGAPPNAME=" + reindexApplication}
-		if input {
-			out = append(out, "-i")
+// the leftovers of an interrupted run. A query returns index OIDs, each rebuilt with REINDEX INDEX
+// CONCURRENTLY in its own session, since it cannot run in a transaction. It returns the
+// exclusion-constraint indexes the queries skip, named database.index.
+func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a domain.Application, queries []string) ([]string, error) {
+	// Names and statements travel hex-encoded, one per line, so one holding a newline stays one.
+	lines := func(database, query string) ([]string, error) {
+		out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
+		// inline-sql: runs in a managed customer database through psql, not in the platform database
+		if err := e.containerExec(ctx, helper, out, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", database, "-c", "SELECT encode(convert_to(v, 'UTF8'), 'hex') FROM ("+query+") AS q(v)"); err != nil {
+			return nil, err
 		}
-		return append(append(out, container, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", database), args...)
+		var values []string
+		for encoded := range strings.SplitSeq(strings.TrimSpace(out.b.String()), "\n") {
+			if v, err := hex.DecodeString(encoded); err == nil && len(v) > 0 {
+				values = append(values, string(v))
+			}
+		}
+		return values, nil
 	}
-	listing := &boundedOutput{limit: 65536, stopOnLimit: true}
-	// Names travel hex-encoded, so a name holding a newline or an equals sign stays one name.
 	// inline-sql: runs in a managed customer database through psql, not in the platform database
-	if err := e.dataTool(ctx, nil, listing, psql(false, a.Postgres.Database, "-c", "SELECT encode(convert_to(datname, 'UTF8'), 'hex') FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname")...); err != nil {
+	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname")
+	if err != nil {
 		return nil, err
 	}
-	raw := listing.b.Bytes()
 	var exclusions []string
-	for encoded := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
-		name, err := hex.DecodeString(encoded)
-		if err != nil || len(name) == 0 {
-			continue
-		}
-		database := string(name)
+	for _, database := range databases {
 		// psql reads its -d value as a connection string when it holds '='; quote it as one.
 		connection := "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(database) + "'"
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		script := reindexSessionLimit + "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM (" + domain.ReindexLeftovers + ") AS i(oid) ORDER BY 1 \\gexec\n"
-		for _, query := range queries {
-			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			script += "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM (" + query + ") AS i(oid) ORDER BY 1 \\gexec\n"
-		}
-		if err = e.dataTool(ctx, strings.NewReader(script), io.Discard, psql(true, connection, "-f", "-")...); err != nil {
+		statements, err := lines(connection, "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM ("+domain.ReindexLeftovers+") AS i(oid) ORDER BY 1")
+		if err != nil {
 			return nil, err
 		}
 		for _, query := range queries {
-			out := &boundedOutput{limit: 4096}
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			if err = e.dataTool(ctx, nil, out, psql(false, connection, "-c", "SELECT i.oid::regclass FROM ("+domain.ExclusionIndexes(query)+") AS i(oid) ORDER BY 1")...); err != nil {
+			rebuild, err := lines(connection, "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM ("+query+") AS i(oid) ORDER BY 1")
+			if err != nil {
 				return nil, err
 			}
-			for index := range strings.SplitSeq(strings.TrimSpace(out.b.String()), "\n") {
-				if index != "" {
-					exclusions = append(exclusions, database+"."+index)
-				}
+			statements = append(statements, rebuild...)
+		}
+		for _, statement := range statements {
+			if err = e.containerExec(ctx, helper, io.Discard, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-c", statement); err != nil {
+				return nil, err
+			}
+		}
+		for _, query := range queries {
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
+			skipped, err := lines(connection, "SELECT i.oid::regclass::text FROM ("+domain.ExclusionIndexes(query)+") AS i(oid) ORDER BY 1")
+			if err != nil {
+				return nil, err
+			}
+			for _, index := range skipped {
+				exclusions = append(exclusions, database+"."+index)
 			}
 		}
 	}

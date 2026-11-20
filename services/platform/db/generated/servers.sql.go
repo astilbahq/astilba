@@ -52,7 +52,7 @@ func (q *Queries) AttachOperationJob(ctx context.Context, arg AttachOperationJob
 
 const authenticateAgent = `-- name: AuthenticateAgent :one
 SELECT workspace_id,role,(credential_hash <> $1)::boolean AS previous,
-    COALESCE((capabilities->>'credentialFreeVisualCancel')::boolean,false)::boolean AS credential_free_visual_cancel
+    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
 FROM servers
 WHERE id = $2 AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = $1 OR (previous_hash = $1 AND previous_until>now()))
@@ -64,10 +64,10 @@ type AuthenticateAgentParams struct {
 }
 
 type AuthenticateAgentRow struct {
-	WorkspaceID                uuid.UUID `json:"workspace_id"`
-	Role                       string    `json:"role"`
-	Previous                   bool      `json:"previous"`
-	CredentialFreeVisualCancel bool      `json:"credential_free_visual_cancel"`
+	WorkspaceID          uuid.UUID `json:"workspace_id"`
+	Role                 string    `json:"role"`
+	Previous             bool      `json:"previous"`
+	AcknowledgesReleases bool      `json:"acknowledges_releases"`
 }
 
 // unscoped: the presented agent credential establishes the workspace.
@@ -78,7 +78,7 @@ func (q *Queries) AuthenticateAgent(ctx context.Context, arg AuthenticateAgentPa
 		&i.WorkspaceID,
 		&i.Role,
 		&i.Previous,
-		&i.CredentialFreeVisualCancel,
+		&i.AcknowledgesReleases,
 	)
 	return i, err
 }
@@ -102,7 +102,7 @@ func (q *Queries) CancelHeldPreparation(ctx context.Context, arg CancelHeldPrepa
 const cancelUnstartedReleaseCommands = `-- name: CancelUnstartedReleaseCommands :exec
 UPDATE execution_operations child SET cancel_requested=true FROM execution_operations root
 WHERE child.workspace_id = $1 AND root.workspace_id = $1 AND child.parent_id=root.id
-    AND child.state NOT IN ('succeeded','failed','cancelled') AND child.command->'crosshost'->>'phase'='hook'
+    AND child.state IN ('queued','dispatched','running','needs_attention') AND child.command->'crosshost'->>'phase'='hook'
     AND root.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',$2::text)))
 `
 
@@ -250,6 +250,31 @@ func (q *Queries) EnvironmentVolumes(ctx context.Context, arg EnvironmentVolumes
 	return items, nil
 }
 
+const getServerContainerRanges = `-- name: GetServerContainerRanges :one
+SELECT COALESCE((capabilities->>'containerRanges')::boolean, false)::boolean AS supported,
+       (preflight->'containerRanges')::jsonb AS ranges
+FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type GetServerContainerRangesParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type GetServerContainerRangesRow struct {
+	Supported bool   `json:"supported"`
+	Ranges    []byte `json:"ranges"`
+}
+
+// What the server's agent last reported about the ranges its containers send traffic from:
+// whether it reports them at all, and the ranges, absent when it could not read them.
+func (q *Queries) GetServerContainerRanges(ctx context.Context, arg GetServerContainerRangesParams) (GetServerContainerRangesRow, error) {
+	row := q.db.QueryRow(ctx, getServerContainerRanges, arg.WorkspaceID, arg.ID)
+	var i GetServerContainerRangesRow
+	err := row.Scan(&i.Supported, &i.Ranges)
+	return i, err
+}
+
 const insertSecondaryUnit = `-- name: InsertSecondaryUnit :exec
 INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_unit) VALUES($1,$2,$3,$4,false)
 `
@@ -274,7 +299,7 @@ func (q *Queries) InsertSecondaryUnit(ctx context.Context, arg InsertSecondaryUn
 const insertServer = `-- name: InsertServer :one
 INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,enrollment_issuer_id,enrollment_issuer_auth_version,preview_only)
 VALUES($1,$2,$3,$4,$5,$6,$7::uuid,$8::bigint,$9)
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
 `
 
 type InsertServerParams struct {
@@ -300,6 +325,7 @@ type InsertServerRow struct {
 	RotationRequested bool       `json:"rotation_requested"`
 	AwaitingTransfer  bool       `json:"awaiting_transfer"`
 	PreviewOnly       bool       `json:"preview_only"`
+	RevokedAt         *time.Time `json:"revoked_at"`
 }
 
 func (q *Queries) InsertServer(ctx context.Context, arg InsertServerParams) (InsertServerRow, error) {
@@ -326,12 +352,13 @@ func (q *Queries) InsertServer(ctx context.Context, arg InsertServerParams) (Ins
 		&i.RotationRequested,
 		&i.AwaitingTransfer,
 		&i.PreviewOnly,
+		&i.RevokedAt,
 	)
 	return i, err
 }
 
 const listServers = `-- name: ListServers :many
-SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
+SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
 FROM servers WHERE workspace_id = $1 ORDER BY name,id LIMIT 100
 `
 
@@ -346,6 +373,7 @@ type ListServersRow struct {
 	RotationRequested bool       `json:"rotation_requested"`
 	AwaitingTransfer  bool       `json:"awaiting_transfer"`
 	PreviewOnly       bool       `json:"preview_only"`
+	RevokedAt         *time.Time `json:"revoked_at"`
 }
 
 func (q *Queries) ListServers(ctx context.Context, workspaceID uuid.UUID) ([]ListServersRow, error) {
@@ -368,6 +396,7 @@ func (q *Queries) ListServers(ctx context.Context, workspaceID uuid.UUID) ([]Lis
 			&i.RotationRequested,
 			&i.AwaitingTransfer,
 			&i.PreviewOnly,
+			&i.RevokedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -532,7 +561,7 @@ func (q *Queries) ParkedMaintenanceOnPrimary(ctx context.Context, arg ParkedMain
 const prepareServerTransfer = `-- name: PrepareServerTransfer :one
 UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
     enrollment_issuer_id = $3::uuid,enrollment_issuer_auth_version = $4::bigint,
-    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false
+    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,poll_id=NULL,poll_until=NULL,revoked=false,revoked_at=NULL
 WHERE workspace_id = $5 AND id = $6 AND awaiting_transfer
 RETURNING controller_generation
 `
@@ -680,10 +709,10 @@ func (q *Queries) ReleaseRevokedRouteClaims(ctx context.Context, arg ReleaseRevo
 const renewServerEnrollment = `-- name: RenewServerEnrollment :one
 UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
     enrollment_issuer_id = $3::uuid,enrollment_issuer_auth_version = $4::bigint,
-    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,rotation_requested=false,rotate_key_requested=false,
+    credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,revoked_at=NULL,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = $5 AND id = $6
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
 `
 
 type RenewServerEnrollmentParams struct {
@@ -706,6 +735,7 @@ type RenewServerEnrollmentRow struct {
 	RotationRequested bool       `json:"rotation_requested"`
 	AwaitingTransfer  bool       `json:"awaiting_transfer"`
 	PreviewOnly       bool       `json:"preview_only"`
+	RevokedAt         *time.Time `json:"revoked_at"`
 }
 
 // Revoking a preview host released its previews without anything confirming their removal, so it
@@ -732,6 +762,7 @@ func (q *Queries) RenewServerEnrollment(ctx context.Context, arg RenewServerEnro
 		&i.RotationRequested,
 		&i.AwaitingTransfer,
 		&i.PreviewOnly,
+		&i.RevokedAt,
 	)
 	return i, err
 }
@@ -751,7 +782,7 @@ func (q *Queries) ResumeMaintenanceSource(ctx context.Context, arg ResumeMainten
 }
 
 const revokeServer = `-- name: RevokeServer :execrows
-UPDATE servers SET revoked=true,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
+UPDATE servers SET revoked=true,revoked_at=CASE WHEN revoked THEN revoked_at ELSE clock_timestamp() END,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
 WHERE workspace_id = $1 AND id = $2
 `
 
@@ -760,6 +791,8 @@ type RevokeServerParams struct {
 	ID          uuid.UUID `json:"id"`
 }
 
+// Revoking a revoked server again keeps the time its revocation began, or none when it began
+// before times were recorded.
 func (q *Queries) RevokeServer(ctx context.Context, arg RevokeServerParams) (int64, error) {
 	result, err := q.db.Exec(ctx, revokeServer, arg.WorkspaceID, arg.ID)
 	if err != nil {
@@ -771,7 +804,7 @@ func (q *Queries) RevokeServer(ctx context.Context, arg RevokeServerParams) (int
 const revokedServerInActiveRoot = `-- name: RevokedServerInActiveRoot :one
 SELECT EXISTS(SELECT 1 FROM execution_operations o JOIN servers s ON s.workspace_id=o.workspace_id
     WHERE o.workspace_id = $1 AND s.id = $2 AND s.revoked AND o.parent_id IS NULL AND o.kind='crosshost'
-        AND o.state NOT IN ('succeeded','failed','cancelled')
+        AND o.state IN ('queued','dispatched','running','needs_attention')
         AND (o.command->'crosshost'->'plan'->'distributed'->'units' @> jsonb_build_array(jsonb_build_object('plan',jsonb_build_object('serverId',$2::text)))
             OR o.command->'crosshost'->'plan'->'distributed'->'abandoned' @> jsonb_build_array($2::text)))
 `

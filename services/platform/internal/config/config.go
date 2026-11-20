@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
+	"github.com/google/uuid"
 )
 
 const (
@@ -24,10 +25,20 @@ const (
 )
 
 type Config struct {
-	LogRetention                                      time.Duration
-	DatabasePoolSize                                  int32
-	DatabaseURL, Keyring, KeyringJSON, Listen, Origin string
-	Development, Hosted, Troubleshooting              bool
+	LogRetention time.Duration
+	// SecretAccessRetentionDays is how long secret access records are kept. `astilba migrate`
+	// writes it; serving only reads it.
+	SecretAccessRetentionDays            int32
+	DatabasePoolSize                     int32
+	DatabaseURL, Keyring, Listen, Origin string
+	// KeyBackend is the key service keys are read from: "file", the keyring, or "transit", an
+	// OpenBao or Vault Transit mount that Transit describes.
+	KeyBackend string
+	Transit    Transit
+	// InstallationID pins the installation the database must belong to, or is uuid.Nil when it is
+	// not set, which hosting does not allow.
+	InstallationID                       uuid.UUID
+	Development, Hosted, Troubleshooting bool
 	// AgentForkFencing clears a server's credential on proof that a second holder has its agent
 	// key. Off by default: the proof then only raises the owner's alert.
 	AgentForkFencing bool
@@ -38,7 +49,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	c := Config{DatabaseURL: os.Getenv("ASTILBA_DATABASE_URL"), Keyring: os.Getenv("ASTILBA_KEYRING"), KeyringJSON: os.Getenv("ASTILBA_KEYRING_JSON"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
+	c := Config{DatabaseURL: os.Getenv("ASTILBA_DATABASE_URL"), Keyring: os.Getenv("ASTILBA_KEYRING"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
 	c.ApplicationDNS = applicationdns.Config{Base: os.Getenv("ASTILBA_APPLICATION_DOMAIN"), Zone: os.Getenv("ASTILBA_DNS_CLOUDFLARE_ZONE"), Token: os.Getenv("ASTILBA_DNS_CLOUDFLARE_TOKEN")}
 	switch os.Getenv("ASTILBA_TROUBLESHOOTING") {
 	case "":
@@ -63,6 +74,14 @@ func Load() (Config, error) {
 		days = n
 	}
 	c.LogRetention = time.Duration(days) * 24 * time.Hour
+	c.SecretAccessRetentionDays = 400
+	if raw := os.Getenv("ASTILBA_SECRET_ACCESS_RETENTION_DAYS"); raw != "" {
+		n, e := strconv.Atoi(raw)
+		if e != nil || n < 30 || n > 3650 || c.Hosted && n != 400 {
+			return c, errors.New("ASTILBA_SECRET_ACCESS_RETENTION_DAYS must be between 30 and 3650, and 400 when hosted")
+		}
+		c.SecretAccessRetentionDays = int32(n)
+	}
 	c.DatabasePoolSize = defaultDatabasePoolSize
 	if raw := os.Getenv("ASTILBA_DATABASE_POOL_SIZE"); raw != "" {
 		n, e := strconv.Atoi(raw)
@@ -104,11 +123,87 @@ func Load() (Config, error) {
 			return c, e
 		}
 	}
-	if c.DatabaseURL == "" || (c.Keyring == "" && c.KeyringJSON == "") || (c.Keyring != "" && c.KeyringJSON != "") {
-		return c, errors.New("ASTILBA_DATABASE_URL and exactly one of ASTILBA_KEYRING or ASTILBA_KEYRING_JSON are required")
+	if e := c.loadCustody(); e != nil {
+		return c, e
+	}
+	if c.DatabaseURL == "" || c.Keyring == "" {
+		return c, errors.New("ASTILBA_DATABASE_URL and ASTILBA_KEYRING are required")
 	}
 	return c, nil
 }
+
+// loadCustody reads which key service to use and which installation to expect. A keyring in the
+// environment is refused: anything that can read the environment, beside the database URL, could
+// open every value. See docs/hosting.md#key-custody.
+func (c *Config) loadCustody() error {
+	if os.Getenv("ASTILBA_KEYRING_JSON") != "" {
+		return errors.New("ASTILBA_KEYRING_JSON is no longer read: mount the keyring as a private file and name it in ASTILBA_KEYRING")
+	}
+	c.KeyBackend = os.Getenv("ASTILBA_KEY_BACKEND")
+	switch c.KeyBackend {
+	case "":
+		c.KeyBackend = "file"
+	case "file":
+	case "transit":
+		if err := c.loadTransit(); err != nil {
+			return err
+		}
+	default:
+		return errors.New("ASTILBA_KEY_BACKEND must be file or transit")
+	}
+	if raw := os.Getenv("ASTILBA_INSTALLATION_ID"); raw != "" {
+		id, e := uuid.Parse(raw)
+		if e != nil || id == uuid.Nil {
+			return errors.New("ASTILBA_INSTALLATION_ID must be the installation's UUID, which `astilba custody status` shows")
+		}
+		c.InstallationID = id
+	}
+	return nil
+}
+
+// Transit is an OpenBao or Vault Transit mount and how management signs in to it. Credentials
+// are named only by file, so the environment never holds them. See docs/key-custody-transit.md.
+type Transit struct {
+	Address, Mount, Namespace, CAFile string
+	// Auth is "approle" or "jwt", and AuthMount where that method is mounted, if not at its name.
+	Auth, AuthMount          string
+	RoleIDFile, SecretIDFile string
+	JWTFile, JWTRole         string
+}
+
+func (c *Config) loadTransit() error {
+	for _, name := range []string{"ASTILBA_TRANSIT_TOKEN", "ASTILBA_TRANSIT_SECRET_ID", "ASTILBA_TRANSIT_ROLE_ID", "VAULT_TOKEN", "BAO_TOKEN"} {
+		if os.Getenv(name) != "" {
+			return fmt.Errorf("%s is not read: management signs in to Transit with credentials in private files, named by ASTILBA_TRANSIT_ROLE_ID_FILE and ASTILBA_TRANSIT_SECRET_ID_FILE, or ASTILBA_TRANSIT_JWT_FILE", name)
+		}
+	}
+	t := Transit{
+		Address: os.Getenv("ASTILBA_TRANSIT_ADDR"), Mount: os.Getenv("ASTILBA_TRANSIT_MOUNT"), Namespace: os.Getenv("ASTILBA_TRANSIT_NAMESPACE"), CAFile: os.Getenv("ASTILBA_TRANSIT_CA_FILE"),
+		Auth: os.Getenv("ASTILBA_TRANSIT_AUTH"), AuthMount: os.Getenv("ASTILBA_TRANSIT_AUTH_MOUNT"),
+		RoleIDFile: os.Getenv("ASTILBA_TRANSIT_ROLE_ID_FILE"), SecretIDFile: os.Getenv("ASTILBA_TRANSIT_SECRET_ID_FILE"),
+		JWTFile: os.Getenv("ASTILBA_TRANSIT_JWT_FILE"), JWTRole: os.Getenv("ASTILBA_TRANSIT_JWT_ROLE"),
+	}
+	if t.Auth == "" {
+		t.Auth = "approle"
+	}
+	// The rest, such as which files each sign-in method needs, is checked where the client is
+	// made, custody.NewTransit, so the two never disagree.
+	if t.Address == "" {
+		return errors.New("ASTILBA_TRANSIT_ADDR is required when ASTILBA_KEY_BACKEND is transit")
+	}
+	c.Transit = t
+	return nil
+}
+
+// RequirePinnedInstallation refuses to use keys when hosted without ASTILBA_INSTALLATION_ID.
+// Migrating and `custody status` do without it, since they are how an operator learns the ID.
+func (c Config) RequirePinnedInstallation() error {
+	if c.Hosted && c.InstallationID == uuid.Nil {
+		return errors.New("ASTILBA_INSTALLATION_ID is required when hosted; `astilba custody status` shows it")
+	}
+	return nil
+}
+
 func loopbackHost(host string) bool {
 	ip := net.ParseIP(host)
 	return host == "localhost" || (ip != nil && ip.IsLoopback())

@@ -3,10 +3,13 @@ import { initReactI18next } from "react-i18next";
 import account from "../locales/en/account.json";
 import app from "../locales/en/app.json";
 import auth from "../locales/en/auth.json";
+import backupRecovery from "../locales/en/backup-recovery.json";
 import common from "../locales/en/common.json";
 import environment from "../locales/en/environment.json";
 import projects from "../locales/en/projects.json";
+import secretAccess from "../locales/en/secret-access.json";
 import troubleshooting from "../locales/en/troubleshooting.json";
+import workspace from "../locales/en/workspace.json";
 import { locales, readLocalePreference, resolveLocale } from "./locale";
 
 export const i18n = createInstance();
@@ -16,7 +19,18 @@ export async function initializeI18n(
   supportedLocales: readonly string[] = locales.map(({ code }) => code),
 ) {
   const resources = {
-    en: { common, auth, account, app, projects, environment, troubleshooting },
+    en: {
+      common,
+      auth,
+      account,
+      app,
+      projects,
+      environment,
+      troubleshooting,
+      "secret-access": secretAccess,
+      workspace,
+      "backup-recovery": backupRecovery,
+    },
   };
   await instance.use(initReactI18next).init({
     resources,
@@ -33,6 +47,9 @@ export async function initializeI18n(
       "projects",
       "environment",
       "troubleshooting",
+      "secret-access",
+      "workspace",
+      "backup-recovery",
     ],
     returnEmptyString: false,
     interpolation: { escapeValue: false },

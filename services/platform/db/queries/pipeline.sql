@@ -20,7 +20,19 @@ UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_i
 -- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations o SET state = @state, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || @note::text
 WHERE o.workspace_id = @workspace_id AND o.id = @id;
--- name: StopPossiblyDeliveredPipeline :exec
+-- name: OperationNoteHas :one
+-- Whether an operation's note already says something, such as why its delivery waited.
+SELECT strpos(note, @note::text) > 0 AS has FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id;
+-- name: PipelineReportedStart :one
+-- Whether management has a report that the pipeline's runner started it: its start step.
+SELECT (steps @> jsonb_build_array(jsonb_build_object('name', @step::text)))::boolean AS started FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id;
+-- name: LockDeliveredPipeline :one
+-- A pipeline operation that may have been delivered to the server's runner, locked to decide
+-- about it. One never delivered, or assigned to another server, has no row.
+SELECT o.command, o.state, o.cancel_requested FROM execution_operations o JOIN pipeline_runs r ON r.workspace_id = o.workspace_id AND r.id = o.id
+WHERE o.workspace_id = @workspace_id AND o.id = @id AND o.server_id = @server_id AND o.kind = 'pipeline' AND (r.delivery_started IS NOT FALSE OR o.report_sequence > 0)
+FOR UPDATE OF o;
+-- name: StopPossiblyDeliveredOperation :exec
 UPDATE execution_operations SET cancel_requested = true, note = @note::text || CASE WHEN state = 'needs_attention' AND note <> '' THEN ' ' || note ELSE '' END WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AutomaticBuildArtifact :one
@@ -30,7 +42,7 @@ SELECT identity FROM build_artifacts WHERE workspace_id = @workspace_id AND envi
 -- An automatic deployment has no active operation between its passes, and a build admitted in that gap
 -- would stack its image on a draft still waiting to deploy. The age limit keeps a job stuck in retries
 -- from stopping automatic work for the environment indefinitely; a run admitted after it blocks for review.
-SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.environment_id = @environment_id::uuid AND o.state NOT IN ('succeeded','failed','cancelled'))
+SELECT (EXISTS(SELECT 1 FROM execution_operations o WHERE o.workspace_id = @workspace_id AND o.environment_id = @environment_id::uuid AND o.state IN ('queued','dispatched','running','needs_attention'))
     OR EXISTS(SELECT 1 FROM pipeline_auto_deployments d JOIN pipeline_runs r ON r.workspace_id = d.workspace_id AND r.id = d.id
               WHERE d.workspace_id = @workspace_id AND d.environment_id = @environment_id::uuid AND d.state = 'pending' AND r.created_at > now() - interval '1 hour'))::boolean AS busy;
 
@@ -71,20 +83,45 @@ WHERE r.workspace_id = @workspace_id AND r.environment_id = @environment_id AND 
 ORDER BY r.created_at DESC LIMIT 2;
 
 -- name: InsertSourceSubmission :one
-INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,configuration)
-VALUES(@id,@workspace_id,@environment_id,@revision_id,@request_key,@actor_id,@configuration) RETURNING created_at;
+INSERT INTO source_submissions(id,workspace_id,environment_id,revision_id,request_key,actor_id,actor_auth_version,configuration)
+VALUES(@id,@workspace_id,@environment_id,@revision_id,@request_key,@actor_id,@actor_auth_version,@configuration) RETURNING created_at;
 
 -- name: SourceSubmissionByRequestKey :one
 SELECT id,environment_id,revision_id,state,note,result,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND request_key = @request_key;
 
 -- name: LatestSourceSubmission :one
 -- The newest attempt for the environment, or for one revision of it when revision_id is set.
-SELECT id,environment_id,revision_id,configuration,state,note,result,created_at FROM source_submissions
+SELECT id,environment_id,revision_id,configuration,state,note,result,created_at,withdrawn_at FROM source_submissions
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND (sqlc.narg(revision_id)::uuid IS NULL OR revision_id = sqlc.narg(revision_id)::uuid)
 ORDER BY created_at DESC,id DESC LIMIT 1;
 
 -- name: LockSourceSubmission :one
-SELECT environment_id,revision_id,configuration,state,created_at FROM source_submissions WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+SELECT environment_id,revision_id,configuration,state,created_at,withdrawn_at FROM source_submissions WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+
+-- name: SourceSubmissionSubmitter :one
+-- Whether the member who submitted it may still have it sent: the check every standing approval
+-- makes, which includes the workspace's two-factor requirement, at the role writing needs. Losing
+-- write access has already failed it (WithdrawActorSourceSubmissions). A version is recorded unless
+-- an older release queued it.
+SELECT policy_approver_holds(workspace_id, actor_id, actor_auth_version, false)::boolean AS holds,
+    (actor_auth_version IS NOT NULL)::boolean AS recorded
+FROM source_submissions
+WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: WithdrawActorSourceSubmissions :many
+-- A queued submission is sent on its submitter's say-so, so losing write access fails it, in the
+-- transaction that takes it away, and getting it back doesn't restore it. An attempt may be
+-- sending it with nothing held, so withdrawn_at lets that attempt record what the provider did,
+-- and keeps another attempt for the revision from starting beside it until it must have ended.
+UPDATE source_submissions SET state = 'failed', finished_at = now(), withdrawn_at = now(),
+    note = 'Not submitted: the member who submitted it lost write access. An owner or operator can submit the draft again from a minute later.'
+WHERE workspace_id = @workspace_id AND actor_id = @actor_id AND state = 'queued'
+RETURNING id;
+
+-- name: RecordWithdrawnSourceSubmission :exec
+-- What the provider did for an attempt that was already sending a submission when it was withdrawn.
+UPDATE source_submissions SET state = @state, note = @note, result = sqlc.narg(result)
+WHERE workspace_id = @workspace_id AND id = @id AND state = 'failed' AND withdrawn_at IS NOT NULL;
 
 -- name: FinishSourceSubmission :exec
 UPDATE source_submissions SET state = @state, note = @note, result = sqlc.narg(result), finished_at = now()
@@ -94,8 +131,11 @@ WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
 UPDATE source_submissions SET note = @note WHERE workspace_id = @workspace_id AND id = @id AND state = 'queued';
 
 -- name: AwaitSubmittedMerge :exec
--- A source that needs renewed approval keeps needing it: a submission doesn't grant it.
-UPDATE git_sources SET status = 'awaiting_merge' WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND status <> 'approval_required';
+-- A source that needs renewed approval keeps needing it: a submission doesn't grant it. A source bound
+-- again since the submission was made no longer imports the commit it proposed edits to.
+UPDATE git_sources g SET status = 'awaiting_merge' FROM source_submissions s
+WHERE g.workspace_id = @workspace_id AND g.environment_id = @environment_id AND g.status <> 'approval_required'
+    AND s.workspace_id = g.workspace_id AND s.id = @submission_id AND g.imported_commit = s.configuration->>'commit';
 
 -- name: SubmittedReviews :many
 -- The reviews that proposed exactly these files on top of commit from this connection's branch,
@@ -112,3 +152,91 @@ SELECT review FROM (
       AND r.configuration->>'commit' = @commit::text AND r.configuration#>>'{connection,id}' = @connection_id::text AND r.configuration->>'branch' = @branch::text
       AND (SELECT jsonb_object_agg(f->>'path',f->>'content') FROM jsonb_array_elements(r.configuration#>'{bundle,files}') f) = @files::jsonb
 ) reviews WHERE review > 0 ORDER BY created_at DESC;
+
+-- name: RecordGitSourceFailure :exec
+-- The commit stops waiting to import: it failed. A conflict keeps its commit until an owner's refresh
+-- settles the draft.
+UPDATE git_sources SET failed_commit = @commit::text, failure_reason = @reason::text, failed_at = clock_timestamp(),
+    pending_commit = CASE WHEN status = 'conflict' THEN pending_commit ELSE '' END
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: ClearGitSourceFailure :exec
+-- An import admitted for a source ends its failure.
+UPDATE git_sources SET failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND failed_commit <> '';
+
+-- name: BindGitSource :exec
+-- Binding a source again replaces all it was, as a first binding sets it: its approver, and the import
+-- it compares drafts with, which the next import sets. An environment runs one operation at a time,
+-- so no import for what the source was bound to before is still running.
+INSERT INTO git_sources (workspace_id, environment_id, connection_id, configuration, policy_actor, policy_auth_version)
+VALUES (@workspace_id, @environment_id, @connection_id, @configuration, @policy_actor, @policy_auth_version::bigint)
+ON CONFLICT (workspace_id, environment_id) DO UPDATE SET connection_id = EXCLUDED.connection_id, configuration = EXCLUDED.configuration,
+    policy_actor = EXCLUDED.policy_actor, policy_auth_version = EXCLUDED.policy_auth_version,
+    imported_revision_id = NULL, imported_commit = '', pending_commit = '', status = 'pending',
+    failed_commit = '', failure_reason = '', failed_at = NULL;
+
+-- name: UnbindGitSource :execrows
+DELETE FROM git_sources WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: MarkGitSourceConflict :exec
+-- A conflict says why the commit waits, so an earlier failure no longer does.
+UPDATE git_sources SET pending_commit = @commit::text, status = 'conflict', failed_commit = '', failure_reason = '', failed_at = NULL
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+
+-- name: RejectBuildTarget :exec
+-- A rejection ends any wait, since it says why the commit was not built.
+UPDATE build_targets SET rejected_commit = @commit::text, rejection_reason = @reason::text, rejected_at = clock_timestamp(),
+    waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
+
+-- name: WaitBuildTarget :exec
+-- A target waits for its runner at a commit, until the refresh stops waiting. It keeps the time it
+-- started waiting while it waits for the same runner, for the same reason, at the same commit.
+UPDATE build_targets SET waiting_commit = @commit::text, waiting_reason = @reason::text, waiting_runner_id = @runner_id::uuid,
+    waiting_until = @until::timestamptz,
+    waiting_since = CASE WHEN waiting_commit = @commit::text AND waiting_reason = @reason::text AND waiting_runner_id = @runner_id::uuid
+        THEN waiting_since ELSE clock_timestamp() END
+WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND application_id = @application_id;
+
+-- name: EndBranchBuildWaits :exec
+-- A branch's refresh that ends ends every wait it recorded, at any commit, as when the source they
+-- build on failed and holds them: a wait it no longer looks at would never end. One job refreshes
+-- a branch at a time.
+UPDATE build_targets SET waiting_commit = NULL, waiting_reason = NULL, waiting_runner_id = NULL, waiting_since = NULL, waiting_until = NULL
+WHERE workspace_id = @workspace_id AND connection_id = @connection_id AND configuration->>'branch' = @branch::text AND waiting_commit IS NOT NULL;
+
+-- name: ListBuildWaits :many
+-- A wait whose refresh ended without saying so, as when it was discarded or recovery removed it, or
+-- whose target no longer builds automatically, is over, so it isn't shown.
+SELECT application_id, waiting_commit::text AS waiting_commit, waiting_reason::text AS waiting_reason,
+    waiting_runner_id::uuid AS waiting_runner_id, waiting_since::timestamptz AS waiting_since, waiting_until::timestamptz AS waiting_until
+FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND waiting_until > now()
+    AND configuration->>'autoBuild' = 'true'
+ORDER BY application_id;
+
+-- name: RunnerCredential :one
+-- Whether a runner has its credential, or is enrolling again or moving to another management with
+-- a code that is still valid: it has no credential until it finishes, but it is still the
+-- workspace's, so work for it waits rather than fails. A runner whose credential was withdrawn with
+-- no enrollment under way, or whose code expired, is neither.
+SELECT COALESCE(bool_or(NOT revoked AND credential_hash IS NOT NULL), false)::boolean AS enrolled,
+    COALESCE(bool_or(NOT revoked AND credential_hash IS NULL AND enrollment_hash IS NOT NULL AND enrollment_expires > now()), false)::boolean AS enrolling
+FROM servers WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: AutomaticBuildsBehind :one
+-- Whether an environment builds this branch automatically and has not yet been asked to build commit.
+SELECT EXISTS(SELECT 1 FROM build_targets WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND connection_id = @connection_id
+    AND configuration->>'branch' = @branch::text AND configuration->>'autoBuild' = 'true' AND automatic_requested_commit <> @commit::text)::boolean AS behind;
+
+-- name: EnvironmentOperationRunning :one
+SELECT EXISTS(SELECT 1 FROM execution_operations WHERE workspace_id = @workspace_id AND environment_id = @environment_id::uuid
+    AND parent_id IS NULL AND state IN ('queued','dispatched','running','needs_attention'))::boolean AS running;
+
+-- name: WorkspaceRunnerKnown :one
+-- Whether a server is one of the workspace's and not revoked, as a fallback runner saved with a
+-- configuration must be.
+SELECT EXISTS(SELECT 1 FROM servers WHERE workspace_id = @workspace_id AND id = @id AND NOT revoked)::boolean AS known;
+
+-- name: RunnerCapabilities :one
+SELECT capabilities FROM servers WHERE workspace_id = @workspace_id AND id = @id;

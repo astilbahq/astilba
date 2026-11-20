@@ -13,12 +13,14 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
@@ -129,7 +131,10 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		prior, err := q.LatestSourceSubmission(ctx, db.LatestSourceSubmissionParams{WorkspaceID: ws, EnvironmentID: env, RevisionID: &base})
 		if err == nil {
 			abandoned := prior.State == "queued" && time.Since(prior.CreatedAt) > submissionLifetime
-			if prior.State != "failed" && !abandoned {
+			// An attempt may still be sending a submission withdrawn from its submitter, so
+			// another for the revision waits until that attempt must have ended.
+			sending := prior.WithdrawnAt != nil && time.Since(*prior.WithdrawnAt) < submissionTimeout
+			if prior.State != "failed" && !abandoned || sending {
 				out = submissionView(prior.ID, prior.RevisionID, prior.State, prior.Note, prior.Result, prior.CreatedAt)
 				return nil
 			}
@@ -162,7 +167,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 		for _, file := range baseline.Files {
 			files = append(files, composeproject.File{Content: file.Content})
 		}
-		if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, env, composeproject.Bundle{Files: files}); err != nil {
+		if err = s.rejectRuntimeSecrets(ctx, tx, git, ws, env, composeproject.Bundle{Files: files}); err != nil {
 			return err
 		}
 		frozen := submissionConfiguration{SubmissionID: uuid.NewSHA1(env, []byte("source/"+base.String())), Connection: head.Connection, Commit: commit, Branch: source.Branch, Bundle: *v.Spec.Compose, Paths: source.Paths, SubmittedAt: submittedAt}
@@ -171,7 +176,7 @@ func (s *Service) SubmitSource(ctx context.Context, p store.Principal, ws, pid, 
 			return domain.Invalid("source.draft")
 		}
 		id := uuid.New()
-		created, err := q.InsertSourceSubmission(ctx, db.InsertSourceSubmissionParams{ID: id, WorkspaceID: ws, EnvironmentID: env, RevisionID: base, RequestKey: key, ActorID: p.Account.ID, Configuration: raw})
+		created, err := q.InsertSourceSubmission(ctx, db.InsertSourceSubmissionParams{ID: id, WorkspaceID: ws, EnvironmentID: env, RevisionID: base, RequestKey: key, ActorID: p.Account.ID, ActorAuthVersion: pgtype.Int8{Int64: p.Account.AuthVersion, Valid: true}, Configuration: raw})
 		if err != nil {
 			return err
 		}
@@ -212,14 +217,21 @@ func (w *submissionWorker) Work(ctx context.Context, job *river.Job[submissionAr
 		return err
 	}
 	err := s.attemptSubmission(ctx, job)
-	// River discards the job after its last attempt, so that attempt settles its submission
-	// whatever stopped it, rather than leaving it waiting with nothing to run it.
-	if err != nil && job.Attempt >= submissionAttempts {
+	if settlesSubmission(err, job.Attempt) {
 		settle, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 		defer cancel()
 		return errors.Join(err, s.settleSubmission(settle, job.Args.Workspace, job.Args.ID))
 	}
 	return err
+}
+
+// settlesSubmission reports whether an attempt that ended with err must settle its submission.
+// River discards the job after its last attempt, so that attempt settles it whatever stopped it,
+// rather than leave it waiting with nothing to run it. A snooze, as for GitHub's rate limits,
+// spends no attempt, so it settles nothing.
+func settlesSubmission(err error, attempt int) bool {
+	var snoozed *river.JobSnoozeError
+	return err != nil && !errors.As(err, &snoozed) && attempt >= submissionAttempts
 }
 
 func (s *Service) attemptSubmission(ctx context.Context, job *river.Job[submissionArgs]) error {
@@ -264,6 +276,10 @@ func submissionFailure(err error) (string, bool) {
 		return refused.Reason, true
 	}
 	var invalid *domain.Error
+	// GitHub limiting the App, or a cached token it stopped accepting, passes.
+	if errors.As(err, &invalid) && invalid.Code == "temporarily_busy" {
+		return invalid.Message, false
+	}
 	if errors.As(err, &invalid) {
 		return "The connection's credential cannot be used: " + invalid.Message, true
 	}
@@ -278,8 +294,9 @@ func submissionFailure(err error) (string, bool) {
 }
 
 // prepareSubmission makes every decision again under the workspace lock: the attempt is still
-// queued, the workspace may write, no runtime secret is in the files and the connection is the
-// one the draft was submitted through. It returns nil once the attempt is settled.
+// queued, its submitter and the workspace may still write, no runtime secret is in the files and
+// the connection is the one the draft was submitted through. It returns nil once the attempt is
+// settled.
 func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *river.Job[submissionArgs]) (*submissionWork, error) {
 	ws, id := job.Args.Workspace, job.Args.ID
 	tx, done, err := s.Store.BeginWorkspaceWrite(ctx, ws)
@@ -318,7 +335,14 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		return nil, err
 	}
 	if state != "active" {
-		return nil, fail("the environment was retired. Restore it to propose its draft.")
+		return nil, fail("the environment was retired. Restore it to propose its draft; a purged environment cannot be restored.")
+	}
+	// It is sent on its submitter's say-so, which may have ended while it waited.
+	if note, err := submitterRefusal(ctx, q, ws, id); err != nil || note != "" {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fail(note)
 	}
 	var c submissionConfiguration
 	if err = json.Unmarshal(row.Configuration, &c); err != nil {
@@ -331,17 +355,17 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 		return nil, err
 	}
 	// A value can become a runtime secret while the attempt waits.
-	if err = s.rejectRuntimeSecrets(ctx, tx, git.keys.inspect, ws, row.EnvironmentID, c.Bundle); err != nil {
+	if err = s.rejectRuntimeSecrets(ctx, tx, git, ws, row.EnvironmentID, c.Bundle); err != nil {
 		var invalid *domain.Error
 		if !errors.As(err, &invalid) {
 			return nil, err
 		}
 		if slices.Contains(invalid.Fields, "source.secretBudget") {
-			return nil, fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository.")
+			return nil, fail("runtime secrets exceed the limit for checking these files. Nothing was written to the repository. An owner can retire secrets the environment no longer needs, or replace versions that the draft or the deployment still uses.")
 		}
 		return nil, fail("the names or contents of these files include a known runtime secret value. Nothing was written to the repository.")
 	}
-	current, _, err := git.connection(ctx, tx, c.Connection.ID)
+	current, app, err := git.connection(ctx, tx, c.Connection.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -355,6 +379,23 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	}
 	if access.Err != nil {
 		note, terminal := submissionFailure(access.Err)
+		// GitHub limiting the App says when it will allow requests again, so the attempt waits
+		// for that, without spending one of its tries, rather than spend them all sooner. A time
+		// past the submission's hour can't be waited for.
+		if until, limited := githubapp.Limited(access.Err); limited {
+			wait, inTime := submissionWait(until, row.CreatedAt)
+			at := until.UTC().Format("15:04 UTC")
+			if !inTime {
+				return nil, fail("GitHub is limiting how fast Astilba's GitHub App can make requests until " + at + ", after the hour a submission has. Submit the draft again then.")
+			}
+			if err = q.NoteSourceSubmission(ctx, db.NoteSourceSubmissionParams{WorkspaceID: ws, ID: id, Note: "Waiting until " + at + ", when GitHub allows Astilba's GitHub App to make requests again."}); err != nil {
+				return nil, err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return nil, err
+			}
+			return nil, river.JobSnooze(wait)
+		}
 		if terminal || job.Attempt >= submissionAttempts {
 			return nil, fail(note)
 		}
@@ -369,12 +410,38 @@ func (s *Service) prepareSubmission(ctx context.Context, git *gitAnswers, job *r
 	if access.Value.API.Password == "" {
 		return nil, fail("the connection has no API credential, which submitting needs to create the branch and review.")
 	}
-	provider, err := pipeline.NewProvider(current, access.Value.API, s.Policy)
+	provider, err := s.newProvider(current, access.Value.API, app)
 	if err != nil {
 		return nil, fail("the connection's provider is not allowed by this installation's policy.")
 	}
 	work := &submissionWork{provider: provider, submission: pipeline.Submission{ID: c.SubmissionID, Base: c.Commit, Branch: c.Branch, Files: c.Bundle.Files, Previous: c.Paths, At: c.SubmittedAt}}
 	return work, tx.Commit(ctx)
+}
+
+// submitterRefusal says why the member who submitted the attempt may no longer have it sent, or ""
+// while they still may: they are an owner or operator, their password, two-factor settings and
+// recovery codes are as they were when they submitted it, and they meet the workspace's two-factor
+// requirement. Losing write access, even for a while, has already failed it (store.EndAuthority).
+// Membership and the requirement change under the workspace lock, which the caller holds. The note is shown to every member, so like an automatic
+// deployment's it says which only of what the dashboard already shows.
+func submitterRefusal(ctx context.Context, q *db.Queries, ws, id uuid.UUID) (string, error) {
+	s, err := q.SourceSubmissionSubmitter(ctx, db.SourceSubmissionSubmitterParams{WorkspaceID: ws, ID: id})
+	switch {
+	case err != nil || s.Holds:
+		return "", err
+	case !s.Recorded:
+		return "an earlier release of Astilba queued it without recording who may send it. Submit the draft again.", nil
+	}
+	return "the member who submitted it can no longer send it: they are no longer an owner or operator, changed their password, two-factor settings or recovery codes since, or haven't set up the two-factor authentication the workspace now requires. An owner or operator can submit the draft again.", nil
+}
+
+// submissionWait is how long a submission created at created waits for GitHub to allow requests
+// again at until, and whether that is before the submission's last chance to be attempted.
+func submissionWait(until, created time.Time) (time.Duration, bool) {
+	if until.After(created.Add(submissionLifetime - submissionTimeout)) {
+		return 0, false
+	}
+	return max(time.Until(until), time.Second), true
 }
 
 func retryNote(attempt int, note string) string {
@@ -395,15 +462,27 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
+	// An attempt that was already sending the submission when it was withdrawn records what the
+	// provider did, so the source follows the review it opened.
+	withdrawn := err == nil && row.State == "failed" && row.WithdrawnAt != nil
+	// finish records state, unless it is empty or the attempt is settled, and completes the job.
 	finish := func(state, note string, outcome []byte) error {
-		if err == nil && row.State == "queued" {
-			if err := q.FinishSourceSubmission(ctx, db.FinishSourceSubmissionParams{WorkspaceID: ws, ID: id, State: state, Note: boundedNote(note), Result: outcome}); err != nil {
+		var recorded error
+		switch {
+		case state == "":
+		case err == nil && row.State == "queued":
+			recorded = q.FinishSourceSubmission(ctx, db.FinishSourceSubmissionParams{WorkspaceID: ws, ID: id, State: state, Note: boundedNote(note), Result: outcome})
+		case withdrawn:
+			recorded = q.RecordWithdrawnSourceSubmission(ctx, db.RecordWithdrawnSourceSubmissionParams{WorkspaceID: ws, ID: id, State: state, Note: boundedNote(note), Result: outcome})
+		default:
+			state = ""
+		}
+		if recorded != nil {
+			return recorded
+		}
+		if state == "succeeded" {
+			if err := q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID, SubmissionID: id}); err != nil {
 				return err
-			}
-			if state == "succeeded" {
-				if err := q.AwaitSubmittedMerge(ctx, db.AwaitSubmittedMergeParams{WorkspaceID: ws, EnvironmentID: row.EnvironmentID}); err != nil {
-					return err
-				}
 			}
 		}
 		if _, err := river.JobCompleteTx[*riverpgxv5.Driver](ctx, tx, job); err != nil {
@@ -411,22 +490,22 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 		}
 		return tx.Commit(ctx)
 	}
-	if err != nil || row.State != "queued" {
+	if err != nil || row.State != "queued" && !withdrawn {
 		return finish("", "", nil)
 	}
 	if submitErr == nil {
-		var c submissionConfiguration
-		if err = json.Unmarshal(row.Configuration, &c); err != nil {
-			return err
-		}
-		if !reviewURLMatches(c.Connection, result.Review.URL) {
-			return finish("failed", "Not recorded: the Git provider named a review outside the connection's own site. Check branch astilba/"+c.SubmissionID.String()+" and its review at the provider.", nil)
-		}
-		outcome, err := stablejson.Marshal(submissionOutcome{Commit: result.Commit, ReviewNumber: result.Review.Number, ReviewURL: result.Review.URL})
+		state, note, outcome, err := submittedOutcome(row.Configuration, result)
 		if err != nil {
 			return err
 		}
-		return finish("succeeded", "", outcome)
+		if withdrawn && state == "succeeded" {
+			note = "Sent by an attempt that had already started when the member who submitted it lost write access."
+		}
+		return finish(state, note, outcome)
+	}
+	// A failure leaves a withdrawn submission as the withdrawal left it.
+	if withdrawn {
+		return finish("", "", nil)
 	}
 	note, terminal := submissionFailure(submitErr)
 	if terminal || job.Attempt >= submissionAttempts {
@@ -441,14 +520,32 @@ func (s *Service) finishSubmission(ctx context.Context, job *river.Job[submissio
 	return submitErr
 }
 
+// submittedOutcome is the state, note and outcome a submission frozen as configuration records of
+// the provider's result. A review outside the connection's own site is not recorded.
+func submittedOutcome(configuration []byte, result pipeline.SubmissionResult) (string, string, []byte, error) {
+	var c submissionConfiguration
+	if err := json.Unmarshal(configuration, &c); err != nil {
+		return "", "", nil, err
+	}
+	if !reviewURLMatches(c.Connection, result.Review.URL) {
+		return "failed", "Not recorded: the Git provider named a review outside the connection's own site. Check branch astilba/" + c.SubmissionID.String() + " and its review at the provider.", nil, nil
+	}
+	outcome, err := stablejson.Marshal(submissionOutcome{Commit: result.Commit, ReviewNumber: result.Review.Number, ReviewURL: result.Review.URL})
+	return "succeeded", "", outcome, err
+}
+
 // reviewURLMatches accepts a review link only on the connection's own site, so a link the
-// dashboard shows can't lead anywhere else.
+// dashboard shows can't lead anywhere else. NewProvider refuses a base without a host before any
+// attempt, and one here still matches nothing, rather than every link without a host.
 func reviewURLMatches(c pipeline.Connection, review string) bool {
 	u, err := url.Parse(review)
-	expected, _ := url.Parse(c.BaseURL)
+	expected, baseErr := url.Parse(c.BaseURL)
+	if err != nil || baseErr != nil || expected.Host == "" {
+		return false
+	}
 	host := expected.Host
 	if c.Provider == "github" {
 		host = "github.com"
 	}
-	return err == nil && u.Host == host && u.User == nil && u.Scheme == expected.Scheme
+	return u.Host == host && u.User == nil && u.Scheme == expected.Scheme
 }

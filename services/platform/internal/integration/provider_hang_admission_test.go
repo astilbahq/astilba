@@ -106,7 +106,7 @@ func TestPreviewVisualDeliveryRechecksAfterItsProviderCheck(t *testing.T) {
 			h, preview := approvedPreviewBuild(t)
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
-			build, err := h.f.execution.Poll(ctx, h.identity)
+			build, err := pollReleased(h.f.execution, ctx, h.identity)
 			if err != nil || build == nil {
 				t.Fatal("the preview build was not delivered", err)
 			}

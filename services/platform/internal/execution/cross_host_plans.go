@@ -38,7 +38,7 @@ func previousUnits(p deployment.Plan) map[uuid.UUID]deployment.Plan {
 	}
 	return out
 }
-func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, env uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, previous deployment.Plan, replacement *deployment.Replacement) (deployment.Status, error) {
+func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, keys valueKeys, ws, pid, env uuid.UUID, in api.VisualPlanRequest, v visualEnvironment, previous deployment.Plan, replacement *deployment.Replacement, reviewEffects []string) (deployment.Status, error) {
 	out := deployment.Status{}
 	if v.Purpose == "preview" || v.Spec.Compose != nil || in.AcceptDrift || v.Spec.Placement == nil {
 		return out, domain.Invalid("placement")
@@ -56,7 +56,7 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 	if err := s.Store.ValidateApplicationRoutes(ctx, tx, ws, env, v.Spec, &in.ServerId); err != nil {
 		return out, err
 	}
-	if err := s.validateVisualSecrets(ctx, tx, ws, env, v.Spec); err != nil {
+	if err := s.validateVisualSecrets(ctx, tx, keys, ws, env, v.Spec); err != nil {
 		return out, err
 	}
 	network, err := readNetwork(ctx, tx, ws)
@@ -97,7 +97,7 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 	}
 	boundary, err := readRestoreCutover(ctx, tx, ws, env, v.Revision)
 	if err == nil {
-		return s.createRestoreReview(ctx, tx, ws, in, v, previous, network, boundary)
+		return s.createRestoreReview(ctx, tx, ws, in, v, previous, network, boundary, reviewEffects)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return out, err
@@ -132,6 +132,8 @@ func (s *Service) createCrossHostPlan(ctx context.Context, tx pgx.Tx, ws, pid, e
 	}
 
 	parent := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: primaryUnit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.CrossHostRecipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: true, Effects: []string{"Prepare explicit cross-host pools; publish only after every host and private endpoint is ready; retain old pools while outcomes are uncertain.", "First publication of an existing private service port can restart that service on its owning host."}, ExpiresAt: time.Now().UTC().Add(15 * time.Minute), Distributed: &deployment.DistributedPlan{NetworkID: network.ID, NetworkGeneration: network.Generation + 1, Units: []deployment.DistributedUnit{}}}
+	// Every coordinated plan is reviewed, so what else the planner found to review joins it.
+	parent.Effects = append(parent.Effects, reviewEffects...)
 	if err = leaveBehind(ctx, tx, ws, &parent, abandoned, replacement); err != nil {
 		return out, err
 	}

@@ -10,7 +10,6 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
-	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -103,6 +102,9 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					selected, err = recoveryOperationKnowledge(prior, row)
 				case "servers":
 					err = recoveryMonotonic(selected, prior, row, []string{"revoked"}, []string{"controller_generation", "update_generation"})
+					if err == nil {
+						err = recoveryRevocationTime(selected, prior, row)
+					}
 				case "environments":
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"execution_generation"})
 					if err == nil {
@@ -115,6 +117,8 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					err = recoveryMonotonic(selected, prior, row, nil, []string{"generation"})
 				case "network_members":
 					selected, err = recoveryMemberKnowledge(prior, row, source, revoked)
+				case "secrets":
+					recoverySecretKnowledge(selected, prior, row)
 				case "managed_volumes":
 					err = recoveryMonotonic(selected, prior, row, []string{"deleted"}, nil)
 					// Recorded once, by the first deployment of a PostgreSQL major on the volume.
@@ -125,6 +129,12 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					selected, err = recoveryUpgradeKnowledge(prior, row)
 				case "backup_policies":
 					selected, err = recoveryPolicyKnowledge(prior, row)
+				case "backup_recoveries":
+					// Recorded once, by the restore's succeeded report.
+					if string(prior["result"]) == "null" {
+						selected["result"] = row["result"]
+					}
+					err = recoveryDiscardKnowledge(selected, prior, row, known["execution_operations"], incoming["execution_operations"])
 				case "pipeline_runs":
 					if op, exists := incoming["execution_operations"][key]; exists {
 						if oldOp, exists := known["execution_operations"][key]; exists {
@@ -139,6 +149,8 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 							selected = maps.Clone(row)
 						}
 					}
+				case "preview_requests":
+					selected, err = recoveryPreviewRequestKnowledge(prior, row)
 				case "deployment_units":
 					err = recoveryUnitKnowledge(selected, prior, row)
 				}
@@ -162,7 +174,10 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 			if _, exists := incoming[table][key]; exists {
 				continue
 			}
-			selected := maps.Clone(row)
+			selected, err := endRecoveryGapRow(table, row, source.History, known, incoming)
+			if err != nil {
+				return err
+			}
 			if keep, err := applyRecoveryProjection(table, selected, projections); err != nil {
 				return err
 			} else if keep {
@@ -176,7 +191,13 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 	if err = recoveryUnitOwnership(prepared); err != nil {
 		return err
 	}
+	if err = settleRecoveredPreviewPolicies(prepared, known, incoming); err != nil {
+		return err
+	}
 	if err = settleRevokedServers(prepared, revoked); err != nil {
+		return err
+	}
+	if err = dropReleasedPreviewSecrets(&prepared); err != nil {
 		return err
 	}
 	source.Archive = prepared
@@ -255,63 +276,6 @@ func recoveryOperationKnowledge(prior, incoming portability.Row) (portability.Ro
 		return nil, err
 	}
 	return out, nil
-}
-
-// recoveryRevokedServers names every server revoked in any of the archives. Recovery keeps a
-// revocation whichever side knew of it.
-func recoveryRevokedServers(archives ...portability.Archive) (map[uuid.UUID]bool, error) {
-	out := map[uuid.UUID]bool{}
-	for _, archive := range archives {
-		for _, row := range archive.Tables["servers"] {
-			id, err := recoveryValue[uuid.UUID](row, "id")
-			if err != nil {
-				return nil, err
-			}
-			value, err := recoveryValue[bool](row, "revoked")
-			if err != nil {
-				return nil, err
-			}
-			out[id] = out[id] || value
-		}
-	}
-	return out, nil
-}
-
-// settleRevokedServers makes the merged history agree with the revocations it carries. A revoked
-// server stays out of the network, whichever row was selected for it. A removal waiting on one ends
-// here, because nothing can deliver it and nothing it reports counts, and a host that stalled on
-// purpose must not be able to hold recovery back.
-func settleRevokedServers(a portability.Archive, revoked map[uuid.UUID]bool) error {
-	for _, row := range a.Tables["network_members"] {
-		server, err := recoveryValue[uuid.UUID](row, "server_id")
-		if err != nil {
-			return err
-		}
-		if revoked[server] {
-			recoverySet(row, "enabled", false)
-		}
-	}
-	for _, row := range a.Tables["execution_operations"] {
-		server, err := recoveryValue[uuid.UUID](row, "server_id")
-		if err != nil {
-			return err
-		}
-		if !revoked[server] {
-			continue
-		}
-		state, err := recoveryValue[api.ExecutionState](row, "state")
-		if err != nil {
-			return err
-		}
-		command, err := recoveryValue[api.ExecutionCommand](row, "command")
-		if err != nil {
-			return err
-		}
-		if !Terminal(state) && standaloneRestrictionFrame(command) {
-			recoverySet(row, "state", api.ExecutionState("cancelled"))
-		}
-	}
-	return nil
 }
 
 func recoveryMemberKnowledge(prior, incoming portability.Row, source *recoverySource, revoked map[uuid.UUID]bool) (portability.Row, error) {
@@ -448,40 +412,7 @@ func recoveryUpgradeKnowledge(prior, incoming portability.Row) (portability.Row,
 	}
 	return out, nil
 }
-func recoveryPolicyKnowledge(prior, incoming portability.Row) (portability.Row, error) {
-	a, err := recoveryValue[backup.Policy](prior, "configuration")
-	if err != nil {
-		return nil, err
-	}
-	b, err := recoveryValue[backup.Policy](incoming, "configuration")
-	if err != nil {
-		return nil, err
-	}
-	out := maps.Clone(prior)
-	if b.Generation > a.Generation {
-		out["configuration"], out["encrypted_access"] = incoming["configuration"], incoming["encrypted_access"]
-	}
-	sa, err := recoveryValue[backup.Status](prior, "status")
-	if err != nil {
-		return nil, err
-	}
-	sb, err := recoveryValue[backup.Status](incoming, "status")
-	if err != nil {
-		return nil, err
-	}
-	qa, err := recoveryValue[int64](prior, "status_sequence")
-	if err != nil {
-		return nil, err
-	}
-	qb, err := recoveryValue[int64](incoming, "status_sequence")
-	if err != nil {
-		return nil, err
-	}
-	if sb.Generation > sa.Generation || sb.Generation == sa.Generation && qb > qa {
-		out["status"], out["status_sequence"] = incoming["status"], incoming["status_sequence"]
-	}
-	return out, nil
-}
+
 func preflightRecoveryKnownProofs(ctx context.Context, tx pgx.Tx) error {
 	var conflict bool
 	// inline-sql: recovery session temporary table
