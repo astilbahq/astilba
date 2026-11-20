@@ -9,6 +9,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
@@ -49,7 +50,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	runCtx, cancel := context.WithTimeout(ctx, backup.RestoreTimeout)
 	defer cancel()
 	effects := false
-	stored, cleared, err := e.recoverSnapshot(runCtx, v, func() error {
+	stored, release, cleared, err := e.recoverSnapshot(runCtx, v, func() error {
 		if err := runCtx.Err(); err != nil {
 			return err
 		}
@@ -83,7 +84,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 		}
 		return e.finish(c.Id, "failed", "Restore failed before anything was created. Check the destination's access, that the snapshot still exists, and that this server runs the current deployment.")
 	}
-	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: v.Snapshot, TargetID: v.TargetID, Manifest: stored})
+	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: v.Snapshot, TargetID: v.TargetID, Manifest: stored, RestoreImage: release.Image})
 	if err != nil {
 		return err
 	}
@@ -94,11 +95,12 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	})
 }
 
-// recoverSnapshot checks the restore against this server and the snapshot, then restores it.
-func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin func() error) (backup.Manifest, []clusterSetting, error) {
+// recoverSnapshot checks the restore against this server and the snapshot, then restores it, with
+// a logical snapshot in this server's database's own release, which it returns.
+func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin func() error) (backup.Manifest, domain.PostgresRelease, []clusterSetting, error) {
 	in := v.Installation
 	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
-		return backup.Manifest{}, nil, err
+		return backup.Manifest{}, domain.PostgresRelease{}, nil, err
 	}
 	// The database password is the one this server's own database was created with, never one
 	// released with the command: the restored cluster replaces that database's volume at cutover.
@@ -106,22 +108,22 @@ func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin f
 	if in.Policy.Method == "postgres-logical" {
 		password, err := e.databasePassword(ctx, in.Policy)
 		if err != nil {
-			return backup.Manifest{}, nil, restoreRefusal("this server's database is not running as the deployment describes")
+			return backup.Manifest{}, domain.PostgresRelease{}, nil, restoreRefusal("this server's database is not running as the deployment describes")
 		}
 		in.Access.DatabasePassword = password
 	}
 	if err := e.prepareRepository(ctx, &in, false); err != nil {
-		return backup.Manifest{}, nil, err
+		return backup.Manifest{}, domain.PostgresRelease{}, nil, err
 	}
 	m, archive, err := e.snapshotManifest(ctx, in, v.Snapshot)
 	if err != nil {
-		return backup.Manifest{}, nil, err
+		return backup.Manifest{}, domain.PostgresRelease{}, nil, err
 	}
 	if err = v.Admits(m); err != nil {
-		return backup.Manifest{}, nil, restoreRefusal(err.Error())
+		return backup.Manifest{}, domain.PostgresRelease{}, nil, restoreRefusal(err.Error())
 	}
-	cleared, err := e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
-	return m, cleared, err
+	cleared, release, err := e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
+	return m, release, cleared, err
 }
 
 // settleRecovery ends a restore that may have created its volume or containers. Once nothing it

@@ -103,7 +103,8 @@ END$f$;`); err != nil {
 		if err := e.dumpPostgres(dumpCtx, backup.Installation{Policy: policy, Access: backup.Access{DatabasePassword: password}}, uuid.New(), dir, &m); err != nil {
 			t.Fatal(err)
 		}
-		cleared, err := e.restorePostgres(ctx, policy, a, uuid.New(), target, dir, m, password)
+		release, _ := domain.PostgresReleaseOf(*a.Source.Image)
+		cleared, err := e.restorePostgres(ctx, policy, a, uuid.New(), target, dir, m, release, password)
 		return target, cleared, err
 	}
 

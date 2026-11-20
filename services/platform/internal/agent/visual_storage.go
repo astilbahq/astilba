@@ -26,6 +26,9 @@ func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan) error {
 			if err != nil {
 				return errors.New("Cannot create a data volume.")
 			}
+			if err = e.Journal.recordNewPostgresStorage(p, vol.ID); err != nil {
+				return err
+			}
 			v, err = e.Docker.VolumeInspect(ctx, deployment.VolumeName(vol.ID), client.VolumeInspectOptions{})
 		}
 		if err != nil || !visualOwned(v.Volume.Labels, p) || v.Volume.Labels[labelResource] != vol.ID.String() || v.Volume.Driver != "local" || len(v.Volume.Options) > 0 {

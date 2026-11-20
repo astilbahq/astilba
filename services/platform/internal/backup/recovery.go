@@ -28,6 +28,9 @@ type RecoveryResult struct {
 	Snapshot string    `json:"snapshot"`
 	TargetID uuid.UUID `json:"targetId"`
 	Manifest Manifest  `json:"manifest"`
+	// RestoreImage is the PostgreSQL release that restored a logical snapshot. An agent from
+	// before the release rule restored in the archive's own image and leaves it out.
+	RestoreImage string `json:"restoreImage,omitempty"`
 }
 
 // MaxManifestBytes bounds the manifest a recovery reads out of a snapshot before trusting it.

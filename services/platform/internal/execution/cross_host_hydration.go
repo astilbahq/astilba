@@ -29,6 +29,14 @@ func (s *Service) hydrateCrossHost(ctx context.Context, keys valueKeys, c *api.E
 	if !enabled {
 		return domain.Forbidden
 	}
+	if err := requireAgentSupport(ctx, s.Store.Pool, ws, c.ServerId, p.Unit.Plan.Specification); err != nil {
+		return err
+	}
+	if p.Maintenance != nil && p.Maintenance.Target != nil {
+		if err := requireAgentSupport(ctx, s.Store.Pool, ws, c.ServerId, p.Maintenance.Target.Specification); err != nil {
+			return err
+		}
+	}
 	if keys == nil {
 		return nil
 	}

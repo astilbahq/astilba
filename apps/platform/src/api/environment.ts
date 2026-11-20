@@ -46,6 +46,15 @@ export const previewsOptions = (path: EnvironmentPath) =>
     refetchInterval: 5000,
   });
 
+// The environment's secrets. The visual and Compose editors share this list, and the catalog
+// refreshes it after staging an entry that generates one.
+export const secretsOptions = (path: EnvironmentPath) =>
+  queryOptions({
+    queryKey: ["secrets", path],
+    queryFn: ({ signal }) =>
+      result(client.GET(`${root}/secrets`, { params: { path }, signal })),
+  });
+
 export const layoutOptions = (path: EnvironmentPath) =>
   queryOptions({
     queryKey: ["layout", path],

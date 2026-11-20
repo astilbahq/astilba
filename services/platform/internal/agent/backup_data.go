@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -229,20 +230,16 @@ func (e *Engine) dataContainer(ctx context.Context, p backup.Policy, volume, run
 	return created.ID, cleanup, nil
 }
 func (e *Engine) postgresManifest(ctx context.Context, db pgClient, a domain.Application, image string, m *backup.Manifest) error {
-	dataDirectory, _, err := postgresDataDirectory(image)
-	if err != nil {
-		return err
-	}
-	versionNumber := "180004"
-	if image == domain.Postgres17Image {
-		versionNumber = "170010"
+	release, ok := domain.PostgresReleaseOf(image)
+	if !ok {
+		return errUnsupportedPostgresImage
 	}
 	version, err := e.pgQuery(ctx, db, a, "SHOW server_version_num")
-	if err != nil || strings.TrimSpace(string(version)) != versionNumber {
+	if err != nil || strings.TrimSpace(string(version)) != strconv.Itoa(release.Version) {
 		return errors.New("unsupported PostgreSQL version")
 	}
 	layout, err := e.pgQuery(ctx, db, a, "SHOW data_directory")
-	if err != nil || strings.TrimSpace(string(layout)) != dataDirectory {
+	if err != nil || strings.TrimSpace(string(layout)) != release.DataDirectory {
 		return errors.New("unsupported PostgreSQL layout")
 	}
 	// Restore is intentionally limited to unprivileged NOLOGIN roles. SQL from a

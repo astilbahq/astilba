@@ -10,7 +10,11 @@ import {
   environments,
   projectHandlers,
 } from "../../workshop/app-preview";
-import { draftPath, revision } from "../../workshop/environment-fixtures";
+import {
+  draftPath,
+  postgresReleases,
+  revision,
+} from "../../workshop/environment-fixtures";
 import { scenario } from "../../workshop/fixtures";
 import { configure } from "./environment-detail.scenarios";
 
@@ -179,5 +183,75 @@ export const EmptyReadOnlyCanvas: Story = {
   play: async ({ canvasElement, loaded }) => {
     const canvas = await configure(canvasElement, loaded.workshop.instance);
     await userEvent.click(canvas.getByRole("button", { name: "Canvas" }));
+  },
+};
+
+// A database still on a retired release offers the in-place update to its major's current one.
+const retired = postgresReleases.find((r) => r.major === 18 && !r.current)!;
+const current = postgresReleases.find((r) => r.major === 18 && r.current)!;
+const databaseVolume = {
+  id: "00000000-0000-4000-8000-000000000401",
+  name: "database-data",
+};
+export const CanvasRetiredPostgres: Story = {
+  parameters: scenario(
+    session,
+    http.get(draftPath, () =>
+      HttpResponse.json({
+        ...revision,
+        specification: {
+          ...revision.specification,
+          applications: [
+            {
+              id: "00000000-0000-4000-8000-000000000302",
+              name: "database",
+              kind: "postgres",
+              source: { kind: "image", image: retired.image },
+              postgres: {
+                database: "app",
+                username: "app",
+                passwordSecretVersionId: "00000000-0000-4000-8000-000000000600",
+              },
+              mounts: [
+                {
+                  volumeId: databaseVolume.id,
+                  target: retired.mount,
+                  readOnly: false,
+                },
+              ],
+            },
+          ],
+          volumes: [databaseVolume],
+        },
+      } satisfies Schema["Revision"]),
+    ),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement, loaded }) => {
+    const canvas = await configure(canvasElement, loaded.workshop.instance);
+    await userEvent.click(canvas.getByRole("button", { name: "Service list" }));
+    await userEvent.click(canvas.getByRole("button", { name: "database" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Canvas" }));
+    const properties = within(
+      canvas.getByRole("region", { name: "Properties for database" }),
+    );
+    await expect(
+      await properties.findByText(`PostgreSQL ${retired.name} is retired.`, {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await userEvent.click(
+      properties.getByRole("button", {
+        name: `Stage update to PostgreSQL ${current.name}`,
+      }),
+    );
+    await expect(
+      await properties.findByText(`PostgreSQL ${current.name}`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      properties.queryByRole("button", { name: /Stage update/ }),
+    ).toBeNull();
   },
 };

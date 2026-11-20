@@ -119,3 +119,28 @@ func composeApplicationProject(p deployment.Plan, app uuid.UUID) string {
 	}
 	return deployment.UnitName(p.UnitID)
 }
+
+func serviceOrder(spec domain.Specification) []domain.Application {
+	apps := map[uuid.UUID]domain.Application{}
+	for _, a := range spec.Applications {
+		apps[a.ID] = a
+	}
+	out := []domain.Application{}
+	done := map[uuid.UUID]bool{}
+	var visit func(uuid.UUID)
+	visit = func(id uuid.UUID) {
+		if done[id] {
+			return
+		}
+		done[id] = true
+		a := apps[id]
+		for _, dep := range domain.Dependencies(spec, a) {
+			visit(dep)
+		}
+		out = append(out, a)
+	}
+	for _, a := range spec.Applications {
+		visit(a.ID)
+	}
+	return out
+}

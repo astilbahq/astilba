@@ -49,16 +49,15 @@ func clusterReason(err error) string {
 // authentication from, which SQL run as a superuser can change.
 var clusterSettingsFiles = []string{"postgresql.conf", "postgresql.auto.conf", "pg_hba.conf", "pg_ident.conf"}
 
-// postgresDataDirectory is where a pinned image keeps its cluster, and the volume path to it from
-// where the image mounts its volume.
+// postgresDataDirectory is where a pinned release's image keeps its cluster, and the volume path to
+// it from where the image mounts its volume.
 func postgresDataDirectory(image string) (absolute, relative string, err error) {
-	switch image {
-	case domain.PostgresImage:
-		return "/var/lib/postgresql/18/docker", "18/docker", nil
-	case domain.Postgres17Image:
-		return "/var/lib/postgresql/data", "", nil
+	release, ok := domain.PostgresReleaseOf(image)
+	if !ok {
+		return "", "", errUnsupportedPostgresImage
 	}
-	return "", "", errUnsupportedPostgresImage
+	relative = strings.TrimPrefix(strings.TrimPrefix(release.DataDirectory, release.Mount), "/")
+	return release.DataDirectory, relative, nil
 }
 
 // clusterBaseline is what a cluster the pinned image has just created holds, with the manifest's
@@ -77,9 +76,9 @@ type clusterBaseline struct {
 // clusterRoles are the catalogs that hold a cluster's roles, with their passwords, and memberships.
 var clusterRoles = []string{"pg_authid", "pg_auth_members"}
 
-// baseline reads a cluster the pinned image has just created, running in container id.
-func (e *Engine) baseline(ctx context.Context, id string, m backup.Manifest) (clusterBaseline, error) {
-	dir, _, err := postgresDataDirectory(m.Image)
+// baseline reads a cluster the restoring image has just created, running in container id.
+func (e *Engine) baseline(ctx context.Context, id, image string, m backup.Manifest) (clusterBaseline, error) {
+	dir, _, err := postgresDataDirectory(image)
 	if err != nil {
 		return clusterBaseline{}, err
 	}

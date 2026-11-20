@@ -113,7 +113,7 @@ func (s *Service) StartBackupRecovery(ctx context.Context, p store.Principal, ws
 		if err = requireRecoveredResource(source, plan.Specification); err != nil {
 			return err
 		}
-		if err = requireServiceOutputs(ctx, tx, ws, server, plan.Specification); err != nil {
+		if err = requireAgentSupport(ctx, tx, ws, server, plan.Specification); err != nil {
 			return err
 		}
 		if err = requireReplicas(ctx, tx, ws, server, plan); err != nil {
@@ -293,11 +293,11 @@ func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal,
 		}
 		view := source
 		view.ServerID, view.Plan = row.ServerID, plan
-		old, err := backup.RestoredVolume(view, row.TargetVolumeID, result.Manifest)
+		old, err := backup.RestoredVolume(view, row.TargetVolumeID, result.Manifest, result.RestoredImage())
 		if err != nil {
-			return domain.Invalid("restore.compatibility")
+			return restoreIncompatible(err)
 		}
-		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, view, recovery, row.TargetVolumeID, old, result.Manifest, nil)
+		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, view, recovery, row.TargetVolumeID, old, result.RestoredImage(), nil)
 		return err
 	})
 	return out, err
@@ -513,7 +513,8 @@ func openRecoveryAccess(ctx context.Context, q *db.Queries, keys valueKeys, ws u
 }
 
 // recoveryReport takes a restore command's report. Only a succeeded restore carries its result,
-// which must be the snapshot and target it was issued for and a manifest the policy admits.
+// which must be the snapshot and target it was issued for, a manifest the policy admits and, if it
+// names one, a release Astilba pinned.
 func recoveryReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand, r *api.AgentReport) error {
 	if c.Kind != api.ExecutionCommandKindRestore {
 		if r.Restore != nil {
@@ -529,7 +530,7 @@ func recoveryReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.Executio
 	}
 	var v backup.Recovery
 	var result backup.RecoveryResult
-	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil {
+	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil || unknownRestoreImage(result.RestoreImage) {
 		return domain.Invalid("restore")
 	}
 	raw, err := stablejson.Marshal(result)

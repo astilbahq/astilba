@@ -44,16 +44,22 @@ func (e *Engine) databasePassword(ctx context.Context, p backup.Policy) (string,
 	if err != nil {
 		return "", err
 	}
-	password := ""
-	for _, value := range source.Config.Env {
-		if v, ok := strings.CutPrefix(value, "POSTGRES_PASSWORD="); ok {
-			password = v
-		}
-	}
+	password := postgresPassword(source.Config.Env)
 	if password == "" {
 		return "", errors.New("database initialization credential unavailable")
 	}
 	return password, nil
+}
+
+// postgresPassword is the credential a database container was created with, from its environment.
+func postgresPassword(env []string) string {
+	password := ""
+	for _, value := range env {
+		if v, ok := strings.CutPrefix(value, "POSTGRES_PASSWORD="); ok {
+			password = v
+		}
+	}
+	return password
 }
 func sourceApp(p backup.Policy) (domain.Application, error) {
 	for _, a := range p.Plan.Specification.Applications {

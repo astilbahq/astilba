@@ -66,13 +66,13 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		}
 		source, err := backup.CutoverVolume(policy, run)
 		if err != nil {
-			return domain.Invalid("restore.compatibility")
+			return restoreIncompatible(err)
 		}
 		var boundary *deployment.RestoreCutover
 		if policy.Plan.Local != nil {
 			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID}
 		}
-		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, policy, run.ID, run.TargetID, source, *run.Manifest, boundary)
+		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, policy, run.ID, run.TargetID, source, run.RestoredImage(), boundary)
 		return err
 	})
 	return out, err
@@ -80,23 +80,21 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 
 // writeRestoreDraft writes a draft from v's that switches target, holding a verified restore of
 // policy's resource from run, in for source, the volume it replaces, and records boundary with it
-// for a distributed deployment. The target becomes the environment's own volume for the unit the
-// policy's plan names; a deleted or another environment's target is refused.
-func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, env uuid.UUID, v visualEnvironment, policy backup.Policy, run, target, source uuid.UUID, m backup.Manifest, boundary *deployment.RestoreCutover) (db.SpecificationRevision, error) {
-	// The restored target is initialised by the archive's own PostgreSQL image, so the source the
-	// policy froze and the draft that will run on the target must both run that image.
+// for a distributed deployment. A logical restore's data was written by the restored image. The
+// target becomes the environment's own volume for the unit the policy's plan names; a deleted or
+// another environment's target is refused.
+func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, env uuid.UUID, v visualEnvironment, policy backup.Policy, run, target, source uuid.UUID, restored string, boundary *deployment.RestoreCutover) (db.SpecificationRevision, error) {
+	// The release that restored the target wrote its data, so the draft that will run on the
+	// target, as the source the policy froze, must open what that release wrote.
 	var major pgtype.Text
 	if policy.Method == "postgres-logical" {
-		opens := false
-		for _, a := range v.Spec.Applications {
-			if a.ID == policy.ResourceID {
-				opens = backup.OpensRestoredPostgres(a, m) && a.Mounts[0].VolumeID == source
-			}
+		if err := restoredDatabaseOpens(v.Spec, policy, restored); err != nil {
+			return db.SpecificationRevision{}, err
 		}
-		if !opens {
+		if !mountsVolume(v.Spec, policy.ResourceID, source) {
 			return db.SpecificationRevision{}, domain.Invalid("restore.compatibility")
 		}
-		major.String = domain.PostgresMajor(m.Image)
+		major.String = domain.PostgresMajor(restored)
 		major.Valid = major.String != ""
 	}
 	q := db.New(tx)

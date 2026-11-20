@@ -21,6 +21,7 @@ import { client, result, type Schema } from "../api/client";
 import {
   layoutOptions,
   publishLayout,
+  secretsOptions,
   type EnvironmentPath,
 } from "../api/environment";
 import { Button } from "../components/button";
@@ -29,6 +30,7 @@ import * as s from "../styles";
 import { ThemeContext } from "../theme";
 import { ErrorNotice, Form, text, useAction } from "../ui";
 import { GeneratedDomain } from "./generated-domain";
+import { usePostgresReleases } from "./postgres-releases";
 import { ServiceCatalog } from "./service-catalog";
 import { ServiceConnections } from "./service-outputs";
 import * as v from "./visual-editor.styles";
@@ -123,16 +125,8 @@ export function VisualEditor({
   const action = useAction();
   const queries = useQueryClient();
   const layout = useQuery(layoutOptions(path));
-  const secrets = useQuery({
-    queryKey: ["secrets", path],
-    queryFn: () =>
-      result(
-        client.GET(
-          "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/secrets",
-          { params: { path } },
-        ),
-      ),
-  });
+  const postgresReleases = usePostgresReleases(path.workspaceId);
+  const secrets = useQuery(secretsOptions(path));
   useEffect(() => {
     if (layout.data && positions === undefined) {
       setPositions(layout.data.positions);
@@ -503,6 +497,7 @@ export function VisualEditor({
             }
             update={update}
             stage={stage}
+            postgresReleases={postgresReleases.data ?? []}
             onRemove={() => {
               stage({
                 ...spec,
@@ -549,6 +544,8 @@ export function VisualEditor({
         <AddServiceForm
           spec={spec}
           secrets={secrets.data ?? []}
+          postgresReleases={postgresReleases.data}
+          postgresReleasesError={postgresReleases.error}
           action={action}
           stage={stage}
           onSelect={choose}

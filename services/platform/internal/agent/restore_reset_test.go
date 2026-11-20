@@ -11,7 +11,8 @@ import (
 // A stopped cluster the pinned images created holds only what PostgreSQL keeps in it; anything
 // else in its volume is refused, wherever it is.
 func TestRestoredClusterHoldsOnlyAClustersFiles(t *testing.T) {
-	for _, image := range []string{domain.PostgresImage, domain.Postgres17Image} {
+	for _, release := range domain.PostgresReleases() {
+		image := release.Image
 		_, data, err := postgresDataDirectory(image)
 		if err != nil {
 			t.Fatal(err)

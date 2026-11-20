@@ -69,6 +69,19 @@ func Effects(spec, previous domain.Specification, hostChanges bool) []string {
 			}
 		}
 	}
+	updates := PostgresUpdates(previous, spec)
+	for _, a := range spec.Applications {
+		from, ok := updates[a.ID]
+		if !ok {
+			continue
+		}
+		to, _ := domain.PostgresReleaseOf(*a.Source.Image)
+		line := "Update " + a.Name + " from PostgreSQL " + from.Name() + " to " + to.Name() + " in place: the database restarts on its existing data."
+		if len(to.ReindexSince(from)) > 0 {
+			line += " Then rebuild the indexes the " + to.Name() + " release notes name, concurrently, while it serves."
+		}
+		out = append(out, line)
+	}
 	if len(spec.Volumes) > 0 {
 		out = append(out, "Named data volumes survive service replacement and deletion. Export does not copy their data.")
 	}
