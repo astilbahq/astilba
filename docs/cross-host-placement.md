@@ -191,11 +191,6 @@ and its servers. To proceed, revoke those servers in the restored management and
 exports out. Recovery then continues without them, and afterwards you enrol them again and
 redeploy what they ran.
 
-Checkpoints with a recovery window are a format a release before this one can't read, so once
-hosts hold them, run cross-host recovery with a current release. Checkpoints sealed before it
-still recover, alone or mixed with newer ones; they carry every applied change, so their history
-counts as whole.
-
 Stop the old and destination management processes and all participating agents.
 Preserve their journals, host keys and current workload containers. Restore the
 management database and its original keyring, and ensure the importing account

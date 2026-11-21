@@ -68,13 +68,10 @@ func Checkpoint(d deployment.RecoveryDescriptor) Item {
 // CheckpointIdentity is what a recovery checkpoint's envelope is bound to: a hash of its whole
 // descriptor, except the envelope's own digest and size, which only sealing it decides. A host
 // holds the descriptor beside the envelope, so any field it rewrites, such as the checkpoint the
-// envelope follows, its sequence, root or participants, leaves the envelope unopenable. A field
-// added to the descriptor is bound with the rest. A descriptor of another version has no identity,
-// so nothing is sealed or opened under it.
+// envelope follows, its sequence, root or participants, leaves the envelope unopenable. Hosts keep
+// envelopes across releases, so a field added to the descriptor must omit its zero value, or no
+// envelope sealed before it opens.
 func CheckpointIdentity(d deployment.RecoveryDescriptor) string {
-	if d.Version != deployment.RecoveryVersion {
-		return ""
-	}
 	d.Digest, d.Bytes = "", 0
 	return fmt.Sprintf("cross-host-recovery:v2:%s:%s:%s", d.WorkspaceID, d.CheckpointID, deployment.Hash(d))
 }

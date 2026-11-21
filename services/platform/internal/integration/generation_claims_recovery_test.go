@@ -1,8 +1,6 @@
 package integration
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -237,15 +235,11 @@ func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape,
 	if err != nil {
 		t.Fatal(err)
 	}
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	if _, err = writer.Write(captured); err != nil {
+	compressed, err := portability.CompressRecovery(captured)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := keysOf(f.st).Seal(compressed.Bytes(), secretbroker.CheckpointIdentity(descriptor))
+	envelope, err := keysOf(f.st).Seal(compressed, secretbroker.CheckpointIdentity(descriptor))
 	if err != nil {
 		t.Fatal(err)
 	}

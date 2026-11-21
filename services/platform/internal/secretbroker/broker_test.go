@@ -286,7 +286,7 @@ func TestSessionOpensOnlyWhatItWasGiven(t *testing.T) {
 		t.Fatal("a value opened in another workspace")
 	}
 	// A checkpoint names its own workspace.
-	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: other, CheckpointID: uuid.New()}
+	d := deployment.RecoveryDescriptor{WorkspaceID: other, CheckpointID: uuid.New()}
 	cp, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Kinds: []Kind{RecoveryCheckpoint}})
 	if err != nil {
 		t.Fatal(err)

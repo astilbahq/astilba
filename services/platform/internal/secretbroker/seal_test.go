@@ -163,7 +163,7 @@ func TestSealSessionsOpenOnlyWhatTheySealed(t *testing.T) {
 	b, _, owner, _, _ := setup(t)
 	ctx := context.Background()
 	ws := uuid.New()
-	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, CheckpointID: uuid.New()}
+	d := deployment.RecoveryDescriptor{WorkspaceID: ws, CheckpointID: uuid.New()}
 	begin := func() *Session {
 		s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Kinds: []Kind{RecoveryCheckpoint}})
 		if err != nil {
@@ -213,6 +213,7 @@ func TestCheckpointsOpenOnlyUnderTheDescriptorTheyWereSealedWith(t *testing.T) {
 		"group":         func(d *deployment.RecoveryDescriptor) { d.GroupID = uuid.New() },
 		"group hash":    func(d *deployment.RecoveryDescriptor) { d.GroupHash = strings.Repeat("e", 64) },
 		"base":          func(d *deployment.RecoveryDescriptor) { d.BaseID = uuid.New() },
+		"version":       func(d *deployment.RecoveryDescriptor) { d.Version = 1 },
 		"participants":  func(d *deployment.RecoveryDescriptor) { d.Participants = d.Participants[:1] },
 		"participant order": func(d *deployment.RecoveryDescriptor) {
 			d.Participants = []uuid.UUID{d.Participants[1], d.Participants[0]}
@@ -229,30 +230,13 @@ func TestCheckpointsOpenOnlyUnderTheDescriptorTheyWereSealedWith(t *testing.T) {
 	}
 }
 
-// Version 1 descriptors bound neither the checkpoint they follow nor most of their root, so no
-// checkpoint is sealed or opened under one.
-func TestVersionOneCheckpointsAreRefused(t *testing.T) {
-	b, _, owner, _, _ := setup(t)
-	ctx := context.Background()
-	ws := uuid.New()
-	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, CheckpointID: uuid.New()}
-	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Kinds: []Kind{RecoveryCheckpoint}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealed, err := s.Seal(ctx, fence{}, Checkpoint(d), []byte("checkpoint"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.Version = 1
-	if CheckpointIdentity(d) != "" {
-		t.Fatal("a version 1 descriptor has an identity")
-	}
-	if _, err = s.Seal(ctx, fence{}, Checkpoint(d), []byte("checkpoint")); !errors.Is(err, ErrNotAllowed) {
-		t.Fatalf("seal under a version 1 descriptor: %v", err)
-	}
-	if _, err = s.Open(Checkpoint(d), sealed); !errors.Is(err, ErrNotAllowed) {
-		t.Fatalf("open under a version 1 descriptor: %v", err)
+// Hosts keep envelopes across releases, so the identity of a given descriptor never changes. A
+// field added to the descriptor must omit its zero value, or no envelope sealed before it opens.
+func TestCheckpointIdentityKeepsItsReleasedValue(t *testing.T) {
+	id := uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: id, ParentID: id, RootHash: strings.Repeat("a", 64), GroupID: id, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: uuid.MustParse("22222222-2222-4222-8222-222222222222"), Sequence: 2, PreviousHash: strings.Repeat("c", 64), Digest: strings.Repeat("d", 64), Bytes: 9, Participants: []uuid.UUID{id}}
+	if got, want := CheckpointIdentity(d), "cross-host-recovery:v2:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222:a4df4b67f14f25fd20860bc8d32b0dffe875bc18be04f763047259ddead4143d"; got != want {
+		t.Fatalf("checkpoint identity = %s, want %s", got, want)
 	}
 }
 

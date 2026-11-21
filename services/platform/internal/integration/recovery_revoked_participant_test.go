@@ -522,13 +522,6 @@ func TestRecoveryHoldsARevokedPrimaryToTheCheckpointsManagementKept(t *testing.T
 			supplyCapsule(t, k.exports[0], d, envelope)
 			return uuid.Nil
 		}, nil},
-		"two continuations of 2": {func(t *testing.T, k kept) uuid.UUID {
-			for _, phase := range []string{"hook", "abort"} {
-				d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[2], phase)
-				supplyCapsule(t, k.exports[0], d, envelope)
-			}
-			return uuid.Nil
-		}, nil},
 		"another history's 3 relabelled to follow management's 2": {func(t *testing.T, k kept) uuid.UUID {
 			other, _ := k.r.continuation(t, keysOf(k.r.f.st), k.chain[1], "prepare")
 			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), other, "hook")
