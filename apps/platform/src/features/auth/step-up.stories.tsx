@@ -264,7 +264,9 @@ export const Lockout: Story = {
     const confirmation = await dialog(canvasElement);
     await expect(
       await within(confirmation).findByRole("alert"),
-    ).toHaveTextContent(/Too many attempts.*sign out and sign in again/);
+    ).toHaveTextContent(
+      /Too many attempts.*sign out and sign in again.*use a recovery code/,
+    );
     await expect(saves).toBe(1);
   },
 };

@@ -121,8 +121,8 @@ func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, keys *secretbroker.S
 }
 
 // VerifyCode completes a sign-in that has proved the password. Signing in again restarts the
-// sign-in budgets, so besides five attempts in five minutes, each failure spends the account's
-// daily credential failure budget, which confirming identity shares.
+// sign-in budgets, so besides five attempts in five minutes, each failure spends the code's
+// daily allowance, which confirming identity shares.
 func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (_ db.Account, err error) {
 	var account db.Account
 	attempt := codeGuess(id, code, budget{"mfa:" + id.String(), 5, 5 * time.Minute})
@@ -263,6 +263,10 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 			return err
 		}
 		if _, err = q.ActivateTOTP(ctx, db.ActivateTOTPParams{ID: id, TotpLastStep: step, TotpSecret: active}); err != nil {
+			return err
+		}
+		// Failed guesses at an earlier authenticator say nothing about this one.
+		if err = q.ClearAuthAttempts(ctx, Hash(codeFailures(id).scope)); err != nil {
 			return err
 		}
 		codes, err = recoveryCodes(ctx, q, id)

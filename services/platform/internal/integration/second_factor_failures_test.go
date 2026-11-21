@@ -1,20 +1,21 @@
 package integration
 
 import (
-	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 )
 
-func credentialFailureCount(t *testing.T, f *fixture) (count int) {
+func codeFailureCount(t *testing.T, f *fixture) (count int) {
 	t.Helper()
-	_ = f.st.Pool.QueryRow(context.Background(), "SELECT attempts FROM auth_attempts WHERE scope_hash=$1", auth.Hash(fmt.Sprintf("credential-failures:%s", f.owner))).Scan(&count)
+	_ = f.st.Pool.QueryRow(context.Background(), "SELECT attempts FROM auth_attempts WHERE scope_hash=$1", auth.Hash(fmt.Sprintf("code-failures:%s", f.owner))).Scan(&count)
 	return count
 }
 
@@ -37,6 +38,17 @@ func signInWithCode(t *testing.T, f *fixture, code string) (int, []byte) {
 	return other.request("POST", "/api/v1/auth/mfa", map[string]string{"code": code})
 }
 
+// refusal is an error response without its request ID, which differs on every response.
+func refusal(t *testing.T, body []byte) api.Error {
+	t.Helper()
+	var e api.Error
+	if err := json.Unmarshal(body, &e); err != nil {
+		t.Fatal(err)
+	}
+	e.RequestId = ""
+	return e
+}
+
 // Second factors at sign-in and when confirming identity spend one daily allowance of failures,
 // which signing in again with the password does not restart. A success gets its charge back,
 // a spent allowance refuses a right code exactly as a wrong one, and a recovery code still
@@ -56,19 +68,19 @@ func TestSecondFactorFailuresShareADailyAllowance(t *testing.T) {
 		}
 		b.reauthenticate(map[string]string{"code": "000000"}, 400)
 	}
-	if got := credentialFailureCount(t, f); got != 19 {
+	if got := codeFailureCount(t, f); got != 19 {
 		t.Fatalf("%d failures counted, want 19", got)
 	}
 	if status, body := signInWithCode(t, f, codeAt(t, secret, now)); status != 200 {
 		t.Fatalf("a right code at sign-in: status %d: %s", status, body)
 	}
-	if got := credentialFailureCount(t, f); got != 19 {
+	if got := codeFailureCount(t, f); got != 19 {
 		t.Fatalf("a success left %d failures counted, want 19", got)
 	}
 	if status, body := signInWithCode(t, f, "000000"); status != 400 {
 		t.Fatalf("the twentieth failure: status %d: %s", status, body)
 	}
-	if got := credentialFailureCount(t, f); got != 20 {
+	if got := codeFailureCount(t, f); got != 20 {
 		t.Fatalf("%d failures counted, want 20", got)
 	}
 	status, wrong := signInWithCode(t, f, "000001")
@@ -76,14 +88,17 @@ func TestSecondFactorFailuresShareADailyAllowance(t *testing.T) {
 		t.Fatalf("the twenty-first failure: status %d: %s", status, wrong)
 	}
 	status, right := signInWithCode(t, f, codeAt(t, secret, now.Add(30*time.Second)))
-	if status != 429 || !bytes.Equal(wrong, right) {
+	if status != 429 || refusal(t, wrong) != refusal(t, right) {
 		t.Fatalf("a spent allowance answered a right code differently: status %d: %s, after %s", status, right, wrong)
 	}
 	forgetBudget(t, f, "reauth:")
 	b.reauthenticate(map[string]string{"code": codeAt(t, secret, now.Add(30*time.Second))}, 429)
-	if got := credentialFailureCount(t, f); got != 20 {
+	if got := codeFailureCount(t, f); got != 20 {
 		t.Fatalf("refusals were counted: %d failures, want 20", got)
 	}
+	// Recovery codes still work, both when confirming identity and at sign-in.
+	forgetBudget(t, f, "reauth:")
+	b.reauthenticate(map[string]string{"code": codes.Codes[1]}, 200)
 	if status, body := signInWithCode(t, f, codes.Codes[0]); status != 200 {
 		t.Fatalf("a recovery code with the allowance spent: status %d: %s", status, body)
 	}
@@ -99,7 +114,7 @@ func TestSignInConcurrentGuessesStayWithinTheDailyAllowance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO auth_attempts(scope_hash,attempts,expires_at) VALUES($1,19,now()+interval '1 day')", auth.Hash(fmt.Sprintf("credential-failures:%s", f.owner))); err != nil {
+	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO auth_attempts(scope_hash,attempts,expires_at) VALUES($1,19,now()+interval '1 day')", auth.Hash(fmt.Sprintf("code-failures:%s", f.owner))); err != nil {
 		t.Fatal(err)
 	}
 	results := make(chan error, 5)
@@ -136,7 +151,31 @@ func TestEndedPendingSignInSpendsNoFailure(t *testing.T) {
 	if _, err := f.auth.VerifyCode(ctx, f.owner, account.AuthVersion-1, codeAt(t, secret, f.auth.Now())); !errors.Is(err, domain.Credentials) {
 		t.Fatal("an ended pending sign-in was accepted", err)
 	}
-	if got := credentialFailureCount(t, f); got != 0 {
+	if got := codeFailureCount(t, f); got != 0 {
 		t.Fatalf("an ended pending sign-in spent %d failures", got)
+	}
+}
+
+// Activating an authenticator restarts the code's allowance, and failed codes never refuse the
+// password, so an owner whose codes were spent can turn two-factor authentication off with a
+// recovery code, enrol again and sign in with the new authenticator at once.
+func TestEnrollingAgainRestartsTheCodeAllowance(t *testing.T) {
+	f := setup(t)
+	b, _, _, codes := staleOwner(t, f, true)
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO auth_attempts(scope_hash,attempts,expires_at) VALUES($1,20,now()+interval '1 day')", auth.Hash(fmt.Sprintf("code-failures:%s", f.owner))); err != nil {
+		t.Fatal(err)
+	}
+	var session api.Session
+	b.call("POST", "/api/v1/auth/mfa/disable", map[string]any{"current": map[string]string{"code": codes.Codes[0]}}, 200, &session)
+	b.csrf = session.CsrfToken
+	secret := enrollSecret(t, b)
+	var enrolled api.RecoveryCodes
+	b.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": codeAt(t, secret, f.auth.Now()), "current": map[string]string{"password": f.password}}, 200, &enrolled)
+	if got := codeFailureCount(t, f); got != 0 {
+		t.Fatalf("enrolling left %d code failures counted", got)
+	}
+	if status, body := signInWithCode(t, f, codeAt(t, secret, f.auth.Now().Add(30*time.Second))); status != 200 {
+		t.Fatalf("the new authenticator at sign-in: status %d: %s", status, body)
 	}
 }
