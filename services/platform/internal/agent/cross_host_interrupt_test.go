@@ -101,7 +101,7 @@ func crossHostFixture(t *testing.T, phase string) (*Journal, deployment.CrossHos
 	parent, first := uuid.New(), uuid.New()
 	hash := strings.Repeat("b", 64)
 	envelope := []byte("opaque-frozen-deployment-root")
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: hash, GroupID: p.Local.GroupID, GroupHash: hash, BaseID: first, CheckpointID: first, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: hash, GroupID: p.Local.GroupID, GroupHash: hash, BaseID: first, CheckpointID: first, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
 	descriptor, _ := stablejson.Marshal(d)
 	metadata := jsontext.Value(descriptor)
 	body := deployment.CrossHostCommand{ParentID: parent, GroupHash: hash, Phase: phase, Unit: deployment.DistributedUnit{Plan: p, Previous: previous}}

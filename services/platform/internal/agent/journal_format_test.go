@@ -97,7 +97,7 @@ func TestLocalStateMigrationPreservesKeysCiphertextAndRecoveryEvidence(t *testin
 			t.Fatal(err)
 		}
 		parent, id, env, unit, group := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
-		capsule = deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: group, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(capsuleBody), Bytes: len(capsuleBody), Participants: []uuid.UUID{expected.ServerID}}
+		capsule = deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: group, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(capsuleBody), Bytes: len(capsuleBody), Participants: []uuid.UUID{expected.ServerID}}
 		body := deployment.CrossHostCommand{ParentID: parent, GroupHash: capsule.GroupHash, Phase: "checkpoint", Unit: deployment.DistributedUnit{Plan: deployment.Plan{ServerID: expected.ServerID, EnvironmentID: env, UnitID: unit, Local: &deployment.LocalPlacement{Primary: true, GroupID: group}}.WithHash()}}
 		rawBody, _ := stablejson.Marshal(body)
 		message := jsontext.Value(rawBody)

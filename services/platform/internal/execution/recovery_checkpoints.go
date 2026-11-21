@@ -67,7 +67,7 @@ func (s *Service) createRecoveryBase(ctx context.Context, tx pgx.Tx, keys *passK
 		return deployment.RecoveryDescriptor{}, err
 	}
 	id := uuid.New()
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: p.ID, GroupHash: p.Hash, BaseID: id, CheckpointID: id, Participants: []uuid.UUID{}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: p.ID, GroupHash: p.Hash, BaseID: id, CheckpointID: id, Participants: []uuid.UUID{}}
 	for _, unit := range units {
 		d.Participants = append(d.Participants, unit.Plan.ServerID)
 	}

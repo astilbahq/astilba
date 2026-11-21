@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
-	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,11 +12,13 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 )
 
@@ -266,7 +267,7 @@ func (r *claimRecovery) continuation(t *testing.T, key *cryptobox.Keyring, previ
 	d := previous
 	d.Sequence++
 	d.CheckpointID, d.PreviousHash = uuid.New(), previous.Digest
-	envelope, err := key.Seal(raw, fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", d.WorkspaceID, d.ParentID, d.CheckpointID, d.Sequence, d.RootHash))
+	envelope, err := key.Seal(raw, secretbroker.CheckpointIdentity(d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,5 +409,168 @@ func TestRecoveryFitsAParticipantsProofOfProgressBeyondTheBackup(t *testing.T) {
 	r.recoverAll(t, exports)
 	if count := claimCounter(t, r.f, `SELECT count(*) FROM execution_operations WHERE id=$1 AND report_sequence=1`, child); count != 1 {
 		t.Fatal("the participant's proof that it took up its reserve didn't fit the recovered root")
+	}
+}
+
+// keepCheckpoints has management seal and keep the root's next checkpoints, one for each phase in
+// turn, as it does when it starts each phase, so the chain it kept ends after them rather than at
+// the base. It leaves their children to recovery, which restores them from the chain, so a test can
+// tell which checkpoints recovery took. It returns the chain, base first, and each checkpoint's
+// envelope.
+func (r *claimRecovery) keepCheckpoints(t *testing.T, phases ...string) ([]deployment.RecoveryDescriptor, [][]byte) {
+	t.Helper()
+	chain, envelopes := []deployment.RecoveryDescriptor{r.descriptor}, [][]byte{r.envelope}
+	q := db.New(r.f.st.Pool)
+	for _, phase := range phases {
+		d, envelope := r.continuation(t, keysOf(r.f.st), chain[len(chain)-1], phase)
+		if err := q.InsertRecoveryCheckpoint(r.ctx, db.InsertRecoveryCheckpointParams{ID: d.CheckpointID, WorkspaceID: r.ws, ParentID: r.root.Id, Sequence: d.Sequence, Descriptor: claimBytes(t, d), Envelope: envelope, Phase: phase}); err != nil {
+			t.Fatal(err)
+		}
+		chain, envelopes = append(chain, d), append(envelopes, envelope)
+	}
+	last := chain[len(chain)-1]
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE execution_operations SET command=jsonb_set(command,'{recoveryCheckpoint}',$2::jsonb,true) WHERE id=$1`, []any{r.root.Id, claimBytes(t, last)}},
+		{`UPDATE cross_host_operations SET phase=$2 WHERE id=$1`, []any{r.root.Id, phases[len(phases)-1]}},
+		// Each phase management started took the environment's next generations for its children.
+		{`UPDATE environments SET execution_generation=$2 WHERE id=$1`, []any{r.env, claimEnvironmentGeneration + 10*last.Sequence + int64(len(r.group.Distributed.Units)-1)}},
+	} {
+		if _, err := r.f.st.Pool.Exec(r.ctx, statement.query, statement.args...); err != nil {
+			t.Fatal(statement.query, err)
+		}
+	}
+	return chain, envelopes
+}
+
+// recoveredCheckpoint is the checkpoint the recovered root resumes from.
+func (r *claimRecovery) recoveredCheckpoint(t *testing.T) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := r.f.st.Pool.QueryRow(r.ctx, `SELECT (command->'recoveryCheckpoint'->>'checkpointId')::uuid FROM execution_operations WHERE id=$1`, r.root.Id).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// When management kept checkpoints past the base, they are the floor of a revoked primary's root, at
+// every sequence and not only the base's. The host's copies extend the root from the checkpoint
+// after management's last, as management sealed it, but can't hold the root back below management's
+// chain, replace a checkpoint in it, or fork from one. Nor can a checkpoint management sealed in
+// another history, such as before another restore, be relabelled to follow management's last: the
+// envelope is bound to the checkpoint it follows.
+func TestRecoveryHoldsARevokedPrimaryToTheCheckpointsManagementKept(t *testing.T) {
+	type kept struct {
+		r         *claimRecovery
+		chain     []deployment.RecoveryDescriptor
+		envelopes [][]byte
+		exports   []string
+	}
+	for name, test := range map[string]struct {
+		// supply puts the host's copies in its export, and returns the checkpoint the recovered
+		// root must resume from, or uuid.Nil for management's last.
+		supply func(t *testing.T, k kept) uuid.UUID
+		phases []string
+	}{
+		"management's checkpoints alone": {func(*testing.T, kept) uuid.UUID { return uuid.Nil }, nil},
+		"the host's copies of the chain and the checkpoint management sealed next": {func(t *testing.T, k kept) uuid.UUID {
+			for sequence := 1; sequence <= 2; sequence++ {
+				supplyCapsule(t, k.exports[0], k.chain[sequence], k.envelopes[sequence])
+			}
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[2], "hook")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			return d.CheckpointID
+		}, []string{"hook"}},
+		"withholding every checkpoint, the base included": {func(t *testing.T, k kept) uuid.UUID {
+			for _, name := range []string{".capsule", ".json"} {
+				if err := os.Remove(filepath.Join(k.exports[0], k.r.descriptor.CheckpointID.String()+name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return uuid.Nil
+		}, nil},
+		"withholding 1 and 2 but supplying 3": {func(t *testing.T, k kept) uuid.UUID {
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[2], "hook")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			return d.CheckpointID
+		}, []string{"hook"}},
+		"replacing 1": {func(t *testing.T, k kept) uuid.UUID {
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[0], "abort")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			return uuid.Nil
+		}, nil},
+		"replacing 2": {func(t *testing.T, k kept) uuid.UUID {
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[1], "abort")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			return uuid.Nil
+		}, nil},
+		"forking at 1 and going on past 2": {func(t *testing.T, k kept) uuid.UUID {
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[0], "abort")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			for _, phase := range []string{"prepare", "hook"} {
+				d, envelope = k.r.continuation(t, keysOf(k.r.f.st), d, phase)
+				supplyCapsule(t, k.exports[0], d, envelope)
+			}
+			return uuid.Nil
+		}, nil},
+		"forking at 2 and going on past it": {func(t *testing.T, k kept) uuid.UUID {
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[1], "abort")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			d, envelope = k.r.continuation(t, keysOf(k.r.f.st), d, "hook")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			return uuid.Nil
+		}, nil},
+		"two continuations of 2": {func(t *testing.T, k kept) uuid.UUID {
+			for _, phase := range []string{"hook", "abort"} {
+				d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[2], phase)
+				supplyCapsule(t, k.exports[0], d, envelope)
+			}
+			return uuid.Nil
+		}, nil},
+		"another history's 3 relabelled to follow management's 2": {func(t *testing.T, k kept) uuid.UUID {
+			other, _ := k.r.continuation(t, keysOf(k.r.f.st), k.chain[1], "prepare")
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), other, "hook")
+			d.PreviousHash = k.chain[2].Digest
+			supplyCapsule(t, k.exports[0], d, envelope)
+			return uuid.Nil
+		}, nil},
+		"a relabelled 3 beside the one management sealed next": {func(t *testing.T, k kept) uuid.UUID {
+			other, _ := k.r.continuation(t, keysOf(k.r.f.st), k.chain[1], "prepare")
+			relabelled, forged := k.r.continuation(t, keysOf(k.r.f.st), other, "abort")
+			relabelled.PreviousHash = k.chain[2].Digest
+			supplyCapsule(t, k.exports[0], relabelled, forged)
+			d, envelope := k.r.continuation(t, keysOf(k.r.f.st), k.chain[2], "hook")
+			supplyCapsule(t, k.exports[0], d, envelope)
+			return d.CheckpointID
+		}, []string{"hook"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newParticipantRecovery(t)
+			r.revokeThird(t, r.a)
+			chain, envelopes := r.keepCheckpoints(t, "reserve", "prepare")
+			exports := r.exports(t, claimExport{})
+			want := test.supply(t, kept{r, chain, envelopes, exports})
+			if want == uuid.Nil {
+				want = chain[2].CheckpointID
+			}
+			r.recoverAll(t, exports)
+			if got := r.recoveredCheckpoint(t); got != want {
+				t.Fatalf("the root resumes from checkpoint %s, want %s", got, want)
+			}
+			// Management's own phases are always restored, and the host's only as it sealed them.
+			restored := append([]string{"reserve", "prepare"}, test.phases...)
+			for _, phase := range []string{"reserve", "prepare", "hook", "abort"} {
+				child := uuid.NewSHA1(r.root.Id, []byte("crosshost:"+phase+":"+r.peerUnit.String()))
+				want := int64(0)
+				if slices.Contains(restored, phase) {
+					want = 1
+				}
+				if count := claimCounter(t, r.f, `SELECT count(*) FROM execution_operations WHERE id=$1`, child); count != want {
+					t.Fatalf("%s child restored %d times, want %d", phase, count, want)
+				}
+			}
+		})
 	}
 }

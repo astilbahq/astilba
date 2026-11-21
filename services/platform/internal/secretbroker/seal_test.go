@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -162,7 +163,7 @@ func TestSealSessionsOpenOnlyWhatTheySealed(t *testing.T) {
 	b, _, owner, _, _ := setup(t)
 	ctx := context.Background()
 	ws := uuid.New()
-	d := deployment.RecoveryDescriptor{WorkspaceID: ws, CheckpointID: uuid.New()}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, CheckpointID: uuid.New()}
 	begin := func() *Session {
 		s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Kinds: []Kind{RecoveryCheckpoint}})
 		if err != nil {
@@ -180,6 +181,78 @@ func TestSealSessionsOpenOnlyWhatTheySealed(t *testing.T) {
 	}
 	if _, err = second.Open(Checkpoint(d), sealed); !errors.Is(err, ErrNotAllowed) {
 		t.Fatalf("a seal session opened another's checkpoint: %v", err)
+	}
+}
+
+// A host holds a checkpoint's descriptor beside its envelope, so the envelope opens only under the
+// descriptor management sealed it with. A rewritten field, above all the checkpoint it follows, which
+// alone links it into a chain, leaves it unopenable. Only the envelope's own digest and size, which
+// sealing decides, are not bound.
+func TestCheckpointsOpenOnlyUnderTheDescriptorTheyWereSealedWith(t *testing.T) {
+	b, _, owner, _, _ := setup(t)
+	ctx := context.Background()
+	ws, id := uuid.New(), uuid.New()
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, ParentID: uuid.New(), RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: uuid.New(), CheckpointID: id, Sequence: 3, PreviousHash: strings.Repeat("c", 64), Participants: []uuid.UUID{uuid.New(), uuid.New()}}
+	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Kinds: []Kind{RecoveryCheckpoint}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := s.Seal(ctx, fence{}, Checkpoint(d), []byte("continuation"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Digest, d.Bytes = deployment.RecoveryDigest(sealed), len(sealed)
+	if plain, err := s.Open(Checkpoint(d), sealed); err != nil || string(plain) != "continuation" {
+		t.Fatalf("the descriptor it was sealed with, with its digest and size = %q, %v", plain, err)
+	}
+	for name, rewrite := range map[string]func(*deployment.RecoveryDescriptor){
+		"previous hash": func(d *deployment.RecoveryDescriptor) { d.PreviousHash = strings.Repeat("d", 64) },
+		"sequence":      func(d *deployment.RecoveryDescriptor) { d.Sequence++ },
+		"parent":        func(d *deployment.RecoveryDescriptor) { d.ParentID = uuid.New() },
+		"root hash":     func(d *deployment.RecoveryDescriptor) { d.RootHash = strings.Repeat("e", 64) },
+		"group":         func(d *deployment.RecoveryDescriptor) { d.GroupID = uuid.New() },
+		"group hash":    func(d *deployment.RecoveryDescriptor) { d.GroupHash = strings.Repeat("e", 64) },
+		"base":          func(d *deployment.RecoveryDescriptor) { d.BaseID = uuid.New() },
+		"participants":  func(d *deployment.RecoveryDescriptor) { d.Participants = d.Participants[:1] },
+		"participant order": func(d *deployment.RecoveryDescriptor) {
+			d.Participants = []uuid.UUID{d.Participants[1], d.Participants[0]}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rewritten := d
+			rewritten.Participants = slices.Clone(d.Participants)
+			rewrite(&rewritten)
+			if plain, err := s.Open(Checkpoint(rewritten), sealed); err == nil {
+				t.Fatalf("a checkpoint opened under a rewritten %s: %q", name, plain)
+			}
+		})
+	}
+}
+
+// Version 1 descriptors bound neither the checkpoint they follow nor most of their root, so no
+// checkpoint is sealed or opened under one.
+func TestVersionOneCheckpointsAreRefused(t *testing.T) {
+	b, _, owner, _, _ := setup(t)
+	ctx := context.Background()
+	ws := uuid.New()
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, CheckpointID: uuid.New()}
+	s, err := b.Begin(ctx, Request{Workspace: ws, Purpose: Seal, Principal: Account(owner), Kinds: []Kind{RecoveryCheckpoint}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := s.Seal(ctx, fence{}, Checkpoint(d), []byte("checkpoint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Version = 1
+	if CheckpointIdentity(d) != "" {
+		t.Fatal("a version 1 descriptor has an identity")
+	}
+	if _, err = s.Seal(ctx, fence{}, Checkpoint(d), []byte("checkpoint")); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("seal under a version 1 descriptor: %v", err)
+	}
+	if _, err = s.Open(Checkpoint(d), sealed); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("open under a version 1 descriptor: %v", err)
 	}
 }
 
