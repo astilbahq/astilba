@@ -95,7 +95,7 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 	b.call("POST", prefix+"/servers", map[string]any{"name": "Preview host", "role": "combined", "previewOnly": true}, 201, &enrollment)
 	credential, _ := randtoken.New()
 	yes := true
-	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, PostgresReleases: agentPostgresReleases(), Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildNetwork: &yes, RootlessBuilds: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
+	input := api.AgentEnrollment{ServerId: enrollment.Server.Id, Token: enrollment.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, PostgresReleases: agentPostgresReleases(), Version: "preview-fixture", Os: "linux", Arch: "arm64", Docker: true, Build: &yes, BuildNetwork: &yes, RootlessBuilds: &yes, BuildControls: &yes, BuildCache: &yes, Visual: &yes, Previews: &yes, ServiceOutputs: &yes, SafeReleases: &yes, CredentialFreeVisualCancel: &yes}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 8 << 30, Notes: []string{}}}
 	input.Preflight.ExistingContainers = 1
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", input, 400, nil)
 	input.Preflight.ExistingContainers = 0
@@ -326,6 +326,22 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 	report(resolve, nil, &deployment.Observation{ObservedAt: time.Now(), Resources: []deployment.Resource{}, Images: images, StateHash: strings.Repeat("d", 64)})
 	deploy := poll()
 	if !transfer {
+		// A deployment its host runs on past the deadline still stops once the preview loses it.
+		// Cleanup that can't go ahead cancels nothing itself, and the request isn't due for the
+		// worker, so only the poll's own check can stop the deployment.
+		if _, err := f.st.Pool.Exec(ctx, "UPDATE execution_operations SET state='running' WHERE id=$1", deploy.Id); err != nil {
+			t.Fatal(err)
+		}
+		expireCommand(t, ctx, f, deploy.Id)
+		if _, err := f.st.Pool.Exec(ctx, "UPDATE preview_requests SET cleanup_requested=true,next_check_at=now()+interval '1 hour' WHERE environment_id=$1", preview.EnvironmentId); err != nil {
+			t.Fatal(err)
+		}
+		if late := poll(); late.Id != deploy.Id || !late.CancelRequested || strings.Contains(string(*late.Visual), "preview-runtime-canary") {
+			t.Fatal("a running deployment past its deadline was not stopped when its preview lost it")
+		}
+		if _, err := f.st.Pool.Exec(ctx, "UPDATE preview_requests SET cleanup_requested=false,next_check_at=now() WHERE environment_id=$1", preview.EnvironmentId); err != nil {
+			t.Fatal(err)
+		}
 		open.Store(false)
 		hook(t, "close-during-deployment")
 		preview = wait(t, "closing")

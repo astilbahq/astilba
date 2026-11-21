@@ -240,8 +240,8 @@ func TestMigrationTreatsUnfinishedRunsAsPossiblyDelivered(t *testing.T) {
 }
 
 // An expired command carries no credentials, and an agent with a lagging clock that
-// started one could dereference them. The controller's verdict stops it: the note says
-// management's clock, not the agent's, passed the deadline.
+// started one could dereference them. Admission's own expiry note would mean the
+// agent's clock stopped it rather than the controller.
 func TestExpiredCommandStopsAgentWithLaggingClock(t *testing.T) {
 	f := setup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -266,7 +266,7 @@ func TestExpiredCommandStopsAgentWithLaggingClock(t *testing.T) {
 	if err := f.st.Pool.QueryRow(ctx, "SELECT state,note FROM execution_operations WHERE id=$1", build.op.Id).Scan(&state, &note); err != nil {
 		t.Fatal(err)
 	}
-	if state != "cancelled" || note != laggingNote {
+	if state != "cancelled" || note != "Build/source assignment was cancelled or expired." {
 		t.Fatalf("agent ran an expired command: %s %q", state, note)
 	}
 }

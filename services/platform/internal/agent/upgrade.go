@@ -138,8 +138,11 @@ func (e *Engine) executeUpgrade(ctx context.Context, c api.ExecutionCommand, r R
 	}
 	// Past its deadline an upgrade changes nothing, whichever clock says so: management sends one
 	// it delivers late without values.
-	if e.cancelled(c.Id) || cmd.Action == "prepare" && time.Now().After(cmd.Plan.ExpiresAt) || deadline.Passed(r.Command) {
+	if late := deadline.Passed(r.Command); e.cancelled(c.Id) || cmd.Action == "prepare" && time.Now().After(cmd.Plan.ExpiresAt) || late {
 		s.Status.Note = "Upgrade cancelled before host effects."
+		if late && !e.cancelled(c.Id) {
+			s.Status.Note += " " + lateNote(r.Command)
+		}
 		if s.Status.Phase == "planned" {
 			s.Status.Phase = "rejected"
 		}

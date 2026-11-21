@@ -53,6 +53,7 @@ type Client struct {
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
 	secretReleases          atomic.Bool
+	expiredCommands         atomic.Bool
 	containerRanges         atomic.Bool
 	// negotiated says this process has heard which extensions management reads. Until then the
 	// flags above are unset, and a heartbeat would replace what management holds with a set

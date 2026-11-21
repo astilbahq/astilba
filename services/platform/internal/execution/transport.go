@@ -93,15 +93,16 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 			if (a.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (a.Role == "deployment" && c.Kind == "pipeline") {
 				return nil, domain.Forbidden
 			}
-			// This clock decides the deadline, and the agent applies its verdict: one whose clock lags
-			// would otherwise start work late.
-			if time.Now().After(c.Deadline) {
-				expired := true
-				c.Expired = &expired
+			// This clock decides the deadline, and an agent that reads the mark applies its verdict: one
+			// whose clock lags would otherwise start work late.
+			late := time.Now().After(c.Deadline)
+			if late && a.ReadsExpiry {
+				c.Expired = &late
 			}
-			// Past its deadline, a command whose rule lapses then changes nothing on its host: its agent
-			// ends it unrun. So it goes without values, and nothing is checked for it.
-			lapsed := c.Expired != nil && deadline.Of(c).Lapses()
+			// Past its deadline, a command whose rule lapses starts nothing on its host: an agent that
+			// hasn't started it ends it unrun, and one that has already holds its values. So it goes
+			// without them.
+			lapsed := late && deadline.Of(c).Lapses()
 			if s.Store.Hosted {
 				if e := s.hostedAdmission(ctx, a.Workspace, c); e != nil {
 					if !errors.Is(e, store.SubscriptionRequired) {
@@ -110,8 +111,10 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 					cancel = true
 				}
 			}
-			if !cancel && !lapsed {
-				verify := state == "dispatched" && verified != c.Id
+			if !cancel {
+				// Work its host is running stops when it loses its authority, however late. A provider
+				// is asked only before values leave, which a lapsed command never carries.
+				verify := state == "dispatched" && verified != c.Id && !lapsed
 				allowed, e := s.commandAllowed(ctx, a, c, verify)
 				if e != nil {
 					return nil, e

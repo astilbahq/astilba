@@ -62,6 +62,7 @@ func newLateDeliveryHost(t *testing.T, secret string) *lateDeliveryHost {
 	yes := true
 	in.Capabilities.Visual = &yes
 	in.Capabilities.Backups = &yes
+	in.Capabilities.ExpiredCommands = &yes
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	h.server, h.in, h.token = enrolled.Server.Id, in, token
 	return h
@@ -233,8 +234,8 @@ func TestLateDeploymentCarriesNoSecrets(t *testing.T) {
 	}
 }
 
-// PLAT-138. A cancelled deployment comes as the same command without its secrets, though no agent
-// advertises taking credential-free cancellation any more.
+// PLAT-138. A cancelled deployment comes as the same command without its secrets, to an agent that
+// doesn't advertise taking credential-free cancellation.
 func TestCancelledDeploymentCarriesNoSecrets(t *testing.T) {
 	h := newLateDeliveryHost(t, "deployment-secret-cancel-canary")
 	op := h.apply(t, h.plan(t))
@@ -246,5 +247,22 @@ func TestCancelledDeploymentCarriesNoSecrets(t *testing.T) {
 	var payload deployment.Payload
 	if !c.CancelRequested || c.Expired != nil || c.SecretRelease != nil || strings.Contains(string(*c.Visual), h.secret) || json.Unmarshal(*c.Visual, &payload) != nil || payload.Digest() != c.PlanHash {
 		t.Fatal("a cancelled deployment was not delivered as the same command without its secrets")
+	}
+}
+
+// An agent that doesn't say it reads the expired mark rejects a response that carries it, so a late
+// deployment reaches it unmarked, and still without its secrets.
+func TestLateDeploymentToAnAgentWithoutTheMark(t *testing.T) {
+	h := newLateDeliveryHost(t, "deployment-secret-unmarked-canary")
+	h.in.Capabilities.ExpiredCommands = nil
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/heartbeat", h.token, api.AgentHeartbeat{Capabilities: h.in.Capabilities, Preflight: h.in.Preflight}, 200, nil)
+	op := h.apply(t, h.plan(t))
+	expireCommand(t, context.Background(), h.f, op.Id)
+	c := h.poll(t, op.Id)
+	if c.Expired != nil || c.SecretRelease != nil || strings.Contains(string(*c.Visual), h.secret) {
+		t.Fatal("a late deployment to an agent that doesn't read the mark was marked, or carried its secrets")
+	}
+	if n := h.releases(t, op.Id); n != 0 {
+		t.Fatal("management released a late deployment's secrets", n)
 	}
 }

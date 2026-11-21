@@ -434,14 +434,14 @@ func TestRedactionKeepsUnknownMembersAndDropsUnreadablePayloads(t *testing.T) {
 // deadline by management's clock the action ends so, whatever this host's clock reads.
 func TestCancelledUpgradeActionKeepsTheUpgradesValues(t *testing.T) {
 	t.Run("cancelled", func(t *testing.T) {
-		testUnrunUpgradeAction(t, func(c *api.ExecutionCommand) { c.CancelRequested = true })
+		testUnrunUpgradeAction(t, func(c *api.ExecutionCommand) { c.CancelRequested = true }, "Upgrade cancelled before host effects.")
 	})
 	t.Run("expired", func(t *testing.T) {
-		testUnrunUpgradeAction(t, func(c *api.ExecutionCommand) { expired := true; c.Expired = &expired })
+		testUnrunUpgradeAction(t, func(c *api.ExecutionCommand) { expired := true; c.Expired = &expired }, "Upgrade cancelled before host effects. "+laggingNote)
 	})
 }
 
-func testUnrunUpgradeAction(t *testing.T, stop func(*api.ExecutionCommand)) {
+func testUnrunUpgradeAction(t *testing.T, stop func(*api.ExecutionCommand), note string) {
 	j, base := testVisualJournal(t)
 	pg, volume, secret := uuid.New(), uuid.New(), uuid.New()
 	image := domain.Postgres17Image
@@ -471,7 +471,7 @@ func testUnrunUpgradeAction(t *testing.T, stop func(*api.ExecutionCommand)) {
 	if err = (&Engine{Journal: j}).executeUpgrade(t.Context(), c, r); err != nil {
 		t.Fatal(err)
 	}
-	if r, err = j.Record(c.Id); err != nil || r.Report.State != "failed" || r.Report.Note != "Upgrade cancelled before host effects." {
+	if r, err = j.Record(c.Id); err != nil || r.Report.State != "failed" || r.Report.Note != note {
 		t.Fatal("the cancelled action did not end as cancelled", r.Report.State, r.Report.Note, err)
 	}
 	stored, err := j.upgrade(plan.ID)

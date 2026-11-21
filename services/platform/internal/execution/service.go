@@ -341,6 +341,9 @@ type Identity struct {
 	// AcknowledgesReleases is an agent that acknowledges the secret releases it holds, and so may
 	// receive them.
 	AcknowledgesReleases bool
+	// ReadsExpiry is an agent that reads a command's expired mark: management's verdict that its
+	// deadline has passed, which the agent applies whatever its own clock says.
+	ReadsExpiry bool
 }
 
 // instance names what holds a release: the agent's key, whose journal outlives its token
@@ -372,7 +375,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return v, keyNotCurrent
 		}
-		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.AcknowledgesReleases = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.AcknowledgesReleases
+		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.AcknowledgesReleases, v.ReadsExpiry = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.AcknowledgesReleases, row.ReadsExpiry
 		return v, err
 	}
 	if len(token) != 43 {
@@ -380,7 +383,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 	}
 	row, err := s.Store.Queries.AuthenticateAgent(ctx, db.AuthenticateAgentParams{ServerID: id, CredentialHash: hash(token)})
 	v.Kind, v.Credential = identityBearer, hash(token)
-	v.Workspace, v.Role, v.Previous, v.AcknowledgesReleases = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.AcknowledgesReleases
+	v.Workspace, v.Role, v.Previous, v.AcknowledgesReleases, v.ReadsExpiry = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.AcknowledgesReleases, row.ReadsExpiry
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}
