@@ -16,6 +16,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
@@ -135,7 +136,9 @@ func (e *Engine) executeUpgrade(ctx context.Context, c api.ExecutionCommand, r R
 	if !s.Status.Allows(cmd.Action) {
 		return e.finish(c.Id, "failed", "This upgrade action is not valid in the current state.")
 	}
-	if e.cancelled(c.Id) || cmd.Action == "prepare" && time.Now().After(cmd.Plan.ExpiresAt) {
+	// Past its deadline an upgrade changes nothing, whichever clock says so: management sends one
+	// it delivers late without values.
+	if e.cancelled(c.Id) || cmd.Action == "prepare" && time.Now().After(cmd.Plan.ExpiresAt) || deadline.Passed(r.Command) {
 		s.Status.Note = "Upgrade cancelled before host effects."
 		if s.Status.Phase == "planned" {
 			s.Status.Phase = "rejected"

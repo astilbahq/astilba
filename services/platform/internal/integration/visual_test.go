@@ -103,9 +103,8 @@ func TestVisualPlanAdmissionAndPortability(t *testing.T) {
 	if strings.Contains(string(stored), "visual-secret-canary") {
 		t.Fatal("command stored plaintext secret")
 	}
-	// An agent that acknowledges releases keeps the values it was given and compares payloads
-	// by digest, so its cancel comes without them even if it never said it takes
-	// credential-free cancels.
+	// An agent keeps the values it was given and compares payloads by digest, so its cancel
+	// comes without them.
 	b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
 	cancelled := poll(op.Id)
 	var cancelledPayload deployment.Payload

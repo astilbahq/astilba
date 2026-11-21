@@ -209,7 +209,7 @@ func (s *statistics) fail(format string, args ...any) {
 func capabilities() map[string]any {
 	// The extension set of an up-to-date, ready Ubuntu host against this controller.
 	return map[string]any{"arch": "arm64", "os": "linux", "protocol": 1, "version": "v1.0.0-fleet", "docker": true,
-		"backups": true, "build": true, "buildCache": true, "buildControls": true, "compose": true, "credentialFreeVisualCancel": true,
+		"backups": true, "build": true, "buildCache": true, "buildControls": true, "compose": true,
 		"crossHost": false, "previews": true, "railpackVersion": "0.15.1", "replicas": true, "safeReleases": true, "schedules": true,
 		"serviceOutputs": true, "troubleshooting": true, "upgrades": true, "visual": true}
 }

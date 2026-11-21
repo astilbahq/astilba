@@ -96,7 +96,6 @@ test("preview policy retains failed inputs and approves only the displayed fork 
           visual: true,
           previews: true,
           serviceOutputs: true,
-          credentialFreeVisualCancel: true,
         },
         preflight: {
           ready: true,

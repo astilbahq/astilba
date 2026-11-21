@@ -32,8 +32,6 @@ func (j *Journal) Preflight(ctx context.Context, docker *client.Client, version,
 
 func Preflight(ctx context.Context, docker *client.Client, version, dir string, cli ...string) api.AgentHeartbeat {
 	h := api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Os: runtime.GOOS, Arch: api.AgentCapabilitiesArch(runtime.GOARCH), Protocol: 1, Version: version}, Preflight: api.HostPreflight{Notes: []string{}}}
-	credentialFreeCancel := true
-	h.Capabilities.CredentialFreeVisualCancel = &credentialFreeCancel
 	machineBoundRotation := true
 	h.Capabilities.MachineBoundRotation = &machineBoundRotation
 	acknowledgesReleases := true

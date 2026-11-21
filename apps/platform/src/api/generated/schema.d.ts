@@ -2994,8 +2994,6 @@ export interface components {
             recoveryRestore?: boolean;
             backups?: boolean;
             upgrades?: boolean;
-            /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
-            credentialFreeVisualCancel?: boolean;
             /** @description Agent acknowledges each command's secret release once it is journaled, and accepts a command without values only when it already holds them. Management releases values only to agents that advertise this. */
             acknowledgesReleases?: boolean;
             /** @description Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1. */
@@ -3272,6 +3270,8 @@ export interface components {
             deadline: string;
             release: components["schemas"]["AgentRelease"] | null;
             cancelRequested: boolean;
+            /** @description Management's clock had passed the command's deadline when it delivered the command. The agent treats the deadline as passed whatever its own clock says. It is delivery metadata, never part of a stored command. */
+            expired?: boolean;
             visual?: components["schemas"]["VisualPayload"];
             pipeline?: components["schemas"]["PipelineCommand"];
             /** @description A BackupCommand for the backup and schedule kinds, and a BackupRecovery for the restore kind. */

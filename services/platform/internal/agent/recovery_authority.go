@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
@@ -54,8 +55,8 @@ func recoveryOpen(c api.ExecutionCommand) bool {
 	if c.Kind != "crosshost" {
 		return false
 	}
-	body, err := crossHostCommand(c)
-	return err == nil && body.Phase == recoveryOpenPhase
+	body, err := deadline.CrossHost(c)
+	return err == nil && body.Phase == deadline.RecoveryOpenPhase
 }
 
 // TransferRecovery replaces controller authority under the stopped agent's
@@ -125,7 +126,7 @@ func (j *Journal) TransferRecovery(origin string, key []byte, token string, h de
 					return errors.New("recorded command differs from the recovered root")
 				}
 				if r.Command.Kind == "crosshost" {
-					body, err := crossHostCommand(r.Command)
+					body, err := deadline.CrossHost(r.Command)
 					if err != nil || body.Unit.Plan.Hash != h.UnitHash {
 						return errors.New("recorded local plan differs from the recovered root")
 					}
@@ -192,7 +193,7 @@ func (j *Journal) TransferRecovery(origin string, key []byte, token string, h de
 }
 
 func (j *Journal) checkRecoveryOpen(tx *bolt.Tx, c api.ExecutionCommand) error {
-	body, err := crossHostCommand(c)
+	body, err := deadline.CrossHost(c)
 	if err != nil {
 		return err
 	}
@@ -212,7 +213,7 @@ func (j *Journal) checkRecoveryOpen(tx *bolt.Tx, c api.ExecutionCommand) error {
 }
 
 func (j *Journal) executeRecoveryOpen(c api.ExecutionCommand) error {
-	body, err := crossHostCommand(c)
+	body, err := deadline.CrossHost(c)
 	if err != nil {
 		return err
 	}

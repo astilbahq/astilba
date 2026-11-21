@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/astilbahq/astilba/services/platform/internal/agent"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -39,7 +39,7 @@ func unrunPhases(t *testing.T, q phaseQuerier) []string {
 		if maintenance {
 			body.Maintenance = &deployment.Maintenance{}
 		}
-		if !agent.RunsCoordinatedPhase(body) {
+		if !deadline.RunsCoordinatedPhase(body) {
 			unrun = append(unrun, map[bool]string{true: "maintenance ", false: ""}[maintenance]+phase)
 		}
 	}

@@ -5906,9 +5906,6 @@
           type: boolean
         upgrades:
           type: boolean
-        credentialFreeVisualCancel:
-          type: boolean
-          description: Agent accepts visual cancellation without re-sending hydrated credentials.
         acknowledgesReleases:
           type: boolean
           description: >-
@@ -6476,6 +6473,9 @@
           "nullable": true
         "cancelRequested":
           "type": "boolean"
+        expired:
+          type: boolean
+          description: Management's clock had passed the command's deadline when it delivered the command. The agent treats the deadline as passed whatever its own clock says. It is delivery metadata, never part of a stored command.
         "visual":
           "$ref": "#/components/schemas/VisualPayload"
         pipeline:
