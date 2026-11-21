@@ -69,8 +69,8 @@ func Checkpoint(d deployment.RecoveryDescriptor) Item {
 // descriptor, except the envelope's own digest and size, which only sealing it decides. A host
 // holds the descriptor beside the envelope, so any field it rewrites, such as the checkpoint the
 // envelope follows, its sequence, root or participants, leaves the envelope unopenable. Hosts keep
-// envelopes across releases, so a field added to the descriptor must omit its zero value, or no
-// envelope sealed before it opens.
+// envelopes across releases, so the descriptor's encoding must not change: don't rename, reorder or
+// retype its fields, and give a new one omitempty, or no envelope sealed before it opens.
 func CheckpointIdentity(d deployment.RecoveryDescriptor) string {
 	d.Digest, d.Bytes = "", 0
 	return fmt.Sprintf("cross-host-recovery:v2:%s:%s:%s", d.WorkspaceID, d.CheckpointID, deployment.Hash(d))
