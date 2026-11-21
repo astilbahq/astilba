@@ -9,12 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -22,9 +21,6 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/pkg/stdcopy"
-	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/mount"
-	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
 
@@ -192,6 +188,41 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 	return e.attemptRoutes(ctx, state, next, drift, p.UnitID.String(), stableProxy)
 }
 
+// routesServe says whether the host already serves p's routes as publishing them would:
+// its settled routes, which the running proxy serves as the journal records, would render
+// the same route file and proxy if p were published, but for the route revision. It changes
+// nothing, and a pending attempt or drift is never taken as serving.
+func (e *Engine) routesServe(ctx context.Context, p deployment.Plan) (bool, error) {
+	state, err := e.Journal.routing()
+	if err != nil || state.Pending {
+		return false, err
+	}
+	if drift, err := e.ingressDrift(ctx, state); err != nil || drift {
+		return false, err
+	}
+	next, err := e.candidateRoutes(state.Current, p)
+	if err != nil {
+		// Publishing p would fail the same way.
+		return false, nil
+	}
+	next.Revision = state.Current.Revision
+	want, err := renderSnapshot(next)
+	if err != nil {
+		return false, err
+	}
+	have, err := renderSnapshot(state.Current)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(want, have) || !slices.Equal(next.Ports, state.Current.Ports) || !slices.Equal(proxyArgs(next), proxyArgs(state.Current)) || proxyWanted(next) != proxyWanted(state.Current) || next.ManagedEgress != state.Current.ManagedEgress {
+		return false, nil
+	}
+	if len(state.Current.Ports) == 0 {
+		return true, nil
+	}
+	return e.verifyRoutes(ctx, state.Current) == nil, nil
+}
+
 // candidateRoutes is current with p's routes in place of its unit's, checked against the
 // host's limits and settings before anything is written.
 func (e *Engine) candidateRoutes(current routeSnapshot, p deployment.Plan) (routeSnapshot, error) {
@@ -257,8 +288,12 @@ func cloneRoutes(current routeSnapshot) (routeSnapshot, error) {
 // created the proxy. It waits for the certificates of the publishing unit only, if any:
 // another environment's certificate, which depends on where that environment's domain
 // points, must not stop this publish.
-func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool, unit string) (created bool, err error) {
+func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyPolicy, unit string) (created bool, err error) {
 	raw, err := renderSnapshot(s)
+	if err != nil {
+		return false, err
+	}
+	proxy, err := e.prepareProxy(ctx, s, policy)
 	if err != nil {
 		return false, err
 	}
@@ -267,7 +302,7 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool,
 		return false, err
 	}
 	e.point("route-published")
-	if created, err = e.ensureProxy(ctx, s, rebuild); err != nil {
+	if created, err = e.ensureProxy(ctx, s, proxy); err != nil {
 		return created, err
 	}
 	if len(s.Ports) == 0 {
@@ -277,170 +312,6 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, rebuild bool,
 		return created, err
 	}
 	return created, e.verifyCertificates(ctx, s.Sets[unit])
-}
-
-func proxyArgs(s routeSnapshot) []string {
-	args := []string{"--providers.file.filename=/etc/astilba/runtime.yaml", "--providers.file.watch=true", "--providers.providersThrottleDuration=100ms", "--entrypoints.web.address=:80", "--entrypoints.websecure.address=:443", "--api.insecure=true", "--api.dashboard=false", "--entrypoints.traefik.address=127.0.0.1:8080"}
-	for _, p := range s.Ports {
-		if p != 80 && p != 443 {
-			args = append(args, fmt.Sprintf("--entrypoints.tcp-%d.address=:%d", p, p))
-		}
-	}
-	if s.Email != "" {
-		args = append(args, "--certificatesresolvers.letsencrypt.acme.email="+s.Email, "--certificatesresolvers.letsencrypt.acme.storage=/data/acme.json", "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web")
-	}
-	return args
-}
-
-// ensureProxy runs the proxy s needs, joined to its units' networks, and says whether it
-// created the container.
-func (e *Engine) ensureProxy(ctx context.Context, s routeSnapshot, rebuild bool) (created bool, err error) {
-	cfg, err := e.Journal.Config()
-	if err != nil {
-		return false, err
-	}
-	v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
-	exists := err == nil
-	if err != nil && !errdefs.IsNotFound(err) {
-		return created, err
-	}
-	if exists && (v.Container.Config.Labels[labelServer] != cfg.ServerID.String() || v.Container.Config.Labels[labelKind] != "ingress-v1") {
-		return created, errors.New("an existing ingress container is unmanaged or changed")
-	}
-	bindings := network.PortMap{}
-	exposed := network.PortSet{}
-	for _, p := range s.Ports {
-		port, err := network.ParsePort(strconv.Itoa(p) + "/tcp")
-		if err != nil {
-			return created, err
-		}
-		exposed[port] = struct{}{}
-		bindings[port] = []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: strconv.Itoa(p)}}
-	}
-	if !proxyWanted(s) {
-		if exists {
-			_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
-			if err != nil {
-				return created, err
-			}
-		}
-		return created, nil
-	}
-	args := proxyArgs(s)
-	// A proxy keeps the egress gateway only while the routes it runs say so, so restoring
-	// routes from before managed egress also takes it away.
-	gateway := 0
-	if s.ManagedEgress {
-		gateway = 100
-	}
-	current := 0
-	if exists && v.Container.NetworkSettings != nil && v.Container.NetworkSettings.Networks["astilba-ingress-network"] != nil {
-		current = v.Container.NetworkSettings.Networks["astilba-ingress-network"].GwPriority
-	}
-	gatewayChange := exists && current != gateway
-	if exists && (rebuild || gatewayChange || v.Container.Config.Image != deployment.ProxyImage || !reflect.DeepEqual(v.Container.Config.Cmd, args) || !reflect.DeepEqual(v.Container.HostConfig.PortBindings, bindings)) {
-		_, err = e.Docker.ContainerRemove(ctx, v.Container.ID, client.ContainerRemoveOptions{Force: true})
-		if err != nil {
-			return created, err
-		}
-		exists = false
-	}
-	bridgeName := "astilba-ingress-network"
-	bridge, bridgeErr := e.Docker.NetworkInspect(ctx, bridgeName, client.NetworkInspectOptions{})
-	if errdefs.IsNotFound(bridgeErr) {
-		bridgeErr = e.createNetworks(ctx, []networkRequest{ingressNetwork(cfg.ServerID)})
-		if bridgeErr == nil {
-			bridge, bridgeErr = e.Docker.NetworkInspect(ctx, bridgeName, client.NetworkInspectOptions{})
-		}
-	}
-	if bridgeErr != nil {
-		return created, bridgeErr
-	}
-	if bridge.Network.Labels[labelServer] != cfg.ServerID.String() || bridge.Network.Labels[labelKind] != "ingress-v1" || bridge.Network.Driver != "bridge" {
-		return created, errors.New("ingress network ownership mismatch")
-	}
-	if !exists {
-		for _, p := range s.Ports {
-			listener, err := net.Listen("tcp", ":"+strconv.Itoa(p))
-			if err != nil {
-				return created, fmt.Errorf("ingress port %d is already in use", p)
-			}
-			listener.Close()
-		}
-		if _, err = e.Docker.ImageInspect(ctx, deployment.ProxyImage); errdefs.IsNotFound(err) {
-			if err = e.pullImage(ctx, deployment.ProxyImage); err != nil {
-				return created, err
-			}
-		} else if err != nil {
-			return created, err
-		}
-
-		data := filepath.Join(e.Journal.dir, "ingress-data")
-		if err = os.MkdirAll(data, 0700); err != nil {
-			return created, err
-		}
-		info, err := os.Lstat(data)
-		if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-			return created, errors.New("ingress data directory is not private")
-		}
-		networking := &network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{bridgeName: {}}}
-		if s.ManagedEgress {
-			networking.EndpointsConfig[bridgeName].GwPriority = 100
-		}
-		container, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{NetworkingConfig: networking, Name: proxyName, Config: &container.Config{Image: deployment.ProxyImage, Cmd: args, ExposedPorts: exposed, Labels: map[string]string{labelServer: cfg.ServerID.String(), labelKind: "ingress-v1"}}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(bridgeName), PortBindings: bindings, Mounts: []mount.Mount{{Type: mount.TypeBind, Source: filepath.Dir(e.routePath()), Target: "/etc/astilba", ReadOnly: true}, {Type: mount.TypeBind, Source: data, Target: "/data"}}, RestartPolicy: container.RestartPolicy{Name: "unless-stopped"}, CapDrop: []string{"ALL"}, SecurityOpt: []string{"no-new-privileges"}}})
-		if err != nil {
-			return created, err
-		}
-		created = true
-		v, err = e.Docker.ContainerInspect(ctx, container.ID, client.ContainerInspectOptions{})
-		if err != nil {
-			return created, err
-		}
-	}
-	for key, set := range s.Sets {
-		n, err := e.Docker.NetworkInspect(ctx, deployment.NetworkName(set.UnitID), client.NetworkInspectOptions{})
-		if err != nil {
-			return created, err
-		}
-		if key != set.UnitID.String() || n.Network.Labels[labelServer] != cfg.ServerID.String() || n.Network.Labels["com.astilba.unit"] != key || n.Network.Labels[labelEnvironment] != set.EnvironmentID.String() {
-			return created, errors.New("ingress network ownership mismatch")
-		}
-		connected := false
-		for id := range n.Network.Containers {
-			connected = connected || id == v.Container.ID
-		}
-		if !connected {
-			if _, err = e.Docker.NetworkConnect(ctx, n.Network.ID, client.NetworkConnectOptions{Container: v.Container.ID}); err != nil {
-				return created, err
-			}
-		}
-	}
-	for name := range v.Container.NetworkSettings.Networks {
-		if name == bridgeName {
-			continue
-		}
-		keep := false
-		for _, set := range s.Sets {
-			keep = keep || name == deployment.NetworkName(set.UnitID)
-		}
-		if keep {
-			continue
-		}
-		n, err := e.Docker.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
-		if err != nil {
-			return created, err
-		}
-		if n.Network.Labels[labelServer] != cfg.ServerID.String() || n.Network.Labels[labelKind] != "visual-v1" {
-			return created, errors.New("unexpected ingress network")
-		}
-		if _, err = e.Docker.NetworkDisconnect(ctx, n.Network.ID, client.NetworkDisconnectOptions{Container: v.Container.ID, Force: false}); err != nil {
-			return created, err
-		}
-	}
-	if !v.Container.State.Running {
-		_, err = e.Docker.ContainerStart(ctx, v.Container.ID, client.ContainerStartOptions{})
-	}
-	return created, err
 }
 
 // errRouteDisabled is a route the running proxy loaded from the published file and did
