@@ -78,6 +78,7 @@ export const RateLimited: Story = {
       canvasElement.ownerDocument.body,
     ).findByRole("dialog");
     await waitFor(() => expect(notification).toBeVisible());
+    await expect(notification).toHaveTextContent(/use a recovery code/);
     await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
     await expect(canvas.getAllByRole("textbox")[0]).not.toHaveAttribute(
       "aria-invalid",

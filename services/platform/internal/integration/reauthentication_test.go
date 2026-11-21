@@ -164,7 +164,7 @@ func TestReauthenticationFailuresSpendADailyAllowance(t *testing.T) {
 	}
 	failures := func() (count int) {
 		t.Helper()
-		_ = f.st.Pool.QueryRow(ctx, "SELECT attempts FROM auth_attempts WHERE scope_hash=$1", auth.Hash(fmt.Sprintf("reauth-failures:%s", f.owner))).Scan(&count)
+		_ = f.st.Pool.QueryRow(ctx, "SELECT attempts FROM auth_attempts WHERE scope_hash=$1", auth.Hash(fmt.Sprintf("credential-failures:%s", f.owner))).Scan(&count)
 		return count
 	}
 	now := f.auth.Now()
@@ -217,7 +217,7 @@ func TestReauthenticationConcurrentGuessesStayWithinTheDailyAllowance(t *testing
 		t.Fatal(err)
 	}
 	principal := browserPrincipal(t, f.st, account, true)
-	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO auth_attempts(scope_hash,attempts,expires_at) VALUES($1,19,now()+interval '1 day')", auth.Hash(fmt.Sprintf("reauth-failures:%s", f.owner))); err != nil {
+	if _, err := f.st.Pool.Exec(ctx, "INSERT INTO auth_attempts(scope_hash,attempts,expires_at) VALUES($1,19,now()+interval '1 day')", auth.Hash(fmt.Sprintf("credential-failures:%s", f.owner))); err != nil {
 		t.Fatal(err)
 	}
 	results := make(chan error, 5)

@@ -78,6 +78,7 @@ export function createAuthValidation(messages: AuthMessages) {
     fields: FormValidation["fields"],
     credentialsMessage: string = messages.invalidCredentials,
     codeMessage: string = messages.invalidCode,
+    rateLimitedMessage: string = messages.rateLimited,
   ): FormValidation {
     return {
       fields,
@@ -94,7 +95,7 @@ export function createAuthValidation(messages: AuthMessages) {
           case "mfa_required":
             return messages.mfaRequired;
           case "rate_limited":
-            return messages.rateLimited;
+            return rateLimitedMessage;
           case "temporarily_busy":
             return messages.temporarilyBusy;
           case "recent_auth_required":
@@ -122,8 +123,15 @@ export function createAuthValidation(messages: AuthMessages) {
         (error instanceof ApiError &&
           error.detail.code === "invalid_credentials"),
     },
+    // A day's spent failures refuse authenticator codes but never recovery codes, so the
+    // authenticator form points at the way in that still works.
     mfa: {
-      ...form({ code }, messages.invalidCode),
+      ...form(
+        { code },
+        messages.invalidCode,
+        messages.invalidCode,
+        messages.mfaRateLimited,
+      ),
       errorFields: codeErrorFields,
     },
     recovery: {

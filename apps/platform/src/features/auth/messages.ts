@@ -40,6 +40,7 @@ export function createAuthMessages(t: TFunction<"auth">) {
     invitationSubscription: t(($) => $.validation.invitationSubscription),
     mfaRequired: t(($) => $.validation.mfaRequired),
     rateLimited: t(($) => $.validation.rateLimited),
+    mfaRateLimited: t(($) => $.validation.mfaRateLimited),
     temporarilyBusy: t(($) => $.validation.temporarilyBusy),
     requestFailed: t(($) => $.validation.requestFailed),
   };
