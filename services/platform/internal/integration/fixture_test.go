@@ -485,13 +485,12 @@ func setupFixture(t *testing.T, pool *pgxpool.Pool, bootstrap, hosted bool, keys
 		if e != nil {
 			t.Fatal(e)
 		}
-		// The fixture's workspace stands for one that doesn't require two-factor authentication,
-		// as one made before new workspaces started requiring it does, so that tests sign in
-		// with a password alone. TestNewWorkspacesRequireMFA covers the requirement new ones
-		// start with.
-		if _, e = pool.Exec(ctx, `UPDATE workspaces SET require_mfa=false WHERE id IN (SELECT workspace_id FROM memberships WHERE account_id=$1)`, owner); e != nil {
+		// So that tests sign in with a password alone.
+		var bootstrapped uuid.UUID
+		if e = pool.QueryRow(ctx, `SELECT workspace_id FROM memberships WHERE account_id=$1`, owner).Scan(&bootstrapped); e != nil {
 			t.Fatal(e)
 		}
+		withoutMFARequirement(t, st, bootstrapped)
 	}
 
 	mail, notices, address := smtpFixture(t)
@@ -600,6 +599,28 @@ type browser struct {
 	f      *fixture
 	client *http.Client
 	csrf   string
+}
+
+// withoutMFARequirement makes the workspace ws stand for one that doesn't require two-factor
+// authentication, as one made before new workspaces started requiring it does, for a test that
+// changes it as an account signed in with a password alone. TestNewWorkspacesRequireMFA covers
+// the requirement new ones start with.
+func withoutMFARequirement(t *testing.T, st *store.Store, ws uuid.UUID) {
+	t.Helper()
+	_, err := st.Pool.Exec(context.Background(), `UPDATE workspaces SET require_mfa=false WHERE id=$1`, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// createWorkspaceWithoutMFARequirement creates the workspace name and makes it stand for one that
+// doesn't require two-factor authentication, as withoutMFARequirement does.
+func (b *browser) createWorkspaceWithoutMFARequirement(name string) api.Workspace {
+	b.t.Helper()
+	var created api.Workspace
+	b.call("POST", "/api/v1/workspaces", map[string]string{"name": name}, 201, &created)
+	withoutMFARequirement(b.t, b.f.st, created.Id)
+	return created
 }
 
 // browserPrincipal is a recently authenticated browser session of account, for a test that

@@ -442,8 +442,7 @@ func TestOperationAdmissionRollbackAndIsolation(t *testing.T) {
 		t.Fatalf("partial transaction %d %d %d", generation, count, audits)
 	}
 	_, _ = f.st.Pool.Exec(context.Background(), "DROP TRIGGER reject_test_job ON river_job; DROP FUNCTION reject_test_job()")
-	var foreign api.Workspace
-	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &foreign)
+	foreign := b.createWorkspaceWithoutMFARequirement("Other")
 	b.call("POST", "/api/v1/workspaces/"+foreign.Id.String()+"/plans", api.PlanRequest{ServerId: in.ServerId, EnvironmentId: env, Action: "start"}, 404, nil)
 	b.call("POST", base+"/plans", api.PlanRequest{ServerId: in.ServerId, EnvironmentId: uuid.New(), Action: "start"}, 404, nil)
 	// Concurrent admissions use different keys and the same reviewed plan: exactly one wins.

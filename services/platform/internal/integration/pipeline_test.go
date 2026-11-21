@@ -439,8 +439,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 		}
 	})
 	t.Run("tenant and viewer boundaries precede provider access", func(t *testing.T) {
-		var other api.Workspace
-		b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
+		other := b.createWorkspaceWithoutMFARequirement("Other")
 		otherPath := strings.Replace(path, ws.String(), other.Id.String(), 1)
 		b.call("GET", otherPath+"/builds", nil, 404, nil)
 		b.call("POST", otherPath+"/builds", buildRequest, 404, nil)

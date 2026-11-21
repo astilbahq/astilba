@@ -725,10 +725,16 @@ func provisionWorkspace(ctx context.Context, b *browser, cfg *agentConfig, st *s
 	var ws struct {
 		ID string `json:"id"`
 	}
-	if err := b.call(ctx, "POST", "/api/v1/workspaces", map[string]string{"name": fmt.Sprintf("Fleet %d", index)}, &ws, 201); err != nil {
+	name := fmt.Sprintf("Fleet %d", index)
+	if err := b.call(ctx, "POST", "/api/v1/workspaces", map[string]string{"name": name}, &ws, 201); err != nil {
 		return nil, err
 	}
 	base := "/api/v1/workspaces/" + ws.ID
+	// A new workspace requires two-factor authentication, which the owner, signed in with a
+	// password alone, doesn't have. As an owner can, it stops requiring it to make changes.
+	if err := b.call(ctx, "PUT", base, map[string]any{"name": name, "requireMfa": false}, nil, 200); err != nil {
+		return nil, err
+	}
 	var project struct {
 		ID string `json:"id"`
 	}

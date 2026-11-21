@@ -29,8 +29,7 @@ func TestAlertWebhookThatHangsDelaysOnlyItsWorkspace(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	slow := b.login("owner@example.test", f.password).Workspaces[0].Id
-	var other api.Workspace
-	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
+	other := b.createWorkspaceWithoutMFARequirement("Other")
 
 	var hanging atomic.Int32
 	release := make(chan struct{})
@@ -165,8 +164,7 @@ func TestGitPushFloodDelaysNoOtherWorkspace(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	flooding := b.login("owner@example.test", f.password).Workspaces[0].Id
-	var other api.Workspace
-	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
+	other := b.createWorkspaceWithoutMFARequirement("Other")
 	ctx := context.Background()
 	commit := strings.Repeat("b", 40)
 
