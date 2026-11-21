@@ -159,7 +159,14 @@ export function ShellPreview({
       component: EnvironmentCreation,
     });
     const children = (
-      ["/servers", "/alerts", "/members", "/account", "/login"] as const
+      [
+        "/servers",
+        "/alerts",
+        "/members",
+        "/account",
+        "/login",
+        "/onboarding",
+      ] as const
     ).map((path) =>
       createRoute({
         getParentRoute: () => root,

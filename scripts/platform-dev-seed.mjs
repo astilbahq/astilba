@@ -91,6 +91,11 @@ export async function seed({ api, origin, email, password, signal }) {
   const workspace = session.workspaces?.[0];
   if (!workspace) throw new Error("The local owner has no workspace");
   const ws = `/api/v1/workspaces/${workspace.id}`;
+  // A new workspace requires two-factor authentication, which the local owner, signing in with
+  // a password alone, doesn't have. As an owner can, the seed stops requiring it so that it, and
+  // the developer, can make changes.
+  if (workspace.requireMfa)
+    await http.put(ws, { name: workspace.name, requireMfa: false });
   const find = (list, name) => list.find((item) => item.name === name);
 
   const project =

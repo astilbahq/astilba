@@ -375,6 +375,8 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	}
 	// Values are sealed under the key just stored, which this transaction holds.
 	seal := func(item secretbroker.Item, value []byte) ([]byte, error) { return keys.Seal(ctx, q, item, value) }
+	// The imported workspace keeps the requirement its archive records, whichever way, rather
+	// than the one a new workspace starts with.
 	if e = q.SetMFAPolicy(ctx, db.SetMFAPolicyParams{ID: archive.Workspace, RequireMfa: archive.RequireMFA}); e != nil {
 		return out, e
 	}

@@ -1,5 +1,5 @@
 -- name: InsertWorkspace :exec
-INSERT INTO workspaces(id,name) VALUES($1,$2);
+INSERT INTO workspaces(id,name,require_mfa) VALUES($1,$2,$3);
 -- name: InsertMembership :exec
 INSERT INTO memberships(workspace_id,account_id,role) VALUES($1,$2,$3);
 -- name: ListWorkspaces :many

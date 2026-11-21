@@ -6767,6 +6767,7 @@
           "$ref": "#/components/schemas/Role"
         "requireMfa":
           "type": "boolean"
+          "description": "Whether changing the workspace needs two-factor authentication. A new workspace starts with it on; an imported one keeps its archive's setting."
       "required":
         - "id"
         - "name"

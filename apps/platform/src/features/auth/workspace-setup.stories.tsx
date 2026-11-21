@@ -14,7 +14,7 @@ import {
 } from "../../workshop/fixtures";
 import { authenticationCode } from "../../workshop/interactions";
 import { AuthFrame } from "./auth-frame";
-import { HostedOnboarding } from "./hosted-onboarding";
+import { WorkspaceSetup } from "./workspace-setup";
 
 const enrolled = {
   ...hostedMember,
@@ -55,8 +55,8 @@ const enrollment = http.post("/api/v1/auth/mfa/enroll", () =>
   HttpResponse.json(enrollmentData),
 );
 const meta = {
-  title: "Pages/Hosted onboarding",
-  component: HostedOnboarding,
+  title: "Pages/Workspace setup",
+  component: WorkspaceSetup,
   decorators: [
     (Story) => (
       <AuthFrame>
@@ -69,7 +69,7 @@ const meta = {
   beforeEach: () => {
     sent = [];
   },
-} satisfies Meta<typeof HostedOnboarding>;
+} satisfies Meta<typeof WorkspaceSetup>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 
@@ -337,7 +337,39 @@ export const MissingWorkspace: Story = {
   args: { workspaceId: undefined },
   parameters: hostedScenario(hostedMember),
 };
-export const SelfHosted: Story = { parameters: scenario(hostedMember) };
+// A self-hosted installation guides two-factor authentication and recovery codes, which new
+// workspaces require, and has no email or billing steps.
+async function selfHostedSteps(canvasElement: HTMLElement, current: number) {
+  const steps = within(
+    await within(canvasElement).findByRole("list"),
+  ).getAllByRole("listitem");
+  await expect(steps).toHaveLength(3);
+  await expect(steps[current]).toHaveAttribute("aria-current", "step");
+}
+export const SelfHostedAuthenticator: Story = {
+  parameters: scenario(unprotected, enrollment),
+  play: async ({ canvasElement }) => {
+    await selfHostedSteps(canvasElement, 1);
+    await expect(
+      within(within(canvasElement).getByRole("main")).getByRole("button"),
+    ).toBeEnabled();
+  },
+};
+export const SelfHostedRecoveryCodes: Story = {
+  parameters: scenario(enrolled, regenerate),
+  play: async ({ canvasElement }) => selfHostedSteps(canvasElement, 2),
+};
+export const SelfHosted: Story = {
+  parameters: scenario(hostedMember),
+  play: async ({ canvasElement }) => {
+    const steps = within(
+      await within(canvasElement).findByRole("list"),
+    ).getAllByRole("listitem");
+    await expect(steps).toHaveLength(3);
+    for (const step of steps)
+      await expect(step).toHaveAttribute("data-complete", "true");
+  },
+};
 export const ConnectionFailure: Story = {
   parameters: hostedScenario(
     hostedMember,

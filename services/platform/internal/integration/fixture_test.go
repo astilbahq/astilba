@@ -485,6 +485,13 @@ func setupFixture(t *testing.T, pool *pgxpool.Pool, bootstrap, hosted bool, keys
 		if e != nil {
 			t.Fatal(e)
 		}
+		// The fixture's workspace stands for one that doesn't require two-factor authentication,
+		// as one made before new workspaces started requiring it does, so that tests sign in
+		// with a password alone. TestNewWorkspacesRequireMFA covers the requirement new ones
+		// start with.
+		if _, e = pool.Exec(ctx, `UPDATE workspaces SET require_mfa=false WHERE id IN (SELECT workspace_id FROM memberships WHERE account_id=$1)`, owner); e != nil {
+			t.Fatal(e)
+		}
 	}
 
 	mail, notices, address := smtpFixture(t)

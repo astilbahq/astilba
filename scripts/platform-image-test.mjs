@@ -252,9 +252,9 @@ try {
     throw new Error("Embedded assets or source notices missing");
   const connect = (base) => {
     let cookie = "", csrf = "";
-    return async (path, body, expected = 200) => {
+    return async (path, body, expected = 200, method = body === undefined ? "GET" : "POST") => {
       const response = await fetch(`${base}${path}`, {
-        method: body === undefined ? "GET" : "POST",
+        method,
         headers: { Cookie: cookie, Origin: "https://example.test", "X-CSRF-Token": csrf, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
@@ -271,6 +271,10 @@ try {
   const session = await original("/api/v1/auth/login", { email: "owner@example.test", password: "correct horse battery staple" });
   const workspace = session.workspaces[0].id;
   const workspacePath = `/api/v1/workspaces/${workspace}`;
+  // The bootstrapped workspace starts requiring two-factor authentication. Its owner, signed in
+  // with a password alone, can still stop requiring it, and does so to make changes.
+  if (!session.workspaces[0].requireMfa) throw new Error("Packaged bootstrap workspace does not require two-factor authentication");
+  await original(workspacePath, { name: session.workspaces[0].name, requireMfa: false }, 200, "PUT");
   const project = await original(`${workspacePath}/projects`, { name: "Recovery" }, 201);
   const environment = await original(`${workspacePath}/projects/${project.id}/environments`, { name: "Production" }, 201);
   const secret = await original(`${workspacePath}/projects/${project.id}/environments/${environment.id}/secrets`, { name: "RESTORE_TOKEN", value: "packaged-restore-canary" }, 201);

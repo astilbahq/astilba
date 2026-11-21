@@ -18,6 +18,7 @@ import {
 import { ThemeMenu } from "../../components/theme-menu";
 import { ErrorToast } from "../../components/toast";
 import { useAction } from "../../ui";
+import { MfaSetupNotice } from "./mfa-setup-notice";
 
 export type AppSection = "/" | "/servers" | "/alerts" | "/members" | "/account";
 const paths = {
@@ -289,6 +290,9 @@ export function AppShell({
               error={logout.error}
               message={common(($) => $.requestFailed)}
             />
+            {workspace && section !== "/account" && (
+              <MfaSetupNotice user={user} workspace={workspace} />
+            )}
             {children}
           </main>
         </div>

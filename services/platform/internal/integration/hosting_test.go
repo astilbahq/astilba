@@ -61,6 +61,9 @@ func TestHostedSignupRequiresOneUseWorkspaceAdmission(t *testing.T) {
 	if session.User == nil || !session.User.EmailVerified || len(session.Workspaces) != 1 || session.CreatedWorkspaceId == nil || *session.CreatedWorkspaceId != session.Workspaces[0].Id {
 		t.Fatalf("signup did not establish verified owner: %+v", session)
 	}
+	if !session.Workspaces[0].RequireMfa {
+		t.Fatal("a hosted signup's workspace must start requiring two-factor authentication")
+	}
 	browser.csrf = session.CsrfToken
 	browser.call("POST", "/api/v1/workspaces", map[string]string{"name": "Bypass"}, 400, nil)
 	browser.call("POST", "/api/v1/hosting/signup", map[string]string{"token": token, "workspace": "Reuse"}, 400, nil)

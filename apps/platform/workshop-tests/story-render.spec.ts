@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { renderStory } from "./story-render";
 
 const restartStory =
-  "/?path=/story/pages-hosted-onboarding--restart-request-failure&globals=a11y.manual:!true";
+  "/?path=/story/pages-workspace-setup--restart-request-failure&globals=a11y.manual:!true";
 
 test("story completion survives a load resource outlasting its announcement", async ({
   page,
