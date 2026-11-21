@@ -179,3 +179,30 @@ func TestEnrollingAgainRestartsTheCodeAllowance(t *testing.T) {
 		t.Fatalf("the new authenticator at sign-in: status %d: %s", status, body)
 	}
 }
+
+// Without two-factor authentication, wrong passwords when confirming identity spend their own
+// daily allowance, and a right one gets its charge back.
+func TestPasswordConfirmationFailuresSpendADailyAllowance(t *testing.T) {
+	f := setup(t)
+	b, _, _, _ := staleOwner(t, f, false)
+	failures := func() (count int) {
+		t.Helper()
+		_ = f.st.Pool.QueryRow(context.Background(), "SELECT attempts FROM auth_attempts WHERE scope_hash=$1", auth.Hash(fmt.Sprintf("password-confirmation-failures:%s", f.owner))).Scan(&count)
+		return count
+	}
+	b.reauthenticate(map[string]string{"password": f.password}, 200)
+	if got := failures(); got != 0 {
+		t.Fatalf("a right password left %d failures counted", got)
+	}
+	for range 4 {
+		forgetBudget(t, f, "reauth:")
+		for range 5 {
+			b.reauthenticate(map[string]string{"password": "not the password at all"}, 400)
+		}
+	}
+	if got := failures(); got != 20 {
+		t.Fatalf("%d failures counted, want 20", got)
+	}
+	forgetBudget(t, f, "reauth:")
+	b.reauthenticate(map[string]string{"password": f.password}, 429)
+}

@@ -124,8 +124,8 @@ export function createAuthValidation(messages: AuthMessages) {
           error.detail.code === "invalid_credentials"),
     },
     // A refusal for too many attempts can be a few minutes' wait or the code's daily allowance,
-    // which refuses authenticator codes but never recovery codes, so the authenticator forms
-    // point at the way in that still works.
+    // which refuses authenticator codes but never recovery codes, so sign-in points at the way in
+    // that still works.
     mfa: {
       ...form(
         { code },
@@ -133,6 +133,11 @@ export function createAuthValidation(messages: AuthMessages) {
         messages.invalidCode,
         messages.codeRateLimited,
       ),
+      errorFields: codeErrorFields,
+    },
+    // Enrolment checks the new authenticator's code. The account has no recovery codes yet.
+    enrollment: {
+      ...form({ code }, messages.invalidCode),
       errorFields: codeErrorFields,
     },
     recovery: {
