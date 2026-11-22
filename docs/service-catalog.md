@@ -66,7 +66,7 @@ Entries carry multi-platform images pinned by digest. Image pins follow the seve
 | PostgreSQL 18.7 | Private database and built-in outputs; generated password, or an existing secret version | Tested logical backup and fresh restore, including backups from earlier 18 releases | Later 18 releases in place; 17 → 18 through the [supported upgrade](supported-upgrades.md) |
 | Valkey 9.1.3 cache | Private Redis-compatible cache, `HOST`/`PORT`/`URL` | Not applicable: persistence disabled, data lost on restart | Manual compatibility review |
 | Nginx 1.30.6 | HTTP readiness, private HTTP outputs | Not applicable to the welcome-page recipe | Manual compatibility review |
-| Uptime Kuma 2.5.9 (slim, rootless) | HTTP readiness, private HTTP outputs, local retained volume | Manual: stopped-volume tools available; recipe-specific recovery unverified | Manual compatibility review |
+| Uptime Kuma 2.5.11 (slim, rootless) | HTTP readiness, private HTTP outputs, local retained volume | Manual: stopped-volume tools available; recipe-specific recovery unverified | Manual compatibility review |
 | OCI Distribution 3.1.2 | `/v2/` readiness, private HTTP outputs, local retained volume | Manual: stopped-volume tools available; recipe-specific recovery unverified | Manual compatibility review |
 | Kaneo 2.49.0 (app template) | Kaneo and its managed PostgreSQL database; `DATABASE_URL` binding with readiness; generated `AUTH_SECRET`; allowlisted public route | Tested logical backup of the database, recommended daily | Manual: Kaneo migrates its database on start and cannot go back |
 
