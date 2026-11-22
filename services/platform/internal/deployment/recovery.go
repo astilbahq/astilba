@@ -14,6 +14,11 @@ import (
 
 const RecoveryEnvelopeLimit = 1 << 20
 
+// RecoveryVersion is the only descriptor version recovery reads. Version 2 binds a checkpoint's
+// envelope to its whole descriptor (secretbroker.CheckpointIdentity); version 1 left the checkpoint
+// it follows unbound, so its checkpoints are refused rather than read with less protection.
+const RecoveryVersion = 2
+
 // RecoveryDescriptor identifies management-encrypted metadata. Hosts retain the
 // opaque envelope; only the management recovery keyring can open its contents.
 type RecoveryDescriptor struct {
@@ -33,7 +38,7 @@ type RecoveryDescriptor struct {
 }
 
 func (d RecoveryDescriptor) Validate() error {
-	if d.Version != 1 || d.WorkspaceID == uuid.Nil || d.ParentID == uuid.Nil || d.GroupID == uuid.Nil || d.BaseID == uuid.Nil || d.CheckpointID == uuid.Nil || d.Sequence < 0 || d.Sequence > 1<<53 || d.Bytes < 1 || d.Bytes > RecoveryEnvelopeLimit || len(d.RootHash) != 64 || len(d.GroupHash) != 64 || len(d.Digest) != 64 || d.Sequence == 0 && (d.CheckpointID != d.BaseID || d.PreviousHash != "") || d.Sequence > 0 && len(d.PreviousHash) != 64 || len(d.Participants) == 0 || len(d.Participants) > 4 {
+	if d.Version != RecoveryVersion || d.WorkspaceID == uuid.Nil || d.ParentID == uuid.Nil || d.GroupID == uuid.Nil || d.BaseID == uuid.Nil || d.CheckpointID == uuid.Nil || d.Sequence < 0 || d.Sequence > 1<<53 || d.Bytes < 1 || d.Bytes > RecoveryEnvelopeLimit || len(d.RootHash) != 64 || len(d.GroupHash) != 64 || len(d.Digest) != 64 || d.Sequence == 0 && (d.CheckpointID != d.BaseID || d.PreviousHash != "") || d.Sequence > 0 && len(d.PreviousHash) != 64 || len(d.Participants) == 0 || len(d.Participants) > 4 {
 		return errors.New("invalid recovery checkpoint descriptor")
 	}
 	for _, hash := range []string{d.RootHash, d.GroupHash, d.Digest, d.PreviousHash} {

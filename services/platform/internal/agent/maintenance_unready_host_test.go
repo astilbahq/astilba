@@ -114,7 +114,7 @@ func newUnreadyWriter(t *testing.T, app domain.Application, health *container.He
 	w.observeForManagement()
 	envelope := []byte("opaque-frozen-maintenance-root")
 	first := uuid.New()
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: w.parent, RootHash: w.root, GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: first, CheckpointID: first, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: w.parent, RootHash: w.root, GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: first, CheckpointID: first, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
 	raw, _ := stablejson.Marshal(d)
 	w.descriptor = jsontext.Value(raw)
 	if err = j.retainCheckpoint(w.command("reserve"), d, envelope); err != nil {
