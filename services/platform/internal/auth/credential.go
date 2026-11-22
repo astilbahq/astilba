@@ -131,7 +131,7 @@ func (s *Service) withCredential(ctx context.Context, p store.Principal, c Crede
 	if mfa {
 		attempt = codeGuess(p.Account.ID, c.Code, reauthBudget(p.Account.ID))
 	} else {
-		failures := budget{"password-confirmation-failures:" + p.Account.ID.String(), dailyFailures, dailyFailuresWindow}
+		failures := budget{"reauth-failures:" + p.Account.ID.String(), dailyFailures, dailyFailuresWindow}
 		attempt = failingGuess(failures, reauthBudget(p.Account.ID))
 	}
 	var charged, wrong bool

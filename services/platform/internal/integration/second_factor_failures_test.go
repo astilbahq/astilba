@@ -187,7 +187,7 @@ func TestPasswordConfirmationFailuresSpendADailyAllowance(t *testing.T) {
 	b, _, _, _ := staleOwner(t, f, false)
 	failures := func() (count int) {
 		t.Helper()
-		_ = f.st.Pool.QueryRow(context.Background(), "SELECT attempts FROM auth_attempts WHERE scope_hash=$1", auth.Hash(fmt.Sprintf("password-confirmation-failures:%s", f.owner))).Scan(&count)
+		_ = f.st.Pool.QueryRow(context.Background(), "SELECT attempts FROM auth_attempts WHERE scope_hash=$1", auth.Hash(fmt.Sprintf("reauth-failures:%s", f.owner))).Scan(&count)
 		return count
 	}
 	b.reauthenticate(map[string]string{"password": f.password}, 200)
