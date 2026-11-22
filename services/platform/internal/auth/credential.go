@@ -55,10 +55,6 @@ func codeFailures(id uuid.UUID) budget {
 	return budget{"code-failures:" + id.String(), dailyFailures, dailyFailuresWindow}
 }
 
-func passwordConfirmationFailures(id uuid.UUID) budget {
-	return budget{"password-confirmation-failures:" + id.String(), dailyFailures, dailyFailuresWindow}
-}
-
 // guess is one check of a credential, with the budgets it spends before the check. When it
 // spends a daily failure allowance, that comes last, so concurrent charges take its row lock
 // after any other.
@@ -135,7 +131,8 @@ func (s *Service) withCredential(ctx context.Context, p store.Principal, c Crede
 	if mfa {
 		attempt = codeGuess(p.Account.ID, c.Code, reauthBudget(p.Account.ID))
 	} else {
-		attempt = failingGuess(passwordConfirmationFailures(p.Account.ID), reauthBudget(p.Account.ID))
+		failures := budget{"password-confirmation-failures:" + p.Account.ID.String(), dailyFailures, dailyFailuresWindow}
+		attempt = failingGuess(failures, reauthBudget(p.Account.ID))
 	}
 	var charged, wrong bool
 	err := func() (err error) {
