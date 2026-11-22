@@ -35,7 +35,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
-const proxyImage = "traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953"
+const proxyImage = "traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf"
 
 //go:embed transport_proxy.yml
 var proxyConfig []byte
