@@ -38,7 +38,7 @@ func TestRecoverySupersedesUnretainedDelivery(t *testing.T) {
 	p = p.WithHash()
 	parent, id := uuid.New(), uuid.New()
 	base := []byte("opaque-base")
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(base), Bytes: len(base), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(base), Bytes: len(base), Participants: []uuid.UUID{p.ServerID}}
 	command := func(d deployment.RecoveryDescriptor, phase string, generation int64) api.ExecutionCommand {
 		body := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: phase, Unit: deployment.DistributedUnit{Plan: p}}
 		raw, _ := stablejson.Marshal(body)

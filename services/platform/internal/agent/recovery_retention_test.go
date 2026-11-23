@@ -21,7 +21,7 @@ func TestRecoveryRetentionPreservesUnfinishedChains(t *testing.T) {
 	root := func(completed bool, generation int64) (deployment.RecoveryDescriptor, api.ExecutionCommand) {
 		parent, id := uuid.New(), uuid.New()
 		body := []byte("opaque-" + parent.String())
-		d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
+		d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
 		command := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: "complete", Unit: deployment.DistributedUnit{Plan: p}}
 		raw, _ := stablejson.Marshal(command)
 		message := jsontext.Value(raw)
@@ -85,7 +85,7 @@ func TestRecoveryDeletionResumesWithoutRemovingChangedFiles(t *testing.T) {
 	j, p := testVisualJournal(t)
 	body := []byte("opaque-gc-owned")
 	id, parent := uuid.New(), uuid.New()
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
 	c := api.ExecutionCommand{ParentId: &parent, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID}
 	if err := j.retainCheckpoint(c, d, body); err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestRecoveryClosureBoundsCheckpointOnlyCancellations(t *testing.T) {
 	for index := 0; index < 4; index++ {
 		parent, id := uuid.New(), uuid.New()
 		body := []byte("opaque-" + parent.String())
-		d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
+		d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
 		if index == 0 {
 			first = d
 		}

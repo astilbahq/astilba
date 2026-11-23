@@ -92,7 +92,7 @@ func (h *nativePlacementHost) coordinatedCommand(body deployment.CrossHostComman
 			sort.Slice(participants, func(i, j int) bool { return participants[i].String() < participants[j].String() })
 			id := uuid.NewSHA1(body.ParentID, []byte("native-recovery-checkpoint"))
 			envelope := nativeRecoveryEnvelope(body.ParentID)
-			h.checkpoints[body.ParentID] = deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.NewSHA1(p.EnvironmentID, []byte("native-workspace")), ParentID: body.ParentID, RootHash: body.GroupHash, GroupID: p.Local.GroupID, GroupHash: body.GroupHash, BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: participants}
+			h.checkpoints[body.ParentID] = deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.NewSHA1(p.EnvironmentID, []byte("native-workspace")), ParentID: body.ParentID, RootHash: body.GroupHash, GroupID: p.Local.GroupID, GroupHash: body.GroupHash, BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: participants}
 			h.checkpointEnvironments[body.ParentID] = p.EnvironmentID
 			if p.Local.Primary && body.Phase == "reserve" {
 				h.generation++ // The primary metadata ACK precedes reserve.

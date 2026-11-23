@@ -23,7 +23,7 @@ func TestRecoveryCapsuleDurabilityAndPrivateStorage(t *testing.T) {
 	dir := j.dir
 	body := bytes.Repeat([]byte("opaque-management-ciphertext"), 23000)
 	id, parent := uuid.New(), uuid.New()
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
 	raw, _ := stablejson.Marshal(d)
 	message := jsontext.Value(raw)
 	c := api.ExecutionCommand{ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, RecoveryCheckpoint: &message}
@@ -68,7 +68,7 @@ func TestRecoveryContinuationRetriesMetadataWithoutRunningCancelledEffects(t *te
 	p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: true}
 	p = p.WithHash()
 	base := []byte("base-envelope")
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(base), Bytes: len(base), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(base), Bytes: len(base), Participants: []uuid.UUID{p.ServerID}}
 	body := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: "checkpoint", Unit: deployment.DistributedUnit{Plan: p}}
 	raw, _ := stablejson.Marshal(body)
 	message := jsontext.Value(raw)
@@ -118,7 +118,7 @@ func TestRecoveryCapsuleRefusesSymlinkStorage(t *testing.T) {
 	}
 	body := []byte("opaque")
 	id, parent := uuid.New(), uuid.New()
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(body), Bytes: len(body), Participants: []uuid.UUID{p.ServerID}}
 	c := api.ExecutionCommand{ParentId: &parent, ServerId: p.ServerID, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID}
 	if err := j.retainCheckpoint(c, d, body); err == nil {
 		t.Fatal("symlink storage was acknowledged")

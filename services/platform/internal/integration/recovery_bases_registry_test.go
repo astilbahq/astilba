@@ -2,11 +2,11 @@ package integration
 
 import (
 	"encoding/json/v2"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 
 	"github.com/google/uuid"
 )
@@ -177,7 +177,7 @@ func TestRecoveryRegistersTheBaseItTakesOver(t *testing.T) {
 	if id != r.descriptor.BaseID || environment != r.env || primary != r.a.ServerId || closed != nil {
 		t.Fatalf("the taken-over base was registered as %s for %s on %s, closed %v", id, environment, primary, closed)
 	}
-	compressed, err := keysOf(r.f.st).Open(r.envelope, fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", r.ws, r.root.Id, r.descriptor.CheckpointID, 0, r.root.PlanHash))
+	compressed, err := keysOf(r.f.st).Open(r.envelope, secretbroker.CheckpointIdentity(r.descriptor))
 	if err != nil {
 		t.Fatal(err)
 	}
