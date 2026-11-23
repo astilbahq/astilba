@@ -176,13 +176,19 @@ func (r PostgresRelease) OpensDataFrom(source PostgresRelease) error {
 	case source.Version == r.Version:
 		return nil
 	case source.Major() != r.Major():
-		return fmt.Errorf("PostgreSQL %s cannot open data PostgreSQL %s wrote. Changing the major version needs the supported upgrade or new storage", r.Name(), source.Name())
+		return r.MajorChange(source.Name())
 	case source.Line != r.Line:
 		return fmt.Errorf("PostgreSQL %s (%s) cannot open data PostgreSQL %s (%s) wrote in place, because their sorting libraries differ. Restore a backup into new storage instead", r.Name(), r.Line, source.Name(), source.Line)
 	case source.Version > r.Version:
 		return fmt.Errorf("PostgreSQL %s cannot replace PostgreSQL %s: a database never moves to an earlier release", r.Name(), source.Name())
 	}
 	return nil
+}
+
+// MajorChange is why this release cannot open data the source wrote, a release or, where only that
+// is known, a major of another major version.
+func (r PostgresRelease) MajorChange(source string) error {
+	return fmt.Errorf("PostgreSQL %s cannot open data PostgreSQL %s wrote. Changing the major version needs the supported upgrade or new storage", r.Name(), source)
 }
 
 // ReindexSince returns the reindex queries a data directory written by the source release needs
