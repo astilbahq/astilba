@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -137,13 +137,12 @@ func captureSweepNames(t *testing.T) func() (removed, left []string) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(trail, nil)))
 	return func() (removed, left []string) {
 		t.Helper()
-		decoder := json.NewDecoder(trail)
-		for decoder.More() {
+		for line := range strings.Lines(trail.String()) {
 			var record struct {
-				Msg   string
-				Names []string
+				Msg   string   `json:"msg"`
+				Names []string `json:"names"`
 			}
-			if err := decoder.Decode(&record); err != nil {
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
 				t.Fatal(err)
 			}
 			switch {
