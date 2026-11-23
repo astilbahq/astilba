@@ -54,6 +54,9 @@ type Engine struct {
 	// checkedSiblings are index entries the agent found harmless for loads.
 	checkedOnce     sync.Once
 	checkedSiblings *checkedManifests
+	// registryRetry is how often the agent reads an image again in tests, which can't wait as long
+	// as defaultRegistryRetry, the policy when nil.
+	registryRetry *registryRetry
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex

@@ -130,7 +130,7 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 		if len(p.Secrets) != len(domain.SecretReferences(p.Plan.Specification)) {
 			return e.abortRelease(ctx, c, p, &s, "failed", "The execution secret set differs from the reviewed plan.")
 		}
-		if err = e.pullVisualImages(ctx, p); err != nil {
+		if err = e.pullVisualImages(ctx, c, p); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

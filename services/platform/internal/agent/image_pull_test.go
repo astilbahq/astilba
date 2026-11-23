@@ -41,6 +41,9 @@ type testRegistry struct {
 	// anonymous requires a bearer token that its token service issues without a credential, as
 	// Docker Hub does for anonymous pulls.
 	anonymous bool
+	// fault, when set, answers the nth request for a digest and reports true, or leaves it to the
+	// registry.
+	fault func(w http.ResponseWriter, req *http.Request, digest string, n int) bool
 }
 
 func newTestRegistry() *testRegistry {
@@ -95,7 +98,11 @@ func (r *testRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	r.mu.Lock()
 	r.served[parts[1]]++
+	n := r.served[parts[1]]
 	r.mu.Unlock()
+	if r.fault != nil && r.fault(w, req, parts[1], n) {
+		return
+	}
 	switch parts[0] {
 	case "manifests":
 		m, ok := r.manifests[parts[1]]

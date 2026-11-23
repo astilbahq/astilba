@@ -131,11 +131,12 @@ func (f *nativeVisualFixture) finish(c api.ExecutionCommand) Record {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if r.Report.State != "succeeded" {
-		f.t.Fatalf("%s failed: %s", c.Kind, r.Report.Note)
-	}
+	// Settled whatever its outcome, so a failure ends only the subtest that saw it.
 	if err = f.engine.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
 		f.t.Fatal(err)
+	}
+	if r.Report.State != "succeeded" {
+		f.t.Fatalf("%s failed: %s", c.Kind, r.Report.Note)
 	}
 	return r
 }

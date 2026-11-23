@@ -79,8 +79,9 @@ func (c *layerCosts) put(d digest.Digest, cost imageCost) {
 // has counted what that writes to Docker's storage within the host's limits. With Docker's
 // containerd image store the agent reads the image and loads it; with the classic store it
 // measures the image, then Docker pulls it while the agent watches Docker's storage.
+// A read its registry failed is made again, see readRegistry, until cancelled.
 // credential is the registry's, if it needs one; the agent keeps it only for this pull.
-func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential *pipeline.Credential) error {
+func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential *pipeline.Credential, cancelled func() bool) error {
 	refuse := func(err error) error {
 		var refused *imageLoadRefused
 		if errors.As(err, &refused) {
@@ -100,10 +101,6 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if err != nil {
 		return refuse(&imageLoadRefused{why: "its reference is not valid"})
 	}
-	limit, err := e.imageLoadLimit(ctx)
-	if err != nil {
-		return refuse(err)
-	}
 	info, err := e.Docker.Info(ctx, client.InfoOptions{})
 	if err != nil {
 		return refuse(&imageLoadRefused{why: "the agent cannot read Docker's registry settings"})
@@ -118,30 +115,30 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	// Docker pulls the image for its own platform.
 	platform := ocispec.Platform{OS: "linux", Architecture: dockerArchitecture(info.Info.Architecture)}
 	loading := containerdImageStore(info.Info.DriverStatus)
-	plan, source, err := planFromSources(ctx, sources, pinned.Digest(), platform, limit, loading, e.checkedManifests())
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	var plan *registryPlan
+	var measured imageCost
+	err = e.readRegistry(ctx, image, cancelled, func(ctx context.Context) error {
+		// A failed load can leave blobs in Docker's storage until containerd collects them.
+		limit, err := e.imageLoadLimit(ctx)
+		if err != nil {
+			return err
 		}
-		var unread *imageArchiveUnread
-		if errors.As(err, &unread) {
-			err = registryUnreachable(unread.err)
+		var source registryImage
+		if plan, source, err = planFromSources(ctx, sources, pinned.Digest(), platform, limit, loading, e.checkedManifests()); err != nil {
+			return err
 		}
-		return refuse(err)
-	}
-	if loading {
-		return refuse(e.loadRegistryImage(ctx, canonical, source, plan, limit))
-	}
-	measured, err := e.measureRegistryImage(ctx, source, plan, limit)
-	if err != nil {
-		var unread *imageArchiveUnread
-		if errors.As(err, &unread) {
-			err = registryUnreachable(unread.err)
+		if loading {
+			return e.loadRegistryImage(ctx, canonical, source, plan, limit)
 		}
+		measured, err = e.measureRegistryImage(ctx, source, plan, limit)
+		return err
+	})
+	if err != nil || loading {
 		return refuse(err)
 	}
 	// Measuring read the whole image, while other writers may have filled Docker's storage.
-	if limit, err = e.imageLoadLimit(ctx); err != nil {
+	limit, err := e.imageLoadLimit(ctx)
+	if err != nil {
 		return refuse(err)
 	}
 	if err = limit.check(measured); err != nil {
@@ -246,6 +243,7 @@ func (e *Engine) layerCosts() *layerCosts {
 func registryUnreachable(err error) error {
 	var response *errcode.ErrorResponse
 	why := "the agent could not read it from its registry to measure what pulling it writes"
+	fix := "Check the image's registry, its credentials and that this server can reach it, then {retry}."
 	switch {
 	case errors.Is(err, errLongerThanMeasured):
 		why = "its registry sent more for a blob than the image's manifest says the blob holds"
@@ -253,8 +251,11 @@ func registryUnreachable(err error) error {
 		why = "its registry refused to let the agent read it, so the agent cannot measure what pulling it writes"
 	case errors.Is(err, errdef.ErrNotFound):
 		why = "its registry does not have it"
+	case transientRegistryFailure(err):
+		why = "its registry failed or did not answer while the agent read it"
+		fix = "Check that the registry is up and this server can reach it, then {retry}."
 	}
-	return &imageLoadRefused{why: why, fix: "Check the image's registry, its credentials and that this server can reach it, then {retry}."}
+	return &imageLoadRefused{why: why, fix: fix}
 }
 
 // dockerArchitecture is the GOARCH name for an architecture as Docker's info reports it.
@@ -277,7 +278,7 @@ func encodedRegistryAuth(c pipeline.Credential) string {
 // pullVisualImages puts a deployment's images into Docker. Any image it cannot put there ends
 // in an *imagePullRefused whose note says why: a pull changes nothing that a deployment runs, so
 // its callers fail the deployment rather than hold the host for inspection.
-func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) error {
+func (e *Engine) pullVisualImages(ctx context.Context, c api.ExecutionCommand, p deployment.Payload) error {
 	images := make([]string, 0, len(p.Plan.Images)+1)
 	for _, image := range p.Plan.Images {
 		images = append(images, image)
@@ -314,7 +315,7 @@ func (e *Engine) pullVisualImages(ctx context.Context, p deployment.Payload) err
 		if c, ok := p.RegistryAccess[key]; ok {
 			credential = &c
 		}
-		if err := e.pullMeasuredImage(ctx, image, credential); err != nil {
+		if err := e.pullMeasuredImage(ctx, image, credential, func() bool { return e.cancelled(c.Id) }); err != nil {
 			var refused *imagePullRefused
 			if errors.As(err, &refused) {
 				return err

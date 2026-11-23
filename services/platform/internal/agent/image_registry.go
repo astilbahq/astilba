@@ -246,7 +246,7 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 		credentials = auth.StaticCredential(host, auth.Credential{Username: credential.Username, Password: credential.Password})
 	}
 	repo := &remote.Repository{
-		Client:           &auth.Client{Client: &http.Client{Transport: transport}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
+		Client:           &auth.Client{Client: &http.Client{Transport: retryAfterTransport{transport}}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
 		Reference:        registry.Reference{Registry: host, Repository: repository},
 		PlainHTTP:        plainHTTP,
 		MaxMetadataBytes: imageMetadataBytes,
