@@ -93,3 +93,29 @@ for (const theme of ["light", "dark"]) {
     await expect(page.getByRole("main")).toBeFocused();
   });
 }
+
+// The router resets the scroll position after a navigation, and the shell then moves focus.
+// Focusing a main area taller than the screen must not scroll the header, with its navigation
+// button, back out of view.
+test("navigating on a small screen keeps the header in view", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 300 });
+  await page.goto(
+    "/iframe.html?id=pages-projects--populated&viewMode=story&globals=a11y.manual:!true",
+  );
+  const main = page.getByRole("main");
+  const open = page.getByRole("button", { name: app.navigation.open });
+  await page
+    .getByRole("link", { name: "Website Open project", exact: true })
+    .click();
+  await expect(page.getByRole("heading", { name: "Website" })).toBeVisible();
+  await expect(main).toBeFocused();
+  await expect(open).toBeInViewport({ ratio: 1 });
+  await open.click();
+  const drawer = page.getByRole("dialog", { name: app.navigation.label });
+  await drawer.getByRole("link", { name: app.navigation.projects }).click();
+  await expect(drawer).toHaveCount(0);
+  await expect(main).toBeFocused();
+  await expect(open).toBeInViewport({ ratio: 1 });
+});

@@ -51,6 +51,16 @@ function Chevron() {
   );
 }
 
+// focusPage moves focus to the page a navigation rendered: the section its link's hash names, if
+// that can take focus, or otherwise main. The router has placed the scroll position, so main,
+// which can be taller than the screen, leaves it alone.
+function focusPage(main: HTMLElement | null, hash: string) {
+  const section = hash ? document.getElementById(hash) : null;
+  section?.focus();
+  if (!section || document.activeElement !== section)
+    main?.focus({ preventScroll: true });
+}
+
 export function AppShell({
   user,
   workspaces,
@@ -94,12 +104,7 @@ export function AppShell({
     if (open) {
       focusAfterClose.current = true;
       setOpen(false);
-    } else {
-      // A link to a section of the page moves focus to that section, if it can take focus.
-      const target = hash ? document.getElementById(hash) : null;
-      target?.focus();
-      if (!target || document.activeElement !== target) main.current?.focus();
-    }
+    } else focusPage(main.current, hash);
   }, [navigationKey, hash, open]);
   const search = { workspace: selectedWorkspaceId ?? workspace?.id };
   const navigation = [
@@ -261,9 +266,7 @@ export function AppShell({
         setOpen(visible);
       }}
       onOpenChangeComplete={(visible) => {
-        if (!visible && focusAfterClose.current) {
-          main.current?.focus();
-        }
+        if (!visible && focusAfterClose.current) focusPage(main.current, hash);
       }}
     >
       <div className={styles.root}>

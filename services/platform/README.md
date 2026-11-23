@@ -43,7 +43,7 @@ For local development only, set `ASTILBA_DEVELOPMENT=true`, `ASTILBA_LISTEN=127.
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated IPv4 or IPv6 CIDRs for reverse proxies allowed to supply `X-Forwarded-For`. Defaults to no trusted proxies. |
 | `ASTILBA_AGENT_RELEASES`, `ASTILBA_AGENT_RELEASE_KEY` | Optional read-only signed agent catalog directory and its trusted public PEM key. Both are required to offer downloadable agent updates. |
 | **ASTILBA_INTEGRATION_ORIGINS** | Optional comma-separated exact HTTPS origins for self-hosted GitLab/Gitea; explicit origins may reach private networks. See [Git/build trust boundaries](../../docs/git-builds.md). |
-| `ASTILBA_HOSTED` | `true` requires MFA before workspace management writes. Self-hosted owners can enable the same policy per workspace. |
+| `ASTILBA_HOSTED` | `true` requires MFA before workspace management writes. Elsewhere each workspace has the same policy, on from its creation, which its owners can turn off. |
 | `ASTILBA_DEVELOPMENT` | `true` enables loopback-only HTTP cookies and optionally plaintext local SMTP or explicit console email. |
 | `ASTILBA_SMTP_ADDRESS` | SMTP host and port. Outside explicit local console mode, missing SMTP prevents invitations from being sent; reset requests still return a generic response, and [log that no mail went out](../../docs/hosting.md#when-password-reset-mail-fails). |
 | `ASTILBA_SMTP_MODE` | `tls` for implicit TLS or `starttls` for required STARTTLS. `plain` is allowed only for loopback development. `console` writes plaintext email to stdout and requires non-hosted loopback HTTP development with no SMTP address or credentials; `pnpm dev` selects it automatically. |
