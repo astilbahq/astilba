@@ -42,6 +42,14 @@ func restoreIncompatible(err error) error {
 	return &domain.Error{Code: "invalid_input", Message: "This restore cannot replace the database: " + err.Error() + ".", Fields: []string{"restore.compatibility"}}
 }
 
+// volumeMajorRefusal explains the refusal of a plan whose managed database, on a pinned release,
+// runs another major than the one its volume records, which the volume keeps across retirement and
+// restore. The agent refuses it again at deployment, from its own record of the volume's release.
+func volumeMajorRefusal(a domain.Application, recorded string) error {
+	serving, _ := domain.PostgresReleaseOf(*a.Source.Image)
+	return &domain.Error{Code: "invalid_input", Message: a.Name + " cannot start on its volume: " + serving.MajorChange(recorded).Error() + ".", Fields: []string{"applications.postgres.upgrade"}}
+}
+
 // mountsVolume reports whether the specification's managed database keeps its data on the volume.
 func mountsVolume(spec domain.Specification, resource, volume uuid.UUID) bool {
 	for _, a := range spec.Applications {

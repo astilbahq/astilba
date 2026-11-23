@@ -232,7 +232,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 			// The volume's own record holds whatever the environment applied since, including across
 			// a retirement, which clears the applied revision the check above compares with.
 			if major != nil && *major != domain.PostgresMajor(*a.Source.Image) {
-				return domain.Invalid("applications.postgres.upgrade")
+				return volumeMajorRefusal(a, *major)
 			}
 		}
 		plan := deployment.Plan{ID: uuid.New(), ServerID: in.ServerId, EnvironmentID: env, UnitID: v.Unit, RevisionID: v.Revision, ExpectedAppliedID: v.Applied, Recipe: deployment.Recipe, Specification: v.Spec, Images: map[string]string{}, HostChanges: hostChanges, AcceptDrift: in.AcceptDrift, Effects: deployment.Effects(v.Spec, previous, newPorts), ExpiresAt: time.Now().UTC().Add(15 * time.Minute)}.WithHash()

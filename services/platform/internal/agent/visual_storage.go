@@ -12,9 +12,10 @@ import (
 
 // ensureStorage creates the unit's networks and data volumes, a managed database's with its
 // cluster in the owner model, and checks that each existing volume is the unit's own and that a
-// PostgreSQL service on it runs the major and the role model that initialised it. Every
-// deployment path reaches it before starting a service. secrets are the plan's, which hold a new
-// database user's password.
+// PostgreSQL service on it runs the role model that initialised it and a release that can open its
+// data, by the journal's record of the release whose indexes the data holds and the volume's label
+// of the major that initialised it. Every deployment path reaches it before starting a service.
+// secrets are the plan's, which hold a new database user's password.
 func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan, secrets map[string]string) error {
 	if err := e.ensureUnitNetworks(ctx, p); err != nil {
 		return err
@@ -75,6 +76,9 @@ func (e *Engine) ensureStorage(ctx context.Context, p deployment.Plan, secrets m
 		}
 		if err != nil || !visualOwned(v.Volume.Labels, p) || v.Volume.Labels[labelResource] != vol.ID.String() || v.Volume.Driver != "local" || len(v.Volume.Options) > 0 {
 			return errors.New("Data volume ownership or driver does not match.")
+		}
+		if err = e.Journal.postgresDataOpens(p, vol.ID); err != nil {
+			return err
 		}
 		if err = postgresVolumeMatches(v.Volume.Labels, p, vol.ID); err != nil {
 			return err
