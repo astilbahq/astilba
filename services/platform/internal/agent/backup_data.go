@@ -310,11 +310,17 @@ func (e *Engine) postgresManifest(ctx context.Context, db pgClient, a domain.App
 	// A restore runs the dump as the database user, which can't create what only a superuser may,
 	// as a database from before the owner model could, so a dump holding any of it is never one a
 	// restore can use. An extension's own objects come from the extension.
-	if count, err := e.pgQuery(ctx, db, a, superuserObjectsSQL); err != nil || strings.TrimSpace(string(count)) != "0" {
-		return errors.New("objects only a superuser can create, such as event triggers, C functions or operator classes, require a separate recipe")
-	}
-	if count, err := e.pgQuery(ctx, db, a, superuserPrivilegesSQL); err != nil || strings.TrimSpace(string(count)) != "0" {
-		return errors.New("privileges changed on PostgreSQL's or an extension's objects, or granted by a role that doesn't own the object, require a separate recipe")
+	for _, check := range []struct{ sql, refusal string }{
+		{superuserObjectsSQL, "objects only a superuser can create, such as event triggers, C functions or operator classes, require a separate recipe"},
+		{superuserPrivilegesSQL, "privileges changed on PostgreSQL's or an extension's objects, or granted by a role that doesn't own the object, require a separate recipe"},
+	} {
+		count, err := e.pgQuery(ctx, db, a, check.sql)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(count)) != "0" {
+			return errors.New(check.refusal)
+		}
 	}
 	raw, err = e.pgQuery(ctx, db, a, "SELECT coalesce(json_agg(extname ORDER BY extname),'[]') FROM pg_extension")
 	if err != nil || json.Unmarshal(raw, &m.Extensions) != nil {
@@ -371,7 +377,7 @@ var superuserObjectsSQL = func() string {
 		// internal language, and come with the aggregate or the type. A function may run as a role
 		// or session user its user chooses, which pg_settings doesn't list.
 		// inline-sql: reads a managed database's catalog, not the platform database.
-		"SELECT count(*) FROM pg_proc x JOIN pg_language l ON l.oid = x.prolang WHERE "+own("pg_proc")+" AND x.prokind <> 'a' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = x.oid AND d.deptype = 'i') AND (NOT l.lanpltrusted OR x.proleakproof OR x.prosupport <> 0 OR EXISTS (SELECT 1 FROM unnest(x.proconfig) c WHERE lower(split_part(c, '=', 1)) NOT IN ('role', 'session_authorization') AND NOT EXISTS (SELECT 1 FROM pg_settings s WHERE lower(s.name) = lower(split_part(c, '=', 1)) AND s.context = 'user' AND position('.' IN s.name) = 0)))",
+		"SELECT count(*) FROM pg_proc x JOIN pg_language l ON l.oid = x.prolang WHERE "+own("pg_proc")+" AND x.prokind <> 'a' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = x.oid AND d.deptype = 'i') AND (NOT l.lanpltrusted OR x.proleakproof OR x.prosupport <> 0 OR EXISTS (SELECT 1 FROM unnest(x.proconfig) c WHERE lower(split_part(c, '=', 1)) NOT IN ('default_with_oids', 'role', 'session_authorization', 'ssl_renegotiation_limit') AND NOT EXISTS (SELECT 1 FROM pg_settings s WHERE lower(s.name) = lower(split_part(c, '=', 1)) AND s.context = 'user' AND position('.' IN s.name) = 0)))",
 	)
 	return "SELECT (" + strings.Join(counts, ") + (") + ")"
 }()

@@ -9930,13 +9930,6 @@
         bytes:
           type: integer
           format: int64
-        dumpSettings:
-          type: object
-          description: The settings the dump's session printed values under, such as TimeZone and bytea_output, which a restore's verification dumps under again. Manifests written before they were recorded leave them out.
-          additionalProperties:
-            type: string
-            maxLength: 256
-          maxProperties: 6
       required:
         - recipe
         - policyId

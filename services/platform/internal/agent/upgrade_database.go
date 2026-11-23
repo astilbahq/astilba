@@ -139,6 +139,8 @@ func (e *Engine) upgradeDump(ctx context.Context, s upgradeState, source string,
 	if err != nil {
 		return err
 	}
+	// pg_dump sets it for its flag below, whatever the session has.
+	m.DumpSettings["quote_all_identifiers"] = "on"
 	f, err := os.OpenFile(filepath.Join(stage, "data.dump"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err

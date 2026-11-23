@@ -4761,10 +4761,6 @@ export interface components {
             sha256: string;
             /** Format: int64 */
             bytes: number;
-            /** @description The settings the dump's session printed values under, such as TimeZone and bytea_output, which a restore's verification dumps under again. Manifests written before they were recorded leave them out. */
-            dumpSettings?: {
-                [key: string]: string;
-            };
         };
         BackupRun: {
             manifestHash?: string;

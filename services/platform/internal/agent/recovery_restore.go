@@ -84,6 +84,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 		}
 		return e.finish(c.Id, "failed", "Restore failed before anything was created. Check the destination's access, that the snapshot still exists, and that this server runs the current deployment.")
 	}
+	stored.DumpSettings = nil
 	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: v.Snapshot, TargetID: v.TargetID, Manifest: stored, RestoreImage: release.Image, RestoreRoles: restoredRoles(release)})
 	if err != nil {
 		return err

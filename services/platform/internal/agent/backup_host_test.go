@@ -499,9 +499,14 @@ func TestScheduleHistoryKeepsSnapshotsWithinTransportBounds(t *testing.T) {
 	for n := range 100 {
 		roles = append(roles, backup.Role{Name: fmt.Sprintf("%03d", n) + strings.Repeat("r", 60)})
 	}
+	// The database's user can make a setting's value long.
+	settings := map[string]string{}
+	for _, name := range backup.DumpSettings {
+		settings[name] = strings.Repeat("0", 256)
+	}
 	for n := range 200 {
 		snapshot := fmt.Sprintf("%064x", n%100)
-		m := &backup.Manifest{PolicyID: policy.ID, Roles: roles, Extensions: []string{"plpgsql"}, Image: domain.PostgresImage, CreatedAt: time.Now()}
+		m := &backup.Manifest{PolicyID: policy.ID, Roles: roles, Extensions: []string{"plpgsql"}, Image: domain.PostgresImage, CreatedAt: time.Now(), DumpSettings: settings}
 		s.Runs = append(s.Runs, backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, State: "succeeded", Snapshot: snapshot, Manifest: m, TargetID: uuid.New()})
 	}
 	if err = j.saveSchedule(s); err != nil {
@@ -514,8 +519,8 @@ func TestScheduleHistoryKeepsSnapshotsWithinTransportBounds(t *testing.T) {
 	snapshots := map[string]bool{}
 	for _, r := range stored.Runs {
 		snapshots[r.Snapshot] = true
-		if r.ManifestHash == "" || len(r.Manifest.Roles) != 0 {
-			t.Fatal("role metadata was duplicated in operational history")
+		if r.ManifestHash == "" || len(r.Manifest.Roles) != 0 || len(r.Manifest.DumpSettings) != 0 {
+			t.Fatal("a manifest's roles or dump settings were duplicated in operational history")
 		}
 	}
 	if len(stored.Runs) != 128 || len(snapshots) != 100 {

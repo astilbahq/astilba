@@ -336,6 +336,9 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		if got.Snapshot != database.snapshot || got.TargetID != target || got.Manifest.SHA256 != database.manifest.SHA256 || got.Manifest.RunID != database.manifest.RunID {
 			t.Fatalf("restore reported another snapshot: %+v", got)
 		}
+		if got.Manifest.DumpSettings != nil {
+			t.Fatal("the dump's settings were reported to management")
+		}
 		if v, err := docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(domain.PostgresImage) {
 			t.Fatal("the target does not record its PostgreSQL major: ", err)
 		}

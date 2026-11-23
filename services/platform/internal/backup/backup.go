@@ -102,7 +102,8 @@ type Manifest struct {
 	SHA256        string    `json:"sha256"`
 	Bytes         int64     `json:"bytes"`
 	// DumpSettings are the value of each of DumpSettings that the dump ran with. Manifests
-	// written before they were recorded leave them out.
+	// written before they were recorded leave them out. Only a snapshot's own manifest holds them:
+	// management doesn't use them, and a controller from before them refuses a report with them.
 	DumpSettings map[string]string `json:"dumpSettings,omitempty"`
 }
 

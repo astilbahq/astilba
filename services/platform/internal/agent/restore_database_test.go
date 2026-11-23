@@ -50,6 +50,7 @@ COMMENT ON DATABASE app IS 'it''s; DROP DATABASE app;
 ALTER DATABASE app CONNECTION LIMIT = 50;
 ALTER DATABASE app SET work_mem TO '8MB';
 ALTER DATABASE app SET search_path TO 'public', 'x';
+ALTER DATABASE app SET application_name TO E'a\\b''; c';
 ALTER DATABASE app SET "PLPGSQL.VARIABLE_CONFLICT" TO 'use_column';
 ALTER ROLE app IN DATABASE app SET work_mem TO '2MB';
 ALTER ROLE "Reader" IN DATABASE app SET "DateStyle" TO 'ISO, DMY';
@@ -71,7 +72,7 @@ func TestDatabaseStatementsReadOnlyWhatPgDumpWrites(t *testing.T) {
 	for _, s := range got {
 		kinds = append(kinds, s.kind)
 	}
-	want := []databaseStatementKind{statementCreate, statementOwner, statementComment, statementProperty, statementSetting, statementSetting, statementSetting, statementSetting, statementSetting, statementPrivilege, statementPrivilege, statementPrivilege}
+	want := []databaseStatementKind{statementCreate, statementOwner, statementComment, statementProperty, statementSetting, statementSetting, statementSetting, statementSetting, statementSetting, statementSetting, statementPrivilege, statementPrivilege, statementPrivilege}
 	if !slices.Equal(kinds, want) {
 		t.Fatalf("kinds %v, want %v", kinds, want)
 	}
@@ -84,7 +85,7 @@ func TestDatabaseStatementsReadOnlyWhatPgDumpWrites(t *testing.T) {
 			settings = append(settings, s.setting)
 		}
 	}
-	if want := []clusterSetting{{name: "work_mem"}, {name: "search_path"}, {name: "PLPGSQL.VARIABLE_CONFLICT"}, {role: "app", name: "work_mem"}, {role: "Reader", name: "DateStyle"}}; !slices.Equal(settings, want) {
+	if want := []clusterSetting{{name: "work_mem"}, {name: "search_path"}, {name: "application_name"}, {name: "PLPGSQL.VARIABLE_CONFLICT"}, {role: "app", name: "work_mem"}, {role: "Reader", name: "DateStyle"}}; !slices.Equal(settings, want) {
 		t.Fatalf("settings %v, want %v", settings, want)
 	}
 
@@ -98,6 +99,7 @@ func TestDatabaseStatementsReadOnlyWhatPgDumpWrites(t *testing.T) {
 		{"a setting from the current session", "ALTER DATABASE app SET work_mem FROM CURRENT;"},
 		{"a statement after a value", "ALTER DATABASE app SET work_mem TO '1MB'; ALTER ROLE app SUPERUSER;"},
 		{"a dollar-quoted value", "COMMENT ON DATABASE app IS $$x$$;"},
+		{"a backslash escape that isn't a backslash", `ALTER DATABASE app SET application_name TO E'\'; ALTER ROLE app SUPERUSER; --';`},
 		{"an unterminated literal", "COMMENT ON DATABASE app IS 'x;"},
 		{"a statement without its end", "COMMENT ON DATABASE app IS 'x'"},
 		{"a second database", "CREATE DATABASE app WITH TEMPLATE = template0;"},

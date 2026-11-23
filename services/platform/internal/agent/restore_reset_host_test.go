@@ -150,6 +150,11 @@ ALTER DATABASE app SET session_replication_role = replica;
 ALTER DATABASE app SET "PLPGSQL.VARIABLE_CONFLICT" = use_column;
 ALTER DATABASE app SET plpgsql.extra_warnings = 'all';
 ALTER DATABASE app SET role = app;
+ALTER DATABASE app SET ssl_renegotiation_limit = 0;
+ALTER DATABASE app SET application_name = 'a\b''c';
+GRANT CONNECT ON DATABASE app TO reader;
+ALTER DATABASE app CONNECTION LIMIT 0;
+CREATE FUNCTION public.unlisted() RETURNS int LANGUAGE sql SET role = app SET default_with_oids = off AS 'SELECT 1';
 ALTER ROLE reader IN DATABASE app SET log_statement = 'all';`)
 		if err != nil {
 			t.Fatal(err)
@@ -159,12 +164,12 @@ ALTER ROLE reader IN DATABASE app SET log_statement = 'all';`)
 			names = append(names, s.role+":"+s.name)
 		}
 		slices.Sort(names)
-		if want := []string{":PLPGSQL.VARIABLE_CONFLICT", ":log_min_duration_statement", ":plpgsql.extra_warnings", ":role", ":session_preload_libraries", ":session_replication_role", "reader:DateStyle", "reader:log_statement", "reader:work_mem"}; !slices.Equal(names, want) {
+		if want := []string{":PLPGSQL.VARIABLE_CONFLICT", ":log_min_duration_statement", ":plpgsql.extra_warnings", ":role", ":session_preload_libraries", ":session_replication_role", ":ssl_renegotiation_limit", "reader:DateStyle", "reader:log_statement", "reader:work_mem"}; !slices.Equal(names, want) {
 			t.Fatalf("left out %v, want %v", names, want)
 		}
 		db := start(t, current, plan, target, uuid.New(), "none")
 		got, err := e.dataOutput(ctx, pgClient{container: db}, "psql", "-XAt", "-U", "postgres", "-d", "app", "-c", "SELECT string_agg(coalesce(r.rolname, '-') || ':' || pg_catalog.array_to_string(s.setconfig, ','), ';' ORDER BY r.rolname NULLS FIRST) FROM pg_catalog.pg_db_role_setting s LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.setrole")
-		if err != nil || strings.TrimSpace(string(got)) != "-:maintenance_work_mem=1MB,TimeZone=UTC,default_transaction_read_only=on;app:statement_timeout=1min" {
+		if err != nil || strings.TrimSpace(string(got)) != "-:maintenance_work_mem=1MB,TimeZone=UTC,default_transaction_read_only=on,application_name=a\\b'c;app:statement_timeout=1min" {
 			t.Fatalf("the restored database's settings are %q, %v", got, err)
 		}
 	})

@@ -108,7 +108,9 @@ type databaseStatement struct {
 
 const (
 	sqlIdentifier = `("(?:[^"]|"")+"|[a-z_][a-z0-9_]*)`
-	sqlLiteral    = `'(?:[^']|'')*'`
+	// pg_dump writes a setting's value that holds a backslash as an escape string, whose only
+	// escapes are its doubled backslashes and quotes.
+	sqlLiteral    = `(?:'(?:[^']|'')*'|E'(?:[^'\\]|''|\\\\)*')`
 	sqlValues     = sqlLiteral + `(?:, ` + sqlLiteral + `)*`
 	sqlPrivileges = `(?:ALL|CREATE|CONNECT|TEMPORARY)(?:,(?:CREATE|CONNECT|TEMPORARY))*`
 	sqlGrantee    = `(PUBLIC|` + sqlIdentifier + `)`
@@ -272,8 +274,9 @@ func restorable(s clusterSetting, m backup.Manifest, contexts map[string]string)
 
 // hiddenSettings are the settings a database's user may choose that pg_settings doesn't list. The
 // restore leaves them out: who a session runs as would decide who the restore's own sessions run
-// as, and the random seed is no setting a database needs.
-var hiddenSettings = []string{"role", "seed", "session_authorization"}
+// as, the random seed is no setting a database needs, and PostgreSQL only still accepts the others
+// and ignores them.
+var hiddenSettings = []string{"default_with_oids", "role", "seed", "session_authorization", "ssl_renegotiation_limit"}
 
 // renderDatabase renders the archive's entries that describe its database, from container id.
 func (e *Engine) renderDatabase(ctx context.Context, id, archive string, entries []tocEntry) (string, error) {
@@ -353,8 +356,7 @@ func (e *Engine) readArchive(ctx context.Context, id, dir string, m backup.Manif
 func (e *Engine) restoreAsOwner(ctx context.Context, id string, r archiveRestore, m backup.Manifest, roles []string, b clusterBaseline) ([]clusterSetting, error) {
 	// Everything is checked before anything from the archive runs.
 	var left []clusterSetting
-	var after []databaseStatement
-	var settings []databaseStatement
+	var settings, after, properties []databaseStatement
 	for _, s := range r.statements {
 		switch s.kind {
 		case statementCreate, statementOwner:
@@ -369,6 +371,8 @@ func (e *Engine) restoreAsOwner(ctx context.Context, id string, r archiveRestore
 				continue
 			}
 			settings = append(settings, s)
+		case statementProperty:
+			properties = append(properties, s)
 		default:
 			after = append(after, s)
 		}
@@ -392,7 +396,8 @@ func (e *Engine) restoreAsOwner(ctx context.Context, id string, r archiveRestore
 	} else if err := e.restoreWithRoles(ctx, id, m, roles, pass); err != nil {
 		return nil, err
 	}
-	for _, s := range after {
+	// A connection limit can refuse the user's next session, so it comes last.
+	for _, s := range append(after, properties...) {
 		if err := e.asDatabaseUser(ctx, id, m, s.text); err != nil {
 			return nil, err
 		}
