@@ -96,7 +96,8 @@ for (const theme of ["light", "dark"]) {
 
 // The router resets the scroll position after a navigation, and the shell then moves focus.
 // Focusing a main area taller than the screen must not scroll the header, with its navigation
-// button, back out of view.
+// button, back out of view. The project list is loaded before either navigation to it, so main
+// is already that tall when it takes focus.
 test("navigating on a small screen keeps the header in view", async ({
   page,
 }) => {
@@ -106,12 +107,18 @@ test("navigating on a small screen keeps the header in view", async ({
   );
   const main = page.getByRole("main");
   const open = page.getByRole("button", { name: app.navigation.open });
-  await page
-    .getByRole("link", { name: "Website Open project", exact: true })
-    .click();
+  const website = page.getByRole("link", {
+    name: "Website Open project",
+    exact: true,
+  });
+  await website.click();
   await expect(page.getByRole("heading", { name: "Website" })).toBeVisible();
+  await main.getByRole("link", { name: "Projects", exact: true }).click();
+  await expect(website).toBeVisible();
   await expect(main).toBeFocused();
   await expect(open).toBeInViewport({ ratio: 1 });
+  await website.click();
+  await expect(page.getByRole("heading", { name: "Website" })).toBeVisible();
   await open.click();
   const drawer = page.getByRole("dialog", { name: app.navigation.label });
   await drawer.getByRole("link", { name: app.navigation.projects }).click();
