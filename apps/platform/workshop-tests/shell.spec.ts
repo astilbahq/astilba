@@ -126,3 +126,29 @@ test("navigating on a small screen keeps the header in view", async ({
   await expect(main).toBeFocused();
   await expect(open).toBeInViewport({ ratio: 1 });
 });
+
+// The URL keeps the fragment of the link that led to account security. Only a navigation goes to
+// the section it names, not dismissing the drawer later on that page.
+for (const dismissal of ["Close", "Escape"])
+  test(`dismissing the drawer with its trigger hidden focuses main, not the linked section, with ${dismissal}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 820, height: 420 });
+    await page.goto(
+      "/iframe.html?id=pages-projects--two-factor-required-operator&viewMode=story&globals=a11y.manual:!true",
+    );
+    const section = page.getByRole("heading", {
+      name: "Two-factor authentication",
+      exact: true,
+    });
+    await expect(section).toBeFocused();
+    await page.getByRole("button", { name: app.navigation.open }).click();
+    const drawer = page.getByRole("dialog", { name: app.navigation.label });
+    await expect(drawer).toBeVisible();
+    await page.setViewportSize({ width: 1180, height: 420 });
+    if (dismissal === "Close")
+      await drawer.getByRole("button", { name: app.navigation.close }).click();
+    else await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
+    await expect(page.getByRole("main")).toBeFocused();
+  });
