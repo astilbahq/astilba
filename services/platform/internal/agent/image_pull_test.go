@@ -652,12 +652,16 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 	plain := httptest.NewServer(registry)
 	defer plain.Close()
 	host := strings.TrimPrefix(plain.URL, "http://")
-	fallback, err := newRegistryImage(host, "fixture/app", true, true, credential, http.ProxyFromEnvironment)
-	if err != nil {
-		t.Fatal(err)
+	// clear is registry over plain HTTP, once https can't be reached.
+	clear := func(https registryImage) registryImage {
+		source, err := newRegistryImage(host, "fixture/app", true, true, credential, http.ProxyFromEnvironment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		image := source.(orasImage)
+		image.https = https.(orasImage).answers
+		return image
 	}
-	image := fallback.(orasImage)
-	image.fallback = true
 	refusing := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -666,7 +670,7 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = planFromSources(context.Background(), []registryImage{answered, image}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err == nil || registry.count(root) != 0 {
+	if _, _, err = planFromSources(context.Background(), []registryImage{answered, clear(answered)}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err == nil || registry.count(root) != 0 {
 		t.Fatal("asked again in the clear after the registry answered over HTTPS", err)
 	}
 	// Nor after it answered that it lacks the image, or one of its index's entries.
@@ -687,7 +691,7 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range []string{index, sha([]byte("absent"))} {
-		if _, _, err = planFromSources(context.Background(), []registryImage{https, image}, digest.Digest(d), amd64Server, pullTestLimit, true, nil); err == nil || registry.count(d) != 0 {
+		if _, _, err = planFromSources(context.Background(), []registryImage{https, clear(https)}, digest.Digest(d), amd64Server, pullTestLimit, true, nil); err == nil || registry.count(d) != 0 {
 			t.Fatal("asked again in the clear after the registry said it lacks content", err)
 		}
 	}
@@ -697,7 +701,8 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan, source, err := planFromSources(context.Background(), []registryImage{unreachable, image}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err != nil || plan == nil || source != registryImage(image) {
+	plainly := clear(unreachable)
+	if plan, source, err := planFromSources(context.Background(), []registryImage{unreachable, plainly}, digest.Digest(root), amd64Server, pullTestLimit, true, nil); err != nil || plan == nil || source != plainly {
 		t.Fatal("did not fall back to plain HTTP for an unreachable registry", err)
 	}
 }

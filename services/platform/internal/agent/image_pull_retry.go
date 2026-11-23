@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -9,13 +10,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/http2"
+	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
@@ -57,11 +59,15 @@ func (r registryRetry) wait(attempt int, elapsed, asked time.Duration) (time.Dur
 	return wait, true
 }
 
+// errPullCancelled is the owner cancelling the command while the agent waited to read again.
+var errPullCancelled = errors.New("Cancelled while waiting to read an image again after its registry failed.")
+
 // readRegistry runs read, one attempt at reading an image from its registry, until it succeeds,
 // fails for a reason other than reading the registry, or fails in a way the registry won't
-// recover from, within e's retry bounds. It starts no read after the first once cancelled, the
-// command's owner cancelling it, returns true. A read that could not reach the registry ends in
-// registryUnreachable's refusal. Each failed read is logged with its cause, without credentials.
+// recover from, within e's retry bounds. Between attempts it returns errPullCancelled once
+// cancelled, the command's owner cancelling it, returns true. A read that could not reach the
+// registry ends in registryUnreachable's refusal. Each failed read is logged with its cause,
+// without credentials.
 func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func() bool, read func(context.Context) error) error {
 	retry := defaultRegistryRetry
 	if e.registryRetry != nil {
@@ -69,8 +75,7 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 	}
 	began := time.Now()
 	for attempt := 1; ; attempt++ {
-		answers := &registryAnswers{}
-		err := read(context.WithValue(ctx, registryAnswersKey{}, answers))
+		err := read(ctx)
 		// The end of the command's own context is not the registry's failure.
 		if err != nil && ctx.Err() != nil {
 			return ctx.Err()
@@ -79,16 +84,24 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 		if !errors.As(err, &unread) {
 			return err
 		}
+		failure := &sourceFailure{err: unread.err}
+		errors.As(unread.err, &failure)
 		wait, again := time.Duration(0), false
-		if transientRegistryFailure(unread.err) {
-			wait, again = retry.wait(attempt, time.Since(began), answers.asked())
+		cause, transient := registryFailure(failure.err)
+		if transient {
+			wait, again = retry.wait(attempt, time.Since(began), failure.asked)
 		}
-		slog.Warn("the agent could not read an image from its registry", "image", truncated(image, 300), "attempt", attempt, "error", registryFailureText(unread.err), "readsAgain", again)
-		if !again || !waitUnless(ctx, wait, cancelled) {
+		log := slog.With("image", truncated(image, 300), "source", failure.source, "attempt", attempt, "cause", cause)
+		if !again {
+			log.Warn("the agent could not read an image from its registry")
+			return registryUnreachable(unread.err)
+		}
+		log.Warn("the agent could not read an image from its registry and will read it again", "after", wait)
+		if !waitUnless(ctx, wait, cancelled) {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return registryUnreachable(unread.err)
+			return errPullCancelled
 		}
 	}
 }
@@ -118,121 +131,141 @@ func waitUnless(ctx context.Context, wait time.Duration, cancelled func() bool) 
 // connection, a temporary name lookup failure, or an answer that says to try again later. Any
 // other answer, and any failure of the content itself, is not.
 func transientRegistryFailure(err error) bool {
+	_, transient := registryFailure(err)
+	return transient
+}
+
+// registryFailure is what went wrong in err, a failure reading from a registry, and whether the
+// registry or the network to it may recover. The cause is in the agent's own words, for its log:
+// the error's text can hold what the registry wrote, such as a header that repeats a credential
+// or a signed link it redirected to.
+func registryFailure(err error) (cause string, transient bool) {
 	var response *errcode.ErrorResponse
 	if errors.As(err, &response) {
-		return response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
+		code := response.StatusCode
+		return "answered " + strconv.Itoa(code), code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500
+	}
+	switch {
+	case errors.Is(err, errdef.ErrNotFound):
+		return "does not have the content", false
+	case errors.Is(err, errLongerThanMeasured):
+		return "sent more than the content's size", false
+	case errors.Is(err, errShorterThanMeasured):
+		return "sent less than the content's size", false
+	case errors.Is(err, http.ErrSchemeMismatch):
+		return "does not speak HTTPS", false
 	}
 	var lookup *net.DNSError
 	if errors.As(err, &lookup) {
-		return lookup.IsTimeout || lookup.IsTemporary
+		return "its name could not be looked up", lookup.IsTimeout || lookup.IsTemporary
 	}
 	var timeout interface{ Timeout() bool }
 	if errors.As(err, &timeout) && timeout.Timeout() {
-		return true
+		return "did not answer in time", true
 	}
-	for _, dropped := range []error{syscall.ECONNRESET, syscall.ECONNREFUSED, syscall.ECONNABORTED, syscall.EPIPE, io.ErrUnexpectedEOF} {
+	for _, dropped := range []syscall.Errno{syscall.ECONNRESET, syscall.ECONNREFUSED, syscall.ECONNABORTED, syscall.EPIPE} {
 		if errors.Is(err, dropped) {
-			return true
+			return dropped.Error(), true
 		}
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "closed the connection early", true
 	}
 	// A registry that resets an HTTP/2 stream drops one answer, as a reset connection does.
 	var stream http2.StreamError
 	if errors.As(err, &stream) {
 		switch stream.Code {
 		case http2.ErrCodeNo, http2.ErrCodeInternal, http2.ErrCodeRefusedStream, http2.ErrCodeCancel, http2.ErrCodeEnhanceYourCalm:
-			return true
+			return "reset the answer", true
 		}
-		return false
+		return "broke the HTTP/2 protocol", false
+	}
+	// net/http keeps the type of a connection closed after GOAWAY to itself.
+	if errorTextBegins(err, "http2: server sent GOAWAY and closed the connection") {
+		return "closed the connection", true
 	}
 	// A connection the registry closed before it answered.
 	var request *url.Error
-	return errors.As(err, &request) && errors.Is(request.Err, io.EOF)
+	if errors.As(err, &request) && errors.Is(request.Err, io.EOF) {
+		return "closed the connection before it answered", true
+	}
+	var certificate *tls.CertificateVerificationError
+	if errors.As(err, &certificate) {
+		return "its certificate could not be verified", false
+	}
+	return "gave an answer the agent could not use, or none", false
 }
 
-// registryFailureText describes err, a failure reading from a registry, for the agent's log. A
-// registry may answer with any text, and may redirect a blob to storage behind a signed,
-// short-lived link, so an answer is only its status and host, and a URL only its scheme and host.
-func registryFailureText(err error) string {
-	var response *errcode.ErrorResponse
-	if errors.As(err, &response) {
-		text := "the registry answered " + strconv.Itoa(response.StatusCode)
-		if response.URL != nil {
-			text = response.URL.Host + " answered " + strconv.Itoa(response.StatusCode)
-		}
-		return truncated(text, 300)
-	}
-	text := err.Error()
-	var request *url.Error
-	if errors.As(err, &request) {
-		text = request.Op + ": " + request.Err.Error()
-		if u, err := url.Parse(request.URL); err == nil && u.Host != "" {
-			text = request.Op + " " + u.Host + ": " + request.Err.Error()
+// errorTextBegins reports whether err, or an error it wraps, has text that begins with prefix.
+func errorTextBegins(err error, prefix string) bool {
+	for ; err != nil; err = errors.Unwrap(err) {
+		if strings.HasPrefix(err.Error(), prefix) {
+			return true
 		}
 	}
-	text = urlInText.ReplaceAllStringFunc(text, func(text string) string {
-		if u, err := url.Parse(text); err == nil && u.Host != "" {
-			return u.Scheme + "://" + u.Host
-		}
-		return "a URL"
-	})
-	return truncated(queryInText.ReplaceAllString(text, ""), 300)
+	return false
 }
 
-var (
-	urlInText   = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s"'<>]*`)
-	queryInText = regexp.MustCompile(`\?[^\s"'<>]*`)
-)
+// sourceFailure is a failure to read from source, a registry or one of its mirrors, and how long
+// the source's last answer asked to wait, when it did.
+type sourceFailure struct {
+	source string
+	asked  time.Duration
+	err    error
+}
 
-// registryAnswers records the longest wait a registry asked for, with Retry-After, in its
-// answers to one attempt's reads. A registry that asks for more than the agent's window allows is
-// not asked again.
+func (f *sourceFailure) Error() string { return f.err.Error() }
+func (f *sourceFailure) Unwrap() error { return f.err }
+
+// registryAnswers is what a source has answered.
 type registryAnswers struct {
-	mu   sync.Mutex
-	wait time.Duration
+	mu       sync.Mutex
+	answered bool
+	wait     time.Duration
 }
 
-type registryAnswersKey struct{}
+// any reports whether the source has answered at all.
+func (a *registryAnswers) any() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.answered
+}
 
+// asked is how long the source's last answer asked to wait, or zero.
 func (a *registryAnswers) asked() time.Duration {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.wait
 }
 
-func (a *registryAnswers) note(wait time.Duration) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.wait = max(a.wait, wait)
+// answerTransport records a source's answers, and the wait a busy or unavailable one asks for.
+type answerTransport struct {
+	base    http.RoundTripper
+	answers *registryAnswers
 }
 
-// retryAfterTransport notes the wait a registry asks for in a busy or unavailable answer, for the
-// attempt whose request it answered.
-type retryAfterTransport struct{ base http.RoundTripper }
-
-func (t retryAfterTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res, err := t.base.RoundTrip(req)
-	if err != nil || res.StatusCode != http.StatusTooManyRequests && res.StatusCode != http.StatusServiceUnavailable {
-		return res, err
-	}
-	if answers, ok := req.Context().Value(registryAnswersKey{}).(*registryAnswers); ok {
-		if wait, ok := retryAfter(res.Header.Get("Retry-After"), time.Now()); ok {
-			answers.note(wait)
+	t.answers.mu.Lock()
+	defer t.answers.mu.Unlock()
+	t.answers.wait = 0
+	if err == nil {
+		t.answers.answered = true
+		if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
+			t.answers.wait = retryAfter(res.Header.Get("Retry-After"), time.Now())
 		}
 	}
 	return res, err
 }
 
-// retryAfter is the wait a Retry-After header asks for, in seconds or until a date.
-func retryAfter(header string, now time.Time) (time.Duration, bool) {
-	if header == "" {
-		return 0, false
-	}
+// retryAfter is the wait a Retry-After header asks for, in seconds or until a date, or zero.
+func retryAfter(header string, now time.Time) time.Duration {
 	if seconds, err := strconv.ParseUint(header, 10, 32); err == nil {
-		return time.Duration(seconds) * time.Second, true
+		return time.Duration(seconds) * time.Second
 	}
 	at, err := http.ParseTime(header)
 	if err != nil {
-		return 0, false
+		return 0
 	}
-	return max(at.Sub(now), 0), true
+	return max(at.Sub(now), 0)
 }

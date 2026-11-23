@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/distribution/reference"
 	registrytypes "github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/client"
@@ -36,6 +39,9 @@ func quickRegistryRetry() *registryRetry {
 }
 
 func never() bool { return false }
+
+// connKey is a request's connection in its context.
+type connKey struct{}
 
 // registryPull is a registry over HTTPS, which Docker trusts, with an image of one layer, and the
 // Docker that pulls it.
@@ -57,6 +63,9 @@ func newRegistryPull(t *testing.T, containerd bool, proto string) *registryPull 
 	p.root = p.testRegistry.image(layer)
 	server := httptest.NewUnstartedServer(p.testRegistry)
 	server.EnableHTTP2 = proto == "HTTP/2.0"
+	server.Config.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		return context.WithValue(ctx, connKey{}, c)
+	}
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	host := strings.TrimPrefix(server.URL, "https://")
@@ -164,8 +173,8 @@ func hijacked(t *testing.T, w http.ResponseWriter, answer []byte, reset bool) {
 
 // A registry that fails once, for a reason it recovers from, does not fail the pull.
 func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
-	status := func(code int, header ...string) func(*testing.T, *registryPull, http.ResponseWriter) {
-		return func(_ *testing.T, _ *registryPull, w http.ResponseWriter) {
+	status := func(code int, header ...string) func(*testing.T, *registryPull, http.ResponseWriter, *http.Request) {
+		return func(_ *testing.T, _ *registryPull, w http.ResponseWriter, _ *http.Request) {
 			for i := 0; i < len(header); i += 2 {
 				w.Header().Set(header[i], header[i+1])
 			}
@@ -179,21 +188,35 @@ func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
 	for name, tc := range map[string]struct {
 		proto    string
 		manifest bool
-		fail     func(t *testing.T, p *registryPull, w http.ResponseWriter)
+		fail     func(t *testing.T, p *registryPull, w http.ResponseWriter, req *http.Request)
 	}{
 		"unavailable":               {"HTTP/1.1", true, status(http.StatusServiceUnavailable)},
 		"internal error":            {"HTTP/1.1", false, status(http.StatusInternalServerError)},
 		"request timeout":           {"HTTP/1.1", false, status(http.StatusRequestTimeout)},
 		"too many requests":         {"HTTP/1.1", true, status(http.StatusTooManyRequests, "Retry-After", "0")},
 		"a storage gateway's error": {"HTTP/1.1", false, status(530)},
-		"a blob cut short":          {"HTTP/1.1", false, func(t *testing.T, p *registryPull, w http.ResponseWriter) { hijacked(t, w, partial(p), false) }},
-		"a blob's connection reset": {"HTTP/1.1", false, func(t *testing.T, p *registryPull, w http.ResponseWriter) { hijacked(t, w, partial(p), true) }},
-		"an HTTP/2 stream reset": {"HTTP/2.0", false, func(_ *testing.T, p *registryPull, w http.ResponseWriter) {
+		"a blob cut short": {"HTTP/1.1", false, func(t *testing.T, p *registryPull, w http.ResponseWriter, _ *http.Request) {
+			hijacked(t, w, partial(p), false)
+		}},
+		"a blob's connection reset": {"HTTP/1.1", false, func(t *testing.T, p *registryPull, w http.ResponseWriter, _ *http.Request) {
+			hijacked(t, w, partial(p), true)
+		}},
+		"an HTTP/2 stream reset": {"HTTP/2.0", false, func(_ *testing.T, p *registryPull, w http.ResponseWriter, _ *http.Request) {
 			data := p.blobs[p.layer]
 			w.Header().Set("Content-Length", fmt.Sprint(len(data)))
 			_, _ = w.Write(data[:len(data)/2])
 			_ = http.NewResponseController(w).Flush()
 			panic(http.ErrAbortHandler)
+		}},
+		// A registry that restarts says so with GOAWAY before it closes the connection.
+		"an HTTP/2 connection that goes away": {"HTTP/2.0", false, func(_ *testing.T, p *registryPull, w http.ResponseWriter, req *http.Request) {
+			data := p.blobs[p.layer]
+			w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+			w.Header().Set("Connection", "close")
+			_, _ = w.Write(data[:len(data)/2])
+			_ = http.NewResponseController(w).Flush()
+			time.Sleep(100 * time.Millisecond)
+			_ = req.Context().Value(connKey{}).(net.Conn).Close()
 		}},
 	} {
 		for _, store := range []string{"containerd", "classic"} {
@@ -210,7 +233,7 @@ func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
 					if digest != failing || n > 1 {
 						return false
 					}
-					tc.fail(t, p, w)
+					tc.fail(t, p, w, req)
 					return true
 				}
 				if err := p.pull(t.Context()); err != nil {
@@ -219,7 +242,7 @@ func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
 				if n := p.count(failing); n != 2 {
 					t.Fatalf("read %d times", n)
 				}
-				if log := p.logged.String(); strings.Count(log, "could not read an image") != 1 || !strings.Contains(log, "readsAgain=true") {
+				if log := p.logged.String(); strings.Count(log, "could not read an image") != 1 || !strings.Contains(log, "and will read it again") {
 					t.Fatal(log)
 				}
 			})
@@ -267,6 +290,17 @@ func TestPullDoesNotReadAgainWhatWontChange(t *testing.T) {
 				return true
 			}
 		}, "its registry sent more for a blob"},
+		"a layer that ends early": {func(p *registryPull) func(http.ResponseWriter, *http.Request, string, int) bool {
+			return func(w http.ResponseWriter, _ *http.Request, digest string, _ int) bool {
+				if digest != p.layer {
+					return false
+				}
+				// Flushed first, so the answer's end is its own and not a length it names.
+				_ = http.NewResponseController(w).Flush()
+				_, _ = w.Write(p.blobs[p.layer][:1<<10])
+				return true
+			}
+		}, "its registry sent less for a blob"},
 		"an image over its limit": {func(p *registryPull) func(http.ResponseWriter, *http.Request, string, int) bool {
 			p.engine.ImageLoadBytes = 1 << 20
 			return nil
@@ -300,7 +334,7 @@ func TestPullStopsReadingARegistryThatKeepsFailing(t *testing.T) {
 	if n := p.count(p.root); n != 3 {
 		t.Fatalf("read %d times", n)
 	}
-	if log := p.logged.String(); strings.Count(log, "answered 502") != 3 || strings.Count(log, "readsAgain=true") != 2 || strings.Count(log, "readsAgain=false") != 1 {
+	if log := p.logged.String(); strings.Count(log, "answered 502") != 3 || strings.Count(log, "and will read it again") != 2 {
 		t.Fatal(log)
 	}
 }
@@ -370,8 +404,7 @@ func TestPullDoesNotReadAgainOnceCancelled(t *testing.T) {
 			go func() { done <- p.engine.pullMeasuredImage(ctx, p.image, nil, cancelled.Load) }()
 			select {
 			case err := <-done:
-				var refused *imagePullRefused
-				if by == "its context" && !errors.Is(err, context.Canceled) || by != "its context" && !errors.As(err, &refused) {
+				if by == "its context" && !errors.Is(err, context.Canceled) || by != "its context" && !errors.Is(err, errPullCancelled) {
 					t.Fatal(err)
 				}
 			case <-time.After(10 * time.Second):
@@ -381,6 +414,154 @@ func TestPullDoesNotReadAgainOnceCancelled(t *testing.T) {
 				t.Fatalf("read %d times", n)
 			}
 		})
+	}
+}
+
+// A deployment cancelled while it waits for a registry is cancelled, unless it had begun.
+func TestCancelledPullIsCancelled(t *testing.T) {
+	for changedNothing, want := range map[bool]api.ExecutionState{true: "cancelled", false: "needs_attention"} {
+		state, note := pullFailure(errPullCancelled, nil, changedNothing)
+		if state != want || strings.Contains(note, "Existing workloads are unchanged") != changedNothing {
+			t.Error(changedNothing, state, note)
+		}
+	}
+}
+
+// An image's sources are all read again when one that may recover kept the agent from reading it,
+// and only then.
+func TestPullReadsItsSourcesAgain(t *testing.T) {
+	fail := func(code int, header string, always bool) func(http.ResponseWriter, *http.Request, string, int) bool {
+		return func(w http.ResponseWriter, req *http.Request, _ string, n int) bool {
+			if !strings.Contains(req.URL.Path, "/manifests/") || n > 1 && !always {
+				return false
+			}
+			if header != "" {
+				w.Header().Set("Retry-After", header)
+			}
+			w.WriteHeader(code)
+			return true
+		}
+	}
+	for name, tc := range map[string]struct {
+		mirror, registry func(http.ResponseWriter, *http.Request, string, int) bool
+		distrusted       bool
+		read             bool
+		mirrors, reads   int
+	}{
+		"its mirror failing once, its registry always":            {fail(503, "", false), fail(403, "", true), true, true, 2, 0},
+		"its registry's own answer, after its mirror failed":      {fail(503, "", true), fail(403, "", true), false, false, 1, 1},
+		"its mirror's answer, before its registry fails once":     {fail(404, "", true), fail(503, "", false), false, true, 2, 2},
+		"its registry failing once, its mirror asking for a wait": {fail(503, "3600", true), fail(503, "", false), false, true, 2, 2},
+		"its registry asking for a wait, its mirror failing":      {fail(503, "", true), fail(503, "3600", true), false, false, 1, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mirror, registry := newTestRegistry(), newTestRegistry()
+			layer := gzipOf(t, tarOf(t, testFile{"app", 10}))
+			root := mirror.image(layer)
+			registry.image(layer)
+			mirror.fault, registry.fault = tc.mirror, tc.registry
+			sources := []registryImage{mirror.source(t, nil), registry.source(t, nil)}
+			if tc.distrusted {
+				server := httptest.NewUnstartedServer(registry)
+				server.Config.ErrorLog = log.New(io.Discard, "", 0)
+				server.StartTLS()
+				defer server.Close()
+				distrusted, err := newRegistryImage(strings.TrimPrefix(server.URL, "https://"), "fixture/app", false, false, nil, http.ProxyFromEnvironment)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sources[1] = distrusted
+			}
+			if err := readSources(t, sources, root); (err == nil) != tc.read {
+				t.Fatal(err)
+			}
+			if m, r := mirror.count(root), registry.count(root); m != tc.mirrors || r != tc.reads {
+				t.Fatalf("read the mirror %d times and the registry %d", m, r)
+			}
+		})
+	}
+}
+
+// readSources reads the image from sources as a pull into the classic store does.
+func readSources(t *testing.T, sources []registryImage, root string) error {
+	t.Helper()
+	engine := &Engine{registryRetry: quickRegistryRetry()}
+	return engine.readRegistry(t.Context(), "fixture/app", never, func(ctx context.Context) error {
+		plan, source, err := planFromSources(ctx, sources, digest.Digest(root), amd64Server, pullTestLimit, false, nil)
+		if err != nil {
+			return err
+		}
+		_, err = engine.measureRegistryImage(ctx, source, plan, pullTestLimit)
+		return err
+	})
+}
+
+// insecureRegistry is registry on a server that speaks only TLS, as Docker reads a registry it
+// treats as insecure: over HTTPS, then over plain HTTP, which the server answers with 400.
+func insecureRegistry(t *testing.T, registry *testRegistry) []registryImage {
+	t.Helper()
+	server := httptest.NewUnstartedServer(registry)
+	server.Config.ErrorLog = log.New(io.Discard, "", 0)
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	named, err := reference.ParseNormalizedNamed(strings.TrimPrefix(server.URL, "https://") + "/fixture/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := registryImages(t.Context(), system.Info{}, named, nil)
+	if err != nil || len(sources) != 2 {
+		t.Fatal(len(sources), err)
+	}
+	return sources
+}
+
+// An insecure registry that drops a connection is read again over HTTPS, whatever it answers in
+// the clear.
+func TestPullReadsAnInsecureRegistryAgainOverHTTPS(t *testing.T) {
+	registry := newTestRegistry()
+	root := registry.image(gzipOf(t, tarOf(t, testFile{"app", 10})))
+	registry.fault = func(w http.ResponseWriter, _ *http.Request, d string, n int) bool {
+		if d == root && n == 1 {
+			hijacked(t, w, nil, false)
+			return true
+		}
+		return false
+	}
+	if err := readSources(t, insecureRegistry(t, registry), root); err != nil {
+		t.Fatal(err)
+	}
+	if n := registry.count(root); n != 2 {
+		t.Fatalf("read %d times", n)
+	}
+}
+
+// A registry that has answered over HTTPS is not asked in the clear by a later attempt, so a
+// connection cut by someone else can't have it send a credential in the clear.
+func TestPullNeverAsksInTheClearAfterAnAnswerOverHTTPS(t *testing.T) {
+	registry := newTestRegistry()
+	layer := gzipOf(t, tarOf(t, testFile{"app", 10}))
+	root := registry.image(layer)
+	registry.fault = func(w http.ResponseWriter, _ *http.Request, d string, n int) bool {
+		if d == sha(layer) || d == root && n > 1 {
+			hijacked(t, w, nil, false)
+			return true
+		}
+		return false
+	}
+	sources := insecureRegistry(t, registry)
+	clear := newTestRegistry()
+	clear.image(layer)
+	plain := clear.source(t, nil).(orasImage)
+	plain.https = sources[1].(orasImage).https
+	sources[1] = plain
+	if err := readSources(t, sources, root); err == nil {
+		t.Fatal("read")
+	}
+	if n := registry.count(root); n != 3 {
+		t.Fatalf("read %d times over HTTPS", n)
+	}
+	if n := clear.count(root) + clear.count(sha(layer)); n != 0 {
+		t.Fatalf("read %d times in the clear", n)
 	}
 }
 
@@ -397,7 +578,7 @@ func TestPullReadsAgainAfterAStall(t *testing.T) {
 	}
 	source := registry.source(t, nil)
 	defer close(released)
-	transport := source.(orasImage).repo.Client.(*auth.Client).Client.Transport.(retryAfterTransport).base.(*http.Transport)
+	transport := source.(orasImage).repo.Client.(*auth.Client).Client.Transport.(answerTransport).base.(*http.Transport)
 	transport.ResponseHeaderTimeout = 100 * time.Millisecond
 	read := func(ctx context.Context) error {
 		_, err := planRegistryImage(ctx, source, digest.Digest(root), amd64Server, pullTestLimit, true, nil)
@@ -449,22 +630,49 @@ func TestPullReadsOnlyWhatFailedAgain(t *testing.T) {
 	}
 }
 
-// A failed read's log names no credential, no signed link and nothing the registry wrote.
+// A failed read's log names no credential, no signed link and nothing the registry wrote, whatever
+// form its answer takes.
 func TestPullLogsNoCredential(t *testing.T) {
 	const signature = "X-Amz-Signature=fixture-signature"
-	for name, storage := range map[string]http.HandlerFunc{
-		"an error": func(w http.ResponseWriter, _ *http.Request) {
+	answer := func(code int, header, value string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header()[header] = []string{value}
+			w.WriteHeader(code)
+		}
+	}
+	for name, tc := range map[string]struct {
+		// registry answers a read of the layer, or else redirects it to storage.
+		registry, storage http.HandlerFunc
+	}{
+		"an error": {nil, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			fmt.Fprint(w, `{"errors":[{"code":"UNAVAILABLE","message":"fixture-message"}]}`)
-		},
-		"the wrong length": func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "short") },
-		"no answer":        func(w http.ResponseWriter, _ *http.Request) { hijacked(t, w, nil, false) },
-		"a redirect loop": func(w http.ResponseWriter, r *http.Request) {
+		}},
+		"the wrong length": {nil, func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "short") }},
+		"no answer":        {nil, func(w http.ResponseWriter, _ *http.Request) { hijacked(t, w, nil, false) }},
+		"a redirect loop": {nil, func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/loop?"+signature, http.StatusTemporaryRedirect)
-		},
+		}},
+		"a digest header":               {answer(http.StatusOK, "Docker-Content-Digest", "Bearer fixture-token"), nil},
+		"a link that is not one":        {answer(http.StatusTemporaryRedirect, "Location", "/%zz/fixture-path"), nil},
+		"a link with a quote":           {answer(http.StatusTemporaryRedirect, "Location", "http://127.0.0.1:1'fixture-path'&"+signature), nil},
+		"a link of another scheme":      {answer(http.StatusTemporaryRedirect, "Location", "fixture-token:fixture-path"), nil},
+		"a token realm":                 {answer(http.StatusUnauthorized, "Www-Authenticate", `Bearer realm="fixture-token"`), nil},
+		"a token realm that is not one": {answer(http.StatusUnauthorized, "Www-Authenticate", `Bearer realm="http://127.0.0.1:fixture-token"`), nil},
+		"a token realm without a token": {answer(http.StatusUnauthorized, "Www-Authenticate", `Bearer realm="http://127.0.0.1:1/fixture-token"`), nil},
+		"a challenge of another kind":   {answer(http.StatusUnauthorized, "Www-Authenticate", `fixture-token realm="fixture-path"`), nil},
+		"a status that is not one": {func(w http.ResponseWriter, _ *http.Request) {
+			hijacked(t, w, []byte("HTTP/1.1 fixture-token x\r\n\r\n"), false)
+		}, nil},
+		"a header that is not one": {func(w http.ResponseWriter, _ *http.Request) {
+			hijacked(t, w, []byte("HTTP/1.1 200 OK\r\nfixture-token\r\n\r\n"), false)
+		}, nil},
+		"an encoding that does not exist": {func(w http.ResponseWriter, _ *http.Request) {
+			hijacked(t, w, []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: fixture-token\r\n\r\n"), false)
+		}, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			store := httptest.NewServer(storage)
+			store := httptest.NewServer(tc.storage)
 			defer store.Close()
 			p := newRegistryPull(t, true, "HTTP/1.1")
 			p.credential = &pipeline.Credential{Username: "fixture-user", Password: "fixture-password"}
@@ -472,7 +680,11 @@ func TestPullLogsNoCredential(t *testing.T) {
 				if digest != p.layer {
 					return false
 				}
-				http.Redirect(w, req, strings.Replace(store.URL, "http://", "http://fixture-user:fixture-password@", 1)+"/fixture-path?"+signature+"#fixture", http.StatusTemporaryRedirect)
+				if tc.registry != nil {
+					tc.registry(w, req)
+				} else {
+					http.Redirect(w, req, strings.Replace(store.URL, "http://", "http://fixture-user:fixture-password@", 1)+"/fixture-path?"+signature+"#fixture", http.StatusTemporaryRedirect)
+				}
 				return true
 			}
 			_ = p.note(t)
@@ -480,7 +692,7 @@ func TestPullLogsNoCredential(t *testing.T) {
 			if !strings.Contains(log, "could not read an image") {
 				t.Fatal("not logged", log)
 			}
-			for _, secret := range []string{"Signature", "fixture-user", "fixture-password", "fixture-path", "fixture-message", "fixture-token"} {
+			for _, secret := range []string{"Signature", "fixture-user", "fixture-password", "fixture-path", "fixture-message", "fixture-token", store.Listener.Addr().String()} {
 				if strings.Contains(log, secret) {
 					t.Fatal("logged "+secret, log)
 				}
@@ -518,6 +730,7 @@ func TestTransientRegistryFailures(t *testing.T) {
 		"HTTP/2 protocol error":         {http2.StreamError{Code: http2.ErrCodeProtocol}, false},
 		"untrusted certificate":         {asked(errors.New("x509: certificate signed by unknown authority")), false},
 		"content after its end":         {errLongerThanMeasured, false},
+		"content that ends early":       {errShorterThanMeasured, false},
 		"something else the agent read": {errors.New("invalid response"), false},
 	} {
 		t.Run(name, func(t *testing.T) {

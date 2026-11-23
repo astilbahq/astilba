@@ -38,32 +38,63 @@ type registryImage interface {
 }
 
 type orasImage struct {
-	repo *remote.Repository
-	// fallback marks an insecure registry over plain HTTP, which Docker tries only when it
-	// cannot reach the registry over HTTPS at all.
-	fallback bool
+	repo    *remote.Repository
+	answers *registryAnswers
+	// https, for an insecure registry over plain HTTP, is what the registry answered over
+	// HTTPS. Docker tries plain HTTP only when it cannot reach the registry over HTTPS at all.
+	https *registryAnswers
 }
 
 func plainHTTPFallback(source registryImage) bool {
 	image, ok := source.(orasImage)
-	return ok && image.fallback
+	return ok && image.https != nil
+}
+
+// answeredOverHTTPS reports whether source's registry, read over plain HTTP, has ever answered
+// this pull over HTTPS.
+func answeredOverHTTPS(source registryImage) bool {
+	image, ok := source.(orasImage)
+	return ok && image.https != nil && image.https.any()
 }
 
 func (o orasImage) manifest(ctx context.Context, d digest.Digest, limit int64) ([]byte, string, error) {
 	desc, rc, err := o.repo.Manifests().FetchReference(ctx, d.String())
 	if err != nil {
-		return nil, "", err
+		return nil, "", o.failure(err)
 	}
 	defer rc.Close()
 	data, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err != nil {
-		return nil, "", err
+		return nil, "", o.failure(err)
 	}
 	return data, desc.MediaType, nil
 }
 
 func (o orasImage) blob(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
-	return o.repo.Blobs().Fetch(ctx, desc)
+	rc, err := o.repo.Blobs().Fetch(ctx, desc)
+	if err != nil {
+		return nil, o.failure(err)
+	}
+	return sourceBlob{rc, o}, nil
+}
+
+// failure is a failure to read from o.
+func (o orasImage) failure(err error) error {
+	return &sourceFailure{source: o.repo.Reference.Registry, asked: o.answers.asked(), err: err}
+}
+
+// sourceBlob marks a failure to read a blob as its source's.
+type sourceBlob struct {
+	io.ReadCloser
+	source orasImage
+}
+
+func (b sourceBlob) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		err = b.source.failure(err)
+	}
+	return n, err
 }
 
 // dockerCertsDirectory is where Docker reads a registry's certificate authorities and client
@@ -96,7 +127,7 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 			return err
 		}
 		image := images[len(images)-1].(orasImage)
-		image.fallback = true
+		image.https = images[len(images)-2].(orasImage).answers
 		images[len(images)-1] = image
 		return nil
 	}
@@ -245,8 +276,9 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if credential != nil && (credential.Username != "" || credential.Password != "") {
 		credentials = auth.StaticCredential(host, auth.Credential{Username: credential.Username, Password: credential.Password})
 	}
+	answers := &registryAnswers{}
 	repo := &remote.Repository{
-		Client:           &auth.Client{Client: &http.Client{Transport: retryAfterTransport{transport}}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
+		Client:           &auth.Client{Client: &http.Client{Transport: answerTransport{transport, answers}}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
 		Reference:        registry.Reference{Registry: host, Repository: repository},
 		PlainHTTP:        plainHTTP,
 		MaxMetadataBytes: imageMetadataBytes,
@@ -254,5 +286,5 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if err := repo.Reference.ValidateRepository(); err != nil {
 		return nil, errors.New("the image's repository name is not valid")
 	}
-	return orasImage{repo: repo}, nil
+	return orasImage{repo: repo, answers: answers}, nil
 }

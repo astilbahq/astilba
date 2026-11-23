@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"sync"
 
@@ -162,16 +161,17 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 }
 
 // planFromSources plans the image from the first of sources that can be read: a mirror the
-// agent cannot read, or that lacks some of the image, gives way to the next, and an insecure registry it cannot reach over HTTPS
-// to plain HTTP. A registry that answered over HTTPS is not asked again in the clear.
+// agent cannot read, or that lacks some of the image, gives way to the next, and an insecure
+// registry it cannot reach over HTTPS to plain HTTP. A registry that has answered over HTTPS, in
+// this attempt or an earlier one, is not asked again in the clear.
 func planFromSources(ctx context.Context, sources []registryImage, root digest.Digest, platform ocispec.Platform, limit imageLoadLimit, loading bool, checked *checkedManifests) (*registryPlan, registryImage, error) {
-	var err error
+	var err, recoverable error
+	definite := false
 	for _, source := range sources {
 		// Only a failure to get any answer over HTTPS, such as a refused connection or a TLS
 		// error, lets the agent ask in the clear; any answer, a missing manifest included, ends
 		// the search.
-		var transport *url.Error
-		if plainHTTPFallback(source) && !errors.As(err, &transport) {
+		if answeredOverHTTPS(source) {
 			break
 		}
 		var plan *registryPlan
@@ -181,8 +181,26 @@ func planFromSources(ctx context.Context, sources []registryImage, root digest.D
 		if !errors.As(err, &unread) && !errors.As(err, &lacking) {
 			return plan, source, err
 		}
+		if unread != nil && transientRegistryFailure(unread.err) {
+			recoverable = err
+		}
+		// The last source's own answer stands, whatever an earlier one did.
+		definite = sourceAnswered(source, err)
+	}
+	if recoverable != nil && !definite {
+		err = recoverable
 	}
 	return nil, nil, err
+}
+
+// sourceAnswered reports whether err, from reading source, is source's answer rather than a
+// failure to get one. A server that speaks only TLS answers 400 to a request in the clear.
+func sourceAnswered(source registryImage, err error) bool {
+	var response *errcode.ErrorResponse
+	if errors.As(err, &response) {
+		return response.StatusCode != http.StatusBadRequest || !plainHTTPFallback(source)
+	}
+	return errors.Is(err, errdef.ErrNotFound) || errors.As(err, new(*missingContent))
 }
 
 // containerdImageStore reports whether Docker keeps images in containerd, as its info's driver
@@ -247,6 +265,8 @@ func registryUnreachable(err error) error {
 	switch {
 	case errors.Is(err, errLongerThanMeasured):
 		why = "its registry sent more for a blob than the image's manifest says the blob holds"
+	case errors.Is(err, errShorterThanMeasured):
+		why = "its registry sent less for a blob than the image's manifest says the blob holds"
 	case errors.As(err, &response) && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden):
 		why = "its registry refused to let the agent read it, so the agent cannot measure what pulling it writes"
 	case errors.Is(err, errdef.ErrNotFound):
@@ -276,7 +296,7 @@ func encodedRegistryAuth(c pipeline.Credential) string {
 }
 
 // pullVisualImages puts a deployment's images into Docker. Any image it cannot put there ends
-// in an *imagePullRefused whose note says why: a pull changes nothing that a deployment runs, so
+// in an *imagePullRefused whose note says why, or in errPullCancelled: a pull changes nothing that a deployment runs, so
 // its callers fail the deployment rather than hold the host for inspection.
 func (e *Engine) pullVisualImages(ctx context.Context, c api.ExecutionCommand, p deployment.Payload) error {
 	images := make([]string, 0, len(p.Plan.Images)+1)
@@ -317,7 +337,7 @@ func (e *Engine) pullVisualImages(ctx context.Context, c api.ExecutionCommand, p
 		}
 		if err := e.pullMeasuredImage(ctx, image, credential, func() bool { return e.cancelled(c.Id) }); err != nil {
 			var refused *imagePullRefused
-			if errors.As(err, &refused) {
+			if errors.As(err, &refused) || errors.Is(err, errPullCancelled) {
 				return err
 			}
 			return notPulled(image, "pulling it failed or was interrupted", "Check that this server can reach its registry, then {retry}.")
@@ -336,11 +356,16 @@ func (e *Engine) pullVisualImages(ctx context.Context, c api.ExecutionCommand, p
 
 // pullFailure is the outcome and note of a deployment command that failed with err. A pull
 // changes nothing that a deployment runs, so a refused pull fails a command that had changed
-// nothing before it. Any other failure needs attention, as does a refused pull in a command run
-// again after it began changing the deployment, whose note then says so.
+// nothing before it, and cancels one its owner cancelled. Any other failure needs attention, as
+// does a refused or cancelled pull in a command run again after it began changing the deployment,
+// whose note then says so.
 func pullFailure(err error, secrets map[string]string, changedNothing bool) (api.ExecutionState, string) {
 	var refused *imagePullRefused
 	switch {
+	case errors.Is(err, errPullCancelled) && changedNothing:
+		return "cancelled", errPullCancelled.Error() + " Existing workloads are unchanged."
+	case errors.Is(err, errPullCancelled):
+		return "needs_attention", errPullCancelled.Error() + " An earlier attempt of this operation had begun changing the deployment, so inspect it before retrying."
 	case !errors.As(err, &refused):
 		return "needs_attention", safeVisualError(err, secrets)
 	case changedNothing:

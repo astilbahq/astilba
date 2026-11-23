@@ -134,7 +134,8 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return e.abortRelease(ctx, c, p, &s, "failed", safeVisualError(err, p.Secrets)+" The serving revision is retained.")
+			state, note := pullFailure(err, p.Secrets, true)
+			return e.abortRelease(ctx, c, p, &s, state, note+" The serving revision is retained.")
 		}
 		for _, plan := range []deployment.Plan{s.Old.Plan, p.Plan} {
 			image, err := e.Docker.ImageInspect(ctx, plan.Images[app.ID.String()])

@@ -17,21 +17,40 @@ import (
 )
 
 // The visual lane deploys every entry, and CI pulls each image first because a registry failing
-// for a moment during the test would fail the lane.
+// for a moment during the test would fail the lane. CI pulls no other image for it.
 func TestCatalogImagesArePulledFirst(t *testing.T) {
 	workflow, err := os.ReadFile("../../../../.github/workflows/ci.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pulled := map[string]bool{}
-	for _, line := range strings.Split(string(workflow), "\n") {
-		pulled[strings.TrimSpace(line)] = true
+	pulled := func(step string) map[string]bool {
+		_, after, found := strings.Cut(string(workflow), "- name: "+step+"\n")
+		if !found {
+			t.Fatal("no step named", step)
+		}
+		step, _, _ = strings.Cut(after, "- name: ")
+		images := map[string]bool{}
+		for line := range strings.Lines(step) {
+			if line = strings.TrimSpace(line); strings.Contains(line, "@sha256:") {
+				images[line] = true
+			}
+		}
+		return images
 	}
+	fixtures, catalog := pulled("Pull pinned fixture images"), pulled("Pull catalog images")
+	deployed := map[string]bool{}
 	for _, recipe := range Recipes() {
 		for _, app := range recipe.Specification.Applications {
-			if image := *app.Source.Image; !pulled[image] {
-				t.Errorf("%s: add %s to the images .github/workflows/ci.yml pulls", recipe.ID, image)
+			image := *app.Source.Image
+			deployed[image] = true
+			if !fixtures[image] && !catalog[image] {
+				t.Errorf("%s: pull %s in ci.yml", recipe.ID, image)
 			}
+		}
+	}
+	for image := range catalog {
+		if !deployed[image] {
+			t.Error("ci.yml pulls an image the catalog does not deploy:", image)
 		}
 	}
 }
