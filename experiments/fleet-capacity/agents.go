@@ -197,8 +197,15 @@ func (b *browser) enrollMFA(ctx context.Context) error {
 	var enrollment struct {
 		Secret string `json:"secret"`
 	}
-	if err := b.call(ctx, "POST", "/api/v1/auth/mfa/enroll", nil, &enrollment, 200); err != nil {
-		return err
+	for attempt := 1; ; attempt++ {
+		err := b.call(ctx, "POST", "/api/v1/auth/mfa/enroll", nil, &enrollment, 200)
+		if err == nil {
+			break
+		}
+		// A new installation creates the key that seals the secret in the background.
+		if !strings.Contains(err.Error(), "temporarily_busy") || attempt == 60 || !wait(ctx, time.Second) {
+			return err
+		}
 	}
 	code, err := b.nextCode(ctx, enrollment.Secret)
 	if err != nil {

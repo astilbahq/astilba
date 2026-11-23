@@ -95,18 +95,18 @@ export function AppShell({
     select: (state) => (state.resolvedLocation ?? state.location).hash,
   });
   const previousNavigation = useRef(navigationKey);
-  // What takes focus when the drawer closes, if not its trigger: the page a navigation rendered,
-  // or main when the drawer is dismissed with its trigger hidden.
+  // What takes focus once the drawer has closed, if not its trigger: the page a navigation
+  // rendered, even one that arrives while a dismissed drawer fades out, or main when the drawer is
+  // dismissed with its trigger hidden.
   const focusAfterClose = useRef<"page" | "main">(undefined);
   const logout = useAction();
   const request = useSessionRequest();
   useEffect(() => {
     if (previousNavigation.current === navigationKey) return;
     previousNavigation.current = navigationKey;
-    if (open) {
-      focusAfterClose.current = "page";
-      setOpen(false);
-    } else focusPage(main.current, hash);
+    focusAfterClose.current = "page";
+    if (open) setOpen(false);
+    else focusPage(main.current, hash);
   }, [navigationKey, hash, open]);
   const search = { workspace: selectedWorkspaceId ?? workspace?.id };
   const navigation = [
