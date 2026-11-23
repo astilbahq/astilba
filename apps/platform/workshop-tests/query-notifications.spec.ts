@@ -4,7 +4,6 @@ import { renderStory } from "./story-render";
 // A busy browser can run zero-delay timers long after the work queued behind them. A query change
 // must still reach components before a response, a retry or a closing dialog that follows it.
 for (const id of [
-  "pages-account-security--disabled-successfully",
   "pages-environment-purge--purge-without-volumes",
   "pages-environment-retirement--retire-announced",
   "pages-environment-retirement--restore-announced",

@@ -104,11 +104,13 @@ function Panel({
         source={current}
         dirty={false}
         changed={async (message) => {
-          flushSync(() => setSaid(message));
+          // The page's refreshed source reaches the panel before its refresh resolves and focus
+          // moves.
+          flushSync(() => {
+            setSaid(message);
+            if (next) setCurrent(next);
+          });
           status.current?.focus();
-          // The page's refreshed source reaches the panel a moment later, as the query's
-          // notification is scheduled after the refresh resolves.
-          if (next) setTimeout(() => setCurrent(next), 0);
         }}
       />
       {said && (
@@ -283,7 +285,7 @@ export const RebindRenamedFile: Story = {
     );
     // The page then shows the source as bound, which isn't someone else's change.
     await expect(await canvas.findByText(/Source changed/)).toHaveFocus();
-    // The page's refreshed source arrives after the binding settles, and is the binding's own.
+    // The page's refreshed source is the binding's own.
     await waitFor(() =>
       expect(canvasElement.querySelector("main")).toHaveAttribute(
         "data-source",
