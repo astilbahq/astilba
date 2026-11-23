@@ -1,4 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
+import { useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { appShell } from "../../../styled-system/recipes";
@@ -56,7 +57,6 @@ export function AppShell({
   workspace,
   selectedWorkspaceId,
   section,
-  navigationKey,
   onWorkspaceChange,
   onSignedOut,
   children,
@@ -66,7 +66,6 @@ export function AppShell({
   workspace?: Schema["Workspace"];
   selectedWorkspaceId?: string;
   section: AppSection;
-  navigationKey: string;
   onWorkspaceChange: (id: string) => void;
   onSignedOut: () => void;
   children: ReactNode;
@@ -77,6 +76,14 @@ export function AppShell({
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const main = useRef<HTMLElement>(null);
+  // The location the router has rendered, rather than the one it is loading, so that focus
+  // moves once the page it names is there.
+  const navigationKey = useRouterState({
+    select: (state) => (state.resolvedLocation ?? state.location).href,
+  });
+  const hash = useRouterState({
+    select: (state) => (state.resolvedLocation ?? state.location).hash,
+  });
   const previousNavigation = useRef(navigationKey);
   const focusAfterClose = useRef(false);
   const logout = useAction();
@@ -87,8 +94,13 @@ export function AppShell({
     if (open) {
       focusAfterClose.current = true;
       setOpen(false);
-    } else main.current?.focus();
-  }, [navigationKey, open]);
+    } else {
+      // A link to a section of the page moves focus to that section, if it can take focus.
+      const target = hash ? document.getElementById(hash) : null;
+      target?.focus();
+      if (!target || document.activeElement !== target) main.current?.focus();
+    }
+  }, [navigationKey, hash, open]);
   const search = { workspace: selectedWorkspaceId ?? workspace?.id };
   const navigation = [
     { to: "/", label: t(($) => $.navigation.projects), icon: paths.projects },

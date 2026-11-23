@@ -12,8 +12,8 @@ import * as styles from "./mfa-setup-notice.styles";
 // so, while the workspace refuses their changes without it: one that requires it, as new
 // workspaces do, and every workspace on a hosted installation. Until then they can still read
 // it. A viewer changes nothing either way, so isn't told otherwise. Owners continue in workspace
-// setup, which on a hosted installation is only for a workspace they own; anyone else sets it up
-// in account security.
+// setup, which on a hosted installation is only for a workspace they own; anyone else goes to the
+// two-factor section of account security.
 export function MfaSetupNotice({
   user,
   workspace,
@@ -49,6 +49,7 @@ export function MfaSetupNotice({
         <ButtonLink
           to="/account"
           search={{ workspace: workspace.id }}
+          hash="account-mfa"
           size="sm"
         >
           {action}

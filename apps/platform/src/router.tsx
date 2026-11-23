@@ -136,7 +136,6 @@ function SignedInLayout({
         workspace={workspace}
         selectedWorkspaceId={search.workspace}
         section={section}
-        navigationKey={location.href}
         onWorkspaceChange={(id) => {
           void navigate({ to: section, search: { workspace: id } });
         }}

@@ -27,7 +27,7 @@ When it prints **Ready**, open `http://127.0.0.1:54182/login` and sign in as `ow
 
 ## What the seed sets up
 
-Each start signs in through the API and makes sure the **Local stack** workspace holds what follows. A new workspace requires two-factor authentication, which the local owner, signing in with a password alone, doesn't have, so the seed first turns that requirement off as the owner; turn it on again in workspace settings after setting up two-factor authentication. The workspace then holds:
+Each start signs in through the API and makes sure the **Local stack** workspace holds what follows. A new workspace requires two-factor authentication before it can be changed, and the local owner signs in with a password alone, so the first start turns that requirement off; turn it on again in workspace settings after setting up two-factor authentication. The workspace then holds:
 
 - the **Local app** project, with a Compose environment called **production**. Its draft runs a small web server from a pinned BusyBox image that serves the `GREETING` secret from a named volume, with an HTTP route for `web.localhost`;
 - the `GREETING` environment secret;

@@ -351,9 +351,13 @@ export const TwoFactorRequiredOperator: Story = {
         name: "Set up two-factor authentication",
       }),
     );
-    await expect(
-      await within(canvasElement).findByRole("heading", { name: "account" }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(canvasElement).getByRole("heading", {
+          name: "Two-factor authentication",
+        }),
+      ).toHaveFocus(),
+    );
   },
 };
 // A viewer changes nothing with or without two-factor authentication, so sees no notice.

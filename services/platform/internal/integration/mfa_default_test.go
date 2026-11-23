@@ -61,14 +61,22 @@ func TestNewWorkspacesRequireMFA(t *testing.T) {
 		t.Fatal("the created workspace's stored requirement differs from its response")
 	}
 
-	// Before enrolling, the owner reads both new workspaces but changes neither; the earlier
-	// workspace keeps the rule it had.
+	// Before enrolling, the owner reads both new workspaces but changes neither, not even to stop
+	// requiring two-factor authentication; the earlier workspace keeps the rule it had.
 	for _, id := range []uuid.UUID{bootstrapped, created.Id} {
 		b.call("GET", "/api/v1/workspaces/"+id.String()+"/projects", nil, 200, nil)
-		var failure api.Error
-		b.call("POST", "/api/v1/workspaces/"+id.String()+"/projects", map[string]string{"name": "Before"}, 403, &failure)
-		if failure.Code != "mfa_required" {
-			t.Fatalf("an unenrolled owner's change was refused with %q, not mfa_required", failure.Code)
+		for _, change := range []struct {
+			method, path string
+			body         any
+		}{
+			{"POST", "/projects", map[string]string{"name": "Before"}},
+			{"PUT", "", map[string]any{"name": "Before", "requireMfa": false}},
+		} {
+			var failure api.Error
+			b.call(change.method, "/api/v1/workspaces/"+id.String()+change.path, change.body, 403, &failure)
+			if failure.Code != "mfa_required" {
+				t.Fatalf("an unenrolled owner's %s was refused with %q, not mfa_required", change.method, failure.Code)
+			}
 		}
 	}
 	b.call("POST", "/api/v1/workspaces/"+earlier.String()+"/projects", map[string]string{"name": "Earlier"}, 201, nil)

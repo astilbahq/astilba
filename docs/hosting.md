@@ -65,8 +65,8 @@ previously encrypted data.
 5. Start `astilba serve` and sign in. The workspace starts requiring two-factor
    authentication, as every new workspace does, so the dashboard guides you through
    setting it up and saving recovery codes; until then you can look around but not
-   change anything. An owner can turn the requirement off in workspace settings.
-   Configure SMTP before inviting other users or relying on password recovery.
+   change anything, including the requirement itself. Configure SMTP before inviting
+   other users or relying on password recovery.
 6. Follow [agent installation](agent.md), then exercise a deployment and restore
    on disposable infrastructure before admitting customer workloads.
 
