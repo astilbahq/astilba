@@ -33,10 +33,11 @@ func claimPlanVolumes(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, plan de
 	for _, vol := range plan.Specification.Volumes {
 		var owner uuid.UUID
 		var initial, stored, major, storedMajor *string
+		var database domain.Application
 		for _, app := range plan.Specification.Applications {
 			if app.Postgres != nil && app.Mounts[0].VolumeID == vol.ID {
 				value := deployment.Hash(app.Postgres)
-				initial = &value
+				initial, database = &value, app
 				if version := domain.PostgresMajor(*app.Source.Image); version != "" {
 					major = &version
 				}
@@ -54,7 +55,7 @@ func claimPlanVolumes(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, plan de
 				return domain.Invalid("applications.postgres.existingVolume")
 			}
 			if storedMajor != nil && (major == nil || *storedMajor != *major) {
-				return domain.Invalid("applications.postgres.upgrade")
+				return volumeMajorRefusal(database, *storedMajor)
 			}
 			if stored == nil || storedMajor == nil && major != nil {
 				if _, err := tx.Exec(ctx, "UPDATE managed_volumes SET postgres_init_hash=$3,postgres_major=$4 WHERE workspace_id=$1 AND id=$2", ws, vol.ID, initial, major); err != nil {
