@@ -2,9 +2,7 @@ package portability
 
 import (
 	"bytes"
-	"compress/gzip"
 	"errors"
-	"io"
 	"math/bits"
 
 	"github.com/klauspost/compress/zstd"
@@ -15,10 +13,7 @@ import (
 // the release that sealed them or a newer one.
 var ErrRecoveryCodec = errors.New("recovery checkpoint uses a compression this release cannot read; run recovery with the release that sealed it or a newer one")
 
-var (
-	gzipMagic = []byte{0x1f, 0x8b}
-	zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
-)
+var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 
 // CompressRecovery compresses a recovery base for sealing. A base repeats each plan in several
 // tables, further apart than deflate's 32 KiB window, so zstd with a window covering the whole
@@ -52,9 +47,10 @@ func CompressRecovery(raw []byte) ([]byte, error) {
 	return compressed, nil
 }
 
-// DecompressRecovery reads a base sealed by this release (zstd) or an earlier one (gzip). Bases
-// are opened from management's own sealed envelopes, and their output is capped at
-// MaxArchiveBytes either way.
+// DecompressRecovery reads a base sealed by this release (zstd). Earlier releases compressed bases
+// with gzip, but only under version 1 descriptors, which recovery refuses before opening them.
+// Bases are opened from management's own sealed envelopes, and their output is capped at
+// MaxArchiveBytes.
 func DecompressRecovery(compressed []byte) ([]byte, error) {
 	switch {
 	case bytes.HasPrefix(compressed, zstdMagic):
@@ -64,18 +60,6 @@ func DecompressRecovery(compressed []byte) ([]byte, error) {
 		}
 		defer decoder.Close()
 		out, err := decoder.DecodeAll(compressed, nil)
-		if err != nil || len(out) > MaxArchiveBytes {
-			clear(out)
-			return nil, ErrArchive
-		}
-		return out, nil
-	case bytes.HasPrefix(compressed, gzipMagic):
-		reader, err := gzip.NewReader(bytes.NewReader(compressed))
-		if err != nil {
-			return nil, ErrArchive
-		}
-		defer reader.Close()
-		out, err := io.ReadAll(io.LimitReader(reader, MaxArchiveBytes+1))
 		if err != nil || len(out) > MaxArchiveBytes {
 			clear(out)
 			return nil, ErrArchive

@@ -90,7 +90,7 @@ func (e *Engine) executeRetirement(ctx context.Context, c api.ExecutionCommand, 
 		return err
 	}
 	if err = e.publishReleaseRoutes(ctx, withdrawnRoutes(p.Plan)); err != nil {
-		return attention("This environment's routes could not be withdrawn, for example because ingress changed outside Astilba. Nothing else was removed.")
+		return attention(proxyImageNote(err, "This environment's routes could not be withdrawn, for example because ingress changed outside Astilba. Nothing else was removed.", " Nothing else was removed. Retry once the host can pull the image."))
 	}
 	if e.cancelled(c.Id) {
 		return e.finish(c.Id, "cancelled", "Retirement stopped after withdrawing its routes. Its services, networks and volumes are kept.")

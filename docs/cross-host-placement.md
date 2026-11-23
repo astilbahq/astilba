@@ -131,9 +131,11 @@ The primary retains encrypted management checkpoints before each effect phase;
 every participant retains exact command headers and sequenced outcomes. Recovery
 reconstructs the frozen operation from those checkpoints and the original
 management keyring. It does not resolve tags, regenerate plans or infer an outcome
-from a missing container or report. Checkpoints are compressed with zstd. Checkpoints sealed
-before that were compressed with gzip, and recovery still reads them, alone or mixed with newer
-ones. A release can't read checkpoints sealed by a newer one, so run recovery with the release
+from a missing container or report. Checkpoints are compressed with zstd. Each checkpoint is
+sealed to its whole descriptor: its root, participants, sequence and the checkpoint it follows. A
+host keeps the descriptor beside the checkpoint, and one whose descriptor was changed doesn't
+open. Recovery reads only descriptor version 2 and refuses checkpoints sealed with version 1,
+which left the checkpoint they follow unbound. A release can't read checkpoints sealed by a newer one, so run recovery with the release
 that sealed the newest checkpoint or a newer one, even when the management backup is older.
 Checkpoint sizes and retained histories are bounded; an incomplete or incompatible
 evidence set refuses recovery.
@@ -188,11 +190,6 @@ reports say it still runs, so recovery refuses before it changes anything, namin
 and its servers. To proceed, revoke those servers in the restored management and leave their
 exports out. Recovery then continues without them, and afterwards you enrol them again and
 redeploy what they ran.
-
-Checkpoints with a recovery window are a format a release before this one can't read, so once
-hosts hold them, run cross-host recovery with a current release. Checkpoints sealed before it
-still recover, alone or mixed with newer ones; they carry every applied change, so their history
-counts as whole.
 
 Stop the old and destination management processes and all participating agents.
 Preserve their journals, host keys and current workload containers. Restore the
@@ -259,7 +256,7 @@ applied revision changes only after all hosts confirm their target resumption.
 
 Recovery needs an export from every enrolled server except a revoked one, which may be gone or untrusted. Revoke a server in the restored management before recovering if you can't trust it or reach it. An export supplied for a revoked server must still match its machine, but nothing it claims counts: not its proofs, inventory, roots, private links or generation claims, which it could make up. Only its sealed capsules can count, for an interrupted root it was primary of, beyond the checkpoints management kept, because management sealed them and the server can only replay them. An export that can't be read at all still stops recovery, so leave it out; a revoked server's export is never required. Recovery keeps the revocation until an owner lifts it, keeps the server out of the network whichever membership record it selects, and ends its work as revoking it does, including any standalone removal still waiting on it. Recovery also does everything else revoking does, for every server it carries as revoked, because the records it keeps can be from before the revocation, or from a renewal the revocation overrides: it releases the server's previews and deletes their secret copies, and withdraws its domain. It releases the previews the revoked server runs, by where each was placed, so a preview of a policy since moved to another host is left alone. Of a preview policy's two copies, recovery keeps the one naming the host its open previews run on, so their cleanup goes where they are. Where they don't decide it, the copy with the higher generation wins, and on a tie the restored database's.
 
-A revoked server that took part in an interrupted root gets no authority back. The root opens once the remaining participants prove themselves, and they end it as they would after any revocation, following the table in [Moving off a revoked server](#moving-off-a-revoked-server). When the revoked server was the root's primary, whose export normally carries the root's checkpoints, recovery uses the checkpoints management sealed for it instead. If the revoked server's export holds later checkpoints, recovery takes them too, but only in order, each following the last, and only while each opens under management's key, so the server can replay progress management recorded but can't invent, reorder or withhold any below what management kept. Where it holds two different checkpoints for the same step, recovery takes neither. If the root is newer than anything management kept, include the revoked server's export if you can, since its sealed capsules are then the only copy of the root. Without them nothing holds its frozen plan, and recovery refuses with what to do: revoke the root's other servers too, leave out their exports, then deploy the environment to healthy servers.
+A revoked server that took part in an interrupted root gets no authority back. The root opens once the remaining participants prove themselves, and they end it as they would after any revocation, following the table in [Moving off a revoked server](#moving-off-a-revoked-server). When the revoked server was the root's primary, whose export normally carries the root's checkpoints, recovery uses the checkpoints management sealed for it instead. If the revoked server's export holds later checkpoints, recovery takes them too, but only in order, each following the last, and only while each opens under management's key, so the server can replay progress management recorded but can't invent, reorder or withhold any below what management kept. Management seals into each checkpoint the one it follows, so the server can't relabel one sealed after another checkpoint, such as in a history from before another restore, to follow the last one management kept. Where it holds two different checkpoints for the same step, recovery takes neither. If the root is newer than anything management kept, include the revoked server's export if you can, since its sealed capsules are then the only copy of the root. Without them nothing holds its frozen plan, and recovery refuses with what to do: revoke the root's other servers too, leave out their exports, then deploy the environment to healthy servers.
 
 Host exports are unsigned, so recovery refuses, on the preview and before writing
 anything, an export that claims a network, environment, update or controller

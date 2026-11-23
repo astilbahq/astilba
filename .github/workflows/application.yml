@@ -111,7 +111,7 @@ jobs:
           images: |
             postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
             busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
-            traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
+            traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
       - name: Pull the pinned Gitea and OpenBao images
         # Only the operations lane runs the tests against a real Gitea and a real OpenBao.
         if: matrix.lane == 'operations'

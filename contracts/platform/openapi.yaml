@@ -5470,7 +5470,7 @@
       additionalProperties: false
       required: [version,workspaceId,parentId,rootHash,groupId,groupHash,baseId,checkpointId,sequence,digest,bytes,participants]
       properties:
-        version: {type: integer,enum: [1]}
+        version: {type: integer,enum: [2]}
         workspaceId: {type: string,format: uuid}
         parentId: {type: string,format: uuid}
         rootHash: {type: string,pattern: '^[a-f0-9]{64}$'}

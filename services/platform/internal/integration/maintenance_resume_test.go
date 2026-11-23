@@ -182,7 +182,7 @@ func TestMaintenancePrimaryTerminalFailureSurfacesBeforeConsumerCompletion(t *te
 				parent.Crosshost, parent.PlanHash = &message, execution.Hash(body)
 				id := uuid.New()
 				envelope := []byte("frozen-test-capsule")
-				d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: parent.Id, RootHash: parent.PlanHash, GroupID: uuid.New(), GroupHash: parent.PlanHash, BaseID: id, CheckpointID: id, Bytes: len(envelope), Digest: deployment.RecoveryDigest(envelope), Participants: []uuid.UUID{units[0].Plan.ServerID, units[1].Plan.ServerID}}
+				d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, ParentID: parent.Id, RootHash: parent.PlanHash, GroupID: uuid.New(), GroupHash: parent.PlanHash, BaseID: id, CheckpointID: id, Bytes: len(envelope), Digest: deployment.RecoveryDigest(envelope), Participants: []uuid.UUID{units[0].Plan.ServerID, units[1].Plan.ServerID}}
 				descriptor, _ := stablejson.Marshal(d)
 				metadata := jsontext.Value(descriptor)
 				parent.RecoveryCheckpoint = &metadata
