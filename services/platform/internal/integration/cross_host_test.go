@@ -968,7 +968,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	pgImage := domain.Postgres17Image
 	stack := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{
 		{ID: web, Name: "Web", Replicas: 2, Source: domain.ApplicationSource{Kind: "image", Image: &image}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}},
-		{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: databaseSecret.Id}, Mounts: []domain.VolumeMount{{VolumeID: data, Target: domain.PostgresMount(pgImage)}}},
+		{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: databaseSecret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: data, Target: domain.PostgresMount(pgImage)}}},
 	}, Volumes: []domain.Volume{{ID: data, Name: "Data"}}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: web, Variable: "DATABASE_URL"}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: web, Protocol: "http", Domain: "upgrade.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	var databaseDraft api.Revision
 	b.call("PUT", databasePath+"/draft", map[string]any{"baseRevisionId": databaseEnv.DraftRevisionId, "specification": stack}, 200, &databaseDraft)

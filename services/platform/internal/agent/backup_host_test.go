@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -111,8 +112,14 @@ ALTER DATABASE `+db+` OWNER TO backup_reader;`); err != nil {
 			if err != nil || release.Image != fixture.restored {
 				t.Fatalf("restores in %s: %v", release.Image, err)
 			}
-			if _, err := e.restorePostgres(ctx, target, a, uuid.New(), volumes[1], dir, m, release, "metadata-fixture-password"); err != nil {
+			restoredDatabase, err := e.restorePostgres(ctx, target, uuid.New(), volumes[1], dir, m, release, "metadata-fixture-password")
+			if err != nil {
 				t.Fatal(err)
+			}
+			// The restore runs as the database user, which may choose only its own settings, so
+			// another role's aren't restored. A NOLOGIN role's never applied.
+			if want := []clusterSetting{{role: "backup_reader", name: "work_mem"}}; !slices.Equal(restoredDatabase.left, want) {
+				t.Fatalf("left out %v, want %v", restoredDatabase.left, want)
 			}
 			restored := start(volumes[1], fixture.restored)
 			got, err := e.pgQuery(ctx, pgClient{container: restored}, a, `SELECT
@@ -123,14 +130,15 @@ has_database_privilege('backup_reader', current_database(), 'CONNECT'),
 (SELECT setconfig::text FROM pg_db_role_setting WHERE setdatabase=(SELECT oid FROM pg_database WHERE datname=current_database()) AND setrole=(SELECT oid FROM pg_roles WHERE rolname='backup_reader')),
 (SELECT concat_ws(',',datconnlimit,pg_get_userbyid(datdba),shobj_description(oid,'pg_database')) FROM pg_database WHERE datname=current_database()),
 NOT EXISTS (SELECT 1 FROM pg_database, LATERAL aclexplode(coalesce(datacl,acldefault('d',datdba))) WHERE datname=current_database() AND grantee=0 AND privilege_type='CONNECT')`)
-			if err != nil || strings.TrimSpace(string(got)) != fmt.Sprint(release.Version)+"|reporting, public|retained|t|{work_mem=16MB}|7,backup_reader,metadata recovery fixture|t" {
+			if err != nil || strings.TrimSpace(string(got)) != fmt.Sprint(release.Version)+"|reporting, public|retained|t||7,backup_reader,metadata recovery fixture|t" {
 				t.Fatalf("database settings, privileges, ownership, comments or records were lost: %q, %v", got, err)
 			}
 		})
 	}
 }
 
-func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command func(backup.Command) api.ExecutionCommand) {
+// nativeBackupJourney backs up and restores p's database, whose user has password.
+func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, password string, command func(backup.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
 	deliver := func(c api.ExecutionCommand) api.AgentReport {
@@ -160,9 +168,34 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.pgQuery(ctx, pgClient{container: c.ID}, a, `CREATE ROLE backup_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reporting; CREATE TABLE reporting.records(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload hstore NOT NULL); INSERT INTO reporting.records(payload) VALUES ('a=>b'); ALTER TABLE reporting.records OWNER TO backup_reader; GRANT USAGE ON SCHEMA reporting TO backup_reader; CREATE TABLE large_records AS SELECT repeat('x',70*1024*1024) AS payload`); err != nil {
+	// As a deployment's database would: only the superuser creates a role, which the user is a
+	// member of, and the user gives a table to that role only while the role may create in its schema.
+	if _, err = e.pgQuery(ctx, pgClient{container: c.ID}, a, "CREATE ROLE backup_reader NOLOGIN; GRANT backup_reader TO "+quoteIdentifier(a.Postgres.Username)+"; "+asDatabaseUserSQL(a, `CREATE EXTENSION hstore; CREATE SCHEMA reporting; CREATE TABLE reporting.records(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, payload hstore NOT NULL); INSERT INTO reporting.records(payload) VALUES ('a=>b'); GRANT USAGE, CREATE ON SCHEMA reporting TO backup_reader; ALTER TABLE reporting.records OWNER TO backup_reader; REVOKE CREATE ON SCHEMA reporting FROM backup_reader; CREATE TABLE large_records AS SELECT repeat('x',70*1024*1024) AS payload`)); err != nil {
 		t.Fatal(err)
 	}
+	// The database's user sets what the agent's superuser sessions in its database would start
+	// with, and adds a closer match for json_agg(json), which the backup's catalog reads call, that
+	// makes the user a superuser. Every backup and restore below runs with them.
+	escalate := fmt.Sprintf(`CREATE FUNCTION public.escalate(state json, value json) RETURNS json LANGUAGE plpgsql AS $f$BEGIN EXECUTE pg_catalog.format('ALTER ROLE %%I SUPERUSER', %s); RETURN value; END$f$; CREATE AGGREGATE public.json_agg(json) (sfunc = public.escalate, stype = json)`, quoteLiteral(a.Postgres.Username))
+	hostile := []string{"search_path = public, pg_catalog", "standard_conforming_strings = off", "role = " + quoteIdentifier(a.Postgres.Username)}
+	for _, setting := range hostile {
+		escalate += "; ALTER DATABASE " + quoteIdentifier(a.Postgres.Database) + " SET " + setting
+	}
+	if _, err = e.pgQuery(ctx, pgClient{container: c.ID}, a, asDatabaseUserSQL(a, escalate)); err != nil {
+		t.Fatal(err)
+	}
+	notSuperuser := func(when string) {
+		t.Helper()
+		if out, err := e.pgQuery(ctx, pgClient{container: c.ID}, a, "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = "+quoteLiteral(a.Postgres.Username)); err != nil || strings.TrimSpace(string(out)) != "f" {
+			t.Fatalf("%s, the database's user is a superuser: %q %v", when, out, err)
+		}
+	}
+	defer func() {
+		notSuperuser("after the backups")
+		if _, err := e.pgQuery(ctx, pgClient{container: c.ID}, a, "DROP AGGREGATE public.json_agg(json); DROP FUNCTION public.escalate(json, json); ALTER DATABASE "+quoteIdentifier(a.Postgres.Database)+" RESET ALL"); err != nil {
+			t.Error(err)
+		}
+	}()
 	in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "External recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "native-repository-password-canary"}}
 	if r := deliver(command(backup.Command{Action: "install", Installation: in, RunID: uuid.New(), TargetID: uuid.New()})); r.State != "succeeded" {
 		t.Fatalf("install ended %s: %s", r.State, r.Note)
@@ -200,6 +233,7 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	if len(s.Runs) != 1 || s.Runs[0].State != "succeeded" || !backup.SnapshotID(s.Runs[0].Snapshot) || s.Runs[0].Verified {
 		t.Fatalf("offline backup not recorded: %+v", s.Runs)
 	}
+	notSuperuser("after a backup")
 	snapshot := s.Runs[0].Snapshot
 	// Restore into a separate owned volume and compare archived schema/data.
 	if _, err = e.Docker.ContainerStop(ctx, c.ID, client.ContainerStopOptions{}); err != nil {
@@ -307,6 +341,18 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 	if !found {
 		t.Fatal("retention removed the only verified snapshot")
 	}
+	// What only a superuser can create, as a database from before the owner model may hold, is
+	// something the database user can't restore, so its dump is no backup.
+	trigger := "CREATE FUNCTION public.noop_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $f$BEGIN END$f$; CREATE EVENT TRIGGER noop_ddl ON ddl_command_start EXECUTE FUNCTION public.noop_ddl()"
+	if _, err = e.pgQuery(ctx, pgClient{container: c.ID}, a, "SET ROLE NONE; "+trigger); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.runScheduled(ctx, &s, time.Now().UTC(), uuid.New(), "", uuid.Nil); err == nil || s.Runs[len(s.Runs)-1].Snapshot != "" {
+		t.Fatalf("a database holding an event trigger was backed up: %v", err)
+	}
+	if _, err = e.pgQuery(ctx, pgClient{container: c.ID}, a, "SET ROLE NONE; DROP EVENT TRIGGER noop_ddl; DROP FUNCTION public.noop_ddl()"); err != nil {
+		t.Fatal(err)
+	}
 	nativeS3Backup(t, e, policy, s.Installation.Access.DatabasePassword)
 	// Expire after restic writes a snapshot but before its result reaches the
 	// agent. The repository effect must not become a usable catalogue entry.
@@ -343,7 +389,7 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, command fun
 		t.Fatalf("expired upload became usable or held the host: %+v", expired)
 	}
 	nativeQueuedRunNow(t, e, in, command, deliver)
-	nativeStoppedDump(t, e, in, c.ID, a, command)
+	nativeStoppedDump(t, e, in, c.ID, a, password, command)
 	reports, err := e.Journal.ScheduleReports()
 	if err != nil {
 		t.Fatal(err)

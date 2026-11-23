@@ -22,7 +22,10 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		{"SELECT count(*) FROM pg_replication_slots", "0", "replication slots are unsupported"},
 		{"SELECT count(*) FROM pg_subscription", "0", "subscriptions are unsupported"},
 		{"SELECT count(*) FROM pg_db_role_setting WHERE setdatabase=0 OR setdatabase IN (SELECT oid FROM pg_database WHERE datname IN (current_database(),'postgres'))", "0", "database or role settings require a separate recipe"},
-		{"SELECT count(*) FROM pg_database WHERE datname IN (current_database(),'postgres') AND (datacl IS NOT NULL OR datconnlimit<>-1 OR datdba<>(SELECT oid FROM pg_roles WHERE rolname=current_user) OR (shobj_description(oid,'pg_database') IS NOT NULL AND (datname<>'postgres' OR shobj_description(oid,'pg_database')<>'default administrative connection database')))", "0", "custom database privileges, ownership, comments or limits require a separate recipe"},
+		// The database user owns the database; the bootstrap superuser, the database user too
+		// before the owner model, owns the maintenance database. An ACL that only spells out the
+		// default, as a restore's grant and revoke leaves one, is no custom privilege.
+		{"SELECT count(*) FROM pg_database WHERE datname IN (current_database(),'postgres') AND (NOT (coalesce(datacl, acldefault('d',datdba)) @> acldefault('d',datdba) AND coalesce(datacl, acldefault('d',datdba)) <@ acldefault('d',datdba)) OR datconnlimit<>-1 OR datdba<>CASE WHEN datname=current_database() THEN (SELECT oid FROM pg_roles WHERE rolname=" + quoteLiteral(a.Postgres.Username) + ") ELSE 10 END OR (shobj_description(oid,'pg_database') IS NOT NULL AND (datname<>'postgres' OR shobj_description(oid,'pg_database')<>'default administrative connection database')))", "0", "custom database privileges, ownership, comments or limits require a separate recipe"},
 	} {
 		raw, err := e.pgQuery(ctx, db, a, check.sql)
 		if err != nil || strings.TrimSpace(string(raw)) != check.want {
@@ -41,7 +44,7 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		// The pinned dumper inventories every dumpable object class, including
 		// collations and text-search objects; a catalog allowlist misses classes.
 		inventory := &boundedOutput{limit: 65536, stopOnLimit: true}
-		if err = e.containerExec(ctx, db, inventory, "sh", "-c", `set -o pipefail && pg_dump --no-password -U "$1" -d postgres --schema-only -Fc | pg_restore --list`, "sh", pg.Username); err != nil {
+		if err = e.containerExec(ctx, db, inventory, "sh", "-c", `set -o pipefail && pg_dump --no-password -U "$1" -d postgres --schema-only -Fc | pg_restore --list`, "sh", pg.MaintenanceUser()); err != nil {
 			return errors.New("cannot inventory the postgres maintenance database")
 		}
 		for _, line := range strings.Split(inventory.b.String(), "\n") {
@@ -97,7 +100,7 @@ func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source st
 	if err != nil {
 		return nil, err
 	}
-	helper, err := e.postgresHelper(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-preflight-v1"), source, from.Image, s.Command.Installation.Access.DatabasePassword)
+	helper, err := e.postgresHelper(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-preflight-v1"), source, from.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -127,16 +130,20 @@ func (e *Engine) upgradeDump(ctx context.Context, s upgradeState, source string,
 	if err != nil {
 		return err
 	}
-	helper, err := e.postgresHelper(ctx, "astilba-upgrade-tools-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-tools-v1"), source, target.Image, s.Command.Installation.Access.DatabasePassword)
+	helper, err := e.postgresHelper(ctx, "astilba-upgrade-tools-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-tools-v1"), source, target.Image)
 	if err != nil {
 		return err
 	}
 	defer e.removeHelper(helper)
+	dump, err := e.dumpSession(ctx, helper, a, m)
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(filepath.Join(stage, "data.dump"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	err = e.containerExec(ctx, helper, f, "pg_dump", "-U", a.Postgres.Username, "-d", a.Postgres.Database, "-Fc", "-Z0", "--no-password", "--quote-all-identifiers")
+	err = e.containerExec(ctx, dump, f, "pg_dump", "-U", a.Postgres.MaintenanceUser(), "-d", a.Postgres.Database, "-Fc", "-Z0", "--no-password", "--quote-all-identifiers")
 	if err == nil {
 		err = f.Sync()
 	}

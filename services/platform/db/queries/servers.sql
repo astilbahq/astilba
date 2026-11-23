@@ -202,7 +202,8 @@ INSERT INTO deployment_units(workspace_id,id,environment_id,server_id,primary_un
 UPDATE deployment_units SET primary_unit=true WHERE workspace_id = @workspace_id AND id = @id AND NOT primary_unit;
 
 -- name: MoveEnvironmentVolumes :exec
-UPDATE managed_volumes SET unit_id = @unit_id WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
+-- A moved volume starts empty on its new server, so no cluster initialises it there yet.
+UPDATE managed_volumes SET unit_id = @unit_id, postgres_init_hash = NULL WHERE workspace_id = @workspace_id AND environment_id = @environment_id;
 
 -- name: MoveEnvironmentResources :exec
 UPDATE managed_resources SET unit_id = @unit_id WHERE workspace_id = @workspace_id AND environment_id = @environment_id;

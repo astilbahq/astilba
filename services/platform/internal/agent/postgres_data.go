@@ -24,6 +24,10 @@ import (
 // entries, so the record stays at the earlier release until those indexes are rebuilt.
 type postgresData struct {
 	Image string `json:"image"`
+	// Initialising is set before the agent creates a database's new volume, and cleared once its
+	// cluster is ready: a volume found while it is set never served the database, so the agent
+	// deletes and creates it again.
+	Initialising bool `json:"initialising,omitempty"`
 }
 
 const postgresDataBucket = "postgres-data"
@@ -41,10 +45,12 @@ func (j *Journal) savePostgresData(volume uuid.UUID, v postgresData) error {
 	return j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, postgresDataBucket, volume.String(), v) })
 }
 
-// forgetPostgresData drops a deleted volume's record, so storage later made at the same identity
+// forgetPostgresData drops a deleted volume's records, so storage later made at the same identity
 // starts its own.
 func (j *Journal) forgetPostgresData(volume uuid.UUID) error {
-	return j.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte(postgresDataBucket)).Delete([]byte(volume.String())) })
+	return j.db.Update(func(tx *bolt.Tx) error {
+		return errors.Join(tx.Bucket([]byte(postgresDataBucket)).Delete([]byte(volume.String())), tx.Bucket([]byte(postgresCredentialBucket)).Delete([]byte(volume.String())))
+	})
 }
 
 // recordPostgresWriters records the release of each managed database in the plan a unit is
@@ -74,13 +80,14 @@ func (j *Journal) recordPostgresWriters(tx *bolt.Tx, previous deployment.Plan) e
 	return nil
 }
 
-// recordNewPostgresStorage records a data volume the agent has just created for a managed
-// database: the release that will initialise it holds every index it builds.
-func (j *Journal) recordNewPostgresStorage(p deployment.Plan, volume uuid.UUID) error {
+// recordNewPostgresStorage records a data volume the agent is creating for a managed database,
+// initialising until its cluster is ready: the release that initialises it holds every index it
+// builds.
+func (j *Journal) recordNewPostgresStorage(p deployment.Plan, volume uuid.UUID, initialising bool) error {
 	for _, a := range p.LocalApplications() {
 		if a.Postgres != nil && a.Source.Image != nil && len(a.Mounts) == 1 && a.Mounts[0].VolumeID == volume {
 			if _, ok := domain.PostgresReleaseOf(*a.Source.Image); ok {
-				return j.savePostgresData(volume, postgresData{Image: *a.Source.Image})
+				return j.savePostgresData(volume, postgresData{Image: *a.Source.Image, Initialising: initialising})
 			}
 		}
 	}
@@ -89,15 +96,16 @@ func (j *Journal) recordNewPostgresStorage(p deployment.Plan, volume uuid.UUID) 
 
 // reindexBudget bounds a database's rebuild. A lock wait gives up quickly, because REINDEX
 // CONCURRENTLY waits for every older transaction, and one left open would hold the host. Each
-// session resolves names only in pg_catalog: it runs as the cluster's superuser in databases
-// other roles may own, so a function an owner adds to public, such as a closer match for
-// format(), must never run with its privileges. A client's options outrank database and role
-// settings. Its client is checked every second, so removing the helper ends a waiting rebuild.
+// session runs as the cluster's superuser in databases other roles may own, with the session
+// options every client has, so a function an owner adds to public, such as a closer match for
+// format(), never runs with its privileges. Its client is checked every second, so removing the
+// helper ends a waiting rebuild.
 const (
-	reindexBudget  = time.Hour
-	reindexOptions = "PGOPTIONS=-c search_path=pg_catalog,pg_temp -c lock_timeout=10s -c statement_timeout=30min -c client_connection_check_interval=1000"
-	reindexKind    = "postgres-reindex-v1"
+	reindexBudget = time.Hour
+	reindexKind   = "postgres-reindex-v1"
 )
+
+var reindexOptions = pgOptions("lock_timeout=10s", "statement_timeout=30min", "client_connection_check_interval=1000")
 
 // reindexPage is how many names one listing returns, well within its output limit. Tests lower it
 // to page through a few indexes.
@@ -206,7 +214,9 @@ func oldestPostgres(major int) domain.PostgresRelease {
 // rebuildPostgresIndexes rebuilds one database's indexes, returning the exclusion-constraint
 // indexes left to the owner, or why it did not finish. It runs from a helper in the database's
 // network namespace, as backups do, so nothing runs in the database container and removing the
-// helper ends whatever the rebuild left running.
+// helper ends whatever the rebuild left running. It connects as the cluster's superuser, but
+// REINDEX runs an index's functions as its table's owner, so in the owner model the database's
+// own code never runs with the superuser's rights.
 func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, a domain.Application, serving domain.PostgresRelease, queries []string) ([]string, error) {
 	// The container runs the plan's resolved reference to the release's digest.
 	v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(a.ID), client.ContainerInspectOptions{})
@@ -221,7 +231,7 @@ func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, 
 	}
 	labels := visualLabels(p, a.ID)
 	labels[labelKind] = reindexKind
-	helper, err := e.postgresHelper(budget, name, labels, v.Container.ID, serving.Image, postgresPassword(v.Container.Config.Env))
+	helper, err := e.postgresHelper(budget, name, labels, v.Container.ID, serving.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +277,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			}
 			out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			if err := e.containerExec(ctx, helper, out, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", database, "-c", "SELECT encode(convert_to(v, 'UTF8'), 'hex') FROM ("+query+") AS q(v)"+after+" ORDER BY v COLLATE \"C\" LIMIT "+strconv.Itoa(reindexPage)); err != nil {
+			if err := e.containerExec(ctx, helper, out, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.MaintenanceUser(), "-d", database, "-c", "SELECT encode(convert_to(v, 'UTF8'), 'hex') FROM ("+query+") AS q(v)"+after+" ORDER BY v COLLATE \"C\" LIMIT "+strconv.Itoa(reindexPage)); err != nil {
 				return nil, err
 			}
 			page := 0
@@ -284,7 +294,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	}
 	run := func(connection string, statements []string) error {
 		for _, statement := range statements {
-			if err := e.containerExec(ctx, helper, io.Discard, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.Username, "-d", connection, "-c", statement); err != nil {
+			if err := e.containerExec(ctx, helper, io.Discard, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.MaintenanceUser(), "-d", connection, "-c", statement); err != nil {
 				return err
 			}
 		}

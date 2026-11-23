@@ -50,7 +50,7 @@ func TestPostgresReleasesAndRetiredReleaseDrafts(t *testing.T) {
 	b.call("POST", path+"/secrets", map[string]string{"name": "Database password", "value": "releases-password-canary"}, 201, &secret)
 	spec := func(image, mount string) domain.Specification {
 		pg, vol := uuid.New(), uuid.New()
-		return domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: mount}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
+		return domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: "app", PasswordSecretVersionID: secret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: mount}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
 	}
 	refused := string(b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec(retired.Image, retired.Mount)}, 400, nil))
 	if !strings.Contains(refused, "applications.postgres.retired") || !strings.Contains(refused, "is retired, so Database cannot start on it") {
@@ -61,7 +61,7 @@ func TestPostgresReleasesAndRetiredReleaseDrafts(t *testing.T) {
 	// An agent from before the release list would refuse the plan as invalid; management says why.
 	enrolled, in, token := enrollment(t, f, b, ws, "deployment")
 	yes := true
-	in.Capabilities.Visual, in.Capabilities.PostgresReleases = &yes, nil
+	in.Capabilities.Visual, in.Capabilities.PostgresReleases, in.Capabilities.PostgresOwnerRole = &yes, nil, nil
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	request := api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: draft.Id}
 	refused = string(b.call("POST", path+"/deployment-plans", request, 400, nil))
@@ -70,7 +70,31 @@ func TestPostgresReleasesAndRetiredReleaseDrafts(t *testing.T) {
 	}
 	in.Capabilities.PostgresReleases = agentPostgresReleases()
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
+	// PLAT-450. An agent from before the owner model would make the database user the cluster's
+	// superuser.
+	refused = string(b.call("POST", path+"/deployment-plans", request, 400, nil))
+	if !strings.Contains(refused, "server.capabilities.postgresOwnerRole") || !strings.Contains(refused, "its agent would make the database user PostgreSQL's superuser") {
+		t.Fatalf("an agent from before the owner model was sent a database: %s", refused)
+	}
+	in.Capabilities.PostgresOwnerRole = agentPostgresOwnerRole()
+	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", token, api.AgentHeartbeat{Capabilities: in.Capabilities, Preflight: in.Preflight}, 200, nil)
 	b.call("POST", path+"/deployment-plans", request, 201, nil)
+	// A new database's user is never the superuser, so a plan for one from before is refused.
+	legacy := spec(domain.PostgresImage, domain.PostgresMount(domain.PostgresImage))
+	legacy.Applications[0].Postgres.Roles = ""
+	var legacyDraft api.Revision
+	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": legacy}, 200, &legacyDraft)
+	refused = string(b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: legacyDraft.Id}, 400, nil))
+	if !strings.Contains(refused, "applications.postgres.roles") || !strings.Contains(refused, "must use the owner role model") {
+		t.Fatalf("a new database whose user is the superuser was planned: %s", refused)
+	}
+}
+
+// agentPostgresOwnerRole is what a current agent advertises: it runs managed databases in the
+// owner model.
+func agentPostgresOwnerRole() *bool {
+	yes := true
+	return &yes
 }
 
 func retiredSuccessor(releases []api.PostgresRelease) string {

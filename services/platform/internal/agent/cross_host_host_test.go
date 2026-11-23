@@ -406,7 +406,7 @@ chmod +x /tmp/www/cgi-bin/health
 exec httpd -f -p 8080 -h /tmp/www`
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{
 		{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, DependsOn: []uuid.UUID{pg, files}, Command: []string{"sh", "-c", script}, Health: &domain.HealthCheck{Port: 8080, Path: "/cgi-bin/health"}},
-		{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}},
+		{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}},
 		{ID: files, Name: "Files", Kind: "web", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, Command: []string{"sh", "-c", "test -f /files/value || echo retained-file-data > /files/value; exec httpd -f -p 8081 -h /files"}, Health: &domain.HealthCheck{Port: 8081, Path: "/value"}, Outputs: []domain.ServiceOutput{{Name: "URL", Type: "url", Scheme: "http", Port: 8081, Path: "/value"}}, Mounts: []domain.VolumeMount{{VolumeID: fileVolume, Target: "/files"}}},
 	}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}, {ID: fileVolume, Name: "Files"}}, Bindings: []domain.Binding{
 		{ID: uuid.New(), SourceID: pg, TargetID: app, Output: "HOST", Variable: "DB_HOST"},
@@ -502,7 +502,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 	if err = sourceGroup.Validate(true); err != nil {
 		t.Fatal("invalid fixture source group", err)
 	}
-	upgradePlan := upgrade.Plan{Group: &sourceGroup, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: uuid.New(), ResourceID: pg, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 7, ExpiresAt: time.Now().Add(time.Hour), Source: sourceGroup.PrimaryPlan(), TargetImage: domain.PostgresImage}
+	upgradePlan := upgrade.Plan{Group: &sourceGroup, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: uuid.New(), ResourceID: pg, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 7, ExpiresAt: time.Now().Add(time.Hour), Source: sourceGroup.PrimaryPlan(), TargetImage: domain.PostgresImage, TargetRoles: domain.PostgresOwner}
 	if err = upgradePlan.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -774,7 +774,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		primary.command(t, primary.backupCommand(backup.Command{Action: "install", Installation: installation}, nil))
 		pgEngine := &Engine{Docker: primary.docker, DockerCLI: primary.cli}
 		pgApp := sourceGroup.Specification.Applications[1]
-		if _, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, "CREATE TABLE cross_host_marker(value text); INSERT INTO cross_host_marker VALUES('retained database data')"); err != nil {
+		if _, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, asDatabaseUserSQL(pgApp, "CREATE TABLE cross_host_marker(value text); INSERT INTO cross_host_marker VALUES('retained database data')")); err != nil {
 			t.Fatal(err)
 		}
 		effect := upgrade.Command{Action: "", Plan: upgradePlan, Installation: installation, Secrets: secrets}

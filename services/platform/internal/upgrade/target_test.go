@@ -61,3 +61,18 @@ func TestPlanSourceIsAnyPostgres17Release(t *testing.T) {
 		}
 	}
 }
+
+// A plan restores into the role model it recorded, without changing the source it was made from;
+// one made before plans recorded theirs keeps the source's model.
+func TestPlanTargetsTheRoleModelItWasMadeWith(t *testing.T) {
+	for _, roles := range []string{"", domain.PostgresOwner} {
+		p := sourcePlan(domain.Postgres17Image)
+		p.TargetRoles = roles
+		if got := p.Target().Specification.Applications[0].Postgres.Roles; got != roles {
+			t.Errorf("recorded %q builds a target in the %q model", roles, got)
+		}
+		if p.Source.Specification.Applications[0].Postgres.Roles != "" {
+			t.Fatal("building the target changed the source's database")
+		}
+	}
+}

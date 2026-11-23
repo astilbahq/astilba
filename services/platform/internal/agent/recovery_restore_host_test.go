@@ -35,7 +35,7 @@ type recoveryHost struct {
 }
 
 // newRecoveryHost applies spec on a new server, as its deployment would: the unit's network and
-// volumes, a PostgreSQL container created with password, and a worker.
+// volumes, a PostgreSQL cluster the agent created with password, and a worker.
 func newRecoveryHost(t *testing.T, docker *client.Client, spec domain.Specification, environment, unit uuid.UUID, password string) recoveryHost {
 	t.Helper()
 	ctx := context.Background()
@@ -48,7 +48,7 @@ func newRecoveryHost(t *testing.T, docker *client.Client, spec domain.Specificat
 		t.Fatal("fixture plan: ", err)
 	}
 	e := &Engine{Docker: docker, Journal: j, ResticCLI: "/opt/astilba-platform-tools/restic"}
-	if err := e.ensureStorage(ctx, p); err != nil {
+	if err := e.ensureStorage(ctx, p, map[string]string{db.Postgres.PasswordSecretVersionID.String(): password}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -65,7 +65,8 @@ func newRecoveryHost(t *testing.T, docker *client.Client, spec domain.Specificat
 		env   []string
 		out   *string
 	}{
-		{db, domain.PostgresImage, []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=" + password}, &h.db},
+		// The agent created the cluster, as it does a deployment's, so its container has no variables.
+		{db, domain.PostgresImage, nil, &h.db},
 		{worker, execution.TestImage, nil, &h.worker},
 	} {
 		mounts := []mount.Mount{}
@@ -178,7 +179,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 	image, worker := domain.PostgresImage, execution.TestImage
 	dbID, workerID, dbVolume, filesVolume := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: dbVolume, Name: "Data"}, {ID: filesVolume, Name: "Files"}}, Applications: []domain.Application{
-		{ID: dbID, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: uuid.New()}, Mounts: []domain.VolumeMount{{VolumeID: dbVolume, Target: "/var/lib/postgresql"}}},
+		{ID: dbID, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: uuid.New(), Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: dbVolume, Target: "/var/lib/postgresql"}}},
 		{ID: workerID, Name: "Worker", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &worker}, Command: []string{"sleep", "86400"}, Mounts: []domain.VolumeMount{{VolumeID: filesVolume, Target: "/data"}}},
 	}}
 	environment, unit, workspace := uuid.New(), uuid.New(), uuid.New()
@@ -191,7 +192,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 
 	// The lost server: its data, its policies, and their uploads.
 	lost := newRecoveryHost(t, docker, spec, environment, unit, password)
-	if _, err = lost.engine.pgQuery(ctx, pgClient{container: lost.db}, spec.Applications[0], "CREATE TABLE records(value text); INSERT INTO records VALUES ('recovered-record')"); err != nil {
+	if _, err = lost.engine.pgQuery(ctx, pgClient{container: lost.db}, spec.Applications[0], asDatabaseUserSQL(spec.Applications[0], "CREATE TABLE records(value text); INSERT INTO records VALUES ('recovered-record')")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = lost.engine.dataOutput(ctx, pgClient{container: lost.worker}, "sh", "-c", "printf 'recovered file' > /data/record.txt"); err != nil {

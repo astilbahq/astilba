@@ -2971,6 +2971,8 @@ export interface components {
             serviceOutputs?: boolean;
             /** @description The pinned PostgreSQL images this agent can run, restore and update, and whose restores it reports with restoreImage. Advertised only after Astilba-Agent-Postgres-Releases v1; an agent without it knows only postgres 17.10 and 18.4. */
             postgresReleases?: string[];
+            /** @description Runs managed databases in the owner model, restores every logical backup into it and reports its restores with restoreRoles. Advertised only after Astilba-Agent-Postgres-Owner-Role v1. */
+            postgresOwnerRole?: boolean;
             /** @description Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1. */
             safeReleases?: boolean;
             /** @description Supports replica recipe 3 and complete instance groups. Advertised only after Astilba-Agent-Replicas v1. */
@@ -3770,6 +3772,8 @@ export interface components {
             username: string;
             /** Format: uuid */
             passwordSecretVersionId: string;
+            /** @description owner, which every new database must use: the database user is an ordinary role that owns the database, and the cluster's superuser is kept for Astilba's own maintenance. Absent on a database from before, whose database user is the cluster's superuser; such a database moves to the owner model only onto new storage, such as an upgrade's or a restore's target. */
+            roles?: string;
         };
         ServiceOutput: {
             name: string;
@@ -4757,6 +4761,10 @@ export interface components {
             sha256: string;
             /** Format: int64 */
             bytes: number;
+            /** @description The settings the dump's session printed values under, such as TimeZone and bytea_output, which a restore's verification dumps under again. Manifests written before they were recorded leave them out. */
+            dumpSettings?: {
+                [key: string]: string;
+            };
         };
         BackupRun: {
             manifestHash?: string;
@@ -4785,6 +4793,8 @@ export interface components {
             targetId: string;
             /** @description The pinned PostgreSQL image whose server filled the restore target. Absent on runs recorded before restores named it, which were filled by the archive's own image. */
             restoreImage?: string;
+            /** @description The role model the restore target's cluster holds. Absent on runs from agents before the owner model, whose targets make the database user the superuser. */
+            restoreRoles?: string;
         };
         BackupSnapshotReceipt: {
             snapshot: string;
@@ -4844,6 +4854,8 @@ export interface components {
             manifest: components["schemas"]["BackupManifest"];
             /** @description The pinned PostgreSQL release that restored a logical snapshot, which the database must be able to open at cutover. An agent sends it only to a controller that negotiated PostgreSQL releases; without it, the archive's own image restored the snapshot. */
             restoreImage?: string;
+            /** @description The role model the restored cluster holds, which a cutover gives the database. An agent sends it only to a controller that negotiated the owner role; without it, the database user is the restored cluster's superuser. */
+            restoreRoles?: string;
         };
         BackupRecoveryRequest: {
             snapshot: string;

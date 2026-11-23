@@ -202,10 +202,13 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			break
 		}
 		if b.Installation.Policy.Method == "postgres-logical" {
-			if b.Installation.Access.DatabasePassword, err = e.databasePassword(ctx, b.Installation.Policy); err != nil {
+			if err = e.recordDatabaseCredential(ctx, b.Installation.Policy); err != nil {
 				break
 			}
 		}
+		// A restore gives its database user the verifier the journal keeps for the database, so the
+		// schedule keeps no password.
+		b.Installation.Access.DatabasePassword = ""
 		if b.Installation.Policy.Method != "container-job" {
 			if err := effect(); err != nil {
 				return err
@@ -449,7 +452,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		r.Note = "Container job finished; exit result recorded."
 	}
 	if r.Verified {
-		r.Note = "Fresh restore matched its manifest, and a restored database's cluster was checked on a best-effort basis. Existing services and data remain in use until a separate reviewed deployment." + clearedNote(cleared)
+		r.Note = "Fresh restore matched its manifest. A restored database's dump ran only as its own database user, and its cluster was checked. Existing services and data remain in use until a separate reviewed deployment." + clearedNote(cleared)
 	}
 	// A run that failed before its first effect changed nothing, whatever the method.
 	effects := s.BeforeEffects != r.ID

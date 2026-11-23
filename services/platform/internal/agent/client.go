@@ -40,6 +40,7 @@ type Client struct {
 	safeReleases            atomic.Bool
 	serviceOutputs          atomic.Bool
 	postgresReleases        atomic.Bool
+	postgresOwnerRole       atomic.Bool
 	previews                atomic.Bool
 	retirement              atomic.Bool
 	purge                   atomic.Bool
@@ -341,15 +342,23 @@ func (c *Client) Run(ctx context.Context) error {
 				if sent[key] >= report.Sequence {
 					continue
 				}
-				// A controller from before restoreImage refuses a report that names it. Only a
-				// controller that negotiates schedules, so a run naming one waits to hear which.
-				// The mark is read first, as advertisedReport explains.
-				if negotiated := c.negotiated.Load(); !c.postgresReleases.Load() {
-					if !negotiated && slices.ContainsFunc(report.Status.Runs, func(r api.BackupRun) bool { return r.RestoreImage != nil }) {
-						continue
-					}
-					for i := range report.Status.Runs {
+				// A controller from before restoreImage or restoreRoles refuses a report that
+				// names them. Only a controller that negotiates schedules, so a run naming one
+				// waits to hear which. The mark is read first, as advertisedReport explains.
+				negotiated := c.negotiated.Load()
+				releases, roles := c.postgresReleases.Load(), c.postgresOwnerRole.Load()
+				unread := func(r api.BackupRun) bool {
+					return !releases && r.RestoreImage != nil || !roles && r.RestoreRoles != nil
+				}
+				if !negotiated && slices.ContainsFunc(report.Status.Runs, unread) {
+					continue
+				}
+				for i := range report.Status.Runs {
+					if !releases {
 						report.Status.Runs[i].RestoreImage = nil
+					}
+					if !roles {
+						report.Status.Runs[i].RestoreRoles = nil
 					}
 				}
 				if err = c.call(ctx, "POST", "/agent/v1/schedule-reports", report, nil, authAgent); err != nil {

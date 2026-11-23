@@ -35,7 +35,7 @@ func TestRetiredPostgresVolumeRefusesAnotherMajor(t *testing.T) {
 	plan := func(image string, volume uuid.UUID) deployment.Plan {
 		p := identity
 		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{},
-			Applications: []domain.Application{{ID: uuid.New(), Name: "Database", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(image)}}}},
+			Applications: []domain.Application{{ID: uuid.New(), Name: "Database", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(image)}}}},
 			Volumes:      []domain.Volume{{ID: volume, Name: "Data"}}}
 		return p
 	}
@@ -82,10 +82,10 @@ func TestRetiredPostgresVolumeRefusesAnotherMajor(t *testing.T) {
 				_, err := docker.VolumeRemove(ctx, name, client.VolumeRemoveOptions{})
 				return err
 			})
-			if err := e.ensureStorage(ctx, plan(domain.Postgres17Image, volume)); err != nil {
+			if err := e.ensureStorage(ctx, plan(domain.Postgres17Image, volume), nil); err != nil {
 				t.Fatal("the same major was refused", err)
 			}
-			if err := e.ensureStorage(ctx, plan(domain.PostgresImage, volume)); !errors.Is(err, errPostgresVersionChange) || storageState(err) != "failed" {
+			if err := e.ensureStorage(ctx, plan(domain.PostgresImage, volume), nil); !errors.Is(err, errPostgresVersionChange) || storageState(err) != "failed" {
 				t.Fatal("another major was not refused", err)
 			}
 		})

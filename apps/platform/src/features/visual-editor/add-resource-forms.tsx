@@ -82,6 +82,8 @@ export function AddServiceForm({
               database: "app",
               username: "app",
               passwordSecretVersionId: text(d, "password"),
+              // A new database's user owns it and isn't PostgreSQL's superuser.
+              roles: "owner",
             };
             service.mounts = [
               {

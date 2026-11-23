@@ -101,10 +101,18 @@ type Manifest struct {
 	Extensions    []string  `json:"extensions"`
 	SHA256        string    `json:"sha256"`
 	Bytes         int64     `json:"bytes"`
+	// DumpSettings are the value of each of DumpSettings that the dump ran with. Manifests
+	// written before they were recorded leave them out.
+	DumpSettings map[string]string `json:"dumpSettings,omitempty"`
 }
 
 // Extensions are the only extensions a database the recipe backs up may hold.
 var Extensions = []string{"hstore", "plpgsql"}
+
+// DumpSettings are the settings that pg_dump leaves to its session and that change what it writes:
+// how timestamps with a time zone, bytea and money values print, whether definitions the server
+// prints quote every identifier, the dump's encoding, and how its literals are quoted.
+var DumpSettings = []string{"TimeZone", "bytea_output", "lc_monetary", "quote_all_identifiers", "client_encoding", "standard_conforming_strings"}
 
 type Run struct {
 	ManifestHash string     `json:"manifestHash"`
@@ -127,6 +135,10 @@ type Run struct {
 	// later release of the archive's major. Runs before it was recorded restored with the
 	// archive's own image.
 	RestoreImage string `json:"restoreImage,omitempty"`
+	// RestoreRoles is the role model of a logical restore target's cluster: domain.PostgresOwner
+	// from an agent that restores as the database user. A run without it made the database user
+	// the target's superuser.
+	RestoreRoles string `json:"restoreRoles,omitempty"`
 }
 type Status struct {
 	Enabled    bool      `json:"enabled"`

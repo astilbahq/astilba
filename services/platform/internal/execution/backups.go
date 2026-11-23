@@ -483,7 +483,7 @@ func (s *Service) ScheduleReport(ctx context.Context, a Identity, sequence int64
 		}
 	}
 	for _, r := range status.Runs {
-		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) || unknownRestoreImage(r.RestoreImage) {
+		if r.PolicyID != p.ID || r.Generation < 1 || r.Generation > p.Generation || r.ID == uuid.Nil || len(r.Note) > 1024 || r.Snapshot != "" && !backup.SnapshotID(r.Snapshot) || r.Manifest != nil && (r.Manifest.PolicyID != p.ID || r.Manifest.EnvironmentID != p.EnvironmentID || r.Manifest.ResourceID != p.ResourceID) || unknownRestoreImage(r.RestoreImage) || unknownRestoreRoles(r.RestoreRoles) {
 			return domain.Invalid("run")
 		}
 	}

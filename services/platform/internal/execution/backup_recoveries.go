@@ -297,7 +297,7 @@ func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal,
 		if err != nil {
 			return restoreIncompatible(err)
 		}
-		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, view, recovery, row.TargetVolumeID, old, result.RestoredImage(), nil)
+		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, view, recovery, row.TargetVolumeID, old, result.RestoredImage(), result.RestoreRoles, nil)
 		return err
 	})
 	return out, err
@@ -530,7 +530,7 @@ func recoveryReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.Executio
 	}
 	var v backup.Recovery
 	var result backup.RecoveryResult
-	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil || unknownRestoreImage(result.RestoreImage) {
+	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil || unknownRestoreImage(result.RestoreImage) || unknownRestoreRoles(result.RestoreRoles) {
 		return domain.Invalid("restore")
 	}
 	raw, err := stablejson.Marshal(result)

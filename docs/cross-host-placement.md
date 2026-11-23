@@ -76,7 +76,7 @@ The primary holds the environment's volumes and databases, so moving off it lose
 The deployment panel says when the environment's primary was revoked. Choose a healthy server and plan a deployment to it. The plan is refused until you name every volume on the revoked primary, and the panel asks you to accept each one. The plan's effects list what you're giving up. Only an owner can do this. Applying it:
 
 - makes the chosen server the primary. If it already holds this environment's unit, that unit takes the role, so the host keeps a single unit. Otherwise the server gets a new unit. The former primary's unit is detached and never reused, so its old volumes on that host can't come back by accident
-- starts the volumes the revision declares empty, with the same identities, and drops the others
+- starts the volumes the revision declares empty, with the same identities, and drops the others. A managed database on one is new storage, so it uses the [owner role model](visual-deployments.md#managed-database-roles), and a database created before that model needs `roles` set to `owner` in the draft
 - moves the route claims, so point custom domains at the new server, and change generated domains, which name their server
 - leaves the environment's backup policies with the revoked server, where they can't run. Create new ones for later backups.
 

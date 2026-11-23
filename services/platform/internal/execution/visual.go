@@ -216,8 +216,18 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
+			// A replacement onto another server starts the volume empty there, so the cluster it was
+			// initialised with isn't what the database gets.
+			if replacement != nil && (v.Server == nil || *v.Server != in.ServerId) {
+				reserved = nil
+			}
 			if reserved != nil && *reserved != deployment.Hash(a.Postgres) {
 				return domain.Invalid("applications.postgres.existingVolume")
+			}
+			// Storage nothing has initialised yet gets the owner model. A database whose user is
+			// the superuser keeps it only on the volume it was created on.
+			if reserved == nil && !a.Postgres.Owner() {
+				return &domain.Error{Code: "invalid_input", Message: "A new database must use the owner role model, so its database user isn't PostgreSQL's superuser.", Fields: []string{"applications.postgres.roles"}}
 			}
 			// The volume's own record holds whatever the environment applied since, including across
 			// a retirement, which clears the applied revision the check above compares with.

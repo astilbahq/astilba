@@ -126,7 +126,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 			a := p.Specification.Applications[1]
 			policy := backup.Policy{ID: uuid.New(), Name: "Upgrade recovery", WorkspaceID: uuid.New(), EnvironmentID: p.EnvironmentID, ServerID: p.ServerID, DestinationID: uuid.New(), ResourceID: a.ID, Generation: 1, Method: "postgres-logical", Schedule: backup.Schedule{Timezone: "UTC"}, Retain: 1, Plan: p}
 			in := backup.Installation{Policy: policy, Destination: backup.Destination{ID: policy.DestinationID, Name: "Recovery fixture", Kind: "filesystem", Root: root}, Access: backup.Access{Password: "upgrade-repository-password-canary"}}
-			plan := upgrade.Plan{ID: uuid.New(), Recipe: 1, PolicyID: policy.ID, ResourceID: a.ID, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 30, ExpiresAt: time.Now().Add(time.Hour), Source: p, TargetImage: j.target}
+			plan := upgrade.Plan{ID: uuid.New(), Recipe: 1, PolicyID: policy.ID, ResourceID: a.ID, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 30, ExpiresAt: time.Now().Add(time.Hour), Source: p, TargetImage: j.target, TargetRoles: domain.PostgresOwner}
 			target, err := plan.TargetRelease()
 			if err != nil || plan.Validate() != nil {
 				t.Fatal("invalid upgrade plan", err)
@@ -142,7 +142,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				// The checks run as the preflight runs them: from a helper in the source's namespace.
 				checks, stopChecks := context.WithTimeout(ctx, 10*time.Minute)
 				defer stopChecks()
-				helper, err := e.postgresHelper(checks, "astilba-upgrade-preflight-"+plan.ID.String(), upgradeHelperLabels(state, a, "upgrade-preflight-v1"), source.ID, j.source, state.Command.Installation.Access.DatabasePassword)
+				helper, err := e.postgresHelper(checks, "astilba-upgrade-preflight-"+plan.ID.String(), upgradeHelperLabels(state, a, "upgrade-preflight-v1"), source.ID, j.source)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -257,7 +257,9 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				// Prepare makes its own preflight helper under the same name.
 				e.removeHelper(helper)
 			}
-			if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, `CREATE ROLE upgrade_reader NOLOGIN; CREATE EXTENSION hstore; CREATE SCHEMA reports; CREATE TABLE reports.events(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value hstore NOT NULL UNIQUE); INSERT INTO reports.events(value) VALUES ('a=>b'); ALTER TABLE reports.events OWNER TO upgrade_reader; GRANT USAGE ON SCHEMA reports TO upgrade_reader`); err != nil {
+			// As a deployment's database would: only the superuser creates a role, which the user is a
+			// member of, and the user gives a table to that role only while the role may create in its schema.
+			if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, "CREATE ROLE upgrade_reader NOLOGIN; GRANT upgrade_reader TO "+quoteIdentifier(a.Postgres.Username)+"; "+asDatabaseUserSQL(a, `CREATE EXTENSION hstore; CREATE SCHEMA reports; CREATE TABLE reports.events(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value hstore NOT NULL UNIQUE); INSERT INTO reports.events(value) VALUES ('a=>b'); GRANT USAGE, CREATE ON SCHEMA reports TO upgrade_reader; ALTER TABLE reports.events OWNER TO upgrade_reader; REVOKE CREATE ON SCHEMA reports FROM upgrade_reader`)); err != nil {
 				t.Fatal(err)
 			}
 			send := func(action string, interrupt bool) Record {

@@ -256,14 +256,8 @@ func composeAt(p Plan, secrets map[string]string, export bool, root string, sele
 		if err := vars(a.Variables, env); err != nil {
 			return nil, err
 		}
-		if a.Postgres != nil {
-			pass, e := value(a.Postgres.PasswordSecretVersionID)
-			if e != nil {
-				return nil, e
-			}
-			env["POSTGRES_PASSWORD"] = escape(pass)
-			env["POSTGRES_DB"] = a.Postgres.Database
-			env["POSTGRES_USER"] = a.Postgres.Username
+		if err := postgresVariables(a, export, value, escape, env); err != nil {
+			return nil, err
 		}
 		for _, b := range p.Specification.Bindings {
 			if b.TargetID != a.ID {
