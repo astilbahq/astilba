@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,26 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
+
+// The visual lane deploys every entry, and CI pulls each image first because a registry failing
+// for a moment during the test would fail the lane.
+func TestCatalogImagesArePulledFirst(t *testing.T) {
+	workflow, err := os.ReadFile("../../../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pulled := map[string]bool{}
+	for _, line := range strings.Split(string(workflow), "\n") {
+		pulled[strings.TrimSpace(line)] = true
+	}
+	for _, recipe := range Recipes() {
+		for _, app := range recipe.Specification.Applications {
+			if image := *app.Source.Image; !pulled[image] {
+				t.Errorf("%s: add %s to the images .github/workflows/ci.yml pulls", recipe.ID, image)
+			}
+		}
+	}
+}
 
 func TestRecipesUseValidatedVisualAndComposeSubset(t *testing.T) {
 	for _, recipe := range Recipes() {
