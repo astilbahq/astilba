@@ -1,9 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
-import {
-  defaultScheduler,
-  notifyManager,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { notifyManager, type QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { css } from "../../../styled-system/css";
@@ -444,8 +440,8 @@ export const DisabledSuccessfully: Story = {
     await userEvent.keyboard("123456");
     const notifications: Array<() => void> = [];
     const resumeNotifications = () => {
-      notifyManager.setScheduler(defaultScheduler);
-      notifications.splice(0).forEach(defaultScheduler);
+      notifyManager.setScheduler(queueMicrotask);
+      notifications.splice(0).forEach(queueMicrotask);
     };
     // The dialog can close before session observers remove its trigger.
     notifyManager.setScheduler((callback) => {
