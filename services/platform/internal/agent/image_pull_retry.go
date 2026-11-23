@@ -32,20 +32,19 @@ import (
 // registryRetry is how often, and how long, the agent reads an image again when its registry
 // failed for a reason it can recover from.
 type registryRetry struct {
-	// attempts is how many reads the agent makes in all.
-	attempts int
-	// backoff is the wait before each read after the first, before jitter.
+	// backoff is the wait before each read after the first, before jitter, and so how many reads
+	// the agent makes.
 	backoff []time.Duration
 	// window is how long after the first read began the agent may still start another.
 	window time.Duration
 }
 
-var defaultRegistryRetry = registryRetry{attempts: 3, backoff: []time.Duration{2 * time.Second, 8 * time.Second}, window: 90 * time.Second}
+var defaultRegistryRetry = registryRetry{backoff: []time.Duration{2 * time.Second, 8 * time.Second}, window: 90 * time.Second}
 
 // wait is how long to wait before the read after attempt, which began the reads elapsed ago,
 // given the wait the registry asked for, if any. It is false when the agent reads no more.
 func (r registryRetry) wait(attempt int, elapsed, asked time.Duration) (time.Duration, bool) {
-	if attempt >= r.attempts || attempt > len(r.backoff) {
+	if attempt > len(r.backoff) {
 		return 0, false
 	}
 	base := r.backoff[attempt-1]
@@ -89,7 +88,7 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 		wait, again := time.Duration(0), false
 		cause, transient := registryFailure(failure.err)
 		if transient {
-			wait, again = retry.wait(attempt, time.Since(began), failure.asked)
+			wait, again = retry.wait(attempt, time.Since(began), failure.last.wait)
 		}
 		log := slog.With("image", truncated(image, 300), "source", failure.source, "attempt", attempt, "cause", cause)
 		if !again {
@@ -142,8 +141,7 @@ func transientRegistryFailure(err error) bool {
 func registryFailure(err error) (cause string, transient bool) {
 	var response *errcode.ErrorResponse
 	if errors.As(err, &response) {
-		code := response.StatusCode
-		return "answered " + strconv.Itoa(code), code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500
+		return "answered " + strconv.Itoa(response.StatusCode), transientStatus(response.StatusCode)
 	}
 	switch {
 	case errors.Is(err, errdef.ErrNotFound):
@@ -154,6 +152,10 @@ func registryFailure(err error) (cause string, transient bool) {
 		return "sent less than the content's size", false
 	case errors.Is(err, http.ErrSchemeMismatch):
 		return "does not speak HTTPS", false
+	}
+	var proxy *proxyRefusal
+	if errors.As(err, &proxy) {
+		return "the proxy to it answered " + strconv.Itoa(proxy.code), transientStatus(proxy.code)
 	}
 	var lookup *net.DNSError
 	if errors.As(err, &lookup) {
@@ -196,6 +198,16 @@ func registryFailure(err error) (cause string, transient bool) {
 	return "gave an answer the agent could not use, or none", false
 }
 
+// transientStatus reports whether an answer with this status may differ later.
+func transientStatus(code int) bool {
+	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500
+}
+
+// proxyRefusal is a proxy's answer, other than 200, to a request to connect to a registry.
+type proxyRefusal struct{ code int }
+
+func (p *proxyRefusal) Error() string { return "the proxy answered " + strconv.Itoa(p.code) }
+
 // errorTextBegins reports whether err, or an error it wraps, has text that begins with prefix.
 func errorTextBegins(err error, prefix string) bool {
 	for ; err != nil; err = errors.Unwrap(err) {
@@ -206,55 +218,63 @@ func errorTextBegins(err error, prefix string) bool {
 	return false
 }
 
-// sourceFailure is a failure to read from source, a registry or one of its mirrors, and how long
-// the source's last answer asked to wait, when it did.
+// sourceFailure is a failure to read from source, a registry or one of its mirrors, and what the
+// source last answered.
 type sourceFailure struct {
 	source string
-	asked  time.Duration
+	last   registryAnswer
 	err    error
 }
 
 func (f *sourceFailure) Error() string { return f.err.Error() }
 func (f *sourceFailure) Unwrap() error { return f.err }
 
-// registryAnswers is what a source has answered.
-type registryAnswers struct {
-	mu       sync.Mutex
+// registryAnswer is whether a source answered a request, and how long its answer asked to wait.
+type registryAnswer struct {
 	answered bool
 	wait     time.Duration
+}
+
+// registryAnswers is what a source has answered.
+type registryAnswers struct {
+	mu   sync.Mutex
+	ever bool
+	last registryAnswer
 }
 
 // any reports whether the source has answered at all.
 func (a *registryAnswers) any() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.answered
+	return a.ever
 }
 
-// asked is how long the source's last answer asked to wait, or zero.
-func (a *registryAnswers) asked() time.Duration {
+// lastAnswer is what came of the last request to the source.
+func (a *registryAnswers) lastAnswer() registryAnswer {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.wait
+	return a.last
 }
 
 // answerTransport records a source's answers, and the wait a busy or unavailable one asks for.
 type answerTransport struct {
-	base    http.RoundTripper
+	base    *http.Transport
 	answers *registryAnswers
 }
 
 func (t answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	res, err := t.base.RoundTrip(req)
+	last := registryAnswer{answered: err == nil}
+	if err != nil {
+		// An HTTP/2 connection that went silent would fail each later read too.
+		t.base.CloseIdleConnections()
+	} else if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
+		last.wait = retryAfter(res.Header.Get("Retry-After"), time.Now())
+	}
 	t.answers.mu.Lock()
 	defer t.answers.mu.Unlock()
-	t.answers.wait = 0
-	if err == nil {
-		t.answers.answered = true
-		if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
-			t.answers.wait = retryAfter(res.Header.Get("Retry-After"), time.Now())
-		}
-	}
+	t.answers.ever = t.answers.ever || last.answered
+	t.answers.last = last
 	return res, err
 }
 

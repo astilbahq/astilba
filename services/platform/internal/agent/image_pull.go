@@ -181,26 +181,34 @@ func planFromSources(ctx context.Context, sources []registryImage, root digest.D
 		if !errors.As(err, &unread) && !errors.As(err, &lacking) {
 			return plan, source, err
 		}
-		if unread != nil && transientRegistryFailure(unread.err) {
-			recoverable = err
+		definite = true
+		if unread != nil {
+			if transientRegistryFailure(unread.err) {
+				recoverable = err
+			}
+			definite = definiteAnswer(source, unread.err)
 		}
-		// The last source's own answer stands, whatever an earlier one did.
-		definite = sourceAnswered(source, err)
 	}
+	// The last source's own answer stands, whatever an earlier one did.
 	if recoverable != nil && !definite {
 		err = recoverable
 	}
 	return nil, nil, err
 }
 
-// sourceAnswered reports whether err, from reading source, is source's answer rather than a
-// failure to get one. A server that speaks only TLS answers 400 to a request in the clear.
-func sourceAnswered(source registryImage, err error) bool {
-	var response *errcode.ErrorResponse
-	if errors.As(err, &response) {
-		return response.StatusCode != http.StatusBadRequest || !plainHTTPFallback(source)
+// definiteAnswer reports whether err, from reading source, is the source's own answer, rather than
+// a failure to get one or one it may recover from. A server that speaks only TLS answers 400 to a
+// request in the clear.
+func definiteAnswer(source registryImage, err error) bool {
+	if transientRegistryFailure(err) {
+		return false
 	}
-	return errors.Is(err, errdef.ErrNotFound) || errors.As(err, new(*missingContent))
+	var response *errcode.ErrorResponse
+	if plainHTTPFallback(source) && errors.As(err, &response) && response.StatusCode == http.StatusBadRequest {
+		return false
+	}
+	var failure *sourceFailure
+	return !errors.As(err, &failure) || failure.last.answered
 }
 
 // containerdImageStore reports whether Docker keeps images in containerd, as its info's driver

@@ -80,7 +80,7 @@ func (o orasImage) blob(ctx context.Context, desc ocispec.Descriptor) (io.ReadCl
 
 // failure is a failure to read from o.
 func (o orasImage) failure(err error) error {
-	return &sourceFailure{source: o.repo.Reference.Registry, asked: o.answers.asked(), err: err}
+	return &sourceFailure{source: o.repo.Reference.Registry, last: o.answers.lastAnswer(), err: err}
 }
 
 // sourceBlob marks a failure to read a blob as its source's.
@@ -271,6 +271,12 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 		ResponseHeaderTimeout: time.Minute,
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
+		OnProxyConnectResponse: func(_ context.Context, _ *url.URL, _ *http.Request, res *http.Response) error {
+			if res.StatusCode != http.StatusOK {
+				return &proxyRefusal{res.StatusCode}
+			}
+			return nil
+		},
 	}
 	credentials := auth.StaticCredential(host, auth.EmptyCredential)
 	if credential != nil && (credential.Username != "" || credential.Password != "") {
