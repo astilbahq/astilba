@@ -25,7 +25,7 @@ colima start --profile astilba-plat-2 --activate=false --cpu 4 --memory 4 --disk
 
 docker --context colima-astilba-plat-2 pull postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
 docker --context colima-astilba-plat-2 pull busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
-docker --context colima-astilba-plat-2 pull traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
+docker --context colima-astilba-plat-2 pull traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
 
 export PLAT2_DOCKER_HOST="$(docker context inspect colima-astilba-plat-2 --format '{{.Endpoints.docker.Host}}')"
 bash experiments/durable-execution/verify.sh

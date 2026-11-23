@@ -21,7 +21,7 @@ sudo env PLAT4_DISPOSABLE_HOST=1 bash experiments/durable-execution/host/bootstr
 
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
-sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull traefik:v3.7.16@sha256:22a759fb803abb5c3a7ba5d5a55a201c5fb0fc8993d5c72c47a89075e64f1953
+sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
 # For the terminal session proxy tests in make verify-agent-host.
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
 sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock pull caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
@@ -53,9 +53,9 @@ Compose command strings escape container-side variables with `$$`; otherwise Com
 
 ## Versions and results
 
-Pinned runtime: Go 1.27.4, Docker Engine/CLI 29.9.2 (API 1.56), Compose 5.6.1, Traefik 3.7.16, PostgreSQL 18.7 on Alpine 3.23 and BusyBox 1.38.0. Bootstrap checks SHA-256 for the tool archives and binaries. Image references pin the multi-platform manifest digest. Docker archive hashes were calculated from official HTTPS downloads; Compose and Go hashes were checked against their official release metadata.
+Pinned runtime: Go 1.27.4, Docker Engine/CLI 29.9.2 (API 1.56), Compose 5.6.1, Traefik 3.7.19, PostgreSQL 18.7 on Alpine 3.23 and BusyBox 1.38.0. Bootstrap checks SHA-256 for the tool archives and binaries. Image references pin the multi-platform manifest digest. Docker archive hashes were calculated from official HTTPS downloads; Compose and Go hashes were checked against their official release metadata.
 
-Local native arm64 validation passed on 22 October 2026: Ubuntu 24.04.5, kernel 6.8.0-142-generic, systemd 255.4-1ubuntu8.17, Go 1.27.3, BusyBox 1.37.0 and the rest of the pinned runtime above. All six host scenarios passed under the race detector in 43 seconds. This run used the dedicated Lima VM, not a Docker container on macOS.
+Local native arm64 validation passed on 22 October 2026: Ubuntu 24.04.5, kernel 6.8.0-142-generic, systemd 255.4-1ubuntu8.17, Go 1.27.3, Traefik 3.7.16, BusyBox 1.37.0 and the rest of the pinned runtime above. All six host scenarios passed under the race detector in 43 seconds. This run used the dedicated Lima VM, not a Docker container on macOS.
 
 Both native CI host jobs passed on 22 October 2026 at revision `cc6e6d9`:
 
