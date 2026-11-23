@@ -178,7 +178,7 @@ for (const width of [820, 1180])
     await expect(drawer).toHaveCSS("opacity", "1");
     await page.setViewportSize({ width, height: 800 });
     await page.addStyleTag({
-      content: "[role=dialog] { transition-duration: 1s !important }",
+      content: "[role=dialog] { transition-duration: 3s !important }",
     });
     await page.keyboard.press("Escape");
     await expect(drawer).toHaveAttribute("data-ending-style");
