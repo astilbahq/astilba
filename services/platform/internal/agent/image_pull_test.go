@@ -659,7 +659,7 @@ func TestPullFallsBackToPlainHTTPOnlyWhenHTTPSIsUnreachable(t *testing.T) {
 			t.Fatal(err)
 		}
 		image := source.(orasImage)
-		image.https = https.(orasImage).answers
+		image.https = https.(orasImage).transport.answers
 		return image
 	}
 	refusing := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

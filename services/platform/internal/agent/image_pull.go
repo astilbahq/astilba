@@ -197,12 +197,8 @@ func planFromSources(ctx context.Context, sources []registryImage, root digest.D
 }
 
 // definiteAnswer reports whether err, from reading source, is the source's own answer, rather than
-// a failure to get one or one it may recover from. A server that speaks only TLS answers 400 to a
-// request in the clear.
+// a failure to get one. A server that speaks only TLS answers 400 to a request in the clear.
 func definiteAnswer(source registryImage, err error) bool {
-	if transientRegistryFailure(err) {
-		return false
-	}
 	var response *errcode.ErrorResponse
 	if plainHTTPFallback(source) && errors.As(err, &response) && response.StatusCode == http.StatusBadRequest {
 		return false

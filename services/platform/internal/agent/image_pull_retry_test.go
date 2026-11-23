@@ -33,7 +33,6 @@ import (
 	"github.com/opencontainers/go-digest"
 	bolt "go.etcd.io/bbolt"
 	"golang.org/x/net/http2"
-	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
@@ -410,8 +409,8 @@ func TestPullHonoursOnlyTheLastRetryAfter(t *testing.T) {
 		if _, _, err := source.manifest(t.Context(), digest.Digest(sha([]byte("fixture"))), imageMetadataBytes); err == nil {
 			t.Fatal("read")
 		}
-		if last := source.answers.lastAnswer(); last != want || !source.answers.any() {
-			t.Fatal(i, last, source.answers.any())
+		if last := source.transport.answers.lastAnswer(); last != want || !source.transport.answers.any() {
+			t.Fatal(i, last, source.transport.answers.any())
 		}
 	}
 }
@@ -637,19 +636,29 @@ func TestPullNeverAsksInTheClearAfterAnAnswerOverHTTPS(t *testing.T) {
 // A registry whose connection stalls is read again over another, and one read after its window
 // ended is the last.
 func TestPullReadsAgainAfterAStall(t *testing.T) {
-	for _, proto := range []string{"HTTP/1.1", "HTTP/2.0"} {
-		t.Run(proto, func(t *testing.T) {
+	for name, proto := range map[string]string{"HTTP/1.1": "HTTP/1.1", "HTTP/2": "HTTP/2.0", "HTTP/2 during an answer of no set length": "HTTP/2.0"} {
+		t.Run(name, func(t *testing.T) {
+			// An answer of no set length is asked for again, so it is read twice when it stalls.
+			asks, unsized := 1, strings.HasSuffix(name, "length")
+			if unsized {
+				asks = 2
+			}
 			registry := newTestRegistry()
 			root := registry.image(gzipOf(t, tarOf(t, testFile{"app", 10})))
 			released := make(chan struct{})
 			var stalled atomic.Pointer[net.Conn]
-			registry.fault = func(_ http.ResponseWriter, req *http.Request, _ string, _ int) bool {
+			registry.fault = func(w http.ResponseWriter, req *http.Request, d string, _ int) bool {
 				if req.Proto != proto {
 					t.Error("the registry was read over", req.Proto)
 				}
 				conn := req.Context().Value(connKey{}).(net.Conn)
 				stalled.CompareAndSwap(nil, &conn)
 				if *stalled.Load() == conn {
+					if d == root && req.Method == http.MethodGet && unsized {
+						w.Header().Set("Content-Type", registry.manifests[root][0])
+						w.Header().Set("Docker-Content-Digest", root)
+						_ = http.NewResponseController(w).Flush()
+					}
 					<-released
 				}
 				return false
@@ -666,7 +675,7 @@ func TestPullReadsAgainAfterAStall(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source.(orasImage).repo.Client.(*auth.Client).Client.Transport.(answerTransport).base.ResponseHeaderTimeout = 200 * time.Millisecond
+			source.(orasImage).transport.ResponseHeaderTimeout = 200 * time.Millisecond
 			read := func(ctx context.Context) error {
 				_, err := planRegistryImage(ctx, source, digest.Digest(root), amd64Server, pullTestLimit, true, nil)
 				return err
@@ -675,7 +684,7 @@ func TestPullReadsAgainAfterAStall(t *testing.T) {
 			if err := engine.readRegistry(t.Context(), "fixture/app", never, read); err != nil {
 				t.Fatal(err)
 			}
-			if n := registry.count(root); n != 2 {
+			if n := registry.count(root); n != asks+1 {
 				t.Fatalf("read %d times", n)
 			}
 			engine.registryRetry.window = 100 * time.Millisecond
@@ -683,7 +692,7 @@ func TestPullReadsAgainAfterAStall(t *testing.T) {
 			if err := engine.readRegistry(t.Context(), "fixture/app", never, read); err == nil {
 				t.Fatal("read again after its window")
 			}
-			if n := registry.count(root); n != 3 {
+			if n := registry.count(root); n != 2*asks+1 {
 				t.Fatalf("read %d times", n)
 			}
 		})
@@ -706,7 +715,7 @@ func TestPullKeepsAnInsecureRegistrysAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	clear := registry.source(t, nil).(orasImage)
-	clear.https = unreachable.(orasImage).answers
+	clear.https = unreachable.(orasImage).transport.answers
 	err = readSources(t, []registryImage{unreachable, clear}, root)
 	if err == nil || !strings.Contains(err.Error(), "Check the image's registry, its credentials") {
 		t.Fatal(err)

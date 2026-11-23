@@ -258,17 +258,14 @@ func (a *registryAnswers) lastAnswer() registryAnswer {
 
 // answerTransport records a source's answers, and the wait a busy or unavailable one asks for.
 type answerTransport struct {
-	base    *http.Transport
+	*http.Transport
 	answers *registryAnswers
 }
 
 func (t answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	res, err := t.base.RoundTrip(req)
+	res, err := t.Transport.RoundTrip(req)
 	last := registryAnswer{answered: err == nil}
-	if err != nil {
-		// An HTTP/2 connection that went silent would fail each later read too.
-		t.base.CloseIdleConnections()
-	} else if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable {
+	if err == nil && (res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable) {
 		last.wait = retryAfter(res.Header.Get("Retry-After"), time.Now())
 	}
 	t.answers.mu.Lock()

@@ -38,8 +38,8 @@ type registryImage interface {
 }
 
 type orasImage struct {
-	repo    *remote.Repository
-	answers *registryAnswers
+	repo      *remote.Repository
+	transport answerTransport
 	// https, for an insecure registry over plain HTTP, is what the registry answered over
 	// HTTPS. Docker tries plain HTTP only when it cannot reach the registry over HTTPS at all.
 	https *registryAnswers
@@ -78,9 +78,11 @@ func (o orasImage) blob(ctx context.Context, desc ocispec.Descriptor) (io.ReadCl
 	return sourceBlob{rc, o}, nil
 }
 
-// failure is a failure to read from o.
+// failure is a failure to read from o. An HTTP/2 connection that went silent would fail each later
+// read too, so the next has another.
 func (o orasImage) failure(err error) error {
-	return &sourceFailure{source: o.repo.Reference.Registry, last: o.answers.lastAnswer(), err: err}
+	o.transport.CloseIdleConnections()
+	return &sourceFailure{source: o.repo.Reference.Registry, last: o.transport.answers.lastAnswer(), err: err}
 }
 
 // sourceBlob marks a failure to read a blob as its source's.
@@ -127,7 +129,7 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 			return err
 		}
 		image := images[len(images)-1].(orasImage)
-		image.https = images[len(images)-2].(orasImage).answers
+		image.https = images[len(images)-2].(orasImage).transport.answers
 		images[len(images)-1] = image
 		return nil
 	}
@@ -282,9 +284,9 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if credential != nil && (credential.Username != "" || credential.Password != "") {
 		credentials = auth.StaticCredential(host, auth.Credential{Username: credential.Username, Password: credential.Password})
 	}
-	answers := &registryAnswers{}
+	answering := answerTransport{transport, &registryAnswers{}}
 	repo := &remote.Repository{
-		Client:           &auth.Client{Client: &http.Client{Transport: answerTransport{transport, answers}}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
+		Client:           &auth.Client{Client: &http.Client{Transport: answering}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
 		Reference:        registry.Reference{Registry: host, Repository: repository},
 		PlainHTTP:        plainHTTP,
 		MaxMetadataBytes: imageMetadataBytes,
@@ -292,5 +294,5 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if err := repo.Reference.ValidateRepository(); err != nil {
 		return nil, errors.New("the image's repository name is not valid")
 	}
-	return orasImage{repo: repo, answers: answers}, nil
+	return orasImage{repo: repo, transport: answering}, nil
 }
