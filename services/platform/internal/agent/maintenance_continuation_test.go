@@ -54,7 +54,7 @@ func expiredMaintenance(t *testing.T, reserved bool) maintenanceContinuationFixt
 	}
 	parent, id := uuid.New(), uuid.New()
 	envelope := []byte("opaque-frozen-maintenance-root")
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
 	body := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.RootHash, Phase: "resume-source", Unit: deployment.DistributedUnit{Plan: p}, Maintenance: &deployment.Maintenance{Kind: "backup", ResourceID: uuid.New(), RunID: uuid.New(), EffectHash: strings.Repeat("c", 64), ExpectedState: strings.Repeat("d", 64)}}
 	raw, _ := stablejson.Marshal(body)
 	message := jsontext.Value(raw)

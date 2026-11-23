@@ -2738,7 +2738,7 @@ export interface components {
         };
         RecoveryDescriptor: {
             /** @enum {integer} */
-            version: 1;
+            version: 2;
             /** Format: uuid */
             workspaceId: string;
             /** Format: uuid */

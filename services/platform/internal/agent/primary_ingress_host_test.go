@@ -19,7 +19,7 @@ import (
 func (h isolationHost) routedWithoutGateway(u backendUnit) routeSnapshot {
 	h.t.Helper()
 	previous := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, QualifiedBackends: true, Sets: map[string]deployment.RouteSet{u.id.String(): u.set()}}
-	if _, err := h.e.applyRoutes(h.t.Context(), previous, false, ""); err != nil {
+	if _, err := h.e.applyRoutes(h.t.Context(), previous, proxyAsNeeded, ""); err != nil {
 		h.t.Fatal(err)
 	}
 	if err := h.e.rememberProxy(h.t.Context(), &previous); err != nil {

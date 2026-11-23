@@ -35,7 +35,7 @@ func TestRecoveryTransferHoldsReplayAndPreservesFrozenReservation(t *testing.T) 
 	p = p.WithHash()
 	parent, id := uuid.New(), uuid.New()
 	envelope := []byte("opaque-management-envelope")
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: p.Local.GroupID, GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest(envelope), Bytes: len(envelope), Participants: []uuid.UUID{p.ServerID}}
 	makeCommand := func(phase string, generation int64) api.ExecutionCommand {
 		body := deployment.CrossHostCommand{ParentID: parent, GroupHash: d.GroupHash, Phase: phase, Unit: deployment.DistributedUnit{Plan: p}, Secrets: map[string]string{"canary": "private-host-secret-canary"}}
 		raw, _ := stablejson.Marshal(body)
@@ -207,7 +207,7 @@ func TestRecoveryHandoverLargeNetworkFencesAnUncontactedHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent, id := uuid.New(), uuid.New()
-	d := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest([]byte("opaque")), Bytes: 6, Participants: []uuid.UUID{p.ServerID, peerServer}}
+	d := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: uuid.New(), ParentID: parent, RootHash: strings.Repeat("a", 64), GroupID: uuid.New(), GroupHash: strings.Repeat("b", 64), BaseID: id, CheckpointID: id, Digest: deployment.RecoveryDigest([]byte("opaque")), Bytes: 6, Participants: []uuid.UUID{p.ServerID, peerServer}}
 	evidence, err := j.RecoveryEvidence()
 	if err != nil {
 		t.Fatal(err)

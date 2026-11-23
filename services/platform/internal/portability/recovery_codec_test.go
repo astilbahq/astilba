@@ -2,7 +2,6 @@ package portability
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -47,18 +46,6 @@ func TestRecoveryCodecRoundTripsBasesPastTheDefaultWindow(t *testing.T) {
 	}
 }
 
-func TestRecoveryCodecReadsGzipBasesSealedBeforeIt(t *testing.T) {
-	raw := recoveryLikeBase(t, 64<<10)
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	writer.Write(raw)
-	writer.Close()
-	out, err := DecompressRecovery(compressed.Bytes())
-	if err != nil || !bytes.Equal(out, raw) {
-		t.Fatal("a gzip base no longer reads", err)
-	}
-}
-
 func TestRecoveryCodecNamesTheReleaseAnUnknownCodecNeeds(t *testing.T) {
 	if _, err := DecompressRecovery([]byte(`{"version":6}`)); !errors.Is(err, ErrRecoveryCodec) {
 		t.Fatal("an unknown codec was not reported as needing a newer release", err)
@@ -77,12 +64,5 @@ func TestRecoveryCodecRefusesOutputPastTheArchiveLimit(t *testing.T) {
 	encoder.Close()
 	if _, err := DecompressRecovery(frame); !errors.Is(err, ErrArchive) {
 		t.Fatal("a frame decompressing past the archive limit was read", err)
-	}
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	writer.Write(make([]byte, MaxArchiveBytes+1))
-	writer.Close()
-	if _, err := DecompressRecovery(compressed.Bytes()); !errors.Is(err, ErrArchive) {
-		t.Fatal("a gzip base decompressing past the archive limit was read", err)
 	}
 }

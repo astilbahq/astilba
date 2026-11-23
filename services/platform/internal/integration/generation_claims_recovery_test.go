@@ -1,13 +1,10 @@
 package integration
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
-	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -24,6 +21,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
+	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -224,7 +222,7 @@ func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape,
 	}
 	// Sealed as createRecoveryBase seals it: the keyring refuses a capsule under any other identity.
 	id := uuid.New()
-	descriptor := deployment.RecoveryDescriptor{Version: 1, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: group.ID, GroupHash: group.Hash, BaseID: id, CheckpointID: id, Participants: participants}
+	descriptor := deployment.RecoveryDescriptor{Version: deployment.RecoveryVersion, WorkspaceID: ws, ParentID: root.Id, RootHash: root.PlanHash, GroupID: group.ID, GroupHash: group.Hash, BaseID: id, CheckpointID: id, Participants: participants}
 	tx, err := f.st.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		t.Fatal(err)
@@ -237,15 +235,11 @@ func buildClaimRecovery(t *testing.T, networkGeneration int64, shape claimShape,
 	if err != nil {
 		t.Fatal(err)
 	}
-	var compressed bytes.Buffer
-	writer := gzip.NewWriter(&compressed)
-	if _, err = writer.Write(captured); err != nil {
+	compressed, err := portability.CompressRecovery(captured)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := keysOf(f.st).Seal(compressed.Bytes(), fmt.Sprintf("cross-host-recovery:v1:%s:%s:%s:%d:%s", ws, root.Id, id, 0, root.PlanHash))
+	envelope, err := keysOf(f.st).Seal(compressed, secretbroker.CheckpointIdentity(descriptor))
 	if err != nil {
 		t.Fatal(err)
 	}
