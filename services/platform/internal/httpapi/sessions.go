@@ -180,7 +180,7 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		// A new sign-in starts a lineage of its own, even in a browser that had a session,
 		// unless it completes the sign-in that session began.
 		lineage := uuid.New()
-		if loaded.continueLineage && loaded.token != "" {
+		if loaded.continueLineage {
 			var err error
 			if lineage, err = s.continueSignIn(ctx, loaded.token, token, loaded.lineage, data, expiry); err != nil {
 				return err
