@@ -104,12 +104,13 @@ function Panel({
         source={current}
         dirty={false}
         changed={async (message) => {
-          // The page's refreshed source reaches the panel before its refresh resolves and focus
-          // moves.
-          flushSync(() => {
-            setSaid(message);
-            if (next) setCurrent(next);
-          });
+          // The page says what happened, then refreshes: its refreshed source reaches the panel a
+          // task or more later, before the refresh resolves and focus moves.
+          flushSync(() => setSaid(message));
+          if (next) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            flushSync(() => setCurrent(next));
+          }
           status.current?.focus();
         }}
       />
