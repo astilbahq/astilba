@@ -783,7 +783,7 @@ operator gives `--use-host-package-sources`.
 
 | Lanes | What the fresh installation does |
 | --- | --- |
-| `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, and must install nftables from a fallback archive. |
+| `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, with the targets of their SRV records, which apt also follows, and must install nftables from a fallback archive. |
 | `recovery` | Removes nftables and must install it from the runner's own sources, while the test holds dpkg's lock, as a fresh VM's unattended-upgrades does, until 15 seconds after the bootstrap announces an install. Ubuntu's apt waits without a word, so an install that didn't wait would fail in that time. |
 | `upgrade` | Leaves the runner as it is, which needs no Ubuntu package. |
 
