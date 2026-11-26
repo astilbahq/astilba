@@ -10807,3 +10807,7 @@
         manifestHash: {type: string, pattern: '^[a-f0-9]{64}$'}
         oldVolumeId: {type: string, format: uuid}
         targetVolumeId: {type: string, format: uuid}
+        roles:
+          type: string
+          pattern: '^owner$'
+          description: The role model of the restored cluster, which the cutover gives the database. Absent for a restore whose database user is that cluster's superuser.

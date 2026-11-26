@@ -887,7 +887,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 			} else if _, err := data.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, currentGroup.Specification.Applications[1], "UPDATE cross_host_marker SET value='newer source data'"); err != nil {
 				t.Fatal(err)
 			}
-			boundary := deployment.RestoreCutover{SourcePlanID: currentGroup.ID, SourceHash: currentGroup.Hash, PolicyID: policyID, RunID: run, ManifestHash: restored.ManifestHash, OldVolumeID: oldVolume, TargetVolumeID: restoredVolume}
+			boundary := deployment.RestoreCutover{SourcePlanID: currentGroup.ID, SourceHash: currentGroup.Hash, PolicyID: policyID, RunID: run, ManifestHash: restored.ManifestHash, OldVolumeID: oldVolume, TargetVolumeID: restoredVolume, Roles: restored.RestoreRoles}
 			target, err := deployment.RestoredGroup(currentGroup, boundary, uuid.New(), uuid.New(), time.Now().Add(time.Hour))
 			if err != nil || target.Validate(true) != nil {
 				t.Fatal("invalid restored target", err)

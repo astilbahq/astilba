@@ -5378,6 +5378,8 @@ export interface components {
             oldVolumeId: string;
             /** Format: uuid */
             targetVolumeId: string;
+            /** @description The role model of the restored cluster, which the cutover gives the database. Absent for a restore whose database user is that cluster's superuser. */
+            roles?: string;
         };
     };
     responses: never;

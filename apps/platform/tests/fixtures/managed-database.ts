@@ -64,6 +64,7 @@ export async function managedDatabase(
           database: "app",
           username: "app",
           passwordSecretVersionId: secret.id,
+          roles: "owner",
         },
         mounts: [
           {
@@ -111,6 +112,7 @@ export async function managedDatabase(
             schedules: true,
             upgrades: true,
             postgresReleases: releases.map((r) => r.image),
+            postgresOwnerRole: true,
             ...acknowledgesReleases,
           },
           preflight: {

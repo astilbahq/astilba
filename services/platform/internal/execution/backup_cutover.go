@@ -70,7 +70,7 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		}
 		var boundary *deployment.RestoreCutover
 		if policy.Plan.Local != nil {
-			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID}
+			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID, Roles: run.RestoreRoles}
 		}
 		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, policy, run.ID, run.TargetID, source, run.RestoredImage(), run.RestoreRoles, boundary)
 		return err

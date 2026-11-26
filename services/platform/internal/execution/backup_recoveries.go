@@ -293,7 +293,7 @@ func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal,
 		}
 		view := source
 		view.ServerID, view.Plan = row.ServerID, plan
-		old, err := backup.RestoredVolume(view, row.TargetVolumeID, result.Manifest, result.RestoredImage())
+		old, err := backup.RestoredVolume(view, row.TargetVolumeID, result.Manifest, result.RestoredImage(), result.RestoreRoles)
 		if err != nil {
 			return restoreIncompatible(err)
 		}
