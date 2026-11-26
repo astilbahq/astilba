@@ -3,8 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
-	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"net"
 	"net/netip"
 	"net/url"
@@ -13,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
+	"github.com/astilbahq/astilba/services/platform/internal/githubapp"
+	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/google/uuid"
 )
@@ -45,12 +46,18 @@ type Config struct {
 	ApplicationDNS   applicationdns.Config
 	SMTP             mailer.Config
 	Hosting          hosting.Config
-	TrustedProxies   []netip.Prefix
+	// GitHubApp is empty when no GitHub App is configured.
+	GitHubApp      githubapp.Config
+	TrustedProxies []netip.Prefix
 }
 
 func Load() (Config, error) {
-	c := Config{DatabaseURL: os.Getenv("ASTILBA_DATABASE_URL"), Keyring: os.Getenv("ASTILBA_KEYRING"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
-	c.ApplicationDNS = applicationdns.Config{Base: os.Getenv("ASTILBA_APPLICATION_DOMAIN"), Zone: os.Getenv("ASTILBA_DNS_CLOUDFLARE_ZONE"), Token: os.Getenv("ASTILBA_DNS_CLOUDFLARE_TOKEN")}
+	c := Config{Keyring: os.Getenv("ASTILBA_KEYRING"), Listen: os.Getenv("ASTILBA_LISTEN"), Origin: os.Getenv("ASTILBA_ORIGIN"), Development: os.Getenv("ASTILBA_DEVELOPMENT") == "true", Hosted: os.Getenv("ASTILBA_HOSTED") == "true"}
+	c.ApplicationDNS = applicationdns.Config{Base: os.Getenv("ASTILBA_APPLICATION_DOMAIN"), Zone: os.Getenv("ASTILBA_DNS_CLOUDFLARE_ZONE")}
+	c.GitHubApp = loadGitHubApp()
+	if e := c.loadSecrets(); e != nil {
+		return c, e
+	}
 	switch os.Getenv("ASTILBA_TROUBLESHOOTING") {
 	case "":
 	case "single-instance":
@@ -102,7 +109,7 @@ func Load() (Config, error) {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8080"
 	}
-	c.SMTP = mailer.Config{Address: os.Getenv("ASTILBA_SMTP_ADDRESS"), Username: os.Getenv("ASTILBA_SMTP_USERNAME"), Password: os.Getenv("ASTILBA_SMTP_PASSWORD"), From: os.Getenv("ASTILBA_SMTP_FROM"), Mode: os.Getenv("ASTILBA_SMTP_MODE"), Development: c.Development}
+	c.SMTP.Address, c.SMTP.Username, c.SMTP.From, c.SMTP.Mode, c.SMTP.Development = os.Getenv("ASTILBA_SMTP_ADDRESS"), os.Getenv("ASTILBA_SMTP_USERNAME"), os.Getenv("ASTILBA_SMTP_FROM"), os.Getenv("ASTILBA_SMTP_MODE"), c.Development
 	if c.SMTP.Mode == "console" {
 		if !c.Development {
 			return c, errors.New("console email is only available in local development")
@@ -118,7 +125,7 @@ func Load() (Config, error) {
 		if n, e := strconv.ParseInt(os.Getenv("ASTILBA_HOSTED_SERVER_LIMIT"), 10, 32); e == nil {
 			servers = int32(n)
 		}
-		c.Hosting = hosting.Config{CohortLimit: cohort, ServerLimit: servers, PriceID: os.Getenv("ASTILBA_STRIPE_PRICE"), SecretKey: os.Getenv("ASTILBA_STRIPE_SECRET"), WebhookSecret: os.Getenv("ASTILBA_STRIPE_WEBHOOK_SECRET"), Support: os.Getenv("ASTILBA_HOSTED_SUPPORT")}
+		c.Hosting.CohortLimit, c.Hosting.ServerLimit, c.Hosting.PriceID, c.Hosting.Support = cohort, servers, os.Getenv("ASTILBA_STRIPE_PRICE"), os.Getenv("ASTILBA_HOSTED_SUPPORT")
 		if e := c.Hosting.Validate(); e != nil {
 			return c, e
 		}
@@ -127,9 +134,51 @@ func Load() (Config, error) {
 		return c, e
 	}
 	if c.DatabaseURL == "" || c.Keyring == "" {
-		return c, errors.New("ASTILBA_DATABASE_URL and ASTILBA_KEYRING are required")
+		if c.Hosted {
+			return c, errors.New("ASTILBA_DATABASE_URL_FILE and ASTILBA_KEYRING are required")
+		}
+		return c, errors.New("ASTILBA_DATABASE_URL or ASTILBA_DATABASE_URL_FILE, and ASTILBA_KEYRING, are required")
 	}
 	return c, nil
+}
+
+// loadSecrets reads every secret setting, so each start-up refuses a hosted secret in the
+// environment, whichever command it runs. The Stripe keys are read only when hosted, the only
+// time they are used.
+func (c *Config) loadSecrets() error {
+	if c.Hosted {
+		if err := refuseLibraryPasswords(); err != nil {
+			return err
+		}
+	}
+	var err error
+	read := func(s secretSetting, into *string) {
+		if err == nil {
+			*into, err = readSecret(s, c.Hosted)
+		}
+	}
+	read(secretDatabaseURL, &c.DatabaseURL)
+	read(secretDNSCloudflareToken, &c.ApplicationDNS.Token)
+	read(secretSMTPPassword, &c.SMTP.Password)
+	if c.Hosted {
+		read(secretStripeSecret, &c.Hosting.SecretKey)
+		read(secretStripeWebhookSecret, &c.Hosting.WebhookSecret)
+	}
+	read(secretGitHubClientSecret, &c.GitHubApp.ClientSecret)
+	read(secretGitHubWebhookSecret, &c.GitHubApp.WebhookSecret)
+	read(secretGitHubPrivateKey, &c.GitHubApp.PrivateKey)
+	return err
+}
+
+// loadGitHubApp reads the GitHub App's identity; loadSecrets adds its secrets. githubapp.New
+// checks the whole: none of it configured, or all of it.
+func loadGitHubApp() githubapp.Config {
+	rawID := os.Getenv("ASTILBA_GITHUB_APP_ID")
+	id, _ := strconv.ParseInt(rawID, 10, 64)
+	if rawID != "" && id < 1 {
+		id = -1
+	}
+	return githubapp.Config{ID: id, ClientID: os.Getenv("ASTILBA_GITHUB_APP_CLIENT_ID"), Slug: os.Getenv("ASTILBA_GITHUB_APP_SLUG"), APIOrigin: os.Getenv("ASTILBA_GITHUB_APP_FIXTURE_API"), WebOrigin: os.Getenv("ASTILBA_GITHUB_APP_FIXTURE_WEB")}
 }
 
 // loadCustody reads which key service to use and which installation to expect. A keyring in the

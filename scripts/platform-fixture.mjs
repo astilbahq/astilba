@@ -248,11 +248,15 @@ try {
   });
   const hostedDatabase = `hosted_${owned.replaceAll("-", "")}`;
   docker(["exec", name, "createdb", "--username", "postgres", hostedDatabase]);
+  // Hosting reads credentials only from private files.
+  const hostedDatabaseURL = join(directory, "hosted-database-url");
+  await writeFile(hostedDatabaseURL, `postgres://postgres:${password}@${address}/${hostedDatabase}?sslmode=disable\n`, { mode: 0o600 });
   const hostedEnv = {
     ...env,
     // Hosted refuses generated names on a base the Public Suffix List does not isolate.
     ASTILBA_APPLICATION_DOMAIN: "",
-    ASTILBA_DATABASE_URL: `postgres://postgres:${password}@${address}/${hostedDatabase}?sslmode=disable`,
+    ASTILBA_DATABASE_URL: "",
+    ASTILBA_DATABASE_URL_FILE: hostedDatabaseURL,
     ASTILBA_KEYRING: join(directory, "hosted-keyring.json"),
     ASTILBA_DEVELOPMENT: "false", ASTILBA_HOSTED: "true",
     ASTILBA_HOSTED_COHORT_LIMIT: "5", ASTILBA_HOSTED_SERVER_LIMIT: "2",
@@ -272,7 +276,7 @@ try {
   }
   start(binary,["serve"],hostedEnv);
   await mkdir(dirname(hostedInfo),{recursive:true});
-  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
+  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_DATABASE_URL_FILE","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
   ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
   const waitReady = async (port) => {
