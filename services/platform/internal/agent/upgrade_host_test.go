@@ -286,7 +286,8 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				}()
 				e.Point = nil
 				if interrupt && !fired {
-					t.Fatalf("fault point %s was not reached", crash)
+					r, err := e.Journal.Record(cmd.Id)
+					t.Fatalf("fault point %s was not reached: %s: %s: %v", crash, r.Report.State, r.Report.Note, err)
 				}
 				if fired {
 					// Close/reopen the encrypted journal, as an agent process restart does.
