@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"encoding/json/v2"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -79,12 +82,15 @@ func TestOpenSweepsOnlyLeftoverScratch(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "backup-stage-78"), []byte("file"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.Mkdir(filepath.Join(dir, "restore-verification-79"), 0700); err != nil {
-		t.Fatal(err)
+	// One name is the start of another, as a random suffix can make a name the start of any other.
+	for _, name := range []string{"restore-verification-7", "restore-verification-79"} {
+		if err = os.Mkdir(filepath.Join(dir, name), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	unexpected := []string{"backup-stage-78", "restic-access-77", "restore-verification-79"}
+	unexpected := []string{"backup-stage-78", "restic-access-77", "restore-verification-7", "restore-verification-79"}
 
-	trail := captureTrail(t)
+	sweep := captureSweepNames(t)
 	j, err = Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -95,18 +101,16 @@ func TestOpenSweepsOnlyLeftoverScratch(t *testing.T) {
 			t.Fatal("leftover scratch survived the open:", name, err)
 		}
 	}
-	// The operator can tell what it removed from what it left.
-	logged := trail.String()
-	for _, name := range append(scratch, unexpected...) {
-		if strings.Count(logged, name) != 1 {
-			t.Fatal("the sweep did not log", name, "once:", logged)
-		}
+	// The operator can tell what it removed from what it left, each named once.
+	removed, left := sweep()
+	slices.Sort(scratch)
+	slices.Sort(removed)
+	slices.Sort(left)
+	if !slices.Equal(removed, scratch) {
+		t.Fatal("the sweep logged it removed", removed, "not", scratch)
 	}
-	_, left, _ := strings.Cut(logged, "did not make")
-	for _, name := range unexpected {
-		if !strings.Contains(left, name) {
-			t.Fatal("the sweep did not log what it left as such:", logged)
-		}
+	if !slices.Equal(left, unexpected) {
+		t.Fatal("the sweep logged it left", left, "not", unexpected)
 	}
 	for _, name := range append(kept, unexpected...) {
 		if _, err = os.Lstat(filepath.Join(dir, name)); err != nil {
@@ -120,6 +124,37 @@ func TestOpenSweepsOnlyLeftoverScratch(t *testing.T) {
 		if _, err = os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatal("the journal lost", name, err)
 		}
+	}
+}
+
+// captureSweepNames records what the scratch sweep logs. The function it returns gives the names
+// the sweep logged as removed and as left, each list whole from its record, so a check never
+// mistakes one name for the start of another.
+func captureSweepNames(t *testing.T) func() (removed, left []string) {
+	t.Helper()
+	// captureTrail puts the default logger, and the log package's output it redirects, back.
+	trail := captureTrail(t)
+	slog.SetDefault(slog.New(slog.NewJSONHandler(trail, nil)))
+	return func() (removed, left []string) {
+		t.Helper()
+		for line := range strings.Lines(trail.String()) {
+			var record struct {
+				Msg   string   `json:"msg"`
+				Names []string `json:"names"`
+			}
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case strings.Contains(record.Msg, "removed scratch"):
+				removed = append(removed, record.Names...)
+			case strings.Contains(record.Msg, "did not make"):
+				left = append(left, record.Names...)
+			case record.Names != nil:
+				t.Fatal("the sweep logged names in a record the test does not know:", record.Msg)
+			}
+		}
+		return removed, left
 	}
 }
 
