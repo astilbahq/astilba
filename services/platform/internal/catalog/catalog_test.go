@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,41 +14,25 @@ import (
 	"github.com/google/uuid"
 )
 
-// The visual lane deploys every entry, and CI pulls each image first because a registry failing
-// for a moment during the test would fail the lane. CI pulls no other image for it.
-func TestCatalogImagesArePulledFirst(t *testing.T) {
-	workflow, err := os.ReadFile("../../../../.github/workflows/ci.yml")
-	if err != nil {
-		t.Fatal(err)
+// CI pulls Images before the visual lane deploys every entry, so it must name each image a recipe
+// deploys.
+func TestImagesNamesEveryDeployedImageOnce(t *testing.T) {
+	listed := map[string]int{}
+	for _, image := range Images() {
+		listed[image]++
 	}
-	pulled := func(step string) map[string]bool {
-		_, after, found := strings.Cut(string(workflow), "- name: "+step+"\n")
-		if !found {
-			t.Fatal("no step named", step)
-		}
-		step, _, _ = strings.Cut(after, "- name: ")
-		images := map[string]bool{}
-		for line := range strings.Lines(step) {
-			if line = strings.TrimSpace(line); strings.Contains(line, "@sha256:") {
-				images[line] = true
-			}
-		}
-		return images
-	}
-	fixtures, catalog := pulled("Pull pinned fixture images"), pulled("Pull catalog images")
-	deployed := map[string]bool{}
 	for _, recipe := range Recipes() {
-		for _, app := range recipe.Specification.Applications {
-			image := *app.Source.Image
-			deployed[image] = true
-			if !fixtures[image] && !catalog[image] {
-				t.Errorf("%s: pull %s in ci.yml", recipe.ID, image)
-			}
+		if recipe.Specification.Compose != nil {
+			t.Errorf("%s: Images reads only application images, not a Compose bundle", recipe.ID)
 		}
-	}
-	for image := range catalog {
-		if !deployed[image] {
-			t.Error("ci.yml pulls an image the catalog does not deploy:", image)
+		for _, app := range recipe.Specification.Applications {
+			if app.Source.Kind != "image" || app.Source.Image == nil {
+				t.Errorf("%s: Images reads only image sources, found %q", recipe.ID, app.Source.Kind)
+				continue
+			}
+			if listed[*app.Source.Image] != 1 {
+				t.Errorf("%s: Images lists %s %d times", recipe.ID, *app.Source.Image, listed[*app.Source.Image])
+			}
 		}
 	}
 }
