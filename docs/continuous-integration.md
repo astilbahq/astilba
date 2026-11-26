@@ -42,8 +42,8 @@ only when every changed path is known not to affect it:
 | Native hosts | Markdown under `docs/` other than `docs/hosting.md`, whose proxy configurations the native tests run, or the root README, dashboard source, theme, public assets, browser tests, Storybook or Panda configuration, or the server-only `auth`, `alerts`, `mailer`, `billing` and `automationclient` packages or the CLI |
 | Application Go race lanes | documentation or dashboard paths above |
 | Application and workshop browsers | documentation |
-| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull and Docker Hub mirror actions and `scripts/docker-hub-mirror.mjs`, canvas the root JavaScript manifests, lockfile, `.npmrc` and `.pnpmfile`, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
-| Vulnerability scan | not a Go file, a file under `services/platform/cmd`, whose every directory the scan must know, a file anywhere that decides resolved dependency versions (`go.mod`, `go.sum`, `go.work`, `go.work.sum`, `vendor/modules.txt`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` or a `.pnpmfile`), the pnpm install action or script, the Makefile, the allowlist, the pinned Public Suffix List, the scan's workflows, or a file under `scripts/` other than a `.test.mjs` file, since the scan's scripts import, read and run others |
+| Durable execution, Git providers, canvas | outside that experiment, its workflow and the Makefile (durable execution and Git providers also follow the image pull and Docker Hub mirror actions and `scripts/docker-hub-mirror.mjs`, canvas the root JavaScript manifests, lockfile, `.npmrc`, `.pnpmfile` and `vite.config.ts`, the pnpm install action and script, and all three `scripts/fetch-attempts.mjs`) |
+| Vulnerability scan | not a Go file, a file under `services/platform/cmd`, whose every directory the scan must know, a file anywhere that decides resolved dependency versions (`go.mod`, `go.sum`, `go.work`, `go.work.sum`, `vendor/modules.txt`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` or a `.pnpmfile`), the root `vite.config.ts`, the pnpm install action or script, the Makefile, the allowlist, the pinned Public Suffix List, the scan's workflows, or a file under `scripts/` other than a `.test.mjs` file, since the scan's scripts import, read and run others |
 
 `AGENTS.md`, `REVIEW.md`, runtime, contracts, migrations, package/lock files, CI,
 scripts, toolchain and unknown paths select the native suite. A change to the
@@ -359,7 +359,7 @@ choose the source files analysed, not the advisories: an advisory limited to a
 platform nothing ships to can still report as reachable, and then needs a bump or an
 allowlist entry. A new directory under `cmd` or a Go module outside `experiments` stops
 the scan until it is added to `scripts/vulnerability-scan.mjs`, as a shipped binary or a
-CI tool, and `make check-ci` fails the same way first.
+CI tool.
 
 `dashboard` follows pnpm's production closure, so it includes peers that are never
 bundled, such as `typescript`. `tooling` means outside that closure, so review code
