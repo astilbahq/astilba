@@ -27,12 +27,13 @@ and an HTTPS origin. It does not need access to a Docker socket. Application
 builds and deployments run on enrolled agents.
 
 Use [the Compose example](../services/platform/compose.example.yaml), or run the
-same image under your preferred container supervisor. Supply configuration through
-an owner-only environment file outside source control:
+same image under your preferred container supervisor. Supply each credential as a
+private file, as [secret settings](#secret-settings) describes, and the rest of the
+configuration through an owner-only environment file outside source control:
 
 | Setting | Meaning |
 | --- | --- |
-| `ASTILBA_DATABASE_URL` | PostgreSQL connection URL; use verified TLS for a remote database. |
+| `ASTILBA_DATABASE_URL_FILE` | File holding the PostgreSQL connection URL; use verified TLS for a remote database. Self-hosted installations can set the URL itself in `ASTILBA_DATABASE_URL` instead. |
 | `ASTILBA_KEYRING` | Path to a mounted owner-only keyring, readable by UID 65532. |
 | `ASTILBA_INSTALLATION_ID` | The installation's ID, which `astilba custody status` shows after `astilba migrate`. Required when hosted, and recommended everywhere: a database that belongs to another installation is then refused. See [key custody](#key-custody). |
 | `ASTILBA_KEY_BACKEND` | Optional. The key service keys are read from: `file`, the keyring file, is the default; `transit` is OpenBao or Vault Transit, set up as [key custody with Transit](key-custody-transit.md) describes. |
@@ -44,7 +45,7 @@ an owner-only environment file outside source control:
 | `ASTILBA_APPLICATION_DOMAIN` | Optional. Base domain for generated application names; empty turns them off. Hosted installations need it on the Public Suffix List. See [generated application names](#generated-application-names). |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
 | `ASTILBA_SMTP_ADDRESS`, `ASTILBA_SMTP_MODE`, `ASTILBA_SMTP_FROM` | SMTP delivery settings. Use `tls` or `starttls` outside local development. |
-| `ASTILBA_SMTP_USERNAME`, `ASTILBA_SMTP_PASSWORD` | Optional SMTP credentials. |
+| `ASTILBA_SMTP_USERNAME`, `ASTILBA_SMTP_PASSWORD_FILE` | Optional SMTP credentials: the username, and a file holding the password. Set both or neither. |
 
 Generate the keyring once with `astilba keygen --out /private/keyring.json` in a
 private writable directory, then mount it read-only for normal operation. Preserve
@@ -69,6 +70,49 @@ previously encrypted data.
    on disposable infrastructure before admitting customer workloads.
 
 To move to a newer version later, follow [upgrading management](management-upgrades.md).
+
+### Secret settings
+
+These settings hold credentials. Each can be set in its variable or in a file that its `_FILE`
+variable names. Prefer the file: anything that can read management's environment, such as a
+process listing, a crash report or `docker inspect`, then finds no credential.
+
+| Setting | File form | Holds |
+| --- | --- | --- |
+| `ASTILBA_DATABASE_URL` | `ASTILBA_DATABASE_URL_FILE` | The PostgreSQL connection URL, with its password. |
+| `ASTILBA_DNS_CLOUDFLARE_TOKEN` | `ASTILBA_DNS_CLOUDFLARE_TOKEN_FILE` | The Cloudflare token for [generated application names](#generated-application-names). |
+| `ASTILBA_SMTP_PASSWORD` | `ASTILBA_SMTP_PASSWORD_FILE` | The SMTP password. |
+| `ASTILBA_STRIPE_SECRET` | `ASTILBA_STRIPE_SECRET_FILE` | The Stripe secret key, read only when hosted. See [hosted admission and billing](#hosted-admission-and-billing). |
+| `ASTILBA_STRIPE_WEBHOOK_SECRET` | `ASTILBA_STRIPE_WEBHOOK_SECRET_FILE` | The Stripe webhook signing secret, read only when hosted. |
+| `ASTILBA_GITHUB_APP_CLIENT_SECRET` | `ASTILBA_GITHUB_APP_CLIENT_SECRET_FILE` | The [GitHub App](git-builds.md)'s client secret. |
+| `ASTILBA_GITHUB_APP_WEBHOOK_SECRET` | `ASTILBA_GITHUB_APP_WEBHOOK_SECRET_FILE` | The GitHub App's webhook secret. |
+| `ASTILBA_GITHUB_APP_PRIVATE_KEY` | `ASTILBA_GITHUB_APP_PRIVATE_KEY_FILE` | The GitHub App's private key, as PEM. |
+
+Setting both forms of one setting stops management from starting. With `ASTILBA_HOSTED=true`,
+management reads only the files: a credential in the environment stops it from starting, and the
+error names the setting and its file form. Hosting also refuses `PGPASSWORD` and `PGSSLPASSWORD`,
+which the PostgreSQL driver reads by itself; put the password in the URL in
+`ASTILBA_DATABASE_URL_FILE` instead. Every command checks this, not only `astilba serve`, so give
+`astilba migrate` and the other commands the same files.
+
+A file must be:
+
+- a regular file, or a symbolic link to one;
+- readable and writable only by its owner, mode `0400` or `0600`. A file that its group or
+  anyone else can read is refused, as the keyring is, so a secret volume that grants access by
+  group, as Kubernetes does with `fsGroup`, is refused too. Management checks the mode, not the
+  owner: make the owner the user management runs as, UID 65532 in the image, or it cannot read
+  the file;
+- at most 64 KiB, and not empty.
+
+One trailing newline, `\n` or `\r\n`, is removed, so a file written by an editor or by `echo`
+works. Nothing else is trimmed. Apart from the PEM key, a value must be one line, so a second
+line or a stray newline is refused, not sent to the provider. Errors name the setting, never the
+value or the file's contents.
+
+The [Compose example](../services/platform/compose.example.yaml) mounts each credential as a
+Compose secret. Compose mounts a file secret as the file itself, so its owner and mode on the
+host are what management checks.
 
 ### Key custody
 
@@ -360,6 +404,16 @@ answered as usual and sends nothing. A delivery that fails does not count, and a
 email with no account counts for nothing. Each link replaces the one before, so use the newest.
 Completing a reset clears the shared limit and makes that browser a known one.
 
+With two-factor authentication, an account takes 5 codes in 5 minutes at sign-in. Wrong
+authenticator codes also spend a daily allowance of 20, which confirming identity in a signed-in
+session shares. Signing in again does not restart it. Once it is spent, authenticator codes are
+refused on every browser until the day's window ends, even a right one. Recovery codes are still
+accepted, so the holder can sign in with one, which also ends every other session. Turning
+two-factor authentication off with a recovery code and enrolling again, or the operator's
+`astilba reset-mfa` followed by enrolling, starts a new allowance. Someone spending the allowance
+at sign-in knows the password, so the holder should reset it. Someone spending it by confirming
+identity holds one of the account's sessions, which the recovery code ends.
+
 There is no installation-wide limit, because anyone could spend it to refuse everyone. Trying a
 password across many accounts is bounded by each account's limit, each address's limit and how
 fast a replica can hash.
@@ -547,7 +601,7 @@ a shell. A shorter idle or duration limit ends a running session early, and its 
 with it. Nothing else is affected.
 
 These configurations carry a session through each proxy. `make verify-agent-host-core`
-reads them from this page and runs them with pinned nginx 1.30.6, Caddy 2.11.8 and
+reads them from this page and runs them with pinned nginx 1.30.6, Caddy 2.11.9 and
 Traefik 3.7.19 images.
 
 nginx needs the upgrade headers, and its `proxy_read_timeout` is the idle limit:
@@ -627,6 +681,7 @@ tls:
 
 Set `ASTILBA_HOSTED=true`, plus all of:
 
+- `ASTILBA_DATABASE_URL_FILE`: hosting reads every credential from a file. See [secret settings](#secret-settings).
 - `ASTILBA_INSTALLATION_ID`: the installation ID from `astilba custody status`. See [key custody](#key-custody).
 - `ASTILBA_HOSTED_COHORT_LIMIT`: total admitted and reserved workspace invitations.
 - `ASTILBA_HOSTED_SERVER_LIMIT`: allowance applied to new hosted workspaces.
@@ -644,8 +699,8 @@ generation only. Refreshing before confirmation offers replacement codes; plaint
 codes are never saved in browser storage. Existing accounts retain their previous
 completed recovery status until codes are replaced or exhausted.
 
-Stripe is optional. For paid Checkout, configure `ASTILBA_STRIPE_SECRET`,
-`ASTILBA_STRIPE_PRICE` and `ASTILBA_STRIPE_WEBHOOK_SECRET` together. Use one recurring
+Stripe is optional. For paid Checkout, configure `ASTILBA_STRIPE_SECRET_FILE`,
+`ASTILBA_STRIPE_PRICE` and `ASTILBA_STRIPE_WEBHOOK_SECRET_FILE` together. Use one recurring
 monthly price with quantity one and configure the Stripe customer portal. Pin the
 webhook endpoint to API version `2026-09-30.endive`, matching the client, at
 `/hooks/stripe`. Subscribe to `checkout.session.completed`,

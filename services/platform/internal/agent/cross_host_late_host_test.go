@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/moby/moby/client"
@@ -22,7 +23,7 @@ func (w *unreadyWriter) deploymentCommand(phase string) api.ExecutionCommand {
 func (w *unreadyWriter) reserveDeployment(phase string, published bool) {
 	w.t.Helper()
 	c := w.deploymentCommand("reserve")
-	body, err := crossHostCommand(c)
+	body, err := deadline.CrossHost(c)
 	if err != nil {
 		w.t.Fatal(err)
 	}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
@@ -52,6 +53,7 @@ type Client struct {
 	troubleshooting         atomic.Bool
 	machineRotation         atomic.Bool
 	secretReleases          atomic.Bool
+	expiredCommands         atomic.Bool
 	containerRanges         atomic.Bool
 	// negotiated says this process has heard which extensions management reads. Until then the
 	// flags above are unset, and a heartbeat would replace what management holds with a set
@@ -212,7 +214,7 @@ func refusal(response *http.Response) rejection {
 
 func (c *Client) acceptPolledCommand(command api.ExecutionCommand) (Record, error) {
 	if command.Kind == "crosshost" && !c.maintenanceContinuation.Load() {
-		body, err := crossHostCommand(command)
+		body, err := deadline.CrossHost(command)
 		if err == nil && body.Maintenance != nil {
 			if _, err = c.Journal.Record(command.Id); errors.Is(err, os.ErrNotExist) {
 				return Record{}, errors.New("controller must support primary-first maintenance continuation before new maintenance commands can be accepted")

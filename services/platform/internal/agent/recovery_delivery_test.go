@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -52,7 +53,7 @@ func TestRecoverySupersedesUnretainedDelivery(t *testing.T) {
 		if _, err := j.Accept(c); err != nil {
 			return err
 		}
-		body, err := crossHostCommand(c)
+		body, err := deadline.CrossHost(c)
 		if err != nil {
 			return err
 		}

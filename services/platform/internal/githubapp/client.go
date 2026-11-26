@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,20 +29,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// Config is read by config.Load, which takes the secrets from the environment or from files.
 type Config struct {
-	ID                                                                      int64
-	ClientID, Slug, ClientSecret, WebhookSecret, PrivateKey, PrivateKeyFile string
+	ID                                                      int64
+	ClientID, Slug, ClientSecret, WebhookSecret, PrivateKey string
 	// Fixture origins are rejected outside loopback development.
 	APIOrigin, WebOrigin string
-}
-
-func Load() Config {
-	rawID := os.Getenv("ASTILBA_GITHUB_APP_ID")
-	id, _ := strconv.ParseInt(rawID, 10, 64)
-	if rawID != "" && id < 1 {
-		id = -1
-	}
-	return Config{ID: id, ClientID: os.Getenv("ASTILBA_GITHUB_APP_CLIENT_ID"), Slug: os.Getenv("ASTILBA_GITHUB_APP_SLUG"), ClientSecret: os.Getenv("ASTILBA_GITHUB_APP_CLIENT_SECRET"), WebhookSecret: os.Getenv("ASTILBA_GITHUB_APP_WEBHOOK_SECRET"), PrivateKey: os.Getenv("ASTILBA_GITHUB_APP_PRIVATE_KEY"), PrivateKeyFile: os.Getenv("ASTILBA_GITHUB_APP_PRIVATE_KEY_FILE"), APIOrigin: os.Getenv("ASTILBA_GITHUB_APP_FIXTURE_API"), WebOrigin: os.Getenv("ASTILBA_GITHUB_APP_FIXTURE_WEB")}
 }
 
 type Client struct {
@@ -65,7 +56,7 @@ func New(c Config, origin string, development bool) (*Client, error) {
 	if c == (Config{}) {
 		return nil, nil
 	}
-	if c.ID < 1 || c.ClientID == "" || c.Slug == "" || len(c.ClientSecret) < 16 || len(c.WebhookSecret) < 32 || (c.PrivateKey == "") == (c.PrivateKeyFile == "") {
+	if c.ID < 1 || c.ClientID == "" || c.Slug == "" || len(c.ClientSecret) < 16 || len(c.WebhookSecret) < 32 || c.PrivateKey == "" {
 		return nil, errors.New("GitHub App configuration is incomplete")
 	}
 	for _, v := range []string{c.ClientID, c.Slug} {
@@ -74,21 +65,6 @@ func New(c Config, origin string, development bool) (*Client, error) {
 		}
 	}
 	raw := []byte(c.PrivateKey)
-	if c.PrivateKeyFile != "" {
-		f, e := os.Open(c.PrivateKeyFile)
-		if e != nil {
-			return nil, errors.New("cannot open GitHub App private key")
-		}
-		defer f.Close()
-		st, e := f.Stat()
-		if e != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 || st.Size() > 16384 {
-			return nil, errors.New("GitHub App key must be a bounded owner-only regular file")
-		}
-		raw, e = io.ReadAll(io.LimitReader(f, 16385))
-		if e != nil {
-			return nil, e
-		}
-	}
 	if len(raw) > 16384 {
 		return nil, errors.New("GitHub App key exceeds limit")
 	}
@@ -117,7 +93,6 @@ func New(c Config, origin string, development bool) (*Client, error) {
 	}
 	// The PEM is not retained in the general configuration value.
 	c.PrivateKey = ""
-	c.PrivateKeyFile = ""
 	return &Client{Config: c, api: api, web: web, callback: origin + "/github/callback", key: key, http: outbound.Client(development, 20*time.Second), tokens: make(map[tokenKey]*cachedToken), runners: make(map[uuid.UUID]map[runnerKey]runnerToken), validations: make(map[authorityKey]*cachedAuthority)}, nil
 }
 func (c *Client) FixtureAPI() string {

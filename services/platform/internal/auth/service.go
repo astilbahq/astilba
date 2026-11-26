@@ -71,20 +71,39 @@ func matchTOTP(code, secret string, now time.Time, last int64) (int64, bool) {
 	return 0, false
 }
 
+// authenticatorShaped says whether a code could be an authenticator code: six digits once
+// trimmed. A recovery code never is, so a code is checked as one kind or the other, never both.
+func authenticatorShaped(code string) bool {
+	code = strings.TrimSpace(code)
+	if len(code) != 6 {
+		return false
+	}
+	for _, c := range code {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, account *db.Account, code string) error {
 	q := db.New(tx)
 	code = strings.TrimSpace(code)
 	if len(account.TotpSecret) == 0 {
 		return domain.Credentials
 	}
-	secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTP, ID: account.ID}, account.TotpSecret)
-	if err != nil {
-		return err
-	}
-	if step, ok := matchTOTP(code, string(secret), s.Now(), account.TotpLastStep); ok {
+	if authenticatorShaped(code) {
+		secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTP, ID: account.ID}, account.TotpSecret)
+		if err != nil {
+			return err
+		}
+		step, ok := matchTOTP(code, string(secret), s.Now(), account.TotpLastStep)
+		if !ok {
+			return domain.Credentials
+		}
 		return q.AcceptTOTPStep(ctx, db.AcceptTOTPStepParams{ID: account.ID, TotpLastStep: step})
 	}
-	_, err = q.ConsumeRecoveryCode(ctx, db.ConsumeRecoveryCodeParams{AccountID: account.ID, CodeHash: Hash(strings.ToUpper(code))})
+	_, err := q.ConsumeRecoveryCode(ctx, db.ConsumeRecoveryCodeParams{AccountID: account.ID, CodeHash: Hash(strings.ToUpper(code))})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Credentials
 	}
@@ -100,11 +119,18 @@ func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, keys *secretbroker.S
 	account.AuthVersion++
 	return s.securityEvent(ctx, tx, account.ID, RecoveryCodeUsed)
 }
+
+// VerifyCode completes a sign-in that has proved the password. Signing in again restarts the
+// sign-in budgets, so besides five attempts in five minutes, each failure spends the code's
+// daily allowance, which confirming identity shares.
 func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (_ db.Account, err error) {
 	var account db.Account
-	if err = s.Limit(ctx, "mfa:"+id.String(), 5, 5*time.Minute); err != nil {
+	attempt := codeGuess(id, code, budget{"mfa:" + id.String(), 5, 5 * time.Minute})
+	if err = s.spend(ctx, attempt); err != nil {
 		return account, err
 	}
+	var wrong bool
+	defer func() { s.settle(ctx, attempt, wrong) }()
 	keys, err := s.secondFactor(ctx, id, secretbroker.Authenticate, secretbroker.TOTP)
 	if err != nil {
 		return account, err
@@ -116,10 +142,14 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 		if err != nil {
 			return err
 		}
+		// A credential change since the password was checked ends the pending sign-in. No code
+		// was checked, so it is not a failure.
 		if account.AuthVersion != expectedVersion {
 			return domain.Credentials
 		}
-		return s.checkCode(ctx, tx, keys, &account, code)
+		err = s.checkCode(ctx, tx, keys, &account, code)
+		wrong = errors.Is(err, domain.Credentials)
+		return err
 	})
 	return account, err
 }
@@ -286,6 +316,10 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 			return err
 		}
 		if _, err = q.ActivateTOTP(ctx, db.ActivateTOTPParams{ID: id, TotpLastStep: step, TotpSecret: active}); err != nil {
+			return err
+		}
+		// Failed guesses at an earlier authenticator say nothing about this one.
+		if err = q.ClearAuthAttempts(ctx, Hash(codeFailures(id).scope)); err != nil {
 			return err
 		}
 		codes, err = recoveryCodes(ctx, q, id)

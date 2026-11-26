@@ -5,10 +5,10 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -32,7 +32,7 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 	if r.Checkpoint == recoveryEffect {
 		return e.settleRecovery(c.Id, p, v.RunID, "The restore stopped after it began changing this server.")
 	}
-	if e.cancelled(c.Id) || time.Now().After(c.Deadline) {
+	if e.cancelled(c.Id) || deadline.Passed(c) {
 		return e.finish(c.Id, "cancelled", "Cancelled before the restore changed anything.")
 	}
 	// A retried restore gave up the repository's access while it waited for attention.

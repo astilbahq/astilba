@@ -78,6 +78,7 @@ export function createAuthValidation(messages: AuthMessages) {
     fields: FormValidation["fields"],
     credentialsMessage: string = messages.invalidCredentials,
     codeMessage: string = messages.invalidCode,
+    rateLimitedMessage: string = messages.rateLimited,
   ): FormValidation {
     return {
       fields,
@@ -94,7 +95,7 @@ export function createAuthValidation(messages: AuthMessages) {
           case "mfa_required":
             return messages.mfaRequired;
           case "rate_limited":
-            return messages.rateLimited;
+            return rateLimitedMessage;
           case "temporarily_busy":
             return messages.temporarilyBusy;
           case "recent_auth_required":
@@ -124,7 +125,20 @@ export function createAuthValidation(messages: AuthMessages) {
         (error instanceof ApiError &&
           error.detail.code === "invalid_credentials"),
     },
+    // A refusal for too many attempts can be a few minutes' wait or the code's daily allowance,
+    // which refuses authenticator codes but never recovery codes, so sign-in points at the way in
+    // that still works.
     mfa: {
+      ...form(
+        { code },
+        messages.invalidCode,
+        messages.invalidCode,
+        messages.codeRateLimited,
+      ),
+      errorFields: codeErrorFields,
+    },
+    // Enrolment checks the new authenticator's code. The account has no recovery codes yet.
+    enrollment: {
       ...form({ code }, messages.invalidCode),
       errorFields: codeErrorFields,
     },
@@ -165,8 +179,16 @@ export function createAuthValidation(messages: AuthMessages) {
         // from assistive technology.
         shouldToastError: () => false,
         message(error, name) {
-          if (error instanceof ApiError && error.detail.code === "rate_limited")
+          if (
+            error instanceof ApiError &&
+            error.detail.code === "rate_limited"
+          ) {
+            if (credential === "authenticator")
+              return change
+                ? messages.codeRateLimited
+                : messages.stepUpCodeRateLimited;
             return change ? messages.rateLimited : messages.stepUpRateLimited;
+          }
           return base.message(error, name);
         },
       };

@@ -428,10 +428,20 @@ func TestRedactionKeepsUnknownMembersAndDropsUnreadablePayloads(t *testing.T) {
 
 }
 
-// Management delivers an upgrade action cancelled before this host took it without values. Running
-// it leaves an active upgrade's kept values as they are, so an earlier agent restored onto the
-// journal can still run the next action.
+// Management delivers an upgrade action cancelled before this host took it, or past its deadline,
+// without values. Running it changes nothing and leaves an active upgrade's kept values as they
+// are, so an earlier agent restored onto the journal can still run the next action. Past its
+// deadline by management's clock the action ends so, whatever this host's clock reads.
 func TestCancelledUpgradeActionKeepsTheUpgradesValues(t *testing.T) {
+	t.Run("cancelled", func(t *testing.T) {
+		testUnrunUpgradeAction(t, func(c *api.ExecutionCommand) { c.CancelRequested = true }, "Upgrade cancelled before host effects.")
+	})
+	t.Run("expired", func(t *testing.T) {
+		testUnrunUpgradeAction(t, func(c *api.ExecutionCommand) { expired := true; c.Expired = &expired }, "Upgrade cancelled before host effects. "+laggingNote)
+	})
+}
+
+func testUnrunUpgradeAction(t *testing.T, stop func(*api.ExecutionCommand), note string) {
 	j, base := testVisualJournal(t)
 	pg, volume, secret := uuid.New(), uuid.New(), uuid.New()
 	image := domain.Postgres17Image
@@ -452,7 +462,8 @@ func TestCancelledUpgradeActionKeepsTheUpgradesValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := jsontext.Value(raw)
-	c := api.ExecutionCommand{Id: uuid.New(), ServerId: source.ServerID, EnvironmentId: source.EnvironmentID, ResourceId: plan.ID, Kind: "upgrade", Action: "inspect", Generation: 1, PlanHash: cutover.Digest(), Upgrade: &body, CancelRequested: true, Deadline: time.Now().Add(time.Minute)}
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: source.ServerID, EnvironmentId: source.EnvironmentID, ResourceId: plan.ID, Kind: "upgrade", Action: "inspect", Generation: 1, PlanHash: cutover.Digest(), Upgrade: &body, Deadline: time.Now().Add(time.Minute)}
+	stop(&c)
 	r, err := j.Accept(c)
 	if err != nil {
 		t.Fatal(err)
@@ -460,7 +471,7 @@ func TestCancelledUpgradeActionKeepsTheUpgradesValues(t *testing.T) {
 	if err = (&Engine{Journal: j}).executeUpgrade(t.Context(), c, r); err != nil {
 		t.Fatal(err)
 	}
-	if r, err = j.Record(c.Id); err != nil || r.Report.State != "failed" || r.Report.Note != "Upgrade cancelled before host effects." {
+	if r, err = j.Record(c.Id); err != nil || r.Report.State != "failed" || r.Report.Note != note {
 		t.Fatal("the cancelled action did not end as cancelled", r.Report.State, r.Report.Note, err)
 	}
 	stored, err := j.upgrade(plan.ID)

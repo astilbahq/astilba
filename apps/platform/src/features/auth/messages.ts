@@ -31,6 +31,7 @@ export function createAuthMessages(t: TFunction<"auth">) {
     signupAccount: t(($) => $.validation.signupAccount),
     incorrectPassword: t(($) => $.validation.incorrectPassword),
     stepUpRateLimited: t(($) => $.validation.stepUpRateLimited),
+    stepUpCodeRateLimited: t(($) => $.validation.stepUpCodeRateLimited),
     recentRequired: t(($) => $.validation.recentRequired),
     setupConflict: t(($) => $.validation.setupConflict),
     setupElsewhere: t(($) => $.validation.setupElsewhere),
@@ -41,6 +42,7 @@ export function createAuthMessages(t: TFunction<"auth">) {
     invitationSubscription: t(($) => $.validation.invitationSubscription),
     mfaRequired: t(($) => $.validation.mfaRequired),
     rateLimited: t(($) => $.validation.rateLimited),
+    codeRateLimited: t(($) => $.validation.codeRateLimited),
     temporarilyBusy: t(($) => $.validation.temporarilyBusy),
     requestFailed: t(($) => $.validation.requestFailed),
   };

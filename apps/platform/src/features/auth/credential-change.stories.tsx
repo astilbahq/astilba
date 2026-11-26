@@ -163,7 +163,9 @@ export const CredentialChangeRetries: Story = {
     const confirmation = await dialog(canvasElement);
     await expect(
       await within(confirmation).findByRole("alert"),
-    ).toHaveTextContent("Too many attempts. Try again later.");
+    ).toHaveTextContent(
+      "Too many attempts. Try again later. If your authenticator code is still refused, use a recovery code.",
+    );
     await confirm(canvasElement);
     await waitFor(() =>
       expect(within(confirmation).getByRole("alert")).toHaveTextContent(

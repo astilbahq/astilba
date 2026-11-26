@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
@@ -15,15 +16,15 @@ func recoveryClose(c api.ExecutionCommand) bool {
 	if c.Kind != "crosshost" {
 		return false
 	}
-	body, err := crossHostCommand(c)
-	return err == nil && body.Phase == recoveryClosePhase
+	body, err := deadline.CrossHost(c)
+	return err == nil && body.Phase == deadline.RecoveryClosePhase
 }
 
 // Management emits this only when a root ended before reservation: cancelled, failed at its
 // checkpoint, or stopped by a revoked participant.
 // A checkpoint alone never proves that an interrupted parent has finished.
 func (j *Journal) executeRecoveryClose(c api.ExecutionCommand) error {
-	body, err := crossHostCommand(c)
+	body, err := deadline.CrossHost(c)
 	if err != nil {
 		return err
 	}
@@ -58,7 +59,7 @@ func (j *Journal) executeRecoveryClose(c api.ExecutionCommand) error {
 			if r.Command.ParentId == nil || *r.Command.ParentId != d.ParentID {
 				return nil
 			}
-			p, err := crossHostCommand(r.Command)
+			p, err := deadline.CrossHost(r.Command)
 			metadataOpen := err == nil && p.Phase == "recovery-open" && commandGeneration(r.Command) > 0 && commandGeneration(r.Command) <= commandGeneration(c) && r.Command.Id == deployment.RecoveryOpenID(d.ParentID, c.ResourceId, commandGeneration(r.Command)) && (p.GroupHash == d.GroupHash || p.GroupHash == d.RootHash)
 			if err != nil || p.Phase != "checkpoint" && p.Phase != "checkpoint-closed" && !metadataOpen || p.Unit.Plan.Hash != body.Unit.Plan.Hash {
 				return errors.New("a parent with data-effect history requires normal completion or abort")
