@@ -1,9 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
-import {
-  defaultScheduler,
-  notifyManager,
-  type QueryClient,
-} from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { css } from "../../../styled-system/css";
@@ -442,37 +438,23 @@ export const DisabledSuccessfully: Story = {
       expect(within(stacked).getAllByRole("textbox")[0]).toHaveFocus(),
     );
     await userEvent.keyboard("123456");
-    const notifications: Array<() => void> = [];
-    const resumeNotifications = () => {
-      notifyManager.setScheduler(defaultScheduler);
-      notifications.splice(0).forEach(defaultScheduler);
-    };
-    // The dialog can close before session observers remove its trigger.
-    notifyManager.setScheduler((callback) => {
-      notifications.push(callback);
-    });
-    try {
-      await userEvent.click(
-        within(stacked).getByRole("button", { name: "Confirm" }),
-      );
-      await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
-      await waitFor(() => expect(dialog).not.toBeInTheDocument());
-      resumeNotifications();
-      await expect(
-        await canvas.findByRole("button", { name: "Set up authenticator" }),
-      ).toBeVisible();
-      await expect(
-        canvas.getByText("Two-factor authentication disabled."),
-      ).toHaveAttribute("role", "status");
-      await waitFor(() =>
-        expect(
-          canvas.getByRole("heading", { name: "Two-factor authentication" }),
-        ).toHaveFocus(),
-      );
-      await expect(sent).toEqual([{ current: { code: "123456" } }]);
-    } finally {
-      resumeNotifications();
-    }
+    await userEvent.click(
+      within(stacked).getByRole("button", { name: "Confirm" }),
+    );
+    await waitFor(() => expect(body.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await expect(
+      await canvas.findByRole("button", { name: "Set up authenticator" }),
+    ).toBeVisible();
+    await expect(
+      canvas.getByText("Two-factor authentication disabled."),
+    ).toHaveAttribute("role", "status");
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("heading", { name: "Two-factor authentication" }),
+      ).toHaveFocus(),
+    );
+    await expect(sent).toEqual([{ current: { code: "123456" } }]);
   },
 };
 export const SaveRecoveryCodes: Story = {

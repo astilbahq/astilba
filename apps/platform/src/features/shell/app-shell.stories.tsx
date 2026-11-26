@@ -164,7 +164,8 @@ export const Created: Story = {
     await expect(
       await canvas.findByRole("link", { name: "API service Open project" }),
     ).toBeVisible();
-    await expect(canvas.getByRole("status")).toHaveTextContent(
+    // The status follows the refreshed list, once the creation settles.
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
       "Project created.",
     );
   },
