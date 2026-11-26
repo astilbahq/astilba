@@ -284,11 +284,11 @@ func TestCustodyStatusReportsPendingWork(t *testing.T) {
 	}
 }
 
-// Key events are never changed or removed, and the database dates them.
+// Key events are never changed or removed, and the database dates and numbers them.
 func TestKeyEventsAreAppendOnly(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	for _, statement := range []string{"UPDATE installation_key_events SET kind='edited'", "DELETE FROM installation_key_events"} {
+	for _, statement := range []string{"UPDATE installation_key_events SET kind='edited'", "UPDATE installation_key_events SET seq=seq+1000", "DELETE FROM installation_key_events"} {
 		if _, err := f.st.Pool.Exec(ctx, statement); err == nil || !strings.Contains(err.Error(), "never changed or removed") {
 			t.Fatalf("%s: %v", statement, err)
 		}
@@ -297,11 +297,13 @@ func TestKeyEventsAreAppendOnly(t *testing.T) {
 	if err := f.st.Pool.QueryRow(ctx, "INSERT INTO installation_key_events(id,at,run_id,kind) VALUES(gen_random_uuid(),'2000-01-01',gen_random_uuid(),'dated') RETURNING at > now() - interval '1 minute'").Scan(&late); err != nil || !late {
 		t.Fatalf("a writer dated its event: %v", err)
 	}
-	// Nor does a writer order it.
-	for _, statement := range []string{"INSERT INTO installation_key_events(id,run_id,kind,seq) VALUES(gen_random_uuid(),gen_random_uuid(),'ordered',1)", "UPDATE installation_key_events SET seq=seq+1000"} {
-		if _, err := f.st.Pool.Exec(ctx, statement); err == nil {
-			t.Fatalf("%s succeeded", statement)
-		}
+	// Nor does a writer number it: a number before every other event would put it first.
+	var last, given int64
+	if err := f.st.Pool.QueryRow(ctx, "SELECT max(seq) FROM installation_key_events").Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.Pool.QueryRow(ctx, "INSERT INTO installation_key_events(id,run_id,kind,seq) VALUES(gen_random_uuid(),gen_random_uuid(),'numbered',-1) RETURNING seq").Scan(&given); err != nil || given <= last {
+		t.Fatalf("a writer numbered its event %d, after %d: %v", given, last, err)
 	}
 }
 
@@ -568,13 +570,14 @@ func TestKeyEventOperatorsAreBlankedPastRetention(t *testing.T) {
 		_, err := f.st.Pool.Exec(ctx, statement, args...)
 		return err
 	}
-	// Only the database dates events, so the test sets that aside to make old ones.
+	// Only the database dates and numbers events, so the test sets that aside to make old ones,
+	// numbering them as the database would.
 	event := func(days int) uuid.UUID {
 		t.Helper()
 		id := uuid.New()
 		for _, err := range []error{
 			exec("ALTER TABLE installation_key_events DISABLE TRIGGER installation_key_events_insert"),
-			exec(`INSERT INTO installation_key_events(id,at,run_id,kind,operator,reason) VALUES($1,now()-make_interval(days => $2),gen_random_uuid(),'rewrap-started','operator@example.test','yearly rotation')`, id, days),
+			exec(`INSERT INTO installation_key_events(id,at,run_id,kind,operator,reason,seq) VALUES($1,now()-make_interval(days => $2),gen_random_uuid(),'rewrap-started','operator@example.test','yearly rotation',nextval('installation_key_events_order'))`, id, days),
 			exec("ALTER TABLE installation_key_events ENABLE TRIGGER installation_key_events_insert"),
 		} {
 			if err != nil {
@@ -706,15 +709,18 @@ func TestKeyEventOrderMigrationNumbersEarlierEventsByTime(t *testing.T) {
 	if _, err = provider.ApplyVersion(ctx, keyEventOrderMigration, false); err != nil {
 		t.Fatal(err)
 	}
-	// Recorded in this order, dated in another, and two of them at one time.
+	// Recorded in this order, dated in another, and two of them at one time. The first is dated as
+	// the release before dates one, which also shows the guard it had is back.
 	a, b := uuid.MustParse("00000000-0000-0000-0000-00000000000a"), uuid.MustParse("00000000-0000-0000-0000-00000000000b")
 	c, d := uuid.MustParse("00000000-0000-0000-0000-00000000000c"), uuid.MustParse("00000000-0000-0000-0000-00000000000d")
+	e := uuid.MustParse("00000000-0000-0000-0000-00000000000e")
 	tx, err := f.st.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
 	for _, s := range []string{
+		"INSERT INTO installation_key_events(id,at,run_id,kind) VALUES('" + e.String() + "','2000-01-01',gen_random_uuid(),'dated')",
 		"ALTER TABLE installation_key_events DISABLE TRIGGER installation_key_events_insert",
 		"INSERT INTO installation_key_events(id,at,run_id,kind) VALUES('" + d.String() + "','2000-01-03',gen_random_uuid(),'dated')",
 		"INSERT INTO installation_key_events(id,at,run_id,kind) VALUES('" + a.String() + "','2000-01-02',gen_random_uuid(),'dated')",
@@ -743,7 +749,7 @@ func TestKeyEventOrderMigrationNumbersEarlierEventsByTime(t *testing.T) {
 	for _, e := range keyEvents(t, f, "dated") {
 		got = append(got, e.ID)
 	}
-	if want := []uuid.UUID{b, a, c, d, later}; !slices.Equal(got, want) {
+	if want := []uuid.UUID{b, a, c, d, e, later}; !slices.Equal(got, want) {
 		t.Fatalf("events %v, want %v", got, want)
 	}
 }
