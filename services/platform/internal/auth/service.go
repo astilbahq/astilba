@@ -172,17 +172,10 @@ func enrolmentLineage(ctx context.Context, q *db.Queries, p store.Principal) (uu
 
 // pendingEnrolment refuses a session that has no unexpired enrolment of its own to confirm, such as
 // one another session began, as it refuses a lapsed one. The account must not have an authenticator.
-func (s *Service) pendingEnrolment(ctx context.Context, q *db.Queries, p store.Principal, account db.Account) error {
+func (s *Service) pendingEnrolment(account db.Account, lineage uuid.UUID) error {
 	// The new authenticator's code is not the credential that confirms identity, so an
 	// enrolment that has lapsed is refused as input to try again.
-	if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) || account.TotpPendingLineage == nil {
-		return domain.Invalid("code")
-	}
-	lineage, err := enrolmentLineage(ctx, q, p)
-	if err != nil {
-		return err
-	}
-	if *account.TotpPendingLineage != lineage {
+	if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) || account.TotpPendingLineage == nil || *account.TotpPendingLineage != lineage {
 		return domain.Invalid("code")
 	}
 	return nil
@@ -247,14 +240,19 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	var account db.Account
 	var codes []string
 	// Only the session that began the enrolment may try to confirm it, so no other session can
-	// spend this limit or the credential's budgets and keep the owner from confirming. The
-	// refusal says only that this session has nothing to confirm, which its holder knows. The
-	// check is made again under the account's lock.
+	// spend the account's confirmation limit and keep the owner from confirming, and its
+	// attempts here spend no credential budget either. The refusal says only that this session
+	// has nothing to confirm, which its holder knows. The check is made again under the
+	// account's lock; the session's lineage stays the same, as it is fixed with its token.
+	lineage, err := enrolmentLineage(ctx, s.Store.Queries, p)
+	if err != nil {
+		return account, nil, err
+	}
 	enrolling, err := s.Store.Queries.AccountByID(ctx, id)
 	if err != nil {
 		return account, nil, store.IfMissing(err, domain.Unauthenticated)
 	}
-	if err = s.pendingEnrolment(ctx, s.Store.Queries, p, enrolling); err != nil {
+	if err = s.pendingEnrolment(enrolling, lineage); err != nil {
 		return account, nil, err
 	}
 	if err = s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
@@ -272,7 +270,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	}
 	err = s.withCredential(ctx, p, current, openKeys, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		account = *locked
-		if err := s.pendingEnrolment(ctx, q, p, account); err != nil {
+		if err := s.pendingEnrolment(account, lineage); err != nil {
 			return err
 		}
 		// A wrong code for the new authenticator is refused as input to try again.
