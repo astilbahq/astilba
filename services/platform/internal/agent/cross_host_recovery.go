@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
@@ -67,7 +68,7 @@ func (e *Engine) RejectCrossHostEffect(ctx context.Context, id uuid.UUID) error 
 		}
 		schedule = &stored
 	} else {
-		command, err := crossHostCommand(r.Command)
+		command, err := deadline.CrossHost(r.Command)
 		if err != nil || command.Phase != "hook" || command.Unit.Plan.Release == nil || s.Maintenance != nil || s.Phase != "hook" || s.Publication || s.Hook.OperationID != id || s.Hook.Plan.Hash != command.Unit.Plan.Hash {
 			return errors.New("only the frozen unpublished release command may be rejected")
 		}

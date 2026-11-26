@@ -84,6 +84,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Secret-Releases", "v1")
 		// v1 reads preflight.containerRanges, which staging and planning check client allowlists against.
 		w.Header().Set("Astilba-Agent-Container-Ranges", "v1")
+		// v1 marks a command delivered after its deadline expired, for agents that read the mark.
+		w.Header().Set("Astilba-Agent-Expired-Commands", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768

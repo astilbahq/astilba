@@ -182,56 +182,6 @@ func (h *nativePlacementHost) stop() {
 		h.helper = nil
 	}
 }
-func (h *nativePlacementHost) call(t *testing.T, request hostRequest) hostReply {
-	t.Helper()
-	if c := request.Command; c != nil && c.ParentId != nil {
-		if d, ok := h.checkpoints[*c.ParentId]; ok {
-			raw, _ := stablejson.Marshal(d)
-			message := jsontext.Value(raw)
-			c.RecoveryCheckpoint = &message
-			if c.EnvironmentId == uuid.Nil {
-				c.EnvironmentId = h.checkpointEnvironments[*c.ParentId]
-			}
-			body, err := crossHostCommand(*c)
-			if err == nil && body.Phase == "reserve" && body.Unit.Plan.Local.Primary && !h.checkpointReady[*c.ParentId] {
-				checkpoint := *c
-				body.Phase = "checkpoint"
-				payload, _ := stablejson.Marshal(body)
-				msg := jsontext.Value(payload)
-				checkpoint.Id, checkpoint.Generation, checkpoint.Crosshost, checkpoint.PlanHash = uuid.New(), c.Generation-1, &msg, body.Digest()
-				h.command(t, checkpoint)
-				h.checkpointReady[*c.ParentId] = true
-			}
-		}
-	}
-	if err := stablejson.Encode(h.input, request); err != nil {
-		t.Fatal(err)
-	}
-	var reply hostReply
-	if err := json.UnmarshalDecode(h.output, &reply); err != nil {
-		t.Fatalf("host process response: %v", err)
-	}
-	if reply.Error != "" {
-		t.Fatal(reply.Error)
-	}
-	return reply
-}
-func (h *nativePlacementHost) command(t *testing.T, c api.ExecutionCommand) api.AgentReport {
-	t.Helper()
-	reply := h.call(t, hostRequest{Command: &c})
-	if reply.Report == nil {
-		t.Fatal("missing host receipt")
-	}
-	if reply.Report.State != "succeeded" {
-		for _, args := range [][]string{{"wg", "show"}, {"ip", "route"}, {"nft", "list", "ruleset"}} {
-			out, _ := exec.Command("nsenter", append([]string{"--net=/run/netns/" + h.namespace}, args...)...).CombinedOutput()
-			t.Logf("host fixture %s: %s", args[0], out)
-		}
-		t.Fatalf("host phase %s: %s", c.Kind, reply.Report.Note)
-	}
-	h.call(t, hostRequest{Acknowledge: reply.Report})
-	return *reply.Report
-}
 func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost) {
 	t.Helper()
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {

@@ -21,7 +21,7 @@ import (
 )
 
 // giteaImage is the Gitea the Git provider experiment runs, so both check one release.
-const giteaImage = "gitea/gitea:28.2.0@sha256:30777c91280d973fa02be48b1ade735bd6859e8f6f7af3b4444d519437852504"
+const giteaImage = "gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d"
 
 // realGitea is a disposable Gitea with one private repository, owner/app. Its webhooks reach
 // a receiver beside it on their own Docker network, which keeps what Gitea sent for the test

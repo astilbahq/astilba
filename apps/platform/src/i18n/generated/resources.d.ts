@@ -266,6 +266,7 @@ export default interface Resources {
       "useRecovery": "Use a recovery code"
     },
     "validation": {
+      "codeRateLimited": "Too many attempts. Try again later. If your authenticator code is still refused, use a recovery code.",
       "codeRequired": "Enter the six-digit code from your authenticator app.",
       "emailInvalid": "Enter a valid email address.",
       "emailRequired": "Enter your email address.",
@@ -296,6 +297,7 @@ export default interface Resources {
       "setupConflict": "This setup changed in another session. Check the current state and try again.",
       "signupAccount": "Sign in with the invited email address before accepting this invitation.",
       "signupUnavailable": "This invitation cannot create a workspace right now. Try again or contact the person who invited you.",
+      "stepUpCodeRateLimited": "Too many attempts. Try again later, or sign out and sign in again. If your authenticator code is still refused, use a recovery code.",
       "stepUpRateLimited": "Too many attempts. Try again later, or sign out and sign in again to continue.",
       "temporarilyBusy": "Too many sign-ins are in progress. Try again in a few seconds.",
       "workspaceInvalid": "Enter a workspace name without line breaks or control characters.",

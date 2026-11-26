@@ -10,6 +10,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -154,7 +155,7 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	// Any other command runs again from the start, whether or not it was stopped part way: an
 	// install's repository steps are idempotent, and a schedule an install or disable writes is
 	// committed with the command's success.
-	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && deadline.Passed(c) {
 		if r.Checkpoint != "accepted" {
 			return e.finish(c.Id, "cancelled", "Cancelled. No schedule was changed.")
 		}

@@ -2994,10 +2994,12 @@ export interface components {
             recoveryRestore?: boolean;
             backups?: boolean;
             upgrades?: boolean;
-            /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
+            /** @description Agent accepts visual cancellation without re-sending hydrated credentials. Management no longer reads it, and sends no stop or refusal with values whatever an agent advertises. */
             credentialFreeVisualCancel?: boolean;
             /** @description Agent acknowledges each command's secret release once it is journaled, and accepts a command without values only when it already holds them. Management releases values only to agents that advertise this. */
             acknowledgesReleases?: boolean;
+            /** @description Agent reads ExecutionCommand.expired, management's verdict that a command's deadline has passed, and applies it whatever its own clock says. Management marks a late command expired only for agents that advertise this. Advertised only after Astilba-Agent-Expired-Commands v1. */
+            expiredCommands?: boolean;
             /** @description Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1. */
             machineBoundRotation?: boolean;
             /**
@@ -3272,6 +3274,8 @@ export interface components {
             deadline: string;
             release: components["schemas"]["AgentRelease"] | null;
             cancelRequested: boolean;
+            /** @description Management's clock had passed the command's deadline when it delivered the command. The agent treats the deadline as passed whatever its own clock says. It says how the command was delivered, not what it is, and is sent only to agents that advertise expiredCommands. */
+            expired?: boolean;
             visual?: components["schemas"]["VisualPayload"];
             pipeline?: components["schemas"]["PipelineCommand"];
             /** @description A BackupCommand for the backup and schedule kinds, and a BackupRecovery for the restore kind. */
