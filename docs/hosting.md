@@ -45,7 +45,7 @@ configuration through an owner-only environment file outside source control:
 | `ASTILBA_APPLICATION_DOMAIN` | Optional. Base domain for generated application names; empty turns them off. Hosted installations need it on the Public Suffix List. See [generated application names](#generated-application-names). |
 | `ASTILBA_TRUSTED_PROXIES` | Optional comma-separated proxy IP CIDRs, for example `192.0.2.10/32,2001:db8::10/128`. Empty by default; forwarding headers are then ignored. |
 | `ASTILBA_SMTP_ADDRESS`, `ASTILBA_SMTP_MODE`, `ASTILBA_SMTP_FROM` | SMTP delivery settings. Use `tls` or `starttls` outside local development. |
-| `ASTILBA_SMTP_USERNAME`, `ASTILBA_SMTP_PASSWORD_FILE` | Optional SMTP credentials: the username, and a file holding the password. |
+| `ASTILBA_SMTP_USERNAME`, `ASTILBA_SMTP_PASSWORD_FILE` | Optional SMTP credentials: the username, and a file holding the password. Set both or neither. |
 
 Generate the keyring once with `astilba keygen --out /private/keyring.json` in a
 private writable directory, then mount it read-only for normal operation. Preserve
@@ -98,10 +98,11 @@ which the PostgreSQL driver reads by itself; put the password in the URL in
 A file must be:
 
 - a regular file, or a symbolic link to one;
-- readable and writable only by its owner, mode `0400` or `0600`, and owned by the user
-  management runs as, UID 65532 in the image. A file that its group or anyone else can read is
-  refused, as the keyring is. A secret volume that grants access by group, as Kubernetes does
-  with `fsGroup`, is therefore refused;
+- readable and writable only by its owner, mode `0400` or `0600`. A file that its group or
+  anyone else can read is refused, as the keyring is, so a secret volume that grants access by
+  group, as Kubernetes does with `fsGroup`, is refused too. Management checks the mode, not the
+  owner: make the owner the user management runs as, UID 65532 in the image, or it cannot read
+  the file;
 - at most 64 KiB, and not empty.
 
 One trailing newline, `\n` or `\r\n`, is removed, so a file written by an editor or by `echo`

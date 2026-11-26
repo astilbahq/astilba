@@ -196,8 +196,17 @@ try {
   release.signature = sign(null, Buffer.from(message), keys.privateKey).toString("base64");
   await writeFile(join(releases, release.sha256), artifact, { mode: 0o600 });
   await writeFile(join(releases, "fixture.json"), JSON.stringify(release), { mode: 0o600 });
+  // Credentials come only from what this fixture sets, never the caller's shell: hosting refuses
+  // any in the environment, and a stray _FILE would clash with the fixture's own.
+  const clearedSecrets = Object.fromEntries(
+    ["ASTILBA_DATABASE_URL", "ASTILBA_DNS_CLOUDFLARE_TOKEN", "ASTILBA_SMTP_PASSWORD", "ASTILBA_STRIPE_SECRET", "ASTILBA_STRIPE_WEBHOOK_SECRET", "ASTILBA_GITHUB_APP_CLIENT_SECRET", "ASTILBA_GITHUB_APP_WEBHOOK_SECRET", "ASTILBA_GITHUB_APP_PRIVATE_KEY"]
+      .flatMap((name) => [name, `${name}_FILE`])
+      .concat("PGPASSWORD", "PGSSLPASSWORD")
+      .map((name) => [name, ""]),
+  );
   const env = {
     ...process.env,
+    ...clearedSecrets,
     ASTILBA_APPLICATION_DOMAIN: "apps.example.test",
     ASTILBA_AGENT_RELEASES: releases,
     ASTILBA_AGENT_RELEASE_KEY: releaseKey,
@@ -276,7 +285,7 @@ try {
   }
   start(binary,["serve"],hostedEnv);
   await mkdir(dirname(hostedInfo),{recursive:true});
-  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_DATABASE_URL_FILE","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
+  const operatorEnv={...clearedSecrets,...Object.fromEntries(["ASTILBA_DATABASE_URL_FILE","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]))};
   ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
   const waitReady = async (port) => {

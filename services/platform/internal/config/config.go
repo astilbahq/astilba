@@ -143,31 +143,24 @@ func Load() (Config, error) {
 }
 
 // loadSecrets reads every secret setting, so each start-up refuses a hosted secret in the
-// environment, whichever command it runs. The Stripe keys are read only when hosted, the only
-// time they are used.
+// environment, whichever command it runs.
 func (c *Config) loadSecrets() error {
 	if c.Hosted {
 		if err := refuseLibraryPasswords(); err != nil {
 			return err
 		}
 	}
-	var err error
-	read := func(s secretSetting, into *string) {
-		if err == nil {
-			*into, err = readSecret(s, c.Hosted)
+	for _, s := range secretSettings {
+		if s.HostedOnly && !c.Hosted {
+			continue
 		}
+		value, err := readSecret(s, c.Hosted)
+		if err != nil {
+			return err
+		}
+		*s.field(c) = value
 	}
-	read(secretDatabaseURL, &c.DatabaseURL)
-	read(secretDNSCloudflareToken, &c.ApplicationDNS.Token)
-	read(secretSMTPPassword, &c.SMTP.Password)
-	if c.Hosted {
-		read(secretStripeSecret, &c.Hosting.SecretKey)
-		read(secretStripeWebhookSecret, &c.Hosting.WebhookSecret)
-	}
-	read(secretGitHubClientSecret, &c.GitHubApp.ClientSecret)
-	read(secretGitHubWebhookSecret, &c.GitHubApp.WebhookSecret)
-	read(secretGitHubPrivateKey, &c.GitHubApp.PrivateKey)
-	return err
+	return nil
 }
 
 // loadGitHubApp reads the GitHub App's identity; loadSecrets adds its secrets. githubapp.New

@@ -10,21 +10,18 @@ import (
 	"time"
 )
 
-// secretFields says where each secret setting lands in Config. A setting added to secretSettings
-// without a row here fails TestEverySecretSettingIsCovered.
-var secretFields = map[string]struct {
-	get func(Config) string
-	// hostedOnly settings are read only when hosted.
-	hostedOnly bool
-}{
-	"ASTILBA_DATABASE_URL":              {get: func(c Config) string { return c.DatabaseURL }},
-	"ASTILBA_DNS_CLOUDFLARE_TOKEN":      {get: func(c Config) string { return c.ApplicationDNS.Token }},
-	"ASTILBA_SMTP_PASSWORD":             {get: func(c Config) string { return c.SMTP.Password }},
-	"ASTILBA_STRIPE_SECRET":             {get: func(c Config) string { return c.Hosting.SecretKey }, hostedOnly: true},
-	"ASTILBA_STRIPE_WEBHOOK_SECRET":     {get: func(c Config) string { return c.Hosting.WebhookSecret }, hostedOnly: true},
-	"ASTILBA_GITHUB_APP_CLIENT_SECRET":  {get: func(c Config) string { return c.GitHubApp.ClientSecret }},
-	"ASTILBA_GITHUB_APP_WEBHOOK_SECRET": {get: func(c Config) string { return c.GitHubApp.WebhookSecret }},
-	"ASTILBA_GITHUB_APP_PRIVATE_KEY":    {get: func(c Config) string { return c.GitHubApp.PrivateKey }},
+// secretFields says where each secret setting must land in Config, and so which settings are
+// secret. A setting missing from either this or secretSettings fails
+// TestEverySecretSettingIsCovered.
+var secretFields = map[string]func(Config) string{
+	"ASTILBA_DATABASE_URL":              func(c Config) string { return c.DatabaseURL },
+	"ASTILBA_DNS_CLOUDFLARE_TOKEN":      func(c Config) string { return c.ApplicationDNS.Token },
+	"ASTILBA_SMTP_PASSWORD":             func(c Config) string { return c.SMTP.Password },
+	"ASTILBA_STRIPE_SECRET":             func(c Config) string { return c.Hosting.SecretKey },
+	"ASTILBA_STRIPE_WEBHOOK_SECRET":     func(c Config) string { return c.Hosting.WebhookSecret },
+	"ASTILBA_GITHUB_APP_CLIENT_SECRET":  func(c Config) string { return c.GitHubApp.ClientSecret },
+	"ASTILBA_GITHUB_APP_WEBHOOK_SECRET": func(c Config) string { return c.GitHubApp.WebhookSecret },
+	"ASTILBA_GITHUB_APP_PRIVATE_KEY":    func(c Config) string { return c.GitHubApp.PrivateKey },
 }
 
 // clearSecrets unsets both forms of every secret setting, and the driver's passwords, so the
@@ -93,7 +90,7 @@ func TestEverySecretSettingIsCovered(t *testing.T) {
 // the environment form by name and takes the file.
 func TestEachSecretSetting(t *testing.T) {
 	for _, s := range secretSettings {
-		field := secretFields[s.Name]
+		get := secretFields[s.Name]
 		value := "value-of-" + strings.ToLower(s.Name)
 		if s.Multiline {
 			value = "-----BEGIN TEST-----\n" + value + "\n-----END TEST-----"
@@ -107,27 +104,27 @@ func TestEachSecretSetting(t *testing.T) {
 				// Stripe is all or nothing.
 				t.Setenv("ASTILBA_STRIPE_PRICE", "price_test")
 				for _, other := range []secretSetting{secretStripeSecret, secretStripeWebhookSecret} {
-					if other != s {
+					if other.Name != s.Name {
 						t.Setenv(other.File(), secretFile(t, "other"))
 					}
 				}
 			}
 		}
 		t.Run(s.Name, func(t *testing.T) {
-			if !field.hostedOnly {
+			if !s.HostedOnly {
 				t.Run("self-hosted environment", func(t *testing.T) {
 					prepare(t, false)
 					t.Setenv(s.Name, value)
-					if c, err := Load(); err != nil || field.get(c) != value {
-						t.Fatalf("got %q, error %v", field.get(c), err)
+					if c, err := Load(); err != nil || get(c) != value {
+						t.Fatalf("got %q, error %v", get(c), err)
 					}
 				})
 				t.Run("self-hosted file", func(t *testing.T) {
 					prepare(t, false)
 					t.Setenv(s.Name, "")
 					t.Setenv(s.File(), secretFile(t, value+"\n"))
-					if c, err := Load(); err != nil || field.get(c) != value {
-						t.Fatalf("got %q, error %v", field.get(c), err)
+					if c, err := Load(); err != nil || get(c) != value {
+						t.Fatalf("got %q, error %v", get(c), err)
 					}
 				})
 				t.Run("self-hosted both", func(t *testing.T) {
@@ -155,8 +152,8 @@ func TestEachSecretSetting(t *testing.T) {
 			t.Run("hosted file", func(t *testing.T) {
 				prepare(t, true)
 				t.Setenv(s.File(), secretFile(t, value+"\n"))
-				if c, err := Load(); err != nil || field.get(c) != value {
-					t.Fatalf("got %q, error %v", field.get(c), err)
+				if c, err := Load(); err != nil || get(c) != value {
+					t.Fatalf("got %q, error %v", get(c), err)
 				}
 			})
 		})
@@ -214,7 +211,7 @@ func TestSecretFileIsReadStrictly(t *testing.T) {
 		{name: "two newlines", contents: secret + "\n\n", mode: 0o600, refused: "single line"},
 		{name: "a carriage return", contents: secret + "\r", mode: 0o600, refused: "single line"},
 		{name: "two lines", contents: secret + "\nmore\n", mode: 0o600, refused: "single line"},
-		{name: "a NUL", contents: secret + "\x00", mode: 0o600, refused: "single line"},
+		{name: "a NUL", contents: secret + "\x00", mode: 0o600, refused: "NUL byte"},
 		{name: "leading and trailing spaces kept", contents: " " + secret + " \n", mode: 0o600, want: " " + secret + " "},
 		{name: "empty", contents: "", mode: 0o600, refused: "empty file"},
 		{name: "only a newline", contents: "\n", mode: 0o600, refused: "empty file"},
@@ -313,6 +310,10 @@ func TestSecretValuesAreOneLine(t *testing.T) {
 	t.Setenv("ASTILBA_GITHUB_APP_PRIVATE_KEY_FILE", secretFile(t, key+"\n"))
 	if c, err := Load(); err != nil || c.GitHubApp.PrivateKey != key {
 		t.Fatalf("PEM key %q, error %v", c.GitHubApp.PrivateKey, err)
+	}
+	t.Setenv("ASTILBA_GITHUB_APP_PRIVATE_KEY_FILE", secretFile(t, key+"\x00"))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ASTILBA_GITHUB_APP_PRIVATE_KEY must not contain a NUL byte") {
+		t.Fatalf("PEM key with a NUL: %v", err)
 	}
 }
 

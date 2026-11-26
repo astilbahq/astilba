@@ -21,10 +21,10 @@ services:
       ASTILBA_SMTP_ADDRESS: ${ASTILBA_SMTP_ADDRESS:-}
       ASTILBA_SMTP_MODE: ${ASTILBA_SMTP_MODE:-starttls}
       ASTILBA_SMTP_FROM: ${ASTILBA_SMTP_FROM:-}
-      ASTILBA_SMTP_USERNAME: ${ASTILBA_SMTP_USERNAME:-}
       # Uncomment each optional credential you use here, under this service's secrets and under
-      # the top-level secrets.
+      # the top-level secrets. The SMTP username and password go together.
       # ASTILBA_DNS_CLOUDFLARE_TOKEN_FILE: /run/secrets/dns-cloudflare-token
+      # ASTILBA_SMTP_USERNAME: ${ASTILBA_SMTP_USERNAME:?Set the SMTP username}
       # ASTILBA_SMTP_PASSWORD_FILE: /run/secrets/smtp-password
     secrets:
       - database-url

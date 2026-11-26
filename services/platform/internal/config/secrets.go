@@ -17,23 +17,27 @@ type secretSetting struct {
 	// Multiline allows line breaks inside the value, as a PEM key has. Any other value is one
 	// line, and a line break in it is refused rather than sent to the provider.
 	Multiline bool
+	// HostedOnly settings are read only when hosted, the only time they are used.
+	HostedOnly bool
+	// field is where Load puts the value.
+	field func(*Config) *string
 }
 
 func (s secretSetting) File() string { return s.Name + "_FILE" }
 
 var (
-	secretDatabaseURL         = secretSetting{Name: "ASTILBA_DATABASE_URL"}
-	secretDNSCloudflareToken  = secretSetting{Name: "ASTILBA_DNS_CLOUDFLARE_TOKEN"}
-	secretSMTPPassword        = secretSetting{Name: "ASTILBA_SMTP_PASSWORD"}
-	secretStripeSecret        = secretSetting{Name: "ASTILBA_STRIPE_SECRET"}
-	secretStripeWebhookSecret = secretSetting{Name: "ASTILBA_STRIPE_WEBHOOK_SECRET"}
-	secretGitHubClientSecret  = secretSetting{Name: "ASTILBA_GITHUB_APP_CLIENT_SECRET"}
-	secretGitHubWebhookSecret = secretSetting{Name: "ASTILBA_GITHUB_APP_WEBHOOK_SECRET"}
-	secretGitHubPrivateKey    = secretSetting{Name: "ASTILBA_GITHUB_APP_PRIVATE_KEY", Multiline: true}
+	secretDatabaseURL         = secretSetting{Name: "ASTILBA_DATABASE_URL", field: func(c *Config) *string { return &c.DatabaseURL }}
+	secretDNSCloudflareToken  = secretSetting{Name: "ASTILBA_DNS_CLOUDFLARE_TOKEN", field: func(c *Config) *string { return &c.ApplicationDNS.Token }}
+	secretSMTPPassword        = secretSetting{Name: "ASTILBA_SMTP_PASSWORD", field: func(c *Config) *string { return &c.SMTP.Password }}
+	secretStripeSecret        = secretSetting{Name: "ASTILBA_STRIPE_SECRET", HostedOnly: true, field: func(c *Config) *string { return &c.Hosting.SecretKey }}
+	secretStripeWebhookSecret = secretSetting{Name: "ASTILBA_STRIPE_WEBHOOK_SECRET", HostedOnly: true, field: func(c *Config) *string { return &c.Hosting.WebhookSecret }}
+	secretGitHubClientSecret  = secretSetting{Name: "ASTILBA_GITHUB_APP_CLIENT_SECRET", field: func(c *Config) *string { return &c.GitHubApp.ClientSecret }}
+	secretGitHubWebhookSecret = secretSetting{Name: "ASTILBA_GITHUB_APP_WEBHOOK_SECRET", field: func(c *Config) *string { return &c.GitHubApp.WebhookSecret }}
+	secretGitHubPrivateKey    = secretSetting{Name: "ASTILBA_GITHUB_APP_PRIVATE_KEY", Multiline: true, field: func(c *Config) *string { return &c.GitHubApp.PrivateKey }}
 )
 
-// secretSettings is every setting Load reads that holds a credential. Each is read with
-// readSecret and nowhere else.
+// secretSettings is every setting that holds a credential. Load reads each with readSecret, and
+// no credential any other way.
 var secretSettings = []secretSetting{
 	secretDatabaseURL, secretDNSCloudflareToken, secretSMTPPassword, secretStripeSecret,
 	secretStripeWebhookSecret, secretGitHubClientSecret, secretGitHubWebhookSecret, secretGitHubPrivateKey,
@@ -67,7 +71,10 @@ func readSecret(s secretSetting, hosted bool) (string, error) {
 	case value == "":
 		return "", nil
 	}
-	if strings.ContainsRune(value, 0) || !s.Multiline && strings.ContainsAny(value, "\r\n") {
+	if strings.ContainsRune(value, 0) {
+		return "", fmt.Errorf("%s must not contain a NUL byte", s.Name)
+	}
+	if !s.Multiline && strings.ContainsAny(value, "\r\n") {
 		return "", fmt.Errorf("%s must be a single line", s.Name)
 	}
 	return value, nil
