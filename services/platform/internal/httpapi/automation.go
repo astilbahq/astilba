@@ -37,14 +37,15 @@ func bearerOperations(spec *openapi3.T) map[string]bool {
 	return out
 }
 
-// automationRequest authenticates a bearer for an operation that declares automationBearer. It
-// refuses every other operation before reading the token, as nothing there accepts one.
+// automationRequest authenticates a bearer. An operation that does not declare automationBearer
+// refuses it as forbidden before its handler runs, as the allowlist refuses one the credential
+// may not call, since its handler may rely on the browser session.
 func (s *Server) automationRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		values := r.Header.Values("Authorization")
 		parts := strings.Fields(r.Header.Get("Authorization"))
-		if len(values) != 1 || len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || !s.bearerOperations[r.Method+" "+requestRoute(r)] {
+		if len(values) != 1 || len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			s.fail(w, r, domain.Unauthenticated)
 			return
 		}
@@ -57,6 +58,10 @@ func (s *Server) automationRequest(next http.Handler) http.Handler {
 		p, err := s.Store.AuthenticateAutomation(r.Context(), parts[1])
 		if err != nil {
 			s.fail(w, r, err)
+			return
+		}
+		if !s.bearerOperations[r.Method+" "+requestRoute(r)] {
+			s.fail(w, r, domain.Forbidden)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 150000)

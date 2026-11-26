@@ -156,8 +156,9 @@ func TestAutomationScopeLifecycleAndAttribution(t *testing.T) {
 }
 
 // A credential reaches only the operations that declare it. Every other API operation takes a
-// browser session or nothing, and refuses a live credential before its handler, which may rely on
-// the session the browser path loads, such as logout's.
+// browser session or nothing, and refuses a live credential as forbidden before its handler, which
+// may rely on the session the browser path loads, such as logout's. A credential that is not live
+// is refused as unauthenticated there, as everywhere.
 func TestAutomationCredentialReachesOnlyItsOperations(t *testing.T) {
 	f := setup(t)
 	b, _, _, path := automationEnvironment(t, f)
@@ -182,8 +183,8 @@ func TestAutomationCredentialReachesOnlyItsOperations(t *testing.T) {
 			}
 			target := parameter.ReplaceAllStringFunc(template, func(string) string { return uuid.NewString() })
 			var failure api.Error
-			bearerCall(t, f, *grant.Token, method, target, nil, 401, &failure)
-			if failure.Code != "unauthenticated" {
+			bearerCall(t, f, *grant.Token, method, target, nil, 403, &failure)
+			if failure.Code != "forbidden" {
 				t.Fatalf("%s %s refused a credential as %q", method, template, failure.Code)
 			}
 			refused = append(refused, op.OperationID)
@@ -197,7 +198,8 @@ func TestAutomationCredentialReachesOnlyItsOperations(t *testing.T) {
 	if strings.Contains(f.log.String(), "request panic") {
 		t.Fatal("a handler ran for a credential it cannot serve")
 	}
-	// Refusing never reads the token, so the credential still works where it is declared.
+	bearerCall(t, f, "not a credential", "POST", "/api/v1/auth/logout", nil, 401, nil)
+	// Refusing spends nothing of the credential, which still works where it is declared.
 	bearerCall(t, f, *grant.Token, "GET", "/api/v1/automation/context", nil, 200, nil)
 	if v := b.session(); v.User == nil || v.User.Id != f.owner {
 		t.Fatal("the owner's browser session did not survive")

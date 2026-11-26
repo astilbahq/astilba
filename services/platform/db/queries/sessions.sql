@@ -60,7 +60,10 @@ FOR SHARE OF a FOR KEY SHARE OF s;
 
 -- name: BrowserSessionLineage :one
 -- unscoped: the hashed browser session token is the credential.
-SELECT lineage FROM sessions WHERE token = @token AND expiry > clock_timestamp();
+-- Admits the session as BrowserSessionAdmission does and returns its lineage.
+-- Keep the validity predicate identical to BrowserSessionAdmission.
+SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
+WHERE a.id = @account_id AND a.auth_version = @auth_version;
 
 -- name: SessionLineageLive :one
 -- unscoped: a lineage is one browser's chain of renewed session tokens.

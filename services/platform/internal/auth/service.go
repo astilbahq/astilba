@@ -163,10 +163,11 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 // enrolment lasts.
 var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out your other sessions."}
 
-// enrolmentLineage is the lineage of the browser session p presents, which an enrolment is bound
-// to: it stays the same when the session renews its token, as confirming credentials does.
+// enrolmentLineage admits the browser session p presents, refusing one that a credential change
+// or logout has ended, and returns its lineage, which an enrolment is bound to: it stays the same
+// when the session renews its token, as confirming credentials does.
 func enrolmentLineage(ctx context.Context, q *db.Queries, p store.Principal) (uuid.UUID, error) {
-	lineage, err := q.BrowserSessionLineage(ctx, p.SessionHash)
+	lineage, err := q.BrowserSessionLineage(ctx, db.BrowserSessionLineageParams{Token: p.SessionHash, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion})
 	return lineage, store.IfMissing(err, domain.Unauthenticated)
 }
 
@@ -242,8 +243,9 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	// Only the session that began the enrolment may try to confirm it, so no other session can
 	// spend the account's confirmation limit and keep the owner from confirming, and its
 	// attempts here spend no credential budget either. The refusal says only that this session
-	// has nothing to confirm, which its holder knows. The check is made again under the
-	// account's lock; the session's lineage stays the same, as it is fixed with its token.
+	// has nothing to confirm, which its holder knows. A session that a credential change or
+	// logout has ended is refused as such first. The check is made again under the account's
+	// lock; the session's lineage stays the same, as it is fixed with its token.
 	lineage, err := enrolmentLineage(ctx, s.Store.Queries, p)
 	if err != nil {
 		return account, nil, err
