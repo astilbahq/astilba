@@ -360,6 +360,16 @@ answered as usual and sends nothing. A delivery that fails does not count, and a
 email with no account counts for nothing. Each link replaces the one before, so use the newest.
 Completing a reset clears the shared limit and makes that browser a known one.
 
+With two-factor authentication, an account takes 5 codes in 5 minutes at sign-in. Wrong
+authenticator codes also spend a daily allowance of 20, which confirming identity in a signed-in
+session shares. Signing in again does not restart it. Once it is spent, authenticator codes are
+refused on every browser until the day's window ends, even a right one. Recovery codes are still
+accepted, so the holder can sign in with one, which also ends every other session. Turning
+two-factor authentication off with a recovery code and enrolling again, or the operator's
+`astilba reset-mfa` followed by enrolling, starts a new allowance. Someone spending the allowance
+at sign-in knows the password, so the holder should reset it. Someone spending it by confirming
+identity holds one of the account's sessions, which the recovery code ends.
+
 There is no installation-wide limit, because anyone could spend it to refuse everyone. Trying a
 password across many accounts is bounded by each account's limit, each address's limit and how
 fast a replica can hash.
