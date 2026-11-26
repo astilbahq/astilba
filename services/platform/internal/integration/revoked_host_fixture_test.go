@@ -450,12 +450,17 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 	return report, true
 }
 
-// fixtureRecovery is what an agent reports after restoring the snapshot a recovery names: a
-// manifest read out of it that the policy admits.
+// fixtureRecovery is what a current agent reports after restoring the snapshot a recovery names: a
+// manifest read out of it that the policy admits, and, for a database, the owner model its
+// restored cluster holds.
 func fixtureRecovery(r backup.Recovery) backup.RecoveryResult {
 	p := r.Installation.Policy
 	m := backup.Manifest{Recipe: backup.Recipe, PolicyID: p.ID, RunID: uuid.New(), EnvironmentID: p.EnvironmentID, ResourceID: p.ResourceID, Method: p.Method, CreatedAt: time.Now().UTC().Truncate(time.Second), Bytes: 4096, SHA256: strings.Repeat("d", 64), Roles: []backup.Role{}, Extensions: []string{}}
-	return backup.RecoveryResult{Snapshot: r.Snapshot, TargetID: r.TargetID, Manifest: m}
+	out := backup.RecoveryResult{Snapshot: r.Snapshot, TargetID: r.TargetID, Manifest: m}
+	if p.Method == "postgres-logical" {
+		out.RestoreRoles = domain.PostgresOwner
+	}
+	return out
 }
 
 // note records that the host received a phase and says whether it will answer.

@@ -339,8 +339,13 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		if got.Manifest.DumpSettings != nil {
 			t.Fatal("the dump's settings were reported to management")
 		}
-		if v, err := docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(domain.PostgresImage) {
-			t.Fatal("the target does not record its PostgreSQL major: ", err)
+		// A cutover refuses an owner-model database a restore that doesn't say its cluster's
+		// database user isn't the superuser.
+		if got.RestoreRoles != domain.PostgresOwner {
+			t.Fatalf("the restore reported roles %q", got.RestoreRoles)
+		}
+		if v, err := docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(domain.PostgresImage) || v.Volume.Labels[labelPostgresRoles] != postgresOwnerRoles {
+			t.Fatal("the target does not record its PostgreSQL major and role model: ", err)
 		}
 		created, err := docker.ContainerCreate(ctx, client.ContainerCreateOptions{Config: &container.Config{Image: domain.PostgresImage, Env: []string{"POSTGRES_PASSWORD=" + password}}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(target), Target: domain.PostgresMount(domain.PostgresImage)}}}})
 		if err != nil {
@@ -381,7 +386,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		if !*inspected {
 			t.Fatal("the restore's container was not inspected")
 		}
-		if got := result(t, r); got.Snapshot != files.snapshot || got.Manifest.SHA256 != files.manifest.SHA256 {
+		if got := result(t, r); got.Snapshot != files.snapshot || got.Manifest.SHA256 != files.manifest.SHA256 || got.RestoreRoles != "" {
 			t.Fatalf("restore reported another snapshot: %+v", got)
 		}
 		view := files.in.Policy

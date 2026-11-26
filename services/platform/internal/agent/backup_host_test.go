@@ -244,8 +244,8 @@ func nativeBackupJourney(t *testing.T, e *Engine, p deployment.Plan, password st
 		t.Fatalf("fresh restore: %v", err)
 	}
 	restored := s.Runs[len(s.Runs)-1]
-	if !restored.Verified || restored.State != "succeeded" || restored.TargetID != target {
-		t.Fatalf("restore not verified: %+v", restored)
+	if !restored.Verified || restored.State != "succeeded" || restored.TargetID != target || restored.RestoreRoles != domain.PostgresOwner {
+		t.Fatalf("restore not verified in the owner model: %+v", restored)
 	}
 	if _, err = e.volumePath(ctx, policy, target); err != nil {
 		t.Fatal(err)

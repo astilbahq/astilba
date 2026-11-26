@@ -145,7 +145,7 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 		}
 	}
 	manifest := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg, Method: "postgres-logical", Image: retired18}
-	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, RestoreImage: image, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
+	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, RestoreImage: image, RestoreRoles: domain.PostgresOwner, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
 	// A verified restore an agent from before the release rule made of an archive another
 	// PostgreSQL major wrote: its target was initialised with that major, which the deployed
 	// database cannot open.
