@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -92,8 +91,7 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 		if !errors.As(err, &unread) {
 			return err
 		}
-		failure := &sourceFailure{err: unread.err}
-		errors.As(unread.err, &failure)
+		failure := readFailure(unread)
 		wait, again := time.Duration(0), false
 		cause, transient := registryFailure(failure.err)
 		if transient {
@@ -112,6 +110,17 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 			return errPullCancelled
 		}
 	}
+}
+
+// readFailure is the source and failure err, a failure to read an image, names.
+func readFailure(err error) *sourceFailure {
+	var unread *imageArchiveUnread
+	if !errors.As(err, &unread) {
+		return &sourceFailure{err: err}
+	}
+	failure := &sourceFailure{err: unread.err}
+	errors.As(unread.err, &failure)
+	return failure
 }
 
 // waitUnless waits for wait and reports true, or false as soon as ctx ends or cancelled.
@@ -268,16 +277,28 @@ func (a *registryAnswers) lastAnswer() registryAnswer {
 }
 
 // answerTransport records a source's answers, and the wait a busy or unavailable one asks for. It
-// ends an answer whose source stops sending it for idle, see idleAnswer.
+// ends an answer that its source sends too slowly, see slowAnswer.
 type answerTransport struct {
 	*http.Transport
-	answers *registryAnswers
-	idle    time.Duration
+	answers  *registryAnswers
+	progress registryProgress
 }
 
-// defaultRegistryIdle is how long the agent waits for more of an answer a registry has begun to
-// send. TCP keepalives notice a peer that has gone, but not one that is there and sends nothing.
-const defaultRegistryIdle = 30 * time.Second
+// registryProgress is how much of an answer a source must send in each window of time the agent
+// spends waiting for it. TCP keepalives notice a peer that has gone, but not one that is there and
+// sends nothing, or a byte now and then.
+type registryProgress struct {
+	window time.Duration
+	least  int64
+}
+
+// defaultRegistryProgress asks for 256 KiB in every 30 seconds spent waiting, about 70 kbit/s.
+// An image of 100 MB takes over three hours at that rate, so a link slower still can't pull
+// images in practice, and one that keeps up with it passes however much else shares it: only
+// time the agent waits counts, so Docker writing slowly never ends an answer, and a window
+// that starts fast passes on what it got. A source that stops sending is ended within two
+// windows, and an answer that ends sooner, such as a manifest, is never measured.
+var defaultRegistryProgress = registryProgress{window: 30 * time.Second, least: 256 << 10}
 
 func (t *answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithCancelCause(req.Context())
@@ -294,12 +315,12 @@ func (t *answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		cancel(nil)
 		return res, err
 	}
-	res.Body = newIdleAnswer(res.Body, t.idle, cancel)
+	res.Body = newSlowAnswer(res.Body, t.progress, cancel)
 	return res, nil
 }
 
-// errAnswerStalled is a source that stopped sending an answer it had begun, for the transport's
-// idle time. It is a timeout, which the agent reads again after.
+// errAnswerStalled is a source that sent less of an answer it had begun than registryProgress
+// asks for. It is a timeout, which the agent reads again after.
 var errAnswerStalled error = answerStalled{}
 
 type answerStalled struct{}
@@ -307,39 +328,90 @@ type answerStalled struct{}
 func (answerStalled) Error() string { return "the registry stopped sending its answer" }
 func (answerStalled) Timeout() bool { return true }
 
-// idleAnswer is an answer's body that ends its request, failing with errAnswerStalled, once a read
-// has waited idle for the source to send anything. Only time spent waiting in a read counts, so a
-// reader that is slow to ask for more, as Docker is while it writes, never ends it.
-type idleAnswer struct {
-	body    io.ReadCloser
-	idle    time.Duration
-	cancel  context.CancelCauseFunc
-	timer   *time.Timer
-	stalled atomic.Bool
+// slowAnswer is an answer's body that ends its request, failing with errAnswerStalled, once its
+// source has sent less than progress asks for in a window of time spent waiting in reads.
+type slowAnswer struct {
+	body     io.ReadCloser
+	progress registryProgress
+	cancel   context.CancelCauseFunc
+	// mu guards what follows, which the timer also reads and changes.
+	mu sync.Mutex
+	// timer ends the window while a read waits.
+	timer *time.Timer
+	// waited and sent are the window's waiting so far, not counting a read under way, and
+	// what the source sent in it.
+	waited time.Duration
+	sent   int64
+	// reading is when the read under way began, zero when none is.
+	reading time.Time
+	stalled bool
 }
 
-func newIdleAnswer(body io.ReadCloser, idle time.Duration, cancel context.CancelCauseFunc) *idleAnswer {
-	a := &idleAnswer{body: body, idle: idle, cancel: cancel}
-	a.timer = time.AfterFunc(idle, func() {
-		a.stalled.Store(true)
-		cancel(errAnswerStalled)
-	})
+func newSlowAnswer(body io.ReadCloser, progress registryProgress, cancel context.CancelCauseFunc) *slowAnswer {
+	a := &slowAnswer{body: body, progress: progress, cancel: cancel}
+	a.timer = time.AfterFunc(progress.window, a.windowEnds)
 	a.timer.Stop()
 	return a
 }
 
-func (a *idleAnswer) Read(p []byte) (int, error) {
-	a.timer.Reset(a.idle)
+func (a *slowAnswer) Read(p []byte) (int, error) {
+	a.mu.Lock()
+	if a.stalled {
+		a.mu.Unlock()
+		return 0, errAnswerStalled
+	}
+	a.reading = time.Now()
+	a.timer.Reset(a.progress.window - a.waited)
+	a.mu.Unlock()
 	n, err := a.body.Read(p)
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.timer.Stop()
-	if err != nil && err != io.EOF && a.stalled.Load() {
+	if !a.reading.IsZero() {
+		a.waited += time.Since(a.reading)
+		a.reading = time.Time{}
+	}
+	a.sent += int64(n)
+	a.measure()
+	if err != nil && err != io.EOF && a.stalled {
 		err = errAnswerStalled
 	}
 	return n, err
 }
 
-func (a *idleAnswer) Close() error {
+// windowEnds is the window ending while a read waits.
+func (a *slowAnswer) windowEnds() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reading.IsZero() {
+		return
+	}
+	a.waited += time.Since(a.reading)
+	a.reading = time.Now()
+	a.measure()
+	if !a.stalled {
+		a.timer.Reset(a.progress.window - a.waited)
+	}
+}
+
+// measure ends a window that has been waited out: the answer stalls if its source sent too
+// little in it, and otherwise the next window begins.
+func (a *slowAnswer) measure() {
+	if a.waited < a.progress.window {
+		return
+	}
+	if a.sent < a.progress.least {
+		a.stalled = true
+		a.cancel(errAnswerStalled)
+		return
+	}
+	a.waited, a.sent = 0, 0
+}
+
+func (a *slowAnswer) Close() error {
+	a.mu.Lock()
 	a.timer.Stop()
+	a.mu.Unlock()
 	err := a.body.Close()
 	a.cancel(nil)
 	return err

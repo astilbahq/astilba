@@ -361,41 +361,51 @@ func TestPullPassesOverAMirrorThatFailsBlobs(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the agent counts what Docker's storage holds on Linux alone")
 	}
-	for _, store := range []string{"containerd", "classic"} {
-		t.Run(store, func(t *testing.T) {
-			mirror, registry := newTestRegistry(), newTestRegistry()
-			layer := gzipOf(t, tarOf(t, testFile{"app", 10}))
-			root := mirror.image(layer)
-			registry.image(layer)
-			mirror.fault = func(w http.ResponseWriter, _ *http.Request, d string, _ int) bool {
-				if d != sha(layer) {
-					return false
+	for name, fail := range map[string]func(w http.ResponseWriter){
+		"a server error": func(w http.ResponseWriter) { w.WriteHeader(http.StatusBadGateway) },
+		// Neither is the registry's answer.
+		"a missing blob": func(w http.ResponseWriter) { w.WriteHeader(http.StatusNotFound) },
+		"a long wait": func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", "3600")
+			w.WriteHeader(http.StatusTooManyRequests)
+		},
+	} {
+		for _, store := range []string{"containerd", "classic"} {
+			t.Run(name+"/"+store, func(t *testing.T) {
+				mirror, registry := newTestRegistry(), newTestRegistry()
+				layer := gzipOf(t, tarOf(t, testFile{"app", 10}))
+				root := mirror.image(layer)
+				registry.image(layer)
+				mirror.fault = func(w http.ResponseWriter, _ *http.Request, d string, _ int) bool {
+					if d != sha(layer) {
+						return false
+					}
+					fail(w)
+					return true
 				}
-				w.WriteHeader(http.StatusBadGateway)
-				return true
-			}
-			passed := mirror.source(t, nil).(orasImage)
-			passed.mirror = true
-			id := root
-			if store == "classic" {
-				id = sha([]byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers"}}`))
-			}
-			engine := &Engine{Docker: pullDocker(t, store == "containerd", id), ImageLoadReserveBytes: 1, registryRetry: quickRegistryRetry()}
-			named, err := reference.ParseNormalizedNamed("registry.example/fixture/app@" + root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, _, err = engine.readImage(t.Context(), named.(reference.Canonical), []registryImage{passed, registry.source(t, nil)}, amd64Server, store == "containerd", never); err != nil {
-				t.Fatal(err)
-			}
-			if m, r := mirror.count(sha(layer)), registry.count(sha(layer)); m != 1 || r != 1 {
-				t.Fatalf("read the layer from the mirror %d times and from the registry %d", m, r)
-			}
-		})
+				passed := mirror.source(t, nil).(orasImage)
+				passed.mirror = true
+				id := root
+				if store == "classic" {
+					id = sha([]byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers"}}`))
+				}
+				engine := &Engine{Docker: pullDocker(t, store == "containerd", id), ImageLoadReserveBytes: 1, registryRetry: quickRegistryRetry()}
+				named, err := reference.ParseNormalizedNamed("registry.example/fixture/app@" + root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err = engine.readImage(t.Context(), named.(reference.Canonical), []registryImage{passed, registry.source(t, nil)}, amd64Server, store == "containerd", never); err != nil {
+					t.Fatal(err)
+				}
+				if m, r := mirror.count(sha(layer)), registry.count(sha(layer)); m != 1 || r != 1 {
+					t.Fatalf("read the layer from the mirror %d times and from the registry %d", m, r)
+				}
+			})
+		}
 	}
 }
 
-// Only a mirror is passed over, and only for a failure to read from it.
+// Only a mirror is passed over, never the registry itself.
 func TestPassOverOnlyAFailingMirror(t *testing.T) {
 	registry := newTestRegistry()
 	mirror := registry.source(t, nil).(orasImage)
@@ -408,11 +418,5 @@ func TestPassOverOnlyAFailingMirror(t *testing.T) {
 	}
 	if got := passOver(sources, itself, unread); len(got) != 2 {
 		t.Fatal("the registry itself was passed over")
-	}
-	if got := passOver(sources, mirror, unmeasurableImage("fixture")); len(got) != 2 {
-		t.Fatal("the mirror was passed over for its content")
-	}
-	if got := passOver(sources, mirror, nil); len(got) != 2 {
-		t.Fatal("the mirror was passed over after a read")
 	}
 }

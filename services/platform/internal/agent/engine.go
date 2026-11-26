@@ -65,9 +65,9 @@ type Engine struct {
 	// registryRetry is how often the agent reads an image again in tests, which can't wait as long
 	// as defaultRegistryRetry, the policy when nil.
 	registryRetry *registryRetry
-	// registryIdle is how long a registry may stop sending an answer in tests, which can't wait
-	// as long as defaultRegistryIdle, the limit when zero.
-	registryIdle time.Duration
+	// registryProgress is how fast a registry must send an answer in tests, which can't wait as
+	// long as defaultRegistryProgress, the policy when nil.
+	registryProgress *registryProgress
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
@@ -454,7 +454,7 @@ func (e *Engine) inspectOrRemove(ctx context.Context, c api.ExecutionCommand) er
 // run beside a command, see betweenCommands. Reading an image from its registry can take minutes,
 // or as long as the registry keeps sending it, and changes nothing on the host that such work
 // reads or changes. The command goes on once that work has finished. Other work, such as
-// scheduled backups, still waits for the command to end.
+// scheduled backups, skips its turn, see lockUnlessLent.
 func (e *Engine) lend(put func() error) error {
 	e.lendMu.Lock()
 	e.lent = true
@@ -465,6 +465,24 @@ func (e *Engine) lend(put func() error) error {
 		e.lendMu.Unlock()
 	}()
 	return put()
+}
+
+// lockUnlessLent takes mu for work that must not run inside a command, such as a schedule tick,
+// and reports true. While a command has lent the engine it reports false without taking mu, so
+// that work skips its turn rather than waits behind a registry. Work already waiting on mu when a
+// command lends the engine waits for the command to end, as it always has.
+func (e *Engine) lockUnlessLent() bool {
+	if e.mu.TryLock() {
+		return true
+	}
+	e.lendMu.Lock()
+	lent := e.lent
+	e.lendMu.Unlock()
+	if lent {
+		return false
+	}
+	e.mu.Lock()
+	return true
 }
 
 // commandContext ends at end, or once the command's owner cancels it.

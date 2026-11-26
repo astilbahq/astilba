@@ -288,7 +288,7 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if credential != nil && (credential.Username != "" || credential.Password != "") {
 		credentials = auth.StaticCredential(host, auth.Credential{Username: credential.Username, Password: credential.Password})
 	}
-	answering := &answerTransport{Transport: transport, answers: &registryAnswers{}, idle: defaultRegistryIdle}
+	answering := &answerTransport{Transport: transport, answers: &registryAnswers{}, progress: defaultRegistryProgress}
 	repo := &remote.Repository{
 		Client:           &auth.Client{Client: &http.Client{Transport: answering}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
 		Reference:        registry.Reference{Registry: host, Repository: repository},

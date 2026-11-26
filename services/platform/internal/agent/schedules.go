@@ -291,7 +291,10 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 // execution lock with deployments and persists each run before external effects.
 func (e *Engine) TickSchedules(ctx context.Context) error { return e.tickSchedules(ctx, time.Now) }
 func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) error {
-	e.mu.Lock()
+	// A schedule due while a command pulls its images runs on a later tick.
+	if !e.lockUnlessLent() {
+		return nil
+	}
 	defer e.mu.Unlock()
 	if held, err := e.Journal.recoveryHeld(); err != nil {
 		return err

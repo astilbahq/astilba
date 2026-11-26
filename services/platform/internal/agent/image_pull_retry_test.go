@@ -240,7 +240,9 @@ func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
 		for _, store := range []string{"containerd", "classic"} {
 			t.Run(name+"/"+store, func(t *testing.T) {
 				p := newRegistryPull(t, store == "containerd", tc.proto)
-				p.engine.registryIdle = 200 * time.Millisecond
+				if strings.HasSuffix(name, "stops partway") {
+					p.engine.registryProgress = &registryProgress{window: 500 * time.Millisecond, least: 1 << 10}
+				}
 				failing := p.layer
 				if tc.manifest {
 					failing = p.root

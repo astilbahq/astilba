@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -112,9 +113,9 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if err != nil {
 		return refuse(err)
 	}
-	if e.registryIdle > 0 {
+	if e.registryProgress != nil {
 		for _, source := range sources {
-			source.(orasImage).transport.idle = e.registryIdle
+			source.(orasImage).transport.progress = *e.registryProgress
 		}
 	}
 	// Docker pulls the image for its own platform.
@@ -151,28 +152,38 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 
 // readImage reads the image named from the first of sources that serves it, and with Docker's
 // containerd image store, loading, loads it; with the classic store it returns what pulling it
-// writes. A read its registry failed is made again, see readRegistry, until cancelled, past any
-// mirror that failed to send the image's content.
+// writes. A mirror that fails to send the image's content gives way at once to the sources left,
+// see passOver. A read its registry failed is made again, see readRegistry, until cancelled.
 func (e *Engine) readImage(ctx context.Context, named reference.Canonical, sources []registryImage, platform ocispec.Platform, loading bool, cancelled func() bool) (*registryPlan, imageCost, error) {
 	var plan *registryPlan
 	var measured imageCost
 	err := e.readRegistry(ctx, named.String(), cancelled, func(ctx context.Context) error {
-		// A failed load can leave blobs in Docker's storage until containerd collects them.
-		limit, err := e.imageLoadLimit(ctx)
-		if err != nil {
-			return err
+		for {
+			// A failed load can leave blobs in Docker's storage until containerd collects them.
+			limit, err := e.imageLoadLimit(ctx)
+			if err != nil {
+				return err
+			}
+			var source registryImage
+			if plan, source, err = planFromSources(ctx, sources, named.Digest(), platform, limit, loading, e.checkedManifests()); err != nil {
+				return err
+			}
+			if loading {
+				err = e.loadRegistryImage(ctx, named, source, plan, limit)
+			} else {
+				measured, err = e.measureRegistryImage(ctx, source, plan, limit)
+			}
+			rest := passOver(sources, source, err)
+			if len(rest) == len(sources) || ctx.Err() != nil {
+				return err
+			}
+			// Whatever the mirror's failure, or however long it asked the agent to wait, it is
+			// not the registry's.
+			failure := readFailure(err)
+			cause, _ := registryFailure(failure.err)
+			slog.Warn("the agent could not read an image from a mirror and will read it from its registry", "image", truncated(named.String(), 300), "source", failure.source, "cause", cause)
+			sources = rest
 		}
-		var source registryImage
-		if plan, source, err = planFromSources(ctx, sources, named.Digest(), platform, limit, loading, e.checkedManifests()); err != nil {
-			return err
-		}
-		if loading {
-			err = e.loadRegistryImage(ctx, named, source, plan, limit)
-		} else {
-			measured, err = e.measureRegistryImage(ctx, source, plan, limit)
-		}
-		sources = passOver(sources, source, err)
-		return err
 	})
 	return plan, measured, err
 }
@@ -215,8 +226,8 @@ func planFromSources(ctx context.Context, sources []registryImage, root digest.D
 
 // passOver is sources without source when source is a mirror and err a failure to read the
 // image's content from it. A mirror can serve an image's manifests and fail its blobs, and the
-// next attempt would choose it again. Passed over, it gives way to the registry itself for the
-// rest of the pull. The registry itself, which is always among sources, is never passed over.
+// agent would choose it again. Passed over, it gives way to the registry itself for the rest of
+// the pull. The registry itself, which is always among sources, is never passed over.
 func passOver(sources []registryImage, source registryImage, err error) []registryImage {
 	mirror, ok := source.(orasImage)
 	if !ok || !mirror.mirror || !errors.As(err, new(*imageArchiveUnread)) {
