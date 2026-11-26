@@ -297,7 +297,8 @@ type registryProgress struct {
 // images in practice, and one that keeps up with it passes however much else shares it: only
 // time the agent waits counts, so Docker writing slowly never ends an answer, and a window
 // that starts fast passes on what it got. A source that stops sending is ended within two
-// windows, and an answer that ends sooner, such as a manifest, is never measured.
+// windows, and an answer that ends within its first window, such as a manifest on a working
+// link, is never measured.
 var defaultRegistryProgress = registryProgress{window: 30 * time.Second, least: 256 << 10}
 
 func (t *answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {

@@ -51,8 +51,9 @@ func (l standardLog) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// escapedLine is line, at most standardLogBytes of it, with every character that isn't graphic,
-// control characters and invalid UTF-8 included, escaped as Go would quote it.
+// escapedLine is line, cut to standardLogBytes before it is escaped, with every character that
+// isn't graphic, control characters and invalid UTF-8 included, escaped as Go would quote it. A
+// line that is cut loses its invalid UTF-8 instead.
 func escapedLine(line string) string {
 	quoted := strconv.QuoteToGraphic(truncated(line, standardLogBytes))
 	return quoted[1 : len(quoted)-1]

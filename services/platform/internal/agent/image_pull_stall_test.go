@@ -114,7 +114,7 @@ func TestSlowAnswer(t *testing.T) {
 
 // stallingRegistry serves registry over TLS with proto, as a source that must send as progress
 // asks. The registry sends half of its first answer for stalled, then nothing more until the test
-// ends or, if it drips, a byte at a time.
+// ends or, if it drips, the rest a byte at a time.
 func stallingRegistry(t *testing.T, registry *testRegistry, proto, stalled string, drips bool, progress registryProgress) registryImage {
 	t.Helper()
 	released := make(chan struct{})
@@ -134,6 +134,7 @@ func stallingRegistry(t *testing.T, registry *testRegistry, proto, stalled strin
 		w.Header().Set("Content-Length", fmt.Sprint(len(content)))
 		_, _ = w.Write(content[:len(content)/2])
 		_ = http.NewResponseController(w).Flush()
+		// A registry that drips ends its answer, if the agent waits for all of it.
 		for i := len(content) / 2; drips && i < len(content); i++ {
 			select {
 			case <-released:
@@ -144,6 +145,9 @@ func stallingRegistry(t *testing.T, registry *testRegistry, proto, stalled strin
 			}
 			_, _ = w.Write(content[i : i+1])
 			_ = http.NewResponseController(w).Flush()
+		}
+		if drips {
+			return true
 		}
 		select {
 		case <-released:

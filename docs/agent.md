@@ -205,7 +205,7 @@ The dashboard shows connectivity, the last reported preflight and operation stat
 
 Start a reviewed probe from the Servers page, inspect it, then review a separate remove operation. The probe is named `astilba-probe-<resource>`, a name only the agent gives a container, and has the `com.astilba.server`, `resource`, `environment` and `kind` labels. Inspection, start and removal check the name and all four labels, not the image, so a probe started before an upgrade moved the probe image is still managed. Removal then targets the inspected container ID; it never deletes a volume or network. A probe keeps running while management or the agent is stopped. Cancellation retains any created probe at a safe checkpoint; remove it through a new reviewed plan.
 
-The agent logs to standard error, which journald keeps for `journalctl -u astilba-agent`, as `key=value` lines. A few events the Go standard library logs go there too. A server that sends an answer the agent didn't ask for is logged without what it sent, and anything else is escaped and cut to 300 bytes, so a registry or proxy can't write its own text into the log.
+The agent logs to standard error, which journald keeps for `journalctl -u astilba-agent`, as `key=value` lines. A few events the Go standard library logs go there too. A server that sends an answer the agent didn't ask for is logged without what it sent, and anything else is cut to 300 bytes and then escaped, so a registry or proxy can't write its own text into the log.
 
 A `needs_attention` result blocks conflicting work. Inspect the named resource and Docker state before retrying the same command:
 
