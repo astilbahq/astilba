@@ -39,7 +39,9 @@ type registryImage interface {
 
 type orasImage struct {
 	repo      *remote.Repository
-	transport answerTransport
+	transport *answerTransport
+	// mirror is whether this is one of Docker Hub's mirrors, rather than the registry itself.
+	mirror bool
 	// https, for an insecure registry over plain HTTP, is what the registry answered over
 	// HTTPS. Docker tries plain HTTP only when it cannot reach the registry over HTTPS at all.
 	https *registryAnswers
@@ -116,16 +118,18 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 	config := info.RegistryConfig
 	domain, path := reference.Domain(named), reference.Path(named)
 	var images []registryImage
-	add := func(host, repository string, insecure, plainHTTP bool, credential *pipeline.Credential) error {
+	add := func(host, repository string, insecure, plainHTTP, mirror bool, credential *pipeline.Credential) error {
 		image, err := newRegistryImage(host, repository, insecure, plainHTTP, credential, proxy)
 		if err != nil {
 			return &imageLoadRefused{why: "its repository name is not valid"}
 		}
-		images = append(images, image)
+		oras := image.(orasImage)
+		oras.mirror = mirror
+		images = append(images, oras)
 		return nil
 	}
 	fallback := func(host, repository string, credential *pipeline.Credential) error {
-		if err := add(host, repository, true, true, credential); err != nil {
+		if err := add(host, repository, true, true, false, credential); err != nil {
 			return err
 		}
 		image := images[len(images)-1].(orasImage)
@@ -139,7 +143,7 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 			if mirror.prefix != "" {
 				repository = mirror.prefix + "/" + path
 			}
-			if err = add(mirror.host, repository, mirror.plainHTTP, mirror.plainHTTP, nil); err != nil {
+			if err = add(mirror.host, repository, mirror.plainHTTP, mirror.plainHTTP, true, nil); err != nil {
 				return nil, err
 			}
 		}
@@ -149,7 +153,7 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 		host = "registry-1.docker.io"
 	}
 	secure := registrySecure(ctx, config, domain)
-	if err = add(host, path, !secure, false, credential); err != nil {
+	if err = add(host, path, !secure, false, false, credential); err != nil {
 		return nil, err
 	}
 	if !secure {
@@ -284,7 +288,7 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if credential != nil && (credential.Username != "" || credential.Password != "") {
 		credentials = auth.StaticCredential(host, auth.Credential{Username: credential.Username, Password: credential.Password})
 	}
-	answering := answerTransport{transport, &registryAnswers{}}
+	answering := &answerTransport{Transport: transport, answers: &registryAnswers{}, progress: defaultRegistryProgress}
 	repo := &remote.Repository{
 		Client:           &auth.Client{Client: &http.Client{Transport: answering}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
 		Reference:        registry.Reference{Registry: host, Repository: repository},
