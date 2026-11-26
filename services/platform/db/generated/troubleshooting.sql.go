@@ -658,6 +658,7 @@ UPDATE sessions b SET expiry = GREATEST(b.expiry,LEAST(now() + make_interval(sec
 FROM troubleshooting_sessions t
 WHERE t.workspace_id = $3 AND t.id = $4 AND t.state <> 'closed'
  AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')
+ AND b.expiry > clock_timestamp()
 `
 
 type RefreshTroubleshootingBrowserParams struct {
@@ -667,6 +668,8 @@ type RefreshTroubleshootingBrowserParams struct {
 	ID          uuid.UUID `json:"id"`
 }
 
+// A session that has expired stays expired, as in RefreshSession: its row can outlive the
+// expiry until cleanup, and typing must not bring it back before the relay's review ends it.
 func (q *Queries) RefreshTroubleshootingBrowser(ctx context.Context, arg RefreshTroubleshootingBrowserParams) error {
 	_, err := q.db.Exec(ctx, refreshTroubleshootingBrowser,
 		arg.IdleSeconds,

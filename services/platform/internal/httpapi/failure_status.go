@@ -12,7 +12,7 @@ func failureStatus(code string) int {
 		return 403
 	case "not_found":
 		return 404
-	case "conflict", "troubleshooting_refused":
+	case "conflict", "troubleshooting_refused", "mfa_setup_elsewhere":
 		return 409
 	case "rate_limited":
 		return 429

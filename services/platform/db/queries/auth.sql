@@ -9,16 +9,16 @@ SELECT count(*) FROM accounts;
 -- name: InsertAccount :one
 INSERT INTO accounts(id, email, name, password_hash) VALUES($1,$2,$3,$4) RETURNING *;
 -- name: UpdatePassword :exec
-UPDATE accounts SET password_hash=$2, auth_version=auth_version+1,totp_pending=NULL,totp_pending_expiry=NULL WHERE id=$1;
+UPDATE accounts SET password_hash=$2, auth_version=auth_version+1,totp_pending=NULL,totp_pending_expiry=NULL,totp_pending_lineage=NULL WHERE id=$1;
 -- name: BumpAuthVersion :exec
 UPDATE accounts SET auth_version=auth_version+1 WHERE id=$1;
 -- name: SetPendingTOTP :exec
-UPDATE accounts SET totp_pending=$2, totp_pending_expiry=$3 WHERE id=$1;
+UPDATE accounts SET totp_pending = @totp_pending, totp_pending_expiry = @totp_pending_expiry, totp_pending_lineage = @totp_pending_lineage WHERE id = @id;
 -- name: ActivateTOTP :one
-UPDATE accounts SET totp_secret=$3, totp_pending=NULL, totp_pending_expiry=NULL,
+UPDATE accounts SET totp_secret=$3, totp_pending=NULL, totp_pending_expiry=NULL, totp_pending_lineage=NULL,
     totp_last_step=$2, auth_version=auth_version+1 WHERE id=$1 RETURNING auth_version;
 -- name: DisableTOTP :one
-UPDATE accounts SET totp_secret=NULL, totp_pending=NULL, totp_pending_expiry=NULL,
+UPDATE accounts SET totp_secret=NULL, totp_pending=NULL, totp_pending_expiry=NULL, totp_pending_lineage=NULL,
     totp_last_step=-1, auth_version=auth_version+1, recovery_codes_saved=true, recovery_codes_generation=NULL WHERE id=$1 RETURNING auth_version;
 -- name: AcceptTOTPStep :exec
 UPDATE accounts SET totp_last_step=$2 WHERE id=$1;

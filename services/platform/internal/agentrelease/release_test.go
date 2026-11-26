@@ -9,10 +9,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 )
 
 func signedRelease(t *testing.T, data []byte) (api.AgentRelease, ed25519.PublicKey) {
@@ -124,6 +128,74 @@ func TestPermitsKeepsTheFloor(t *testing.T) {
 		if e := Permits(test.floor, r); (e == nil) != test.ok {
 			t.Errorf("floor %q, release minimum %q: %v, want ok=%v", test.floor, test.minimum, e, test.ok)
 		}
+	}
+	// The agent tells a floor refusal from its other failures, and says which floor it is.
+	r.MinimumVersion = "1.1.9"
+	var below *BelowFloor
+	if e := Permits("1.2.0", r); !errors.As(e, &below) || *below != (BelowFloor{Version: "1.4.0", MinimumVersion: "1.1.9", Floor: "1.2.0"}) {
+		t.Fatalf("floor refusal %#v", e)
+	}
+	if e := Permits("development", r); errors.As(e, &below) {
+		t.Fatalf("an agent without a floor reported a floor refusal: %v", e)
+	}
+}
+
+// Management offers an agent only releases it installs, so a floor it can't read exactly is
+// the highest one the agent could have.
+func TestRunningFloor(t *testing.T) {
+	catalog := []api.AgentRelease{
+		{Version: "1.4.0", MinimumVersion: "1.2.0", Protocol: 1, Arch: "arm64"},
+		{Version: "1.4.0", MinimumVersion: "1.3.0", Protocol: 1, Arch: "amd64"},
+	}
+	for _, test := range []struct {
+		version string
+		arch    api.AgentReleaseArch
+		want    Floor
+		ok      bool
+	}{
+		{"1.4.0", "arm64", Floor{MinimumVersion: "1.2.0", Catalogued: true}, true},
+		{"1.4.0", "amd64", Floor{MinimumVersion: "1.3.0", Catalogued: true}, true},
+		{"1.5.0-rc.1", "arm64", Floor{MinimumVersion: "1.5.0-rc.1"}, true},
+		{"fixture", "arm64", Floor{}, false},
+		{"", "arm64", Floor{}, false},
+	} {
+		if got, ok := RunningFloor(catalog, test.version, test.arch); got != test.want || ok != test.ok {
+			t.Errorf("%s on %s: %+v %v, want %+v %v", test.version, test.arch, got, ok, test.want, test.ok)
+		}
+	}
+}
+
+// An agent's floor comes from the one catalog entry for its version and architecture.
+func TestLoadRefusesTwoEntriesForARelease(t *testing.T) {
+	public, private, e := ed25519.GenerateKey(rand.Reader)
+	if e != nil {
+		t.Fatal(e)
+	}
+	write := func(dir, name string, data []byte, arch api.AgentReleaseArch, minimum string) {
+		t.Helper()
+		sum := sha256.Sum256(data)
+		r := api.AgentRelease{Version: "1.4.0", MinimumVersion: minimum, Commit: strings.Repeat("a", 40), Protocol: 1, Arch: arch, Size: int64(len(data)), Sha256: hex.EncodeToString(sum[:])}
+		r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, Message(r)))
+		manifest, e := stablejson.Marshal(r)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.WriteFile(filepath.Join(dir, name), manifest, 0600); e != nil {
+			t.Fatal(e)
+		}
+		if e = os.WriteFile(ArtifactPath(dir, r), data, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	dir := t.TempDir()
+	write(dir, "a.json", []byte("arm64 build"), "arm64", "1.2.0")
+	write(dir, "b.json", []byte("amd64 build"), "amd64", "1.2.0")
+	if releases, e := Load(dir, public); e != nil || len(releases) != 2 {
+		t.Fatalf("one release per architecture: %v %v", releases, e)
+	}
+	write(dir, "c.json", []byte("another arm64 build"), "arm64", "1.0.0")
+	if _, e := Load(dir, public); e == nil || !strings.Contains(e.Error(), "already has release 1.4.0 for arm64") {
+		t.Fatalf("two entries for one release: %v", e)
 	}
 }
 

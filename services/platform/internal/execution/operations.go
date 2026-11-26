@@ -255,16 +255,9 @@ func (s *Service) RequestUpdate(ctx context.Context, p store.Principal, ws, id u
 		if json.Unmarshal(row.Capabilities, &cap) != nil || cap.Protocol != 1 {
 			return domain.Conflict
 		}
-		var release *api.AgentRelease
-		for i := range s.Releases {
-			r := &s.Releases[i]
-			if r.Version == version && string(r.Arch) == string(cap.Arch) && r.Protocol == 1 {
-				release = r
-				break
-			}
-		}
-		if release == nil || release.Version == cap.Version {
-			return domain.Invalid("version")
+		release, err := updateRelease(s.Releases, cap, version)
+		if err != nil {
+			return err
 		}
 		c := api.ExecutionCommand{Id: uuid.New(), ServerId: id, Generation: generation, Kind: "update", Release: release, Action: "inspect", Deadline: time.Now().Add(30 * time.Minute)}
 		c.PlanHash = Hash(release)

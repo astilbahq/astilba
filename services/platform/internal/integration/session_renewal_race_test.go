@@ -133,10 +133,14 @@ func enableMFA(t *testing.T, b *browser) api.RecoveryCodes {
 }
 
 // accountCredentials is everything an account change could alter, as text to compare.
-func accountCredentials(t *testing.T, f *fixture) string {
+func accountCredentials(t *testing.T, f *fixture) string { return accountCredentialsAs(t, f, false) }
+
+// accountCredentialsAs is accountCredentials, as a logout of the session holding any pending
+// authenticator enrolment would leave them when freed is set.
+func accountCredentialsAs(t *testing.T, f *fixture, freed bool) string {
 	t.Helper()
 	var state string
-	if err := f.st.Pool.QueryRow(context.Background(), `SELECT a::text || ' ' || coalesce((SELECT string_agg(code_hash::text, ',' ORDER BY code_hash) FROM recovery_codes r WHERE r.account_id = a.id), '') FROM accounts a WHERE a.id = $1`, f.owner).Scan(&state); err != nil {
+	if err := f.st.Pool.QueryRow(context.Background(), `SELECT (CASE WHEN $2 THEN jsonb_populate_record(a, '{"totp_pending":null,"totp_pending_expiry":null,"totp_pending_lineage":null}') ELSE a END)::text || ' ' || coalesce((SELECT string_agg(code_hash::text, ',' ORDER BY code_hash) FROM recovery_codes r WHERE r.account_id = a.id), '') FROM accounts a WHERE a.id = $1`, f.owner, freed).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
 	return state
@@ -180,7 +184,8 @@ func TestAccountChangeDoesNotRecreateLoggedOutSession(t *testing.T) {
 			b := f.browser(t)
 			b.login("owner@example.test", f.password)
 			body := change.body(t, b)
-			before := accountCredentials(t, f)
+			// The logout frees an enrolment the session began, and must change nothing else.
+			before := accountCredentialsAs(t, f, true)
 
 			gate.armed.Store(true)
 			finish := sendHeld(t, b, gate, b.client.Jar.Cookies(mustURL(f.server.URL)), "POST", change.path, body)

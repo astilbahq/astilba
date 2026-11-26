@@ -67,6 +67,8 @@ type Server struct {
 	TerminalReviewEvery time.Duration
 	terminals           *terminalHub
 	archives            *archiveTurns
+	// bearerOperations is set by Handler from the specification; see automationRequest.
+	bearerOperations map[string]bool
 }
 
 func New(st *store.Store, service *auth.Service, origin string, development bool, log *slog.Logger) (*Server, func()) {
@@ -113,6 +115,7 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.bearerOperations = bearerOperations(spec)
 	r := chi.NewRouter()
 	r.Use(s.request)
 	r.Group(func(r chi.Router) {
@@ -398,7 +401,8 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	if e == nil {
 		// The signed-in token continues the pending sign-in's lineage, so a logout that read
 		// the pending sign-in, such as choosing another account in another tab, ends what it
-		// became. Signing in proves a credential, so it does not need the pending row itself.
+		// became if it lands after. Signing in proves a credential, so it does not need the
+		// pending row itself: after such a logout it signs in, in a lineage of its own.
 		r.Context().Value(sessionLoadKey{}).(*sessionLoad).continueLineage = true
 		e = s.establish(r.Context(), a, true)
 	}
