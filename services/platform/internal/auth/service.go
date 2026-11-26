@@ -152,11 +152,18 @@ func recoveryCodes(ctx context.Context, q *db.Queries, id uuid.UUID) ([]string, 
 // lock, so only reading the session after the wait sees one. A logout that lands after this
 // check, while the few statements of the change run, does not stop it.
 func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, error) {
+	account, _, err := lockCurrentLineage(ctx, q, p)
+	return account, err
+}
+
+// lockCurrentLineage is lockCurrent, also returning the session's lineage.
+func lockCurrentLineage(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, uuid.UUID, error) {
 	account, err := q.LockAccount(ctx, p.Account.ID)
 	if err != nil {
-		return account, err
+		return account, uuid.Nil, err
 	}
-	return account, store.AdmitBrowserSession(ctx, q, p)
+	lineage, err := store.AdmittedLineage(ctx, q, p)
+	return account, lineage, err
 }
 
 // MFASetupElsewhere refuses to begin an enrolment while another signed-in browser session's
@@ -185,14 +192,9 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 	}
 	defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
 	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		// As lockCurrent does, the session is admitted after the account's lock. The enrolment
-		// is bound to its lineage, which stays the same when it renews its token, as confirming
-		// credentials does.
-		account, err := q.LockAccount(ctx, p.Account.ID)
-		if err != nil {
-			return err
-		}
-		lineage, err := store.AdmittedLineage(ctx, q, p)
+		// The enrolment is bound to the session's lineage, which stays the same when it renews
+		// its token, as confirming credentials does.
+		account, lineage, err := lockCurrentLineage(ctx, q, p)
 		if err != nil {
 			return err
 		}
