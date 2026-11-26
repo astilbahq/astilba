@@ -103,12 +103,12 @@ func TestRegistryCannotWriteToTheAgentLog(t *testing.T) {
 // Anything else the standard library logs is one escaped line of bounded length.
 func TestStandardLogIsEscapedAndBounded(t *testing.T) {
 	logged := agentLog(t)
-	log.Print("net/http: invalid byte \x1b[31m‮\xff in fixture\nlevel=ERROR msg=fixture-forged " + strings.Repeat("x", 4096))
+	log.Print("net/http: invalid byte \x1b[31m\u202e\xff in fixture\nlevel=ERROR msg=fixture-forged " + strings.Repeat("x", 4096))
 	text := logged.String()
 	if strings.Count(text, "\n") != 1 || !strings.Contains(text, "level=WARN") || !strings.Contains(text, `msg="the Go standard library logged an event"`) {
 		t.Fatal(text)
 	}
-	if strings.ContainsAny(text, "\x1b‮") || strings.Contains(text, "\xff") || !strings.Contains(text, `\\x1b[31m\\u202e in fixture\\nlevel=ERROR`) {
+	if strings.ContainsAny(text, "\x1b\u202e") || strings.Contains(text, "\xff") || !strings.Contains(text, `\\x1b[31m\\u202e in fixture\\nlevel=ERROR`) {
 		t.Fatal("not escaped:", text)
 	}
 	if len(text) > 2*standardLogBytes {
