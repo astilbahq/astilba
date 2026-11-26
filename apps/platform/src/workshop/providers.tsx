@@ -1,7 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { createInstance, type i18n as I18n } from "i18next";
 import { useContext, useEffect, useEffectEvent, type ReactNode } from "react";
 import { setSession, type Session } from "../api/client";
+import { createQueryClient } from "../api/query-client";
 import { sessionOptions } from "../api/session";
 import { ToastProvider } from "../components/toast";
 import { TooltipProvider } from "../components/tooltip";
@@ -36,12 +37,7 @@ const availableLocales = [
 
 export async function createWorkshopState(session: Session = guest) {
   resetWorkshopSignOut();
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, staleTime: Infinity },
-      mutations: { retry: false },
-    },
-  });
+  const queryClient = createQueryClient({ staleTime: Infinity });
   queryClient.setQueryData(sessionOptions.queryKey, setSession(session));
   const instance = createInstance();
   await initializeI18n(

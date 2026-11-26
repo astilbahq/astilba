@@ -14,6 +14,7 @@ import { http, HttpResponse } from "msw/http";
 import { useState } from "react";
 import type { Schema } from "../api/client";
 import { sessionOptions } from "../api/session";
+import { Account } from "../features/account/account";
 import { CreateEnvironment } from "../features/projects/create-environment";
 import {
   AppShell,
@@ -92,7 +93,6 @@ function PreviewLayout() {
         workspace={selected}
         selectedWorkspaceId={search.workspace}
         section={section}
-        navigationKey={location.href}
         onWorkspaceChange={(id) =>
           void navigate({
             to: section,
@@ -158,8 +158,13 @@ export function ShellPreview({
       path: "/environments/new",
       component: EnvironmentCreation,
     });
+    const account = createRoute({
+      getParentRoute: () => root,
+      path: "/account",
+      component: Account,
+    });
     const children = (
-      ["/servers", "/alerts", "/members", "/account", "/login"] as const
+      ["/servers", "/alerts", "/members", "/login", "/onboarding"] as const
     ).map((path) =>
       createRoute({
         getParentRoute: () => root,
@@ -168,7 +173,7 @@ export function ShellPreview({
       }),
     );
     return createRouter({
-      routeTree: root.addChildren([index, creation, ...children]),
+      routeTree: root.addChildren([index, creation, account, ...children]),
       history: createMemoryHistory({
         initialEntries: [
           initialPath ??

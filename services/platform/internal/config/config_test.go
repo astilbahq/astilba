@@ -10,6 +10,7 @@ import (
 )
 
 func TestTrustedProxyConfiguration(t *testing.T) {
+	clearSecrets(t)
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")
 	t.Setenv("ASTILBA_KEYRING_JSON", "")
@@ -37,6 +38,7 @@ func TestTrustedProxyConfiguration(t *testing.T) {
 }
 
 func TestDatabasePoolSize(t *testing.T) {
+	clearSecrets(t)
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")
 	t.Setenv("ASTILBA_KEYRING_JSON", "")
@@ -72,12 +74,7 @@ func TestDatabasePoolSize(t *testing.T) {
 // The server limit is written to a 32-bit column, so a value that would wrap there must be
 // refused rather than truncated.
 func TestHostedServerLimit(t *testing.T) {
-	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
-	t.Setenv("ASTILBA_KEYRING", "keyring.json")
-	t.Setenv("ASTILBA_KEYRING_JSON", "")
-	t.Setenv("ASTILBA_HOSTED", "true")
-	t.Setenv("ASTILBA_HOSTED_COHORT_LIMIT", "10")
-	t.Setenv("ASTILBA_HOSTED_SUPPORT", "support@example.test")
+	baseEnvironment(t, true)
 	for _, tc := range []struct {
 		value string
 		want  int32
@@ -105,6 +102,7 @@ func TestHostedServerLimit(t *testing.T) {
 }
 
 func TestConsoleEmailRequiresLocalDevelopment(t *testing.T) {
+	clearSecrets(t)
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")
 	t.Setenv("ASTILBA_KEYRING_JSON", "")
@@ -123,6 +121,11 @@ func TestConsoleEmailRequiresLocalDevelopment(t *testing.T) {
 		{"https origin", "true", "false", "127.0.0.1:54181", "https://127.0.0.1:54182", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.hosted == "true" {
+				// Hosted reads the database URL only from its file.
+				t.Setenv("ASTILBA_DATABASE_URL", "")
+				t.Setenv("ASTILBA_DATABASE_URL_FILE", secretFile(t, "postgres://example.invalid/platform"))
+			}
 			t.Setenv("ASTILBA_DEVELOPMENT", tc.development)
 			t.Setenv("ASTILBA_HOSTED", tc.hosted)
 			t.Setenv("ASTILBA_LISTEN", tc.listen)
@@ -170,6 +173,7 @@ func TestEmailLinkOriginValidation(t *testing.T) {
 
 // Access records are kept 400 days unless a self-hosted installation says otherwise.
 func TestSecretAccessRetention(t *testing.T) {
+	clearSecrets(t)
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")
 	t.Setenv("ASTILBA_KEYRING_JSON", "")
@@ -198,13 +202,7 @@ func TestSecretAccessRetention(t *testing.T) {
 
 // Hosted keeps access records for 400 days whatever the environment says.
 func TestHostedSecretAccessRetention(t *testing.T) {
-	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
-	t.Setenv("ASTILBA_KEYRING", "keyring.json")
-	t.Setenv("ASTILBA_KEYRING_JSON", "")
-	t.Setenv("ASTILBA_HOSTED", "true")
-	t.Setenv("ASTILBA_HOSTED_COHORT_LIMIT", "10")
-	t.Setenv("ASTILBA_HOSTED_SUPPORT", "support@example.test")
-	t.Setenv("ASTILBA_HOSTED_SERVER_LIMIT", "10")
+	baseEnvironment(t, true)
 	for value, bad := range map[string]bool{"": false, "400": false, "399": true, "3650": true} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("ASTILBA_SECRET_ACCESS_RETENTION_DAYS", value)
@@ -218,6 +216,7 @@ func TestHostedSecretAccessRetention(t *testing.T) {
 
 // The keyring is a file, the key backend is the keyring file, and hosting pins the installation.
 func TestCustodyConfiguration(t *testing.T) {
+	clearSecrets(t)
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")
 	t.Setenv("ASTILBA_HOSTED", "false")
@@ -257,6 +256,7 @@ func TestCustodyConfiguration(t *testing.T) {
 }
 
 func TestTransitConfiguration(t *testing.T) {
+	clearSecrets(t)
 	t.Setenv("ASTILBA_DATABASE_URL", "postgres://example.invalid/platform")
 	t.Setenv("ASTILBA_KEYRING", "keyring.json")
 	t.Setenv("ASTILBA_HOSTED", "false")

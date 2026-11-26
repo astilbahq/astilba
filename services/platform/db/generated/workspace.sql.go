@@ -129,16 +129,17 @@ func (q *Queries) InsertMembership(ctx context.Context, arg InsertMembershipPara
 }
 
 const insertWorkspace = `-- name: InsertWorkspace :exec
-INSERT INTO workspaces(id,name) VALUES($1,$2)
+INSERT INTO workspaces(id,name,require_mfa) VALUES($1,$2,$3)
 `
 
 type InsertWorkspaceParams struct {
-	ID   uuid.UUID `json:"id"`
-	Name string    `json:"name"`
+	ID         uuid.UUID `json:"id"`
+	Name       string    `json:"name"`
+	RequireMfa bool      `json:"require_mfa"`
 }
 
 func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams) error {
-	_, err := q.db.Exec(ctx, insertWorkspace, arg.ID, arg.Name)
+	_, err := q.db.Exec(ctx, insertWorkspace, arg.ID, arg.Name, arg.RequireMfa)
 	return err
 }
 

@@ -528,8 +528,7 @@ func TestManualBuildQueuesOnItsRunnerWhenTheFallbackCantBuild(t *testing.T) {
 // servers and not revoked, since choosing a runner passes over one that can't take work.
 func TestSavingRefusesAFallbackRunnerThatIsntTheWorkspaces(t *testing.T) {
 	i := newImportedEnvironment(t, "github")
-	var other api.Workspace
-	i.b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
+	other := i.b.createWorkspaceWithoutMFARequirement("Other")
 	foreign, _, _ := enrollment(t, i.f, i.b, other.Id, "build")
 	revokedID, _ := i.addRunner(t)
 	i.b.call("POST", i.prefix+"/servers/"+revokedID.String()+"/revoke", nil, 204, nil)

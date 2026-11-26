@@ -184,30 +184,41 @@ function Onboarding({
     ),
   );
   const [codes, setCodes] = useState<Schema["RecoveryCodes"]>();
+  const hosted = !!hosting.data?.enabled;
+  // Every installation guides two-factor authentication and recovery codes, which a new
+  // workspace requires before changes; only a hosted one goes on to email and billing, for the
+  // workspace it names.
+  const security = !user?.mfaEnabled
+    ? "authenticator"
+    : !user.recoveryCodesSaved || user.recoveryCodesRemaining === 0
+      ? "recovery"
+      : undefined;
   const stage = !user
     ? "guest"
     : hosting.isPending
       ? "loading"
       : hosting.error && !hosting.data
         ? "unavailable"
-        : !hosting.data?.enabled
-          ? "self-hosted"
+        : !hosted
+          ? (security ?? "complete")
           : !workspace
             ? "missing"
             : subscription.isPending
               ? "loading"
               : subscription.error && !subscription.data
                 ? "unavailable"
-                : !user.mfaEnabled
-                  ? "authenticator"
-                  : !user.recoveryCodesSaved ||
-                      user.recoveryCodesRemaining === 0
-                    ? "recovery"
-                    : !user.emailVerified
-                      ? "email"
-                      : subscription.data?.managementActive
-                        ? "complete"
-                        : "subscription";
+                : (security ??
+                  (!user.emailVerified
+                    ? "email"
+                    : subscription.data?.managementActive
+                      ? "complete"
+                      : "subscription"));
+  const steps = [
+    t(($) => $.onboarding.account),
+    t(($) => $.onboarding.authenticator),
+    t(($) => $.onboarding.recovery),
+    ...(hosted ? [t(($) => $.onboarding.subscription)] : []),
+  ];
   const index =
     stage === "authenticator"
       ? 1
@@ -216,7 +227,7 @@ function Onboarding({
         : stage === "subscription" || stage === "email"
           ? 3
           : stage === "complete"
-            ? 4
+            ? steps.length
             : -1;
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -251,12 +262,7 @@ function Onboarding({
           className={auth.progress}
           aria-label={t(($) => $.onboarding.progress)}
         >
-          {[
-            t(($) => $.onboarding.account),
-            t(($) => $.onboarding.authenticator),
-            t(($) => $.onboarding.recovery),
-            t(($) => $.onboarding.subscription),
-          ].map((label, item) => (
+          {steps.map((label, item) => (
             <li
               key={item}
               aria-current={item === index ? "step" : undefined}
@@ -290,9 +296,6 @@ function Onboarding({
             {t(($) => $.onboarding.signIn)}
           </Link>
         </>
-      )}
-      {stage === "self-hosted" && (
-        <p className={s.muted}>{t(($) => $.onboarding.selfHosted)}</p>
       )}
       {stage === "missing" && (
         <>
@@ -363,7 +366,7 @@ function Onboarding({
             search={{ workspace: workspaceId }}
             className={auth.secondaryLink}
           >
-            {stage === "complete" || stage === "self-hosted"
+            {stage === "complete"
               ? t(($) => $.onboarding.projects)
               : t(($) => $.onboarding.later)}
           </Link>
@@ -373,7 +376,7 @@ function Onboarding({
   );
 }
 
-export function HostedOnboarding(props: {
+export function WorkspaceSetup(props: {
   workspaceId?: string;
   billing?: BillingReturn;
 }) {

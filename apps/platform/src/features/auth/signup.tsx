@@ -14,9 +14,9 @@ import { usePageTitle } from "../../i18n/use-page-title";
 import * as s from "../../styles";
 import { BusyButton, Field, Form, text, useAction } from "../../ui";
 import * as auth from "./auth.styles";
-import { HostedOnboarding } from "./hosted-onboarding";
 import { useAuthLinkCheck } from "./use-auth-link-check";
 import { useAuthValidation } from "./use-auth-validation";
+import { WorkspaceSetup } from "./workspace-setup";
 
 export function Signup({
   token,
@@ -58,7 +58,7 @@ export function Signup({
   const returnTo = token
     ? `/signup?${new URLSearchParams({ token })}`
     : undefined;
-  if (created) return <HostedOnboarding workspaceId={created} />;
+  if (created) return <WorkspaceSetup workspaceId={created} />;
   return (
     <div className={auth.flow}>
       <div className={auth.headingGroup}>

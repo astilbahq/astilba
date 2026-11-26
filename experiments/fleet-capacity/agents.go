@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -68,17 +72,24 @@ type browser struct {
 	mu             sync.Mutex
 	cookies        map[string]string
 	csrf           string
-	// Reauthentication replaces the session token, so it waits for requests in flight.
-	session sync.RWMutex
+	// Reauthentication replaces the session token, so it waits for requests in flight, and counts
+	// in renewals.
+	session  sync.RWMutex
+	renewals int
+	// totpSecret is the owner's two-factor secret once enrollMFA has set it up, and totpStep the
+	// last time step whose code it sent, since management accepts each step once.
+	totpSecret string
+	totpStep   int64
 }
 
 func (b *browser) call(ctx context.Context, method, path string, body, out any, want int) error {
 	b.session.RLock()
+	renewals := b.renewals
 	err := b.request(ctx, method, path, body, out, want)
 	b.session.RUnlock()
 	// The owner's recent-authentication window is short compared with a large setup.
 	if err != nil && strings.Contains(err.Error(), "recent_auth_required") {
-		if err = b.reauthenticate(ctx, b.password); err != nil {
+		if err = b.reauthenticate(ctx, renewals); err != nil {
 			return err
 		}
 		b.session.RLock()
@@ -88,18 +99,34 @@ func (b *browser) call(ctx context.Context, method, path string, body, out any, 
 	return err
 }
 
-func (b *browser) reauthenticate(ctx context.Context, password string) error {
+// reauthenticate confirms the owner's identity again, with a code once two-factor authentication
+// is set up, as management then asks for. One renewal serves every caller that saw the session
+// as it was after the same number of them: management accepts a code per time step and five
+// confirmations in 15 minutes.
+func (b *browser) reauthenticate(ctx context.Context, renewals int) error {
 	b.session.Lock()
 	defer b.session.Unlock()
+	if b.renewals != renewals {
+		return nil
+	}
+	credential := map[string]string{"password": b.password}
+	if b.totpSecret != "" {
+		code, err := b.nextCode(ctx, b.totpSecret)
+		if err != nil {
+			return err
+		}
+		credential = map[string]string{"code": code}
+	}
 	var s struct {
 		CsrfToken string `json:"csrfToken"`
 	}
-	if err := b.request(ctx, "POST", "/api/v1/auth/reauthenticate", map[string]string{"password": password}, &s, 200); err != nil {
+	if err := b.request(ctx, "POST", "/api/v1/auth/reauthenticate", credential, &s, 200); err != nil {
 		return err
 	}
 	b.mu.Lock()
 	b.csrf = s.CsrfToken
 	b.mu.Unlock()
+	b.renewals++
 	return nil
 }
 
@@ -162,6 +189,73 @@ func (b *browser) login(ctx context.Context, email, password string) error {
 	}
 	b.csrf = s.CsrfToken
 	return nil
+}
+
+// enrollMFA sets up the owner's two-factor authentication, as the owner of a new workspace does
+// before changing it: the workspaces provisioned here start requiring it.
+func (b *browser) enrollMFA(ctx context.Context) error {
+	var enrollment struct {
+		Secret string `json:"secret"`
+	}
+	for attempt := 1; ; attempt++ {
+		err := b.call(ctx, "POST", "/api/v1/auth/mfa/enroll", nil, &enrollment, 200)
+		if err == nil {
+			break
+		}
+		// A new installation creates the key that seals the secret in the background.
+		if !strings.Contains(err.Error(), "temporarily_busy") || attempt == 60 || !wait(ctx, time.Second) {
+			return err
+		}
+	}
+	code, err := b.nextCode(ctx, enrollment.Secret)
+	if err != nil {
+		return err
+	}
+	var confirmed struct {
+		Session struct {
+			CsrfToken string `json:"csrfToken"`
+		} `json:"session"`
+	}
+	if err = b.call(ctx, "POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": map[string]string{"password": b.password}}, &confirmed, 200); err != nil {
+		return err
+	}
+	b.csrf = confirmed.Session.CsrfToken
+	b.totpSecret = enrollment.Secret
+	return nil
+}
+
+// nextCode is the code for the earliest time step after the last one sent that management
+// accepts now, which is up to one step either side of the current one, waiting if there is none.
+func (b *browser) nextCode(ctx context.Context, secret string) (string, error) {
+	step := max(time.Now().Unix()/30, b.totpStep+1)
+	if wait := time.Until(time.Unix((step-1)*30, 0)); wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	code, err := totpCode(secret, step)
+	if err != nil {
+		return "", err
+	}
+	b.totpStep = step
+	return code, nil
+}
+
+// totpCode is the six-digit RFC 6238 code of a base32 secret for a 30-second step, with SHA-1.
+func totpCode(secret string, step int64) (string, error) {
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimRight(secret, "=")))
+	if err != nil {
+		return "", err
+	}
+	var counter [8]byte
+	binary.BigEndian.PutUint64(counter[:], uint64(step))
+	mac := hmac.New(sha1.New, key)
+	mac.Write(counter[:])
+	sum := mac.Sum(nil)
+	offset := sum[len(sum)-1] & 0x0f
+	return fmt.Sprintf("%06d", (binary.BigEndian.Uint32(sum[offset:offset+4])&0x7fffffff)%1000000), nil
 }
 
 // Statistics are cumulative; the orchestrator differences snapshots around its window.
@@ -649,6 +743,9 @@ func runAgents(args []string) error {
 	if err := b.login(ctx, cfg.email, cfg.password); err != nil {
 		return err
 	}
+	if err := b.enrollMFA(ctx); err != nil {
+		return err
+	}
 	agents, err := provision(ctx, b, &cfg, st)
 	if err != nil {
 		return err
@@ -799,8 +896,13 @@ func firstDeployments(ctx context.Context, b *browser, cfg *agentConfig, agents 
 	}
 	reauthenticated := time.Now()
 	for _, a := range agents {
-		if time.Since(reauthenticated) > 3*time.Minute {
-			if err := b.reauthenticate(ctx, cfg.password); err != nil {
+		// Within the five-minute window, and few enough to leave confirmations for callers that
+		// miss it.
+		if time.Since(reauthenticated) > 4*time.Minute {
+			b.session.RLock()
+			renewals := b.renewals
+			b.session.RUnlock()
+			if err := b.reauthenticate(ctx, renewals); err != nil {
 				return err
 			}
 			reauthenticated = time.Now()

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import jsQR from "jsqr";
+import { authFixtureSQL } from "./auth-fixture";
 import { confirmCredential } from "./confirm-credential";
 import { openEnvironmentSection } from "./environment-section";
 import { fixtureInfo, hosted as hostedOrigin } from "./fixtures/ports";
@@ -30,6 +31,13 @@ test("hosted signup, MFA, billing admission and encrypted workspace import", asy
   await creation
     .getByRole("button", { name: "Create workspace", exact: true })
     .click();
+  await expect(creation.getByLabel("Workspace name")).toHaveValue("");
+  // The shared owner signs in with a password alone, so the workspace it exports stands for
+  // one that doesn't require two-factor authentication, which new ones do.
+  await authFixtureSQL(
+    `UPDATE workspaces SET require_mfa=false WHERE name='${workspaceName}'`,
+  );
+  await page.reload();
   await page.getByRole("button", { name: /^Workspace:/ }).click();
   await page
     .getByRole("menuitem", { name: workspaceName, exact: true })

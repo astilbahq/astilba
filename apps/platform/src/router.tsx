@@ -18,12 +18,12 @@ import { Account } from "./features/account/account";
 import { Alerts } from "./features/alerts";
 import { AuthFrame, AuthPage } from "./features/auth/auth-frame";
 import { VerifyEmailPage } from "./features/auth/email-verification";
-import { HostedOnboarding } from "./features/auth/hosted-onboarding";
 import { Invitation } from "./features/auth/invitation";
 import { PasswordReset } from "./features/auth/password-reset";
 import { SignIn } from "./features/auth/sign-in";
 import { Signup } from "./features/auth/signup";
 import { StepUpProvider } from "./features/auth/step-up";
+import { WorkspaceSetup } from "./features/auth/workspace-setup";
 import { GitHubCallback, GitHubInstalled } from "./features/github-app";
 import { CreateEnvironment } from "./features/projects/create-environment";
 import {
@@ -136,7 +136,6 @@ function SignedInLayout({
         workspace={workspace}
         selectedWorkspaceId={search.workspace}
         section={section}
-        navigationKey={location.href}
         onWorkspaceChange={(id) => {
           void navigate({ to: section, search: { workspace: id } });
         }}
@@ -372,7 +371,7 @@ const onboarding = createRoute({
 });
 function OnboardingPage() {
   const { workspace, billing } = onboarding.useSearch();
-  return <HostedOnboarding workspaceId={workspace} billing={billing} />;
+  return <WorkspaceSetup workspaceId={workspace} billing={billing} />;
 }
 const verifyEmail = createRoute({
   getParentRoute: () => auth,

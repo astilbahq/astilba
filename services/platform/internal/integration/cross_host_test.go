@@ -808,8 +808,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/schedule-reports", identities[0].ID.String()+"."+identities[0].Token, map[string]any{"sequence": 1, "status": map[string]any{"policyId": policy.ID, "generation": policy.Generation, "enabled": true, "next": "0000-01-01T00:00:00Z", "runs": []any{}}}, 400, nil)
 	// Installed policies awaiting host transfer can fill a batch indefinitely.
 	// Their blocked admission must not prevent another workspace's due snapshot.
-	var blockedWorkspace api.Workspace
-	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Pending transfer"}, 201, &blockedWorkspace)
+	blockedWorkspace := b.createWorkspaceWithoutMFARequirement("Pending transfer")
 	blockedEnv := envForExecution(t, f, b, blockedWorkspace.Id)
 	refreshAuthentication()
 	blockedServer, _, _ := enrollment(t, f, b, blockedWorkspace.Id, "deployment")
@@ -825,8 +824,7 @@ func testCrossHostCoordinatedPlacement(t *testing.T, expiryPhase string) {
 		t.Fatal(err)
 	}
 	// Another workspace's plain failure at the head of the scan must not stop this one either.
-	var heldWorkspace api.Workspace
-	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Held"}, 201, &heldWorkspace)
+	heldWorkspace := b.createWorkspaceWithoutMFARequirement("Held")
 	heldEnv := envForExecution(t, f, b, heldWorkspace.Id)
 	refreshAuthentication()
 	heldServer, _, _ := enrollment(t, f, b, heldWorkspace.Id, "deployment")

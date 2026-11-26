@@ -309,6 +309,11 @@ export const RetireAnnounced: Story = {
     );
     const message = await canvas.findByText("Environment retired.");
     await expect(regions).toContain(message.closest('[role="status"]'));
+    // The retired page has no trigger to return to, so focus moves to its banner's heading.
+    const heading = await canvas.findByRole("heading", {
+      name: "This environment is retired",
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
   },
 };
 // Restoring announces the outcome from a region that stays as the page becomes active again.
@@ -353,6 +358,12 @@ export const RestoreAnnounced: Story = {
       "Environment restored. Nothing has been deployed.",
     );
     await expect(regions).toContain(message.closest('[role="status"]'));
+    // The banner and its trigger leave with the restore, so focus moves to the page's title.
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("heading", { level: 1, name: "Development" }),
+      ).toHaveFocus(),
+    );
   },
 };
 // A server's confirmation finishes the retirement, which only the page announces.

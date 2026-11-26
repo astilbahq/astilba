@@ -83,7 +83,7 @@ const ValkeyImage = "valkey/valkey:9.1.3-alpine3.24@sha256:bf09d58e96d6b4524a153
 // The slim image leaves out Chromium and the embedded MariaDB, which the recipe does not
 // use and which carry most of the full image's advisories. The rootless image runs as
 // node (uid 1000) and ships /app/data owned by it, so a new volume is writable.
-const UptimeKumaImage = "louislam/uptime-kuma:2.5.11-slim-rootless@sha256:ebc6299a1bc8bd4a29e0bddcc04f11440e3690b1c52e19558006eeefb5a8b019"
+const UptimeKumaImage = "louislam/uptime-kuma:2.5.12-slim-rootless@sha256:212d2131952eded9b2508620455f15f5c2c85c262aafd23b97a7447c53e1d1bc"
 const RegistryImage = "registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c"
 
 // KaneoImage bundles Kaneo's API and web client behind one nginx on port 5173, as uid 1001.

@@ -38,6 +38,10 @@ func New(c Config) (*Mailer, error) {
 	} else if c.Address == "" {
 		return &Mailer{config: c}, nil
 	}
+	// A username without its password would only fail when the first message is sent.
+	if (c.Username == "") != (c.Password == "") {
+		return nil, errors.New("configure the SMTP username and password together, or neither")
+	}
 	if strings.ContainsAny(c.From, "\r\n") {
 		return nil, ErrUnavailable
 	}

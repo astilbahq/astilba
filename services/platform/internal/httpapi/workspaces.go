@@ -74,7 +74,7 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, e)
 			return
 		}
-		s.respond(w, 201, api.Workspace{Id: id, Name: name, Role: api.Owner})
+		s.respond(w, 201, api.Workspace{Id: id, Name: name, Role: api.Owner, RequireMfa: store.NewWorkspaceRequiresMFA})
 		return
 	}
 	id := uuid.New()
@@ -100,7 +100,7 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	s.respond(w, 201, api.Workspace{Id: id, Name: name, Role: api.Owner})
+	s.respond(w, 201, api.Workspace{Id: id, Name: name, Role: api.Owner, RequireMfa: store.NewWorkspaceRequiresMFA})
 }
 func (s *Server) GetWorkspace(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 	s.scope(w, r, id, store.WorkspaceAccess{}, func(_ *db.Queries, ws store.Workspace) (any, error) { return workspace(ws), nil })

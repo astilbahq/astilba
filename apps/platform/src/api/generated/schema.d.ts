@@ -3403,6 +3403,7 @@ export interface components {
             id: string;
             name: string;
             role: components["schemas"]["Role"];
+            /** @description Whether changing the workspace needs two-factor authentication. A new workspace starts with it on; an imported one keeps its archive's setting. */
             requireMfa: boolean;
         };
         MfaRequirement: {
