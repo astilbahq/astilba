@@ -161,7 +161,7 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 
 // MFASetupElsewhere refuses to begin an enrolment while another signed-in browser session's
 // enrolment lasts.
-var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another browser session. Finish it there, or start again here once it lapses after 10 minutes."}
+var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out every session."}
 
 // enrolmentLineage is the lineage of the browser session p presents, which an enrolment is bound
 // to: it stays the same when the session renews its token, as confirming credentials does.

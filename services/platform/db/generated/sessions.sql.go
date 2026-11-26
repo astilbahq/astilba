@@ -93,6 +93,21 @@ func (q *Queries) DeleteSessionLineage(ctx context.Context, lineage uuid.UUID) e
 	return err
 }
 
+const endLineageEnrolment = `-- name: EndLineageEnrolment :exec
+UPDATE accounts SET totp_pending = NULL,totp_pending_expiry = NULL,totp_pending_lineage = NULL
+WHERE totp_pending_lineage = $1::uuid
+ AND id IN (SELECT id FROM accounts WHERE totp_pending_lineage = $1::uuid FOR UPDATE SKIP LOCKED)
+`
+
+// unscoped: a lineage is one browser's chain of renewed session tokens.
+// A logged-out lineage's authenticator enrolment is no one's, so another session may begin one.
+// A logout never waits for an account's lock: a row held by another change keeps its enrolment,
+// which BeginMFA lets go of once it finds the lineage signed out.
+func (q *Queries) EndLineageEnrolment(ctx context.Context, lineage uuid.UUID) error {
+	_, err := q.db.Exec(ctx, endLineageEnrolment, lineage)
+	return err
+}
+
 const findSession = `-- name: FindSession :one
 SELECT data,lineage FROM sessions WHERE token = $1 AND current_timestamp < expiry
 `

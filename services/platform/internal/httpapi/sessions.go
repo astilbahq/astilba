@@ -64,10 +64,14 @@ func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
 // this request loaded it, such as a password change from another tab. The lock orders this
 // with a renewal of the lineage: one that committed first has its new token deleted here,
 // and one that comes after finds its old token gone and refuses. A later sign-in stays signed
-// in: it starts its own lineage, or completes a pending one after this delete has run.
+// in: it starts its own lineage, or completes a pending one after this delete has run. An
+// authenticator enrolment the lineage began ends with it.
 func endLineage(ctx context.Context, st *store.Store, lineage uuid.UUID) error {
 	return st.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockSessionLineage(ctx, lineage); err != nil {
+			return err
+		}
+		if err := q.EndLineageEnrolment(ctx, lineage); err != nil {
 			return err
 		}
 		return q.DeleteSessionLineage(ctx, lineage)

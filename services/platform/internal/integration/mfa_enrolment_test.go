@@ -49,21 +49,27 @@ func TestMFAEnrolmentBelongsToTheSessionThatBeganIt(t *testing.T) {
 	}
 }
 
-// An enrolment gives way once it is no one's: its session signed out, or it lapsed. A session
-// may start its own again, which replaces the secret it was shown before.
+// An enrolment gives way once it is no one's. Ending its session, by logout or by a password
+// change that ends every session, frees it at once; one that lapsed gives way to the next. A
+// session may start its own again, which replaces the secret it was shown before.
 func TestMFAEnrolmentGivesWayWhenItsSessionEnds(t *testing.T) {
 	ctx := context.Background()
-	for _, ending := range []string{"logout", "lapse", "restart"} {
+	for _, ending := range []string{"logout", "password", "lapse", "restart"} {
 		t.Run(ending, func(t *testing.T) {
 			f := setup(t)
 			first, second := f.browser(t), f.browser(t)
 			first.login("owner@example.test", f.password)
 			second.login("owner@example.test", f.password)
 			enrollSecret(t, first)
-			next := second
+			next, password := second, f.password
 			switch ending {
 			case "logout":
 				first.call("POST", "/api/v1/auth/logout", nil, 204, nil)
+			case "password":
+				password = "another correct horse battery staple"
+				var changed api.Session
+				second.call("POST", "/api/v1/auth/password", map[string]any{"current": map[string]string{"password": f.password}, "password": password}, 200, &changed)
+				second.csrf = changed.CsrfToken
 			case "lapse":
 				if _, err := f.st.Pool.Exec(ctx, "UPDATE accounts SET totp_pending_expiry=clock_timestamp()-interval '1 hour' WHERE id=$1", f.owner); err != nil {
 					t.Fatal(err)
@@ -71,16 +77,52 @@ func TestMFAEnrolmentGivesWayWhenItsSessionEnds(t *testing.T) {
 			case "restart":
 				next = first
 			}
+			if ending == "logout" || ending == "password" {
+				var held bool
+				if err := f.st.Pool.QueryRow(ctx, "SELECT totp_pending IS NOT NULL OR totp_pending_expiry IS NOT NULL OR totp_pending_lineage IS NOT NULL FROM accounts WHERE id=$1", f.owner).Scan(&held); err != nil || held {
+					t.Fatal("ending the session left its enrolment pending", err)
+				}
+			}
 			secret := enrollSecret(t, next)
 			value, err := totp.GenerateCode(secret, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
 			var codes api.RecoveryCodes
-			next.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": value, "current": map[string]string{"password": f.password}}, 200, &codes)
+			next.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": value, "current": map[string]string{"password": password}}, 200, &codes)
 			if !codes.Session.User.MfaEnabled {
 				t.Fatal("the newer enrolment did not turn on two-factor authentication")
 			}
 		})
 	}
+}
+
+// Freeing an enrolment never makes a logout wait for the account's lock, which a credential
+// change or an import may hold while it rechecks the session; the enrolment still gives way.
+func TestMFAEnrolmentLogoutDoesNotWaitForTheAccount(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	first, second := f.browser(t), f.browser(t)
+	first.login("owner@example.test", f.password)
+	second.login("owner@example.test", f.password)
+	enrollSecret(t, first)
+	held, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { held.Rollback(ctx) })
+	if _, err = held.Exec(ctx, "SELECT id FROM accounts WHERE id=$1 FOR UPDATE", f.owner); err != nil {
+		t.Fatal(err)
+	}
+	logout := first.send("POST", "/api/v1/auth/logout", nil)
+	select {
+	case reply := <-logout:
+		requireReply(t, reply, 204)
+	case <-time.After(5 * time.Second):
+		t.Fatal("logout waited for the account's lock")
+	}
+	if err = held.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	enrollSecret(t, second)
 }

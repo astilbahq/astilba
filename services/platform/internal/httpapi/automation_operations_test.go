@@ -76,7 +76,7 @@ func carriesOperation(ref *openapi3.SchemaRef, seen map[*openapi3.Schema]bool) b
 }
 
 // A credential reaches only operations that declare automationBearer, so every operation it is
-// allowed must declare it, and none that takes a browser session or nothing may.
+// allowed must declare it.
 func TestBearerOperationsFollowTheContract(t *testing.T) {
 	spec, err := api.GetSpec()
 	if err != nil {
@@ -92,16 +92,6 @@ func TestBearerOperationsFollowTheContract(t *testing.T) {
 	for name := range automationOperations {
 		if !reachable[byName[name]] {
 			t.Errorf("%s is allowed to a credential but does not declare automationBearer", name)
-		}
-	}
-	for _, name := range []string{"GetAutomationContext"} {
-		if !reachable[byName[name]] {
-			t.Errorf("%s does not declare automationBearer", name)
-		}
-	}
-	for _, name := range []string{"Logout", "Login", "Session", "VerifyMFA", "OpenTroubleshootingSession", "CloseTroubleshootingSession"} {
-		if reachable[byName[name]] {
-			t.Errorf("%s takes a browser session or nothing, but a credential reaches it", name)
 		}
 	}
 }

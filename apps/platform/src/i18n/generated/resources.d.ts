@@ -290,7 +290,7 @@ export default interface Resources {
       "recoveryCodeRequired": "Enter a recovery code.",
       "requestFailed": "The request could not be completed. Try again.",
       "setupConflict": "This setup changed in another session. Check the current state and try again.",
-      "setupElsewhere": "Two-factor authentication is being set up in another browser session. Finish it there, or start again here after 10 minutes.",
+      "setupElsewhere": "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out every session.",
       "signupAccount": "Sign in with the invited email address before accepting this invitation.",
       "signupUnavailable": "This invitation cannot create a workspace right now. Try again or contact the person who invited you.",
       "stepUpRateLimited": "Too many attempts. Try again later, or sign out and sign in again to continue.",
