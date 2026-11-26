@@ -217,9 +217,6 @@ func TestBootstrapOnDisposableHost(t *testing.T) {
 		}
 		used := regexp.MustCompile(`Ubuntu packages for this run come from (\S+)\. This host's package sources are unchanged\.`).FindSubmatch(out)
 		if !bytes.Contains(out, []byte("This host's package sources failed.")) || used == nil {
-			if reached := reachedArchives(out, blocked); len(reached) > 0 {
-				t.Fatalf("apt still read from %s, though blocked, so the bootstrap did not fall back: %s", strings.Join(reached, ", "), out)
-			}
 			t.Fatalf("the bootstrap did not say it used a fallback archive: %s", out)
 		}
 		if u, err := url.Parse(string(used[1])); err != nil || slices.Contains(blocked, u.Hostname()) {
@@ -475,11 +472,10 @@ func ubuntuArchives(t *testing.T) []string {
 
 // blockHosts makes names refuse connections, as when the distribution's mirror names stopped
 // resolving on 11 November 2026. apt also reaches a name through the targets of its SRV records,
-// and looks those up with a final dot, which /etc/hosts matches only as written: since
-// 25 November 2026 Canonical's archives name a CDN that way. So each name and target is blocked
-// in both forms, and glibc, which apt resolves through, must then give each only a loopback
-// address. It returns the names it blocked, and a function that restores /etc/hosts, which also
-// runs when the test ends.
+// trying each in turn: since 25 November 2026 Canonical's archives name a CDN that way after
+// themselves. So the targets are blocked too, and apt must then read nothing from any of them.
+// It returns the names it blocked, and a function that restores /etc/hosts, which also runs when
+// the test ends.
 func blockHosts(t *testing.T, names []string) ([]string, func()) {
 	t.Helper()
 	for _, name := range slices.Clone(names) {
@@ -508,7 +504,7 @@ func blockHosts(t *testing.T, names []string) ([]string, func()) {
 	blocked := bytes.TrimRight(bytes.Clone(original), "\n")
 	blocked = append(blocked, "\n# Ubuntu archives blocked by TestBootstrapOnDisposableHost\n"...)
 	for _, name := range names {
-		blocked = fmt.Appendf(blocked, "127.0.0.1 %s %s.\n::1 %s %s.\n", name, name, name, name)
+		blocked = fmt.Appendf(blocked, "127.0.0.1 %s\n::1 %s\n", name, name)
 	}
 	if err = os.WriteFile("/etc/hosts", blocked, 0o644); err != nil {
 		t.Fatal(err)
@@ -523,37 +519,38 @@ func blockHosts(t *testing.T, names []string) ([]string, func()) {
 		}
 	}
 	t.Cleanup(restore)
-	for _, name := range names {
-		for _, form := range []string{name, name + "."} {
-			out, err := exec.Command("getent", "ahosts", form).Output()
-			var exit *exec.ExitError
-			// getent exits 2 when the name does not resolve at all, which blocks it too.
-			if errors.As(err, &exit) && exit.ExitCode() == 2 {
-				continue
-			}
-			if err != nil {
-				t.Fatalf("resolve %s: %v", form, err)
-			}
-			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				if address := strings.Fields(line)[0]; !net.ParseIP(address).IsLoopback() {
-					t.Fatalf("blocking %s did not hold: %s resolves to %s", name, form, address)
-				}
-			}
-		}
+	// Whatever way apt reaches an archive, it reads none while blocked. The probe keeps its lists
+	// and caches apart, leaving the host's as they were.
+	lists := t.TempDir()
+	if err = os.Mkdir(filepath.Join(lists, "partial"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "apt-get", "update", "-o", "Dir::State::Lists="+lists, "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "-o", "Acquire::Retries=0").CombinedOutput()
+	read, failed := aptArchives(out, names)
+	if len(read) > 0 {
+		t.Fatalf("blocking this host's Ubuntu archives did not hold: apt still read from %s: %s", strings.Join(read, ", "), out)
+	}
+	if len(failed) == 0 {
+		t.Fatalf("apt did not try this host's Ubuntu archives, so the block is unproven: %s", out)
 	}
 	return names, restore
 }
 
-// reachedArchives names the hosts in blocked that apt's output says it read an index or package
-// from.
-func reachedArchives(out []byte, blocked []string) []string {
-	var reached []string
-	for _, m := range regexp.MustCompile(`(?m)^\s*(?:Hit|Get):\d+ https?://([^/\s:]+)`).FindAllSubmatch(out, -1) {
-		if host := strings.ToLower(string(m[1])); slices.Contains(blocked, host) {
-			reached = append(reached, host)
+// aptArchives names the hosts in blocked that apt's output says it read an index or package
+// from, and those it says it failed to.
+func aptArchives(out []byte, blocked []string) (read, failed []string) {
+	for _, m := range regexp.MustCompile(`(?m)^\s*(Hit|Get|Err):\d+ https?://([^/\s:]+)`).FindAllSubmatch(out, -1) {
+		if host := strings.ToLower(string(m[2])); slices.Contains(blocked, host) {
+			if string(m[1]) == "Err" {
+				failed = append(failed, host)
+			} else {
+				read = append(read, host)
+			}
 		}
 	}
-	return slices.Compact(slices.Sorted(slices.Values(reached)))
+	return slices.Compact(slices.Sorted(slices.Values(read))), slices.Compact(slices.Sorted(slices.Values(failed)))
 }
 
 const (
