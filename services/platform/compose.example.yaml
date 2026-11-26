@@ -5,7 +5,8 @@ services:
     ports:
       - 127.0.0.1:8080:8080
     environment:
-      ASTILBA_DATABASE_URL: ${ASTILBA_DATABASE_URL:?Set a PostgreSQL connection URL}
+      # Credentials are files, never environment values. See docs/hosting.md#secret-settings.
+      ASTILBA_DATABASE_URL_FILE: /run/secrets/database-url
       ASTILBA_KEYRING: /run/astilba/keyring.json
       ASTILBA_KEY_BACKEND: ${ASTILBA_KEY_BACKEND:-}
       ASTILBA_INSTALLATION_ID: ${ASTILBA_INSTALLATION_ID:-}
@@ -17,12 +18,18 @@ services:
       ASTILBA_TROUBLESHOOTING: ${ASTILBA_TROUBLESHOOTING:-}
       ASTILBA_APPLICATION_DOMAIN: ${ASTILBA_APPLICATION_DOMAIN:-}
       ASTILBA_DNS_CLOUDFLARE_ZONE: ${ASTILBA_DNS_CLOUDFLARE_ZONE:-}
-      ASTILBA_DNS_CLOUDFLARE_TOKEN: ${ASTILBA_DNS_CLOUDFLARE_TOKEN:-}
       ASTILBA_SMTP_ADDRESS: ${ASTILBA_SMTP_ADDRESS:-}
       ASTILBA_SMTP_MODE: ${ASTILBA_SMTP_MODE:-starttls}
       ASTILBA_SMTP_FROM: ${ASTILBA_SMTP_FROM:-}
-      ASTILBA_SMTP_USERNAME: ${ASTILBA_SMTP_USERNAME:-}
-      ASTILBA_SMTP_PASSWORD: ${ASTILBA_SMTP_PASSWORD:-}
+      # Uncomment each optional credential you use here, under this service's secrets and under
+      # the top-level secrets. The SMTP username and password go together.
+      # ASTILBA_DNS_CLOUDFLARE_TOKEN_FILE: /run/secrets/dns-cloudflare-token
+      # ASTILBA_SMTP_USERNAME: ${ASTILBA_SMTP_USERNAME:?Set the SMTP username}
+      # ASTILBA_SMTP_PASSWORD_FILE: /run/secrets/smtp-password
+    secrets:
+      - database-url
+      # - dns-cloudflare-token
+      # - smtp-password
     volumes:
       - type: bind
         source: ${ASTILBA_KEYRING_FILE:?Set an owner-only keyring file readable by UID 65532}
@@ -32,3 +39,12 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+
+# Compose mounts each file as it is, so give every one owner UID 65532 and mode 0400.
+secrets:
+  database-url:
+    file: ${ASTILBA_DATABASE_URL_SECRET:?Set an owner-only file holding the PostgreSQL connection URL, readable by UID 65532}
+  # dns-cloudflare-token:
+  #   file: ${ASTILBA_DNS_CLOUDFLARE_TOKEN_SECRET:?Set an owner-only file holding the Cloudflare token, readable by UID 65532}
+  # smtp-password:
+  #   file: ${ASTILBA_SMTP_PASSWORD_SECRET:?Set an owner-only file holding the SMTP password, readable by UID 65532}
