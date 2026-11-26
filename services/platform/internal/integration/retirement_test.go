@@ -439,8 +439,9 @@ func TestRetiredPostgresVolumeKeepsItsMajor(t *testing.T) {
 	if err := json.Unmarshal(x.owner.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: x.server, BaseRevisionId: upgraded.Id}, 400, nil), &refused); err != nil {
 		t.Fatal(err)
 	}
-	if refused.Fields == nil || !slices.Contains(*refused.Fields, "applications.postgres.upgrade") {
-		t.Fatalf("switching the kept volume's PostgreSQL major was not refused as an upgrade: %+v", refused)
+	serving, _ := domain.PostgresReleaseOf(newer)
+	if refused.Fields == nil || !slices.Contains(*refused.Fields, "applications.postgres.upgrade") || !strings.Contains(refused.Message, "Database cannot start on its volume: PostgreSQL "+serving.Name()+" cannot open data PostgreSQL 17 wrote") {
+		t.Fatalf("switching the kept volume's PostgreSQL major was not refused as an upgrade, with why: %+v", refused)
 	}
 }
 

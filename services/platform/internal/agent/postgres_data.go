@@ -47,6 +47,52 @@ func (j *Journal) forgetPostgresData(volume uuid.UUID) error {
 	return j.db.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte(postgresDataBucket)).Delete([]byte(volume.String())) })
 }
 
+// postgresReleaseOf resolves an image to its pinned release for postgresDataOpens. Tests replace it
+// to add a release of another line, which no pin comes from yet.
+var postgresReleaseOf = domain.PostgresReleaseOf
+
+// postgresDataOpens refuses a plan whose managed database on the volume runs a release that cannot
+// open the data the journal records there: another major's, another line's or a later release's.
+// The record is the release whose indexes the data holds, which an interrupted update leaves behind
+// the one that last served it.
+// The record follows the volume, not the unit's applied plan, so it also holds for a restore
+// target, an upgrade's target and storage a retired environment kept, which the comparison with
+// the applied plan never sees. A volume with no record, such as one an earlier agent made, is left
+// to that comparison and the volume's major label.
+func (j *Journal) postgresDataOpens(p deployment.Plan, volume uuid.UUID) error {
+	for _, a := range p.LocalApplications() {
+		if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 || a.Mounts[0].VolumeID != volume {
+			continue
+		}
+		record, found, err := j.postgresData(volume)
+		if err != nil || !found || record.Image == *a.Source.Image {
+			return err
+		}
+		written, known := postgresReleaseOf(record.Image)
+		serving, ok := postgresReleaseOf(*a.Source.Image)
+		if !known || !ok {
+			return errPostgresVersionChange
+		}
+		if err = serving.OpensDataFrom(written); err != nil {
+			return postgresDataRefusal{application: a.Name, reason: err}
+		}
+	}
+	return nil
+}
+
+// postgresDataRefusal is a PostgreSQL version change refused for the data on a volume before any
+// service starts, with the reason the owner reads.
+type postgresDataRefusal struct {
+	application string
+	reason      error
+}
+
+func (r postgresDataRefusal) Error() string {
+	return r.application + " cannot start on its volume: " + r.reason.Error() + "."
+}
+
+func (r postgresDataRefusal) Is(target error) bool { return target == errPostgresVersionChange }
+
 // recordPostgresWriters records the release of each managed database in the plan a unit is
 // leaving, for a volume with no record yet. That release wrote the data a new plan may serve with
 // a later one, which is what makes the later release's reindex due. Runs inside saveUnit, before
