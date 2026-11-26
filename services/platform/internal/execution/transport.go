@@ -10,6 +10,7 @@ import (
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -58,8 +59,8 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 	if n.RowsAffected() != 1 {
 		return nil, ErrPollLeaseHeld
 	}
-	deadline := time.NewTimer(PollDuration)
-	defer deadline.Stop()
+	pollEnd := time.NewTimer(PollDuration)
+	defer pollEnd.Stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var verified uuid.UUID
@@ -92,6 +93,16 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 			if (a.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (a.Role == "deployment" && c.Kind == "pipeline") {
 				return nil, domain.Forbidden
 			}
+			// This clock decides the deadline, and an agent that reads the mark applies its verdict: one
+			// whose clock lags would otherwise start work late.
+			late := time.Now().After(c.Deadline)
+			if late && a.ReadsExpiry {
+				c.Expired = &late
+			}
+			// Past its deadline, a command whose rule lapses starts nothing on its host: an agent that
+			// hasn't started it ends it unrun, and one that has already holds its values. So it goes
+			// without them.
+			lapsed := late && deadline.Of(c).Lapses()
 			if s.Store.Hosted {
 				if e := s.hostedAdmission(ctx, a.Workspace, c); e != nil {
 					if !errors.Is(e, store.SubscriptionRequired) {
@@ -101,7 +112,9 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 			}
 			if !cancel {
-				verify := state == "dispatched" && verified != c.Id
+				// Work its host is running stops when it loses its authority, however late. A provider
+				// is asked only before values leave, which a lapsed command never carries.
+				verify := state == "dispatched" && verified != c.Id && !lapsed
 				allowed, e := s.commandAllowed(ctx, a, c, verify)
 				if e != nil {
 					return nil, e
@@ -118,9 +131,9 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				}
 			}
 			c.CancelRequested = cancel
-			// A stop carries no values. Hydration finishes a pipeline or restore no agent holds, and
-			// adds no credentials to one it might.
-			if cancel && c.Kind != "pipeline" && c.Kind != "restore" {
+			// A stop or a lapsed command carries no values. Hydration finishes a pipeline or restore no
+			// agent holds, and adds no credentials to one it might.
+			if (cancel || lapsed) && c.Kind != "pipeline" && c.Kind != "restore" {
 				return &c, nil
 			}
 			if carriesValues(c) {
@@ -141,7 +154,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 					select {
 					case <-ctx.Done():
 						return nil, ctx.Err()
-					case <-deadline.C:
+					case <-pollEnd.C:
 						return nil, nil
 					case <-tick.C:
 					}
@@ -159,7 +172,7 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-deadline.C:
+		case <-pollEnd.C:
 			return nil, nil
 		case <-tick.C:
 		}

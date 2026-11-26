@@ -47,6 +47,7 @@ func (c *Client) hearFeatures(h http.Header) {
 	c.machineRotation.Store(h.Get("Astilba-Agent-Machine-Rotation") == "v1")
 	c.secretReleases.Store(h.Get("Astilba-Agent-Secret-Releases") == "v1")
 	c.containerRanges.Store(h.Get("Astilba-Agent-Container-Ranges") == "v1")
+	c.expiredCommands.Store(h.Get("Astilba-Agent-Expired-Commands") == "v1")
 	c.keysSupported.Store(h.Get(agentidentity.KeysHeader) == "v1")
 	if c.Engine != nil {
 		read := refusalsUnread
@@ -196,6 +197,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.containerRanges.Load() {
 		v.ContainerRanges = nil
+	}
+	if !c.expiredCommands.Load() {
+		v.ExpiredCommands = nil
 	}
 	return v
 }

@@ -52,7 +52,8 @@ func (q *Queries) AttachOperationJob(ctx context.Context, arg AttachOperationJob
 
 const authenticateAgent = `-- name: AuthenticateAgent :one
 SELECT workspace_id,role,(credential_hash <> $1)::boolean AS previous,
-    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
+    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases,
+    COALESCE((capabilities->>'expiredCommands')::boolean,false)::boolean AS reads_expiry
 FROM servers
 WHERE id = $2 AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = $1 OR (previous_hash = $1 AND previous_until>now()))
@@ -68,6 +69,7 @@ type AuthenticateAgentRow struct {
 	Role                 string    `json:"role"`
 	Previous             bool      `json:"previous"`
 	AcknowledgesReleases bool      `json:"acknowledges_releases"`
+	ReadsExpiry          bool      `json:"reads_expiry"`
 }
 
 // unscoped: the presented agent credential establishes the workspace.
@@ -79,6 +81,7 @@ func (q *Queries) AuthenticateAgent(ctx context.Context, arg AuthenticateAgentPa
 		&i.Role,
 		&i.Previous,
 		&i.AcknowledgesReleases,
+		&i.ReadsExpiry,
 	)
 	return i, err
 }

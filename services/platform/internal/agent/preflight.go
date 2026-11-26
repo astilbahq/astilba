@@ -36,6 +36,8 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	h.Capabilities.CredentialFreeVisualCancel = &credentialFreeCancel
 	machineBoundRotation := true
 	h.Capabilities.MachineBoundRotation = &machineBoundRotation
+	expiredCommands := true
+	h.Capabilities.ExpiredCommands = &expiredCommands
 	acknowledgesReleases := true
 	h.Capabilities.AcknowledgesReleases = &acknowledgesReleases
 	raw, _ := os.ReadFile("/etc/os-release")

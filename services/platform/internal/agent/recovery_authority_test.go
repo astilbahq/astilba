@@ -11,6 +11,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -50,7 +51,7 @@ func TestRecoveryTransferHoldsReplayAndPreservesFrozenReservation(t *testing.T) 
 	if _, err = j.Accept(reserve); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := crossHostCommand(reserve)
+	body, _ := deadline.CrossHost(reserve)
 	if _, err = j.reserveCrossHost(reserve, body); err != nil {
 		t.Fatal(err)
 	}

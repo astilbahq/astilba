@@ -71,7 +71,7 @@ export function AuthenticatorSetup({
           </Anchor>
           <Form
             action={confirm}
-            validation={validation.mfa}
+            validation={validation.enrollment}
             onSubmit={(data) =>
               confirm.run(() =>
                 request(

@@ -33,7 +33,7 @@ import (
 )
 
 const postgresImage = "postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1"
-const effectImage = "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+const effectImage = "busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4"
 
 type processConfig struct {
 	Role, DB, Socket, Journal, Docker, Marker, Pause string

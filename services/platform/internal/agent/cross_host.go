@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
@@ -22,11 +23,11 @@ import (
 
 func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r Record) error {
 	finish := func(state api.ExecutionState, note string) error { return e.finishPhase(ctx, c.Id, state, note) }
-	command, err := crossHostCommand(c)
+	command, err := deadline.CrossHost(c)
 	if err != nil || command.Unit.Plan.Local == nil || command.Unit.Plan.Validate(command.Phase != "resolve") != nil {
 		return finish("failed", "The assigned cross-host plan is invalid.")
 	}
-	if _, known := crossHostPhases(command)[command.Phase]; !known {
+	if !deadline.KnownPhase(command) {
 		return finish("failed", "Unsupported coordinated phase.")
 	}
 	p := command.Unit.Plan
@@ -406,7 +407,7 @@ func heldPreparationCancelled(r Record) bool {
 	if r.Report.State != "needs_attention" || !r.Command.CancelRequested || r.Command.Kind != "crosshost" {
 		return false
 	}
-	body, err := crossHostCommand(r.Command)
+	body, err := deadline.CrossHost(r.Command)
 	return err == nil && body.Phase == "prepare" && body.Maintenance == nil && body.Unit.Plan.Local != nil && !body.Unit.Plan.Local.Primary
 }
 

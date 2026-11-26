@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -403,7 +404,7 @@ func (s *Service) hydrateRecovery(ctx context.Context, a Identity, keys valueKey
 	if Terminal(api.ExecutionState(op.State)) {
 		return false, false, nil
 	}
-	cancelled, expired := c.CancelRequested || op.CancelRequested, time.Now().After(c.Deadline)
+	cancelled, expired := c.CancelRequested || op.CancelRequested, deadline.Passed(*c)
 	if !op.Held && (cancelled || expired) {
 		// No agent has it, so it ends here rather than reaching one that may not know the kind.
 		return false, false, finishUndeliveredRecovery(ctx, tx, c.Id, ws, "cancelled", recoveryUndeliveredNote)

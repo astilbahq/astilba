@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -373,7 +374,9 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 
 // hydrateBackup fills a backup command's access, or with nil keys only makes its checks.
 func (s *Service) hydrateBackup(ctx context.Context, keys valueKeys, c *api.ExecutionCommand) error {
-	if c.CancelRequested || time.Now().After(c.Deadline) {
+	// Poll sends a backup past its deadline without values. An upgrade's check reaches here with the
+	// upgrade's own stop and deadline.
+	if c.CancelRequested || deadline.Passed(*c) {
 		return nil
 	}
 	var b backup.Command

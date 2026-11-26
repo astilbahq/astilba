@@ -14,7 +14,7 @@ import (
 func testPlan() Plan {
 	image := domain.PostgresImage
 	db, web, volume, secret := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	appImage := "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
+	appImage := "busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4"
 	return Plan{ID: uuid.New(), ServerID: uuid.New(), EnvironmentID: uuid.New(), UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: Recipe, ExpiresAt: time.Now().Add(time.Minute), Images: map[string]string{db.String(): image, web.String(): appImage}, Specification: domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}}, Applications: []domain.Application{{ID: db, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: "/var/lib/postgresql"}}}, {ID: web, Name: "Web", Kind: "web", Source: domain.ApplicationSource{Kind: "image", Image: &appImage}, Command: []string{"sh", "-c", "echo $VALUE"}, Health: &domain.HealthCheck{Port: 8080, Path: "/"}}}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: db, TargetID: web, Variable: "DATABASE_URL"}}}}.WithHash()
 }
 

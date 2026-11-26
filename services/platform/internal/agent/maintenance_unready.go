@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -96,7 +97,7 @@ func (e *Engine) AcceptUnreadyWriters(ctx context.Context, id uuid.UUID) error {
 	if r.Report.State != "needs_attention" || r.Command.ParentId == nil || *r.Command.ParentId != s.ParentID || s.ParentID == uuid.Nil {
 		return errors.New("the operation must require attention under this host's frozen parent")
 	}
-	command, err := crossHostCommand(r.Command)
+	command, err := deadline.CrossHost(r.Command)
 	resuming := err == nil && (command.Phase == "resume-source" || command.Phase == "resume-target") && s.Phase == "resuming"
 	completing := err == nil && command.Phase == "complete" && s.Phase == "resumed"
 	if s.Maintenance == nil || s.Pause == nil || !resuming && !completing {

@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/cryptobox"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
@@ -350,8 +351,8 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 		a.RecoveryCheckpoint, b.RecoveryCheckpoint = nil, nil
 	}
 	if a.Kind == "crosshost" && b.Kind == "crosshost" {
-		ap, ae := crossHostCommand(a)
-		bp, be := crossHostCommand(b)
+		ap, ae := deadline.CrossHost(a)
+		bp, be := deadline.CrossHost(b)
 		if ae != nil || be != nil || ap.Digest() != a.PlanHash || bp.Digest() != b.PlanHash {
 			return false
 		}
@@ -395,11 +396,7 @@ func sameCommand(a, b api.ExecutionCommand) bool {
 		// Keep the original hydrated journal entry when a credential-free cancel arrives.
 		a.Pipeline, b.Pipeline = nil, nil
 	}
-	a.CancelRequested = false
-	b.CancelRequested = false
-	// Whether a delivery brought its values says how it travelled, not what the command is: the
-	// journal keeps the values it was first given.
-	a.SecretRelease, b.SecretRelease = nil, nil
+	a, b = withoutDelivery(a), withoutDelivery(b)
 	aj, _ := stablejson.Marshal(a)
 	bj, _ := stablejson.Marshal(b)
 	return bytes.Equal(aj, bj)
@@ -468,8 +465,7 @@ func (j *Journal) Accept(c api.ExecutionCommand) (Record, error) {
 			if !sameCommand(existing.Command, c) {
 				return errors.New("command identity changed")
 			}
-			existing.Command.CancelRequested = existing.Command.CancelRequested || c.CancelRequested
-			takeReleasedValues(&existing, c)
+			takeDelivery(&existing, c)
 			out = existing
 			return j.put(tx, "operations", c.Id.String(), out)
 		} else if !errors.Is(e, os.ErrNotExist) {

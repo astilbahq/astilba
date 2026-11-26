@@ -7,6 +7,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"io"
 	"os"
@@ -179,7 +180,7 @@ func (j *Journal) rootUnitHash(tx *bolt.Tx, parent uuid.UUID) (string, error) {
 		if r.Command.ParentId == nil || *r.Command.ParentId != parent || r.Command.Kind != "crosshost" {
 			return nil
 		}
-		body, err := crossHostCommand(r.Command)
+		body, err := deadline.CrossHost(r.Command)
 		if err != nil {
 			return err
 		}

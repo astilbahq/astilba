@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/google/uuid"
@@ -53,7 +54,7 @@ func (j *Journal) networkRestrictionScope(c api.ExecutionCommand, command hostne
 			if r.Command.ParentId == nil || *r.Command.ParentId != *c.ParentId || r.Command.Kind != "crosshost" {
 				return nil
 			}
-			body, err := crossHostCommand(r.Command)
+			body, err := deadline.CrossHost(r.Command)
 			checkpoint, e := commandCheckpoint(r.Command)
 			if err != nil || e != nil || !deployment.SameRecoveryRoot(d, checkpoint) || body.Unit.Plan.Local == nil {
 				return errors.New("retained network root differs from the parent")

@@ -42,7 +42,8 @@ RETURNING controller_generation;
 -- name: AuthenticateAgent :one
 -- unscoped: the presented agent credential establishes the workspace.
 SELECT workspace_id,role,(credential_hash <> @credential_hash)::boolean AS previous,
-    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
+    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases,
+    COALESCE((capabilities->>'expiredCommands')::boolean,false)::boolean AS reads_expiry
 FROM servers
 WHERE id = @server_id AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = @credential_hash OR (previous_hash = @credential_hash AND previous_until>now()));
