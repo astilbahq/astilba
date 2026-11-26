@@ -183,3 +183,19 @@ func TestCancellingEndsASendAtOnce(t *testing.T) {
 		t.Fatal("the send outlived its context")
 	}
 }
+
+// A username without its password, or the reverse, is refused at start-up rather than when the
+// first message fails to authenticate.
+func TestCredentialsAreConfiguredTogether(t *testing.T) {
+	base := Config{Address: "smtp.example.test:587", From: "accounts@example.test", Mode: "starttls"}
+	for _, c := range []struct {
+		username, password string
+		ok                 bool
+	}{{"", "", true}, {"mailer", "password", true}, {"mailer", "", false}, {"", "password", false}} {
+		config := base
+		config.Username, config.Password = c.username, c.password
+		if _, err := New(config); (err == nil) != c.ok {
+			t.Fatalf("username %q, password set %v: error %v", c.username, c.password != "", err)
+		}
+	}
+}
