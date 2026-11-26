@@ -169,3 +169,66 @@ func TestMFAEnrolmentLogoutDoesNotWaitForTheAccount(t *testing.T) {
 		t.Fatal("logout waited for a hold on accounts")
 	}
 }
+
+// A two-factor sign-in continues its pending sign-in's lineage only while that lasts. If a logout of
+// the pending sign-in lands while the code is checked, the sign-in still succeeds, since it proves
+// a credential, but in a lineage of its own: one that has signed out is never signed into again,
+// so it cannot hold an enrolment off.
+func TestMFASignInAfterItsLogoutStaysOutOfTheEndedLineage(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	enrolling := f.browser(t)
+	enrolling.login("owner@example.test", f.password)
+	codes := enableMFA(t, enrolling)
+	b := f.browser(t)
+	b.login("owner@example.test", f.password)
+	lineages := func() map[string]bool {
+		t.Helper()
+		rows, err := f.st.Pool.Query(ctx, "SELECT DISTINCT lineage::text FROM sessions")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := map[string]bool{}
+		for rows.Next() {
+			var lineage string
+			if err = rows.Scan(&lineage); err != nil {
+				t.Fatal(err)
+			}
+			found[lineage] = true
+		}
+		if err = rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	before := lineages()
+	held, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { held.Rollback(ctx) })
+	if _, err = held.Exec(ctx, "SELECT id FROM accounts WHERE id=$1 FOR UPDATE", f.owner); err != nil {
+		t.Fatal(err)
+	}
+	verify := b.send("POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]})
+	waitForLock(t, f, "-- name: LockAccount")
+	requireReply(t, <-b.send("POST", "/api/v1/auth/logout", nil), 204)
+	afterLogout := lineages()
+	if err = held.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireReply(t, <-verify, 200)
+	ended := 0
+	for lineage := range before {
+		if afterLogout[lineage] {
+			continue
+		}
+		ended++
+		if lineages()[lineage] {
+			t.Fatal("the sign-in signed into the lineage its logout ended")
+		}
+	}
+	if ended != 1 {
+		t.Fatalf("the logout ended %d lineages, want 1", ended)
+	}
+}
