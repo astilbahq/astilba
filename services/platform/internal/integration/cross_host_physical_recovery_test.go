@@ -1,13 +1,16 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -337,7 +340,7 @@ chmod +x /tmp/www/cgi-bin/health
 	}
 	remoteID := remoteContainers.Items[0].ID
 	for _, remote := range remoteContainers.Items {
-		assertPhysicalRemoteHTTP(t, ctx, hosts[0].namespace, spec.Applications[0].Health.Path, remote.ID)
+		assertPhysicalRemoteHTTP(t, ctx, hosts[0], spec.Applications[0].Health.Path, remote.ID)
 	}
 	if upgradeRecovery {
 		physicalPGQuery(t, ctx, hosts[0], pg, "CREATE TABLE recovery_canary(value text PRIMARY KEY); INSERT INTO recovery_canary VALUES ('source-before-upgrade')")
@@ -735,23 +738,70 @@ chmod +x /tmp/www/cgi-bin/health
 			t.Fatal("upgrade recovery removed the source volume", err)
 		}
 		assertPhysicalWriters(t, ctx, hosts, target, app, true)
-		assertPhysicalRemoteHTTP(t, ctx, hosts[0].namespace, "/cgi-bin/health", remoteID)
+		assertPhysicalRemoteHTTP(t, ctx, hosts[0], "/cgi-bin/health", remoteID)
 	}
 }
 
-func assertPhysicalRemoteHTTP(t *testing.T, ctx context.Context, namespace, path, containerID string) {
+// assertPhysicalRemoteHTTP waits for the ingress host's proxy to serve path from the remote
+// container over managed networking. The proxy probes a replica pool every 5 seconds and stops
+// sending to a server after one failed probe, so it can answer 503 for a few seconds after a
+// deployment and its network report ready. Each kind of answer that is not the container's is
+// logged once, with the proxy's view of its servers; an answer that never comes fails with the
+// last one.
+func assertPhysicalRemoteHTTP(t *testing.T, ctx context.Context, host *recoveryFixtureHost, path, containerID string) {
 	t.Helper()
-	served := false
-	for range 20 {
-		body, err := exec.CommandContext(ctx, "nsenter", "--net=/run/netns/"+namespace, "curl", "--fail", "--silent", "--show-error", "--max-time", "3", "-H", "Host: physical-recovery.example.test", "http://127.0.0.1"+path).CombinedOutput()
-		if err != nil {
-			t.Fatal("physical cross-host HTTP", err, string(body))
+	started := time.Now()
+	seen := map[string]bool{}
+	var last string
+	for deadline := started.Add(30 * time.Second); ; {
+		status, body, err := physicalIngressGet(ctx, host.namespace, path)
+		if err == nil && status/100 == 2 && body == containerID[:12] {
+			if len(seen) > 0 {
+				t.Logf("ingress served %s after %s", containerID[:12], time.Since(started).Round(time.Millisecond))
+			}
+			return
 		}
-		served = served || strings.TrimSpace(string(body)) == containerID[:12]
+		kind := fmt.Sprint(status)
+		last = fmt.Sprintf("%d %q", status, body)
+		if err != nil {
+			kind, last = "error", err.Error()
+		}
+		if status/100 != 2 && !seen[kind] {
+			seen[kind] = true
+			t.Logf("ingress answered %s after %s; proxy services: %s", last, time.Since(started).Round(time.Millisecond), physicalProxyServices(ctx, host))
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			t.Fatalf("ingress never reached the remote container %s over managed networking; last answer %s", containerID[:12], last)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	if !served {
-		t.Fatal("ingress never reached the remote container over managed networking")
+}
+
+// physicalIngressGet requests path from the proxy in namespace, as a client of the application
+// would. A connection failure is an error; any status is an answer.
+func physicalIngressGet(ctx context.Context, namespace, path string) (int, string, error) {
+	var stdout, stderr bytes.Buffer
+	command := exec.CommandContext(ctx, "nsenter", "--net=/run/netns/"+namespace, "curl", "--silent", "--show-error", "--max-time", "3", "-H", "Host: physical-recovery.example.test", "--write-out", "\n%{http_code}", "http://127.0.0.1"+path)
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		return 0, "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
+	out := stdout.String()
+	i := strings.LastIndex(out, "\n")
+	status, err := strconv.Atoi(out[i+1:])
+	if i < 0 || err != nil {
+		return 0, "", fmt.Errorf("curl wrote no status: %q", out)
+	}
+	return status, strings.TrimSpace(out[:i]), nil
+}
+
+// physicalProxyServices is the proxy's report of its HTTP services and each server's status.
+func physicalProxyServices(ctx context.Context, host *recoveryFixtureHost) string {
+	out, err := exec.CommandContext(ctx, "/opt/astilba-plat4/bin/docker", "--host", host.engine.Docker.DaemonHost(), "exec", "astilba-ingress", "wget", "-T", "2", "-qO-", "http://127.0.0.1:8080/api/http/services").CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("unavailable (%v: %s)", err, bytes.TrimSpace(out))
+	}
+	return string(bytes.TrimSpace(out))
 }
 
 func physicalPGQuery(t *testing.T, ctx context.Context, host *recoveryFixtureHost, resource uuid.UUID, sql string) string {
