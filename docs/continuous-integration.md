@@ -351,14 +351,15 @@ and what an allowlist entry has to name:
 | --- | --- |
 | `image`, `agent`, `cli` | A vulnerable function is reachable from `cmd/server`, `cmd/agent` or `cmd/cli`, for the platforms that binary ships to |
 | `dashboard` | A lockfile package in the production dependency closure of `@astilba/dashboard` |
-| `tooling` | Any other lockfile package, or Go reachable only from other `services/platform` packages |
+| `tooling` | Any other lockfile package, or Go reachable only from other `services/platform` packages, including commands only CI runs, such as `cmd/catalog-images` |
 | `experiment` | A vulnerable function is reachable in `experiments/durable-execution`, `git-compose`, `fleet-capacity` or `platform-comparison/app` |
 
 Each binary is scanned with the `GOOS`, `GOARCH` and build tags it ships with. These
 choose the source files analysed, not the advisories: an advisory limited to a
 platform nothing ships to can still report as reachable, and then needs a bump or an
-allowlist entry. A new binary under `cmd` or a Go module outside `experiments` stops
-the scan until it is added to `scripts/vulnerability-scan.mjs`.
+allowlist entry. A new directory under `cmd` or a Go module outside `experiments` stops
+the scan until it is added to `scripts/vulnerability-scan.mjs`, as a shipped binary or a
+CI tool, and `make check-ci` fails the same way first.
 
 `dashboard` follows pnpm's production closure, so it includes peers that are never
 bundled, such as `typescript`. `tooling` means outside that closure, so review code
@@ -838,8 +839,11 @@ with the image smoke test's PostgreSQL pull.
 - The action runs on the runner's own Node, because Host jobs set up no Node of their own.
 - The Host visual lane also pulls every [catalog image](service-catalog.md) this way. Its
   catalog journey deploys them all, and a failed registry read during it failed the lane four
-  times from 18 to 21 November 2026. `TestCatalogImagesArePulledFirst` fails if the
-  list and the catalog differ. The agent finds these images in Docker and reads no registry,
+  times from 18 to 21 November 2026. The list comes from the catalog itself:
+  `services/platform/cmd/catalog-images` prints each image the catalog deploys that the
+  Host job's `FIXTURE_IMAGES` does not already pull, and refuses one without a tag and a
+  digest, so a catalog bump needs no workflow change. Its test fails if the workflow stops
+  passing the fixture list to it or pulling what it prints. The agent finds these images in Docker and reads no registry,
   so the journey no longer measures a pull from a public registry. `TestNativePull*` and
   `TestNativePipeline` keep the measured pull covered against registries on the host, and
   `TestPull*` covers a registry that fails and recovers.
