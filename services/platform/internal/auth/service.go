@@ -163,14 +163,6 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 // enrolment lasts.
 var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out your other sessions."}
 
-// enrolmentLineage admits the browser session p presents, refusing one that a credential change
-// or logout has ended, and returns its lineage, which an enrolment is bound to: it stays the same
-// when the session renews its token, as confirming credentials does.
-func enrolmentLineage(ctx context.Context, q *db.Queries, p store.Principal) (uuid.UUID, error) {
-	lineage, err := q.BrowserSessionLineage(ctx, db.BrowserSessionLineageParams{Token: p.SessionHash, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion})
-	return lineage, store.IfMissing(err, domain.Unauthenticated)
-}
-
 // pendingEnrolment refuses a session that has no unexpired enrolment of its own to confirm, such as
 // one another session began, as it refuses a lapsed one. The account must not have an authenticator.
 func (s *Service) pendingEnrolment(account db.Account, lineage uuid.UUID) error {
@@ -193,16 +185,19 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 	}
 	defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
 	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		account, err := lockCurrent(ctx, q, p)
+		// As lockCurrent does, the session is admitted after the account's lock. The enrolment
+		// is bound to its lineage, which stays the same when it renews its token, as confirming
+		// credentials does.
+		account, err := q.LockAccount(ctx, p.Account.ID)
+		if err != nil {
+			return err
+		}
+		lineage, err := store.AdmittedLineage(ctx, q, p)
 		if err != nil {
 			return err
 		}
 		if len(account.TotpSecret) > 0 {
 			return domain.Conflict
-		}
-		lineage, err := enrolmentLineage(ctx, q, p)
-		if err != nil {
-			return err
 		}
 		if other := account.TotpPendingLineage; other != nil && *other != lineage && account.TotpPendingExpiry != nil && account.TotpPendingExpiry.After(s.Now()) {
 			// An enrolment whose session has signed out is no one's, so it gives way.
@@ -246,7 +241,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	// has nothing to confirm, which its holder knows. A session that a credential change or
 	// logout has ended is refused as such first. The check is made again under the account's
 	// lock; the session's lineage stays the same, as it is fixed with its token.
-	lineage, err := enrolmentLineage(ctx, s.Store.Queries, p)
+	lineage, err := store.AdmittedLineage(ctx, s.Store.Queries, p)
 	if err != nil {
 		return account, nil, err
 	}

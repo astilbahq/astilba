@@ -44,9 +44,10 @@ WHERE browser_session_hash = @previous AND state <> 'closed';
 
 -- name: BrowserSessionAdmission :one
 -- unscoped: the hashed browser session token is the credential.
--- Revalidates an authenticated session under the lock its request waited for.
+-- Revalidates an authenticated session under the lock its request waited for, and
+-- returns its lineage.
 -- Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
-SELECT a.id FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
+SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
 WHERE a.id = @account_id AND a.auth_version = @auth_version;
 
 -- name: BrowserSessionSnapshotAdmission :one
@@ -57,13 +58,6 @@ WHERE a.id = @account_id AND a.auth_version = @auth_version;
 SELECT a.id FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
 WHERE a.id = @account_id AND a.auth_version = @auth_version
 FOR SHARE OF a FOR KEY SHARE OF s;
-
--- name: BrowserSessionLineage :one
--- unscoped: the hashed browser session token is the credential.
--- Admits the session as BrowserSessionAdmission does and returns its lineage.
--- Keep the validity predicate identical to BrowserSessionAdmission.
-SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
-WHERE a.id = @account_id AND a.auth_version = @auth_version;
 
 -- name: SessionLineageLive :one
 -- unscoped: a lineage is one browser's chain of renewed session tokens.

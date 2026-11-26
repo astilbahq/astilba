@@ -13,7 +13,7 @@ import (
 )
 
 const browserSessionAdmission = `-- name: BrowserSessionAdmission :one
-SELECT a.id FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
+SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
 WHERE a.id = $2 AND a.auth_version = $3
 `
 
@@ -24,31 +24,11 @@ type BrowserSessionAdmissionParams struct {
 }
 
 // unscoped: the hashed browser session token is the credential.
-// Revalidates an authenticated session under the lock its request waited for.
+// Revalidates an authenticated session under the lock its request waited for, and
+// returns its lineage.
 // Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
 func (q *Queries) BrowserSessionAdmission(ctx context.Context, arg BrowserSessionAdmissionParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, browserSessionAdmission, arg.Token, arg.AccountID, arg.AuthVersion)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
-const browserSessionLineage = `-- name: BrowserSessionLineage :one
-SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
-WHERE a.id = $2 AND a.auth_version = $3
-`
-
-type BrowserSessionLineageParams struct {
-	Token       string    `json:"token"`
-	AccountID   uuid.UUID `json:"account_id"`
-	AuthVersion int64     `json:"auth_version"`
-}
-
-// unscoped: the hashed browser session token is the credential.
-// Admits the session as BrowserSessionAdmission does and returns its lineage.
-// Keep the validity predicate identical to BrowserSessionAdmission.
-func (q *Queries) BrowserSessionLineage(ctx context.Context, arg BrowserSessionLineageParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, browserSessionLineage, arg.Token, arg.AccountID, arg.AuthVersion)
 	var lineage uuid.UUID
 	err := row.Scan(&lineage)
 	return lineage, err

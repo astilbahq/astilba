@@ -275,8 +275,15 @@ func (s *Store) BeginKeys(ctx context.Context, p Principal, access WorkspaceAcce
 // version. A refusal rolls back and leaves no audit record, as a refused automation
 // credential does. It takes no locks, so it cannot deadlock or make a revocation wait.
 func AdmitBrowserSession(ctx context.Context, q *db.Queries, p Principal) error {
-	_, err := q.BrowserSessionAdmission(ctx, db.BrowserSessionAdmissionParams{Token: p.SessionHash, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion})
-	return IfMissing(err, domain.Unauthenticated)
+	_, err := AdmittedLineage(ctx, q, p)
+	return err
+}
+
+// AdmittedLineage admits the session as AdmitBrowserSession does and returns its lineage, the
+// chain of tokens it renews through, which stays the same for as long as the sign-in lasts.
+func AdmittedLineage(ctx context.Context, q *db.Queries, p Principal) (uuid.UUID, error) {
+	lineage, err := q.BrowserSessionAdmission(ctx, db.BrowserSessionAdmissionParams{Token: p.SessionHash, AccountID: p.Account.ID, AuthVersion: p.Account.AuthVersion})
+	return lineage, IfMissing(err, domain.Unauthenticated)
 }
 
 func browserAdmission(ctx context.Context, tx pgx.Tx, p Principal, isolation pgx.TxIsoLevel) error {
