@@ -10,17 +10,41 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/google/uuid"
 	middleware "github.com/oapi-codegen/nethttp-middleware"
 )
 
+// bearerOperations are the API operations, as method and route pattern, whose declared security
+// admits an automation credential. Every other operation takes a browser session or nothing, and
+// its handler may rely on the session that the browser path loads.
+func bearerOperations(spec *openapi3.T) map[string]bool {
+	out := map[string]bool{}
+	for path, item := range spec.Paths.Map() {
+		for method, op := range item.Operations() {
+			security := spec.Security
+			if op.Security != nil {
+				security = *op.Security
+			}
+			for _, requirement := range security {
+				if _, ok := requirement["automationBearer"]; ok {
+					out[method+" "+path] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// automationRequest authenticates a bearer for an operation that declares automationBearer. It
+// refuses every other operation before reading the token, as nothing there accepts one.
 func (s *Server) automationRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		values := r.Header.Values("Authorization")
 		parts := strings.Fields(r.Header.Get("Authorization"))
-		if len(values) != 1 || len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || publicPath(r.URL.Path) {
+		if len(values) != 1 || len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || !s.bearerOperations[r.Method+" "+requestRoute(r)] {
 			s.fail(w, r, domain.Unauthenticated)
 			return
 		}

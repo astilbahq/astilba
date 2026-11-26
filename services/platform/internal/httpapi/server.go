@@ -67,6 +67,8 @@ type Server struct {
 	TerminalReviewEvery time.Duration
 	terminals           *terminalHub
 	archives            *archiveTurns
+	// bearerOperations is set by Handler from the specification; see automationRequest.
+	bearerOperations map[string]bool
 }
 
 func New(st *store.Store, service *auth.Service, origin string, development bool, log *slog.Logger) (*Server, func()) {
@@ -113,6 +115,7 @@ func (s *Server) Handler(assets http.Handler) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.bearerOperations = bearerOperations(spec)
 	r := chi.NewRouter()
 	r.Use(s.request)
 	r.Group(func(r chi.Router) {
