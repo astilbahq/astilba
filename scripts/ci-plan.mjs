@@ -24,6 +24,9 @@ const owns = (prefix, workflow) => (path) =>
 const javascript = (path) =>
   [
     ".github/actions/install-pnpm/action.yml",
+    ".npmrc",
+    ".pnpmfile.cjs",
+    ".pnpmfile.mjs",
     "package.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
@@ -38,9 +41,20 @@ const imagePulls = (path) =>
   path === "scripts/fetch-attempts.mjs" ||
   path === "scripts/docker-hub-mirror.mjs";
 
+// Files that decide which dependency versions get resolved, wherever they are: Go reads a
+// go.work from the module directory or any parent, and its replacements override go.mod;
+// a vendor directory replaces the module cache; pnpm reads .npmrc and its pnpmfile hooks.
+const dependencyInputs = (path) =>
+  /(^|\/)(go\.(mod|sum|work|work\.sum)|vendor\/modules\.txt|package\.json|pnpm-(lock|workspace)\.yaml|\.npmrc|\.pnpmfile\.(cjs|mjs))$/.test(
+    path,
+  );
+
 const vulnerabilityInputs = (path) =>
   path.endsWith(".go") ||
-  /(^|\/)(go\.mod|go\.sum|package\.json)$/.test(path) ||
+  dependencyInputs(path) ||
+  // The scan lists every directory here and stops on one it does not scan, so a new
+  // command's first file, Go or not, must run it.
+  path.startsWith("services/platform/cmd/") ||
   javascript(path) ||
   path === "Makefile" ||
   path === ".github/vulnerability-allowlist.json" ||
