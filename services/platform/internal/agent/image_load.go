@@ -151,7 +151,10 @@ func (e *Engine) imageLoadLimit(ctx context.Context) (imageLoadLimit, error) {
 // errLongerThanMeasured is a stream that goes on past the size measured for it.
 var errLongerThanMeasured = errors.New("the image archive grew after it was measured")
 
-// measuredReader reads exactly remaining bytes, and fails if r has more.
+// errShorterThanMeasured is a stream that ended, whole, before the size measured for it.
+var errShorterThanMeasured = errors.New("the image archive shrank after it was measured")
+
+// measuredReader reads exactly remaining bytes, and fails if r has more or fewer.
 type measuredReader struct {
 	r         io.Reader
 	remaining int64
@@ -167,7 +170,7 @@ func (m *measuredReader) Read(p []byte) (int, error) {
 	n, err := m.r.Read(p[:min(int64(len(p)), m.remaining)])
 	m.remaining -= int64(n)
 	if err == io.EOF && m.remaining > 0 {
-		err = io.ErrUnexpectedEOF
+		err = errShorterThanMeasured
 	}
 	return n, err
 }

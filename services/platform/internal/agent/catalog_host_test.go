@@ -101,11 +101,17 @@ func nativeCatalogJourney(t *testing.T, e *Engine, server uuid.UUID, command fun
 					t.Fatal(err)
 				}
 				r, err := e.Journal.Record(c.Id)
-				if err != nil || r.Report.State != "succeeded" {
-					t.Fatalf("%s: %v %s", action, err, r.Report.Note)
+				if err != nil {
+					t.Fatal(action, err)
 				}
+				// Settled before it fails the test, as management settles a finished command, so a
+				// refused deployment fails only its own subtest and the journal admits the next. One
+				// that needs attention still holds the journal, as it would a server.
 				if err = e.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
 					t.Fatal(err)
+				}
+				if r.Report.State != "succeeded" {
+					t.Fatalf("%s: %s", action, r.Report.Note)
 				}
 				var observation deployment.Observation
 				if err = json.Unmarshal(*r.Report.Observation, &observation); err != nil {

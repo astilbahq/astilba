@@ -529,7 +529,7 @@ func TestNativePipeline(t *testing.T) {
 		_ = json.Unmarshal(*pushed.Report.Pipeline, &image)
 		deploy := deployment.Payload{Plan: deployment.Plan{Images: map[string]string{"app": image.Image}}, RegistryAccess: map[string]pipeline.Credential{"app": {Username: "deployer", Password: registry.pull}}}
 		refusedWithin("registry image of a 9G sparse file", "The image "+image.Image+" was not pulled: unpack", func() string {
-			err := engine.pullVisualImages(ctx, deploy)
+			err := engine.pullVisualImages(ctx, api.ExecutionCommand{}, deploy)
 			if !errors.As(err, new(*imagePullRefused)) {
 				t.Fatal("registry image of a sparse file was not refused", err)
 			}
