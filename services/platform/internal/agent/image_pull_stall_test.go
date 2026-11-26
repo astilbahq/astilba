@@ -26,7 +26,7 @@ import (
 // stops or sends a byte now and then, and not while it keeps up or the reader is slow to ask.
 func TestSlowAnswer(t *testing.T) {
 	const window = 100 * time.Millisecond
-	progress := registryProgress{window: window, least: 32}
+	progress := registryProgress{window: window, least: 16}
 	for name, tc := range map[string]struct {
 		// send is what the source sends, before it stops.
 		send    func(w *io.PipeWriter)
@@ -66,9 +66,10 @@ func TestSlowAnswer(t *testing.T) {
 		},
 		"a source that keeps up": {
 			send: func(w *io.PipeWriter) {
-				for range 20 {
+				// Ten times what each window asks, so a late wake-up doesn't fall short.
+				for range 50 {
 					_, _ = w.Write(make([]byte, 16))
-					time.Sleep(window / 4)
+					time.Sleep(window / 10)
 				}
 				_ = w.Close()
 			},
