@@ -38,6 +38,10 @@ A fresh host has no floor until its first install. Give the bootstrap `--minimum
 
 The minimum version is the reviewed file `services/platform/cmd/agent/minimum-version`, which every build embeds, so it is part of the release's commit. Raise it in a pull request when releases below it must not run again, for example after a security fix, or after a change that earlier agents can't read. An agent is bound by the new value only once it runs a release that carries it; from then on it only installs releases that carry that value or a higher one. Update every agent to such a release promptly.
 
+Raises so far, and why releases below each must not run again:
+
+- `0.1.0`: from this release, a PostgreSQL backup's snapshot manifest records the dump's settings. An earlier agent drops them when it reads the manifest, so the manifest no longer matches the hash its record holds, and that agent refuses to restore any backup made since. The floor doesn't stop an earlier agent restored by hand, which refuses those restores too. The first release must be tagged `0.1.0` or later.
+
 ### Release procedure
 
 Releases are built by `.github/workflows/agent-release.yml`, never on a workstation, and signed offline by the holder of the release key.
