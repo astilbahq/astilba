@@ -651,6 +651,7 @@ type InstallationKeyEvent struct {
 	WorkspaceID *uuid.UUID  `json:"workspace_id"`
 	Generation  pgtype.Int8 `json:"generation"`
 	Details     []byte      `json:"details"`
+	Seq         int64       `json:"seq"`
 }
 
 type InstallationKeyWrapping struct {

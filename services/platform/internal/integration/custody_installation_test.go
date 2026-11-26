@@ -2,8 +2,10 @@ package integration
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json/v2"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pressly/goose/v3"
 )
 
 // keyEvents are the installation's key events of one kind, oldest first.
@@ -293,6 +296,71 @@ func TestKeyEventsAreAppendOnly(t *testing.T) {
 	var late bool
 	if err := f.st.Pool.QueryRow(ctx, "INSERT INTO installation_key_events(id,at,run_id,kind) VALUES(gen_random_uuid(),'2000-01-01',gen_random_uuid(),'dated') RETURNING at > now() - interval '1 minute'").Scan(&late); err != nil || !late {
 		t.Fatalf("a writer dated its event: %v", err)
+	}
+	// Nor does a writer order it.
+	for _, statement := range []string{"INSERT INTO installation_key_events(id,run_id,kind,seq) VALUES(gen_random_uuid(),gen_random_uuid(),'ordered',1)", "UPDATE installation_key_events SET seq=seq+1000"} {
+		if _, err := f.st.Pool.Exec(ctx, statement); err == nil {
+			t.Fatalf("%s succeeded", statement)
+		}
+	}
+}
+
+// Events one transaction records share its time, and come back in the order recorded; so does
+// whether a run supersedes another.
+func TestKeyEventsThatShareATimeKeepTheirOrder(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	stopped, succeeded, running := uuid.New(), uuid.New(), uuid.New()
+	var ids []uuid.UUID
+	for _, e := range []struct {
+		run           uuid.UUID
+		kind, details string
+	}{
+		{stopped, "rewrap-started", "{}"},
+		{succeeded, "rewrap-started", "{}"},
+		{succeeded, "rewrap-finished", `{"outcome":"used"}`},
+		{running, "rewrap-started", "{}"},
+	} {
+		id := uuid.New()
+		if err = db.New(tx).InsertInstallationKeyEvent(ctx, db.InsertInstallationKeyEventParams{ID: id, RunID: e.run, Kind: e.kind, Details: []byte(e.details)}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	events, err := db.New(f.st.Pool).InstallationKeyEvents(ctx, int32(len(ids)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uuid.UUID
+	for _, e := range slices.Backward(events) {
+		if !e.At.Equal(events[0].At) {
+			t.Fatalf("events of one transaction at %s and %s", e.At, events[0].At)
+		}
+		got = append(got, e.ID)
+	}
+	if !slices.Equal(got, ids) {
+		t.Fatalf("events %v, recorded as %v", got, ids)
+	}
+	// The run that started after the stopped one and succeeded supersedes it; the run that
+	// started after that success does not.
+	unfinished, err := db.New(f.st.Pool).UnfinishedCustodyRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs []uuid.UUID
+	for _, r := range unfinished {
+		runs = append(runs, r.RunID)
+	}
+	if !slices.Equal(runs, []uuid.UUID{running}) {
+		t.Fatalf("unfinished %v, want only %s (stopped %s)", runs, running, stopped)
 	}
 }
 
@@ -615,5 +683,67 @@ func TestKeyringCheckPassesOverErasedValues(t *testing.T) {
 	}
 	if err := restart(f, keysOf(f.st), uuid.Nil); err != nil {
 		t.Fatalf("right keyring with only erased values: %v", err)
+	}
+}
+
+// keyEventOrderMigration numbers the installation's key events in the order they were recorded.
+const keyEventOrderMigration = 72
+
+// Events recorded before the order was kept are numbered by time, then ID, as readers ordered
+// them before; events after them come after.
+func TestKeyEventOrderMigrationNumbersEarlierEventsByTime(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	conn, err := sql.Open("pgx", f.st.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, conn, os.DirFS("../../db/migrations"), goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, keyEventOrderMigration, false); err != nil {
+		t.Fatal(err)
+	}
+	// Recorded in this order, dated in another, and two of them at one time.
+	a, b := uuid.MustParse("00000000-0000-0000-0000-00000000000a"), uuid.MustParse("00000000-0000-0000-0000-00000000000b")
+	c, d := uuid.MustParse("00000000-0000-0000-0000-00000000000c"), uuid.MustParse("00000000-0000-0000-0000-00000000000d")
+	tx, err := f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	for _, s := range []string{
+		"ALTER TABLE installation_key_events DISABLE TRIGGER installation_key_events_insert",
+		"INSERT INTO installation_key_events(id,at,run_id,kind) VALUES('" + d.String() + "','2000-01-03',gen_random_uuid(),'dated')",
+		"INSERT INTO installation_key_events(id,at,run_id,kind) VALUES('" + a.String() + "','2000-01-02',gen_random_uuid(),'dated')",
+		"INSERT INTO installation_key_events(id,at,run_id,kind) VALUES('" + c.String() + "','2000-01-03',gen_random_uuid(),'dated')",
+		"INSERT INTO installation_key_events(id,at,run_id,kind) VALUES('" + b.String() + "','2000-01-01',gen_random_uuid(),'dated')",
+		"ALTER TABLE installation_key_events ENABLE TRIGGER installation_key_events_insert",
+	} {
+		if _, err = tx.Exec(ctx, s); err != nil {
+			t.Fatal(s, err)
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.ApplyVersion(ctx, keyEventOrderMigration, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = dbmigrate.Check(ctx, f.st.Pool.Config().ConnString()); err != nil {
+		t.Fatal(err)
+	}
+	later := uuid.New()
+	if err = db.New(f.st.Pool).InsertInstallationKeyEvent(ctx, db.InsertInstallationKeyEventParams{ID: later, RunID: uuid.New(), Kind: "dated", Details: []byte("{}")}); err != nil {
+		t.Fatal(err)
+	}
+	var got []uuid.UUID
+	for _, e := range keyEvents(t, f, "dated") {
+		got = append(got, e.ID)
+	}
+	if want := []uuid.UUID{b, a, c, d, later}; !slices.Equal(got, want) {
+		t.Fatalf("events %v, want %v", got, want)
 	}
 }
