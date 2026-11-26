@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import type { Schema } from "../src/api/client";
 import { authFixtureSQL } from "./auth-fixture";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
@@ -86,6 +87,7 @@ async function seedOperator(workspaceId: string, name: string) {
 
 test("owner controls terminal sessions, ends them and reviews their history", async ({
   page,
+  browser,
 }, info) => {
   await page.goto("/");
   await signInAsOwner(page);
@@ -193,15 +195,54 @@ test("owner controls terminal sessions, ends them and reviews their history", as
   );
   await expect(panel).toContainText("No sessions are open");
 
-  // Sessions are off in this environment now, so the API refuses and audits this.
-  const refused = await page.request.post(
-    `${deployed.environmentPath}/troubleshooting/sessions`,
-    {
-      headers: deployed.headers,
-      data: { applicationId: deployed.applicationId, instance: 1 },
-    },
+  // Sessions are off in this environment now, so the API refuses and audits this. A
+  // person's refusals are recorded once an hour, so the owner's could already be recorded
+  // by an earlier run on this installation, and lie past the activity the page lists. A
+  // member who signs in for this run is refused instead.
+  const member = await seedOperator(deployed.workspaceId, "Riley Operator");
+  const context = await browser.newContext();
+  try {
+    const memberPage = await context.newPage();
+    await memberPage.goto(`${api}/login`);
+    await memberPage
+      .getByLabel("Email", { exact: true })
+      .fill(`${member}@example.test`);
+    await memberPage
+      .getByLabel("Password", { exact: true })
+      .fill("correct horse battery staple");
+    await memberPage
+      .getByRole("button", { name: "Sign in", exact: true })
+      .click();
+    await expect(
+      memberPage.getByRole("heading", { name: "Projects", exact: true }),
+    ).toBeVisible();
+    const session = await (
+      await context.request.get(`${api}/api/v1/session`)
+    ).json();
+    const refused = await context.request.post(
+      `${api}${deployed.environmentPath}/troubleshooting/sessions`,
+      {
+        headers: { "X-CSRF-Token": session.csrfToken, Origin: api },
+        data: { applicationId: deployed.applicationId, instance: 1 },
+      },
+    );
+    expect(refused.status()).toBe(409);
+    expect((await refused.json()).code).toBe("troubleshooting_refused");
+  } finally {
+    await context.close();
+  }
+  // The activity below names the action but not who took it, so the audit says this run's
+  // refusal is the one recorded.
+  const audit: Schema["AuditEvent"][] = await (
+    await page.request.get(`/api/v1/workspaces/${deployed.workspaceId}/audit`)
+  ).json();
+  expect(audit).toContainEqual(
+    expect.objectContaining({
+      actorId: member,
+      action: "session.refused.environment",
+      resourceId: deployed.environmentId,
+    }),
   );
-  expect((await refused.json()).code).toBe("troubleshooting_refused");
 
   await page.getByRole("link", { name: "Workspace", exact: true }).click();
   await expect(
