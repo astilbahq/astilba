@@ -22,7 +22,7 @@ const planId = "00000000-0000-4000-8000-000000000020";
 const server = "00000000-0000-4000-8000-000000000030";
 const app = "00000000-0000-4000-8000-000000000040";
 const image =
-  "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
+  "busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4";
 const specification: Schema["Specification"] = {
   version: 1,
   variables: [],

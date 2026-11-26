@@ -19,8 +19,8 @@ import (
 	"time"
 )
 
-const GitLabImage = "gitlab/gitlab-ce:19.5.1-ce.0@sha256:bb79dc86267c557fd11e7feb0cd9dd506dd02e991ecdd6cae11ca7d7e5d36fc3"
-const GiteaImage = "gitea/gitea:28.2.0@sha256:30777c91280d973fa02be48b1ade735bd6859e8f6f7af3b4444d519437852504"
+const GitLabImage = "gitlab/gitlab-ce:19.5.5-ce.0@sha256:392e6bd5bf118ae520e4038261a5ae39aea05de0d2299a162b4c822a9684cf9b"
+const GiteaImage = "gitea/gitea:28.3.0@sha256:8967bf9deaf3c5c4adae13519436dc1b20c646ac83fe37ae810c933a1045227d"
 
 func fixtureID() string {
 	var data [8]byte
