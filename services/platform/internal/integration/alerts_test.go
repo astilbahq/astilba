@@ -89,8 +89,7 @@ func TestAlertInboxIsolationDeduplicationAndRetention(t *testing.T) {
 	if len(inbox.Alerts) != 1 {
 		t.Fatal("same operation alerted again after terminal failure")
 	}
-	var other api.Workspace
-	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &other)
+	other := b.createWorkspaceWithoutMFARequirement("Other")
 	b.call("POST", "/api/v1/workspaces/"+other.Id.String()+"/alerts/"+id.String()+"/acknowledge", nil, 404, nil)
 	viewerID := uuid.New()
 	hash, _ := f.auth.Passwords.Hash(f.password)

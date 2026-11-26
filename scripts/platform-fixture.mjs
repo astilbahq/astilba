@@ -237,6 +237,10 @@ try {
       stdio: ["pipe", "inherit", "inherit"],
     },
   );
+  // The shared owner signs in with a password alone, so its workspace stands for one that
+  // doesn't require two-factor authentication, as one made before new workspaces did.
+  // workspace-mfa.spec.ts covers the requirement new ones start with.
+  docker(["exec", name, "psql", "--username", "postgres", "--dbname", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "UPDATE workspaces SET require_mfa=false WHERE name='Personal'"]);
   const start = (cmd, args, environment) => {
     const child = spawn(cmd, args, {
       cwd: root,

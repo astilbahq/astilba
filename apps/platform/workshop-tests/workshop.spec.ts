@@ -437,9 +437,9 @@ test("hosted signup and email verification fit expanded RTL at 320px", async ({
     "pages-hosted-signup--new-account",
     "pages-email-verification--verify",
     "pages-email-verification--email-sent",
-    "pages-hosted-onboarding--scan-authenticator",
-    "pages-hosted-onboarding--save-recovery-codes",
-    "pages-hosted-onboarding--subscription",
+    "pages-workspace-setup--scan-authenticator",
+    "pages-workspace-setup--save-recovery-codes",
+    "pages-workspace-setup--subscription",
   ]) {
     await gotoNextStory(
       page,

@@ -1,4 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
+import { useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { appShell } from "../../../styled-system/recipes";
@@ -18,6 +19,7 @@ import {
 import { ThemeMenu } from "../../components/theme-menu";
 import { ErrorToast } from "../../components/toast";
 import { useAction } from "../../ui";
+import { MfaSetupNotice } from "./mfa-setup-notice";
 
 export type AppSection = "/" | "/servers" | "/alerts" | "/members" | "/account";
 const paths = {
@@ -49,13 +51,22 @@ function Chevron() {
   );
 }
 
+// focusPage moves focus to the page a navigation rendered: the section its link's hash names, if
+// that can take focus, or otherwise main. The router has placed the scroll position, so main,
+// which can be taller than the screen, leaves it alone.
+function focusPage(main: HTMLElement | null, hash: string) {
+  const section = hash ? document.getElementById(hash) : null;
+  section?.focus();
+  if (!section || document.activeElement !== section)
+    main?.focus({ preventScroll: true });
+}
+
 export function AppShell({
   user,
   workspaces,
   workspace,
   selectedWorkspaceId,
   section,
-  navigationKey,
   onWorkspaceChange,
   onSignedOut,
   children,
@@ -65,7 +76,6 @@ export function AppShell({
   workspace?: Schema["Workspace"];
   selectedWorkspaceId?: string;
   section: AppSection;
-  navigationKey: string;
   onWorkspaceChange: (id: string) => void;
   onSignedOut: () => void;
   children: ReactNode;
@@ -76,18 +86,28 @@ export function AppShell({
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const main = useRef<HTMLElement>(null);
+  // The location the router has rendered, rather than the one it is loading, so that focus
+  // moves once the page it names is there.
+  const navigationKey = useRouterState({
+    select: (state) => (state.resolvedLocation ?? state.location).href,
+  });
+  const hash = useRouterState({
+    select: (state) => (state.resolvedLocation ?? state.location).hash,
+  });
   const previousNavigation = useRef(navigationKey);
-  const focusAfterClose = useRef(false);
+  // What takes focus once the drawer has closed, if not its trigger: the page a navigation
+  // rendered, even one that arrives while a dismissed drawer fades out, or main when the drawer is
+  // dismissed with its trigger hidden.
+  const focusAfterClose = useRef<"page" | "main">(undefined);
   const logout = useAction();
   const request = useSessionRequest();
   useEffect(() => {
     if (previousNavigation.current === navigationKey) return;
     previousNavigation.current = navigationKey;
-    if (open) {
-      focusAfterClose.current = true;
-      setOpen(false);
-    } else main.current?.focus();
-  }, [navigationKey, open]);
+    focusAfterClose.current = "page";
+    if (open) setOpen(false);
+    else focusPage(main.current, hash);
+  }, [navigationKey, hash, open]);
   const search = { workspace: selectedWorkspaceId ?? workspace?.id };
   const navigation = [
     { to: "/", label: t(($) => $.navigation.projects), icon: paths.projects },
@@ -242,15 +262,17 @@ export function AppShell({
     <Dialog.Root
       open={open}
       onOpenChange={(visible) => {
-        if (visible) focusAfterClose.current = false;
-        if (!visible && !trigger.current?.getClientRects().length)
-          focusAfterClose.current = true;
+        if (visible) focusAfterClose.current = undefined;
+        else if (!trigger.current?.getClientRects().length)
+          focusAfterClose.current = "main";
         setOpen(visible);
       }}
       onOpenChangeComplete={(visible) => {
-        if (!visible && focusAfterClose.current) {
-          main.current?.focus();
-        }
+        if (!visible && focusAfterClose.current)
+          focusPage(
+            main.current,
+            focusAfterClose.current === "page" ? hash : "",
+          );
       }}
     >
       <div className={styles.root}>
@@ -289,6 +311,9 @@ export function AppShell({
               error={logout.error}
               message={common(($) => $.requestFailed)}
             />
+            {workspace && section !== "/account" && (
+              <MfaSetupNotice user={user} workspace={workspace} />
+            )}
             {children}
           </main>
         </div>

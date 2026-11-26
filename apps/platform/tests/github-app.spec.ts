@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { authFixtureSQL } from "./auth-fixture";
 import { openEnvironmentSection } from "./environment-section";
 import { signInAsOwner } from "./fixtures/owner-sign-in";
 import { api } from "./fixtures/ports";
@@ -29,6 +30,11 @@ test("GitHub App authorization returns across sites, selects a repository and di
   });
   expect(workspaceResponse.status()).toBe(201);
   const workspace = await workspaceResponse.json();
+  // The shared owner signs in with a password alone, so this workspace stands for one that
+  // doesn't require two-factor authentication, which new ones do.
+  await authFixtureSQL(
+    `UPDATE workspaces SET require_mfa=false WHERE id='${workspace.id}'`,
+  );
   await page.reload();
   await page.getByRole("button", { name: /^Workspace:/ }).click();
   await page

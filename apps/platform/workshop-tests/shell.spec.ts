@@ -93,3 +93,103 @@ for (const theme of ["light", "dark"]) {
     await expect(page.getByRole("main")).toBeFocused();
   });
 }
+
+// The router resets the scroll position after a navigation, and the shell then moves focus.
+// Focusing a main area taller than the screen must not scroll the header, with its navigation
+// button, back out of view. The project list is loaded before either navigation to it, so main
+// is already that tall when it takes focus.
+test("navigating on a small screen keeps the header in view", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 300 });
+  await page.goto(
+    "/iframe.html?id=pages-projects--populated&viewMode=story&globals=a11y.manual:!true",
+  );
+  const main = page.getByRole("main");
+  const open = page.getByRole("button", { name: app.navigation.open });
+  const website = page.getByRole("link", {
+    name: "Website Open project",
+    exact: true,
+  });
+  await website.click();
+  await expect(page.getByRole("heading", { name: "Website" })).toBeVisible();
+  await main.getByRole("link", { name: "Projects", exact: true }).click();
+  await expect(website).toBeVisible();
+  await expect(main).toBeFocused();
+  await expect(open).toBeInViewport({ ratio: 1 });
+  await website.click();
+  await expect(page.getByRole("heading", { name: "Website" })).toBeVisible();
+  await open.click();
+  const drawer = page.getByRole("dialog", { name: app.navigation.label });
+  await drawer.getByRole("link", { name: app.navigation.projects }).click();
+  await expect(drawer).toHaveCount(0);
+  await expect(main).toBeFocused();
+  await expect(open).toBeInViewport({ ratio: 1 });
+});
+
+// The URL keeps the fragment of the link that led to account security. Only a navigation goes to
+// the section it names, not dismissing the drawer later on that page.
+for (const dismissal of ["Close", "Escape"])
+  test(`dismissing the drawer with its trigger hidden focuses main, not the linked section, with ${dismissal}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 820, height: 420 });
+    await page.goto(
+      "/iframe.html?id=pages-projects--two-factor-required-operator&viewMode=story&globals=a11y.manual:!true",
+    );
+    const section = page.getByRole("heading", {
+      name: "Two-factor authentication",
+      exact: true,
+    });
+    await expect(section).toBeFocused();
+    await page.getByRole("button", { name: app.navigation.open }).click();
+    const drawer = page.getByRole("dialog", { name: app.navigation.label });
+    await expect(drawer).toBeVisible();
+    await page.setViewportSize({ width: 1180, height: 420 });
+    if (dismissal === "Close")
+      await drawer.getByRole("button", { name: app.navigation.close }).click();
+    else await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
+    await expect(page.getByRole("main")).toBeFocused();
+  });
+
+// A dismissed drawer is still fading out when a navigation already under way arrives. The page it
+// renders keeps the focus, whether or not the drawer's trigger is there to take it.
+for (const width of [820, 1180])
+  test(`a navigation during the drawer's fade keeps the focus it moved at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 820, height: 800 });
+    await page.goto(
+      "/iframe.html?id=pages-projects--two-factor-required-operator&viewMode=story&globals=a11y.manual:!true",
+    );
+    const section = page.locator("#account-mfa");
+    await expect(section).toBeFocused();
+    const open = page.getByRole("button", { name: app.navigation.open });
+    const drawer = page.getByRole("dialog", { name: app.navigation.label });
+    await open.click();
+    await drawer.getByRole("link", { name: app.navigation.projects }).click();
+    await expect(drawer).toHaveCount(0);
+    const setUp = page
+      .getByRole("main")
+      .getByRole("link", { name: "Set up two-factor authentication" });
+    await expect(setUp).toBeVisible();
+    await open.click();
+    await expect(drawer).toHaveCSS("opacity", "1");
+    await page.setViewportSize({ width, height: 800 });
+    await page.addStyleTag({
+      content: "[role=dialog] { transition-duration: 3s !important }",
+    });
+    await page.keyboard.press("Escape");
+    await expect(drawer).toHaveAttribute("data-ending-style");
+    // The closing drawer still covers the page, so the link takes no pointer.
+    await page.evaluate(() =>
+      document
+        .querySelector<HTMLAnchorElement>('main a[href*="account-mfa"]')!
+        .click(),
+    );
+    await expect(section).toBeFocused();
+    await expect(drawer).toHaveCount(1);
+    await expect(drawer).toHaveCount(0);
+    await expect(section).toBeFocused();
+  });

@@ -30,5 +30,10 @@
     "description": "Leave this page and discard unsaved edits?",
     "keep": "Keep editing",
     "discard": "Discard and leave"
+  },
+  "mfaSetup": {
+    "title": "Set up two-factor authentication",
+    "description": "This workspace requires two-factor authentication. You can look around, but you can’t change anything until you set it up.",
+    "action": "Set up two-factor authentication"
   }
 }
