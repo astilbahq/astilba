@@ -14,6 +14,29 @@ import (
 	"github.com/google/uuid"
 )
 
+// CI pulls Images before the visual lane deploys every entry, so it must name each image a recipe
+// deploys.
+func TestImagesNamesEveryDeployedImageOnce(t *testing.T) {
+	listed := map[string]int{}
+	for _, image := range Images() {
+		listed[image]++
+	}
+	for _, recipe := range Recipes() {
+		if recipe.Specification.Compose != nil {
+			t.Errorf("%s: Images reads only application images, not a Compose bundle", recipe.ID)
+		}
+		for _, app := range recipe.Specification.Applications {
+			if app.Source.Kind != "image" || app.Source.Image == nil {
+				t.Errorf("%s: Images reads only image sources, found %q", recipe.ID, app.Source.Kind)
+				continue
+			}
+			if listed[*app.Source.Image] != 1 {
+				t.Errorf("%s: Images lists %s %d times", recipe.ID, *app.Source.Image, listed[*app.Source.Image])
+			}
+		}
+	}
+}
+
 func TestRecipesUseValidatedVisualAndComposeSubset(t *testing.T) {
 	for _, recipe := range Recipes() {
 		t.Run(recipe.ID, func(t *testing.T) {

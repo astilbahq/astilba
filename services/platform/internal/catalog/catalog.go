@@ -210,3 +210,19 @@ func kaneo(base Maintenance) Recipe {
 	r.Support.Upgrade = Support{"manual", "Kaneo migrates its database when a new image starts and cannot go back. Back up and check the release notes before changing the image."}
 	return r
 }
+
+// Images is every image the catalog deploys, each once, in the order the recipes name them.
+// CI pulls them before the visual lane's catalog journey through cmd/catalog-images.
+func Images() []string {
+	seen := map[string]bool{}
+	var images []string
+	for _, recipe := range Recipes() {
+		for _, app := range recipe.Specification.Applications {
+			if app.Source.Image != nil && !seen[*app.Source.Image] {
+				seen[*app.Source.Image] = true
+				images = append(images, *app.Source.Image)
+			}
+		}
+	}
+	return images
+}

@@ -130,11 +130,12 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 		if len(p.Secrets) != len(domain.SecretReferences(p.Plan.Specification)) {
 			return e.abortRelease(ctx, c, p, &s, "failed", "The execution secret set differs from the reviewed plan.")
 		}
-		if err = e.pullVisualImages(ctx, p); err != nil {
+		if err = e.pullVisualImages(ctx, c, p); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return e.abortRelease(ctx, c, p, &s, "failed", safeVisualError(err, p.Secrets)+" The serving revision is retained.")
+			state, note := pullFailure(err, p.Secrets, true)
+			return e.abortRelease(ctx, c, p, &s, state, note+" The serving revision is retained.")
 		}
 		for _, plan := range []deployment.Plan{s.Old.Plan, p.Plan} {
 			image, err := e.Docker.ImageInspect(ctx, plan.Images[app.ID.String()])

@@ -204,7 +204,9 @@ func TestNativePullRefusesBlobsUnlikeTheirDescriptors(t *testing.T) {
 			tc.spoil(layer)
 			image := f.host + "/fixture/app@" + manifest
 			var err error
-			used := f.leastFree(func() { err = (&Engine{Docker: f.docker}).pullMeasuredImage(f.ctx, image, nil) })
+			used := f.leastFree(func() {
+				err = (&Engine{Docker: f.docker}).pullMeasuredImage(f.ctx, image, nil, func() bool { return false })
+			})
 			var refused *imagePullRefused
 			if !errors.As(err, &refused) || !strings.Contains(refused.Error(), tc.note) {
 				t.Fatal("not refused for its reason", err)
@@ -292,7 +294,7 @@ func TestNativePullPutsAMultiPlatformImageInDocker(t *testing.T) {
 		t.Fatal(err)
 	}
 	containerd := containerdImageStore(info.Info.DriverStatus)
-	if err = (&Engine{Docker: f.docker}).pullMeasuredImage(f.ctx, image, nil); err != nil {
+	if err = (&Engine{Docker: f.docker}).pullMeasuredImage(f.ctx, image, nil, func() bool { return false }); err != nil {
 		t.Fatal(err)
 	}
 	if f.reads[theirLayer].Load() != 0 {

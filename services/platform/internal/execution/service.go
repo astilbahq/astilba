@@ -154,12 +154,16 @@ func (s *Service) scopeIn(ctx context.Context, p store.Principal, ws uuid.UUID, 
 
 // serverView maps the server columns shared by ListServers, InsertServer and
 // RenewServerEnrollment; their generated row types convert to ListServersRow.
-func serverView(row db.ListServersRow) (api.Server, error) {
+func (s *Service) serverView(row db.ListServersRow) (api.Server, error) {
 	v := api.Server{Id: row.ID, Name: row.Name, Role: api.ServerRole(row.Role), LastSeen: row.LastSeen, RotationRequested: row.RotationRequested, TransferRequired: &row.AwaitingTransfer, PreviewOnly: &row.PreviewOnly}
 	if len(row.Capabilities) > 0 {
 		if err := json.Unmarshal(row.Capabilities, &v.Capabilities); err != nil {
 			return v, err
 		}
+	}
+	if v.Capabilities != nil {
+		updates := agentUpdates(s.Releases, *v.Capabilities)
+		v.AgentUpdates = &updates
 	}
 	if len(row.Preflight) > 0 {
 		if err := json.Unmarshal(row.Preflight, &v.Preflight); err != nil {
@@ -197,7 +201,7 @@ func (s *Service) Servers(ctx context.Context, p store.Principal, ws uuid.UUID) 
 			return err
 		}
 		for _, row := range rows {
-			v, e := serverView(row)
+			v, e := s.serverView(row)
 			if e != nil {
 				return e
 			}
@@ -241,7 +245,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		if e != nil {
 			return e
 		}
-		out.Server, e = serverView(db.ListServersRow(row))
+		out.Server, e = s.serverView(db.ListServersRow(row))
 		return e
 	})
 	return out, err
@@ -269,7 +273,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		if e != nil {
 			return e
 		}
-		out.Server, e = serverView(db.ListServersRow(row))
+		out.Server, e = s.serverView(db.ListServersRow(row))
 		return e
 	})
 	return out, err
