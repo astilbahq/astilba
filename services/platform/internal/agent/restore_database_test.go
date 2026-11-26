@@ -48,6 +48,7 @@ COMMENT ON DATABASE app IS 'it''s; DROP DATABASE app;
 \! id';
 
 ALTER DATABASE app CONNECTION LIMIT = 50;
+ALTER DATABASE app IS_TEMPLATE = true;
 ALTER DATABASE app SET work_mem TO '8MB';
 ALTER DATABASE app SET search_path TO 'public', 'x';
 ALTER DATABASE app SET application_name TO E'a\\b''; c';
@@ -72,7 +73,7 @@ func TestDatabaseStatementsReadOnlyWhatPgDumpWrites(t *testing.T) {
 	for _, s := range got {
 		kinds = append(kinds, s.kind)
 	}
-	want := []databaseStatementKind{statementCreate, statementOwner, statementComment, statementProperty, statementSetting, statementSetting, statementSetting, statementSetting, statementSetting, statementSetting, statementPrivilege, statementPrivilege, statementPrivilege}
+	want := []databaseStatementKind{statementCreate, statementOwner, statementComment, statementProperty, statementProperty, statementSetting, statementSetting, statementSetting, statementSetting, statementSetting, statementSetting, statementPrivilege, statementPrivilege, statementPrivilege}
 	if !slices.Equal(kinds, want) {
 		t.Fatalf("kinds %v, want %v", kinds, want)
 	}
@@ -103,6 +104,10 @@ func TestDatabaseStatementsReadOnlyWhatPgDumpWrites(t *testing.T) {
 		{"an unterminated literal", "COMMENT ON DATABASE app IS 'x;"},
 		{"a statement without its end", "COMMENT ON DATABASE app IS 'x'"},
 		{"a second database", "CREATE DATABASE app WITH TEMPLATE = template0;"},
+		// pg_dump writes a connection limit, and a template flag only when it is set.
+		{"connections disallowed", "ALTER DATABASE app ALLOW_CONNECTIONS = false;"},
+		{"connections allowed", "ALTER DATABASE app ALLOW_CONNECTIONS = true;"},
+		{"a template flag cleared", "ALTER DATABASE app IS_TEMPLATE = false;"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			script := "CREATE DATABASE app WITH TEMPLATE = template0 ENCODING = 'UTF8';\n" + c.script

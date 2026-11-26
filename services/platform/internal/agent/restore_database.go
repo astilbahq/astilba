@@ -124,7 +124,7 @@ var databaseShapes = []struct {
 	// inline-sql: a pattern pg_dump's statements are held to, which runs nothing.
 	{statementCreate, regexp.MustCompile(`^CREATE DATABASE ` + sqlIdentifier + ` WITH TEMPLATE = template0(?: [A-Z_]+ = (?:` + sqlLiteral + `|[a-z0-9_]+))*$`)},
 	{statementOwner, regexp.MustCompile(`^ALTER DATABASE ` + sqlIdentifier + ` OWNER TO ` + sqlIdentifier + `$`)},
-	{statementProperty, regexp.MustCompile(`^ALTER DATABASE ` + sqlIdentifier + ` (?:CONNECTION LIMIT = -?[0-9]{1,10}|IS_TEMPLATE = (?:true|false)|ALLOW_CONNECTIONS = (?:true|false))$`)},
+	{statementProperty, regexp.MustCompile(`^ALTER DATABASE ` + sqlIdentifier + ` (?:CONNECTION LIMIT = -?[0-9]{1,10}|IS_TEMPLATE = true)$`)},
 	{statementSetting, regexp.MustCompile(`^ALTER DATABASE ` + sqlIdentifier + ` SET ` + sqlIdentifier + ` TO ` + sqlValues + `$`)},
 	{statementSetting, regexp.MustCompile(`^ALTER ROLE ` + sqlIdentifier + ` IN DATABASE ` + sqlIdentifier + ` SET ` + sqlIdentifier + ` TO ` + sqlValues + `$`)},
 	{statementComment, regexp.MustCompile(`^COMMENT ON DATABASE ` + sqlIdentifier + ` IS ` + sqlLiteral + `$`)},
