@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -12,16 +13,33 @@ import (
 )
 
 // assertPhysicalRemoteHTTP waits for the ingress host's proxy to serve path from the remote
-// container over managed networking. The proxy probes a replica pool every 5 seconds and stops
-// sending to a server after one failed probe, so it can answer 503 for a few seconds after a
-// deployment and its network report ready. Each kind of answer that is not the container's is
-// logged once, with the proxy's view of its servers; an answer that never comes fails with the
-// last one.
+// container over managed networking, then checks that it keeps answering: 20 requests in a row
+// succeed, and at least one reaches the container. The proxy probes a replica pool every 5
+// seconds and stops sending to a server after one failed probe, so it can answer 503 for a few
+// seconds after a deployment and its network report ready.
 func assertPhysicalRemoteHTTP(t *testing.T, ctx context.Context, host *recoveryFixtureHost, path, containerID string) {
+	t.Helper()
+	awaitPhysicalRemoteHTTP(t, ctx, host, path, containerID)
+	served := false
+	for range 20 {
+		status, body, err := physicalIngressGet(ctx, host.namespace, path)
+		if err != nil || status/100 != 2 {
+			t.Fatalf("ingress answered %d %q (%v) after serving %s; proxy services: %s", status, body, err, containerID[:12], physicalProxyServices(ctx, host))
+		}
+		served = served || body == containerID[:12]
+	}
+	if !served {
+		t.Fatalf("ingress stopped reaching the remote container %s over managed networking", containerID[:12])
+	}
+}
+
+// awaitPhysicalRemoteHTTP returns once the proxy serves path from the container. Each kind of
+// answer before then is logged once, with the proxy's view of its servers, and an answer that
+// never comes fails with the last one.
+func awaitPhysicalRemoteHTTP(t *testing.T, ctx context.Context, host *recoveryFixtureHost, path, containerID string) {
 	t.Helper()
 	started := time.Now()
 	seen := map[string]bool{}
-	var last string
 	for deadline := started.Add(30 * time.Second); ; {
 		status, body, err := physicalIngressGet(ctx, host.namespace, path)
 		if err == nil && status/100 == 2 && body == containerID[:12] {
@@ -30,19 +48,29 @@ func assertPhysicalRemoteHTTP(t *testing.T, ctx context.Context, host *recoveryF
 			}
 			return
 		}
-		kind := fmt.Sprint(status)
-		last = fmt.Sprintf("%d %q", status, body)
-		if err != nil {
+		// A server error says why in its status; a success is from another container.
+		kind, last := fmt.Sprint(status), fmt.Sprintf("%d %q", status, body)
+		if status/100 == 2 {
+			kind = last
+		}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			kind, last = fmt.Sprintf("curl exit %d", exit.ExitCode()), err.Error()
+		} else if err != nil {
 			kind, last = "error", err.Error()
 		}
-		if status/100 != 2 && !seen[kind] {
+		if !seen[kind] {
 			seen[kind] = true
 			t.Logf("ingress answered %s after %s; proxy services: %s", last, time.Since(started).Round(time.Millisecond), physicalProxyServices(ctx, host))
 		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
+		if time.Now().After(deadline) {
 			t.Fatalf("ingress never reached the remote container %s over managed networking; last answer %s", containerID[:12], last)
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for the ingress to reach %s: %v; last answer %s", containerID[:12], ctx.Err(), last)
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 }
 
