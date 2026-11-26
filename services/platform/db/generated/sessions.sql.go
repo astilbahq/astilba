@@ -13,7 +13,7 @@ import (
 )
 
 const browserSessionAdmission = `-- name: BrowserSessionAdmission :one
-SELECT a.id FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
+SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
 WHERE a.id = $2 AND a.auth_version = $3
 `
 
@@ -24,13 +24,14 @@ type BrowserSessionAdmissionParams struct {
 }
 
 // unscoped: the hashed browser session token is the credential.
-// Revalidates an authenticated session under the lock its request waited for.
+// Revalidates an authenticated session under the lock its request waited for, and
+// returns its lineage.
 // Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
 func (q *Queries) BrowserSessionAdmission(ctx context.Context, arg BrowserSessionAdmissionParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, browserSessionAdmission, arg.Token, arg.AccountID, arg.AuthVersion)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+	var lineage uuid.UUID
+	err := row.Scan(&lineage)
+	return lineage, err
 }
 
 const browserSessionSnapshotAdmission = `-- name: BrowserSessionSnapshotAdmission :one
@@ -81,6 +82,17 @@ func (q *Queries) DeleteSessionLineage(ctx context.Context, lineage uuid.UUID) e
 	return err
 }
 
+const endEnrolments = `-- name: EndEnrolments :exec
+UPDATE accounts SET totp_pending = NULL,totp_pending_expiry = NULL,totp_pending_lineage = NULL
+WHERE id = ANY($1::uuid[])
+`
+
+// unscoped: the accounts are those LockLineageEnrolments locked for a logged-out lineage.
+func (q *Queries) EndEnrolments(ctx context.Context, ids []uuid.UUID) error {
+	_, err := q.db.Exec(ctx, endEnrolments, ids)
+	return err
+}
+
 const findSession = `-- name: FindSession :one
 SELECT data,lineage FROM sessions WHERE token = $1 AND current_timestamp < expiry
 `
@@ -118,6 +130,35 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.Lineage,
 	)
 	return err
+}
+
+const lockLineageEnrolments = `-- name: LockLineageEnrolments :many
+SELECT id FROM accounts WHERE totp_pending_lineage = $1::uuid FOR NO KEY UPDATE SKIP LOCKED
+`
+
+// unscoped: a lineage is one browser's chain of renewed session tokens.
+// A logged-out lineage's authenticator enrolment is no one's, so another session may begin one.
+// A logout never waits for an account's lock: a row held by another change keeps its enrolment,
+// which BeginMFA lets go of once it finds the lineage signed out. The lock is the one an update
+// of the row takes, so a transaction that only references the account does not hold it off.
+func (q *Queries) LockLineageEnrolments(ctx context.Context, lineage uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockLineageEnrolments, lineage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockSessionLineage = `-- name: LockSessionLineage :exec
@@ -167,4 +208,16 @@ func (q *Queries) RefreshSession(ctx context.Context, arg RefreshSessionParams) 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const sessionLineageLive = `-- name: SessionLineageLive :one
+SELECT EXISTS(SELECT 1 FROM sessions WHERE lineage = $1 AND expiry > clock_timestamp())
+`
+
+// unscoped: a lineage is one browser's chain of renewed session tokens.
+func (q *Queries) SessionLineageLive(ctx context.Context, lineage uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, sessionLineageLive, lineage)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

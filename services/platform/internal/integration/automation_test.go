@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,6 +28,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pquerna/otp/totp"
@@ -150,6 +153,59 @@ func TestAutomationScopeLifecycleAndAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	bearerCall(t, f, *changed.Token, "GET", path+"/draft", nil, 401, nil)
+}
+
+// A credential reaches only the operations that declare it. Every other API operation takes a
+// browser session or nothing, and refuses a live credential as forbidden before its handler, which
+// may rely on the session the browser path loads, such as logout's. A credential that is not live
+// is refused as unauthenticated there, as everywhere.
+func TestAutomationCredentialReachesOnlyItsOperations(t *testing.T) {
+	f := setup(t)
+	b, _, _, path := automationEnvironment(t, f)
+	grant := issueAutomation(t, b, path, domain.EnvironmentRead)
+	spec, err := api.GetSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameter := regexp.MustCompile(`\{[^}]+\}`)
+	refused := []string{}
+	for template, item := range spec.Paths.Map() {
+		if !strings.HasPrefix(template, "/api/") {
+			continue
+		}
+		for method, op := range item.Operations() {
+			security := spec.Security
+			if op.Security != nil {
+				security = *op.Security
+			}
+			if slices.ContainsFunc(security, func(r openapi3.SecurityRequirement) bool { _, ok := r["automationBearer"]; return ok }) {
+				continue
+			}
+			target := parameter.ReplaceAllStringFunc(template, func(string) string { return uuid.NewString() })
+			var failure api.Error
+			bearerCall(t, f, *grant.Token, method, target, nil, 403, &failure)
+			if failure.Code != "forbidden" {
+				t.Fatalf("%s %s refused a credential as %q", method, template, failure.Code)
+			}
+			refused = append(refused, op.OperationID)
+		}
+	}
+	for _, name := range []string{"Logout", "Login", "Session", "OpenTroubleshootingSession", "ListTroubleshootingSessions"} {
+		if !slices.Contains(refused, name) {
+			t.Fatalf("%s was not checked; refused %v", name, refused)
+		}
+	}
+	if strings.Contains(f.log.String(), "request panic") {
+		t.Fatal("a handler ran for a credential it cannot serve")
+	}
+	bearerCall(t, f, "not a credential", "POST", "/api/v1/auth/logout", nil, 401, nil)
+	identity, _, _ := strings.Cut(*grant.Token, ".")
+	bearerCall(t, f, identity+"."+strings.Repeat("A", 43), "POST", "/api/v1/auth/logout", nil, 401, nil)
+	// Refusing spends nothing of the credential, which still works where it is declared.
+	bearerCall(t, f, *grant.Token, "GET", "/api/v1/automation/context", nil, 200, nil)
+	if v := b.session(); v.User == nil || v.User.Id != f.owner {
+		t.Fatal("the owner's browser session did not survive")
+	}
 }
 
 func TestAutomationRechecksAdmissionAfterWorkspaceWait(t *testing.T) {

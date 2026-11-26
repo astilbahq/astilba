@@ -43,7 +43,8 @@ type sessionLoad struct {
 	lineage uuid.UUID
 	// staleCSRF is the CSRF token of a loaded session that dropStaleSession ended. See csrfToken.
 	staleCSRF string
-	// continueLineage gives a new sign-in's token the loaded session's lineage. See VerifyMFA.
+	// continueLineage gives a new sign-in's token the loaded session's lineage while that
+	// session lasts, deleting it with the new token's insert. See VerifyMFA and continueSignIn.
 	continueLineage bool
 }
 
@@ -54,7 +55,7 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
-	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.keepRow) && loaded.token == token {
+	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.continueLineage || loaded.keepRow) && loaded.token == token {
 		return nil
 	}
 	return s.PostgresStore.DeleteCtx(ctx, token)
@@ -64,11 +65,23 @@ func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
 // this request loaded it, such as a password change from another tab. The lock orders this
 // with a renewal of the lineage: one that committed first has its new token deleted here,
 // and one that comes after finds its old token gone and refuses. A later sign-in stays signed
-// in: it starts its own lineage, or completes a pending one after this delete has run.
+// in, in a lineage of its own, even one completing a pending sign-in this delete ended. An
+// authenticator enrolment the lineage began ends with it. Only a logout that has one to end
+// writes to accounts, so the rest never wait for a hold on that table, such as a custody
+// conversion's.
 func endLineage(ctx context.Context, st *store.Store, lineage uuid.UUID) error {
 	return st.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockSessionLineage(ctx, lineage); err != nil {
 			return err
+		}
+		enrolling, err := q.LockLineageEnrolments(ctx, lineage)
+		if err != nil {
+			return err
+		}
+		if len(enrolling) > 0 {
+			if err = q.EndEnrolments(ctx, enrolling); err != nil {
+				return err
+			}
 		}
 		return q.DeleteSessionLineage(ctx, lineage)
 	})
@@ -103,6 +116,25 @@ func (s *sessionStore) renewLive(ctx context.Context, previous, token string, li
 		}
 		return q.MoveTroubleshootingBrowserBinding(ctx, db.MoveTroubleshootingBrowserBindingParams{Renewed: newHash, Previous: oldHash})
 	})
+}
+
+// continueSignIn replaces a pending sign-in's token with the signed-in one, continuing its
+// lineage, and returns the lineage the new token has. A logout or expiry that ended the pending
+// token first ended its lineage, which nothing signs into again: signing in proves a credential,
+// so it still succeeds, in a lineage of its own. The lock orders this with that logout.
+func (s *sessionStore) continueSignIn(ctx context.Context, previous, token string, lineage uuid.UUID, data []byte, expiry time.Time) (uuid.UUID, error) {
+	err := s.store.Transaction(ctx, func(q *db.Queries) error {
+		if err := q.LockSessionLineage(ctx, lineage); err != nil {
+			return err
+		}
+		if n, err := q.DeleteRenewedSession(ctx, previous); err != nil {
+			return err
+		} else if n == 0 {
+			lineage = uuid.New()
+		}
+		return q.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage})
+	})
+	return lineage, err
 }
 
 func (s *sessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool, error) {
@@ -149,9 +181,11 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		// unless it completes the sign-in that session began.
 		lineage := uuid.New()
 		if loaded.continueLineage {
-			lineage = loaded.lineage
-		}
-		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
+			var err error
+			if lineage, err = s.continueSignIn(ctx, loaded.token, token, loaded.lineage, data, expiry); err != nil {
+				return err
+			}
+		} else if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
 			return err
 		}
 		loaded.lineage = lineage
