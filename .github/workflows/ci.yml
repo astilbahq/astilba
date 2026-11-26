@@ -60,6 +60,20 @@ jobs:
     needs: plan
     if: needs.plan.outputs.native == 'true'
     name: Host (${{ matrix.platform.arch }}, ${{ matrix.lane }})
+    env:
+      # Every lane pulls these. The visual lane also pulls the other images the catalog deploys.
+      FIXTURE_IMAGES: |
+        postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4
+        postgres:17.12-alpine3.23@sha256:a7a82c6bf77e2a6414ea07c8709f8c51911bfb92cb6c49156d63ac2a8b8effbc
+        postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+        postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
+        busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
+        traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
+        nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
+        caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+        moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb
+        moby/buildkit:v0.35.0-rootless@sha256:5987568f92dafbfb679879de59c1cd8d26597f5f6635c314e166164e2615870c
+        dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
     strategy:
       fail-fast: false
       matrix:
@@ -98,6 +112,17 @@ jobs:
             echo "::warning::Loading native Go packages failed; see the error above"
           done
           exit 1
+      - name: List catalog images
+        # The visual lane deploys every catalog entry, so it pulls each image first: a registry
+        # failing for a moment during the journey would fail the lane. This lists the images the
+        # fixture pull leaves out, from the catalog itself, before sudo steps write to the Go cache.
+        if: matrix.lane == 'visual'
+        id: catalog-images
+        run: |
+          # The fixture list splits into one argument per image.
+          # shellcheck disable=SC2086
+          images=$(go -C services/platform run ./cmd/catalog-images $FIXTURE_IMAGES)
+          printf 'images<<EOF\n%s\nEOF\n' "$images" >> "$GITHUB_OUTPUT"
       - name: Choose a current Ubuntu archive
         # Canonical first, then independent mirrors. Every one is verified against Ubuntu's key.
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" bash scripts/ci-ubuntu-archive.sh
@@ -122,31 +147,13 @@ jobs:
         uses: ./.github/actions/pull-images
         with:
           docker: sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock
-          images: |
-            postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4
-            postgres:17.12-alpine3.23@sha256:a7a82c6bf77e2a6414ea07c8709f8c51911bfb92cb6c49156d63ac2a8b8effbc
-            postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
-            postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1
-            busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
-            traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
-            nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
-            caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
-            moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb
-            moby/buildkit:v0.35.0-rootless@sha256:5987568f92dafbfb679879de59c1cd8d26597f5f6635c314e166164e2615870c
-            dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+          images: ${{ env.FIXTURE_IMAGES }}
       - name: Pull catalog images
-        # The visual lane deploys every catalog entry. TestCatalogImagesArePulledFirst keeps this
-        # list, with PostgreSQL above, the catalog's.
         if: matrix.lane == 'visual'
         uses: ./.github/actions/pull-images
         with:
           docker: sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock
-          images: |
-            nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
-            valkey/valkey:9.1.3-alpine3.24@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
-            louislam/uptime-kuma:2.5.12-slim-rootless@sha256:212d2131952eded9b2508620455f15f5c2c85c262aafd23b97a7447c53e1d1bc
-            registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
-            ghcr.io/usekaneo/kaneo:2.49.0@sha256:cd1826b1aba3ce736015cadf6f6c975d923aac00f4b6aaa7aedb29bc722dae49
+          images: ${{ steps.catalog-images.outputs.images }}
       - name: Verify native Ubuntu host
         if: matrix.lane == 'core'
         working-directory: experiments/durable-execution

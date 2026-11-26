@@ -153,9 +153,41 @@ test("each suite runs only for paths that can affect it", async (t) => {
       ["services/platform/go.sum"],
       ["native", "go", "browser", "vulnerabilities"],
     ],
+    // A workspace's replacements override go.mod without changing it.
+    [["go.work"], ["native", "go", "browser", "vulnerabilities"]],
+    [
+      ["services/platform/go.work.sum"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
+      ["experiments/git-compose/vendor/modules.txt"],
+      ["native", "go", "browser", "git", "vulnerabilities"],
+    ],
     [
       ["apps/platform/package.json"],
       ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [[".npmrc"], ["native", "go", "browser", "canvas", "vulnerabilities"]],
+    [
+      [".pnpmfile.cjs"],
+      ["native", "go", "browser", "canvas", "vulnerabilities"],
+    ],
+    [
+      ["apps/platform/.npmrc"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
+      ["apps/platform/pnpm-lock.yaml"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    // The scan stops on a command directory it does not scan, whatever the directory holds.
+    [
+      ["services/platform/cmd/new/README.md"],
+      ["native", "go", "browser", "vulnerabilities"],
+    ],
+    [
+      ["services/platform/cmd/cli/testdata/help.txt"],
+      ["go", "browser", "vulnerabilities"],
     ],
     [
       ["services/platform/internal/publicsuffix/public_suffix_list.dat"],
