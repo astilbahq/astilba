@@ -690,7 +690,7 @@ func TestKeyringCheckPassesOverErasedValues(t *testing.T) {
 }
 
 // keyEventOrderMigration numbers the installation's key events in the order they were recorded.
-const keyEventOrderMigration = 72
+const keyEventOrderMigration = 73
 
 // Events recorded before the order was kept are numbered by time, then ID, as readers ordered
 // them before; events after them come after.
