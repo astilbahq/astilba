@@ -189,13 +189,19 @@ try {
   const keys = generateKeyPairSync("ed25519");
   const releaseKey = join(directory, "release-public.pem");
   await writeFile(releaseKey, keys.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o600 });
-  const artifact = Buffer.from("Astilba browser download fixture\n");
-  const release = { version: "0.1.0-fixture.download", protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex"), commit: "0123456789abcdef0123456789abcdef01234567", minimumVersion: "0.0.0" };
-  // agentrelease.Message: the v2 format, one LF-terminated field per line.
-  const message = `astilba-agent-release-signature-v2\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n${release.commit}\n${release.minimumVersion}\n`;
-  release.signature = sign(null, Buffer.from(message), keys.privateKey).toString("base64");
-  await writeFile(join(releases, release.sha256), artifact, { mode: 0o600 });
-  await writeFile(join(releases, "fixture.json"), JSON.stringify(release), { mode: 0o600 });
+  const signRelease = async (name, version, minimumVersion) => {
+    const artifact = Buffer.from(`Astilba browser ${name} fixture\n`);
+    const release = { version, protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex"), commit: "0123456789abcdef0123456789abcdef01234567", minimumVersion };
+    // agentrelease.Message: the v2 format, one LF-terminated field per line.
+    const message = `astilba-agent-release-signature-v2\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n${release.commit}\n${release.minimumVersion}\n`;
+    release.signature = sign(null, Buffer.from(message), keys.privateKey).toString("base64");
+    await writeFile(join(releases, release.sha256), artifact, { mode: 0o600 });
+    await writeFile(join(releases, `${name}.json`), JSON.stringify(release), { mode: 0o600 });
+  };
+  await signRelease("download", "0.1.0-fixture.download", "0.0.0");
+  // An agent running fixture.floor has floor 0.1.0: it installs fixture.raised, never download.
+  await signRelease("floor", "0.2.0-fixture.floor", "0.1.0");
+  await signRelease("raised", "0.3.0-fixture.raised", "0.2.0");
   // Credentials come only from what this fixture sets, never the caller's shell: hosting refuses
   // any in the environment, and a stray _FILE would clash with the fixture's own.
   const clearedSecrets = Object.fromEntries(

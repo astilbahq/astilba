@@ -315,10 +315,15 @@ test("agent downloads are signed and verifiable", async ({ page }) => {
     )
     .check();
   await page.getByRole("button", { name: "Create enrollment" }).click();
+  const download = page
+    .getByRole("listitem")
+    .filter({ hasText: "0.1.0-fixture.download" });
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Download agent", exact: true }).click();
+  await download
+    .getByRole("link", { name: "Download agent", exact: true })
+    .click();
   expect((await downloadPromise).suggestedFilename()).toBe("astilba-agent");
-  const manifestPath = await page
+  const manifestPath = await download
     .getByRole("link", { name: "Signed manifest" })
     .getAttribute("href");
   const manifestResponse = await page.request.get(manifestPath!);

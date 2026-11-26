@@ -280,6 +280,11 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 			return e.finish(c.Id, "needs_attention", "This installation needs the documented local update procedure.")
 		}
 		if err = e.Update(ctx, *c.Release); err != nil {
+			// A refused release left the host as it was, so nothing needs attention.
+			var refused *Refused
+			if errors.As(err, &refused) {
+				return e.finish(c.Id, "failed", refused.Note())
+			}
 			return e.finish(c.Id, "needs_attention", "Agent update did not finish. Inspect the local update state and retry the local procedure.")
 		}
 		return e.finish(c.Id, "succeeded", "Agent artifact verified and installed.")
