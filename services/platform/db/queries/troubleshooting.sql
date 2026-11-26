@@ -151,10 +151,13 @@ LEFT JOIN hosted_subscriptions h ON h.workspace_id = t.workspace_id
 WHERE t.workspace_id = @workspace_id AND t.id = @id;
 
 -- name: RefreshTroubleshootingBrowser :exec
+-- A session that has expired stays expired, as in RefreshSession: its row can outlive the
+-- expiry until cleanup, and typing must not bring it back before the relay's review ends it.
 UPDATE sessions b SET expiry = GREATEST(b.expiry,LEAST(now() + make_interval(secs => @idle_seconds::double precision),@deadline_at::timestamptz))
 FROM troubleshooting_sessions t
 WHERE t.workspace_id = @workspace_id AND t.id = @id AND t.state <> 'closed'
- AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_');
+ AND b.token = translate(rtrim(encode(t.browser_session_hash,'base64'),'='),'+/','-_')
+ AND b.expiry > clock_timestamp();
 
 -- name: GetTroubleshootingSessionForEnd :one
 SELECT actor_id,state,close_reason FROM troubleshooting_sessions
