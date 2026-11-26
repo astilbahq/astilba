@@ -49,7 +49,8 @@ func (q *Queries) AgentKey(ctx context.Context, arg AgentKeyParams) (AgentKeyRow
 
 const authenticateAgentToken = `-- name: AuthenticateAgentToken :one
 SELECT s.workspace_id,s.role,l.id AS lineage,l.key_hash,
-    COALESCE((s.capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
+    COALESCE((s.capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases,
+    COALESCE((s.capabilities->>'expiredCommands')::boolean,false)::boolean AS reads_expiry
 FROM agent_lineages l JOIN servers s ON s.id = l.server_id AND s.workspace_id = l.workspace_id
 WHERE l.server_id = $1 AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch
     AND s.credential_hash = l.key_hash AND NOT s.revoked AND NOT s.awaiting_transfer
@@ -68,6 +69,7 @@ type AuthenticateAgentTokenRow struct {
 	Lineage              uuid.UUID `json:"lineage"`
 	KeyHash              []byte    `json:"key_hash"`
 	AcknowledgesReleases bool      `json:"acknowledges_releases"`
+	ReadsExpiry          bool      `json:"reads_expiry"`
 }
 
 // unscoped: the presented token establishes the workspace. A token is live only while its lineage
@@ -81,6 +83,7 @@ func (q *Queries) AuthenticateAgentToken(ctx context.Context, arg AuthenticateAg
 		&i.Lineage,
 		&i.KeyHash,
 		&i.AcknowledgesReleases,
+		&i.ReadsExpiry,
 	)
 	return i, err
 }

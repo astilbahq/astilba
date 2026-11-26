@@ -3,16 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json/jsontext"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"maps"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -20,45 +17,6 @@ import (
 )
 
 const deadlineNote = "The admission deadline passed before execution."
-
-// Every command kind the contract defines has a deadline rule, and the agent runs no other, so a
-// new kind needs a decision about its deadline before it can run at all.
-func TestEveryCommandKindHasADeadlineRule(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "../api/api.gen.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kinds := map[api.ExecutionCommandKind]bool{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		spec, ok := n.(*ast.ValueSpec)
-		if !ok {
-			return true
-		}
-		if kind, ok := spec.Type.(*ast.Ident); ok && kind.Name == "ExecutionCommandKind" {
-			for _, v := range spec.Values {
-				value, err := strconv.Unquote(v.(*ast.BasicLit).Value)
-				if err != nil {
-					t.Fatal(err)
-				}
-				kinds[api.ExecutionCommandKind(value)] = true
-			}
-		}
-		return true
-	})
-	if len(kinds) == 0 {
-		t.Fatal("found no command kinds in the contract")
-	}
-	for kind := range kinds {
-		if _, ok := commandKinds[kind]; !ok {
-			t.Errorf("command kind %s has no deadline rule", kind)
-		}
-	}
-	for kind := range commandKinds {
-		if !kinds[kind] {
-			t.Errorf("deadline rule for command kind %s, which the contract doesn't define", kind)
-		}
-	}
-}
 
 // The agent runs a coordinated phase only where it is handled: recovery opening and closing in
 // their executors before admission, every other phase by its deadline rule. Management's issued
@@ -68,23 +26,25 @@ func TestRunsCoordinatedPhaseOnlyWhereThePhaseIsHandled(t *testing.T) {
 	for _, body := range []deployment.CrossHostCommand{deployed, maintained} {
 		for _, phase := range []string{"drain", "maintenance-reserve", "links", ""} {
 			body.Phase = phase
-			if RunsCoordinatedPhase(body) {
+			if deadline.RunsCoordinatedPhase(body) {
 				t.Errorf("phase %q runs without a rule", phase)
 			}
 		}
 	}
 	deployed.Phase, maintained.Phase = "pause", "probe"
-	if RunsCoordinatedPhase(deployed) || RunsCoordinatedPhase(maintained) {
+	if deadline.RunsCoordinatedPhase(deployed) || deadline.RunsCoordinatedPhase(maintained) {
 		t.Error("a phase runs for the other kind of operation")
 	}
-	for phase, executor := range map[string]func(api.ExecutionCommand) bool{recoveryOpenPhase: recoveryOpen, recoveryClosePhase: recoveryClose} {
-		_, deploymentRule := deploymentPhases[phase]
-		_, maintenanceRule := maintenancePhases[phase]
-		if deploymentRule || maintenanceRule {
+	for phase, executor := range map[string]func(api.ExecutionCommand) bool{deadline.RecoveryOpenPhase: recoveryOpen, deadline.RecoveryClosePhase: recoveryClose} {
+		deployed.Phase, maintained.Phase = phase, phase
+		if deadline.KnownPhase(deployed) || deadline.KnownPhase(maintained) {
 			t.Errorf("%s has a deadline rule it never reaches", phase)
 		}
 		f := lateDeployment(t, phase, false)
-		if !RunsCoordinatedPhase(f.body) || !executor(f.command) {
+		if deadline.Of(f.command) != deadline.BeforeAdmission {
+			t.Errorf("%s is not classified as decided before admission", phase)
+		}
+		if !deadline.RunsCoordinatedPhase(f.body) || !executor(f.command) {
 			t.Errorf("%s doesn't reach its executor", phase)
 		}
 	}
@@ -344,7 +304,7 @@ func TestLateRetirementNeedsTheHostToHoldItsUnit(t *testing.T) {
 		if late(t, j, tampered) {
 			t.Fatal("a late retirement ran without matching its plan hash")
 		}
-		for action := range visualActions {
+		for action := range deadline.VisualActions() {
 			if action != "retire" && late(t, j, visualCommand(plan, action, 2)) {
 				t.Fatalf("a late %s ran", action)
 			}
