@@ -32,8 +32,32 @@ func TestMFAEnrolmentBelongsToTheSessionThatBeganIt(t *testing.T) {
 	if refused.Code != "mfa_setup_elsewhere" {
 		t.Fatalf("another session's enrolment refused as %q", refused.Code)
 	}
+	// Another session's attempts, more than the confirmation limit allows and with the right
+	// password or a wrong one, spend none of the owner's budgets.
+	budgets := func() string {
+		t.Helper()
+		var state string
+		if err := f.st.Pool.QueryRow(context.Background(), "SELECT coalesce(string_agg(encode(scope_hash,'hex') || ':' || attempts, ',' ORDER BY scope_hash), '') FROM auth_attempts").Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := budgets()
 	confirm := map[string]any{"code": code(secret), "current": map[string]string{"password": f.password}}
-	other.call("POST", "/api/v1/auth/mfa/confirm", confirm, 400, nil)
+	for attempt := range 6 {
+		body := confirm
+		if attempt%2 == 1 {
+			body = map[string]any{"code": code(secret), "current": map[string]string{"password": "not the password at all"}}
+		}
+		var failure api.Error
+		other.call("POST", "/api/v1/auth/mfa/confirm", body, 400, &failure)
+		if failure.Code != "invalid_input" {
+			t.Fatalf("another session's confirmation refused as %q", failure.Code)
+		}
+	}
+	if after := budgets(); after != before {
+		t.Fatalf("another session's confirmations spent the owner's budgets:\n%s\n%s", before, after)
+	}
 	if v := other.session(); v.User == nil || v.User.MfaEnabled {
 		t.Fatal("another session confirmed the enrolment")
 	}

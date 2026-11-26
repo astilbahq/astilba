@@ -161,13 +161,31 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 
 // MFASetupElsewhere refuses to begin an enrolment while another signed-in browser session's
 // enrolment lasts.
-var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out every session."}
+var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out your other sessions."}
 
 // enrolmentLineage is the lineage of the browser session p presents, which an enrolment is bound
 // to: it stays the same when the session renews its token, as confirming credentials does.
 func enrolmentLineage(ctx context.Context, q *db.Queries, p store.Principal) (uuid.UUID, error) {
 	lineage, err := q.BrowserSessionLineage(ctx, p.SessionHash)
 	return lineage, store.IfMissing(err, domain.Unauthenticated)
+}
+
+// pendingEnrolment refuses a session that has no unexpired enrolment of its own to confirm, such as
+// one another session began, as it refuses a lapsed one. The account must not have an authenticator.
+func (s *Service) pendingEnrolment(ctx context.Context, q *db.Queries, p store.Principal, account db.Account) error {
+	// The new authenticator's code is not the credential that confirms identity, so an
+	// enrolment that has lapsed is refused as input to try again.
+	if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) || account.TotpPendingLineage == nil {
+		return domain.Invalid("code")
+	}
+	lineage, err := enrolmentLineage(ctx, q, p)
+	if err != nil {
+		return err
+	}
+	if *account.TotpPendingLineage != lineage {
+		return domain.Invalid("code")
+	}
+	return nil
 }
 
 // BeginMFA starts an enrolment bound to the browser session that asks, so that no other session,
@@ -228,6 +246,17 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	id := p.Account.ID
 	var account db.Account
 	var codes []string
+	// Only the session that began the enrolment may try to confirm it, so no other session can
+	// spend this limit or the credential's budgets and keep the owner from confirming. The
+	// refusal says only that this session has nothing to confirm, which its holder knows. The
+	// check is made again under the account's lock.
+	enrolling, err := s.Store.Queries.AccountByID(ctx, id)
+	if err != nil {
+		return account, nil, store.IfMissing(err, domain.Unauthenticated)
+	}
+	if err = s.pendingEnrolment(ctx, s.Store.Queries, p, enrolling); err != nil {
+		return account, nil, err
+	}
 	if err = s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
 		return account, nil, err
 	}
@@ -243,19 +272,10 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	}
 	err = s.withCredential(ctx, p, current, openKeys, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		account = *locked
-		// The new authenticator's code is not the credential that confirms identity, so a
-		// wrong one, or an enrolment that has lapsed, is refused as input to try again.
-		if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) {
-			return domain.Invalid("code")
-		}
-		// Another session's enrolment is refused as a lapsed one is: this session has none.
-		lineage, err := enrolmentLineage(ctx, q, p)
-		if err != nil {
+		if err := s.pendingEnrolment(ctx, q, p, account); err != nil {
 			return err
 		}
-		if account.TotpPendingLineage == nil || *account.TotpPendingLineage != lineage {
-			return domain.Invalid("code")
-		}
+		// A wrong code for the new authenticator is refused as input to try again.
 		secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTPPending, ID: id}, account.TotpPending)
 		if err != nil {
 			return err
