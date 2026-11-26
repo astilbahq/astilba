@@ -44,6 +44,11 @@ export default interface Resources {
       "signOut": "Sign out",
       "source": "Licence and source"
     },
+    "mfaSetup": {
+      "action": "Set up two-factor authentication",
+      "description": "This workspace requires two-factor authentication. You can look around, but you can’t change anything until you set it up.",
+      "title": "Set up two-factor authentication"
+    },
     "name": "Astilba",
     "navigation": {
       "account": "Account security",
@@ -176,7 +181,6 @@ export default interface Resources {
       "saveDescription": "Store these codes in your password manager or somewhere safe offline. Each code works once if you lose access to your authenticator.",
       "saved": "I have saved my codes",
       "scan": "Scan this code with your authenticator app, or enter the setup key manually.",
-      "selfHosted": "This installation does not require a hosted subscription.",
       "settings": "Open workspace settings",
       "signIn": "Sign in to continue",
       "subscription": "Billing",

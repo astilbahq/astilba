@@ -510,8 +510,9 @@ export const ComposeFileReview: Story = {
       "notes.txt",
     );
     await userEvent.click(canvas.getByRole("button", { name: "Add file" }));
+    // The file is added once the action runs, after the click.
     await userEvent.click(
-      canvas.getByText("Staged file diff (1)", { exact: true }),
+      await canvas.findByText("Staged file diff (1)", { exact: true }),
     );
     await expect(
       canvas.getByRole("button", { name: "Save revision" }),

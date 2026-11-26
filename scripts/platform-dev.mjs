@@ -477,6 +477,21 @@ try {
         ],
         { env, input: password },
       );
+    // A new workspace requires two-factor authentication before it can be changed, and the
+    // local owner signs in with a password alone. Until the first start completes, the only
+    // workspace is that owner's, which stands for one made before the requirement.
+    if (!state.initialized)
+      await docker([
+        "exec",
+        id,
+        "psql",
+        "-U",
+        "postgres",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        "UPDATE workspaces SET require_mfa=false",
+      ]);
     state.initialized = true;
     saveState();
     startManagement();

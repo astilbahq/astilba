@@ -317,13 +317,19 @@ func Audit(ctx context.Context, q *db.Queries, p Principal, w uuid.UUID, action 
 	return q.InsertAudit(ctx, db.InsertAuditParams{WorkspaceID: w, ID: uuid.New(), ActorID: p.Account.ID, Action: action, ResourceID: resource, AutomationCredentialID: credential})
 }
 
+// NewWorkspaceRequiresMFA is the two-factor requirement a workspace starts with. It is on, so
+// that the first owner is guided to set up two-factor authentication before changing anything.
+// It is set here rather than as the column's default, which stays off: workspaces created
+// before it keep the setting they had, and an import restores the one its archive records.
+const NewWorkspaceRequiresMFA = true
+
 // CreateWorkspace creates a workspace with its first owner and its keys, in the caller's
-// transaction. It is the one way a workspace is created, so every new workspace has keys: they
-// come from Broker.Create, called before the transaction because wrapping them waits on the key
-// service.
+// transaction. It is the one way a workspace is created, so every new workspace has keys and
+// starts with NewWorkspaceRequiresMFA: the keys come from Broker.Create, called before the
+// transaction because wrapping them waits on the key service.
 func CreateWorkspace(ctx context.Context, q *db.Queries, keys *secretbroker.NewKeys, name string, owner uuid.UUID) error {
 	ws := keys.Workspace()
-	if err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: ws, Name: name}); err != nil {
+	if err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{ID: ws, Name: name, RequireMfa: NewWorkspaceRequiresMFA}); err != nil {
 		return err
 	}
 	if err := keys.Insert(ctx, q); err != nil {

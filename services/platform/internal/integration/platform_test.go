@@ -201,6 +201,7 @@ func TestBootstrapAndOwnerRaces(t *testing.T) {
 	a := f.browser(t)
 	session := a.login("owner@example.test", f.password)
 	ws := session.Workspaces[0].Id
+	withoutMFARequirement(t, f.st, ws)
 	prefix := "/api/v1/workspaces/" + ws.String()
 	f.owner = session.User.Id
 	a.call("POST", prefix+"/invitations", map[string]string{"email": "other@example.test", "role": "owner"}, 201, nil)
@@ -248,8 +249,7 @@ func TestExistingAccountInviteAndMFAPolicy(t *testing.T) {
 	a := f.browser(t)
 	session := a.login("owner@example.test", f.password)
 	ws := session.Workspaces[0].Id
-	var second api.Workspace
-	a.call("POST", "/api/v1/workspaces", map[string]string{"name": "Second"}, 201, &second)
+	second := a.createWorkspaceWithoutMFARequirement("Second")
 	a.call("POST", "/api/v1/workspaces/"+second.Id.String()+"/invitations", map[string]string{"email": "owner@example.test", "role": "viewer"}, 201, nil)
 	token := tokenFromLinkMail(t, f, "/invitation")
 	anonymous := f.browser(t)
