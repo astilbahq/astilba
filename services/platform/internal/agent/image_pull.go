@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -111,27 +112,15 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	if err != nil {
 		return refuse(err)
 	}
+	if e.registryIdle > 0 {
+		for _, source := range sources {
+			source.(orasImage).transport.idle = e.registryIdle
+		}
+	}
 	// Docker pulls the image for its own platform.
 	platform := ocispec.Platform{OS: "linux", Architecture: dockerArchitecture(info.Info.Architecture)}
 	loading := containerdImageStore(info.Info.DriverStatus)
-	var plan *registryPlan
-	var measured imageCost
-	err = e.readRegistry(ctx, image, cancelled, func(ctx context.Context) error {
-		// A failed load can leave blobs in Docker's storage until containerd collects them.
-		limit, err := e.imageLoadLimit(ctx)
-		if err != nil {
-			return err
-		}
-		var source registryImage
-		if plan, source, err = planFromSources(ctx, sources, pinned.Digest(), platform, limit, loading, e.checkedManifests()); err != nil {
-			return err
-		}
-		if loading {
-			return e.loadRegistryImage(ctx, canonical, source, plan, limit)
-		}
-		measured, err = e.measureRegistryImage(ctx, source, plan, limit)
-		return err
-	})
+	plan, measured, err := e.readImage(ctx, canonical, sources, platform, loading, cancelled)
 	if err != nil || loading {
 		return refuse(err)
 	}
@@ -158,6 +147,34 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 		return refuse(&imageLoadRefused{why: "Docker pulled a different image for this server than the agent measured"})
 	}
 	return nil
+}
+
+// readImage reads the image named from the first of sources that serves it, and with Docker's
+// containerd image store, loading, loads it; with the classic store it returns what pulling it
+// writes. A read its registry failed is made again, see readRegistry, until cancelled, past any
+// mirror that failed to send the image's content.
+func (e *Engine) readImage(ctx context.Context, named reference.Canonical, sources []registryImage, platform ocispec.Platform, loading bool, cancelled func() bool) (*registryPlan, imageCost, error) {
+	var plan *registryPlan
+	var measured imageCost
+	err := e.readRegistry(ctx, named.String(), cancelled, func(ctx context.Context) error {
+		// A failed load can leave blobs in Docker's storage until containerd collects them.
+		limit, err := e.imageLoadLimit(ctx)
+		if err != nil {
+			return err
+		}
+		var source registryImage
+		if plan, source, err = planFromSources(ctx, sources, named.Digest(), platform, limit, loading, e.checkedManifests()); err != nil {
+			return err
+		}
+		if loading {
+			err = e.loadRegistryImage(ctx, named, source, plan, limit)
+		} else {
+			measured, err = e.measureRegistryImage(ctx, source, plan, limit)
+		}
+		sources = passOver(sources, source, err)
+		return err
+	})
+	return plan, measured, err
 }
 
 // planFromSources plans the image from the first of sources that can be read: a mirror the
@@ -194,6 +211,21 @@ func planFromSources(ctx context.Context, sources []registryImage, root digest.D
 		err = recoverable
 	}
 	return nil, nil, err
+}
+
+// passOver is sources without source when source is a mirror and err a failure to read the
+// image's content from it. A mirror can serve an image's manifests and fail its blobs, and the
+// next attempt would choose it again. Passed over, it gives way to the registry itself for the
+// rest of the pull. The registry itself, which is always among sources, is never passed over.
+func passOver(sources []registryImage, source registryImage, err error) []registryImage {
+	mirror, ok := source.(orasImage)
+	if !ok || !mirror.mirror || !errors.As(err, new(*imageArchiveUnread)) {
+		return sources
+	}
+	return slices.DeleteFunc(slices.Clone(sources), func(s registryImage) bool {
+		other, ok := s.(orasImage)
+		return ok && other.repo == mirror.repo
+	})
 }
 
 // definiteAnswer reports whether err, from reading source, is the source's own answer, rather than
@@ -301,8 +333,13 @@ func encodedRegistryAuth(c pipeline.Credential) string {
 
 // pullVisualImages puts a deployment's images into Docker. Any image it cannot put there ends
 // in an *imagePullRefused whose note says why, or in errPullCancelled: a pull changes nothing that a deployment runs, so
-// its callers fail the deployment rather than hold the host for inspection.
+// its callers fail the deployment rather than hold the host for inspection. A command pulling
+// images lends the engine meanwhile, see lend.
 func (e *Engine) pullVisualImages(ctx context.Context, c api.ExecutionCommand, p deployment.Payload) error {
+	return e.lend(func() error { return e.putVisualImages(ctx, c, p) })
+}
+
+func (e *Engine) putVisualImages(ctx context.Context, c api.ExecutionCommand, p deployment.Payload) error {
 	images := make([]string, 0, len(p.Plan.Images)+1)
 	for _, image := range p.Plan.Images {
 		images = append(images, image)

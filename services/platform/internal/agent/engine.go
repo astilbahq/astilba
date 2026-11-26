@@ -48,7 +48,14 @@ type Engine struct {
 	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
-	mu          sync.Mutex
+	// mu is the host's execution lock: a command holds it from start to end, as do scheduled
+	// backups and other work that must not run inside a command.
+	mu sync.Mutex
+	// lent is whether the command holding mu has lent the engine, while it puts images into
+	// Docker, to work that may run beside it; see lend. lendMu guards it, and that work holds
+	// lendMu while it runs.
+	lendMu sync.Mutex
+	lent   bool
 	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
 	layerCostsOnce sync.Once
 	measuredLayers *layerCosts
@@ -58,6 +65,9 @@ type Engine struct {
 	// registryRetry is how often the agent reads an image again in tests, which can't wait as long
 	// as defaultRegistryRetry, the policy when nil.
 	registryRetry *registryRetry
+	// registryIdle is how long a registry may stop sending an answer in tests, which can't wait
+	// as long as defaultRegistryIdle, the limit when zero.
+	registryIdle time.Duration
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
@@ -440,9 +450,33 @@ func (e *Engine) inspectOrRemove(ctx context.Context, c api.ExecutionCommand) er
 	return e.finish(c.Id, "succeeded", "Managed probe removed. No networks or volumes were removed.")
 }
 
+// lend runs put, a command's putting of images into Docker, with the engine lent to work that may
+// run beside a command, see betweenCommands. Reading an image from its registry can take minutes,
+// or as long as the registry keeps sending it, and changes nothing on the host that such work
+// reads or changes. The command goes on once that work has finished. Other work, such as
+// scheduled backups, still waits for the command to end.
+func (e *Engine) lend(put func() error) error {
+	e.lendMu.Lock()
+	e.lent = true
+	e.lendMu.Unlock()
+	defer func() {
+		e.lendMu.Lock()
+		e.lent = false
+		e.lendMu.Unlock()
+	}()
+	return put()
+}
+
 // commandContext ends at end, or once the command's owner cancels it.
 func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, end time.Time) (context.Context, func()) {
 	ctx, cancel := context.WithDeadline(parent, end)
+	cancellable, stop := untilCancelled(ctx, func() bool { return e.cancelled(c.Id) })
+	return cancellable, func() { stop(); cancel() }
+}
+
+// untilCancelled is parent until cancelled, which it asks five times a second, returns true.
+func untilCancelled(parent context.Context, cancelled func() bool) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(200 * time.Millisecond)
@@ -454,7 +488,7 @@ func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, 
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if e.cancelled(c.Id) {
+				if cancelled() {
 					cancel()
 					return
 				}

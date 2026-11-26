@@ -60,6 +60,9 @@ func main() {
 	}
 }
 func run() error {
+	// What the standard library logs, such as net/http's notes on a peer's connection, goes
+	// through the agent's log without what the peer sent.
+	agent.SetLogger(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if len(os.Args) < 2 {
 		return errors.New("usage: astilba-agent describe|network-support|network-restore|preflight|enroll|transfer|troubleshooting-enable|troubleshooting-disable|run|retry|resolve-run|reject-cross-host-effect|accept-unready-writers|inspect-upgrades|inspect-cross-host|inspect-controller|export-recovery|update-local|release-keygen|release-manifest|release-sign")
 	}

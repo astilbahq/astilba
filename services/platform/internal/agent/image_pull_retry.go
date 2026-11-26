@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,13 +59,14 @@ func (r registryRetry) wait(attempt int, elapsed, asked time.Duration) (time.Dur
 	return wait, true
 }
 
-// errPullCancelled is the owner cancelling the command while the agent waited to read again.
-var errPullCancelled = errors.New("Cancelled while waiting to read an image again after its registry failed.")
+// errPullCancelled is the owner cancelling the command while the agent read an image from its
+// registry, or waited to read it again.
+var errPullCancelled = errors.New("Cancelled while the agent read an image from its registry.")
 
 // readRegistry runs read, one attempt at reading an image from its registry, until it succeeds,
 // fails for a reason other than reading the registry, or fails in a way the registry won't
-// recover from, within e's retry bounds. Between attempts it returns errPullCancelled once
-// cancelled, the command's owner cancelling it, returns true. A read that could not reach the
+// recover from, within e's retry bounds. It returns errPullCancelled once cancelled, the
+// command's owner cancelling it, returns true, ending an attempt it is reading. A read that could not reach the
 // registry ends in registryUnreachable's refusal. Each failed read is logged with its cause,
 // without credentials.
 func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func() bool, read func(context.Context) error) error {
@@ -74,10 +76,17 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 	}
 	began := time.Now()
 	for attempt := 1; ; attempt++ {
-		err := read(ctx)
-		// The end of the command's own context is not the registry's failure.
+		reading, stop := untilCancelled(ctx, cancelled)
+		err := read(reading)
+		// Before stop, only the command's own context or its owner ends reading.
+		ended := reading.Err() != nil
+		stop()
+		// Neither is the registry's failure.
 		if err != nil && ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if err != nil && ended {
+			return errPullCancelled
 		}
 		var unread *imageArchiveUnread
 		if !errors.As(err, &unread) {
@@ -152,6 +161,8 @@ func registryFailure(err error) (cause string, transient bool) {
 		return "sent less than the content's size", false
 	case errors.Is(err, http.ErrSchemeMismatch):
 		return "does not speak HTTPS", false
+	case errors.Is(err, errAnswerStalled):
+		return "stopped sending its answer", true
 	}
 	var proxy *proxyRefusal
 	if errors.As(err, &proxy) {
@@ -256,23 +267,82 @@ func (a *registryAnswers) lastAnswer() registryAnswer {
 	return a.last
 }
 
-// answerTransport records a source's answers, and the wait a busy or unavailable one asks for.
+// answerTransport records a source's answers, and the wait a busy or unavailable one asks for. It
+// ends an answer whose source stops sending it for idle, see idleAnswer.
 type answerTransport struct {
 	*http.Transport
 	answers *registryAnswers
+	idle    time.Duration
 }
 
-func (t answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	res, err := t.Transport.RoundTrip(req)
+// defaultRegistryIdle is how long the agent waits for more of an answer a registry has begun to
+// send. TCP keepalives notice a peer that has gone, but not one that is there and sends nothing.
+const defaultRegistryIdle = 30 * time.Second
+
+func (t *answerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithCancelCause(req.Context())
+	res, err := t.Transport.RoundTrip(req.WithContext(ctx))
 	last := registryAnswer{answered: err == nil}
 	if err == nil && (res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable) {
 		last.wait = retryAfter(res.Header.Get("Retry-After"), time.Now())
 	}
 	t.answers.mu.Lock()
-	defer t.answers.mu.Unlock()
 	t.answers.ever = t.answers.ever || last.answered
 	t.answers.last = last
-	return res, err
+	t.answers.mu.Unlock()
+	if err != nil {
+		cancel(nil)
+		return res, err
+	}
+	res.Body = newIdleAnswer(res.Body, t.idle, cancel)
+	return res, nil
+}
+
+// errAnswerStalled is a source that stopped sending an answer it had begun, for the transport's
+// idle time. It is a timeout, which the agent reads again after.
+var errAnswerStalled error = answerStalled{}
+
+type answerStalled struct{}
+
+func (answerStalled) Error() string { return "the registry stopped sending its answer" }
+func (answerStalled) Timeout() bool { return true }
+
+// idleAnswer is an answer's body that ends its request, failing with errAnswerStalled, once a read
+// has waited idle for the source to send anything. Only time spent waiting in a read counts, so a
+// reader that is slow to ask for more, as Docker is while it writes, never ends it.
+type idleAnswer struct {
+	body    io.ReadCloser
+	idle    time.Duration
+	cancel  context.CancelCauseFunc
+	timer   *time.Timer
+	stalled atomic.Bool
+}
+
+func newIdleAnswer(body io.ReadCloser, idle time.Duration, cancel context.CancelCauseFunc) *idleAnswer {
+	a := &idleAnswer{body: body, idle: idle, cancel: cancel}
+	a.timer = time.AfterFunc(idle, func() {
+		a.stalled.Store(true)
+		cancel(errAnswerStalled)
+	})
+	a.timer.Stop()
+	return a
+}
+
+func (a *idleAnswer) Read(p []byte) (int, error) {
+	a.timer.Reset(a.idle)
+	n, err := a.body.Read(p)
+	a.timer.Stop()
+	if err != nil && err != io.EOF && a.stalled.Load() {
+		err = errAnswerStalled
+	}
+	return n, err
+}
+
+func (a *idleAnswer) Close() error {
+	a.timer.Stop()
+	err := a.body.Close()
+	a.cancel(nil)
+	return err
 }
 
 // retryAfter is the wait a Retry-After header asks for, in seconds or until a date, or zero.
