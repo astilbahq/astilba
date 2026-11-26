@@ -149,4 +149,23 @@ func TestMFAEnrolmentLogoutDoesNotWaitForTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	enrollSecret(t, second)
+	// A logout with no enrolment to end does not write to accounts, so a hold on the whole
+	// table, as a custody conversion takes, does not keep it waiting either.
+	third := f.browser(t)
+	third.login("owner@example.test", f.password)
+	held, err = f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { held.Rollback(ctx) })
+	if _, err = held.Exec(ctx, "LOCK TABLE accounts IN SHARE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	logout = third.send("POST", "/api/v1/auth/logout", nil)
+	select {
+	case reply := <-logout:
+		requireReply(t, reply, 204)
+	case <-time.After(5 * time.Second):
+		t.Fatal("logout waited for a hold on accounts")
+	}
 }

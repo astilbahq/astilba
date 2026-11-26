@@ -82,18 +82,14 @@ func (q *Queries) DeleteSessionLineage(ctx context.Context, lineage uuid.UUID) e
 	return err
 }
 
-const endLineageEnrolment = `-- name: EndLineageEnrolment :exec
+const endEnrolments = `-- name: EndEnrolments :exec
 UPDATE accounts SET totp_pending = NULL,totp_pending_expiry = NULL,totp_pending_lineage = NULL
-WHERE totp_pending_lineage = $1::uuid
- AND id IN (SELECT id FROM accounts WHERE totp_pending_lineage = $1::uuid FOR UPDATE SKIP LOCKED)
+WHERE id = ANY($1::uuid[])
 `
 
-// unscoped: a lineage is one browser's chain of renewed session tokens.
-// A logged-out lineage's authenticator enrolment is no one's, so another session may begin one.
-// A logout never waits for an account's lock: a row held by another change keeps its enrolment,
-// which BeginMFA lets go of once it finds the lineage signed out.
-func (q *Queries) EndLineageEnrolment(ctx context.Context, lineage uuid.UUID) error {
-	_, err := q.db.Exec(ctx, endLineageEnrolment, lineage)
+// unscoped: the accounts are those LockLineageEnrolments locked for a logged-out lineage.
+func (q *Queries) EndEnrolments(ctx context.Context, ids []uuid.UUID) error {
+	_, err := q.db.Exec(ctx, endEnrolments, ids)
 	return err
 }
 
@@ -134,6 +130,35 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.Lineage,
 	)
 	return err
+}
+
+const lockLineageEnrolments = `-- name: LockLineageEnrolments :many
+SELECT id FROM accounts WHERE totp_pending_lineage = $1::uuid FOR NO KEY UPDATE SKIP LOCKED
+`
+
+// unscoped: a lineage is one browser's chain of renewed session tokens.
+// A logged-out lineage's authenticator enrolment is no one's, so another session may begin one.
+// A logout never waits for an account's lock: a row held by another change keeps its enrolment,
+// which BeginMFA lets go of once it finds the lineage signed out. The lock is the one an update
+// of the row takes, so a transaction that only references the account does not hold it off.
+func (q *Queries) LockLineageEnrolments(ctx context.Context, lineage uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, lockLineageEnrolments, lineage)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const lockSessionLineage = `-- name: LockSessionLineage :exec

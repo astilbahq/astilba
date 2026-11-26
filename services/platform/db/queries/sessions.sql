@@ -24,14 +24,18 @@ SELECT pg_advisory_xact_lock(hashtextextended(CAST(sqlc.arg(lineage)::uuid AS te
 -- until cleanup, and a logout no longer sees it.
 DELETE FROM sessions WHERE token = @token AND expiry > clock_timestamp();
 
--- name: EndLineageEnrolment :exec
+-- name: LockLineageEnrolments :many
 -- unscoped: a lineage is one browser's chain of renewed session tokens.
 -- A logged-out lineage's authenticator enrolment is no one's, so another session may begin one.
 -- A logout never waits for an account's lock: a row held by another change keeps its enrolment,
--- which BeginMFA lets go of once it finds the lineage signed out.
+-- which BeginMFA lets go of once it finds the lineage signed out. The lock is the one an update
+-- of the row takes, so a transaction that only references the account does not hold it off.
+SELECT id FROM accounts WHERE totp_pending_lineage = @lineage::uuid FOR NO KEY UPDATE SKIP LOCKED;
+
+-- name: EndEnrolments :exec
+-- unscoped: the accounts are those LockLineageEnrolments locked for a logged-out lineage.
 UPDATE accounts SET totp_pending = NULL,totp_pending_expiry = NULL,totp_pending_lineage = NULL
-WHERE totp_pending_lineage = @lineage::uuid
- AND id IN (SELECT id FROM accounts WHERE totp_pending_lineage = @lineage::uuid FOR UPDATE SKIP LOCKED);
+WHERE id = ANY(@ids::uuid[]);
 
 -- name: DeleteSessionLineage :exec
 -- unscoped: a lineage is one browser's chain of renewed session tokens.

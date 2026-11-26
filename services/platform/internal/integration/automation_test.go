@@ -199,6 +199,8 @@ func TestAutomationCredentialReachesOnlyItsOperations(t *testing.T) {
 		t.Fatal("a handler ran for a credential it cannot serve")
 	}
 	bearerCall(t, f, "not a credential", "POST", "/api/v1/auth/logout", nil, 401, nil)
+	identity, _, _ := strings.Cut(*grant.Token, ".")
+	bearerCall(t, f, identity+"."+strings.Repeat("A", 43), "POST", "/api/v1/auth/logout", nil, 401, nil)
 	// Refusing spends nothing of the credential, which still works where it is declared.
 	bearerCall(t, f, *grant.Token, "GET", "/api/v1/automation/context", nil, 200, nil)
 	if v := b.session(); v.User == nil || v.User.Id != f.owner {

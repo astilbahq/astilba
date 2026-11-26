@@ -134,6 +134,20 @@ func (s *Store) TransactionTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) 
 	return Normalize(tx.Commit(ctx))
 }
 
+// ReadSnapshot runs reads that must agree in one read-only snapshot, so that nothing commits
+// between them.
+func (s *Store) ReadSnapshot(ctx context.Context, fn func(*db.Queries) error) error {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err = fn(db.New(tx)); err != nil {
+		return Normalize(err)
+	}
+	return Normalize(tx.Commit(ctx))
+}
+
 // Locking the workspace serializes membership decisions and its bounded mutations.
 func (s *Store) InWorkspace(ctx context.Context, p Principal, id uuid.UUID, access WorkspaceAccess, fn func(*db.Queries, Workspace) error) error {
 	return s.InWorkspaceTx(ctx, p, id, access, func(tx pgx.Tx, q *db.Queries, w Workspace) error { return fn(q, w) })

@@ -271,15 +271,21 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	// spend the account's confirmation limit and keep the owner from confirming, and its
 	// attempts here spend no credential budget either. The refusal says only that this session
 	// has nothing to confirm, which its holder knows. A session that a credential change or
-	// logout has ended is refused as such first. The check is made again under the account's
-	// lock; the session's lineage stays the same, as it is fixed with its token.
-	lineage, err := store.AdmittedLineage(ctx, s.Store.Queries, p)
+	// logout has ended is refused as such first. Both are read in one snapshot: a logout or
+	// password change that ends the enrolment with the session, committing between two reads,
+	// would show a live session with nothing to confirm. The check is made again under the
+	// account's lock; the session's lineage stays the same, as it is fixed with its token.
+	var lineage uuid.UUID
+	var enrolling db.Account
+	err = s.Store.ReadSnapshot(ctx, func(q *db.Queries) (err error) {
+		if lineage, err = store.AdmittedLineage(ctx, q, p); err != nil {
+			return err
+		}
+		enrolling, err = q.AccountByID(ctx, id)
+		return store.IfMissing(err, domain.Unauthenticated)
+	})
 	if err != nil {
 		return account, nil, err
-	}
-	enrolling, err := s.Store.Queries.AccountByID(ctx, id)
-	if err != nil {
-		return account, nil, store.IfMissing(err, domain.Unauthenticated)
 	}
 	if err = s.pendingEnrolment(enrolling, lineage); err != nil {
 		return account, nil, err

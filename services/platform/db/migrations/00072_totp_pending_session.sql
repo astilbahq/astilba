@@ -4,7 +4,8 @@
 -- and that lineage is signed in. NULL for an enrolment begun before this was recorded, which no
 -- session confirms and any may replace.
 --
--- Additive: the previous release neither reads nor writes it. An enrolment it begins keeps the
+-- Additive: the previous release neither reads nor writes it, so while it still serves requests
+-- any session of the account can confirm or replace an enrolment there. An enrolment it begins keeps the
 -- lineage an earlier one recorded, so after rolling forward the session that began it is refused
 -- until it lapses, while that earlier session is signed in. The earlier session can confirm it
 -- only with a code from the secret the other session was shown.
