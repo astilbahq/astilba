@@ -134,6 +134,19 @@ jobs:
             moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb
             moby/buildkit:v0.35.0-rootless@sha256:5987568f92dafbfb679879de59c1cd8d26597f5f6635c314e166164e2615870c
             dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+      - name: Pull catalog images
+        # The visual lane deploys every catalog entry. TestCatalogImagesArePulledFirst keeps this
+        # list, with PostgreSQL above, the catalog's.
+        if: matrix.lane == 'visual'
+        uses: ./.github/actions/pull-images
+        with:
+          docker: sudo /opt/astilba-plat4/bin/docker --host unix:///run/astilba-plat4/docker.sock
+          images: |
+            nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a
+            valkey/valkey:9.1.3-alpine3.24@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+            louislam/uptime-kuma:2.5.12-slim-rootless@sha256:212d2131952eded9b2508620455f15f5c2c85c262aafd23b97a7447c53e1d1bc
+            registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+            ghcr.io/usekaneo/kaneo:2.49.0@sha256:cd1826b1aba3ce736015cadf6f6c975d923aac00f4b6aaa7aedb29bc722dae49
       - name: Verify native Ubuntu host
         if: matrix.lane == 'core'
         working-directory: experiments/durable-execution

@@ -347,7 +347,7 @@ func (e *Engine) prepareCrossHost(ctx context.Context, c api.ExecutionCommand, p
 	if len(p.Secrets) != len(p.Plan.SecretReferences()) {
 		return errors.New("the execution secret set differs from this unit's references")
 	}
-	if err := e.pullVisualImages(ctx, p); err != nil {
+	if err := e.pullVisualImages(ctx, c, p); err != nil {
 		return err
 	}
 	for _, a := range p.Plan.LocalApplications() {

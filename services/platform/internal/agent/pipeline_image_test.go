@@ -21,7 +21,7 @@ func TestImageArchiveIsReadAsMeasured(t *testing.T) {
 	if _, err := read("archive and more", 7); err == nil {
 		t.Fatal("an archive that grew after it was measured was read")
 	}
-	if _, err := read("arch", 7); err != io.ErrUnexpectedEOF {
+	if _, err := read("arch", 7); err != errShorterThanMeasured {
 		t.Fatal("an archive that shrank after it was measured was read", err)
 	}
 }

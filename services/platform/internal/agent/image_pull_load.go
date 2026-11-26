@@ -27,7 +27,7 @@ import (
 // archive ends, and the agent ends it only once the whole image is within limit and every blob
 // matches its digest. A refused load's blobs stay until containerd collects them. The image is
 // named by the reference the deployment pulls, so it resolves, and has the same ID, as if
-// Docker had pulled it.
+// Docker had pulled it. A failure to read the registry is an *imageArchiveUnread.
 func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonical, source registryImage, plan *registryPlan, limit imageLoadLimit) error {
 	// Docker unpacks every image in the loaded index for the platforms it loads, including
 	// any whose content it already holds from elsewhere. So it loads only the chosen image's
@@ -78,7 +78,7 @@ func (e *Engine) loadRegistryImage(ctx context.Context, named reference.Canonica
 	case errors.As(checked, &refused):
 		return refused
 	case errors.As(checked, &unread):
-		return registryUnreachable(unread.err)
+		return unread
 	case loaded != nil:
 		return &imageLoadRefused{why: "Docker's image load failed: " + firstLine(loaded.Error(), 300)}
 	case checked != nil:

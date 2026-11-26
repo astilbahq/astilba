@@ -836,6 +836,13 @@ with the image smoke test's PostgreSQL pull.
   store, one on a pinned manifest reports `not found` and a short layer a short read. So a
   pin removed upstream also takes four minutes to report.
 - The action runs on the runner's own Node, because Host jobs set up no Node of their own.
+- The Host visual lane also pulls every [catalog image](service-catalog.md) this way. Its
+  catalog journey deploys them all, and a failed registry read during it failed the lane four
+  times from 18 to 21 November 2026. `TestCatalogImagesArePulledFirst` fails if the
+  list and the catalog differ. The agent finds these images in Docker and reads no registry,
+  so the journey no longer measures a pull from a public registry. `TestNativePull*` and
+  `TestNativePipeline` keep the measured pull covered against registries on the host, and
+  `TestPull*` covers a registry that fails and recovers.
 
 Not covered: Canvas and Workshop name their image in `container:`, which the runner pulls
 with its own short retries before any step can run. Pulls made during a test, such as
