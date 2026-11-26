@@ -154,7 +154,9 @@ ALTER DATABASE app SET ssl_renegotiation_limit = 0;
 ALTER DATABASE app SET application_name = 'a\b''c';
 GRANT CONNECT ON DATABASE app TO reader;
 ALTER DATABASE app CONNECTION LIMIT 0;
+ALTER DATABASE app IS_TEMPLATE true;
 CREATE FUNCTION public.unlisted() RETURNS int LANGUAGE sql SET role = app SET default_with_oids = off AS 'SELECT 1';
+ALTER FUNCTION public.unlisted() SET seed = 0.5;
 ALTER ROLE reader IN DATABASE app SET log_statement = 'all';`)
 		if err != nil {
 			t.Fatal(err)
@@ -171,6 +173,29 @@ ALTER ROLE reader IN DATABASE app SET log_statement = 'all';`)
 		got, err := e.dataOutput(ctx, pgClient{container: db}, "psql", "-XAt", "-U", "postgres", "-d", "app", "-c", "SELECT string_agg(coalesce(r.rolname, '-') || ':' || pg_catalog.array_to_string(s.setconfig, ','), ';' ORDER BY r.rolname NULLS FIRST) FROM pg_catalog.pg_db_role_setting s LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.setrole")
 		if err != nil || strings.TrimSpace(string(got)) != "-:maintenance_work_mem=1MB,TimeZone=UTC,default_transaction_read_only=on,application_name=a\\b'c;app:statement_timeout=1min" {
 			t.Fatalf("the restored database's settings are %q, %v", got, err)
+		}
+		// pg_dump writes the connection limit before the database's other properties, and a limit
+		// of 0 refuses the user any new session.
+		got, err = e.dataOutput(ctx, pgClient{container: db}, "psql", "-XAt", "-U", "postgres", "-d", "app", "-c", "SELECT datconnlimit || '|' || datistemplate FROM pg_catalog.pg_database WHERE datname = current_database()")
+		if err != nil || strings.TrimSpace(string(got)) != "0|true" {
+			t.Fatalf("the restored database's connection limit and template flag are %q, %v", got, err)
+		}
+	})
+
+	// The restore applies the database's own statements in one session, and the first that fails
+	// stops the rest and fails the restore.
+	t.Run("a refused database statement stops those after it", func(t *testing.T) {
+		target, _, err := restore(t, current, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		db := start(t, current, plan, target, uuid.New(), "none")
+		if err = e.asDatabaseUser(ctx, db, backup.Manifest{Username: "app", Database: "app"}, []databaseStatement{{text: "ALTER DATABASE app CONNECTION LIMIT = -5"}, {text: "COMMENT ON DATABASE app IS 'after'"}}); err == nil {
+			t.Fatal("a refused statement did not fail")
+		}
+		got, err := e.dataOutput(ctx, pgClient{container: db}, "psql", "-XAt", "-U", "postgres", "-d", "app", "-c", "SELECT datconnlimit || '|' || coalesce(pg_catalog.shobj_description(oid, 'pg_database'), '-') FROM pg_catalog.pg_database WHERE datname = current_database()")
+		if err != nil || strings.TrimSpace(string(got)) != "-1|-" {
+			t.Fatalf("statements around the refused one were applied: %q, %v", got, err)
 		}
 	})
 

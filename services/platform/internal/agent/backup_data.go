@@ -357,6 +357,11 @@ var superuserObjectsSQL = func() string {
 		return alias + ".oid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = '" + catalog + "'::regclass AND d.objid = " + alias + ".oid AND d.deptype = 'e')"
 	}
 	own := func(catalog string) string { return ownAs(catalog, "x") }
+	hidden := make([]string, len(hiddenSettings))
+	for i, name := range hiddenSettings {
+		hidden[i] = quoteLiteral(strings.ToLower(name))
+	}
+	hiddenList := strings.Join(hidden, ", ")
 	// inline-sql: reads a managed database's catalog, not the platform database.
 	counts := []string{"SELECT count(*) FROM pg_event_trigger"}
 	for _, catalog := range []string{"pg_opclass", "pg_opfamily", "pg_ts_template", "pg_ts_parser", "pg_am", "pg_foreign_data_wrapper", "pg_language"} {
@@ -374,10 +379,10 @@ var superuserObjectsSQL = func() string {
 		// inline-sql: reads a managed database's catalog, not the platform database.
 		"SELECT count(*) FROM pg_aggregate g JOIN pg_proc x ON x.oid = g.aggfnoid WHERE "+own("pg_proc")+" AND 'internal'::regtype IN (g.aggtranstype, g.aggmtranstype)",
 		// An aggregate's own function, and a range type's constructors, are PostgreSQL's, in its
-		// internal language, and come with the aggregate or the type. A function may run as a role
-		// or session user its user chooses, which pg_settings doesn't list.
+		// internal language, and come with the aggregate or the type. A function may set any setting
+		// its user may choose, including those pg_settings doesn't list.
 		// inline-sql: reads a managed database's catalog, not the platform database.
-		"SELECT count(*) FROM pg_proc x JOIN pg_language l ON l.oid = x.prolang WHERE "+own("pg_proc")+" AND x.prokind <> 'a' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = x.oid AND d.deptype = 'i') AND (NOT l.lanpltrusted OR x.proleakproof OR x.prosupport <> 0 OR EXISTS (SELECT 1 FROM unnest(x.proconfig) c WHERE lower(split_part(c, '=', 1)) NOT IN ('default_with_oids', 'role', 'session_authorization', 'ssl_renegotiation_limit') AND NOT EXISTS (SELECT 1 FROM pg_settings s WHERE lower(s.name) = lower(split_part(c, '=', 1)) AND s.context = 'user' AND position('.' IN s.name) = 0)))",
+		"SELECT count(*) FROM pg_proc x JOIN pg_language l ON l.oid = x.prolang WHERE "+own("pg_proc")+" AND x.prokind <> 'a' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = x.oid AND d.deptype = 'i') AND (NOT l.lanpltrusted OR x.proleakproof OR x.prosupport <> 0 OR EXISTS (SELECT 1 FROM unnest(x.proconfig) c WHERE lower(split_part(c, '=', 1)) NOT IN ("+hiddenList+") AND NOT EXISTS (SELECT 1 FROM pg_settings s WHERE lower(s.name) = lower(split_part(c, '=', 1)) AND s.context = 'user' AND position('.' IN s.name) = 0)))",
 	)
 	return "SELECT (" + strings.Join(counts, ") + (") + ")"
 }()

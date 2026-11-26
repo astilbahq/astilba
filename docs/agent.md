@@ -40,7 +40,7 @@ The minimum version is the reviewed file `services/platform/cmd/agent/minimum-ve
 
 Raises so far, and why releases below each must not run again:
 
-- `0.1.0`: from this release, a PostgreSQL backup's snapshot manifest records the dump's settings. An earlier agent drops them when it reads the manifest, so the manifest no longer matches the hash its record holds, and that agent refuses to restore any backup made since. The floor doesn't stop an earlier agent restored by hand, which refuses those restores too. The first release must be tagged `0.1.0` or later.
+- `0.1.0`: from this release, a PostgreSQL backup's snapshot manifest records the dump's settings. An earlier agent drops them when it reads the manifest, so the manifest no longer matches the hash its record holds, and that agent refuses local restores of any backup made since. The floor doesn't stop an earlier agent restored by hand, which refuses those restores too. The first release must be tagged `0.1.0` or later.
 
 ### Release procedure
 

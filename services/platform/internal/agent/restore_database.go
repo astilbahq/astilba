@@ -272,10 +272,11 @@ func restorable(s clusterSetting, m backup.Manifest, contexts map[string]string)
 	return context == "user" && (s.role == "" || s.role == m.Username), nil
 }
 
-// hiddenSettings are the settings a database's user may choose that pg_settings doesn't list. The
-// restore leaves them out: who a session runs as would decide who the restore's own sessions run
-// as, the random seed is no setting a database needs, and PostgreSQL only still accepts the others
-// and ignores them.
+// hiddenSettings are the settings a database's user may choose that pg_settings doesn't list. A
+// backup lets a function set them, as its user may. The restore leaves them out of the database's
+// own settings: who a session runs as would decide who the restore's own sessions run as, the
+// random seed is no setting a database needs, and PostgreSQL only still accepts the others and
+// ignores them.
 var hiddenSettings = []string{"default_with_oids", "role", "seed", "session_authorization", "ssl_renegotiation_limit"}
 
 // renderDatabase renders the archive's entries that describe its database, from container id.
@@ -304,9 +305,18 @@ func (e *Engine) writeRestoreList(ctx context.Context, id, list string) error {
 	return e.dataTool(ctx, strings.NewReader(list), io.Discard, "exec", "-i", id, "sh", "-c", `rm -f -- "$1" && umask 077 && cat > "$1"`, "sh", restoreList)
 }
 
-// asDatabaseUser runs one validated statement in m's database as its user.
-func (e *Engine) asDatabaseUser(ctx context.Context, id string, m backup.Manifest, statement string) error {
-	return e.dataTool(ctx, nil, io.Discard, "exec", id, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", m.Username, "-d", m.Database, "-c", statement)
+// asDatabaseUser runs validated statements in order in m's database, in one session as its user,
+// each in its own transaction. The first that fails stops the rest and fails the call. A
+// connection limit or another property of the database applies only to later sessions.
+func (e *Engine) asDatabaseUser(ctx context.Context, id string, m backup.Manifest, statements []databaseStatement) error {
+	if len(statements) == 0 {
+		return nil
+	}
+	command := []string{"exec", id, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", m.Username, "-d", m.Database}
+	for _, s := range statements {
+		command = append(command, "-c", s.text)
+	}
+	return e.dataTool(ctx, nil, io.Discard, command...)
 }
 
 // archiveRestore is what a restore reads from an archive before anything from it runs: its
@@ -378,10 +388,8 @@ func (e *Engine) restoreAsOwner(ctx context.Context, id string, r archiveRestore
 		}
 	}
 	// pg_restore applies a database's settings before its contents, so they apply to the restore.
-	for _, s := range settings {
-		if err := e.asDatabaseUser(ctx, id, m, s.text); err != nil {
-			return nil, err
-		}
+	if err := e.asDatabaseUser(ctx, id, m, settings); err != nil {
+		return nil, err
 	}
 	pass := func(keep func(tocKind) bool) error {
 		if err := e.writeRestoreList(ctx, id, tocList(r.entries, keep)); err != nil {
@@ -396,11 +404,10 @@ func (e *Engine) restoreAsOwner(ctx context.Context, id string, r archiveRestore
 	} else if err := e.restoreWithRoles(ctx, id, m, roles, pass); err != nil {
 		return nil, err
 	}
-	// A connection limit can refuse the user's next session, so it comes last.
-	for _, s := range append(after, properties...) {
-		if err := e.asDatabaseUser(ctx, id, m, s.text); err != nil {
-			return nil, err
-		}
+	// A connection limit can refuse the user's next session, so the database's properties come
+	// last, in the session that applies the rest.
+	if err := e.asDatabaseUser(ctx, id, m, append(after, properties...)); err != nil {
+		return nil, err
 	}
 	return left, nil
 }
