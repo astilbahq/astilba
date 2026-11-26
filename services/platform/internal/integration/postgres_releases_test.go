@@ -85,7 +85,7 @@ func TestPostgresReleasesAndRetiredReleaseDrafts(t *testing.T) {
 	var legacyDraft api.Revision
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": draft.Id, "specification": legacy}, 200, &legacyDraft)
 	refused = string(b.call("POST", path+"/deployment-plans", api.VisualPlanRequest{ServerId: enrolled.Server.Id, BaseRevisionId: legacyDraft.Id}, 400, nil))
-	if !strings.Contains(refused, "applications.postgres.roles") || !strings.Contains(refused, "must use the owner role model") {
+	if !strings.Contains(refused, "applications.postgres.roles") || !strings.Contains(refused, "must use the owner role model") || !strings.Contains(refused, `add \"roles\": \"owner\" to Database's postgres settings`) {
 		t.Fatalf("a new database whose user is the superuser was planned: %s", refused)
 	}
 }

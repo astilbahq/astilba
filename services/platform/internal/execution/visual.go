@@ -227,7 +227,7 @@ func (s *Service) createVisualPlan(ctx context.Context, tx pgx.Tx, keys valueKey
 			// Storage nothing has initialised yet gets the owner model. A database whose user is
 			// the superuser keeps it only on the volume it was created on.
 			if reserved == nil && !a.Postgres.Owner() {
-				return &domain.Error{Code: "invalid_input", Message: "A new database must use the owner role model, so its database user isn't PostgreSQL's superuser.", Fields: []string{"applications.postgres.roles"}}
+				return &domain.Error{Code: "invalid_input", Message: "A new database must use the owner role model, so its database user isn't PostgreSQL's superuser: add \"roles\": \"owner\" to " + a.Name + "'s postgres settings.", Fields: []string{"applications.postgres.roles"}}
 			}
 			// The volume's own record holds whatever the environment applied since, including across
 			// a retirement, which clears the applied revision the check above compares with.
