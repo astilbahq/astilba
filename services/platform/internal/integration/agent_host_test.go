@@ -44,17 +44,22 @@ func TestNativeAgentService(t *testing.T) {
 	binary, next := filepath.Join(root, "agent"), filepath.Join(root, "next-agent")
 	buildNativeAgent(t, binary, "0.1.0-fixture.1")
 	buildNativeAgent(t, next, "0.1.0-fixture.2")
-	data, e := os.ReadFile(next)
-	if e != nil {
-		t.Fatal(e)
+	signed := func(path, version string) api.AgentRelease {
+		t.Helper()
+		data, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		digest := sha256.Sum256(data)
+		release := api.AgentRelease{Version: version, MinimumVersion: agentFixtureFloor, Commit: agentFixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(data)), Sha256: hex.EncodeToString(digest[:])}
+		release.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, agentrelease.Message(release)))
+		if e = os.WriteFile(filepath.Join(root, release.Sha256), data, 0755); e != nil {
+			t.Fatal(e)
+		}
+		return release
 	}
-	digest := sha256.Sum256(data)
-	release := api.AgentRelease{Version: "0.1.0-fixture.2", MinimumVersion: agentFixtureFloor, Commit: agentFixtureCommit, Protocol: 1, Arch: api.AgentReleaseArch(runtime.GOARCH), Size: int64(len(data)), Sha256: hex.EncodeToString(digest[:])}
-	release.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, agentrelease.Message(release)))
-	if e = os.WriteFile(filepath.Join(root, release.Sha256), data, 0755); e != nil {
-		t.Fatal(e)
-	}
-	f.execution.Releases = []api.AgentRelease{release}
+	// Management reads the running agent's floor from its release in the catalog.
+	f.execution.Releases = []api.AgentRelease{signed(binary, "0.1.0-fixture.1"), signed(next, "0.1.0-fixture.2")}
 	f.apiServer.ArtifactDirectory = root
 	tlsServer := httptest.NewTLSServer(f.server.Config.Handler)
 	defer tlsServer.Close()

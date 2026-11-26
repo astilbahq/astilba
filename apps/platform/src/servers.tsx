@@ -5,6 +5,7 @@ import { serversOptions } from "./api/servers";
 import { Button } from "./components/button";
 import { Label } from "./components/label";
 import { Select } from "./components/select";
+import { AgentUpdate } from "./features/agent-update";
 import { EnrollmentInstructions } from "./features/enrollment-instructions";
 import { ManagedNetwork } from "./features/managed-network";
 import { ServerMetrics } from "./features/metrics";
@@ -300,52 +301,34 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 onEnrollment={setEnrollment}
               />
             )}
-            {owner &&
-              releases.data?.some(
-                (r) =>
-                  r.arch === server.capabilities?.arch &&
-                  r.version !== server.capabilities.version,
-              ) && (
-                <Form
-                  action={action}
-                  onSubmit={(data) => {
-                    if (
-                      confirm(
-                        `Update ${server.name} to ${text(data, "version")}? The update requires an idle agent and verifies the signed artifact.`,
-                      )
+            {owner && (
+              <AgentUpdate
+                server={server}
+                releases={releases.data ?? []}
+                action={action}
+                busy={busy}
+                onUpdate={(version) => {
+                  if (
+                    confirm(
+                      `Update ${server.name} to ${version}? The update requires an idle agent and verifies the signed artifact.`,
                     )
-                      run(() =>
-                        result(
-                          client.POST(
-                            "/api/v1/workspaces/{workspaceId}/servers/{serverId}/update",
-                            {
-                              params: {
-                                path: { workspaceId, serverId: server.id },
-                              },
-                              body: { version: text(data, "version") },
+                  )
+                    run(() =>
+                      result(
+                        client.POST(
+                          "/api/v1/workspaces/{workspaceId}/servers/{serverId}/update",
+                          {
+                            params: {
+                              path: { workspaceId, serverId: server.id },
                             },
-                          ),
+                            body: { version },
+                          },
                         ),
-                      );
-                  }}
-                >
-                  <Label>
-                    Agent release
-                    <Select name="version">
-                      {releases.data
-                        .filter(
-                          (r) =>
-                            r.arch === server.capabilities?.arch &&
-                            r.version !== server.capabilities.version,
-                        )
-                        .map((r) => (
-                          <option key={r.sha256}>{r.version}</option>
-                        ))}
-                    </Select>
-                  </Label>
-                  <BusyButton busy={busy}>Update agent</BusyButton>
-                </Form>
-              )}
+                      ),
+                    );
+                }}
+              />
+            )}
           </article>
         ))}
       </section>

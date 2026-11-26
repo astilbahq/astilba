@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -84,8 +85,14 @@ func TestInstallKeepsItsFloorAndRefusesMisdescribedReleases(t *testing.T) {
 				t.Fatal(err)
 			}
 			r, body := release(test.version, test.below, test.change)
-			if err := Install(context.Background(), r, pub, bytes.NewReader(body), path, Running{MinimumVersion: test.floor}); err == nil || !strings.Contains(err.Error(), test.refusal) {
+			err := Install(context.Background(), r, pub, bytes.NewReader(body), path, Running{MinimumVersion: test.floor})
+			if err == nil || !strings.Contains(err.Error(), test.refusal) {
 				t.Fatalf("Install: %v, want a refusal naming %q", err, test.refusal)
+			}
+			// A floor refusal is one the agent reports as such; a misdescribed release isn't.
+			var below *agentrelease.BelowFloor
+			if floor := test.refusal != "identity"; errors.As(err, &below) != floor {
+				t.Fatalf("Install: %#v, floor refusal %v", err, floor)
 			}
 			if got, _ := os.ReadFile(path); !bytes.Equal(got, current) {
 				t.Fatal("the refused release replaced the agent")
