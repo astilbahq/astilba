@@ -159,6 +159,20 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 	return account, store.AdmitBrowserSession(ctx, q, p)
 }
 
+// MFASetupElsewhere refuses to begin an enrolment while another signed-in browser session's
+// enrolment lasts.
+var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another browser session. Finish it there, or start again here once it lapses after 10 minutes."}
+
+// enrolmentLineage is the lineage of the browser session p presents, which an enrolment is bound
+// to: it stays the same when the session renews its token, as confirming credentials does.
+func enrolmentLineage(ctx context.Context, q *db.Queries, p store.Principal) (uuid.UUID, error) {
+	lineage, err := q.BrowserSessionLineage(ctx, p.SessionHash)
+	return lineage, store.IfMissing(err, domain.Unauthenticated)
+}
+
+// BeginMFA starts an enrolment bound to the browser session that asks, so that no other session,
+// such as an old one someone else holds, can replace the secret its holder scanned or confirm it.
+// The session may start again, which replaces its own.
 func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string, err error) {
 	var secret, uri string
 	keys, err := s.secondFactor(ctx, p.Account.ID, secretbroker.Seal, secretbroker.TOTPPending)
@@ -174,6 +188,20 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 		if len(account.TotpSecret) > 0 {
 			return domain.Conflict
 		}
+		lineage, err := enrolmentLineage(ctx, q, p)
+		if err != nil {
+			return err
+		}
+		if other := account.TotpPendingLineage; other != nil && *other != lineage && account.TotpPendingExpiry != nil && account.TotpPendingExpiry.After(s.Now()) {
+			// An enrolment whose session has signed out is no one's, so it gives way.
+			live, err := q.SessionLineageLive(ctx, *other)
+			if err != nil {
+				return err
+			}
+			if live {
+				return MFASetupElsewhere
+			}
+		}
 		key, err := totp.Generate(totp.GenerateOpts{Issuer: "Astilba", AccountName: account.Email, Period: 30, SecretSize: 20, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
 		if err != nil {
 			return err
@@ -183,7 +211,7 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 			return err
 		}
 		expires := s.Now().Add(10 * time.Minute)
-		if err = q.SetPendingTOTP(ctx, db.SetPendingTOTPParams{ID: account.ID, TotpPending: blob, TotpPendingExpiry: &expires}); err != nil {
+		if err = q.SetPendingTOTP(ctx, db.SetPendingTOTPParams{ID: account.ID, TotpPending: blob, TotpPendingExpiry: &expires, TotpPendingLineage: &lineage}); err != nil {
 			return err
 		}
 		secret, uri = key.Secret(), key.URL()
@@ -192,10 +220,10 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 	return secret, uri, err
 }
 
-// ConfirmMFA turns on two-factor authentication with the authenticator BeginMFA gave, once the
-// session's holder has given the password. Without it a stolen session could enrol its own
-// authenticator, and the account's owner could not sign in again even after resetting the
-// password.
+// ConfirmMFA turns on two-factor authentication with the authenticator BeginMFA gave the same
+// browser session, once the session's holder has given the password. Without it a stolen session
+// could enrol its own authenticator, and the account's owner could not sign in again even after
+// resetting the password.
 func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Credential, code string) (_ db.Account, _ []string, err error) {
 	id := p.Account.ID
 	var account db.Account
@@ -218,6 +246,14 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 		// The new authenticator's code is not the credential that confirms identity, so a
 		// wrong one, or an enrolment that has lapsed, is refused as input to try again.
 		if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) {
+			return domain.Invalid("code")
+		}
+		// Another session's enrolment is refused as a lapsed one is: this session has none.
+		lineage, err := enrolmentLineage(ctx, q, p)
+		if err != nil {
+			return err
+		}
+		if account.TotpPendingLineage == nil || *account.TotpPendingLineage != lineage {
 			return domain.Invalid("code")
 		}
 		secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTPPending, ID: id}, account.TotpPending)

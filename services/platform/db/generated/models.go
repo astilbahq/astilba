@@ -26,6 +26,7 @@ type Account struct {
 	EmailVerifiedAt         *time.Time `json:"email_verified_at"`
 	RecoveryCodesSaved      bool       `json:"recovery_codes_saved"`
 	RecoveryCodesGeneration *uuid.UUID `json:"recovery_codes_generation"`
+	TotpPendingLineage      *uuid.UUID `json:"totp_pending_lineage"`
 }
 
 type AccountSecurityEvent struct {

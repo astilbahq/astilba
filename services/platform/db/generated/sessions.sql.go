@@ -33,6 +33,18 @@ func (q *Queries) BrowserSessionAdmission(ctx context.Context, arg BrowserSessio
 	return id, err
 }
 
+const browserSessionLineage = `-- name: BrowserSessionLineage :one
+SELECT lineage FROM sessions WHERE token = $1 AND expiry > clock_timestamp()
+`
+
+// unscoped: the hashed browser session token is the credential.
+func (q *Queries) BrowserSessionLineage(ctx context.Context, token string) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, browserSessionLineage, token)
+	var lineage uuid.UUID
+	err := row.Scan(&lineage)
+	return lineage, err
+}
+
 const browserSessionSnapshotAdmission = `-- name: BrowserSessionSnapshotAdmission :one
 SELECT a.id FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
 WHERE a.id = $2 AND a.auth_version = $3
@@ -167,4 +179,16 @@ func (q *Queries) RefreshSession(ctx context.Context, arg RefreshSessionParams) 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const sessionLineageLive = `-- name: SessionLineageLive :one
+SELECT EXISTS(SELECT 1 FROM sessions WHERE lineage = $1 AND expiry > clock_timestamp())
+`
+
+// unscoped: a lineage is one browser's chain of renewed session tokens.
+func (q *Queries) SessionLineageLive(ctx context.Context, lineage uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, sessionLineageLive, lineage)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

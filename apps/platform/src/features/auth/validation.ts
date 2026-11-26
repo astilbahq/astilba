@@ -101,6 +101,8 @@ export function createAuthValidation(messages: AuthMessages) {
             return messages.recentRequired;
           case "conflict":
             return messages.setupConflict;
+          case "mfa_setup_elsewhere":
+            return messages.setupElsewhere;
           case "invalid_input":
             if (!field) return messages.invalidFields;
             if (field === "email") return messages.emailInvalid;

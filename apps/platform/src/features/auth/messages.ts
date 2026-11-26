@@ -33,6 +33,7 @@ export function createAuthMessages(t: TFunction<"auth">) {
     stepUpRateLimited: t(($) => $.validation.stepUpRateLimited),
     recentRequired: t(($) => $.validation.recentRequired),
     setupConflict: t(($) => $.validation.setupConflict),
+    setupElsewhere: t(($) => $.validation.setupElsewhere),
     invalidCredentials: t(($) => $.validation.invalidCredentials),
     invalidResetLink: t(($) => $.validation.invalidResetLink),
     invalidInvitation: t(($) => $.validation.invalidInvitation),
