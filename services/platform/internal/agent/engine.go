@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
@@ -155,7 +156,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.ServerId != cfg.ServerID || c.Id == uuid.Nil || c.Generation < 1 || len(c.PlanHash) != 64 || (cfg.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (cfg.Role == "deployment" && c.Kind == "pipeline") {
 		return errors.New("command identity or role rejected")
 	}
-	if _, known := commandKinds[c.Kind]; !known {
+	if !deadline.KnownKind(c.Kind) {
 		return errors.New("unsupported command")
 	}
 	preview := false
@@ -219,13 +220,13 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return e.finish(c.Id, "failed", err.Error())
 	}
 	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
-	if commandDeadline(c) != ownDeadline && !updateContinuation && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	if deadline.Of(c) != deadline.OwnDeadline && !updateContinuation && r.Checkpoint == "accepted" && deadline.Passed(r.Command) {
 		late, err := e.runsLate(c)
 		if err != nil {
 			return err
 		}
 		if !late {
-			return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+			return e.finish(c.Id, "cancelled", lateNote(r.Command))
 		}
 	}
 	upgrades, err := e.Journal.upgrades()
@@ -275,8 +276,8 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		if updateContinuation && e.VerifyInstalledUpdate != nil && e.VerifyInstalledUpdate(*c.Release) == nil {
 			return e.finish(c.Id, "succeeded", "Agent artifact verified and installed.")
 		}
-		if time.Now().After(c.Deadline) {
-			return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+		if deadline.Passed(r.Command) {
+			return e.finish(c.Id, "cancelled", lateNote(r.Command))
 		}
 		if e.Update == nil {
 			return e.finish(c.Id, "needs_attention", "This installation needs the documented local update procedure.")

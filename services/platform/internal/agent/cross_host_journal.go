@@ -133,13 +133,6 @@ func (j *Journal) saveCrossHost(s crossHostState) error {
 		return j.put(tx, "cross-host", "active", s)
 	})
 }
-func crossHostCommand(c api.ExecutionCommand) (deployment.CrossHostCommand, error) {
-	var command deployment.CrossHostCommand
-	if c.Crosshost == nil || hostnetwork.Decode(*c.Crosshost, &command) != nil || command.Digest() != c.PlanHash || c.ParentId == nil || *c.ParentId != command.ParentID || command.ParentID == uuid.Nil || len(command.GroupHash) != 64 || command.Unit.Plan.ServerID != c.ServerId || command.Unit.Plan.EnvironmentID != c.EnvironmentId || command.Unit.Plan.UnitID != c.ResourceId {
-		return command, errors.New("invalid coordinated command identity")
-	}
-	return command, nil
-}
 func crossHostReceipt(c api.ExecutionCommand, command deployment.CrossHostCommand, observation deployment.Observation) *jsontext.Value {
 	raw, _ := stablejson.Marshal(deployment.CrossHostReceipt{ParentID: command.ParentID, GroupHash: command.GroupHash, UnitID: command.Unit.Plan.UnitID, Phase: command.Phase, PlanHash: command.Unit.Plan.Hash, Observation: observation})
 	v := jsontext.Value(raw)

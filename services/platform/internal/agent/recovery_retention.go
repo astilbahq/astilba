@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/google/uuid"
@@ -16,7 +17,7 @@ func (j *Journal) completeRecoveryHead(tx *bolt.Tx, r Record) error {
 	if r.Command.ParentId == nil || r.Command.Kind != "crosshost" || r.Report.State != "succeeded" {
 		return nil
 	}
-	body, err := crossHostCommand(r.Command)
+	body, err := deadline.CrossHost(r.Command)
 	if err != nil {
 		return err
 	}

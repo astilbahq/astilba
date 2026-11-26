@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/google/uuid"
 )
 
@@ -66,7 +67,7 @@ func (e *Engine) awaitValues(c api.ExecutionCommand, r Record, held bool) (bool,
 	switch {
 	case held:
 		return false, nil
-	case time.Now().After(c.Deadline):
+	case deadline.Passed(c):
 		return true, e.finish(c.Id, "cancelled", valuesExpiredNote)
 	case r.ValuesWanted:
 		return true, nil
