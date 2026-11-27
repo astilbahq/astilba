@@ -179,7 +179,7 @@ RESET ROLE;`); err != nil {
 	for name, application := range databases {
 		initial[name] = files(old, application)
 	}
-	// The unit applied the retired release; applying the update records what wrote the data.
+	// The unit applied the retired release, the oldest of its major, on storage with no record.
 	if err := e.Journal.saveUnit(unitState{Plan: before, Expected: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ RESET ROLE;`); err != nil {
 		t.Fatal(err)
 	}
 	if record, found, err := e.Journal.postgresData(volume); err != nil || !found || record.Image != retired.Image {
-		t.Fatalf("the release that wrote the data was not recorded: %+v, %v", record, err)
+		t.Fatalf("the release assumed of the data was not recorded: %+v, %v", record, err)
 	}
 	// A transaction that holds the table makes the concurrent rebuild wait; the lock timeout ends
 	// the wait, the update stays, the record keeps the earlier release and the note says so. It
