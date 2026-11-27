@@ -150,6 +150,11 @@ func (e *Engine) runProbes(ctx context.Context, probes []string, mode string) (f
 	if status == 0 {
 		return nil, nil, nil
 	}
+	// The script exits 1 only once it has named what its mode asks for. Any other status, a
+	// process limit or a kill, ended the round early, and probes after it were never sent.
+	if status != 1 {
+		return nil, nil, fmt.Errorf("route probe ended with status %d", status)
+	}
 	for line := range strings.FieldsSeq(out.String()) {
 		n, parseErr := strconv.Atoi(line)
 		if parseErr != nil || n < 1 || n > len(probes) {

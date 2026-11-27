@@ -85,6 +85,7 @@ func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 	}
 	routed := &maintenanceRoutes{Servers: []routedServer{}}
 	if len(pools) > 0 {
+		e.point("maintenance-routes-reading")
 		runtime, err := e.readIngressRuntime(ctx)
 		if err != nil {
 			return fmt.Errorf("the proxy did not report which route servers it routes: %w", err)

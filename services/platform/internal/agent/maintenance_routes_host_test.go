@@ -212,9 +212,9 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 // Nothing converts a reserved host's routes until the reservation is released, so bare
 // backend names an earlier agent published would last as long as it does. Reserving
 // converts them first, and a host whose conversion fails is not reserved. The proxy counts
-// every server up again when it loads the converted routes, until it probes it, so a
-// server it had out, here the other host's, is still left out of what the reservation
-// records.
+// every server up again when it loads the converted routes, until it probes it, so the
+// reservation probes each server the proxy reports up, and a server the proxy had out,
+// here the other host's, is still left out of what it records.
 func TestNativeReservationConvertsBareBackends(t *testing.T) {
 	w := newRoutedWriter(t)
 	ctx := context.Background()
@@ -252,28 +252,28 @@ func TestNativeReservationConvertsBareBackends(t *testing.T) {
 		return state.Current.QualifiedBackends
 	}
 
-	remoteDown := func() bool {
-		t.Helper()
+	remoteStatus := func() string {
 		runtime, err := w.engine.readIngressRuntime(ctx)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return ""
 		}
 		for _, service := range runtime["services"] {
 			for at, status := range service.ServerStatus {
 				if backend, err := backendOf(w.plan.UnitID, at); err == nil && backend == remote {
-					return status == "DOWN"
+					return status
 				}
 			}
 		}
-		return false
+		return ""
 	}
 	for range 30 {
-		if remoteDown() {
+		if remoteStatus() == "DOWN" {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if !remoteDown() {
+	if remoteStatus() != "DOWN" {
 		t.Fatal("the proxy never took the other host's stopped server out")
 	}
 
@@ -296,7 +296,19 @@ func TestNativeReservationConvertsBareBackends(t *testing.T) {
 		t.Fatal("the failed conversion did not restore the route file", err)
 	}
 
+	// The proxy must still count the other host's server up when the reservation reads it,
+	// or this run could not tell whether the reservation probed it.
+	stale := false
+	w.engine.Point = func(point string) {
+		if point == "maintenance-routes-reading" {
+			stale = remoteStatus() == "UP"
+		}
+	}
 	w.phase("reserve")
+	w.engine.Point = nil
+	if !stale {
+		t.Fatal("the proxy had already taken the other host's server out again when the reservation read its routes")
+	}
 	if !w.barrier() || !qualified() {
 		t.Fatal("the host was reserved without converting its routes")
 	}
