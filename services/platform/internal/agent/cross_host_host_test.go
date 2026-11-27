@@ -702,8 +702,11 @@ exec httpd -f -p 8080 -h /tmp/www`
 				resumes[index].Deadline = deadline
 			}
 			time.Sleep(time.Until(deadline) + time.Millisecond)
+			// Management completes no host until every host has resumed.
 			for index, host := range hosts {
 				host.command(t, resumes[index])
+			}
+			for index, host := range hosts {
 				r := host.command(t, command(index, "complete"))
 				var receipt deployment.CrossHostReceipt
 				if err = json.Unmarshal(*r.Crosshost, &receipt); err != nil {
@@ -773,6 +776,8 @@ exec httpd -f -p 8080 -h /tmp/www`
 		primary.command(t, upgradeCommand("cutover"))
 		for index, host := range hosts {
 			host.command(t, command(index, "resume-target", "", true))
+		}
+		for index, host := range hosts {
 			r := host.command(t, command(index, "complete", "", true))
 			var receipt deployment.CrossHostReceipt
 			if err := json.Unmarshal(*r.Crosshost, &receipt); err != nil {
@@ -905,6 +910,8 @@ exec httpd -f -p 8080 -h /tmp/www`
 			nativeRequireHealthy(t, recreated.Container)
 			for index, host := range hosts {
 				host.command(t, command(index, "resume-target"))
+			}
+			for index, host := range hosts {
 				r := host.command(t, command(index, "complete"))
 				var receipt deployment.CrossHostReceipt
 				if err := json.Unmarshal(*r.Crosshost, &receipt); err != nil {

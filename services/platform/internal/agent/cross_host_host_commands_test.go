@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"net"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -223,6 +225,14 @@ func nativeBackupOfStoppedWriter(t *testing.T, hosts []*nativePlacementHost, uni
 	if _, err := remote.docker.ContainerStop(ctx, writer, client.ContainerStopOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	// A writer stopped before a backup has normally been out of its pool since then. One
+	// stopped within a probe interval of the reservation still reads as routed there, and
+	// its completion would wait out the bound for it.
+	for _, endpoint := range units[0].Plan.Local.Backends[app.String()] {
+		if endpoint.ServerID == remote.server {
+			nativeWaitServerOut(t, primary, "http://"+net.JoinHostPort(endpoint.Address, strconv.Itoa(endpoint.Port)))
+		}
+	}
 	observe := func() {
 		t.Helper()
 		parent := uuid.New()
@@ -288,6 +298,38 @@ func nativeBackupOfStoppedWriter(t *testing.T, hosts []*nativePlacementHost, uni
 		}
 	}
 	nativeWaitPlacementRecovery(t)
+}
+
+// nativeWaitServerOut waits until host's proxy reports server up in no pool, as it does
+// within a probe interval of the server failing.
+func nativeWaitServerOut(t *testing.T, host *nativePlacementHost, server string) {
+	t.Helper()
+	for started := time.Now(); ; time.Sleep(200 * time.Millisecond) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		raw, err := proxyRawdata(ctx, host.docker, proxyName)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var runtime struct {
+			Services map[string]struct {
+				ServerStatus map[string]string `json:"serverStatus"`
+			} `json:"services"`
+		}
+		if err = json.Unmarshal(raw, &runtime); err != nil {
+			t.Fatal(err)
+		}
+		up := false
+		for _, service := range runtime.Services {
+			up = up || service.ServerStatus[server] == "UP"
+		}
+		if !up {
+			return
+		}
+		if time.Since(started) > 3*deployment.PoolHealthInterval {
+			t.Fatalf("the proxy still routes %s", server)
+		}
+	}
 }
 
 // Restoring a database its owner stopped starts the restored one. Everything depending on it
