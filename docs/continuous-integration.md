@@ -740,6 +740,11 @@ sources. The `upgrade` and `upgrade-faults` lanes compile the same tests, so the
 share one entry. A matching toolchain cache can seed a changed source tree; Go checks
 build inputs before reuse. Test commands retain `-race -count=1`.
 
+Every run restores, but only a passing job on `main` saves. Pull requests and merge
+groups can restore `main`'s entries, while an entry saved under their own refs serves no
+other run and pushes `main`'s out of the repository's cache limit. A pull request that
+changes a key's inputs, such as `ci.yml` or `go.mod`, compiles from cold until it merges.
+
 A separate step fetches the Go toolchain and modules before any test step, making
 up to three attempts, so a briefly dropped module download does not fail the
 check. Test steps are never retried.
