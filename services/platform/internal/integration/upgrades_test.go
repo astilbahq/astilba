@@ -54,7 +54,7 @@ func newUpgradeHost(t *testing.T, f *fixture) *upgradeHost {
 	b.call("POST", path+"/secrets", map[string]string{"name": "Database", "value": "upgrade-database-canary"}, 201, &h.secret)
 	pg, vol := uuid.New(), uuid.New()
 	image := domain.Postgres17Image
-	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: h.secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: domain.PostgresMount(image)}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: h.secret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: domain.PostgresMount(image)}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, &h.draft)
 	enrolled, in, token := enrollment(t, f, b, ws, "deployment")
 	yes := true

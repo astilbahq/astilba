@@ -18,18 +18,22 @@ type RestoreCutover struct {
 	ManifestHash   string    `json:"manifestHash"`
 	OldVolumeID    uuid.UUID `json:"oldVolumeId"`
 	TargetVolumeID uuid.UUID `json:"targetVolumeId"`
+	// Roles is the role model of a logical restore's cluster, which the restored database moves
+	// onto: domain.PostgresOwner, or empty for a restore whose database user is its superuser.
+	Roles string `json:"roles,omitempty"`
 }
 
 func (r RestoreCutover) Validate() error {
-	if r.SourcePlanID == uuid.Nil || len(r.SourceHash) != 64 || r.PolicyID == uuid.Nil || r.RunID == uuid.Nil || len(r.ManifestHash) != 64 || r.OldVolumeID == uuid.Nil || r.TargetVolumeID == uuid.Nil || r.OldVolumeID == r.TargetVolumeID {
+	if r.SourcePlanID == uuid.Nil || len(r.SourceHash) != 64 || r.PolicyID == uuid.Nil || r.RunID == uuid.Nil || len(r.ManifestHash) != 64 || r.OldVolumeID == uuid.Nil || r.TargetVolumeID == uuid.Nil || r.OldVolumeID == r.TargetVolumeID || r.Roles != "" && r.Roles != domain.PostgresOwner {
 		return errors.New("invalid restored-volume cutover identity")
 	}
 	return nil
 }
 
-// RestoreSpecification permits only replacing the restored volume's identity.
+// RestoreSpecification permits only replacing the restored volume's identity and moving the managed
+// database on it onto roles, the restored cluster's role model.
 // Images, credentials, placement and all other service configuration stay fixed.
-func RestoreSpecification(source domain.Specification, old, target uuid.UUID) (domain.Specification, error) {
+func RestoreSpecification(source domain.Specification, old, target uuid.UUID, roles string) (domain.Specification, error) {
 	raw, err := stablejson.Marshal(source)
 	if err != nil {
 		return source, err
@@ -49,9 +53,13 @@ func RestoreSpecification(source domain.Specification, old, target uuid.UUID) (d
 		return out, errors.New("restored volume is not in the source specification")
 	}
 	for i := range out.Applications {
-		for j := range out.Applications[i].Mounts {
-			if out.Applications[i].Mounts[j].VolumeID == old {
-				out.Applications[i].Mounts[j].VolumeID = target
+		a := &out.Applications[i]
+		for j := range a.Mounts {
+			if a.Mounts[j].VolumeID == old {
+				a.Mounts[j].VolumeID = target
+				if a.Postgres != nil {
+					a.Postgres.Roles = roles
+				}
 			}
 		}
 	}
@@ -62,7 +70,7 @@ func RestoredGroup(source Plan, r RestoreCutover, id, revision uuid.UUID, expire
 	if r.Validate() != nil || source.Validate(true) != nil || source.Distributed == nil || source.ID != r.SourcePlanID || source.Hash != r.SourceHash {
 		return Plan{}, errors.New("restore source differs from its frozen group")
 	}
-	spec, err := RestoreSpecification(source.Specification, r.OldVolumeID, r.TargetVolumeID)
+	spec, err := RestoreSpecification(source.Specification, r.OldVolumeID, r.TargetVolumeID, r.Roles)
 	if err != nil {
 		return Plan{}, err
 	}

@@ -84,14 +84,15 @@ func (e *Engine) executeRecovery(ctx context.Context, c api.ExecutionCommand, r 
 		}
 		return e.finish(c.Id, "failed", "Restore failed before anything was created. Check the destination's access, that the snapshot still exists, and that this server runs the current deployment.")
 	}
-	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: v.Snapshot, TargetID: v.TargetID, Manifest: stored, RestoreImage: release.Image})
+	stored.DumpSettings = nil
+	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: v.Snapshot, TargetID: v.TargetID, Manifest: stored, RestoreImage: release.Image, RestoreRoles: restoredRoles(release)})
 	if err != nil {
 		return err
 	}
 	return e.Journal.Mutate(c.Id, func(record *Record) {
 		result := jsontext.Value(raw)
 		record.Report.Restore = &result
-		settleReport(record, "succeeded", "Snapshot restored into a new volume and matched against its manifest. A restored database's settings files were reset to this server's and its cluster checked on a best-effort basis, which doesn't make a database from a compromised server safe to use. Nothing uses the volume until a reviewed cutover."+clearedNote(cleared))
+		settleReport(record, "succeeded", "Snapshot restored into a new volume and matched against its manifest. A restored database's dump ran only as its own database user, never as PostgreSQL's superuser, and its cluster was checked and its settings files reset to this server's. Nothing uses the volume until a reviewed cutover."+clearedNote(cleared))
 	})
 }
 
@@ -102,15 +103,14 @@ func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin f
 	if err := e.checkRestoreOwnership(ctx, in.Policy); err != nil {
 		return backup.Manifest{}, domain.PostgresRelease{}, nil, err
 	}
-	// The database password is the one this server's own database was created with, never one
+	// The database user's credential is the one this server's own database has, never one
 	// released with the command: the restored cluster replaces that database's volume at cutover.
-	in.Access.DatabasePassword = ""
+	credential := ""
 	if in.Policy.Method == "postgres-logical" {
-		password, err := e.databasePassword(ctx, in.Policy)
-		if err != nil {
+		var err error
+		if credential, err = e.databaseCredential(ctx, in.Policy); err != nil {
 			return backup.Manifest{}, domain.PostgresRelease{}, nil, restoreRefusal("this server's database is not running as the deployment describes")
 		}
-		in.Access.DatabasePassword = password
 	}
 	if err := e.prepareRepository(ctx, &in, false); err != nil {
 		return backup.Manifest{}, domain.PostgresRelease{}, nil, err
@@ -122,7 +122,7 @@ func (e *Engine) recoverSnapshot(ctx context.Context, v backup.Recovery, begin f
 	if err = v.Admits(m); err != nil {
 		return backup.Manifest{}, domain.PostgresRelease{}, nil, restoreRefusal(err.Error())
 	}
-	cleared, release, err := e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, begin)
+	cleared, release, err := e.restoreArchive(ctx, in, v.RunID, v.TargetID, v.Snapshot, archive, m, credential, begin)
 	return m, release, cleared, err
 }
 

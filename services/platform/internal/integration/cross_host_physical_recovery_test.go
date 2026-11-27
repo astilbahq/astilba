@@ -239,7 +239,7 @@ hostname
 CGI
 chmod +x /tmp/www/cgi-bin/health
 ` + serveHTTP}
-		spec.Applications = append(spec.Applications, domain.Application{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}})
+		spec.Applications = append(spec.Applications, domain.Application{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}})
 		spec.Volumes = []domain.Volume{{ID: volume, Name: "Database"}}
 		spec.Bindings = []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: app, Output: "HOST", Variable: "DB_HOST"}, {ID: uuid.New(), SourceID: pg, TargetID: app, Output: "PORT", Variable: "DB_PORT"}}
 	}
@@ -337,7 +337,7 @@ chmod +x /tmp/www/cgi-bin/health
 	}
 	remoteID := remoteContainers.Items[0].ID
 	for _, remote := range remoteContainers.Items {
-		assertPhysicalRemoteHTTP(t, ctx, hosts[0].namespace, spec.Applications[0].Health.Path, remote.ID)
+		assertPhysicalRemoteHTTP(t, ctx, hosts[0], spec.Applications[0].Health.Path, remote.ID)
 	}
 	if upgradeRecovery {
 		physicalPGQuery(t, ctx, hosts[0], pg, "CREATE TABLE recovery_canary(value text PRIMARY KEY); INSERT INTO recovery_canary VALUES ('source-before-upgrade')")
@@ -735,22 +735,7 @@ chmod +x /tmp/www/cgi-bin/health
 			t.Fatal("upgrade recovery removed the source volume", err)
 		}
 		assertPhysicalWriters(t, ctx, hosts, target, app, true)
-		assertPhysicalRemoteHTTP(t, ctx, hosts[0].namespace, "/cgi-bin/health", remoteID)
-	}
-}
-
-func assertPhysicalRemoteHTTP(t *testing.T, ctx context.Context, namespace, path, containerID string) {
-	t.Helper()
-	served := false
-	for range 20 {
-		body, err := exec.CommandContext(ctx, "nsenter", "--net=/run/netns/"+namespace, "curl", "--fail", "--silent", "--show-error", "--max-time", "3", "-H", "Host: physical-recovery.example.test", "http://127.0.0.1"+path).CombinedOutput()
-		if err != nil {
-			t.Fatal("physical cross-host HTTP", err, string(body))
-		}
-		served = served || strings.TrimSpace(string(body)) == containerID[:12]
-	}
-	if !served {
-		t.Fatal("ingress never reached the remote container over managed networking")
+		assertPhysicalRemoteHTTP(t, ctx, hosts[0], "/cgi-bin/health", remoteID)
 	}
 }
 

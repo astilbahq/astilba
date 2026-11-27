@@ -96,9 +96,13 @@ func (s *Service) createPreviewEnvironment(ctx context.Context, tx pgx.Tx, copyK
 	if err != nil {
 		return err
 	}
-	// A preview's database starts on its major's current release. A preview server whose agent
-	// does not know it refuses here, so the pass rolls the new environment back.
+	// A preview's database starts on its major's current release, in the owner model. A preview
+	// server whose agent does not know either refuses here, so the pass rolls the new environment
+	// back.
 	if err = requirePostgresReleases(ctx, tx, p.Workspace, p.Server, spec); err != nil {
+		return err
+	}
+	if err = requirePostgresOwnerRole(ctx, tx, p.Workspace, p.Server, spec); err != nil {
 		return err
 	}
 	raw, err = stablejson.Marshal(spec)

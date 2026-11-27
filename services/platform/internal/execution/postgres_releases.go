@@ -18,6 +18,11 @@ func unknownRestoreImage(image string) bool {
 	return image != "" && !ok
 }
 
+// unknownRestoreRoles reports a restore that names a role model Astilba doesn't have.
+func unknownRestoreRoles(roles string) bool {
+	return roles != "" && roles != domain.PostgresOwner
+}
+
 // restoredDatabaseOpens refuses a cutover whose restored data the draft's release cannot open,
 // such as data PostgreSQL 17 wrote under a PostgreSQL 18 database.
 func restoredDatabaseOpens(spec domain.Specification, p backup.Policy, restored string) error {

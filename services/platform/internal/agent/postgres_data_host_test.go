@@ -112,7 +112,7 @@ func TestPostgresVolumeRefusesAReleaseThatCannotOpenItsData(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err := e.ensureStorage(ctx, p)
+			err := e.ensureStorage(ctx, p, nil)
 			if tc.refused == "" {
 				if err != nil {
 					t.Fatal("a release that opens the data was refused:", err)

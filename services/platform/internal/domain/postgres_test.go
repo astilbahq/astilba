@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"regexp"
 	"slices"
 	"strconv"
@@ -195,5 +196,44 @@ func TestRebuiltTagIsNotARelease(t *testing.T) {
 	}
 	if FreshPostgresImage(rebuilt) != rebuilt {
 		t.Fatal("an unpinned image was moved to a release instead of refused")
+	}
+}
+
+// PLAT-450. A database's role model is the owner model or the one from before it. In the owner
+// model PostgreSQL keeps postgres for the cluster's superuser, pg_ for its predefined roles and
+// the template databases for itself.
+func TestPostgresRoleModel(t *testing.T) {
+	spec := func(p Postgres) Specification {
+		image := PostgresImage
+		database, volume := uuid.New(), uuid.New()
+		p.PasswordSecretVersionID = uuid.New()
+		return Specification{Version: 1, Variables: []Variable{}, Volumes: []Volume{{ID: volume, Name: "Data"}}, Applications: []Application{{ID: database, Name: "Database", Kind: "postgres", Source: ApplicationSource{Kind: "image", Image: &image}, Postgres: &p, Mounts: []VolumeMount{{VolumeID: volume, Target: PostgresMount(image)}}}}}
+	}
+	for _, p := range []Postgres{
+		{Database: "app", Username: "app", Roles: PostgresOwner},
+		{Database: "postgres", Username: "app", Roles: PostgresOwner},
+		{Database: "app", Username: "postgres"},
+	} {
+		if err := ValidateVisual(spec(p)); err != nil {
+			t.Errorf("%+v refused: %v", p, err)
+		}
+	}
+	for _, c := range []struct {
+		p     Postgres
+		field string
+	}{
+		{Postgres{Database: "app", Username: "app", Roles: "superuser"}, "applications.postgres.roles"},
+		{Postgres{Database: "app", Username: "postgres", Roles: PostgresOwner}, "applications.postgres.username"},
+		{Postgres{Database: "app", Username: "pg_app", Roles: PostgresOwner}, "applications.postgres.username"},
+		{Postgres{Database: "template1", Username: "app", Roles: PostgresOwner}, "applications.postgres.database"},
+		{Postgres{Database: "template0", Username: "app", Roles: PostgresOwner}, "applications.postgres.database"},
+	} {
+		var refused *Error
+		if err := ValidateVisual(spec(c.p)); !errors.As(err, &refused) || !slices.Contains(refused.Fields, c.field) {
+			t.Errorf("%+v: %v, want %s", c.p, err, c.field)
+		}
+	}
+	if (Postgres{Username: "app"}).MaintenanceUser() != "app" || (Postgres{Username: "app", Roles: PostgresOwner}).MaintenanceUser() != "postgres" {
+		t.Fatal("the maintenance user isn't the cluster's superuser")
 	}
 }
