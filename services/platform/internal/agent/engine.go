@@ -379,14 +379,14 @@ func (e *Engine) start(ctx context.Context, c api.ExecutionCommand, r Record) er
 			return ctx.Err()
 		case errors.Is(err, errPullCancelled):
 			return e.finish(c.Id, "cancelled", "Cancelled while Docker pulled the test image. No container was created.")
-		// A pull changes nothing the test runs, so one its registry stalled or kept slow fails the
-		// command, as it does a deployment, see pullFailure, and leaves the host free.
+		// A pull changes nothing the test runs, so one that fails fails the command, as it does a
+		// deployment, see pullFailure, and leaves the host free.
 		case errors.Is(err, errDockerPullStalled):
 			return e.finish(c.Id, "failed", "Image pull stalled: the registry stopped sending the test image to Docker. No container was created. Check that this server can reach the registry, then start the test again.")
 		case errors.Is(err, errPullTimedOut):
 			return e.finish(c.Id, "failed", "Docker did not pull the test image within the 10 minutes the agent allows. No container was created. Check this server's link to the registry, then start the test again.")
 		default:
-			return e.finish(c.Id, "needs_attention", "Image pull failed. Check Docker connectivity and available disk, then retry this operation.")
+			return e.finish(c.Id, "failed", "Image pull failed. No container was created. Check Docker connectivity and available disk, then start the test again.")
 		}
 		if err = e.checkpoint(c.Id, "create"); err != nil {
 			return err

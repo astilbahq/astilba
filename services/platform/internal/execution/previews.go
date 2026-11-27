@@ -453,7 +453,8 @@ func (s *Service) ActOnPreview(ctx context.Context, p store.Principal, ws, pid, 
 				if busy {
 					return domain.Conflict
 				}
-				if _, err = tx.Exec(ctx, "UPDATE preview_requests SET build_id=NULL,plan_id=NULL,operation_id=NULL,built_head='' WHERE id=$1", id); err != nil {
+				// A refresh runs a refused step again, whatever its inputs.
+				if _, err = tx.Exec(ctx, "UPDATE preview_requests SET build_id=NULL,plan_id=NULL,operation_id=NULL,built_head='',refused_key='',refusal_note='' WHERE id=$1", id); err != nil {
 					return err
 				}
 			}

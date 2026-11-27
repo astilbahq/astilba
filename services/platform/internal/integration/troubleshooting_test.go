@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -310,4 +312,71 @@ func TestTroubleshootingEndsAtManagementRecovery(t *testing.T) {
 		t.Fatal("recovery left a session open", state, reason, err)
 	}
 	x.audited(t, "session.close", 1)
+}
+
+// Closing a terminal session locks its row, then its audit event refers to the account. Confirming
+// credentials locks the account and then moves the session to the renewed token, so it waits for
+// the close, which does not wait for it.
+func TestReauthenticationWaitsForClosingTerminal(t *testing.T) {
+	x := relayFixture(t)
+	opened := x.open(t, x.owner, x.app, 1, 201)
+	ctx := context.Background()
+	held, err := x.f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Rollback(ctx)
+	q, closing := db.New(held), db.CloseTroubleshootingSessionParams{CloseReason: "closed", WorkspaceID: x.ws, ID: opened.Session.Id}
+	if _, err = q.GetTroubleshootingSessionActor(ctx, db.GetTroubleshootingSessionActorParams{WorkspaceID: x.ws, ID: opened.Session.Id}); err != nil {
+		t.Fatal(err)
+	}
+	reauthenticated := x.owner.send("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": x.f.password})
+	awaitLockWait(t, x.f, "troubleshooting_sessions")
+	if err = q.CloseTroubleshootingSession(ctx, closing); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Audit(ctx, q, store.Principal{Account: db.Account{ID: x.f.owner}}, x.ws, "session.close", opened.Session.Id); err != nil {
+		t.Fatal(err)
+	}
+	if err = held.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-reauthenticated; got.err != nil || got.status != 200 {
+		t.Fatalf("reauthentication answered %d: %s %v", got.status, got.body, got.err)
+	}
+	x.waitClosed(t, opened.Session.Id, "closed")
+}
+
+// Turning terminal sessions off, or retiring their environment, refers to the owner's account
+// before it closes them. Confirming credentials in the meantime does not wait for that reference,
+// so it moves the session to its renewed token, which the close then ends.
+func TestReauthenticationPassesOwnerClosingTerminals(t *testing.T) {
+	x := relayFixture(t)
+	opened := x.open(t, x.owner, x.app, 1, 201)
+	ctx := context.Background()
+	held, err := x.f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Rollback(ctx)
+	q := db.New(held)
+	if err = store.Audit(ctx, q, store.Principal{Account: db.Account{ID: x.f.owner}}, x.ws, "troubleshooting.policy", x.env); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-x.owner.send("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": x.f.password}):
+		if got.err != nil || got.status != 200 {
+			t.Fatalf("reauthentication answered %d: %s %v", got.status, got.body, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reauthentication waited for the owner's audit event")
+	}
+	ended, err := q.CloseEnvironmentTroubleshootingSessions(ctx, db.CloseEnvironmentTroubleshootingSessionsParams{CloseReason: "environment setting changed", WorkspaceID: x.ws, EnvironmentID: x.env})
+	if err != nil || len(ended) != 1 {
+		t.Fatal("the close ended", ended, err)
+	}
+	if err = held.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	x.waitClosed(t, opened.Session.Id, "environment setting changed")
 }

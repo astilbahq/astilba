@@ -321,8 +321,9 @@ func TestSignInSucceedsWithoutThePresentedSession(t *testing.T) {
 	}
 }
 
-// Once the change commits, any request still carrying the old cookie finds it stale.
-// That cleanup must not read as a logout and fail the change that caused it.
+// A request carrying the old cookie while a credential change is under way finds the session as
+// it was, since the change and the renewal commit together, and must not fail the change. Once
+// the change commits, the old cookie is stale.
 func TestAccountChangeSurvivesStaleRequestWithOldCookie(t *testing.T) {
 	f := setup(t)
 	gate, release := holdSessions(t, f)
@@ -332,14 +333,17 @@ func TestAccountChangeSurvivesStaleRequestWithOldCookie(t *testing.T) {
 
 	gate.armedCommit.Store(true)
 	finish := sendHeld(t, b, gate, old, "POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": f.password}})
-	if stale := sessionFromCookies(t, b, old); stale.User != nil {
-		t.Fatal("the old cookie survived the password change")
+	if during := sessionFromCookies(t, b, old); during.User == nil {
+		t.Fatal("the old cookie was stale before the password change committed")
 	}
 	release()
 	result := finish()
 
 	if result.status != 200 || len(sessionCookies(result.cookies)) != 1 {
 		t.Fatalf("status %d, cookies %d: %s", result.status, len(result.cookies), result.body)
+	}
+	if stale := sessionFromCookies(t, b, old); stale.User != nil {
+		t.Fatal("the old cookie survived the password change")
 	}
 	if session := sessionFromCookies(t, b, result.cookies); session.User == nil || session.User.Id != f.owner {
 		t.Fatal("the renewed cookie did not authenticate the owner")

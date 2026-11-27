@@ -84,3 +84,24 @@ WHERE s.workspace_id = @workspace_id AND v.workspace_id=s.workspace_id AND v.sec
 DELETE FROM secrets s USING environments e
 WHERE s.workspace_id = @workspace_id AND e.workspace_id=s.workspace_id AND e.id=s.environment_id AND e.purpose='preview'
     AND NOT EXISTS(SELECT 1 FROM preview_requests r WHERE r.workspace_id=e.workspace_id AND r.environment_id=e.id AND r.state<>'deleted');
+
+-- name: PreviewRefusalHost :one
+-- What a preview step reads of its host that an agent update or a revocation changes: the
+-- capabilities its agent last advertised, as a digest, and whether it is revoked.
+SELECT md5(capabilities::text)::text AS capabilities, revoked FROM servers WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: PreviewRefusalEnvironment :one
+-- What a preview's build or promotion reads of its environment that an owner or a deployment
+-- changes: its state, its draft and applied revisions, and, as a digest, each of its secrets'
+-- versions with whether the secret is retired, the version is erased and its length is measured.
+-- The runtime-secret check chooses what it searches for from these.
+SELECT e.state::text AS state, e.draft_revision_id, e.applied_revision_id,
+ (SELECT md5(COALESCE(string_agg(v.id::text || ':' || (s.retired_at IS NULL)::text || ':' || (v.erased_at IS NULL)::text || ':' || COALESCE(v.plaintext_bytes::text, ''), ',' ORDER BY v.id), ''))
+  FROM secret_versions v JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+  WHERE s.workspace_id = e.workspace_id AND s.environment_id = e.id)::text AS secrets
+FROM environments e WHERE e.workspace_id = @workspace_id AND e.id = @id;
+
+-- name: RefusePreviewStep :exec
+-- Fails a request whose step was refused for good, recording the step's key and the reason.
+UPDATE preview_requests SET state = 'failed', note = @note, refused_key = @refused_key, refusal_note = @note, updated_at = now(), next_check_at = now() + interval '5 minutes'
+WHERE workspace_id = @workspace_id AND id = @id;

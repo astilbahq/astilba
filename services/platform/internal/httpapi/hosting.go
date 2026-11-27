@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"io"
 	"net/http"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/billing"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -26,15 +28,15 @@ func (s *Server) HostedSignup(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, workspace, e := s.Auth.AcceptHosted(r.Context(), value(b.Token), value(b.Name), value(b.Password), b.Workspace, s.clientSource(r), principal(r.Context()))
-	if e == nil && principal(r.Context()) == nil {
-		e = s.establish(r.Context(), a, false)
-	}
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	session, e := s.session(r.Context())
+	ctx := r.Context()
+	existing := principal(ctx)
+	var session api.Session
+	_, workspace, e := s.Auth.AcceptHosted(ctx, value(b.Token), value(b.Name), value(b.Password), b.Workspace, s.clientSource(r), existing, s.storeSession(ctx, &session, func(ctx context.Context, a db.Account) error {
+		if existing != nil {
+			return nil
+		}
+		return s.establish(ctx, a, false)
+	}))
 	if e != nil {
 		s.fail(w, r, e)
 		return

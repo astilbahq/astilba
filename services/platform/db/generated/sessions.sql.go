@@ -186,6 +186,17 @@ func (q *Queries) DeleteRenewedSession(ctx context.Context, token string) (*time
 	return signed_in_at, err
 }
 
+const deleteSession = `-- name: DeleteSession :exec
+DELETE FROM sessions WHERE token = $1
+`
+
+// unscoped: the hashed browser session token is the credential.
+// Ends the session a sign-in replaces, in the sign-in's transaction.
+func (q *Queries) DeleteSession(ctx context.Context, token string) error {
+	_, err := q.db.Exec(ctx, deleteSession, token)
+	return err
+}
+
 const deleteSessionLineage = `-- name: DeleteSessionLineage :exec
 DELETE FROM sessions WHERE lineage = $1
 `
