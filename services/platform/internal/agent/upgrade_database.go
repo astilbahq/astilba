@@ -67,6 +67,8 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		// The dump above leaves out PostgreSQL's own schemas, which a superuser can add to too, so
 		// every catalog row with an OID initdb didn't give is counted, whatever its class. The
 		// catalogs are listed from the catalog itself, so a release's new ones are counted as well.
+		// Sessions' temporary schemas are left out with everything that goes when they're dropped:
+		// any role may use one in postgres, and the schemas stay once their sessions end.
 		// inline-sql: reads a managed database's catalog, not the platform database.
 		raw, err = e.pgQuery(ctx, db, admin, "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c WHERE c.relnamespace = 'pg_catalog'::regnamespace AND c.relkind = 'r' AND NOT c.relisshared AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'oid' AND NOT a.attisdropped)")
 		if err != nil {
@@ -77,10 +79,10 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 			if !catalogName.MatchString(name) {
 				return errors.New("cannot inventory " + called)
 			}
-			rows = append(rows, "SELECT oid FROM pg_catalog."+name+" WHERE oid >= 16384")
+			rows = append(rows, "SELECT 'pg_catalog."+name+"'::regclass AS classid, oid FROM pg_catalog."+name+" WHERE oid >= 16384")
 		}
 		// inline-sql: reads a managed database's catalog, not the platform database.
-		raw, err = e.pgQuery(ctx, db, admin, "SELECT count(*) FROM ("+strings.Join(rows, " UNION ALL ")+") o")
+		raw, err = e.pgQuery(ctx, db, admin, temporaryObjectsSQL+"SELECT count(*) FROM ("+strings.Join(rows, " UNION ALL ")+") o WHERE (o.classid, o.oid) NOT IN (SELECT classid, objid FROM temporary)")
 		if err != nil || strings.TrimSpace(string(raw)) != "0" {
 			return errors.New(called + " contains user objects")
 		}
@@ -90,6 +92,17 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 
 // catalogName is a PostgreSQL system catalog's name, put into a query only once it matches.
 var catalogName = regexp.MustCompile(`^pg_[a-z_]+$`)
+
+// temporaryObjectsSQL names, as temporary(classid, objid), the temporary schemas and every object
+// dropped with them: those depending on them, directly or not, and the labels of enums among them,
+// which pg_depend leaves out. PostgreSQL reserves the pg_ prefix, so no other schema has those names.
+const temporaryObjectsSQL = `WITH RECURSIVE dependent(classid, objid) AS (
+	SELECT 'pg_catalog.pg_namespace'::regclass, oid FROM pg_catalog.pg_namespace WHERE nspname ~ '^pg_(toast_)?temp_[0-9]+$'
+	UNION SELECT d.classid, d.objid FROM pg_catalog.pg_depend d JOIN dependent ON d.refclassid = dependent.classid AND d.refobjid = dependent.objid
+), temporary(classid, objid) AS (
+	SELECT classid, objid FROM dependent
+	UNION ALL SELECT 'pg_catalog.pg_enum'::regclass, e.oid FROM pg_catalog.pg_enum e JOIN dependent ON dependent.classid = 'pg_catalog.pg_type'::regclass AND dependent.objid = e.enumtypid
+) `
 
 func (e *Engine) knownUpgradeWriters(ctx context.Context, db pgClient, a domain.Application, p deployment.Plan) error {
 	allowed := map[string]bool{}
