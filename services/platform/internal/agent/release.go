@@ -242,7 +242,7 @@ func (e *Engine) executeRelease(ctx context.Context, c api.ExecutionCommand, p d
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return e.abortRelease(ctx, c, p, &s, "failed", proxyImageNote(err, "The proxy rejected the candidate. Previous routing was restored.", " The candidate was not routed; previous routing was kept. Release again once the host can pull the image."))
+			return e.abortRelease(ctx, c, p, &s, "failed", proxyImageNote(err, routeServersNote(err, "The proxy rejected the candidate. Previous routing was restored.", p.Secrets), " The candidate was not routed; previous routing was kept. Release again once the host can pull the image."))
 		}
 		e.point("release-route-acknowledged")
 		observed, expected, err := e.observeVisualPlan(ctx, p.Plan, p.Secrets, true)
@@ -392,7 +392,7 @@ func (e *Engine) abortRelease(ctx context.Context, c api.ExecutionCommand, p dep
 		// image the host can't pull.
 		if serving, err := e.routesServe(ctx, old); err != nil || !serving {
 			if err = e.publishReleaseRoutes(ctx, old); err != nil {
-				return e.finish(c.Id, "needs_attention", proxyImageNote(err, "Routing recovery is uncertain. Both revisions are retained.", " Both revisions are retained. Retry once the host can pull the image."))
+				return e.finish(c.Id, "needs_attention", proxyImageNote(err, routeServersNote(err, "Routing recovery is uncertain. Both revisions are retained.", p.Secrets), " Both revisions are retained. Retry once the host can pull the image."))
 			}
 		}
 	}
