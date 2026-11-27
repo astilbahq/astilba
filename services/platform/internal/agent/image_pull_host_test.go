@@ -37,8 +37,10 @@ type nativePullFixture struct {
 	blobs    map[string][]byte
 	overlong map[string]bool // blobs sent as themselves, then zeros without end
 	large    map[string]func() io.Reader
-	reads    map[string]*atomic.Int64
-	sent     atomic.Int64
+	// paced blobs are sent by their function, which writes as fast as it chooses.
+	paced map[string]func(r *http.Request, w io.Writer)
+	reads map[string]*atomic.Int64
+	sent  atomic.Int64
 }
 
 func newNativePullFixture(t *testing.T) *nativePullFixture {
@@ -54,7 +56,7 @@ func newNativePullFixture(t *testing.T) *nativePullFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = docker.Close() })
-	f := &nativePullFixture{t: t, ctx: context.Background(), docker: docker, docs: map[string][2]string{}, blobs: map[string][]byte{}, overlong: map[string]bool{}, large: map[string]func() io.Reader{}, reads: map[string]*atomic.Int64{}}
+	f := &nativePullFixture{t: t, ctx: context.Background(), docker: docker, docs: map[string][2]string{}, blobs: map[string][]byte{}, overlong: map[string]bool{}, large: map[string]func() io.Reader{}, paced: map[string]func(*http.Request, io.Writer){}, reads: map[string]*atomic.Int64{}}
 	server := httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	t.Cleanup(server.Close)
 	f.host = strings.TrimPrefix(server.URL, "https://")
@@ -93,6 +95,11 @@ func (f *nativePullFixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			w.(http.Flusher).Flush()
 			f.sent.Add(int64(len(chunk)))
+		}
+	case kind == "blobs" && f.paced[d] != nil:
+		w.Header().Set("Content-Length", fmt.Sprint(len(f.blobs[d])))
+		if r.Method == http.MethodGet {
+			f.paced[d](r, w)
 		}
 	case kind == "blobs" && f.large[d] != nil:
 		size, _ := io.Copy(io.Discard, f.large[d]())

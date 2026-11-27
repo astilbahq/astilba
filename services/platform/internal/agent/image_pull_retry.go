@@ -58,9 +58,9 @@ func (r registryRetry) wait(attempt int, elapsed, asked time.Duration) (time.Dur
 	return wait, true
 }
 
-// errPullCancelled is the owner cancelling the command while the agent read an image from its
-// registry, or waited to read it again.
-var errPullCancelled = errors.New("Cancelled while the agent read an image from its registry.")
+// errPullCancelled is the owner cancelling the command while it put an image into Docker: while
+// the agent read it from its registry, or waited to read it again, or Docker pulled it.
+var errPullCancelled = errors.New("Cancelled while the agent pulled an image from its registry.")
 
 // readRegistry runs read, one attempt at reading an image from its registry, until it succeeds,
 // fails for a reason other than reading the registry, or fails in a way the registry won't
@@ -75,7 +75,7 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 	}
 	began := time.Now()
 	for attempt := 1; ; attempt++ {
-		reading, stop := untilCancelled(ctx, cancelled)
+		reading, stop := untilCancelled(ctx, cancelled, nil)
 		err := read(reading)
 		// Before stop, only the command's own context or its owner ends reading.
 		ended := reading.Err() != nil

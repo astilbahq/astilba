@@ -3,10 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -343,11 +340,42 @@ func encodedRegistryAuth(c pipeline.Credential) string {
 }
 
 // pullVisualImages puts a deployment's images into Docker. Any image it cannot put there ends
-// in an *imagePullRefused whose note says why, or in errPullCancelled: a pull changes nothing that a deployment runs, so
-// its callers fail the deployment rather than hold the host for inspection. A command pulling
-// images lends the engine meanwhile, see lend.
+// in an *imagePullRefused whose note says why, or in errPullCancelled: a pull changes nothing that
+// a deployment runs, so its callers fail the deployment rather than hold the host for inspection.
+// It stops once the command's owner cancels it, and after deploymentPullTime, which a registry
+// that sends just fast enough would otherwise outlast. A command pulling images lends the engine
+// meanwhile, see lend.
 func (e *Engine) pullVisualImages(ctx context.Context, c api.ExecutionCommand, p deployment.Payload) error {
-	return e.lend(func() error { return e.putVisualImages(ctx, c, p) })
+	return e.lend(func() error {
+		pulling, stop := e.pullContext(ctx, c, deploymentPullTime)
+		defer stop()
+		return e.putVisualImages(pulling, c, p)
+	})
+}
+
+// pullEnded is the outcome of err, a failure to put image into Docker under ctx: errPullCancelled
+// once the command's owner cancelled it, and otherwise a refusal whose note says why, such as a
+// registry that stopped sending or a pull that ran out of time. However err came about, the end of
+// ctx is why, when the command's owner or its time ended it.
+func pullEnded(ctx context.Context, image string, err error) error {
+	if ctx.Err() != nil {
+		switch cause := context.Cause(ctx); {
+		case errors.Is(cause, errPullCancelled):
+			return errPullCancelled
+		case errors.Is(cause, errPullTimedOut):
+			err = cause
+		}
+	}
+	var refused *imagePullRefused
+	switch {
+	case errors.As(err, &refused) || errors.Is(err, errPullCancelled):
+		return err
+	case errors.Is(err, errPullTimedOut):
+		return notPulled(image, "putting the deployment's images into Docker took longer than the hour the agent allows", "Check that its registry is up and this server's link to it is fast enough, then {retry}.")
+	case errors.Is(err, errDockerPullStalled):
+		return notPulled(image, "its registry stopped sending it to Docker, or sent it too slowly to pull", "Check that the registry is up and this server can reach it, then {retry}.")
+	}
+	return notPulled(image, "pulling it failed or was interrupted", "Check that this server can reach its registry, then {retry}.")
 }
 
 func (e *Engine) putVisualImages(ctx context.Context, c api.ExecutionCommand, p deployment.Payload) error {
@@ -367,19 +395,19 @@ func (e *Engine) putVisualImages(ctx context.Context, c api.ExecutionCommand, p 
 		if a, ok := p.Plan.Artifacts[key]; ok && a.ServerID != nil {
 			v, err := e.Docker.ImageInspect(ctx, image)
 			if err != nil || v.ID != a.Digest || v.Architecture != a.Architecture {
-				return notPulled(image, "the image built on this server is no longer in Docker or differs from that build", "Build it again, then {retry}.")
+				return pullEnded(ctx, image, notPulled(image, "the image built on this server is no longer in Docker or differs from that build", "Build it again, then {retry}."))
 			}
 			continue
 		}
 		if _, err := e.Docker.ImageInspect(ctx, image); err == nil {
 			continue
 		} else if !errdefs.IsNotFound(err) {
-			return notPulled(image, "the agent could not ask Docker whether it already has it", "Check Docker on this server, then {retry}.")
+			return pullEnded(ctx, image, notPulled(image, "the agent could not ask Docker whether it already has it", "Check Docker on this server, then {retry}."))
 		}
 		if _, planned := p.Plan.Images[key]; !planned {
 			// Astilba's own images are pinned by digest in the agent itself.
 			if err := e.pullImageAuth(ctx, image, ""); err != nil {
-				return notPulled(image, "pulling it failed or was interrupted", "Check that this server can reach its registry, then {retry}.")
+				return pullEnded(ctx, image, err)
 			}
 			continue
 		}
@@ -388,11 +416,7 @@ func (e *Engine) putVisualImages(ctx context.Context, c api.ExecutionCommand, p 
 			credential = &c
 		}
 		if err := e.pullMeasuredImage(ctx, image, credential, func() bool { return e.cancelled(c.Id) }); err != nil {
-			var refused *imagePullRefused
-			if errors.As(err, &refused) || errors.Is(err, errPullCancelled) {
-				return err
-			}
-			return notPulled(image, "pulling it failed or was interrupted", "Check that this server can reach its registry, then {retry}.")
+			return pullEnded(ctx, image, err)
 		}
 	}
 
@@ -400,7 +424,7 @@ func (e *Engine) putVisualImages(ctx context.Context, c api.ExecutionCommand, p 
 		image := p.Plan.Images[key]
 		v, err := e.Docker.ImageInspect(ctx, image)
 		if err != nil || v.Architecture != artifact.Architecture {
-			return notPulled(image, "Docker holds it for an architecture other than the reviewed build's", "Build it for this server, then {retry}.")
+			return pullEnded(ctx, image, notPulled(image, "Docker holds it for an architecture other than the reviewed build's", "Build it for this server, then {retry}."))
 		}
 	}
 	return nil
@@ -437,31 +461,4 @@ func (e *Engine) finishVisualPull(ctx context.Context, c api.ExecutionCommand, p
 // with {retry} for deploying again.
 func notPulled(image, why, fix string) error {
 	return &imagePullRefused{image, &imageLoadRefused{why: why, fix: fix}}
-}
-
-func (e *Engine) pullImage(ctx context.Context, image string) error {
-	return e.pullImageAuth(ctx, image, "")
-}
-func (e *Engine) pullImageAuth(ctx context.Context, image, auth string) error {
-	stream, err := e.Docker.ImagePull(ctx, image, client.ImagePullOptions{RegistryAuth: auth})
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-	decoder := jsontext.NewDecoder(stream)
-	for {
-		var message struct {
-			Error string `json:"error"`
-		}
-		err := json.UnmarshalDecode(decoder, &message)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if message.Error != "" {
-			return errors.New("registry rejected the image pull")
-		}
-	}
 }
