@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json/jsontext"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -262,4 +266,154 @@ func TestUserObjectsNoteNamesLeftoversWithinTheNote(t *testing.T) {
 	if note := userObjectsNote("the postgres maintenance database", many); len(note) > 900 || !strings.Contains(note, "function pg_temp_9999999999.") || !strings.Contains(note, " more in temporary schemas") {
 		t.Fatalf("a note of %d bytes: %q", len(note), note)
 	}
+}
+
+// A native upgrade test restarts the agent at every fault point an upgrade passes, so a new one
+// can't go untested. Each fault a native test lists is a point an upgrade passes, either a fault
+// point or a step's checkpoint, and only one test lists it.
+func TestUpgradeFaultListsHoldEveryUpgradeFaultPoint(t *testing.T) {
+	faults, passed := upgradePoints(t)
+	if len(faults) == 0 || len(passed) == 0 {
+		t.Fatal("found no upgrade points: the agent no longer names them as this test reads them")
+	}
+	listed := map[string]int{}
+	for _, list := range [][]string{upgradePreparationFaults, upgradeCutoverFaults} {
+		for _, point := range list {
+			listed[point]++
+			if !faults[point] && !passed[point] {
+				t.Errorf("a native upgrade test restarts the agent at %s, which no upgrade passes", point)
+			}
+		}
+	}
+	for point, n := range listed {
+		if n > 1 {
+			t.Errorf("%s is listed %d times: list it once, for the action that passes it", point, n)
+		}
+	}
+	for point := range faults {
+		if listed[point] == 0 {
+			t.Errorf("no native upgrade test restarts the agent at %s: add it to upgradePreparationFaults or upgradeCutoverFaults", point)
+		}
+	}
+}
+
+// upgradePoints reads the agent's source for the points an upgrade passes: the fault points it
+// names with point, and the checkpoints its steps record. Points named upgrade-… are the database
+// upgrade's, wherever in the agent it passes them. The upgrade's own files must name each point
+// with a string constant, so this can read it.
+func upgradePoints(t *testing.T) (faults, passed map[string]bool) {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	var parsed []*ast.File
+	constants := map[string]string{}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed = append(parsed, f)
+		for _, decl := range f.Decls {
+			d, ok := decl.(*ast.GenDecl)
+			if !ok || d.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range d.Specs {
+				v := spec.(*ast.ValueSpec)
+				for i, name := range v.Names {
+					if i >= len(v.Values) {
+						continue
+					}
+					if s, ok := v.Values[i].(*ast.BasicLit); ok && s.Kind == token.STRING {
+						if value, err := strconv.Unquote(s.Value); err == nil {
+							constants[name.Name] = value
+						}
+					}
+				}
+			}
+		}
+	}
+	// A name this can read is a string literal, a package string constant, or a sum of them.
+	var read func(ast.Expr) (string, bool)
+	read = func(e ast.Expr) (string, bool) {
+		switch e := e.(type) {
+		case *ast.BasicLit:
+			if e.Kind == token.STRING {
+				s, err := strconv.Unquote(e.Value)
+				return s, err == nil
+			}
+		case *ast.Ident:
+			s, ok := constants[e.Name]
+			return s, ok
+		case *ast.ParenExpr:
+			return read(e.X)
+		case *ast.BinaryExpr:
+			if e.Op == token.ADD {
+				x, xok := read(e.X)
+				y, yok := read(e.Y)
+				return x + y, xok && yok
+			}
+		}
+		return "", false
+	}
+	faults, passed = map[string]bool{}, map[string]bool{}
+	for _, f := range parsed {
+		upgradeFile := strings.HasPrefix(filepath.Base(fset.File(f.Pos()).Name()), "upgrade")
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				method, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				// point names a fault point. checkpoint records a step and passes its name as a
+				// point; upgradeStep records an upgrade's step as the checkpoint upgrade-<step>.
+				var name ast.Expr
+				prefix := ""
+				switch {
+				case method.Sel.Name == "point" && len(call.Args) == 1:
+					name = call.Args[0]
+				case method.Sel.Name == "checkpoint" && len(call.Args) == 2:
+					name = call.Args[1]
+				case method.Sel.Name == "upgradeStep" && len(call.Args) == 3:
+					name, prefix = call.Args[2], "upgrade-"
+				default:
+					return true
+				}
+				s, ok := read(name)
+				if !ok {
+					// checkpoint and upgradeStep pass on the name they were given.
+					forwards := fn.Name.Name == "checkpoint" && method.Sel.Name == "point" || fn.Name.Name == "upgradeStep" && method.Sel.Name == "checkpoint"
+					if upgradeFile && !forwards {
+						t.Errorf("%s: name this point with a string constant, so the native upgrade tests can be checked against it", fset.Position(call.Pos()))
+					}
+					return true
+				}
+				s = prefix + s
+				if !strings.HasPrefix(s, "upgrade-") {
+					return true
+				}
+				if method.Sel.Name == "point" {
+					faults[s] = true
+				} else {
+					passed[s] = true
+				}
+				return true
+			})
+		}
+	}
+	return faults, passed
 }

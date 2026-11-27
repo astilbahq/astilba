@@ -77,9 +77,9 @@ func newNativeUpgradeHost(t *testing.T) *nativeUpgradeHost {
 	first, firstSecrets := f.plan("first", true)
 	first.Specification.Applications[0].Replicas = 3
 	first.PrepareInstances(deployment.Plan{})
-	first = f.resolve(first.WithHash())
-	f.finish(f.command("deploy", first, firstSecrets))
-	f.request("first.example.test", "v1")
+	first = f.resolve(t, first.WithHash())
+	f.finish(t, f.command("deploy", first, firstSecrets))
+	f.request(t, "first.example.test", "v1")
 	database := first.Specification.Applications[1]
 	startup, cancelStartup := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancelStartup()
@@ -118,8 +118,8 @@ func (h *nativeUpgradeHost) source(release bool) func(*testing.T, string) (deplo
 			p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf ready > /tmp/www/health; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}
 			p = p.WithHash()
 		}
-		p = h.resolve(p)
-		h.finish(h.command("deploy", p, secrets))
+		p = h.resolve(t, p)
+		h.finish(t, h.command("deploy", p, secrets))
 		if !releaseVerified {
 			p = nativeReleaseJourney(t, h.engine, p, secrets, h.resolve, h.command, h.finish)
 			releaseVerified = true
@@ -144,10 +144,10 @@ func (h *nativeUpgradeHost) undisturbed(t *testing.T) {
 	ctx := context.Background()
 	nativeFilesAndJobs(t, h.engine, h.server)
 	second, secondSecrets := h.plan("second", false)
-	second = h.resolve(second)
-	h.finish(h.command("deploy", second, secondSecrets))
-	h.request("first.example.test", "v1")
-	h.request("second.example.test", "v1")
+	second = h.resolve(t, second)
+	h.finish(t, h.command("deploy", second, secondSecrets))
+	h.request(t, "first.example.test", "v1")
+	h.request(t, "second.example.test", "v1")
 	db, err := pgx.Connect(ctx, h.databaseURL)
 	if err != nil {
 		t.Fatal("upgrades disturbed an unrelated TCP route")
@@ -158,7 +158,7 @@ func (h *nativeUpgradeHost) undisturbed(t *testing.T) {
 		t.Fatal("upgrades disturbed an unrelated database", err)
 	}
 	nativeControllerTransfer(t, h.engine)
-	h.refuseInUseVolumeDeletion(h.first)
+	h.refuseInUseVolumeDeletion(t, h.first)
 }
 
 // The release a database not yet updated in place runs.

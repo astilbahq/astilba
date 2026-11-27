@@ -77,9 +77,9 @@ func TestNativeHostRunsFiftyRoutedEnvironments(t *testing.T) {
 		t.Fatalf("Docker placed the earlier network in the agent's pool: %s", earlierSubnet)
 	}
 	for i, p := range plans {
-		p = f.resolve(p)
+		p = f.resolve(t, p)
 		plans[i] = p
-		f.finish(f.command("deploy", p, map[string]string{}))
+		f.finish(t, f.command("deploy", p, map[string]string{}))
 	}
 	// The owner's own networks still come from Docker's pools.
 	owner, err := f.docker.NetworkCreate(ctx, "astilba-fixture-owner-"+f.server.String(), client.NetworkCreateOptions{Driver: "bridge"})
@@ -90,7 +90,7 @@ func TestNativeHostRunsFiftyRoutedEnvironments(t *testing.T) {
 
 	seen := map[netip.Prefix]bool{}
 	for i, p := range plans {
-		f.request(fmt.Sprintf("env%02d.example.test", i), "v1")
+		f.request(t, fmt.Sprintf("env%02d.example.test", i), "v1")
 		id, subnet := nativeSubnet(t, f, deployment.NetworkName(p.UnitID))
 		if i == 0 {
 			if id != earlierID || subnet != earlierSubnet {
@@ -121,8 +121,8 @@ func TestNativeOwnerPoolHoldsManagedNetworks(t *testing.T) {
 		f.engine.NetworkPool = pool
 		nativeHoldManagedNetwork(t, f, managed)
 		p, _ := f.plan("pool"+strings.ReplaceAll(pool.Addr().String(), ".", ""), false)
-		p = f.resolve(p)
-		f.finish(f.command("deploy", p, map[string]string{}))
+		p = f.resolve(t, p)
+		f.finish(t, f.command("deploy", p, map[string]string{}))
 		for _, name := range []string{deployment.NetworkName(p.UnitID), "astilba-ingress-network"} {
 			if _, subnet := nativeSubnet(t, f, name); subnet.Overlaps(managed) || subnet.Bits() != networkBits || name != "astilba-ingress-network" && !pool.Contains(subnet.Addr()) {
 				t.Fatalf("%s in pool %s: %s", name, pool, subnet)
@@ -158,7 +158,7 @@ func TestNativeFullHostRefusesAnotherEnvironment(t *testing.T) {
 		}
 	}
 	first, _ := f.plan("first", false)
-	first = f.resolve(first)
+	first = f.resolve(t, first)
 	// The host's first routed environment needs its own network and the ingress network,
 	// and one range holds only one of them.
 	f.engine.NetworkPool = netip.MustParsePrefix("10.253.254.0/25")
@@ -169,11 +169,11 @@ func TestNativeFullHostRefusesAnotherEnvironment(t *testing.T) {
 	f.engine.NetworkPool = netip.MustParsePrefix("10.253.254.0/24")
 	first.ID = uuid.New()
 	first = first.WithHash()
-	f.finish(f.command("deploy", first, map[string]string{}))
+	f.finish(t, f.command("deploy", first, map[string]string{}))
 
 	second, _ := f.plan("second", false)
-	refused(f.resolve(second))
-	f.request("first.example.test", "v1")
+	refused(f.resolve(t, second))
+	f.request(t, "first.example.test", "v1")
 }
 
 // The agent reads the host's ranges under the shipped unit's sandbox.

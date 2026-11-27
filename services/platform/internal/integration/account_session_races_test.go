@@ -7,9 +7,13 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
+	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -228,6 +232,93 @@ func TestHostedAcceptanceWaitingBehindAccountLock(t *testing.T) {
 	}
 	if err := f.auth.ValidateHostedInvitation(ctx, token, "test"); err != nil {
 		t.Fatal("the refused acceptance used the invitation: ", err)
+	}
+}
+
+// An account already signed in that accepts an invitation or a hosted invitation keeps its
+// session's token, which the acceptance still refreshes in its transaction. A logout that ends
+// the session first wins: the refresh finds no session, the acceptance rolls back, and the
+// request answers 401.
+func TestLogoutDuringAcceptanceBySignedInAccount(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// accept signs a browser in and returns the acceptance it sends, and a check that the
+		// refused acceptance changed nothing.
+		accept func(t *testing.T, f *fixture) (b *browser, send func() <-chan reply, unchanged func())
+	}{
+		{"invitation", func(t *testing.T, f *fixture) (*browser, func() <-chan reply, func()) {
+			owner := f.browser(t)
+			ws := owner.login("owner@example.test", f.password).Workspaces[0].Id
+			owner.call("POST", "/api/v1/workspaces/"+ws.String()+"/invitations", map[string]string{"email": "member@example.test", "role": "viewer"}, 201, nil)
+			member := f.browser(t)
+			var joined api.Session
+			member.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": tokenFromLinkMail(t, f, "/invitation"), "name": "Member", "password": f.password}, 200, &joined)
+			member.csrf = joined.CsrfToken
+			second := owner.createWorkspaceWithoutMFARequirement("Second")
+			owner.call("POST", "/api/v1/workspaces/"+second.Id.String()+"/invitations", map[string]string{"email": "member@example.test", "role": "viewer"}, 201, nil)
+			token := tokenFromLinkMail(t, f, "/invitation")
+			return member, func() <-chan reply {
+					return member.send("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token})
+				}, func() {
+					var joined bool
+					if err := f.st.Pool.QueryRow(context.Background(), "SELECT EXISTS(SELECT 1 FROM memberships m JOIN accounts a ON a.id = m.account_id WHERE a.email = 'member@example.test' AND m.workspace_id = $1)", second.Id).Scan(&joined); err != nil {
+						t.Fatal(err)
+					}
+					if joined {
+						t.Fatal("the refused acceptance added the membership")
+					}
+					retry := f.browser(t).withLogin("member@example.test", f.password)
+					retry.call("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token}, 200, nil)
+				}
+		}},
+		{"hosted sign-up", func(t *testing.T, f *fixture) (*browser, func() <-chan reply, func()) {
+			f.st.Hosted = true
+			f.st.Hosting = hosting.Config{CohortLimit: 5, ServerLimit: 2}
+			// An account already signed in needs two factors to sign up for hosting.
+			owner := f.browser(t).withLogin("owner@example.test", f.password)
+			enableMFA(t, owner)
+			if err := f.auth.InviteHosted(context.Background(), "owner@example.test", f.apiServer.Origin); err != nil {
+				t.Fatal(err)
+			}
+			token := tokenFromLinkMail(t, f, "/signup")
+			return owner, func() <-chan reply {
+					return owner.send("POST", "/api/v1/hosting/signup", map[string]string{"token": token, "workspace": "Planted"})
+				}, func() {
+					var created bool
+					if err := f.st.Pool.QueryRow(context.Background(), "SELECT EXISTS(SELECT 1 FROM workspaces WHERE name='Planted')").Scan(&created); err != nil {
+						t.Fatal(err)
+					}
+					if created {
+						t.Fatal("the refused acceptance created a workspace")
+					}
+					if err := f.auth.ValidateHostedInvitation(context.Background(), token, "test"); err != nil {
+						t.Fatal("the refused acceptance used the invitation: ", err)
+					}
+				}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			b, send, unchanged := c.accept(t, f)
+			lineage := sessionLineage(t, f, sessionCookies(b.client.Jar.Cookies(mustURL(f.server.URL)))[0])
+			logout, err := f.st.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { logout.Rollback(ctx) })
+			if err = store.EndLineage(ctx, db.New(logout), lineage); err != nil {
+				t.Fatal(err)
+			}
+
+			request := send()
+			awaitLockWait(t, f, "name: RefreshSession")
+			if err = logout.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			requireReply(t, <-request, 401)
+			unchanged()
+		})
 	}
 }
 

@@ -193,7 +193,7 @@ func TestRecoveryCodeSignInAndResetNotify(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := tokenFromLinkMail(t, f, "/reset")
-	if _, err := f.auth.CompleteReset(context.Background(), token, "a reset password for this test", "test"); err != nil {
+	if _, err := f.auth.CompleteReset(context.Background(), token, "a reset password for this test", "test", nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitNotice(t, f, "Your Astilba password was reset")
