@@ -23,6 +23,7 @@ import { AuthenticatorSetup } from "../auth/authenticator-setup";
 import { EmailVerification } from "../auth/email-verification";
 import { RecoveryCodesConfirmation } from "../auth/recovery-codes-confirmation";
 import { useAuthValidation } from "../auth/use-auth-validation";
+import { SessionsSection } from "./account-sessions";
 import * as styles from "./account.styles";
 
 function PasswordSection() {
@@ -419,6 +420,7 @@ function AccountContent({ user }: { user: Schema["Account"] }) {
       </section>
       <PasswordSection />
       <MFASection user={user} />
+      <SessionsSection user={user} />
       <IdentitySection />
     </div>
   );

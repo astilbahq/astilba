@@ -105,13 +105,14 @@ To turn it back on, make both changes in one save, then land `strict: false`.
 
 ## Native lanes
 
-Each architecture runs four lanes, each on its own disposable runner VM. The
-Native verification gate requires all eight jobs to pass:
+Each architecture runs five lanes, each on its own disposable runner VM. The
+Native verification gate requires all ten jobs to pass:
 
 | Lane | Verification |
 | --- | --- |
-| `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose and cross-host deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals, including sessions under the production unit and through real nginx, Caddy and Traefik |
-| `recovery` | Agent service enrollment, restart and signed update; a troubleshooting session end to end; cross-host older-backup, drained and upgrade recovery |
+| `core` | PLAT-4 host runtime, builds, PostgreSQL restore, managed links, Compose deployment, pipeline, preview, release transport, and troubleshooting target, session, cleanup and refusals, including sessions under the production unit and through real nginx, Caddy and Traefik |
+| `crosshost` | Cross-host deployment and takeover; coordinated maintenance and backups, with their reservations, writer health and late phases; recovery from a drained host |
+| `recovery` | Agent service enrollment, restart and signed update; a troubleshooting session end to end; cross-host older-backup and upgrade recovery |
 | `visual` | Visual deployment, including catalog, backup and restore |
 | `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, scheduled jobs, later deployments, controller transfer and volume deletion on that host |
 
@@ -135,6 +136,23 @@ could stop a named test running but it cannot read: Makefile conditionals, shell
 syntax other than `cd DIR && ... go test`, unlisted `go test` flags, and matrix
 `exclude` or `include`. A test that skips itself at run time still counts as
 selected.
+
+Each `go test` command in a native lane has its own `-timeout`. A package past it
+fails its job, and in the merge queue that removes whichever pull request is being
+tested, whatever it changed. So `make check-lane-budget` also reads the Host jobs of
+the last five `ci.yml` main runs of the current lanes, and holds each package a lane's
+target runs to 60% of its command's `-timeout` on each architecture, which a runner 28%
+slower still meets. Each run is judged by the Makefile of the commit it ran, so a run
+from before the lanes changed is judged by the lanes it had. Packages other steps run,
+such as the bootstrap's, are left out. It
+keeps its own issue, `Native lanes are past their time budget`, as the
+[Go race lanes' budget](#application-go-verification) does, and lists each lane's
+package medians, with their budgets, in the job summary. `make check-ci` fails when a
+native lane runs one package in two commands, because `go test` prints one time for a
+package. When a lane is over, move a family of tests to a lane with room, or to a new
+lane added to `verify-agent-host` and the workflow's `lane` list; each test's time is in
+its job log's `--- PASS` line. Moving tests between existing lanes takes three main runs
+to show, while adding or renaming a lane starts a new sample.
 
 ## Local native agent tests
 
@@ -233,7 +251,7 @@ lines. One commit's package time has differed by 28% between hosted runners, so 
 single run says little about a lane.
 
 `lane-budget.yml` runs `make check-lane-budget` daily and on demand. It reads the
-last five main runs of the current lanes and reports a lane whose package has a
+last five main runs of the current Go race lanes and reports a lane whose package has a
 median above 600 seconds, listing the times in its job summary. Below them it
 proposes the fewest name lanes that keep every package within 400 seconds, which a
 runner 28% slower still meets. It splits the tests no family selects (by
@@ -252,7 +270,7 @@ one change reaches every test. Then apply the proposed split: give each name lan
 letters and the name the proposal gives it, adding or removing a variable, its rule,
 its place in `verify-app-core` and the workflow's matrix as needed. When one letter
 alone is past 400 seconds, the proposal says so: move a test family to a lane of its
-own instead. A lane of one test, such as `crosshost`, can only
+own instead. A lane of one test, such as the Go race `crosshost` lane, can only
 come down by shortening or splitting that test. Moving a family between existing lanes
 takes three main runs to show, because earlier runs stay in the sample; adding or
 renaming a lane, as a new split does, starts a new sample, and a lane with fewer than three runs neither fails the check nor
@@ -542,7 +560,7 @@ The lane budget workflow opens `Scheduled scans stopped reporting` when
   not succeed, a job that timed out included.
 
 The scheduled scans' `Check the lane budget` job opens `Lane budget stopped running` on
-the same checks for `lane-budget.yml` and its `Compare Go race lane times` job. A run the
+the same checks for `lane-budget.yml` and its `Compare lane times` job. A run the
 concurrency group cancelled before those jobs ran is passed over. A fresh run that has not
 finished leaves the issue as it is, so it closes only once the other workflow has run and
 reported again. GitHub starts a daily schedule hours late under load, hence the 36 hours.
@@ -786,7 +804,7 @@ operator gives `--use-host-package-sources`.
 | --- | --- |
 | `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, with the targets of their SRV records, which apt also follows, and must install nftables from a fallback archive. |
 | `recovery` | Removes nftables and must install it from the runner's own sources, while the test holds dpkg's lock, as a fresh VM's unattended-upgrades does, until 15 seconds after the bootstrap announces an install. Ubuntu's apt waits without a word, so an install that didn't wait would fail in that time. |
-| `upgrade` | Leaves the runner as it is, which needs no Ubuntu package. |
+| `crosshost`, `upgrade` | Leave the runner as it is, which needs no Ubuntu package. |
 
 A runner already has every other Ubuntu package the bootstrap installs. If this step already moved the runner to a mirror because Canonical's archive is down, the blocked lanes install from the runner's sources instead, with a warning annotation, because blocking that mirror too would leave too few to fall back to. The `recovery` lane warns in the same way if it had to fall back.
 

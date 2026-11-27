@@ -104,6 +104,10 @@ func (s *Service) runCoordinatedSchedule(ctx context.Context, ws, server, id uui
 	if err = requireGeneralSchedule(ctx, tx, ws, server, p); err != nil {
 		return err
 	}
+	// An agent rolled back past prefixes would refuse the occurrence only once maintenance began.
+	if err = requireBackupPrefixes(ctx, tx, ws, server, b.Installation.Destination); err != nil {
+		return err
+	}
 	c := (maintenanceEffect{Backup: &b}).command("")
 	if err = s.commandAdmission(ctx, tx, ws, c); err != nil {
 		return err

@@ -38,12 +38,12 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 		if err != nil {
 			return err
 		}
-		for _, raw := range rows {
+		for _, row := range rows {
 			var v backup.Destination
-			if err = json.Unmarshal(raw, &v); err != nil {
+			if err = json.Unmarshal(row.Configuration, &v); err != nil {
 				return err
 			}
-			view := destinationView(v, slices.Contains(exposed, v.ID))
+			view := destinationView(v, row.ServerID, row.Shared, slices.Contains(exposed, v.ID))
 			for _, p := range policies {
 				if p.DestinationID == v.ID {
 					view.Policies = append(view.Policies, api.BackupDestinationPolicy{Id: p.ID, Name: p.Name, ProjectId: p.ProjectID, EnvironmentId: p.EnvironmentID, EnvironmentName: p.EnvironmentName})
@@ -56,15 +56,28 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 	return out, err
 }
 
-// destinationView is d as the API shows it.
-func destinationView(d backup.Destination, exposed bool) api.BackupDestination {
-	return api.BackupDestination{Id: d.ID, Name: d.Name, Kind: api.BackupDestinationKind(d.Kind), Root: d.Root, Endpoint: d.Endpoint, Bucket: d.Bucket, Region: d.Region, Exposed: exposed, Policies: []api.BackupDestinationPolicy{}}
+// destinationView is d, bound to server or shared, as the API shows it.
+func destinationView(d backup.Destination, server *uuid.UUID, shared, exposed bool) api.BackupDestination {
+	v := api.BackupDestination{Id: d.ID, Name: d.Name, Kind: api.BackupDestinationKind(d.Kind), Root: d.Root, Endpoint: d.Endpoint, Bucket: d.Bucket, Region: d.Region, ServerId: server, Shared: shared, Exposed: exposed, Policies: []api.BackupDestinationPolicy{}}
+	if d.Prefix != "" {
+		v.Prefix = &d.Prefix
+	}
+	return v
 }
-func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access) (api.BackupDestination, error) {
+
+// CreateBackupDestination adds destination d with access a. An S3 destination is bound to server,
+// the deployment server its keys are given to, and a filesystem destination has none.
+func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access, server *uuid.UUID) (api.BackupDestination, error) {
 	d.ID = uuid.New()
 	a.Password = ""
+	if d.Kind == "s3" && d.Prefix != "" && !backup.ValidPrefix(d.Prefix) {
+		return api.BackupDestination{}, domain.Invalid("prefix")
+	}
 	if backup.ValidateDestination(d, a) != nil {
 		return api.BackupDestination{}, domain.Invalid("destination")
+	}
+	if (d.Kind == "s3") != (server != nil) {
+		return api.BackupDestination{}, domain.Invalid("serverId")
 	}
 	item := secretbroker.Item{Kind: secretbroker.BackupDestination, ID: d.ID}
 	keys, done, err := s.sealing(ctx, p, ws, item)
@@ -81,19 +94,24 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 		if n >= 100 {
 			return domain.Conflict
 		}
+		if server != nil {
+			if err = s.admitDestination(ctx, tx, ws, *server, d); err != nil {
+				return err
+			}
+		}
 		secret, err := sealIntegration(ctx, db.New(tx), keys, item, a)
 		if err != nil {
 			return err
 		}
 		sealed = true
 		raw, _ := stablejson.Marshal(d)
-		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret})
+		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret, ServerID: server})
 	})
 	if err != nil {
 		return api.BackupDestination{}, err
 	}
 	// No policy uses a new destination yet.
-	return destinationView(d, false), nil
+	return destinationView(d, server, false, false), nil
 }
 func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]backup.Policy, error) {
 	out := []backup.Policy{}
@@ -225,12 +243,8 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			return domain.Invalid("server.capabilities.schedules")
 		}
 		if out.Method != "container-job" {
-			exists, err := db.New(tx).BackupDestinationExists(ctx, db.BackupDestinationExistsParams{WorkspaceID: ws, ID: out.DestinationID})
-			if err != nil {
+			if err = bindPolicyDestination(ctx, tx, ws, out, creating); err != nil {
 				return err
-			}
-			if !exists {
-				return domain.NotFound
 			}
 			// A revoked server that held the destination's keys can still delete or overwrite what a
 			// new policy writes there, so choosing it is acknowledged and recorded.
@@ -341,6 +355,9 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 				return err
 			}
 			if err = json.Unmarshal(raw, &b.Installation.Destination); err != nil {
+				return err
+			}
+			if err = requireBackupPrefixes(ctx, tx, ws, v.ServerID, b.Installation.Destination); err != nil {
 				return err
 			}
 		}

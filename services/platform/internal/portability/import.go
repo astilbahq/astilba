@@ -149,6 +149,13 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			setValue(row, "discard_operation_id", nil)
 		}
 	}
+	// Version 19 carries each destination's server. An older archive's are bound as migration
+	// 00075 binds a database's.
+	if version < 19 {
+		if err := bindArchiveDestinations(&archive); err != nil {
+			return archive, err
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -213,6 +220,9 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		if e = checkReleasedRoutes(archive); e != nil {
 			return archive, e
 		}
+	}
+	if e = checkDestinationBindings(archive); e != nil {
+		return archive, e
 	}
 	// Foreign keys on global IDs must refer to records within this archive; a
 	// destination row in another workspace must never satisfy an imported link.

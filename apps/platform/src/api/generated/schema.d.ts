@@ -697,6 +697,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The account's signed-in browser sessions, the one that asks first and then the most recently seen, marking the one that asks. */
+        get: operations["listAccountSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sessions/sign-out-others": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Signs out every other session of the account, including any not listed. Needs recent authentication. */
+        post: operations["signOutOtherSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Signs out another session of the account. Needs recent authentication; the session that asks logs out instead. A session that is not signed in, as one signed out elsewhere or expired, is not found. */
+        delete: operations["signOutSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/mfa/recovery-codes": {
         parameters: {
             query?: never;
@@ -2994,6 +3047,8 @@ export interface components {
             schedules?: boolean;
             /** @description Runs the restore command kind, which restores a snapshot from a lost server's backup repository. Advertised only after Astilba-Agent-Recovery-Restore v1. */
             recoveryRestore?: boolean;
+            /** @description Keeps an S3 destination's repositories under its prefix. A policy or restore on a destination with a prefix needs it. Advertised only after Astilba-Agent-Backup-Prefixes v1. */
+            backupPrefixes?: boolean;
             backups?: boolean;
             upgrades?: boolean;
             /** @description Agent accepts visual cancellation without re-sending hydrated credentials. Management no longer reads it, and sends no stop or refusal with values whatever an agent advertises. */
@@ -3468,6 +3523,28 @@ export interface components {
             mfaPending: boolean;
             recentAuth: boolean;
             workspaces: components["schemas"]["Workspace"][];
+        };
+        AccountSessions: {
+            sessions: components["schemas"]["AccountSession"][];
+            /** @description Other signed-in sessions seen less recently than those listed. Signing out every other session ends them too. */
+            unlisted: number;
+        };
+        /** @description A signed-in browser session, from its sign-in across every renewal of its token. What it shows of the client is from its latest request. */
+        AccountSession: {
+            /** Format: uuid */
+            id: string;
+            /** @description Whether this is the session that asked. */
+            current: boolean;
+            /** Format: date-time */
+            signedInAt: string;
+            /** Format: date-time */
+            lastSeenAt: string;
+            /** @enum {string} */
+            browser: "chrome" | "edge" | "firefox" | "safari" | "opera" | "other";
+            /** @enum {string} */
+            os: "windows" | "macos" | "ios" | "android" | "chromeos" | "linux" | "other";
+            /** @description The network of the latest request, as an IPv4 /24 or IPv6 /48 prefix. Absent when the address was unknown. */
+            network?: string;
         };
         Login: {
             /** Format: email */
@@ -4655,6 +4732,15 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
+            /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are at the bucket's root. */
+            prefix?: string;
+            /**
+             * Format: uuid
+             * @description The server an S3 destination's storage keys are given to. Only policies on it can use the destination. Null for a filesystem destination, a shared one, and one created before destinations were bound that no policy has used yet, which its first policy binds.
+             */
+            serverId: string | null;
+            /** @description Whether this S3 destination was used by policies on more than one server before destinations were bound. Each of those servers holds its keys and can delete or overwrite the others' backups. Its policies keep using it, and no new policy can. */
+            shared: boolean;
             /** @description Whether a revoked server holds this S3 destination's storage keys: the server a policy using it is bound to, or one a restore of such a policy was recorded for. It can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement, and a backup_exposure alert fires for it. */
             exposed: boolean;
             /** @description The backup policies using this destination. */
@@ -4671,6 +4757,8 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
+            /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are at the bucket's root. */
+            prefix?: string;
         };
         BackupDestinationPolicy: {
             /** Format: uuid */
@@ -4696,6 +4784,13 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
+            /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't begin with `astilba`. A prefix that equals, contains or is inside another of the workspace's destinations' in a bucket of the same name, at any endpoint, or a second destination without one there, is refused with the field `prefix`, since keys limited to one would reach the other's backups. */
+            prefix?: string;
+            /**
+             * Format: uuid
+             * @description Required for an S3 destination, and refused for a filesystem one: the deployment server its storage keys are given to. Only policies on that server can use it, so give it keys limited to its prefix or bucket. A server that is missing, revoked, a build server or not ready to deploy is refused with the field `serverId`.
+             */
+            serverId?: string;
             access: components["schemas"]["BackupAccess"];
         };
         /** @description Daily wall-clock, five-field cron, or UTC elapsed interval. Omitted kind preserves the original daily format. */
@@ -4712,7 +4807,10 @@ export interface components {
             name: string;
             /** Format: uuid */
             resourceId: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description A new policy can use only an S3 destination bound to its server, or one no policy has used yet, which it binds to its server. One bound to another server is refused with the field `destination.server`, and a shared one with `destination.shared`.
+             */
             destinationId: string;
             /** @enum {string} */
             method: "postgres-logical" | "quiesced-files" | "container-job";
@@ -6997,6 +7095,95 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Session"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listAccountSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's signed-in sessions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSessions"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    signOutOtherSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's signed-in sessions afterwards */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSessions"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    signOutSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's signed-in sessions afterwards */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSessions"];
                 };
             };
             /** @description Error */

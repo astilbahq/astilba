@@ -87,6 +87,9 @@ func (s *Service) StartBackupRecovery(ctx context.Context, p store.Principal, ws
 		if destination.Kind != "s3" {
 			return domain.Invalid("policy.destination")
 		}
+		if err = requireBackupPrefixes(ctx, tx, ws, server, destination); err != nil {
+			return err
+		}
 		receipts, err := db.New(tx).BackupSnapshotReceipts(ctx, db.BackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
 		if err != nil {
 			return err

@@ -418,7 +418,7 @@ func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 		raw, _ := stablejson.Marshal(out)
 		return raw
 	}
-	policy := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "workspace_id": server["workspace_id"], "environment_id": a.Tables["environments"][0]["id"], "server_id": server["id"], "configuration": jsontext.Value(`{}`), "encrypted_access": jsontext.Value(`null`), "status": jsontext.Value(`{}`), "status_sequence": jsontext.Value(`0`), "snapshot_receipts": receipts(2)}
+	policy := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "workspace_id": server["workspace_id"], "environment_id": a.Tables["environments"][0]["id"], "server_id": server["id"], "configuration": jsontext.Value(`{"serverId":` + string(server["id"]) + `}`), "encrypted_access": jsontext.Value(`null`), "status": jsontext.Value(`{}`), "status_sequence": jsontext.Value(`0`), "snapshot_receipts": receipts(2)}
 	decode := func(version int, change func(Archive)) (Archive, error) {
 		t.Helper()
 		older := a
@@ -472,7 +472,21 @@ func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 // withoutVersionFifteen makes a decoded archive look as one written before it carried restores onto
 // another server.
 func withoutVersionFifteen(a Archive) {
+	withoutVersionNineteen(a)
 	delete(a.Tables, "backup_recoveries")
+}
+
+// withoutVersionNineteen makes a decoded archive look as one written before it carried the server
+// each backup destination is bound to.
+func withoutVersionNineteen(a Archive) {
+	rows := []Row{}
+	for _, row := range a.Tables["backup_destinations"] {
+		row = maps.Clone(row)
+		delete(row, "server_id")
+		delete(row, "shared")
+		rows = append(rows, row)
+	}
+	a.Tables["backup_destinations"] = rows
 }
 
 // An archive from before version 15 made no restore onto another server, and may not carry one.

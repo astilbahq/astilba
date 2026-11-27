@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -24,6 +25,11 @@ import (
 // entries, so the record stays at the earlier release until those indexes are rebuilt.
 type postgresData struct {
 	Image string `json:"image"`
+	// Served is the later release that served the data while a rebuild of Image's indexes was
+	// outstanding, set before the rebuild starts and dropped once it finishes. Image may then be
+	// one assumed of storage with no record, the oldest release of its major, which says nothing
+	// of what wrote the data; Served is what the data must still open with.
+	Served string `json:"served,omitempty"`
 	// Initialising is set before the agent creates a database's new volume, and cleared once its
 	// cluster is ready: a volume found while it is set never served the database, so the agent
 	// deletes and creates it again.
@@ -59,8 +65,8 @@ var postgresReleaseOf = domain.PostgresReleaseOf
 
 // postgresDataOpens refuses a plan whose managed database on the volume runs a release that cannot
 // open the data the journal records there: another major's, another line's or a later release's.
-// The record is the release whose indexes the data holds, which an interrupted update leaves behind
-// the one that last served it.
+// It compares with the serving release a record names while a rebuild is outstanding, and
+// otherwise with the release it holds, the last one the agent recorded serving the data.
 // The record follows the volume, not the unit's applied plan, so it also holds for a restore
 // target, an upgrade's target and storage a retired environment kept, which the comparison with
 // the applied plan never sees. A volume with no record, such as one an earlier agent made, is left
@@ -71,10 +77,11 @@ func (j *Journal) postgresDataOpens(p deployment.Plan, volume uuid.UUID) error {
 			continue
 		}
 		record, found, err := j.postgresData(volume)
-		if err != nil || !found || record.Image == *a.Source.Image {
+		last := cmp.Or(record.Served, record.Image)
+		if err != nil || !found || last == *a.Source.Image {
 			return err
 		}
-		written, known := postgresReleaseOf(record.Image)
+		written, known := postgresReleaseOf(last)
 		serving, ok := postgresReleaseOf(*a.Source.Image)
 		if !known || !ok {
 			return errPostgresVersionChange
@@ -102,8 +109,13 @@ func (r postgresDataRefusal) Is(target error) bool { return target == errPostgre
 // recordPostgresWriters records the release of each managed database in the plan a unit is
 // leaving, for a volume with no record yet. That release wrote the data a new plan may serve with
 // a later one, which is what makes the later release's reindex due. Runs inside saveUnit, before
-// the new plan is the applied one.
-func (j *Journal) recordPostgresWriters(tx *bolt.Tx, previous deployment.Plan) error {
+// the new plan is the applied one. Saving the applied plan again, as pausing or resuming
+// maintenance and a rerun after a restart do, leaves no plan behind: its own release has not yet
+// rebuilt the indexes it says to.
+func (j *Journal) recordPostgresWriters(tx *bolt.Tx, previous, next deployment.Plan) error {
+	if previous.Hash == next.Hash {
+		return nil
+	}
 	for _, a := range previous.LocalApplications() {
 		if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
 			continue
@@ -166,7 +178,12 @@ var reindexPage = 1000
 // step. A journal failure is an error, and so is the agent stopping, which leaves the command to
 // resume when it restarts.
 func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin func() error) (string, error) {
-	var unfinished, exclusions []string
+	type rebuild struct {
+		application domain.Application
+		serving     domain.PostgresRelease
+		queries     []string
+	}
+	var due []rebuild
 	for _, a := range p.LocalApplications() {
 		if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
 			continue
@@ -186,43 +203,70 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			// target an earlier agent filled: assume the oldest release of its major wrote it.
 			written = oldestPostgres(serving.Major())
 		}
+		var queries []string
 		if written.Major() == serving.Major() && written.Version < serving.Version {
-			if queries := serving.ReindexSince(written); len(queries) > 0 {
-				if begin != nil {
-					if err = begin(); err != nil {
-						return "", err
-					}
-					begin = nil
-				}
-				skipped, err := e.rebuildPostgresIndexes(ctx, p, a, serving, queries)
-				if ctx.Err() != nil {
-					// The agent is stopping: the command resumes when it restarts.
-					return "", ctx.Err()
-				}
-				if err != nil {
-					unfinished = append(unfinished, a.Name)
-					continue
-				}
-				exclusions = append(exclusions, skipped...)
-			}
+			queries = serving.ReindexSince(written)
 		}
-		if !found || record.Image != serving.Image {
-			if err = e.Journal.savePostgresData(volume, postgresData{Image: serving.Image}); err != nil {
+		next := postgresData{Image: serving.Image}
+		if len(queries) > 0 {
+			// Every outstanding rebuild is recorded before the first starts, so a later plan the
+			// unit saves does not record the release of the plan it leaves for storage with no
+			// record, which would mark its indexes rebuilt. Until it finishes, the data still
+			// refuses releases that cannot open what the serving one writes.
+			next = postgresData{Image: cmp.Or(record.Image, written.Image), Served: serving.Image}
+			due = append(due, rebuild{application: a, serving: serving, queries: queries})
+		}
+		if record != next {
+			if err = e.Journal.savePostgresData(volume, next); err != nil {
 				return "", err
 			}
 		}
 	}
-	return reindexNote(unfinished, exclusions), nil
+	var unfinished, exclusions, closed []string
+	for i, r := range due {
+		if i == 0 && begin != nil {
+			if err := begin(); err != nil {
+				return "", err
+			}
+		}
+		a := r.application
+		left, err := e.rebuildPostgresIndexes(ctx, p, a, r.serving, r.queries)
+		if ctx.Err() != nil {
+			// The agent is stopping: the command resumes when it restarts.
+			return "", ctx.Err()
+		}
+		if err != nil {
+			unfinished = append(unfinished, a.Name)
+			continue
+		}
+		exclusions = append(exclusions, left.exclusions...)
+		if len(left.closed) > 0 {
+			// The record stays at the earlier release, so the next deployment rebuilds them once
+			// their owner allows connections again.
+			for _, database := range left.closed {
+				closed = append(closed, database+" ("+a.Name+")")
+			}
+			continue
+		}
+		if err = e.Journal.savePostgresData(a.Mounts[0].VolumeID, postgresData{Image: r.serving.Image}); err != nil {
+			return "", err
+		}
+	}
+	return reindexNote(unfinished, closed, exclusions), nil
 }
 
-// reindexNote tells the owner what the rebuild left, within the room an operation's note has.
-func reindexNote(unfinished, exclusions []string) string {
+// reindexNote tells the owner what the rebuild left, within the room an operation's note has
+// after the longest note a report puts before it. A maintenance report puts its own after it.
+func reindexNote(unfinished, closed, exclusions []string) string {
 	var parts []string
 	if len(unfinished) > 0 {
-		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unfinished, 240)+"; the data is served on the new release and the next deployment retries it.")
+		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unfinished, 120)+"; the data is served on the new release and the next deployment retries it.")
+	}
+	if len(closed) > 0 {
+		parts = append(parts, "The databases "+listSome(closed, 80)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
 	}
 	if len(exclusions) > 0 {
-		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(exclusions, 420)+".")
+		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(exclusions, 220)+".")
 	}
 	return strings.Join(parts, " ")
 }
@@ -257,29 +301,38 @@ func oldestPostgres(major int) domain.PostgresRelease {
 	return domain.PostgresRelease{}
 }
 
-// rebuildPostgresIndexes rebuilds one database's indexes, returning the exclusion-constraint
-// indexes left to the owner, or why it did not finish. It runs from a helper in the database's
+// reindexLeft is what a rebuild left to the database's owner.
+type reindexLeft struct {
+	// exclusions are the exclusion-constraint indexes the queries skip, named database.index.
+	exclusions []string
+	// closed are the databases that do not accept connections, so that nothing could rebuild
+	// their indexes.
+	closed []string
+}
+
+// rebuildPostgresIndexes rebuilds one database's indexes, returning what it left to the owner,
+// or why it did not finish. It runs from a helper in the database's
 // network namespace, as backups do, so nothing runs in the database container and removing the
 // helper ends whatever the rebuild left running. It connects as the cluster's superuser, but
 // REINDEX runs an index's functions as its table's owner, so in the owner model the database's
 // own code never runs with the superuser's rights.
-func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, a domain.Application, serving domain.PostgresRelease, queries []string) ([]string, error) {
+func (e *Engine) rebuildPostgresIndexes(ctx context.Context, p deployment.Plan, a domain.Application, serving domain.PostgresRelease, queries []string) (reindexLeft, error) {
 	// The container runs the plan's resolved reference to the release's digest.
 	v, err := e.Docker.ContainerInspect(ctx, p.ContainerName(a.ID), client.ContainerInspectOptions{})
 	if err != nil || !visualOwned(v.Container.Config.Labels, p) || v.Container.Config.Labels[labelResource] != a.ID.String() || v.Container.Config.Image != p.Images[a.ID.String()] || !deployment.ResolvedImage(serving.Image, v.Container.Config.Image) || !v.Container.State.Running {
-		return nil, errors.New("the database container is not the plan's")
+		return reindexLeft{}, errors.New("the database container is not the plan's")
 	}
 	budget, cancel := context.WithTimeout(ctx, reindexBudget)
 	defer cancel()
 	name := "astilba-reindex-" + a.ID.String()
 	if err = e.removeReindexHelper(budget, name, p); err != nil {
-		return nil, err
+		return reindexLeft{}, err
 	}
 	labels := visualLabels(p, a.ID)
 	labels[labelKind] = reindexKind
 	helper, err := e.postgresHelper(budget, name, labels, v.Container.ID, serving.Image)
 	if err != nil {
-		return nil, err
+		return reindexLeft{}, err
 	}
 	defer e.removeHelper(helper)
 	helper.env = append(slices.DeleteFunc(slices.Clone(helper.env), func(v string) bool { return strings.HasPrefix(v, "PGOPTIONS=") }), reindexOptions)
@@ -308,8 +361,8 @@ func (e *Engine) removeReindexHelper(ctx context.Context, name string, p deploym
 // the leftovers of an interrupted run. A query returns index OIDs, each rebuilt with REINDEX INDEX
 // CONCURRENTLY in its own session, since it cannot run in a transaction. A rebuild that fails drops
 // what it left, so a half-built index does not slow every write until the next run. It returns the
-// exclusion-constraint indexes the queries skip, named database.index.
-func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a domain.Application, queries []string) ([]string, error) {
+// exclusion-constraint indexes the queries skip and the databases it could not connect to.
+func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a domain.Application, queries []string) (reindexLeft, error) {
 	// lines lists a query's text values in pages, so no one listing outgrows its output limit
 	// however many indexes a database has. Values travel hex-encoded, one per line, so one holding a
 	// newline stays one, and the last value of a page comes back the same way. Paging is by value:
@@ -350,24 +403,47 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
 		return lines(connection, "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM ("+domain.ReindexLeftovers+") AS i(oid)")
 	}
+	// A database marked as a template is rebuilt like any other: its owner may mark their own
+	// database IS_TEMPLATE, and template1's indexes are what each new database copies. A copy
+	// made from a template while its rebuild is connected fails, as one made while any session
+	// is. A database that does not accept connections, which even the superuser then can't make,
+	// is named instead; before the owner model the database user is a superuser and can close
+	// any. One the deployment connects to fails the listing, so it is left unfinished. template0
+	// never accepts connections and holds only the catalogs initdb made, which the queries leave
+	// alone. Names are listed apart from whether each accepts connections, which is read just
+	// before its rebuild: a name stays in its place in the listing's pages whatever the database
+	// does, and one closed after its check fails to connect, so the step is left unfinished.
 	// inline-sql: runs in a managed customer database through psql, not in the platform database
-	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn AND NOT datistemplate")
+	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn OR datname <> 'template0'")
 	if err != nil {
-		return nil, err
+		return reindexLeft{}, err
 	}
-	var exclusions []string
+	var left reindexLeft
 	for _, database := range databases {
+		// inline-sql: runs in a managed customer database through psql, not in the platform database
+		state, err := lines(a.Postgres.Database, "SELECT CASE WHEN datallowconn THEN 'open' ELSE 'closed' END FROM pg_database WHERE datname = convert_from(decode('"+hex.EncodeToString([]byte(database))+"', 'hex'), 'UTF8')")
+		if err != nil {
+			return reindexLeft{}, err
+		}
+		if len(state) == 0 {
+			// Dropped since it was listed.
+			continue
+		}
+		if state[0] != "open" {
+			left.closed = append(left.closed, database)
+			continue
+		}
 		// psql reads its -d value as a connection string when it holds '='; quote it as one.
 		connection := "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(database) + "'"
 		statements, err := leftovers(connection)
 		if err != nil {
-			return nil, err
+			return reindexLeft{}, err
 		}
 		for _, query := range queries {
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
 			rebuild, err := lines(connection, "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM ("+query+") AS i(oid)")
 			if err != nil {
-				return nil, err
+				return reindexLeft{}, err
 			}
 			statements = append(statements, rebuild...)
 		}
@@ -378,18 +454,18 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 					_ = run(connection, dropped)
 				}
 			}
-			return nil, err
+			return reindexLeft{}, err
 		}
 		for _, query := range queries {
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
 			skipped, err := lines(connection, "SELECT i.oid::regclass::text FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
 			if err != nil {
-				return nil, err
+				return reindexLeft{}, err
 			}
 			for _, index := range skipped {
-				exclusions = append(exclusions, database+"."+index)
+				left.exclusions = append(left.exclusions, database+"."+index)
 			}
 		}
 	}
-	return exclusions, nil
+	return left, nil
 }
