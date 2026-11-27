@@ -8,9 +8,16 @@ import (
 	"slices"
 	"testing"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/google/uuid"
 )
+
+// catalogRelease is a catalog entry for version on arch, with an artifact of its own digest.
+func catalogRelease(version, minimum string, arch api.AgentReleaseArch) api.AgentRelease {
+	sum := sha256.Sum256([]byte(version + string(arch)))
+	return api.AgentRelease{Version: version, MinimumVersion: minimum, Commit: agentFixtureCommit, Protocol: 1, Arch: arch, Size: 1, Sha256: hex.EncodeToString(sum[:])}
+}
 
 // An agent refuses a release whose minimum version is below that of the release it runs.
 // Management reads that floor from the catalog and neither offers nor sends such a release, so
@@ -20,16 +27,12 @@ func TestAgentUpdatesKeepTheAgentFloor(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
-	release := func(version, minimum string, arch api.AgentReleaseArch) api.AgentRelease {
-		sum := sha256.Sum256([]byte(version + string(arch)))
-		return api.AgentRelease{Version: version, MinimumVersion: minimum, Commit: agentFixtureCommit, Protocol: 1, Arch: arch, Size: 1, Sha256: hex.EncodeToString(sum[:])}
-	}
 	f.execution.Releases = []api.AgentRelease{
-		release("0.1.0", "0.0.0", "arm64"),
-		release("0.2.0", "0.1.0", "arm64"),
-		release("0.2.1", "0.1.0", "arm64"),
-		release("0.3.0", "0.3.0", "arm64"),
-		release("0.3.1", "0.0.0", "amd64"),
+		catalogRelease("0.1.0", "0.0.0", "arm64"),
+		catalogRelease("0.2.0", "0.1.0", "arm64"),
+		catalogRelease("0.2.1", "0.1.0", "arm64"),
+		catalogRelease("0.3.0", "0.3.0", "arm64"),
+		catalogRelease("0.3.1", "0.0.0", "amd64"),
 	}
 	enroll := func(version string) uuid.UUID {
 		t.Helper()
@@ -91,5 +94,58 @@ func TestAgentUpdatesKeepTheAgentFloor(t *testing.T) {
 		if op.Kind != "update" || op.ServerId != server {
 			t.Fatalf("update of %s to %s: %+v", server, version, op)
 		}
+	}
+}
+
+// The Servers page offers an agent update only where RequestUpdate takes one: not to a revoked
+// server, nor to one without an agent credential, such as one awaiting a transfer or a new
+// enrollment. Each of those keeps the capabilities its agent last reported.
+func TestAgentUpdatesOnlyWhereAnUpdateIsTaken(t *testing.T) {
+	f := setup(t)
+	b := f.browser(t)
+	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	f.execution.Releases = []api.AgentRelease{catalogRelease("0.3.0", "0.1.0", "arm64"), catalogRelease("0.2.0", "0.1.0", "arm64")}
+	base := "/api/v1/workspaces/" + ws.String()
+	enroll := func() uuid.UUID {
+		t.Helper()
+		enrolled, input, _ := enrollment(t, f, b, ws, "deployment")
+		input.Capabilities.Version = "0.2.0"
+		if _, e := f.execution.Enroll(context.Background(), acknowledging(input), "test"); e != nil {
+			t.Fatal(e)
+		}
+		return enrolled.Server.Id
+	}
+	enrolled, revoked, renewed, transferring := enroll(), enroll(), enroll(), enroll()
+	b.call("POST", base+"/servers/"+revoked.String()+"/revoke", nil, 204, nil)
+	var renewal api.Enrollment
+	b.call("POST", base+"/servers/"+renewed.String()+"/enrollment", nil, 201, &renewal)
+	if renewal.Server.Capabilities == nil || renewal.Server.AgentUpdates != nil {
+		t.Fatalf("a renewed enrollment answers with capabilities %v and updates %v", renewal.Server.Capabilities, renewal.Server.AgentUpdates)
+	}
+	// Recovery fences a server this way until its agent enrolls again.
+	if e := f.st.Queries.FenceServerController(context.Background(), db.FenceServerControllerParams{ControllerGeneration: 1, WorkspaceID: ws, ServerID: transferring}); e != nil {
+		t.Fatal(e)
+	}
+	var servers []api.Server
+	b.call("GET", base+"/servers", nil, 200, &servers)
+	for _, id := range []uuid.UUID{enrolled, revoked, renewed, transferring} {
+		i := slices.IndexFunc(servers, func(s api.Server) bool { return s.Id == id })
+		if i < 0 || servers[i].Capabilities == nil {
+			t.Fatalf("server %s isn't listed with its capabilities", id)
+		}
+		if id == transferring && (servers[i].TransferRequired == nil || !*servers[i].TransferRequired) {
+			t.Fatalf("server %s isn't awaiting a transfer", id)
+		}
+		if id == revoked && servers[i].Status != "revoked" {
+			t.Fatalf("server %s is %s, not revoked", id, servers[i].Status)
+		}
+		if offered := servers[i].AgentUpdates != nil; offered != (id == enrolled) {
+			t.Errorf("server %s offers agent updates: %v", id, offered)
+		}
+		status := 404
+		if id == enrolled {
+			status = 201
+		}
+		b.call("POST", base+"/servers/"+id.String()+"/update", api.UpdateAgent{Version: "0.3.0"}, status, nil)
 	}
 }

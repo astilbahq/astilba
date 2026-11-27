@@ -9,7 +9,7 @@ import { BusyButton, Form, text } from "../ui";
  * Offers the catalog releases management sends this server's agent. An agent refuses a release
  * whose minimum version is below that of the release it runs, so management sends only releases
  * at or above that floor. The others are listed beside them, disabled, with the reason; when none
- * qualifies, the note says so.
+ * qualifies, the note says so. Releases are listed in management's order, newest first.
  */
 export function AgentUpdate({
   server,
@@ -46,12 +46,26 @@ export function AgentUpdate({
       : updates.basis === "catalog"
         ? `This agent installs only releases whose minimum version is at least ${floor}, that of the release it runs.${none}`
         : `Release ${capabilities.version}, which this agent runs, isn't in the release catalog, so management can't read its minimum version. Management offers only releases whose minimum version is at least ${floor}, which the agent installs whatever its own minimum version.${none} Add this release's signed manifest to the catalog so management can read its minimum version, or update the agent with the local procedure.`;
+  // Management lists the catalog newest first, so the first release it sends is the newest. The
+  // select starts there when that is newer than the release the agent runs, so accepting what it
+  // shows never downgrades the agent. When management sends only older releases, for example once
+  // the agent runs the newest, the select starts on no release, so a rollback is always one the
+  // owner picked. An agent whose release isn't in the catalog is sent only other releases whose
+  // minimum version, and so version, is at least its own, so every one of those is newer.
+  const running = releases.findIndex(
+    (r) => r.arch === capabilities.arch && r.version === capabilities.version,
+  );
+  const newest = offered[0];
+  const start =
+    newest && (running < 0 || releases.indexOf(newest) < running)
+      ? newest.version
+      : "";
   // The select keeps showing a release while management sends it, whether the owner chose it or
-  // it was the first offered. Once management stops sending it, for example after an update
-  // installed it or raised the floor, the select moves to the first release management sends and
-  // keeps that one the same way, so a release it moved away from never comes back by itself.
+  // the select started there. Once management stops sending it, for example after an update
+  // installed it or raised the floor, the select starts again as above and keeps that release the
+  // same way, so a release it moved away from never comes back by itself.
   const value =
-    choice !== undefined && sent.has(choice) ? choice : offered[0]?.version;
+    choice !== undefined && sent.has(choice) ? choice : start;
   if (value !== choice) setChoice(value);
   return (
     <>
@@ -70,9 +84,15 @@ export function AgentUpdate({
             <Select
               name="version"
               value={value}
+              required
               onChange={(e) => setChoice(e.target.value)}
               aria-describedby={withheld ? note : undefined}
             >
+              {start === "" && (
+                <option value="" disabled>
+                  {`Choose a release older than ${capabilities.version}, which this agent runs`}
+                </option>
+              )}
               {others.map((r) =>
                 sent.has(r.version) ? (
                   <option key={r.sha256} value={r.version}>

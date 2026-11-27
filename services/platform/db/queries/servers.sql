@@ -1,5 +1,9 @@
 -- name: ListServers :many
-SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
+-- updatable is the condition AdvanceServerUpdateGeneration admits an update on, so the Servers page
+-- offers an update only where RequestUpdate takes one. InsertServer and RenewServerEnrollment
+-- return the same columns.
+SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at,
+    (NOT revoked AND credential_hash IS NOT NULL)::boolean AS updatable
 FROM servers WHERE workspace_id = @workspace_id ORDER BY name,id LIMIT 100;
 
 -- name: CountServers :one
@@ -8,7 +12,8 @@ SELECT count(*) FROM servers WHERE workspace_id = @workspace_id;
 -- name: InsertServer :one
 INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,enrollment_issuer_id,enrollment_issuer_auth_version,preview_only)
 VALUES(@id,@workspace_id,@name,@role,@enrollment_hash,@enrollment_expires,@enrollment_issuer_id::uuid,@enrollment_issuer_auth_version::bigint,@preview_only)
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at;
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at,
+    (NOT revoked AND credential_hash IS NOT NULL)::boolean AS updatable;
 
 -- name: RenewServerEnrollment :one
 -- Revoking a preview host released its previews without anything confirming their removal, so it
@@ -19,7 +24,8 @@ UPDATE servers SET enrollment_hash = @enrollment_hash,enrollment_expires = @enro
     credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,revoked_at=NULL,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = @workspace_id AND id = @id
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at;
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at,
+    (NOT revoked AND credential_hash IS NOT NULL)::boolean AS updatable;
 
 -- name: RevokeServer :execrows
 -- Revoking a revoked server again keeps the time its revocation began, or none when it began
@@ -28,6 +34,7 @@ UPDATE servers SET revoked=true,revoked_at=CASE WHEN revoked THEN revoked_at ELS
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AdvanceServerUpdateGeneration :one
+-- ListServers reports this condition as updatable.
 UPDATE servers SET update_generation=update_generation+1
 WHERE workspace_id = @workspace_id AND id = @id AND NOT revoked AND credential_hash IS NOT NULL
 RETURNING capabilities,update_generation;

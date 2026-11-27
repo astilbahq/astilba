@@ -3060,7 +3060,7 @@ export interface components {
             identity?: components["schemas"]["ServerIdentity"];
             agentUpdates?: components["schemas"]["AgentUpdates"];
         };
-        /** @description The agent releases management sends this server. Present whenever the agent has reported its capabilities. An agent refuses any release whose minimum version is below that of the release it runs, its floor, so management sends only releases at or above the floor it can be sure of. */
+        /** @description The agent releases management sends this server. Present when the agent has reported its capabilities and the server can take an update; absent while it's revoked or holds no agent credential, for example while it awaits a transfer or a new enrollment. An agent refuses any release whose minimum version is below that of the release it runs, its floor, so management sends only releases at or above the floor it can be sure of. */
         AgentUpdates: {
             /**
              * @description How management knows the agent's floor. catalog: from the catalog entry for the version and architecture the agent reports, so minimumVersion is its floor. version: that release isn't in the catalog, so minimumVersion is the agent's own version, which no floor exceeds; the agent may accept some releases below it, but management can't tell which. unknown: the agent reports no valid version, so management sends nothing.
@@ -3069,7 +3069,7 @@ export interface components {
             basis: "catalog" | "version" | "unknown";
             /** @description Management sends releases whose minimum version is at least this one. Absent when the basis is unknown. */
             minimumVersion?: string;
-            /** @description The catalog releases for the agent's architecture, other than the one it runs, that management sends it. */
+            /** @description The catalog releases for the agent's architecture, other than the one it runs, that management sends it, newest first. */
             versions: string[];
         };
         ServerIdentity: {
@@ -8263,7 +8263,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success */
+            /** @description The release catalog, newest release first. Releases of one version are in architecture order. Management refuses at startup a catalog with more releases than this list holds. */
             200: {
                 headers: {
                     [name: string]: unknown;
