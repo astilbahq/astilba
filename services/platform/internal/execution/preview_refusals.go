@@ -24,8 +24,13 @@ import (
 // Only refusals are recorded. An error that may pass by itself, such as the operation limit or a
 // provider call, still fails the pass and is retried.
 
-// refusalRetry tells the owner what makes a refused step run again.
-const refusalRetry = " It is tried again after a new commit, a change to the preview policy or an update of the preview host's agent, or when an owner refreshes the preview."
+// creationRetry and environmentRetry tell the owner what makes a refused step run again. A policy
+// can't change its configuration while any of its previews holds an environment, so a step refused
+// in an environment the preview keeps names the cleanup a policy change needs first.
+const (
+	creationRetry    = " It is tried again after a new commit, a change to the preview policy or an update of the preview host's agent, or when an owner refreshes the preview."
+	environmentRetry = " It is tried again after a new commit or an update of the preview host's agent, or when an owner refreshes the preview. The preview policy can change once its previews are cleaned up."
+)
 
 // previewRefusalKey digests a step's name and inputs together with what the step reads of the
 // preview host. Every key names the policy generation the step ran under, so a policy saved since
@@ -90,11 +95,15 @@ func (s *Service) previewPromotionKey(ctx context.Context, tx pgx.Tx, p previewP
 }
 
 // refusePreview fails the request with note and records key, so later passes skip the step until
-// its inputs change. The note is kept to be shown at every later pass, so it is bounded as an
+// its inputs change. kept says whether the preview still holds its environment. The note is kept to be shown at every later pass, so it is bounded as an
 // agent's is. Every reason is a fixed sentence or names a field the API bounds, such as a host's
 // name or a Railpack digest, and never quotes the configuration (refusedChange).
-func refusePreview(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, key, note string) error {
-	return db.New(tx).RefusePreviewStep(ctx, db.RefusePreviewStepParams{WorkspaceID: ws, ID: id, RefusedKey: key, Note: boundedNote(note) + refusalRetry})
+func refusePreview(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, key, note string, kept bool) error {
+	retry := creationRetry
+	if kept {
+		retry = environmentRetry
+	}
+	return db.New(tx).RefusePreviewStep(ctx, db.RefusePreviewStepParams{WorkspaceID: ws, ID: id, RefusedKey: key, Note: boundedNote(note) + retry})
 }
 
 // stillRefused is a pass that skips a step refused under the same key: the request stays failed
@@ -117,9 +126,8 @@ func previewBuildRefusal(err error) string {
 	if !runnerUpgradeRequired(err) || !errors.As(err, &refused) {
 		return ""
 	}
+	// A runner's Railpack pins are refused before admission, by runnerRailpackRefusal.
 	switch {
-	case slices.Contains(refused.Fields, railpackUpgradeRequired):
-		return refused.Message
 	case slices.Contains(refused.Fields, "runner.buildNetworkUpgradeRequired"):
 		return "Update the agent on the preview host: it would run build code on the host's network."
 	case slices.Contains(refused.Fields, "runner.rootlessBuildsUpgradeRequired"):

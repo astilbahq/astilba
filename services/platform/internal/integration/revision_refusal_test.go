@@ -4,7 +4,6 @@ import (
 	"encoding/json/v2"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -114,22 +113,18 @@ func TestPreviewCreationOverTheLimitFails(t *testing.T) {
 	preview := h.waitPreview(t, "approval_required")
 	h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "approve", "head": preview.Head, "headRepository": preview.HeadRepository}, 200, nil)
 	preview = h.waitPreview(t, "failed")
-	if preview.Note != "Preview environment was not created: "+overTheLimit+refusalRetry || preview.EnvironmentId != nil {
+	if preview.Note != "Preview environment was not created: "+overTheLimit+creationRetry || preview.EnvironmentId != nil {
 		t.Fatal("the preview did not fail with the reason, or kept an environment", preview.Note, preview.EnvironmentId)
 	}
 	stillRefused(t, h, preview, []func() int64{environments}, true)
 	// A refresh asks for the creation again.
-	created, opened := environments(), secretAccesses(t, h)
+	created, opened, before := environments(), secretAccesses(t, h), previewUpdated(t, h, preview)
 	h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "refresh", "head": preview.Head, "headRepository": preview.HeadRepository}, 200, nil)
-	deadline := time.Now().Add(20 * time.Second)
-	for environments() == created || secretAccesses(t, h) == opened {
-		if time.Now().After(deadline) {
-			t.Fatal("a refresh did not create the preview again")
-		}
-		time.Sleep(30 * time.Millisecond)
+	if again := previewPassAfter(t, h, preview, before); again.State != "failed" || again.Note != preview.Note {
+		t.Fatal("the refreshed preview was not refused again", again.State, again.Note)
 	}
-	if again := h.waitPreview(t, "failed"); again.Note != preview.Note {
-		t.Fatalf("the refreshed preview's note is %q", again.Note)
+	if environments() == created || secretAccesses(t, h) == opened {
+		t.Fatal("a refresh did not create the preview again")
 	}
 	// A policy without the generated hostnames fits, and its preview is created.
 	h.policy["generatedDomains"] = false
@@ -151,7 +146,7 @@ func TestPreviewPromotionOverTheLimitFails(t *testing.T) {
 	approvePreview(t, h, h.path)
 	reportPreviewBuild(t, h)
 	preview := h.waitPreview(t, "failed")
-	if preview.Note != "Preview was not deployed: "+overTheLimit+refusalRetry {
+	if preview.Note != "Preview was not deployed: "+overTheLimit+environmentRetry {
 		t.Fatalf("the preview's note is %q", preview.Note)
 	}
 	var plans int

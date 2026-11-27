@@ -15,8 +15,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// refusalRetry ends the note of a preview step refused for good.
-const refusalRetry = " It is tried again after a new commit, a change to the preview policy or an update of the preview host's agent, or when an owner refreshes the preview."
+// creationRetry and environmentRetry end the note of a preview step refused for good, without an
+// environment and in the environment the preview keeps.
+const (
+	creationRetry    = " It is tried again after a new commit, a change to the preview policy or an update of the preview host's agent, or when an owner refreshes the preview."
+	environmentRetry = " It is tried again after a new commit or an update of the preview host's agent, or when an owner refreshes the preview. The preview policy can change once its previews are cleaned up."
+)
 
 // countInserts counts the rows transactions try to insert into table from now on, including rows
 // they roll back, as a refused step rolls back all it wrote. A sequence advances whatever happens
@@ -57,22 +61,28 @@ func secretAccesses(t *testing.T, h *hungPreview) int {
 // previewPass has the provider announce the request and waits for the pass that answers it.
 func previewPass(t *testing.T, h *hungPreview, preview api.PullRequestPreview) api.PullRequestPreview {
 	t.Helper()
-	var before time.Time
-	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT updated_at FROM preview_requests WHERE id=$1", preview.Id).Scan(&before); err != nil {
+	before := previewUpdated(t, h, preview)
+	h.pullRequestHook(t)
+	return previewPassAfter(t, h, preview, before)
+}
+
+// previewUpdated is when a pass last recorded the request's state.
+func previewUpdated(t *testing.T, h *hungPreview, preview api.PullRequestPreview) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT updated_at FROM preview_requests WHERE id=$1", preview.Id).Scan(&at); err != nil {
 		t.Fatal(err)
 	}
-	h.pullRequestHook(t)
+	return at
+}
+
+// previewPassAfter waits for a pass to record the request's state after before, and returns it.
+func previewPassAfter(t *testing.T, h *hungPreview, preview api.PullRequestPreview, before time.Time) api.PullRequestPreview {
+	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
-	for {
-		var after time.Time
-		if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT updated_at FROM preview_requests WHERE id=$1", preview.Id).Scan(&after); err != nil {
-			t.Fatal(err)
-		}
-		if after.After(before) {
-			break
-		}
+	for !previewUpdated(t, h, preview).After(before) {
 		if time.Now().After(deadline) {
-			t.Fatal("no pass answered the request's event")
+			t.Fatal("no pass answered the request")
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
@@ -160,7 +170,7 @@ func TestPreviewOnAHostThatNeedsAnAgentUpdateWaitsForTheUpdate(t *testing.T) {
 	preview := h.waitPreview(t, "approval_required")
 	h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "approve", "head": preview.Head, "headRepository": preview.HeadRepository}, 200, nil)
 	preview = h.waitPreview(t, "failed")
-	if !strings.HasPrefix(preview.Note, "Preview environment was not created: Update the agent on Preview host") || !strings.HasSuffix(preview.Note, refusalRetry) || preview.EnvironmentId != nil {
+	if !strings.HasPrefix(preview.Note, "Preview environment was not created: Update the agent on Preview host") || !strings.HasSuffix(preview.Note, creationRetry) || preview.EnvironmentId != nil {
 		t.Fatal("the preview did not say its host's agent needs an update, or kept an environment", preview.Note)
 	}
 	stillRefused(t, h, preview, []func() int64{environments}, true)
@@ -169,6 +179,28 @@ func TestPreviewOnAHostThatNeedsAnAgentUpdateWaitsForTheUpdate(t *testing.T) {
 	if preview = h.waitPreview(t, "building"); preview.EnvironmentId == nil {
 		t.Fatal("the updated agent's preview has no environment")
 	}
+}
+
+// A preview host whose agent would build as root refuses the build, which rolls the new environment
+// back, and later passes create it again only once the agent is updated (PLAT-217).
+func TestPreviewBuildOnAHostThatNeedsAnAgentUpdateWaitsForTheUpdate(t *testing.T) {
+	h := newHungPreview(t)
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+	current := h.enrolled.Capabilities
+	outdated := current
+	outdated.RootlessBuilds = nil
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/heartbeat", h.token, api.AgentHeartbeat{Capabilities: outdated, Preflight: h.enrolled.Preflight}, 200, nil)
+	environments := countInserts(t, h, "environments")
+	preview := h.waitPreview(t, "approval_required")
+	h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "approve", "head": preview.Head, "headRepository": preview.HeadRepository}, 200, nil)
+	preview = h.waitPreview(t, "failed")
+	if preview.Note != "Preview build rejected before runner delivery: Update the agent on the preview host: it would run build code as root."+creationRetry || preview.EnvironmentId != nil {
+		t.Fatal("the build was not refused for the host's agent, or kept its environment", preview.Note)
+	}
+	stillRefused(t, h, preview, []func() int64{environments}, false)
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/heartbeat", h.token, api.AgentHeartbeat{Capabilities: current, Preflight: h.enrolled.Preflight}, 200, nil)
+	h.pullRequestHook(t)
+	h.waitPreview(t, "building")
 }
 
 // A build refused for a preview's existing environment is not admitted again, nor its environment's
@@ -195,7 +227,7 @@ func TestRefusedPreviewBuildWaitsForANewCommit(t *testing.T) {
 	opened := secretAccesses(t, h)
 	pushPreviewCommit(t, h, strings.Repeat("b", 40))
 	preview = h.waitPreview(t, "failed")
-	if preview.Note != "Preview build rejected before runner delivery: Public build arguments contain a known secret value."+refusalRetry || preview.EnvironmentId == nil {
+	if preview.Note != "Preview build rejected before runner delivery: Public build arguments contain a known secret value."+environmentRetry || preview.EnvironmentId == nil {
 		t.Fatal("the build was not refused in the preview's environment", preview.Note)
 	}
 	if secretAccesses(t, h) == opened {
@@ -246,7 +278,7 @@ func TestRefusedPreviewPromotionWaitsForANewCommit(t *testing.T) {
 	promotions, accept := refuseRevisions(t, h, *preview.EnvironmentId)
 	reportPreviewBuild(t, h)
 	preview = h.waitPreview(t, "failed")
-	if preview.Note != "Preview was not deployed: the configuration would be invalid."+refusalRetry {
+	if preview.Note != "Preview was not deployed: the configuration would be invalid."+environmentRetry {
 		t.Fatalf("the preview's note is %q", preview.Note)
 	}
 	stillRefused(t, h, preview, []func() int64{promotions}, false)

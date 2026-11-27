@@ -37,7 +37,7 @@ func TestPreviewBuildRejectionSettlesTheRequest(t *testing.T) {
 	if preview.EnvironmentId != nil {
 		t.Fatal("a request that can never build kept an environment and its resource slot")
 	}
-	if !strings.HasPrefix(preview.Note, "Preview build rejected before runner delivery: ") || !strings.HasSuffix(preview.Note, refusalRetry) {
+	if !strings.HasPrefix(preview.Note, "Preview build rejected before runner delivery: ") || !strings.HasSuffix(preview.Note, creationRetry) {
 		t.Fatalf("the preview's note is %q", preview.Note)
 	}
 	stillRefused(t, h, preview, []func() int64{environments}, true)

@@ -444,7 +444,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		if why != "" {
-			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview environment was not created: "+why)
+			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview environment was not created: "+why, false)
 		}
 		git.createdEnvironments[*r.View.EnvironmentId] = true
 	}
@@ -506,7 +506,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 					return err
 				}
 			}
-			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview build rejected before runner delivery: "+refusal.Message)
+			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview build rejected before runner delivery: "+refusal.Message, allocation == nil)
 		}
 		hash := buildInputHash(connection, pr.Head, cfg)
 		op, err := s.insertPipeline(ctx, tx, git, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
@@ -519,7 +519,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 					return err
 				}
 			}
-			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview build rejected before runner delivery: "+why)
+			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview build rejected before runner delivery: "+why, allocation == nil)
 		}
 		if err != nil {
 			return err
@@ -574,7 +574,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		if why != "" {
-			return refusePreview(ctx, tx, p.Workspace, id, key, "Preview was not deployed: "+why)
+			return refusePreview(ctx, tx, p.Workspace, id, key, "Preview was not deployed: "+why, true)
 		}
 		status, err := s.createVisualPlan(ctx, tx, git.keys.inspect, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
 		if err != nil {
