@@ -132,9 +132,11 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
     // The control that asked is gone, or has nothing left to do.
     heading.current?.focus();
   };
+  // done says whether a list shows what was asked for as done.
   const signOut = (
     asked: "one" | "others",
     send: (signal: AbortSignal) => Promise<Schema["AccountSessions"]>,
+    done: (list: Schema["AccountSessions"]) => boolean,
     origin: Element,
   ) => {
     setMessage(undefined);
@@ -147,18 +149,22 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
         }).catch(async (error: unknown) => {
           // Refused before anything changed: useAction confirms identity and asks again.
           if (isRecentAuthRequired(error)) throw error;
-          // A session may have signed out meanwhile, so the list is read again.
-          const reread = queries.invalidateQueries({
-            queryKey: options.queryKey,
-          });
+          // A session may have signed out meanwhile, or this sign-out may have finished with
+          // its answer lost, so the list is read again.
+          await queries.invalidateQueries({ queryKey: options.queryKey });
           if (
             asked === "one" &&
             error instanceof ApiError &&
             error.detail.code === "not_found"
           ) {
             // Signed out elsewhere, or expired: what was asked for is done.
-            await reread;
             signedOut("gone");
+            return;
+          }
+          // A list that could not be read again is the one shown before, which shows nothing done.
+          const list = queries.getQueryData(options.queryKey);
+          if (list && done(list)) {
+            signedOut(asked);
             return;
           }
           throw error;
@@ -234,6 +240,8 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
                           params: { path: { sessionId: session.id } },
                         }),
                       ),
+                    (list) =>
+                      !list.sessions.some(({ id }) => id === session.id),
                     origin,
                   )
                 }
@@ -262,6 +270,9 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
                           signal,
                         }),
                       ),
+                    (list) =>
+                      list.unlisted === 0 &&
+                      list.sessions.every(({ current }) => current),
                     event.currentTarget,
                   )
                 }

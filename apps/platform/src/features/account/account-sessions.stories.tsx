@@ -186,8 +186,8 @@ export const SignOutFails: Story = {
     await expect(sent).toEqual([laptop.id]);
   },
 };
-// A sign-out that ended the session but whose answer was lost fails, and reading the list again
-// shows the session gone; focus moves to the section, since its button went with it.
+// A sign-out whose answer was lost after it ended the session is done, as reading the list again
+// shows; focus moves to the section, since its button went with it.
 export const SignOutAnswerLost: Story = {
   ...sessionsScenario(signedIn, {
     after: { sessions: [thisSession, phone], unlisted: 0 },
@@ -200,10 +200,12 @@ export const SignOutAnswerLost: Story = {
         name: "Sign out Chrome on Windows",
       }),
     );
-    await expect(await list.findByRole("alert")).toHaveTextContent(
-      "The session could not be signed out.",
+    await expect(await list.findByText("Session signed out.")).toHaveAttribute(
+      "role",
+      "status",
     );
-    await waitFor(() => expect(list.getAllByRole("listitem")).toHaveLength(2));
+    await expect(list.queryByRole("alert")).toBeNull();
+    await expect(list.getAllByRole("listitem")).toHaveLength(2);
     await expect(
       list.getByRole("heading", { name: "Signed-in sessions" }),
     ).toHaveFocus();
