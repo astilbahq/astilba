@@ -573,7 +573,6 @@ export const AuthenticatorConfirmationDeclined: Story = {
   },
 };
 
-
 // Signed-in sessions: this one, and two others the person can sign out.
 const thisSession: Schema["AccountSession"] = {
   id: "00000000-0000-4000-8000-000000000010",
@@ -669,7 +668,10 @@ export const SignedInSessions: Story = {
 };
 // Signing out one session ends it; focus moves to the section, since its button is gone.
 export const SignOutASession: Story = {
-  ...sessionsScenario(signedIn, { sessions: [thisSession, phone], unlisted: 0 }),
+  ...sessionsScenario(signedIn, {
+    sessions: [thisSession, phone],
+    unlisted: 0,
+  }),
   play: async ({ canvasElement }) => {
     const list = sessionList(canvasElement);
     const items = await list.findAllByRole("listitem");
@@ -692,8 +694,11 @@ export const SignOutOtherSessionsConfirmsIdentity: Story = {
   ...(() => {
     const confirmed = sessionMutation(staleEnabled, enabled, "reauthenticate");
     const signingOut = sessionsScenario(signedIn, alone, staleEnabled);
+    // Only its session read: its defaults would answer for the list this story sets.
     signingOut.parameters.msw.handlers.session.unshift(
-      ...confirmed.parameters.msw.handlers.session,
+      ...confirmed.parameters.msw.handlers.session.filter(
+        (handler) => handler.info.path === "/api/v1/session",
+      ),
     );
     signingOut.parameters.msw.handlers.action.unshift(
       ...confirmed.parameters.msw.handlers.action,

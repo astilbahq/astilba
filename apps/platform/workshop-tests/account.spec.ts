@@ -16,11 +16,10 @@ for (const theme of ["light", "dark"]) {
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
-    // Two-factor authentication's last action opens its confirmation dialog.
+    // Two-factor authentication's last action opens its confirmation dialog. The pseudo-locale
+    // changes every name, so the section is found by the heading that labels it.
     await page
-      .getByRole("main")
-      .getByRole("region")
-      .nth(-2)
+      .locator("section[aria-labelledby='account-mfa']")
       .getByRole("button")
       .last()
       .click();

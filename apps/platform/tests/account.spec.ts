@@ -239,7 +239,6 @@ test("account credentials use shared forms and clear secrets and drafts after a 
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
-
 test("the account page lists signed-in sessions and signs out another", async ({
   browser,
   page,
@@ -284,7 +283,9 @@ test("the account page lists signed-in sessions and signs out another", async ({
     ).toEqual([]);
 
     // Signing in just now is recent authentication, so nothing asks for it again.
-    await sessions.getByRole("button", { name: "Sign out", exact: true }).click();
+    await sessions
+      .getByRole("button", { name: "Sign out", exact: true })
+      .click();
     await expect(sessions.getByRole("status")).toHaveText(
       "Session signed out.",
     );
