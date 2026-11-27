@@ -54,11 +54,17 @@ func TestReportNoteStaysWithinTheContract(t *testing.T) {
 		shapes["wide"] = append(shapes["wide"], strings.Repeat("a", 150)+strconv.Itoa(i))
 		shapes["short"] = append(shapes["short"], "x"+strconv.Itoa(i))
 	}
+	qualified := map[string][]listed{}
+	for shape, names := range shapes {
+		for _, name := range names {
+			qualified[shape] = append(qualified[shape], listed{name, name})
+		}
+	}
 	before := "The selected local pool is recorded and retirement is confirmed. "
 	after := "This host's maintenance reservation is released. 1000000 instances were not required to be ready: they were already stopped or failing, or an operator accepted them."
 	for unfinishedShape, unfinished := range shapes {
-		for closedShape, closed := range shapes {
-			for invalidShape, invalid := range shapes {
+		for closedShape, closed := range qualified {
+			for invalidShape, invalid := range qualified {
 				for exclusionShape, exclusions := range shapes {
 					rebuild := reindexNote(unfinished, closed, invalid, exclusions)
 					if note := before + rebuild; utf8.RuneCountInString(note) > 1024 || reportNote(note) != note || strings.Count(rebuild, " more") != 4 {
@@ -73,6 +79,27 @@ func TestReportNoteStaysWithinTheContract(t *testing.T) {
 	}
 	if reportNote("short") != "short" {
 		t.Fatal("a short note changed")
+	}
+}
+
+// PLAT-548. A name too long for its list is cut at a whole character, and a database's name
+// before its application's, so the note stays valid UTF-8 and still says whose it is.
+func TestLongNamesKeepWholeCharactersAndTheirApplication(t *testing.T) {
+	long := "x" + strings.Repeat("ä", 200)
+	for _, note := range []string{
+		reindexNote(nil, []listed{{long, "Billing"}}, nil, nil),
+		reindexNote(nil, nil, []listed{{long, "Billing"}}, nil),
+		reindexNote([]string{long}, nil, nil, []string{long + "." + long}),
+		reindexNote(nil, []listed{{long, long}}, nil, nil),
+	} {
+		if !utf8.ValidString(note) {
+			t.Fatalf("a cut name split a character: %q", note)
+		}
+	}
+	for _, note := range []string{reindexNote(nil, []listed{{long, "Billing"}}, nil, nil), reindexNote(nil, nil, []listed{{long, "Billing"}}, nil)} {
+		if !strings.Contains(note, "… (Billing)") {
+			t.Fatalf("a cut database name lost its application: %q", note)
+		}
 	}
 }
 

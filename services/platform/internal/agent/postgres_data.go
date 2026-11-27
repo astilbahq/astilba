@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -284,7 +285,8 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			}
 		}
 	}
-	var unfinished, exclusions, closed, invalid []string
+	var unfinished, exclusions []string
+	var closed, invalid []listed
 	for i, r := range due {
 		if i == 0 && begin != nil {
 			if err := begin(); err != nil {
@@ -306,10 +308,10 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			// The record stays at the earlier release, so the next deployment rebuilds them once
 			// their owner allows connections again or drops the invalid ones.
 			for _, database := range left.closed {
-				closed = append(closed, database+" ("+a.Name+")")
+				closed = append(closed, listed{database, a.Name})
 			}
 			for _, database := range left.invalid {
-				invalid = append(invalid, database+" ("+a.Name+")")
+				invalid = append(invalid, listed{database, a.Name})
 			}
 			continue
 		}
@@ -322,10 +324,10 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 
 // reindexNote tells the owner what the rebuild left, within the room an operation's note has
 // after the longest note a report puts before it. A maintenance report puts its own after it.
-func reindexNote(unfinished, closed, invalid, exclusions []string) string {
+func reindexNote(unfinished []string, closed, invalid []listed, exclusions []string) string {
 	var parts []string
 	if len(unfinished) > 0 {
-		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unfinished, 100)+"; the data is served on the new release and the next deployment retries it.")
+		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unqualified(unfinished), 100)+"; the data is served on the new release and the next deployment retries it.")
 	}
 	if len(closed) > 0 {
 		parts = append(parts, "The databases "+listSome(closed, 70)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
@@ -334,30 +336,64 @@ func reindexNote(unfinished, closed, invalid, exclusions []string) string {
 		parts = append(parts, "The databases "+listSome(invalid, 70)+" are invalid after an interrupted DROP DATABASE; drop them to finish the rebuild.")
 	}
 	if len(exclusions) > 0 {
-		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(exclusions, 170)+".")
+		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(unqualified(exclusions), 170)+".")
 	}
 	return strings.Join(parts, " ")
 }
 
+// listed is a name in an operation's note, with the application it belongs to when that says
+// which deployment's it is.
+type listed struct{ name, application string }
+
 // listSome joins names up to about limit bytes, then counts the rest. A name longer than that,
-// or than 120 bytes, is cut.
-func listSome(names []string, limit int) string {
-	slices.Sort(names)
+// or than 120 bytes, is cut at a whole character, its own part before its application's, so the
+// note still says whose it is.
+func listSome(names []listed, limit int) string {
+	names = slices.Clone(names)
+	slices.SortFunc(names, func(a, b listed) int {
+		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.application, b.application))
+	})
 	names = slices.Compact(names)
 	width := min(limit, 120)
-	out := ""
-	for i, name := range names {
-		if len(name) > width {
-			name = name[:width] + "…"
+	shown := make([]string, len(names))
+	for i, n := range names {
+		shown[i] = cutName(n.name, width)
+		if n.application != "" {
+			qualifier := " (" + cutName(n.application, width/2) + ")"
+			shown[i] = cutName(n.name, max(width-len(qualifier), width/4)) + qualifier
 		}
+	}
+	out := ""
+	for i, name := range shown {
 		next := name
 		if out != "" {
 			next = out + ", " + name
 		}
 		if len(next) > limit && out != "" {
-			return out + " and " + strconv.Itoa(len(names)-i) + " more"
+			return out + " and " + strconv.Itoa(len(shown)-i) + " more"
 		}
 		out = next
+	}
+	return out
+}
+
+// cutName shortens name to whole characters within width bytes, marking the cut.
+func cutName(name string, width int) string {
+	if len(name) <= width {
+		return name
+	}
+	end := width
+	for end > 0 && !utf8.RuneStart(name[end]) {
+		end--
+	}
+	return name[:end] + "…"
+}
+
+// unqualified lists names that belong to no application in particular.
+func unqualified(v []string) []listed {
+	out := make([]listed, len(v))
+	for i, name := range v {
+		out[i] = listed{name: name}
 	}
 	return out
 }
