@@ -11,6 +11,7 @@ import {
   nativeBudgets,
   nativeLaneBudget,
   nativeLanes,
+  nativeShare,
   packageTimes,
   recentJobs,
   splitReport,
@@ -21,15 +22,16 @@ import {
 const integration =
   "github.com/astilbahq/astilba/services/platform/internal/integration";
 
-test("the integration package warns at the same budget", () => {
-  const fixture = readFileSync(
-    "services/platform/internal/integration/fixture_test.go",
+test("the test packages warn at the same budgets", () => {
+  const warning = readFileSync(
+    "services/platform/internal/lanebudget/lanebudget.go",
     "utf8",
   );
   assert.match(
-    fixture,
-    new RegExp(`^const laneBudget = ${budgetSeconds} \\* time\\.Second$`, "m"),
+    warning,
+    new RegExp(`^const RaceBudget = ${budgetSeconds} \\* time\\.Second$`, "m"),
   );
+  assert.ok(warning.includes(`\nconst NativeShare = ${nativeShare}\n`));
 });
 
 test("reads what go test prints for a package, passed, failed or empty", () => {
@@ -158,6 +160,45 @@ test("samples recent runs of the current lanes in which every lane finished", as
       [1, "b", "success", 12],
       [4, "b", "failure", 41],
       [4, "a", "success", 42],
+    ],
+  );
+});
+
+test("takes the current lanes from the newest run whose lanes all finished", async () => {
+  const lanes = (...entries) => ({
+    jobs: entries.map(([id, lane, conclusion = "success"]) => ({
+      id,
+      name: `Go race (${lane})`,
+      conclusion,
+    })),
+  });
+  // Runs 1 and 2 added lane c, and neither finished it, so the newest complete lanes
+  // are still a and b. Run 5 ran c too, but before a rebalancing that took it away.
+  const runs = new Map([
+    [1, lanes([11, "a", "cancelled"], [12, "b"], [13, "c"])],
+    [2, lanes([21, "a"], [22, "b"], [23, "c", "skipped"])],
+    [3, lanes([31, "a"], [32, "b"])],
+    [4, lanes([41, "a"], [42, "b", "failure"])],
+    [5, lanes([51, "a"], [52, "b"], [53, "c"])],
+  ]);
+  const jobs = await recentJobs(async (path) => {
+    if (path.includes("/workflows/"))
+      return {
+        json: async () => ({
+          workflow_runs: [...runs.keys()].map((id) => ({ id })),
+        }),
+      };
+    const run = /runs\/(\d+)\/jobs/.exec(path)?.[1];
+    if (run) return { json: async () => runs.get(Number(run)) };
+    return { text: async () => `ok  \tpkg\t${/jobs\/(\d+)/.exec(path)[1]}.0s` };
+  }, "o/r");
+  assert.deepEqual(
+    jobs.map(({ run, lane }) => [run, lane]),
+    [
+      [3, "a"],
+      [3, "b"],
+      [4, "a"],
+      [4, "b"],
     ],
   );
 });
