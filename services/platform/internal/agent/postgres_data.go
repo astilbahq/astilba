@@ -313,7 +313,8 @@ type listed struct{ name, application string }
 
 // listSome joins names within limit bytes, its count of the rest included. A name longer than
 // 120 bytes, or than the room the count leaves, is cut at a whole character, its own part before
-// its application's, so the note still says whose it is.
+// its application's, so the note still says whose it is. An application keeps whatever room its
+// database's whole name leaves, and at least half.
 func listSome(names []listed, limit int) string {
 	names = slices.Clone(names)
 	slices.SortFunc(names, func(a, b listed) int {
@@ -326,13 +327,13 @@ func listSome(names []listed, limit int) string {
 		}
 		return " and " + strconv.Itoa(n) + " more"
 	}
-	// The first name always fits beside the longest count.
-	width := min(limit-len(rest(len(names))), 120)
+	// The first name always fits beside the count of the names after it.
+	width := min(limit-len(rest(max(len(names)-1, 0))), 120)
 	out := ""
 	for i, n := range names {
 		name := cutName(n.name, width)
 		if n.application != "" {
-			qualifier := " (" + cutName(n.application, width/2) + ")"
+			qualifier := " (" + cutName(n.application, max(width-len(n.name), width/2)-len(" ()")) + ")"
 			name = cutName(n.name, width-len(qualifier)) + qualifier
 		}
 		next := name

@@ -142,6 +142,25 @@ func TestLongNamesKeepWholeCharactersAndTheirApplication(t *testing.T) {
 	}
 }
 
+// A lone name needs no room for a count of the rest, so one that fits its room is kept whole.
+func TestALoneNameThatFitsIsKeptWhole(t *testing.T) {
+	alone := strings.Repeat("d", 55)
+	if list := listSome([]listed{{alone, "Billing"}}, closedRoom); list != alone+" (Billing)" {
+		t.Fatalf("a lone name that fits was cut: %q", list)
+	}
+	if list := listSome(unqualified([]string{strings.Repeat("u", unfinishedRoom)}), unfinishedRoom); list != strings.Repeat("u", unfinishedRoom) {
+		t.Fatalf("a lone name that fills its room was cut: %q", list)
+	}
+}
+
+// An application keeps whatever room its database's whole name leaves.
+func TestAnApplicationKeepsTheRoomItsDatabaseLeaves(t *testing.T) {
+	application := "Customer billing and invoicing service"
+	if list := listSome([]listed{{"app", application}}, closedRoom); list != "app ("+application+")" {
+		t.Fatalf("an application name that fits was cut: %q", list)
+	}
+}
+
 // An agent that stops during the rebuild leaves the command to resume: it reports no outcome,
 // and the volume keeps recording the earlier release beside the serving one, whatever plan the
 // unit saves next.
