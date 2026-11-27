@@ -75,7 +75,7 @@ export const Accounts: Story = {
     await expect(
       view.getAllByRole("button", { name: "Revoke key" }),
     ).toHaveLength(2);
-    await expect(view.getByText("1 revoked key")).toBeVisible();
+    await expect(view.getByText("Recently revoked keys")).toBeVisible();
     await userEvent.click(view.getByRole("button", { name: "Retry now" }));
     await expect(
       await view.findByText("Management is trying again."),

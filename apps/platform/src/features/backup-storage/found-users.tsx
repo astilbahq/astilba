@@ -79,11 +79,11 @@ function FoundUserItem({
   const revoking = user.revoking;
   const path = { workspaceId, accountId: account.id };
   const self = user.installationId === account.installationId;
-  const listed = account.peers.includes(user.installationId);
-  // The report marks peers as of the latest check; one added since counts at once.
-  const peer = user.peer || listed;
-  // A peer is another installation, named by its UUID tag.
-  const peerable = !user.peer && !self && uuid.test(user.installationId);
+  // Management marks peers by the account's peers as they are now.
+  const peer = user.peer;
+  // A peer is another installation, named by its UUID tag. Adding one takes the button away
+  // and leaves its dialog to close.
+  const peerable = !self && uuid.test(user.installationId);
   return (
     <li ref={item} tabIndex={-1} className={st.focusTarget}>
       <span className={st.identifier}>{user.userName}</span>
@@ -140,7 +140,7 @@ function FoundUserItem({
       )}
       {owner && peerable && (
         <ConfirmAction
-          available={!listed}
+          available={!peer}
           focusAfter={item}
           danger={false}
           label={t(($) => $.found.addPeer)}

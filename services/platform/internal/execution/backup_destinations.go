@@ -245,8 +245,8 @@ func mintError(err error) error {
 	return errMintFailed
 }
 
-// destinationKeys are the workspace's managed destinations' keys as their views show them, newest
-// first.
+// destinationKeys are the workspace's managed destinations' keys as their views show them: those
+// not yet revoked, newest first, then the most recently revoked.
 func destinationKeys(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (map[uuid.UUID][]api.BackupStorageKey, error) {
 	rows, err := db.New(tx).DestinationBackupStorageKeys(ctx, ws)
 	if err != nil {

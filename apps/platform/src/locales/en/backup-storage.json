@@ -80,8 +80,7 @@
     "retrying": "Retrying…",
     "retryRequested": "Management is trying again.",
     "noKeys": "No keys yet.",
-    "revoked_one": "{{count}} revoked key",
-    "revoked_other": "{{count}} revoked keys"
+    "revoked": "Recently revoked keys"
   },
   "key": {
     "label": "{{purpose}} for {{server}}",

@@ -186,11 +186,17 @@ func TestABusyEnvironmentDoesntHoldUpRevocation(t *testing.T) {
 	k.b.call("POST", k.environment(k.first)+"/backup-policies", k.policy(k.first, "Managed", d.Id), 201, &policy)
 	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/revoke", nil, 204, nil)
 	k.run(t, keySweep{})
-	k.renew(t, d)
+	minted := k.renew(t, d)
 
 	// The environment runs a check, so the install the next pass queues has to wait, while a
-	// found user the owner revoked is due.
+	// found user the owner revoked is due. The key's installs are held back until then; one a
+	// sweep queued before that fails, so the next try is the one the busy environment refuses.
+	k.exec(t, `UPDATE backup_storage_keys SET install_next_at=now() + interval '1 hour' WHERE id=$1`, minted.Id)
+	if status, c := k.poll(t, k.first); status == 200 && c != nil {
+		agentRequest(t, k.f.server.Client(), k.f.server.URL, "/agent/v1/report", k.first.token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Steps: []api.ExecutionStep{}}, 204, nil)
+	}
 	k.b.call("POST", k.environment(k.first)+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "check", RequestKey: uuid.New()}, 202, nil)
+	k.exec(t, `UPDATE backup_storage_keys SET install_next_at=NULL WHERE id=$1`, minted.Id)
 	path := awskeys.Path(k.ws.String())
 	stranger := "astilba-" + uuid.NewString()
 	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")

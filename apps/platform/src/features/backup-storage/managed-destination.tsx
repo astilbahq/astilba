@@ -98,9 +98,7 @@ export function ManagedDestination({
       )}
       {!!revoked.length && (
         <details>
-          <summary>
-            {t(($) => $.destination.revoked, { count: revoked.length })}
-          </summary>
+          <summary>{t(($) => $.destination.revoked)}</summary>
           <ul className={st.items}>{revoked.map(keyItem)}</ul>
         </details>
       )}

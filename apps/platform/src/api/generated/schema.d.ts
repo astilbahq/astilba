@@ -4867,7 +4867,7 @@ export interface components {
              * @description The storage account a managed destination's keys are minted from, or null.
              */
             accountId: string | null;
-            /** @description A managed destination's minted keys, newest first: those not yet revoked, then the most recently revoked, up to 20. Empty for any other. */
+            /** @description A managed destination's minted keys: those not yet revoked, newest first, then the most recently revoked, up to 20 in all. Empty for any other. */
             keys: components["schemas"]["BackupStorageKey"][];
             /** @description Whether this is a managed destination none of whose keys has ever been active: its key is still being made, or making it failed and the destination goes once that key is revoked. No policy can use it. */
             placeholder: boolean;

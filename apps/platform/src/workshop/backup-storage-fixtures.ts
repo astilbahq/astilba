@@ -180,9 +180,12 @@ export function backupStorageHandlers({
             accounts.map((a) => ({
               ...a,
               peers: [...a.peers, ...addedPeers],
-              foundUsers: a.foundUsers.map((u) =>
-                revokedUsers.has(u.userName) ? { ...u, revoking: true } : u,
-              ),
+              // As management does, a found user is a peer's as soon as the peer is added.
+              foundUsers: a.foundUsers.map((u) => ({
+                ...u,
+                peer: u.peer || addedPeers.has(u.installationId),
+                revoking: u.revoking || revokedUsers.has(u.userName),
+              })),
             })),
           ),
     ),

@@ -460,7 +460,7 @@ export default interface Resources {
       "retry": "Retry now",
       "retryRequested": "Management is trying again.",
       "retrying": "Retrying…",
-      "revoked": "{{count}} revoked key" | "{{count}} revoked keys",
+      "revoked": "Recently revoked keys",
       "server": "Keys for {{server}}",
       "unknownServer": "server {{id}}"
     },

@@ -9999,8 +9999,8 @@
           type: array
           maxItems: 20
           description: >-
-            A managed destination's minted keys, newest first: those not yet revoked, then the most
-            recently revoked, up to 20. Empty for any other.
+            A managed destination's minted keys: those not yet revoked, newest first, then the most
+            recently revoked, up to 20 in all. Empty for any other.
           items: {$ref: '#/components/schemas/BackupStorageKey'}
         placeholder:
           type: boolean
