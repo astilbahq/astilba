@@ -9,11 +9,8 @@ import { Input } from "../components/input";
 import { Label } from "../components/label";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
-import {
-  ExposedDestinationNotice,
-  RevokedServerHistory,
-  RevokedServerRecovery,
-} from "./backup-recovery";
+import { ExposedDestinationNotice } from "./backup-exposure";
+import { RevokedServerHistory, RevokedServerRecovery } from "./backup-recovery";
 import {
   ScheduleFields,
   nextRunDescription,
@@ -36,7 +33,8 @@ export function PolicyStatus({
   path: EnvironmentPath;
   policy: Schema["BackupPolicy"];
   server?: Schema["Server"];
-  exposed: boolean;
+  /** Whose keys a revoked server holds, when it holds the policy's destination's. */
+  exposed?: "owner" | "managed";
   owner: boolean;
   revision: Schema["Revision"];
   dirty: boolean;
@@ -112,7 +110,7 @@ export function PolicyStatus({
           "None"
         )}
       </p>
-      {exposed && <ExposedDestinationNotice />}
+      {exposed && <ExposedDestinationNotice managed={exposed === "managed"} />}
       <ErrorNotice error={action.error ?? status.error} />
       {message && <p role="status">{message}</p>}
       {manage && (

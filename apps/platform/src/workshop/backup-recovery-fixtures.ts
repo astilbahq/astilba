@@ -177,6 +177,9 @@ export function revokedServerBackupHandlers({
           serverId: revoked,
           shared: false,
           exposed: true,
+          accountId: null,
+          keys: [],
+          remintError: null,
           policies: [
             {
               id: policyId,

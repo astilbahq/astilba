@@ -36,6 +36,11 @@ UPDATE backup_storage_accounts SET checked_at=NULL WHERE workspace_id = @workspa
 UPDATE backup_storage_accounts SET check_error = sqlc.narg(check_error),report = @report
 WHERE workspace_id = @workspace_id AND id = @id AND generation = @generation;
 
+-- name: RecordBackupStorageFoundRevoking :exec
+-- The latest check's report, with a found user the owner has since revoked shown as revoking.
+UPDATE backup_storage_accounts SET report = @report
+WHERE workspace_id = @workspace_id AND id = @id;
+
 -- name: InsertBackupStorageKey :exec
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,destination_id,holder_server_id,purpose,scope,user_name,recovery_request,recovery_policy_id,recovery_snapshot)
 VALUES(@id,@workspace_id,@account_id,@destination_id,@holder_server_id,@purpose,@scope,@user_name,sqlc.narg(recovery_request),sqlc.narg(recovery_policy_id),sqlc.narg(recovery_snapshot));

@@ -578,23 +578,3 @@ export function RevokedServerHistory() {
   const { t } = useTranslation("backup-recovery");
   return <p className={s.muted}>{t(($) => $.revoked.history)}</p>;
 }
-
-/** A persistent warning on a policy whose destination's keys a revoked server was given. */
-export function ExposedDestinationNotice() {
-  const { t } = useTranslation("backup-recovery");
-  return <p className={s.notice}>{t(($) => $.exposed.policy)}</p>;
-}
-
-/** The warning and acknowledgement for creating a policy on an exposed destination. */
-export function ExposureAcknowledgement() {
-  const { t } = useTranslation("backup-recovery");
-  return (
-    <>
-      <p className={s.notice}>{t(($) => $.exposed.warning)}</p>
-      <Label className={r.choice}>
-        <Checkbox name="exposureAcknowledged" required />
-        {t(($) => $.exposed.acknowledge)}
-      </Label>
-    </>
-  );
-}

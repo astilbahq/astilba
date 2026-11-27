@@ -972,6 +972,23 @@ func (q *Queries) RecordBackupStorageAccountCheck(ctx context.Context, arg Recor
 	return err
 }
 
+const recordBackupStorageFoundRevoking = `-- name: RecordBackupStorageFoundRevoking :exec
+UPDATE backup_storage_accounts SET report = $1
+WHERE workspace_id = $2 AND id = $3
+`
+
+type RecordBackupStorageFoundRevokingParams struct {
+	Report      []byte    `json:"report"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// The latest check's report, with a found user the owner has since revoked shown as revoking.
+func (q *Queries) RecordBackupStorageFoundRevoking(ctx context.Context, arg RecordBackupStorageFoundRevokingParams) error {
+	_, err := q.db.Exec(ctx, recordBackupStorageFoundRevoking, arg.Report, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const recordBackupStorageKeyFailure = `-- name: RecordBackupStorageKeyFailure :exec
 UPDATE backup_storage_keys SET attempts=attempts+1,last_error = $1,
     next_attempt_at=clock_timestamp() + LEAST(interval '15 minutes', interval '30 seconds' * power(2, LEAST(attempts,10)))

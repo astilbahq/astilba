@@ -1,5 +1,19 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useId, useRef, useState } from "react";
+import { backupDestinationsOptions } from "../api/backups";
 import { client, result, type Schema } from "../api/client";
+import {
+  AlertDialogActions,
+  AlertDialogClose,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogRoot,
+  AlertDialogTitle,
+} from "../components/alert-dialog";
 import { Button } from "../components/button";
+import { Checkbox } from "../components/checkbox";
+import { Label } from "../components/label";
+import { Anchor } from "../components/link";
 import * as s from "../styles";
 
 const protection: Record<string, string> = {
@@ -116,27 +130,13 @@ export function ServerCredentials({
         >
           Rotate key now
         </Button>
-        <Button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            if (
-              confirm(
-                `Revoke ${server.name}? Its credential stops working and its unfinished work ends. It may keep running what it was given and it keeps its secrets, registry access and TLS keys, so rotate them. Renewing it later doesn't undo this. ${leak} A host that held a reservation for work that has since ended may only come back through offline recovery, which isn't established.`,
-              )
-            )
-              run(() =>
-                result(
-                  client.POST(
-                    "/api/v1/workspaces/{workspaceId}/servers/{serverId}/revoke",
-                    { params: { path } },
-                  ),
-                ),
-              );
-          }}
-        >
-          Revoke connection
-        </Button>
+        <RevokeServer
+          workspaceId={workspaceId}
+          server={server}
+          busy={busy}
+          run={run}
+          leak={leak}
+        />
         <Button
           type="button"
           disabled={busy || server.transferRequired}
@@ -177,6 +177,135 @@ export function ServerCredentials({
           Remove from private networks
         </Button>
       </div>
+    </>
+  );
+}
+
+const transferGuide =
+  "https://github.com/astilbahq/astilba/blob/main/docs/hosting.md#transfer-a-workspace-between-installations";
+
+// Revoking a server ends its connection, after the owner confirms what it keeps. A server holding
+// an active key management minted for a managed backup destination can hand its keys over to a
+// workspace transfer instead of having them revoked at AWS, so its installed schedules keep
+// backing up once it joins the other installation (docs/backups.md#managed-keys).
+function RevokeServer({
+  workspaceId,
+  server,
+  busy,
+  run,
+  leak,
+}: {
+  workspaceId: string;
+  server: Schema["Server"];
+  busy: boolean;
+  run: (fn: () => Promise<unknown>) => void;
+  leak: string;
+}) {
+  const queries = useQueryClient();
+  const destinations = useQuery(backupDestinationsOptions(workspaceId));
+  const managed = !!destinations.data?.some(
+    (d) =>
+      d.accountId &&
+      d.keys.some(
+        (k) =>
+          k.purpose === "server" &&
+          k.state === "active" &&
+          k.serverId === server.id,
+      ),
+  );
+  const [open, setOpen] = useState(false);
+  const [handOver, setHandOver] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const explanation = useId();
+  return (
+    <>
+      <Button
+        ref={trigger}
+        type="button"
+        disabled={busy}
+        onClick={() => {
+          setHandOver(false);
+          setOpen(true);
+        }}
+      >
+        Revoke connection
+      </Button>
+      <AlertDialogRoot open={open} onOpenChange={setOpen}>
+        <AlertDialogContent finalFocus={trigger}>
+          <AlertDialogTitle>Revoke {server.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Its credential stops working and its unfinished work ends. It may
+            keep running what it was given and it keeps its secrets, registry
+            access and TLS keys, so rotate them. Renewing it later doesn’t undo
+            this. {leak} A host that held a reservation for work that has since
+            ended may only come back through offline recovery, which isn’t
+            established.
+          </AlertDialogDescription>
+          {destinations.isError && (
+            <p className={s.notice}>
+              Whether this server holds backup storage keys management made
+              couldn’t be checked. If it does, revoking it revokes them at AWS.
+              If you are moving this workspace to another installation, cancel
+              and reload the page first.
+            </p>
+          )}
+          {managed && (
+            <>
+              <p id={explanation}>
+                This server holds backup storage keys management made. Revoking
+                it revokes them at AWS, so its installed schedules’ backups
+                fail. If you are moving this workspace to another installation,
+                hand them over instead: they keep working for the transferred
+                server, and the destinations stay unexposed.{" "}
+                <Anchor href={transferGuide} target="_blank" rel="noreferrer">
+                  Transferring a workspace
+                </Anchor>
+              </p>
+              <Label>
+                <Checkbox
+                  checked={handOver}
+                  onChange={(e) => setHandOver(e.target.checked)}
+                  aria-describedby={explanation}
+                />
+                Hand its storage keys over to a workspace transfer
+              </Label>
+            </>
+          )}
+          <AlertDialogActions>
+            <AlertDialogClose render={<Button>Cancel</Button>} />
+            <Button
+              type="button"
+              variant="danger"
+              // Whether the keys can be handed over is known once the destinations load.
+              disabled={destinations.isPending}
+              onClick={() => {
+                setOpen(false);
+                // Only a server that holds managed keys can hand them over.
+                const transfer = managed && handOver;
+                run(async () => {
+                  await result(
+                    client.POST(
+                      "/api/v1/workspaces/{workspaceId}/servers/{serverId}/revoke",
+                      {
+                        params: { path: { workspaceId, serverId: server.id } },
+                        ...(transfer
+                          ? { body: { handOverStorageKeys: true } }
+                          : {}),
+                      },
+                    ),
+                  );
+                  // Revoking latches its keys, or hands them over, and can expose destinations.
+                  await queries.invalidateQueries({
+                    queryKey: backupDestinationsOptions(workspaceId).queryKey,
+                  });
+                });
+              }}
+            >
+              Revoke connection
+            </Button>
+          </AlertDialogActions>
+        </AlertDialogContent>
+      </AlertDialogRoot>
     </>
   );
 }

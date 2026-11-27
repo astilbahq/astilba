@@ -327,6 +327,16 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 		if err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: uuid.New(), WorkspaceID: ws, AccountID: account, UserName: user, FoundTags: tags}); err != nil {
 			return err
 		}
+		// The report shows the user as revoking until the next check, which no longer finds it
+		// once AWS confirms.
+		report.Found[j].Revoking = true
+		raw, err := stablejson.Marshal(report)
+		if err != nil {
+			return err
+		}
+		if err = q.RecordBackupStorageFoundRevoking(ctx, db.RecordBackupStorageFoundRevokingParams{WorkspaceID: ws, ID: account, Report: raw}); err != nil {
+			return err
+		}
 		return s.queueKeySweep(ctx, tx)
 	})
 }

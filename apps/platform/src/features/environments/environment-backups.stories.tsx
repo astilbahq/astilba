@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
+import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   ShellPreview,
@@ -12,6 +13,7 @@ import {
   resetRevokedServerBackups,
   revokedServerBackupHandlers,
 } from "../../workshop/backup-recovery-fixtures";
+import { account } from "../../workshop/backup-storage-fixtures";
 import { scenario } from "../../workshop/fixtures";
 
 const meta = {
@@ -182,5 +184,45 @@ export const AnotherServersDestination: Story = {
       name: /^Offsite bucket — keys belong to edge-1/,
     });
     await expect(option).toBeDisabled();
+  },
+};
+
+// With a storage account, a destination can have management make its server's key: the form then
+// asks for the account and an AWS region, and for no endpoint or keys.
+export const ManagedDestinationForm: Story = {
+  parameters: scenario(
+    session,
+    http.get("/api/v1/workspaces/:workspaceId/backup-storage-accounts", () =>
+      HttpResponse.json([account]),
+    ),
+    ...revokedServerBackupHandlers(),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("tab", { name: "Deployments" }),
+    );
+    await userEvent.click(
+      await canvas.findByText("Add a reusable backup destination"),
+    );
+    const form = within(
+      await canvas.findByRole("form", { name: "Add backup destination" }),
+    );
+    await userEvent.selectOptions(
+      form.getByLabelText("Storage type"),
+      await form.findByRole("option", {
+        name: "AWS S3, with keys management makes",
+      }),
+    );
+    await expect(
+      form.getByLabelText("Storage account the key is made from"),
+    ).toHaveValue(account.id);
+    await expect(
+      form.getByLabelText(/^AWS region, such as eu-west-2/),
+    ).toBeVisible();
+    await expect(form.queryByLabelText("S3 HTTPS origin")).toBeNull();
+    await expect(form.queryByLabelText("S3 access key")).toBeNull();
+    await expect(form.queryByLabelText("S3 secret key")).toBeNull();
   },
 };

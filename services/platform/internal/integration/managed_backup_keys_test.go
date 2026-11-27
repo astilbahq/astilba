@@ -368,6 +368,12 @@ func TestTheAccountCheckReportsUsersManagementDidntMake(t *testing.T) {
 		t.Fatal("the check raised no alert", err)
 	}
 	k.b.call("POST", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/found-users/"+stranger+"/revoke", nil, 204, nil)
+	k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &accounts)
+	for _, u := range accounts[0].FoundUsers {
+		if u.UserName == stranger && !u.Revoking {
+			t.Fatal("the revoked found user isn't shown as revoking")
+		}
+	}
 	k.b.call("POST", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/found-users/someone-else/revoke", nil, 404, nil)
 	k.run(t, keySweep{})
 	for _, u := range k.aws.Users(path) {
