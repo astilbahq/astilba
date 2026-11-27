@@ -229,42 +229,48 @@ RESET ROLE;`); err != nil {
 	for i := 0; i < 300 && locked(); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
-	// Before the owner model the database user is a superuser, so once the rebuild has listed the
-	// databases it can rename one and copy template1 into a new one. Both are still rebuilt.
+	// Before the owner model the database user is a superuser, so during the rebuild it can copy
+	// template1 into a new database, and move a database's name to another just after the rebuild
+	// read it. The copy and the moved database are both still rebuilt, the moved one under its new
+	// name, and nothing meant for it runs in the database that took its name.
+	query := func(statements ...string) {
+		t.Helper()
+		for _, statement := range statements {
+			if _, err := e.pgQuery(ctx, pgClient{container: updated}, a, statement); err != nil {
+				t.Fatal(statement, err)
+			}
+		}
+	}
 	copied := a
 	copiedDatabase := *a.Postgres
 	copiedDatabase.Database = "copied"
 	copied.Postgres = &copiedDatabase
 	var copiedFiles, movedFiles map[string]string
+	moved := false
 	e.Point = func(point string) {
-		if point != "postgres-reindex-listed" || copiedFiles != nil {
-			return
+		switch {
+		case point == "postgres-reindex-listed" && copiedFiles == nil:
+			movedFiles = files(updated, other)
+			query(`CREATE DATABASE copied TEMPLATE template1`, `CREATE DATABASE decoy TEMPLATE template0`)
+			copiedFiles = files(updated, copied)
+		case point == "postgres-reindex-read a=b" && !moved:
+			moved = true
+			query(`ALTER DATABASE "a=b" RENAME TO "a=b moved"`, `ALTER DATABASE decoy RENAME TO "a=b"`)
 		}
-		movedFiles = files(updated, other)
-		for _, statement := range []string{`ALTER DATABASE "a=b" RENAME TO "a=b moved"`, `CREATE DATABASE copied TEMPLATE template1`} {
-			if _, err := e.pgQuery(ctx, pgClient{container: updated}, a, statement); err != nil {
-				t.Fatal(statement, err)
-			}
-		}
-		copiedFiles = files(updated, copied)
 	}
 	note, err = e.reindexPostgres(ctx, after, begin)
 	e.Point = nil
-	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 || copiedFiles == nil {
+	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 || !moved {
 		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
 	}
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `ALTER DATABASE "a=b moved" RENAME TO "a=b"`); err != nil {
-		t.Fatal(err)
-	}
+	query(`ALTER DATABASE "a=b" RENAME TO decoy`, `ALTER DATABASE "a=b moved" RENAME TO "a=b"`)
 	if got := files(updated, other); got["unbounded"] == movedFiles["unbounded"] || got["plain"] != movedFiles["plain"] {
 		t.Errorf("a database renamed during the rebuild was not rebuilt: %v, was %v", got, movedFiles)
 	}
 	if got := files(updated, copied); got["unbounded"] == copiedFiles["unbounded"] || got["plain"] != copiedFiles["plain"] {
 		t.Errorf("a database copied from template1 during the rebuild was not rebuilt: %v, was %v", got, copiedFiles)
 	}
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE copied`); err != nil {
-		t.Fatal(err)
-	}
+	query(`DROP DATABASE copied`, `DROP DATABASE decoy`)
 	for name, application := range databases {
 		got, was := files(updated, application), initial[name]
 		if _, left := got["unbounded_ccnew"]; left {

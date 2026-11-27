@@ -16,7 +16,7 @@ Creating a plan changes no running service. Starting it stops every service in t
 | Source storage | Owned local Docker volume at `/var/lib/postgresql/data` |
 | Target storage | Fresh owned local Docker volume at `/var/lib/postgresql`, with data at `/var/lib/postgresql/18/docker` |
 | Configuration | One managed database in a visual deployment; Compose remains manual |
-| Database | One application database, standard tablespaces; no custom database settings, ACL, owner, comments or connection limits. The `postgres` maintenance database and `template1` must be as `initdb` made them: no user objects, large objects or settings, `initdb`'s grants, owner, comment and connection limit, and `template1` still a template that accepts connections. Before the owner model the database user is a superuser and can change either |
+| Database | One application database, standard tablespaces; no custom database settings, ACL, owner, comments or connection limits. The `postgres` maintenance database and `template1` must hold nothing `initdb` didn't create, in any schema, PostgreSQL's own included: no objects, large objects or settings. Each keeps `initdb`'s grants, owner, comment and connection limit, and `template1` stays a template that accepts connections. Before the owner model the database user is a superuser and can change either |
 | Extensions | `plpgsql` 1.0 and `hstore` 1.8; no other extensions |
 | Roles | The managed owner plus the backup recipe's unprivileged NOLOGIN roles; no memberships, per-role settings or additional login roles |
 | Replication | No replication slots, subscriptions or prepared transactions |

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -63,9 +64,32 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 				return errors.New(called + " contains user objects")
 			}
 		}
+		// The dump above leaves out PostgreSQL's own schemas, which a superuser can add to too, so
+		// every catalog row with an OID initdb didn't give is counted, whatever its class. The
+		// catalogs are listed from the catalog itself, so a release's new ones are counted as well.
+		// inline-sql: reads a managed database's catalog, not the platform database.
+		raw, err = e.pgQuery(ctx, db, admin, "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c WHERE c.relnamespace = 'pg_catalog'::regnamespace AND c.relkind = 'r' AND NOT c.relisshared AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'oid' AND NOT a.attisdropped)")
+		if err != nil {
+			return errors.New("cannot inventory " + called)
+		}
+		var rows []string
+		for name := range strings.SplitSeq(strings.TrimSpace(string(raw)), ",") {
+			if !catalogName.MatchString(name) {
+				return errors.New("cannot inventory " + called)
+			}
+			rows = append(rows, "SELECT oid FROM pg_catalog."+name+" WHERE oid >= 16384")
+		}
+		// inline-sql: reads a managed database's catalog, not the platform database.
+		raw, err = e.pgQuery(ctx, db, admin, "SELECT count(*) FROM ("+strings.Join(rows, " UNION ALL ")+") o")
+		if err != nil || strings.TrimSpace(string(raw)) != "0" {
+			return errors.New(called + " contains user objects")
+		}
 	}
 	return nil
 }
+
+// catalogName is a PostgreSQL system catalog's name, put into a query only once it matches.
+var catalogName = regexp.MustCompile(`^pg_[a-z_]+$`)
 
 func (e *Engine) knownUpgradeWriters(ctx context.Context, db pgClient, a domain.Application, p deployment.Plan) error {
 	allowed := map[string]bool{}

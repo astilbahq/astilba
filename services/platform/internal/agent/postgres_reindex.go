@@ -162,6 +162,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	// rename keeps: invalid after a DROP DATABASE interrupted part-way, closed, or open. found is
 	// false once it is dropped.
 	current := func(oid string) (state, name string, found bool, err error) {
+		// The oid goes into each session's SQL as text, so only a number is taken.
 		if _, err = strconv.ParseUint(oid, 10, 32); err != nil {
 			return "", "", false, errors.New("the listing returned something other than a database oid")
 		}
@@ -252,6 +253,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			case state == "closed":
 				left.closed = append(left.closed, name)
 			default:
+				e.point("postgres-reindex-read " + name)
 				// psql reads its -d value as a connection string when it holds '='; quote it as one.
 				database := reindexDatabase{connection: "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(name) + "'", oid: oid}
 				skipped, err := rebuild(database)

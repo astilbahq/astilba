@@ -248,6 +248,9 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 						{`CREATE COLLATION public.application_order FROM "C"`, "DROP COLLATION public.application_order"},
 						{"SELECT lo_from_bytea(16500000, 'retained data'::bytea)", "SELECT lo_unlink(16500000)"},
 						{"CREATE SCHEMA pgcustom; CREATE TABLE pgcustom.records(id integer)", "DROP SCHEMA pgcustom CASCADE"},
+						// A dump leaves out PostgreSQL's own schemas, which a superuser can add to too.
+						{"CREATE TABLE information_schema.kept(id integer)", "DROP TABLE information_schema.kept"},
+						{"CREATE FUNCTION pg_catalog.kept() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "DROP FUNCTION pg_catalog.kept()"},
 					} {
 						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.create); err != nil {
 							t.Fatal(err)
