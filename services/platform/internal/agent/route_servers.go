@@ -24,7 +24,8 @@ import (
 // PoolHealthInterval after the probe that failed.
 const routeServerWait = 30 * time.Second
 
-// maxProbeOutput is more than a failed probe writes, which is one line of wget's.
+// maxProbeOutput is more than a round of probes writes: the number of the probe that
+// failed, and a few lines of wget's about it.
 const maxProbeOutput = 4 << 10
 
 // routeServersUnready is a published route that the proxy does not route to every server
@@ -125,7 +126,7 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 // file, and first probes it PoolHealthInterval later, so until then its report vouches
 // for nothing: one failed probe would then take the server out for another interval, and
 // a pool with no server left answers 503. So each server must pass the proxy's probe,
-// sent from inside the proxy, and the proxy must still report it up once any probe it
+// sent over the proxy's network, and the proxy must still report it up once any probe it
 // started before that has ended. Only unit's pools are waited for: another environment's
 // server, down or not, must not stop this publish.
 func (e *Engine) awaitRouteServers(ctx context.Context, s routeSnapshot, raw []byte, unit string) error {
@@ -169,41 +170,36 @@ func (e *Engine) awaitRouteServers(ctx context.Context, s routeSnapshot, raw []b
 	}
 }
 
-// probeScript sends the probe $2 once, reading no body, and kills it after $1 seconds:
-// wget's own timeout only bounds each read, and an exec outlives a closed stream. The
-// exec's own shell waits for wget, because the proxy reaps no process it did not start,
-// as one left by busybox's timeout would be. The URL is an argument, never part of the
-// script.
-const probeScript = `wget -q --spider -T "$1" "$2" & probe=$!; ticks=0; while kill -0 "$probe" 2>/dev/null; do if [ "$ticks" -ge "$(($1 * 50))" ]; then kill -9 "$probe"; break; fi; sleep 0.02; ticks=$((ticks + 1)); done; wait "$probe"`
-
-// probeRouteServers sends each server the proxy's probe from inside the proxy, so that it
-// takes the proxy's path to the server, and names the first that fails. Like the proxy's,
-// a probe asks once and ends at PoolHealthTimeout. Each distinct probe is sent once a
-// round, since routes to one application share its servers.
+// probeRouteServers sends each server the proxy's probe from the proxy's network
+// namespace, so that it takes the proxy's path to the server, and names the first that
+// fails. Like the proxy's, a probe asks once and ends at PoolHealthTimeout. Each distinct
+// probe is sent once a round, since routes to one application share its servers.
 //
 // Why a probe failed stays in the agent's log. The answer can come from wherever the
 // server or a redirect sends the probe, which is in the proxy's networks, so the error,
 // which reaches the deployment's notes, names only the route and server.
 func (e *Engine) probeRouteServers(ctx context.Context, pools []routePool) error {
-	timeout := strconv.Itoa(int(deployment.PoolHealthTimeout / time.Second))
-	passed := map[string]bool{}
+	type target struct {
+		pool   routePool
+		server poolServer
+	}
+	probes, targets, seen := []string{}, []target{}, map[string]bool{}
 	for _, pool := range pools {
 		for _, server := range pool.servers {
-			if passed[server.probe] {
-				continue
+			if !seen[server.probe] {
+				seen[server.probe] = true
+				probes = append(probes, server.probe)
+				targets = append(targets, target{pool, server})
 			}
-			_, stderr, ok, err := e.proxyExec(ctx, []string{"sh", "-c", probeScript, "probe", timeout, server.probe}, maxProbeOutput)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				slog.Warn("route server failed the proxy's health check", "route", pool.domain, "server", server.url, "reason", probeReason(stderr))
-				return fmt.Errorf("route %s: server %s failed the proxy's health check", pool.domain, server.url)
-			}
-			passed[server.probe] = true
 		}
 	}
-	return nil
+	failed, stderr, err := e.probeRound(ctx, probes)
+	if err != nil || failed < 0 {
+		return err
+	}
+	t := targets[failed]
+	slog.Warn("route server failed the proxy's health check", "route", t.pool.domain, "server", t.server.url, "reason", probeReason(stderr))
+	return fmt.Errorf("route %s: server %s failed the proxy's health check", t.pool.domain, t.server.url)
 }
 
 // routeServersUp says whether the proxy reports every server of pools up.

@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -66,6 +67,12 @@ func (h isolationHost) poolPlan(u poolUnit) deployment.Plan {
 	return p
 }
 
+// run runs script in the replica id and waits for it.
+func (h isolationHost) run(id, script string) {
+	h.t.Helper()
+	h.exec(id, []string{"sh", "-c", script})
+}
+
 // healthy makes every replica of u answer the proxy's probe, or fail it.
 func (h isolationHost) healthy(u poolUnit, up bool) {
 	cmd := []string{"rm", "-f", "/www/health"}
@@ -73,25 +80,30 @@ func (h isolationHost) healthy(u poolUnit, up bool) {
 		cmd = []string{"touch", "/www/health"}
 	}
 	for _, id := range u.replicas {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		exec, err := h.f.docker.ExecCreate(ctx, id, client.ExecCreateOptions{Cmd: cmd})
-		if err == nil {
-			_, err = h.f.docker.ExecStart(ctx, exec.ID, client.ExecStartOptions{})
-		}
-		for err == nil {
-			status, inspectErr := h.f.docker.ExecInspect(ctx, exec.ID, client.ExecInspectOptions{})
-			if err = inspectErr; err != nil || !status.Running {
-				if err == nil && status.ExitCode != 0 {
-					err = errors.New(strings.Join(cmd, " ") + " failed")
-				}
-				break
+		h.exec(id, cmd)
+	}
+}
+
+// exec runs cmd in the container id and waits for it.
+func (h isolationHost) exec(id string, cmd []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	exec, err := h.f.docker.ExecCreate(ctx, id, client.ExecCreateOptions{Cmd: cmd})
+	if err == nil {
+		_, err = h.f.docker.ExecStart(ctx, exec.ID, client.ExecStartOptions{})
+	}
+	for err == nil {
+		status, inspectErr := h.f.docker.ExecInspect(ctx, exec.ID, client.ExecInspectOptions{})
+		if err = inspectErr; err != nil || !status.Running {
+			if err == nil && status.ExitCode != 0 {
+				err = errors.New(strings.Join(cmd, " ") + " failed")
 			}
-			time.Sleep(50 * time.Millisecond)
+			break
 		}
-		cancel()
-		if err != nil {
-			h.t.Error(err)
-		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		h.t.Error(err)
 	}
 }
 
@@ -178,14 +190,49 @@ func TestNativeUnreachablePoolFailsItsPublish(t *testing.T) {
 	if got, err := h.f.request(proxyName, u.domain); err == nil {
 		t.Fatalf("the failed route answered %q", got)
 	}
-	// The proxy reaps no process it did not start, so every probe must end with its exec.
-	processes, _, ok, err := h.e.proxyExec(t.Context(), []string{"ps", "-o", "stat,comm"}, 16<<10)
-	if err != nil || !ok {
-		t.Fatalf("listing the proxy's processes: %v", err)
+	h.probesLeftNothing()
+}
+
+// probesLeftNothing fails unless every probe ended with its round: no probe container
+// remains, and the proxy, which reaps no process it did not start, runs only itself.
+func (h isolationHost) probesLeftNothing() {
+	h.t.Helper()
+	if _, err := h.f.docker.ContainerInspect(context.Background(), routeProbeName, client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+		h.t.Fatalf("a route probe container remains: %v", err)
 	}
-	for _, line := range strings.Split(string(processes), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "Z") {
-			t.Fatalf("the probes left processes in the proxy:\n%s", processes)
+	processes, _, ok, err := h.e.proxyExec(context.Background(), []string{"ps", "-o", "stat,comm"}, 16<<10)
+	if err != nil || !ok {
+		h.t.Fatalf("listing the proxy's processes: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(processes)), "\n")[1:] {
+		if fields := strings.Fields(line); len(fields) < 2 || (fields[1] != "traefik" && fields[1] != "ps") {
+			h.t.Fatalf("the probes left processes in the proxy:\n%s", processes)
 		}
 	}
+}
+
+// A probe that follows a redirect to https starts a TLS helper that outlives wget, and a
+// server that holds the handshake keeps it running. Neither may outlive the probe's round,
+// whether the round ends at the probe's bound or because the publish gave up first.
+func TestNativeRedirectedProbeLeavesNothing(t *testing.T) {
+	h := newIsolationHost(t)
+	u := h.poolUnit("9", "pool")
+	h.removeProxy()
+	if err := h.e.publishVisualRoutes(t.Context(), h.poolPlan(u)); err != nil {
+		t.Fatal(err)
+	}
+	host := deployment.BackendHost(u.id, deployment.ServiceName(u.instances[0]))
+	h.run(u.replicas[0], `mkdir -p /www/cgi-bin && printf '#!/bin/sh\nprintf "Status: 302 Found\\r\\nLocation: https://`+host+`:8443/\\r\\n\\r\\n"\n' > /www/cgi-bin/redirect && chmod +x /www/cgi-bin/redirect && (nc -lk -p 8443 -e sleep 30 >/dev/null 2>&1 &)`)
+	probe := "http://" + host + ":8080/cgi-bin/redirect"
+	failed, _, err := h.e.probeRound(t.Context(), []string{probe})
+	if err != nil || failed != 0 {
+		t.Fatalf("the held probe gave %d, %v", failed, err)
+	}
+	h.probesLeftNothing()
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	if _, _, err = h.e.probeRound(ctx, []string{probe}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the cancelled round gave %v", err)
+	}
+	h.probesLeftNothing()
 }
