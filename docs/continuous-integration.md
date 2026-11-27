@@ -105,8 +105,8 @@ To turn it back on, make both changes in one save, then land `strict: false`.
 
 ## Native lanes
 
-Each architecture runs five lanes, each on its own disposable runner VM. The
-Native verification gate requires all ten jobs to pass:
+Each architecture runs six lanes, each on its own disposable runner VM. The
+Native verification gate requires all twelve jobs to pass:
 
 | Lane | Verification |
 | --- | --- |
@@ -114,7 +114,8 @@ Native verification gate requires all ten jobs to pass:
 | `crosshost` | Cross-host deployment and takeover; coordinated maintenance and backups, with their reservations, writer health and late phases; recovery from a drained host |
 | `recovery` | Agent service enrollment, restart and signed update; a troubleshooting session end to end; cross-host older-backup and upgrade recovery |
 | `visual` | Visual deployment, including catalog, backup and restore |
-| `upgrade` | Application releases and PostgreSQL major upgrades, then an unrelated unit's routes and data, scheduled jobs, later deployments, controller transfer and volume deletion on that host |
+| `upgrade` | Application releases and the supported PostgreSQL major upgrades, then an unrelated unit's routes and data, scheduled jobs, later deployments, controller transfer and volume deletion on that host |
+| `upgrade-faults` | PostgreSQL major upgrades with the agent restarted at each fault point of prepare and cutover, then the same checks of the unrelated unit and later work as `upgrade` |
 
 Every lane repeats the same fresh production bootstrap, pinned runtime install and
 image pulls, so each suite starts from the same prepared host. The Makefile's
@@ -123,8 +124,9 @@ sequence on a local disposable host. CI no longer runs suites from different lan
 on one VM, so it cannot see residue from one lane break another. For example, an
 ingress that survives the preview test's cleanup no longer trips the visual test's
 absent-ingress guard in CI; the sequential target still shows it. Scheduled jobs,
-controller transfer and volume deletion run in both `visual` and `upgrade`, because
-they read finished upgrade records.
+controller transfer and volume deletion run in `visual` and in each upgrade test,
+because they read finished upgrade records. Each upgrade test prepares its own host
+with the unrelated unit, so the upgrade tests can move between lanes.
 
 `-run` lists select the native tests, so `make check-ci` fails when a
 `func TestNative*` that Go builds for `linux/amd64` or `linux/arm64` under
@@ -734,7 +736,8 @@ Do not temporarily remove protection.
 The host jobs cache downloaded Go modules and compilation outputs under the
 runner's temporary directory. The key includes the operating system,
 architecture, lane, pinned bootstrap/toolchain configuration, module files and Go
-sources. A matching toolchain cache can seed a changed source tree; Go checks
+sources. The `upgrade` and `upgrade-faults` lanes compile the same tests, so they
+share one entry. A matching toolchain cache can seed a changed source tree; Go checks
 build inputs before reuse. Test commands retain `-race -count=1`.
 
 A separate step fetches the Go toolchain and modules before any test step, making
@@ -810,7 +813,7 @@ operator gives `--use-host-package-sources`.
 | --- | --- |
 | `core`, `visual` | Removes nftables, blocks the runner's Ubuntu archives and Canonical's in `/etc/hosts`, with the targets of their SRV records, which apt also follows, and must install nftables from a fallback archive. |
 | `recovery` | Removes nftables and must install it from the runner's own sources, while the test holds dpkg's lock, as a fresh VM's unattended-upgrades does, until 15 seconds after the bootstrap announces an install. Ubuntu's apt waits without a word, so an install that didn't wait would fail in that time. |
-| `crosshost`, `upgrade` | Leave the runner as it is, which needs no Ubuntu package. |
+| `crosshost`, `upgrade`, `upgrade-faults` | Leave the runner as it is, which needs no Ubuntu package. |
 
 A runner already has every other Ubuntu package the bootstrap installs. If this step already moved the runner to a mirror because Canonical's archive is down, the blocked lanes install from the runner's sources instead, with a warning annotation, because blocking that mirror too would leave too few to fall back to. The `recovery` lane warns in the same way if it had to fall back.
 
