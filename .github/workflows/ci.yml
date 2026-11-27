@@ -93,10 +93,11 @@ jobs:
       - name: Select native Go cache
         run: |
           printf 'GOCACHE=%s/astilba-native-go/build\nGOMODCACHE=%s/astilba-native-go/mod\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Cache native Go compilation
+      - name: Restore native Go compilation
+        id: native-go-cache
         # The two upgrade lanes compile the same race-built ./internal/agent tests, so they
         # share one entry rather than save the same build twice.
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/astilba-native-go
           key: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane == 'upgrade-faults' && 'upgrade' || matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
@@ -165,6 +166,15 @@ jobs:
         run: make verify-build PLAT4_ARCH=${{ matrix.platform.arch }}
       - name: Verify production agent with systemd
         run: make verify-agent-host-${{ matrix.lane }}
+      - name: Save native Go compilation
+        # Every pull request and merge group can restore main's entries, but an entry saved
+        # under a pull request or a merge group's temporary branch serves only that ref. It
+        # still counts against the repository's cache limit and evicts main's.
+        if: github.ref == 'refs/heads/main' && steps.native-go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/astilba-native-go
+          key: ${{ steps.native-go-cache.outputs.cache-primary-key }}
 
   verify:
     name: Native verification
