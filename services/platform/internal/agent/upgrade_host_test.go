@@ -31,7 +31,7 @@ import (
 
 // The fault points an upgrade's prepare passes. Restarted at one, the agent ends
 // the prepare failed, and return serves the old database again.
-var upgradePreparationFaults = []string{"upgrade-admitted", "upgrade-preflight", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect"}
+var upgradePreparationFaults = []string{"upgrade-admitted", "upgrade-preflight", "upgrade-preflight-clients-checked", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect"}
 
 // The fault points an upgrade's cutover passes. Restarted at one, the agent keeps
 // the new-write boundary, refuses a return that would lose writes, and reconcile
