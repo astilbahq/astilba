@@ -34,6 +34,7 @@ func compactManifest(r *backup.Run) {
 	}
 	m.Roles = []backup.Role{}
 	m.Extensions = []string{}
+	m.DumpSettings = nil
 	r.Manifest = &m
 }
 

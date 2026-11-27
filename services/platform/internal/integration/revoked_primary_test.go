@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
 )
@@ -74,6 +75,38 @@ func TestReplacingARevokedPrimaryStartsItsVolumesEmpty(t *testing.T) {
 	}
 	// Once moved, the environment is planned like any other.
 	g.applied(t, &e, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: b.id}))
+}
+
+// A database from before the owner model keeps its superuser only on the volume that created it.
+// A replacement starts that volume empty on the new primary, so the plan's database is new storage
+// there, whatever initialised the volume before.
+func TestReplacementStartsADatabaseAsNewStorage(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	gone, b := g.hosts[0], g.hosts[1]
+	web, database, data := uuid.New(), uuid.New(), uuid.New()
+	image := domain.PostgresImage
+	e := g.deployed(t, gone, func(path string) domain.Specification {
+		var secret api.SecretVersion
+		g.b.call("POST", path+"/secrets", map[string]string{"name": "Database", "value": "replaced-database-canary"}, 201, &secret)
+		return domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: data, Name: "Data"}}, Applications: []domain.Application{webApplication(web), {ID: database, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: data, Target: domain.PostgresMount(image)}}}}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: database, TargetID: web, Variable: "DATABASE_URL"}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: web, Protocol: "http", Domain: "replaced.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
+	})
+	// As the volume records when the same database, from before the owner model, created it.
+	legacy := *e.spec.Applications[1].Postgres
+	legacy.Roles = ""
+	another := deployment.Hash(&legacy)
+	if _, err := g.f.st.Pool.Exec(g.ctx, `UPDATE managed_volumes SET postgres_init_hash=$2 WHERE id=$1`, data, another); err != nil {
+		t.Fatal(err)
+	}
+	wantRefusedField(t, <-g.b.send("POST", e.path+"/deployment-plans", api.VisualPlanRequest{BaseRevisionId: e.draft.Id, ServerId: gone.id}), "applications.postgres.existingVolume")
+	g.revoke(t, gone)
+	g.applied(t, &e, g.replace(&e, b.id, data))
+	var stored *string
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT postgres_init_hash FROM managed_volumes WHERE id=$1`, data).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil || *stored == another {
+		t.Fatalf("the new primary's volume records %v, not the cluster the replacement created", stored)
+	}
 }
 
 // The common two-host case: the secondary that's left takes over, keeping its single unit, which

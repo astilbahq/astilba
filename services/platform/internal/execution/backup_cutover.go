@@ -70,9 +70,9 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 		}
 		var boundary *deployment.RestoreCutover
 		if policy.Plan.Local != nil {
-			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID}
+			boundary = &deployment.RestoreCutover{SourcePlanID: current.ID, SourceHash: current.Hash, PolicyID: policy.ID, RunID: run.ID, ManifestHash: run.ManifestHash, OldVolumeID: source, TargetVolumeID: run.TargetID, Roles: run.RestoreRoles}
 		}
-		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, policy, run.ID, run.TargetID, source, run.RestoredImage(), boundary)
+		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, policy, run.ID, run.TargetID, source, run.RestoredImage(), run.RestoreRoles, boundary)
 		return err
 	})
 	return out, err
@@ -80,13 +80,14 @@ func (s *Service) PrepareBackupCutover(ctx context.Context, p store.Principal, w
 
 // writeRestoreDraft writes a draft from v's that switches target, holding a verified restore of
 // policy's resource from run, in for source, the volume it replaces, and records boundary with it
-// for a distributed deployment. A logical restore's data was written by the restored image. The
-// target becomes the environment's own volume for the unit the policy's plan names; a deleted or
-// another environment's target is refused.
-func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, env uuid.UUID, v visualEnvironment, policy backup.Policy, run, target, source uuid.UUID, restored string, boundary *deployment.RestoreCutover) (db.SpecificationRevision, error) {
+// for a distributed deployment. A logical restore's data was written by the restored image, in a
+// cluster of the restored role model, which the draft's database takes. The target becomes the
+// environment's own volume for the unit the policy's plan names, recorded with the database it
+// holds; a deleted or another environment's target is refused.
+func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, env uuid.UUID, v visualEnvironment, policy backup.Policy, run, target, source uuid.UUID, restored, roles string, boundary *deployment.RestoreCutover) (db.SpecificationRevision, error) {
 	// The release that restored the target wrote its data, so the draft that will run on the
 	// target, as the source the policy froze, must open what that release wrote.
-	var major pgtype.Text
+	var major, initial pgtype.Text
 	if policy.Method == "postgres-logical" {
 		if err := restoredDatabaseOpens(v.Spec, policy, restored); err != nil {
 			return db.SpecificationRevision{}, err
@@ -96,20 +97,31 @@ func writeRestoreDraft(ctx context.Context, tx pgx.Tx, p store.Principal, ws, en
 		}
 		major.String = domain.PostgresMajor(restored)
 		major.Valid = major.String != ""
+		// An agent in the owner model restores every backup into it, a legacy database's too, so
+		// the cutover also moves that database onto it. The draft's database is a copy: v.Spec's
+		// own shares nothing with another caller.
+		for i := range v.Spec.Applications {
+			if a := &v.Spec.Applications[i]; a.ID == policy.ResourceID && a.Postgres != nil {
+				moved := *a.Postgres
+				moved.Roles = roles
+				a.Postgres = &moved
+				initial.String, initial.Valid = deployment.Hash(a.Postgres), true
+			}
+		}
 	}
 	q := db.New(tx)
 	// The lock a new draft's volumes are checked under comes before the target's row.
 	if err := store.LockVolumeDecisions(ctx, q, ws, env); err != nil {
 		return db.SpecificationRevision{}, err
 	}
-	recorded, err := q.ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: policy.Plan.UnitID, ID: target, PostgresMajor: major})
+	recorded, err := q.ClaimRestoreTarget(ctx, db.ClaimRestoreTargetParams{WorkspaceID: ws, EnvironmentID: env, UnitID: policy.Plan.UnitID, ID: target, PostgresMajor: major, PostgresInitHash: initial})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.SpecificationRevision{}, domain.Conflict
 	}
 	if err != nil {
 		return db.SpecificationRevision{}, err
 	}
-	if recorded != major {
+	if recorded.PostgresMajor != major || recorded.PostgresInitHash != initial {
 		return db.SpecificationRevision{}, domain.Invalid("restore.compatibility")
 	}
 	if v.Spec.Compose != nil {

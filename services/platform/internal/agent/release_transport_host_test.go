@@ -77,7 +77,7 @@ func TestNativeReleaseCommandTransport(t *testing.T) {
 				}
 			})
 			direct := &Engine{Journal: j, Docker: actual}
-			if err = direct.ensureStorage(ctx, p); err != nil {
+			if err = direct.ensureStorage(ctx, p, nil); err != nil {
 				t.Fatal(err)
 			}
 			upstream := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {

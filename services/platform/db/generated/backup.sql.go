@@ -396,35 +396,44 @@ func (q *Queries) ClaimDueCoordinatedBackupPolicy(ctx context.Context, arg Claim
 }
 
 const claimRestoreTarget = `-- name: ClaimRestoreTarget :one
-INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_major)
-VALUES($1,$2,$3,$4,$5)
-ON CONFLICT(workspace_id,id) DO UPDATE SET postgres_major = COALESCE(managed_volumes.postgres_major,EXCLUDED.postgres_major)
+INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_major,postgres_init_hash)
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT(workspace_id,id) DO UPDATE SET postgres_major = COALESCE(managed_volumes.postgres_major,EXCLUDED.postgres_major), postgres_init_hash = COALESCE(managed_volumes.postgres_init_hash,EXCLUDED.postgres_init_hash)
 WHERE managed_volumes.environment_id = EXCLUDED.environment_id AND NOT managed_volumes.deleted
-RETURNING postgres_major
+RETURNING postgres_major, postgres_init_hash
 `
 
 type ClaimRestoreTargetParams struct {
-	WorkspaceID   uuid.UUID   `json:"workspace_id"`
-	EnvironmentID uuid.UUID   `json:"environment_id"`
-	UnitID        uuid.UUID   `json:"unit_id"`
-	ID            uuid.UUID   `json:"id"`
-	PostgresMajor pgtype.Text `json:"postgres_major"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	EnvironmentID    uuid.UUID   `json:"environment_id"`
+	UnitID           uuid.UUID   `json:"unit_id"`
+	ID               uuid.UUID   `json:"id"`
+	PostgresMajor    pgtype.Text `json:"postgres_major"`
+	PostgresInitHash pgtype.Text `json:"postgres_init_hash"`
+}
+
+type ClaimRestoreTargetRow struct {
+	PostgresMajor    pgtype.Text `json:"postgres_major"`
+	PostgresInitHash pgtype.Text `json:"postgres_init_hash"`
 }
 
 // A verified restore's target becomes the environment's data volume when a cutover is prepared,
-// before any plan mounts it, with the PostgreSQL major the restore initialised it with, as an
-// upgrade's target does when it is planned. Another environment's or a deleted volume returns no row.
-func (q *Queries) ClaimRestoreTarget(ctx context.Context, arg ClaimRestoreTargetParams) (pgtype.Text, error) {
+// before any plan mounts it, with the PostgreSQL major the restore initialised it with and the
+// database it holds, as an upgrade's target does when it is planned. A claim already recorded
+// keeps what it recorded, which the caller compares. Another environment's or a deleted volume
+// returns no row.
+func (q *Queries) ClaimRestoreTarget(ctx context.Context, arg ClaimRestoreTargetParams) (ClaimRestoreTargetRow, error) {
 	row := q.db.QueryRow(ctx, claimRestoreTarget,
 		arg.WorkspaceID,
 		arg.EnvironmentID,
 		arg.UnitID,
 		arg.ID,
 		arg.PostgresMajor,
+		arg.PostgresInitHash,
 	)
-	var postgres_major pgtype.Text
-	err := row.Scan(&postgres_major)
-	return postgres_major, err
+	var i ClaimRestoreTargetRow
+	err := row.Scan(&i.PostgresMajor, &i.PostgresInitHash)
+	return i, err
 }
 
 const countBackupDestinations = `-- name: CountBackupDestinations :one

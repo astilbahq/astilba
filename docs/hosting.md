@@ -154,7 +154,7 @@ remove the trigger.
 | Command | What it does |
 | --- | --- |
 | `astilba custody status [--as-operator]` | Shows the installation ID and whether it is pinned, the key backend, each canary, the custody stage, how many workspaces have keys, how many values are still sealed under the keyring, how many values recording stage 4 reads, and any pending work. It changes nothing. With a [Transit](key-custody-transit.md) backend, add `--as-operator` when it runs with the operator's credentials. |
-| `astilba custody history [--limit 50]` | Lists the installation's key events, newest first. |
+| `astilba custody history [--limit 50]` | Lists the installation's key events, the most recently recorded first. |
 | `astilba custody rewrap --operator <name or role> [--reason <text>]` | Wraps every stored value's key, the canaries, and every workspace, installation and token key under the newest key: the keyring's active key, or with [Transit](key-custody-transit.md) each class's newest key version, rewrapped inside the key service. It records its start and finish. See [rotating the keyring](../services/platform/README.md#rotating-the-keyring). |
 | `astilba custody init-transit --dev --address <URL> --token-file <file> --out <dir>` | Sets up a local OpenBao dev server for the local stack's `--custody openbao` profile. It refuses anything but `--dev`, a loopback address, and a server whose cluster is named `astilba-dev`, as the local stack's is; set up a real key service as [key custody with Transit](key-custody-transit.md) describes. |
 | `astilba custody init-keys` | Creates the keys that workspaces and the installation don't have yet, as `serve` does in the background, and waits until none are missing. It is safe to run beside running instances. |
