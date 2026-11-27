@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -233,6 +234,26 @@ func TestNativeRedirectedProbeLeavesNothing(t *testing.T) {
 	defer cancel()
 	if _, _, err = h.e.probeRound(ctx, []string{probe}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the cancelled round gave %v", err)
+	}
+	h.probesLeftNothing()
+}
+
+// A round may probe as many servers as an environment can run, and quick probes must not
+// add up to the probe container's process limit.
+func TestNativeFullProbeRoundPasses(t *testing.T) {
+	h := newIsolationHost(t)
+	u := h.poolUnit("a", "pool")
+	h.removeProxy()
+	if err := h.e.publishVisualRoutes(t.Context(), h.poolPlan(u)); err != nil {
+		t.Fatal(err)
+	}
+	host := deployment.BackendHost(u.id, deployment.ServiceName(u.instances[0]))
+	probes := []string{}
+	for n := range domain.MaxRuntimeInstances {
+		probes = append(probes, "http://"+host+":8080/health?n="+strconv.Itoa(n))
+	}
+	if failed, stderr, err := h.e.probeRound(t.Context(), probes); err != nil || failed != -1 {
+		t.Fatalf("a round of healthy probes gave %d, %v: %s", failed, err, stderr)
 	}
 	h.probesLeftNothing()
 }

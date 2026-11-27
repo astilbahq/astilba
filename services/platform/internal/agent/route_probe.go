@@ -23,9 +23,11 @@ const routeProbeName = "astilba-route-probe"
 
 // routeProbeScript sends each probe in turn as the proxy does, once and reading no body,
 // and kills it after $1 seconds, since wget's own timeout only bounds each read. It prints
-// the number of the first probe that fails and stops. The URLs are arguments, never part
-// of the script.
-const routeProbeScript = `limit=$1; shift; n=0; for probe; do n=$((n + 1)); timeout -s KILL "$limit" wget -q --spider -T "$limit" "$probe" || { echo "$n"; exit 1; }; done`
+// the number of the first probe that fails and stops. The shell, the container's first
+// process, waits for each probe itself: busybox's timeout would leave a watcher running
+// for a second after every probe, and a round of quick probes would reach the container's
+// process limit. The URLs are arguments, never part of the script.
+const routeProbeScript = `limit=$1; shift; n=0; for probe; do n=$((n + 1)); wget -q --spider -T "$limit" "$probe" & pid=$!; ticks=0; while kill -0 "$pid" 2>/dev/null; do if [ "$ticks" -ge "$((limit * 50))" ]; then kill -9 "$pid"; break; fi; sleep 0.02; ticks=$((ticks + 1)); done; wait "$pid" || { echo "$n"; exit 1; }; done`
 
 // probeRound sends probes from a container of their own in the proxy's network namespace,
 // so they take the proxy's path, and resolve names as the proxy does, without running
@@ -86,7 +88,20 @@ func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, s
 	defer attached.Close()
 	// The client doesn't tie a hijacked stream to ctx.
 	defer context.AfterFunc(ctx, func() { attached.Close() })()
-	wait := e.Docker.ContainerWait(ctx, created.ID, client.ContainerWaitOptions{Condition: container.WaitConditionRemoved})
+	// The client hands the wait's result to a goroutine that waits for it to be taken, so
+	// a round that ends early stops the wait and takes what it gave, before removal.
+	waitCtx, stopWait := context.WithCancel(ctx)
+	wait := e.Docker.ContainerWait(waitCtx, created.ID, client.ContainerWaitOptions{Condition: container.WaitConditionRemoved})
+	waited := false
+	defer func() {
+		stopWait()
+		if !waited {
+			select {
+			case <-wait.Result:
+			case <-wait.Error:
+			}
+		}
+	}()
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return 0, nil, err
 	}
@@ -103,6 +118,7 @@ func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, s
 		return 0, nil, errProxyOutputLimit
 	}
 	var status int64
+	waited = true
 	select {
 	case result := <-wait.Result:
 		if result.Error != nil {
