@@ -111,6 +111,12 @@ func (e *Engine) awaitRoutes(ctx context.Context, s routeSnapshot, raw []byte) e
 // proxy's networks are already those the journal records. A failure restores the previous
 // file and is tried again later. The revision is derived so that a restart after the file
 // was written, before the journal, finds the same file here.
+//
+// It waits while the host is held: by a recovered controller that has not opened its
+// barrier, or by a coordinated reservation, whose phases expect the routes and the servers
+// they name to stay those they recorded. Waiting needs no record of its own, since the
+// journal still names bare backends, and the hold ending wakes the next attempt, see
+// wakeRouteConversion.
 func (e *Engine) QualifyRouteBackends(ctx context.Context) error {
 	// While a command pulls its images, the next attempt converts.
 	if !e.lockUnlessLent() {
@@ -128,6 +134,9 @@ func (e *Engine) QualifyRouteBackends(ctx context.Context) error {
 		return nil
 	}
 	if held, err := e.Journal.recoveryHeld(); err != nil || held {
+		return err
+	}
+	if reserved, err := e.Journal.hasCrossHostBarrier(); err != nil || reserved {
 		return err
 	}
 	next := current
@@ -165,6 +174,21 @@ func (e *Engine) replaceRouteFile(ctx context.Context, s routeSnapshot) error {
 	}
 	e.point("route-published")
 	return e.awaitRoutes(ctx, s, raw)
+}
+
+// routeConversionWake is signalled when a hold that QualifyRouteBackends waits for ends,
+// so the conversion runs once the command that ended it does, not up to a minute later.
+func (e *Engine) routeConversionWake() chan struct{} {
+	e.routeWakeOnce.Do(func() { e.routeWake = make(chan struct{}, 1) })
+	return e.routeWake
+}
+
+// wakeRouteConversion asks for another conversion attempt. One already asked for is enough.
+func (e *Engine) wakeRouteConversion() {
+	select {
+	case e.routeConversionWake() <- struct{}{}:
+	default:
+	}
 }
 
 // qualifyRouteBackends logs a failure and leaves it to the next attempt: converting must

@@ -147,7 +147,7 @@ func (e *Engine) finishCrossHost(c api.ExecutionCommand, command deployment.Cros
 	if len(*raw) > deployment.ObservationLimit+2048 {
 		return e.finish(c.Id, "needs_attention", "The coordinated observation exceeds its reporting bound.")
 	}
-	return e.Journal.db.Update(func(tx *bolt.Tx) error {
+	err := e.Journal.db.Update(func(tx *bolt.Tx) error {
 		var r Record
 		if err := e.Journal.get(tx, "operations", c.Id.String(), &r); err != nil {
 			return err
@@ -179,6 +179,10 @@ func (e *Engine) finishCrossHost(c api.ExecutionCommand, command deployment.Cros
 		}
 		return tx.Bucket([]byte("cross-host")).Delete([]byte("active"))
 	})
+	if err == nil && release {
+		e.wakeRouteConversion()
+	}
+	return err
 }
 
 // RequireUnreservedHost also fences local recovery and update CLIs that do not

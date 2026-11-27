@@ -98,6 +98,9 @@ type Engine struct {
 	// ingressImage stands in for the pinned proxy image in tests, which need one the host
 	// can't pull. Empty is deployment.ProxyImage.
 	ingressImage string
+	// routeWake wakes the route backend conversion, see routeConversionWake.
+	routeWakeOnce sync.Once
+	routeWake     chan struct{}
 }
 
 func (e *Engine) point(p string) {
@@ -204,7 +207,11 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return nil
 	}
 	if recoveryOpen(c) {
-		return e.Journal.executeRecoveryOpen(c)
+		if err = e.Journal.executeRecoveryOpen(c); err != nil {
+			return err
+		}
+		e.wakeRouteConversion()
+		return nil
 	}
 	if recoveryClose(c) {
 		return e.Journal.executeRecoveryClose(c)
