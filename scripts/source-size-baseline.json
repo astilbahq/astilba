@@ -1,7 +1,7 @@
 {
   "apps/platform/src/features/deployments.tsx": 624,
   "apps/platform/tests/auth.spec.ts": 922,
-  "services/platform/internal/agent/cross_host_host_test.go": 1084,
+  "services/platform/internal/agent/cross_host_host_test.go": 1060,
   "services/platform/internal/agent/visual.go": 729,
   "services/platform/internal/composeproject/source.go": 601,
   "services/platform/internal/integration/cross_host_physical_recovery_test.go": 918,

@@ -300,6 +300,23 @@ func nativeBackupOfStoppedWriter(t *testing.T, hosts []*nativePlacementHost, uni
 	nativeWaitPlacementRecovery(t)
 }
 
+// nativeResumeThenComplete resumes every host, then completes every host, recording what
+// each completion observed. Management completes no host until every host has resumed.
+func nativeResumeThenComplete(t *testing.T, hosts []*nativePlacementHost, completed []deployment.Observation, resume, complete func(int) api.ExecutionCommand) {
+	t.Helper()
+	for index, host := range hosts {
+		host.command(t, resume(index))
+	}
+	for index, host := range hosts {
+		r := host.command(t, complete(index))
+		var receipt deployment.CrossHostReceipt
+		if err := json.Unmarshal(*r.Crosshost, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		completed[index] = receipt.Observation
+	}
+}
+
 // nativeWaitServerOut waits until host's proxy reports server up in no pool, as it does
 // within a probe interval of the server failing.
 func nativeWaitServerOut(t *testing.T, host *nativePlacementHost, server string) {

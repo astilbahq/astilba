@@ -702,18 +702,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 				resumes[index].Deadline = deadline
 			}
 			time.Sleep(time.Until(deadline) + time.Millisecond)
-			// Management completes no host until every host has resumed.
-			for index, host := range hosts {
-				host.command(t, resumes[index])
-			}
-			for index, host := range hosts {
-				r := host.command(t, command(index, "complete"))
-				var receipt deployment.CrossHostReceipt
-				if err = json.Unmarshal(*r.Crosshost, &receipt); err != nil {
-					t.Fatal(err)
-				}
-				completed[index] = receipt.Observation
-			}
+			nativeResumeThenComplete(t, hosts, completed, func(index int) api.ExecutionCommand { return resumes[index] }, func(index int) api.ExecutionCommand { return command(index, "complete") })
 			nativeWaitPlacementRecovery(t)
 		})
 	}
@@ -774,17 +763,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		}
 		primary.command(t, command(0, "effect", "cutover", false))
 		primary.command(t, upgradeCommand("cutover"))
-		for index, host := range hosts {
-			host.command(t, command(index, "resume-target", "", true))
-		}
-		for index, host := range hosts {
-			r := host.command(t, command(index, "complete", "", true))
-			var receipt deployment.CrossHostReceipt
-			if err := json.Unmarshal(*r.Crosshost, &receipt); err != nil {
-				t.Fatal(err)
-			}
-			completed[index] = receipt.Observation
-		}
+		nativeResumeThenComplete(t, hosts, completed, func(index int) api.ExecutionCommand { return command(index, "resume-target", "", true) }, func(index int) api.ExecutionCommand { return command(index, "complete", "", true) })
 		rows, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, "SELECT count(*) FROM cross_host_marker WHERE value='retained database data'")
 		if err != nil || strings.TrimSpace(string(rows)) != "1" {
 			t.Fatal("major upgrade did not preserve application data", err)
@@ -908,17 +887,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 				t.Fatal("restore recovery adopted memory drift during the creation gap", err)
 			}
 			nativeRequireHealthy(t, recreated.Container)
-			for index, host := range hosts {
-				host.command(t, command(index, "resume-target"))
-			}
-			for index, host := range hosts {
-				r := host.command(t, command(index, "complete"))
-				var receipt deployment.CrossHostReceipt
-				if err := json.Unmarshal(*r.Crosshost, &receipt); err != nil {
-					t.Fatal(err)
-				}
-				completed[index] = receipt.Observation
-			}
+			nativeResumeThenComplete(t, hosts, completed, func(index int) api.ExecutionCommand { return command(index, "resume-target") }, func(index int) api.ExecutionCommand { return command(index, "complete") })
 			if method == backup.QuiescedFiles {
 				value, err := data.dataOutput(ctx, pgClient{container: deployment.UnitName(files)}, "cat", "/files/value")
 				nativeRequireValue(t, "restored files", value, "retained-file-data", err)
