@@ -34,5 +34,48 @@
     "confirm": "Confirm identity",
     "confirmed": "Identity confirmed."
   },
-  "cancel": "Cancel"
+  "cancel": "Cancel",
+  "sessions": {
+    "title": "Signed-in sessions",
+    "description": "Browsers signed in to your account. If you don’t recognize one, sign it out and change your password.",
+    "loading": "Loading sessions…",
+    "loadFailed": "Your sessions could not be loaded.",
+    "retry": "Try again",
+    "client": "{{browser}} on {{os}}",
+    "browser": {
+      "chrome": "Chrome",
+      "edge": "Edge",
+      "firefox": "Firefox",
+      "safari": "Safari",
+      "opera": "Opera",
+      "other": "Unknown browser"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "ios": "iOS",
+      "android": "Android",
+      "chromeos": "ChromeOS",
+      "linux": "Linux",
+      "other": "an unknown system"
+    },
+    "current": "This session",
+    "network": "Network <network/>",
+    "networkUnknown": "Network unknown",
+    "signedIn": "Signed in {{at, datetime}}",
+    "lastActive": "Last active {{at, datetime}}",
+    "activeNow": "Active now",
+    "unlisted_one": "{{count}} older session isn’t shown. Signing out all other sessions ends it too.",
+    "unlisted_other": "{{count}} older sessions aren’t shown. Signing out all other sessions ends them too.",
+    "noOthers": "No other sessions are signed in.",
+    "signOut": "Sign out",
+    "signOutNamed": "Sign out {{client}}",
+    "signOutOthers": "Sign out all other sessions",
+    "signingOut": "Signing out…",
+    "signOutFailed": "The session could not be signed out.",
+    "othersSignOutFailed": "The other sessions could not be signed out.",
+    "signedOut": "Session signed out.",
+    "alreadySignedOut": "That session was already signed out.",
+    "othersSignedOut": "All other sessions signed out."
+  }
 }

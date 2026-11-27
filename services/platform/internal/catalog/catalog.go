@@ -77,7 +77,7 @@ type BackupPreset struct {
 	Retain    int       `json:"retain"`
 }
 
-const NginxImage = "nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a"
+const NginxImage = "nginx:1.30.7-alpine3.24@sha256:caf4e1e032a20f9c3c5e28fc7f25ffd768ad8677b4975c54193075997b3a97e3"
 const ValkeyImage = "valkey/valkey:9.1.3-alpine3.24@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b"
 
 // The slim image leaves out Chromium and the embedded MariaDB, which the recipe does not

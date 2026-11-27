@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { compile, parseMakefile } from "./native-lanes.mjs";
+import { compile, goTests, parseMakefile } from "./native-lanes.mjs";
 import { github, syncIssue } from "./report-issue.mjs";
 
 // Each lane's `go test -timeout` allows 900 seconds. One commit's package time has
@@ -14,6 +14,12 @@ export const targetSeconds = 400;
 const sampledRuns = 5;
 const minimumRuns = 3;
 const issueTitle = "Go race lanes are past their time budget";
+// Native lanes set a -timeout for each go test command, from 5 to 30 minutes, so each
+// package is held to this share of its own command's. A runner 28% slower still meets
+// it, with room for the tests that land before the lanes are rebalanced.
+export const nativeShare = 0.6;
+const nativeIssueTitle = "Native lanes are past their time budget";
+const nativePrefix = "verify-agent-host-";
 
 // A name is limited to import path characters because it reaches a public issue, and
 // test output could print a line of this shape with a mention or markup in it.
@@ -66,8 +72,10 @@ function median(values) {
 // a time means this parser no longer reads the logs, so it must not read as a pass.
 // Each problem's key names what is wrong without today's numbers, so the issue says
 // only what is new. Logs that could not be read are a check that did not run, which
-// keeps the issue's earlier problems.
+// keeps the issue's earlier problems. `budget` is either one budget for every package or
+// a function of a lane and package giving each its own.
 export function laneBudget(jobs, budget = budgetSeconds) {
+  const limit = typeof budget === "function" ? budget : () => budget;
   const problems = [];
   const problem = (key, line, check) =>
     problems.push({ key, line, ...(check && { check }) });
@@ -94,17 +102,125 @@ export function laneBudget(jobs, budget = budgetSeconds) {
         name,
         seconds: Math.round(median(seconds)),
         samples: seconds.length,
+        budget: limit(lane, name),
       };
     })
     .toSorted((a, b) => b.seconds - a.seconds);
-  for (const { lane, name, seconds, samples: count } of rows)
-    if (count >= minimumRuns && seconds > budget)
+  for (const { lane, name, seconds, samples: count, budget: allowed } of rows)
+    if (count >= minimumRuns && seconds > allowed)
       problem(
         `over\t${lane}\t${name}`,
-        `${lane}: \`${name}\` has a median of ${seconds}s over ${count} runs, past the ${budget}s budget. Rebalance the lanes, as docs/continuous-integration.md describes.`,
+        `${lane}: \`${name}\` has a median of ${seconds}s over ${count} runs, past the ${allowed}s budget. Rebalance the lanes, as docs/continuous-integration.md describes.`,
       );
   const undecided = rows.some(({ samples: count }) => count < minimumRuns);
   return { problems, undecided, rows };
+}
+
+const durationUnits = { h: 3600, m: 60, s: 1, ms: 0.001 };
+
+// Seconds in a Go duration such as 30m or 1h30m.
+export function durationSeconds(text) {
+  if (!/^(?:\d+(?:\.\d+)?(?:ms|h|m|s))+$/.test(text))
+    throw new Error(`cannot read the duration ${text}`);
+  return [...text.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)].reduce(
+    (sum, [, amount, unit]) => sum + Number(amount) * durationUnits[unit],
+    0,
+  );
+}
+
+// Each native lane's packages, with the seconds each is allowed: a share of the timeout of
+// the go test command that runs it. go test prints one time for a package, so a lane that
+// ran a package in two commands could not say which command took it.
+export function nativeBudgets(makefile, share = nativeShare) {
+  const { recipes, expand } = parseMakefile(makefile);
+  const lanes = new Map();
+  for (const [target, lines] of recipes) {
+    if (!target.startsWith(nativePrefix)) continue;
+    const packages = new Map();
+    for (const command of lines.flatMap((line) => goTests(expand(line))))
+      for (const directory of command.packages) {
+        if (directory.endsWith("/..."))
+          throw new Error(
+            `${target} runs ${directory}, whose packages this check cannot list`,
+          );
+        if (packages.has(directory))
+          throw new Error(
+            `${target} runs ${directory} in more than one go test command, so its time cannot be told apart`,
+          );
+        packages.set(
+          directory,
+          Math.round(durationSeconds(command.timeout) * share),
+        );
+      }
+    lanes.set(target.slice(nativePrefix.length), packages);
+  }
+  return lanes;
+}
+
+// go test prints a package's import path, which ends with its directory.
+const inDirectory = (name, directory) =>
+  name === directory || name.endsWith(`/${directory}`);
+
+// Native jobs, timed by their lane's Makefile commands. Each job is judged by the Makefile
+// of the commit it ran, as its packages and timeouts were then: a run from before the
+// lanes changed is neither stale nor missing a package added since. A row's budget is
+// the newest run's. Each job also runs packages outside its lane's target, such as the
+// bootstrap's, and those have their own limits in the workflow, so only the target's
+// packages are compared. A successful job without a time for one of them means this
+// check no longer reads it, so it must not read as a pass. `budgetsOf` gives a job's
+// nativeBudgets, newest jobs first.
+export function nativeLaneBudget(jobs, budgetsOf) {
+  // Every run repeats these, and the issue lists each once.
+  const problems = new Map();
+  const problem = (key, line) =>
+    problems.has(key) || problems.set(key, { key, line, check: true });
+  const allowed = new Map();
+  const timed = [];
+  for (const job of jobs) {
+    let budgets;
+    try {
+      budgets = budgetsOf(job);
+    } catch (error) {
+      problem(
+        `makefile\t${job.run}`,
+        `run ${job.run}: cannot read its Makefile: ${error.message}`,
+      );
+      continue;
+    }
+    const packages = budgets.get(job.target);
+    if (!packages) {
+      problem(
+        `unknown\t${job.target}`,
+        `run ${job.run}: ${job.lane} has no ${nativePrefix}${job.target} in the Makefile`,
+      );
+      continue;
+    }
+    const times = [];
+    const missing = [];
+    for (const [directory, seconds] of packages) {
+      const found = job.times.filter(({ name }) =>
+        inDirectory(name, directory),
+      );
+      for (const { name } of found) {
+        const key = `${job.lane}\t${name}`;
+        if (!allowed.has(key)) allowed.set(key, seconds);
+      }
+      times.push(...found);
+      if (!found.length) missing.push(directory);
+    }
+    // A job with no time at all is reported below, as any lane's would be.
+    if (job.conclusion === "success" && times.length)
+      for (const directory of missing)
+        problem(
+          `untimed\t${job.lane}\t${directory}`,
+          `run ${job.run}: ${job.lane} succeeded with no time for ${directory}`,
+        );
+    timed.push({ ...job, times });
+  }
+  const result = laneBudget(timed, (lane, name) =>
+    allowed.get(`${lane}\t${name}`),
+  );
+  return { ...result, problems: [...problems.values(), ...result.problems] };
 }
 
 // Which tests the family lanes select, read from the Makefile the lanes run.
@@ -242,26 +358,45 @@ export function splitReport(split, target = targetSeconds) {
   ].join("\n");
 }
 
+// Where each kind of lane runs, and the lane a job's name gives. A native lane runs once
+// for each architecture, whose runners differ in speed, so each is a lane of its own here.
+export const raceLanes = {
+  workflow: "application.yml",
+  lane: (name) => {
+    const lane = /^Go race \(([\w-]+)\)$/.exec(name)?.[1];
+    return lane && { lane };
+  },
+};
+export const nativeLanes = {
+  workflow: "ci.yml",
+  lane: (name) => {
+    const [, architecture, target] =
+      /^Host \(([\w-]+), ([\w-]+)\)$/.exec(name) ?? [];
+    return target && { lane: `${target} (${architecture})`, target };
+  },
+};
+
 // Main pushes run every lane once, and a newer run cannot cancel them. A run that
 // ran other lanes predates a rebalancing, so its times would misreport today's lanes,
-// and one with a lane that did not finish has no time for it.
-export async function recentJobs(request, repository) {
+// and one with a lane that did not finish has no time for it. A run that selected no
+// native checks has no native lanes, so it is passed over.
+export async function recentJobs(request, repository, lanesOf = raceLanes) {
   const { workflow_runs: runs } = await (
     await request(
-      `/repos/${repository}/actions/workflows/application.yml/runs?branch=main&event=push&status=completed&per_page=${sampledRuns * 3}`,
+      `/repos/${repository}/actions/workflows/${lanesOf.workflow}/runs?branch=main&event=push&status=completed&per_page=${sampledRuns * 3}`,
     )
   ).json();
   let sampled = 0;
   let current;
   const jobs = [];
-  for (const { id } of runs) {
+  for (const { id, head_sha: commit } of runs) {
     if (sampled === sampledRuns) break;
     const { jobs: listed } = await (
       await request(`/repos/${repository}/actions/runs/${id}/jobs?per_page=100`)
     ).json();
     const lanes = listed.flatMap((job) => {
-      const lane = /^Go race \(([\w-]+)\)$/.exec(job.name)?.[1];
-      return lane ? [{ ...job, lane }] : [];
+      const lane = lanesOf.lane(job.name);
+      return lane ? [{ ...job, ...lane }] : [];
     });
     if (!lanes.length) continue;
     const names = lanes
@@ -277,13 +412,15 @@ export async function recentJobs(request, repository) {
     )
       continue;
     sampled++;
-    for (const { id: job, lane, conclusion } of lanes) {
+    for (const { id: job, lane, target, conclusion } of lanes) {
       const log = await (
         await request(`/repos/${repository}/actions/jobs/${job}/logs`)
       ).text();
       jobs.push({
         run: id,
+        commit,
         lane,
+        ...(target && { target }),
         conclusion,
         times: packageTimes(log),
         tests: testTimes(log),
@@ -293,62 +430,144 @@ export async function recentJobs(request, repository) {
   return jobs;
 }
 
+// Reads the Makefile each sampled commit ran, once a commit. What one could not be read
+// for throws when a job of that commit asks, so only its jobs go unjudged.
+export async function commitBudgets(request, repository, jobs) {
+  const budgets = new Map();
+  for (const commit of new Set(jobs.map((job) => job.commit)))
+    try {
+      const { content, encoding } = await (
+        await request(
+          `/repos/${repository}/contents/Makefile?ref=${encodeURIComponent(commit)}`,
+        )
+      ).json();
+      if (encoding !== "base64")
+        throw new Error(`the Makefile came as ${encoding}`);
+      budgets.set(
+        commit,
+        nativeBudgets(Buffer.from(content, "base64").toString("utf8")),
+      );
+    } catch (error) {
+      budgets.set(commit, error);
+    }
+  return (job) => {
+    const found = budgets.get(job.commit);
+    if (found instanceof Error) throw found;
+    return found;
+  };
+}
+
+// The median times as Markdown, leaving out packages too quick to matter.
+export function timesTable(rows, budgets = false) {
+  return [
+    `| Lane | Package | Median seconds |${budgets ? " Budget |" : ""} Runs |`,
+    `| --- | --- | --- |${budgets ? " --- |" : ""} --- |`,
+    ...rows
+      .filter(({ seconds }) => seconds >= 10)
+      .map(
+        ({ lane, name, seconds, budget, samples }) =>
+          `| ${lane} | \`${name}\` | ${seconds} |${budgets ? ` ${budget} |` : ""} ${samples} |`,
+      ),
+  ].join("\n");
+}
+
+// Shows one kind of lane's times and, in the workflow, keeps its issue.
+async function report(
+  request,
+  repository,
+  { heading, title, problems, undecided, table },
+) {
+  console.log(`${heading}\n\n${table}\n`);
+  // Only the workflow reports, so a local run changes nothing.
+  if (!process.env.GITHUB_RUN_ID) return;
+  appendFileSync(
+    process.env.GITHUB_STEP_SUMMARY,
+    `## ${heading}\n\n${table}\n\n`,
+  );
+  await syncIssue(request, repository, {
+    title,
+    problems,
+    undecided,
+    body: [
+      ...(problems.length
+        ? problems.map(({ line }) => line)
+        : ["Every lane is within budget again."]),
+      "",
+      table,
+      "",
+      `${process.env.GITHUB_SERVER_URL}/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+      "",
+      "See the lane budget in `docs/continuous-integration.md`. This closes itself once the lanes are back within budget.",
+    ].join("\n"),
+  });
+}
+
 async function run() {
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN must allow reading Actions");
   const repository = process.env.GITHUB_REPOSITORY ?? "astilbahq/astilba";
   const request = github(token);
   const isFamily = familyMatcher(readFileSync("Makefile", "utf8"));
-  const jobs = await recentJobs(request, repository);
-  const { problems, undecided, rows } = laneBudget(jobs);
-  const times = [
-    "| Lane | Package | Median seconds | Runs |",
-    "| --- | --- | --- | --- |",
-    ...rows
-      .filter(({ seconds }) => seconds >= 10)
-      .map(
-        ({ lane, name, seconds, samples }) =>
-          `| ${lane} | \`${name}\` | ${seconds} | ${samples} |`,
-      ),
-  ].join("\n");
-  const table = [times, splitReport(nameSplit(jobs, isFamily))]
-    .filter(Boolean)
-    .join("\n\n");
-  console.log(table);
-  // Only the workflow reports, so a local run changes nothing.
-  if (process.env.GITHUB_RUN_ID) {
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${table}\n`);
-    await syncIssue(request, repository, {
+  const kinds = [
+    {
+      heading: "Go race lanes",
       title: issueTitle,
-      problems,
-      undecided,
-      body: [
-        ...(problems.length
-          ? problems.map(({ line }) => line)
-          : ["Every lane is within budget again."]),
-        "",
-        table,
-        "",
-        `${process.env.GITHUB_SERVER_URL}/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`,
-        "",
-        "See the lane budget in `docs/continuous-integration.md`. This closes itself once the lanes are back within budget.",
-      ].join("\n"),
-    });
-  }
+      check: async () => {
+        const jobs = await recentJobs(request, repository);
+        const result = laneBudget(jobs);
+        const table = [
+          timesTable(result.rows),
+          splitReport(nameSplit(jobs, isFamily)),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        return { ...result, table };
+      },
+    },
+    {
+      heading: "Native lanes",
+      title: nativeIssueTitle,
+      check: async () => {
+        const jobs = await recentJobs(request, repository, nativeLanes);
+        const result = nativeLaneBudget(
+          jobs,
+          await commitBudgets(request, repository, jobs),
+        );
+        return { ...result, table: timesTable(result.rows, true) };
+      },
+    },
+  ];
+  // One kind failing to check or report still lets the other report.
+  const results = [];
+  const failures = [];
+  for (const { check, ...kind } of kinds)
+    try {
+      const result = await check();
+      await report(request, repository, { ...kind, ...result });
+      results.push(result);
+    } catch (error) {
+      failures.push(`${kind.heading}: ${error.message}`);
+    }
+
   // In a workflow the issue is the notice, so the job fails only when it could not
   // check or report, which the scheduled scans' check on this workflow reports. Run by
   // hand, a lane past its budget fails.
-  if (problems.length) {
-    const text = problems.map(({ line }) => line).join("\n");
-    if (!process.env.GITHUB_RUN_ID || problems.some(({ check }) => check))
+  const problems = results.flatMap((result) => result.problems);
+  if (failures.length || problems.length) {
+    const text = [...failures, ...problems.map(({ line }) => line)].join("\n");
+    if (
+      failures.length ||
+      !process.env.GITHUB_RUN_ID ||
+      problems.some(({ check }) => check)
+    )
       throw new Error(text);
     console.log(text);
     return;
   }
   console.log(
-    undecided
-      ? `No lane with ${minimumRuns} runs is past ${budgetSeconds}s, and some have fewer.`
-      : `Every lane's packages are within ${budgetSeconds}s.`,
+    results.some(({ undecided }) => undecided)
+      ? `No lane with ${minimumRuns} runs is past its budget, and some have fewer.`
+      : `Every lane's packages are within budget: ${budgetSeconds}s for a Go race lane, and ${nativeShare * 100}% of its command's -timeout for a native one.`,
   );
 }
 
