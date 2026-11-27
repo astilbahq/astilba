@@ -244,8 +244,8 @@ func (s *Service) ValidateReset(ctx context.Context, token, ip string) error {
 }
 
 // CompleteReset proves control of the account's email, so it also lifts what guessing has
-// done to the account's sign-in budgets.
-func (s *Service) CompleteReset(ctx context.Context, token, password, ip string) (db.Account, error) {
+// done to the account's sign-in budgets. finish runs in the reset's transaction.
+func (s *Service) CompleteReset(ctx context.Context, token, password, ip string, finish Finish) (db.Account, error) {
 	var account db.Account
 	if err := domain.Password(password); err != nil {
 		return account, err
@@ -292,8 +292,10 @@ func (s *Service) CompleteReset(ctx context.Context, token, password, ip string)
 		if err := s.securityEvent(ctx, tx, reset.AccountID, PasswordReset); err != nil {
 			return err
 		}
-		account, err = q.AccountByID(ctx, reset.AccountID)
-		return err
+		if account, err = q.AccountByID(ctx, reset.AccountID); err != nil {
+			return err
+		}
+		return finish.run(tx, account)
 	})
 	return account, err
 }

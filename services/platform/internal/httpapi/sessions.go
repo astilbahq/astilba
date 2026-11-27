@@ -49,13 +49,13 @@ type sessionLoad struct {
 	// continueLineage gives a new sign-in's token the loaded session's lineage while that
 	// session lasts, deleting it with the new token's insert. See VerifyMFA and continueSignIn.
 	continueLineage bool
-	// renewed is set once this request has replaced the session's token, which then commits
-	// only with a successful response. See renewToken.
-	renewed bool
-	// tx is the transaction of the sign-in or credential change the session is stored with, while
-	// storeSession runs, and stored is set once the session is stored there. See storeSession.
-	tx     pgx.Tx
-	stored bool
+	// tx is the transaction of the sign-in, credential change or password reset the session is
+	// stored or ended with, while inChange runs, and changed is set once it has run, so that a
+	// failed request, whose transaction rolled back, sends neither cookie. stored is set once the
+	// session is stored there. See inChange.
+	tx      pgx.Tx
+	changed bool
+	stored  bool
 	// client summarizes the browser making this request, which a signed-in session records.
 	client sessionClient
 	// account and version are what the session being saved is signed in to, if anything. They
@@ -205,7 +205,7 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		// session may have expired during this request. UPDATE serializes with that
 		// deletion and never restores its authority.
 		client := loaded.client
-		n, err := s.queries.RefreshSession(ctx, db.RefreshSessionParams{Token: token, Data: data, Expiry: expiry, ClientBrowser: client.browser, ClientOs: client.os, ClientNetwork: pgtype.Text{String: client.network, Valid: client.network != ""}})
+		n, err := s.on(loaded).RefreshSession(ctx, db.RefreshSessionParams{Token: token, Data: data, Expiry: expiry, ClientBrowser: client.browser, ClientOs: client.os, ClientNetwork: pgtype.Text{String: client.network, Valid: client.network != ""}})
 		if err != nil {
 			return err
 		}
@@ -256,14 +256,13 @@ func (w *sessionResponseGuard) save(status int) {
 	}
 	w.saved = true
 	sessions, ctx := w.server.Sessions, w.request.Context()
+	if w.loaded.changed && status >= 400 {
+		// The session was stored or ended in the transaction of the request's change, which
+		// rolled back, so the browser keeps the cookies it has. See inChange.
+		return
+	}
 	switch sessions.Status(ctx) {
 	case scs.Modified:
-		if w.loaded.renewed && status >= 400 {
-			// The renewal and what followed it are one unit: a sign-in or credential change
-			// that failed after renewing stores no token, so nothing it began is signed in,
-			// and it sends neither cookie. See renewToken.
-			return
-		}
 		var token string
 		var err error
 		if w.loaded.stored {
@@ -354,11 +353,7 @@ func (s *Server) browserSession(next http.Handler) http.Handler {
 // that could not be sealed, signs nothing in and changes nothing. The browser keeps the token it
 // presented, and the session it loaded stays as it was.
 func (s *Server) renewToken(ctx context.Context) error {
-	if err := s.Sessions.RenewToken(ctx); err != nil {
-		return err
-	}
-	ctx.Value(sessionLoadKey{}).(*sessionLoad).renewed = true
-	return nil
+	return s.Sessions.RenewToken(ctx)
 }
 
 // rotate replaces the token after a change to the account's password or two-factor
@@ -375,30 +370,53 @@ func (s *Server) rotate(ctx context.Context, a db.Account) error {
 	return nil
 }
 
-// storeSession is the Finish of a sign-in or of a change to how the account signs in. In the
-// change's transaction it runs renew, which renews the session for the account if it needs to,
-// sets *out to what the response shows of the session, and stores a renewed session there. The transaction
-// then commits the change and the session together, before the response, so nothing may change
-// the session after. A logout that ended the session first wins: the change rolls back with it.
+// inChange runs fn with the session stored or ended in tx, the transaction of the request's
+// sign-in, credential change or password reset, so that the two commit together or neither does.
+func inChange(ctx context.Context, tx pgx.Tx, fn func(*sessionLoad) error) error {
+	loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
+	loaded.tx, loaded.changed = tx, true
+	defer func() { loaded.tx = nil }()
+	return fn(loaded)
+}
+
+// storeSession is the Finish of a sign-in, of a change to how the account signs in, or of
+// accepting an invitation. In the change's transaction it runs renew, which renews the session
+// for the account if it needs to, sets *out to what the response shows of the session, and
+// stores the session there, renewed or not. The transaction then commits the change and the
+// session together, before the response, so nothing may change the session after. A logout
+// that ended the session first wins: the change rolls back with it, and the request answers 401.
 func (s *Server) storeSession(ctx context.Context, out *api.Session, renew func(context.Context, db.Account) error) auth.Finish {
 	return func(tx pgx.Tx, a db.Account) error {
-		loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
-		loaded.tx = tx
-		defer func() { loaded.tx = nil }()
-		if err := renew(ctx, a); err != nil {
-			return err
-		}
-		var err error
-		if *out, err = s.session(ctx, db.New(tx)); err != nil || !loaded.renewed {
-			return err
-		}
-		if _, err = loaded.commit(ctx, s.Sessions); errors.Is(err, errSessionRevoked) {
-			return domain.Unauthenticated
-		} else if err != nil {
-			return err
-		}
-		loaded.stored = true
-		return nil
+		return inChange(ctx, tx, func(loaded *sessionLoad) error {
+			if err := renew(ctx, a); err != nil {
+				return err
+			}
+			var err error
+			if *out, err = s.session(ctx, db.New(tx)); err != nil {
+				return err
+			}
+			if _, err = loaded.commit(ctx, s.Sessions); errors.Is(err, errSessionRevoked) {
+				return domain.Unauthenticated
+			} else if err != nil {
+				return err
+			}
+			loaded.stored = true
+			return nil
+		})
+	}
+}
+
+// endSession is the Finish of a password reset. In the reset's transaction it ends the session
+// the browser presented, if any, and gives the browser a device token for the account, so a
+// failure leaves the password, the reset link and the browser's session as they were.
+func (s *Server) endSession(ctx context.Context) auth.Finish {
+	return func(tx pgx.Tx, a db.Account) error {
+		return inChange(ctx, tx, func(*sessionLoad) error {
+			if err := s.Sessions.Destroy(ctx); err != nil {
+				return err
+			}
+			return s.issueDevice(ctx, a)
+		})
 	}
 }
 
