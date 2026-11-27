@@ -91,8 +91,19 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 			return finish("cancelled", "Cancelled before reserving this host.")
 		}
 		// Nothing converts the routes while the host is reserved, see QualifyRouteBackends.
-		if err := e.convertBareBackends(ctx); err != nil {
+		converted, err := e.convertBareBackends(ctx)
+		if err != nil {
 			return finish("failed", "This host's routes could not be moved off the backend names an earlier agent published, so the host was not reserved. Try again once its proxy serves.")
+		}
+		// The proxy counts each renamed server up until it has probed it, and maintenance
+		// records which servers the proxy routes.
+		if converted {
+			if err = sleepContext(ctx, poolHealthSettle); err != nil {
+				if e.cancelled(c.Id) {
+					return finish("cancelled", "Cancelled before reserving this host.")
+				}
+				return err
+			}
 		}
 		o, _, err := e.observeUnit(ctx, p, command.Secrets)
 		expected := p.ExpectedState

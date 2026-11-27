@@ -211,10 +211,16 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 
 // Nothing converts a reserved host's routes until the reservation is released, so bare
 // backend names an earlier agent published would last as long as it does. Reserving
-// converts them first, and a host whose conversion fails is not reserved.
+// converts them first, and a host whose conversion fails is not reserved. The proxy counts
+// a renamed server up until it probes it, so a server it had out, here the other host's,
+// is still left out of what the reservation records.
 func TestNativeReservationConvertsBareBackends(t *testing.T) {
 	w := newRoutedWriter(t)
 	ctx := context.Background()
+	remote := net.JoinHostPort(remoteAddress, strconv.Itoa(remotePort))
+	if _, err := w.docker.ContainerStop(ctx, w.remote, client.ContainerStopOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	state, err := w.journal.routing()
 	if err != nil {
 		t.Fatal(err)
@@ -245,6 +251,31 @@ func TestNativeReservationConvertsBareBackends(t *testing.T) {
 		return state.Current.QualifiedBackends
 	}
 
+	remoteDown := func() bool {
+		t.Helper()
+		runtime, err := w.engine.readIngressRuntime(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, service := range runtime["services"] {
+			for at, status := range service.ServerStatus {
+				if backend, err := backendOf(w.plan.UnitID, at); err == nil && backend == remote {
+					return status == "DOWN"
+				}
+			}
+		}
+		return false
+	}
+	for range 30 {
+		if remoteDown() {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !remoteDown() {
+		t.Fatal("the proxy never took the other host's stopped server out")
+	}
+
 	// A conversion the proxy never activates is put back.
 	broken := false
 	w.engine.Point = func(point string) {
@@ -268,8 +299,13 @@ func TestNativeReservationConvertsBareBackends(t *testing.T) {
 	if !w.barrier() || !qualified() {
 		t.Fatal("the host was reserved without converting its routes")
 	}
-	// The reservation recorded the servers the converted routes name.
-	w.routed()
+	s, err := w.journal.crossHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Routed == nil || len(s.Routed.Servers) != 1 || s.Routed.Servers[0].Backend == remote {
+		t.Fatalf("the reservation recorded %+v, not only this host's writer", s.Routed)
+	}
 }
 
 // A proxy that cannot say which servers it routes could not confirm them at completion
