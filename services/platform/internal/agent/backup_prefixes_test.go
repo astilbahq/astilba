@@ -108,8 +108,8 @@ func releasedSchedule(t *testing.T, j *Journal, id uuid.UUID) (first, later sche
 
 // A released binary would back up a prefixed destination's policy to its bucket's root, so it
 // never finds that schedule enabled, whatever its cadence. This binary still runs it, and an
-// earlier binary's change to it since leaves it disabled here too, until management installs it
-// again.
+// earlier binary's change to it since leaves it disabled here too, until management installs a new
+// generation.
 func TestAPrefixedScheduleIsHiddenFromOlderBinaries(t *testing.T) {
 	j, plan := testVisualJournal(t)
 	d := backup.Destination{ID: uuid.New(), Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "backups", Prefix: "servers/web-1"}
@@ -136,13 +136,15 @@ func TestAPrefixedScheduleIsHiddenFromOlderBinaries(t *testing.T) {
 	if err := j.saveSchedule(s); err != nil {
 		t.Fatal(err)
 	}
-	// An earlier binary records something on the disabled mirror it reads.
+	// An earlier binary records something on the disabled mirror it reads, and writes it back
+	// without the prefix it doesn't know.
 	first, _ := releasedSchedule(t, j, p.ID)
 	first.Sequence++
+	first.Installation.Destination.Prefix = ""
 	if err := j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "schedules", p.ID.String(), first) }); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := j.schedule(p.ID); err != nil || got.Installation.Policy.Enabled || got.Sequence != first.Sequence {
+	if got, err := j.schedule(p.ID); err != nil || got.Installation.Policy.Enabled || !got.Installation.Next.IsZero() || got.Sequence != first.Sequence {
 		t.Fatal("this binary ignored a released binary's later change to the schedule", err)
 	}
 	// Without a prefix, the schedule is where released binaries read it.
