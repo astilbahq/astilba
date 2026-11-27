@@ -27,9 +27,16 @@ type Service struct {
 	Mail      *mailer.Mailer
 	Now       func() time.Time
 	// Tokens seals the tokens this service issues to itself: device tokens and reset requests.
-	Tokens *secretbroker.Tokens
+	Tokens TokenSealer
 	// Queue takes reset requests. Only a serving process has one.
 	Queue *river.Client[pgx.Tx]
+}
+
+// TokenSealer seals and opens self-issued tokens. A serving process uses
+// secretbroker.Tokens.
+type TokenSealer interface {
+	Seal(kind secretbroker.TokenKind, plaintext []byte) ([]byte, error)
+	Open(kind secretbroker.TokenKind, ciphertext []byte) ([]byte, error)
 }
 
 // Hash is the stored lookup key for two kinds of value, neither a secret a person chose. Link
