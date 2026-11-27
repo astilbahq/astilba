@@ -72,9 +72,8 @@ func TestReportNoteStaysWithinTheContract(t *testing.T) {
 }
 
 // An agent that stops during the rebuild leaves the command to resume: it reports no outcome,
-// and each volume keeps recording the earlier release. Storage with no record, whose rebuild had
-// not started yet, records the one assumed of it before the first starts, so a later plan the
-// unit saves does not record the serving release of the plan it leaves instead.
+// and each volume, storage with no record included, keeps recording the earlier release beside
+// the serving one, whatever plan the unit saves next.
 func TestStoppingDuringTheRebuildLeavesItToResume(t *testing.T) {
 	journal, base := testVisualJournal(t)
 	docker, err := client.New(client.WithHost("unix:///nonexistent/astilba-test.sock"))
@@ -238,35 +237,49 @@ func TestOutstandingRebuildKeepsTheServingReleasesRefusals(t *testing.T) {
 	}
 }
 
-// Saving the applied plan again, as pausing or resuming maintenance and a rerun after a restart
-// do, leaves no plan behind, so it records no release for storage with no record: the plan's own
-// release has not rebuilt its indexes yet, and the rebuild would never be due. Leaving the plan
-// for another still records its release.
-func TestSavingTheAppliedPlanAgainRecordsNoRelease(t *testing.T) {
+// Storage with no record, such as a restore target an earlier agent filled, holds indexes no
+// release this agent saw rebuilt. Whatever plans the unit saves, the applied one again as pausing
+// or resuming maintenance does, or another on the same release, the record assumes the oldest
+// release of the major and names the one serving the data, so the rebuild stays due and earlier
+// releases stay refused. Storage the unit leaves is recorded the same way.
+func TestStorageWithNoRecordKeepsItsRebuildWhateverPlansTheUnitSaves(t *testing.T) {
 	journal, identity := testVisualJournal(t)
 	serving, _ := domain.CurrentPostgres(18)
-	volume := uuid.New()
-	plan := func() deployment.Plan {
+	oldest := oldestPostgres(18)
+	if oldest.Image == serving.Image || len(serving.ReindexSince(oldest)) == 0 {
+		t.Fatal("PostgreSQL 18 has no earlier release whose update rebuilds indexes")
+	}
+	served, kept := uuid.New(), uuid.New()
+	plan := func(volumes ...uuid.UUID) deployment.Plan {
 		p := identity
 		p.ID = uuid.New()
 		image := serving.Image
-		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}},
-			Applications: []domain.Application{{ID: uuid.New(), Name: "Database", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: serving.Mount}}}}}
+		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}}
+		for _, volume := range volumes {
+			p.Specification.Volumes = append(p.Specification.Volumes, domain.Volume{ID: volume, Name: volume.String()})
+			p.Specification.Applications = append(p.Specification.Applications, domain.Application{ID: uuid.New(), Name: volume.String(), Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: serving.Mount}}})
+		}
 		return p.WithHash()
 	}
-	applied := plan()
-	for range 2 {
-		if err := journal.saveUnit(unitState{Plan: applied, Expected: map[string]string{}}); err != nil {
+	applied := plan(served, kept)
+	for _, p := range []deployment.Plan{applied, applied, plan(served)} {
+		if err := journal.saveUnit(unitState{Plan: p, Expected: map[string]string{}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if record, found, err := journal.postgresData(volume); err != nil || found {
-		t.Fatalf("saving the applied plan again recorded its release: %+v, %v", record, err)
+	assumed := postgresData{Image: oldest.Image, Served: serving.Image}
+	for _, volume := range []uuid.UUID{served, kept} {
+		if record, found, err := journal.postgresData(volume); err != nil || !found || record != assumed {
+			t.Fatalf("storage with no record was recorded as %+v, %v", record, err)
+		}
+		if err := journal.postgresDataOpens(plan(volume), volume); err != nil {
+			t.Fatalf("the serving release was refused: %v", err)
+		}
 	}
-	if err := journal.saveUnit(unitState{Plan: plan(), Expected: map[string]string{}}); err != nil {
-		t.Fatal(err)
-	}
-	if record, found, err := journal.postgresData(volume); err != nil || !found || record != (postgresData{Image: serving.Image}) {
-		t.Fatalf("leaving the plan did not record its release: %+v, %v", record, err)
+	earlier := plan(served)
+	image := oldest.Image
+	earlier.Specification.Applications[0].Source.Image = &image
+	if err := journal.postgresDataOpens(earlier.WithHash(), served); !errors.Is(err, errPostgresVersionChange) {
+		t.Fatalf("an earlier release opened data the serving one wrote: %v", err)
 	}
 }

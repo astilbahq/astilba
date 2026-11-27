@@ -25,10 +25,11 @@ import (
 // entries, so the record stays at the earlier release until those indexes are rebuilt.
 type postgresData struct {
 	Image string `json:"image"`
-	// Served is the later release that served the data while a rebuild of Image's indexes was
-	// outstanding, set before the rebuild starts and dropped once it finishes. Image may then be
-	// one assumed of storage with no record, the oldest release of its major, which says nothing
-	// of what wrote the data; Served is what the data must still open with.
+	// Served is the later release that served the data while a rebuild of Image's indexes is
+	// outstanding: set when a unit first saves a plan with storage that has no record, or before a
+	// rebuild starts, and dropped once it finishes. Image may then be one assumed of storage with
+	// no record, the oldest release of its major, which says nothing of what wrote the data; Served
+	// is what the data must still open with.
 	Served string `json:"served,omitempty"`
 	// Initialising is set before the agent creates a database's new volume, and cleared once its
 	// cluster is ready: a volume found while it is set never served the database, so the agent
@@ -106,36 +107,46 @@ func (r postgresDataRefusal) Error() string {
 
 func (r postgresDataRefusal) Is(target error) bool { return target == errPostgresVersionChange }
 
-// recordPostgresWriters records the release of each managed database in the plan a unit is
-// leaving, for a volume with no record yet. That release wrote the data a new plan may serve with
-// a later one, which is what makes the later release's reindex due. Runs inside saveUnit, before
-// the new plan is the applied one. Saving the applied plan again, as pausing or resuming
-// maintenance and a rerun after a restart do, leaves no plan behind: its own release has not yet
-// rebuilt the indexes it says to.
-func (j *Journal) recordPostgresWriters(tx *bolt.Tx, previous, next deployment.Plan) error {
-	if previous.Hash == next.Hash {
-		return nil
-	}
-	for _, a := range previous.LocalApplications() {
-		if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
-			continue
-		}
-		if _, ok := domain.PostgresReleaseOf(*a.Source.Image); !ok {
-			continue
-		}
-		var existing postgresData
-		err := j.get(tx, postgresDataBucket, a.Mounts[0].VolumeID.String(), &existing)
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err = j.put(tx, postgresDataBucket, a.Mounts[0].VolumeID.String(), postgresData{Image: *a.Source.Image}); err != nil {
-			return err
+// assumePostgresData records each managed database volume of the plan a unit saves, then of the
+// plan it leaves, that has no record yet. Such storage is one an earlier agent made or filled,
+// whose indexes no release this agent saw rebuilt, so it is assumed to hold the oldest release of
+// its major's, served by the plan's own release: the rebuild stays due from the oldest whatever
+// plans the unit saves first, and the data still refuses what cannot open what that release
+// wrote. Runs inside saveUnit, after the plan it saves has served the data.
+func (j *Journal) assumePostgresData(tx *bolt.Tx, plans ...deployment.Plan) error {
+	for _, p := range plans {
+		for _, a := range p.LocalApplications() {
+			if a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
+				continue
+			}
+			serving, ok := domain.PostgresReleaseOf(*a.Source.Image)
+			if !ok {
+				continue
+			}
+			var existing postgresData
+			err := j.get(tx, postgresDataBucket, a.Mounts[0].VolumeID.String(), &existing)
+			if err == nil {
+				continue
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if err = j.put(tx, postgresDataBucket, a.Mounts[0].VolumeID.String(), assumedPostgresData(serving)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// assumedPostgresData is the record of storage with no record that serving has served: the oldest
+// release of its major holds its indexes.
+func assumedPostgresData(serving domain.PostgresRelease) postgresData {
+	assumed := postgresData{Image: oldestPostgres(serving.Major()).Image}
+	if assumed.Image != serving.Image {
+		assumed.Served = serving.Image
+	}
+	return assumed
 }
 
 // recordNewPostgresStorage records a data volume the agent is creating for a managed database,
@@ -199,8 +210,7 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 		}
 		written, known := domain.PostgresReleaseOf(record.Image)
 		if !found || !known {
-			// Storage this agent neither created nor saw in an applied plan, such as a restore
-			// target an earlier agent filled: assume the oldest release of its major wrote it.
+			// As assumePostgresData does for storage no plan the unit saved has recorded yet.
 			written = oldestPostgres(serving.Major())
 		}
 		var queries []string
@@ -209,10 +219,9 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 		}
 		next := postgresData{Image: serving.Image}
 		if len(queries) > 0 {
-			// Every outstanding rebuild is recorded before the first starts, so a later plan the
-			// unit saves does not record the release of the plan it leaves for storage with no
-			// record, which would mark its indexes rebuilt. Until it finishes, the data still refuses releases that cannot open what
-			// the serving one writes.
+			// Every outstanding rebuild is recorded before the first starts, so if the agent
+			// stops during one, the data of each still refuses releases that cannot open what the
+			// serving one writes.
 			next = postgresData{Image: cmp.Or(record.Image, written.Image), Served: serving.Image}
 			due = append(due, rebuild{application: a, serving: serving, queries: queries})
 		}
