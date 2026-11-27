@@ -76,6 +76,11 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 	if backup.ValidateDestination(d, a) != nil {
 		return api.BackupDestination{}, domain.Invalid("destination")
 	}
+	if d.Kind == "s3" {
+		if field := d.Unknowable(); field != "" {
+			return api.BackupDestination{}, domain.Invalid(field)
+		}
+	}
 	if (d.Kind == "s3") != (server != nil) {
 		return api.BackupDestination{}, domain.Invalid("serverId")
 	}

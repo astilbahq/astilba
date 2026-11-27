@@ -31,6 +31,9 @@ type Destination struct {
 	Prefix string `json:"prefix,omitempty"`
 }
 
+// bucketPattern is an S3 destination's bucket.
+var bucketPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
 // prefixPattern is a destination's prefix: names of letters, digits, '.', '_' and '-' that start
 // with a letter or digit, joined by '/'.
 var prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
@@ -47,18 +50,6 @@ func (d Destination) scope() string {
 		return "astilba"
 	}
 	return d.Prefix
-}
-
-// Overlaps says whether S3 destinations d and o keep their repositories in the same part of a
-// bucket of one name, or one inside the other's, so keys limited to one would reach the other's.
-// Their endpoints aren't compared: one bucket has many, such as a provider's regional and global
-// origins, or an origin with its port.
-func (d Destination) Overlaps(o Destination) bool {
-	if d.Kind != "s3" || o.Kind != "s3" || d.Bucket != o.Bucket {
-		return false
-	}
-	a, b := d.scope(), o.scope()
-	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 // Repository is restic's repository for policy p's backups on d.
@@ -212,7 +203,7 @@ func ValidateDestination(d Destination, a Access) error {
 		}
 	case "s3":
 		u, err := url.Parse(d.Endpoint)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || d.Root != "" || !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(d.Bucket) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") || d.Prefix != "" && !ValidPrefix(d.Prefix) {
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || d.Root != "" || !bucketPattern.MatchString(d.Bucket) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") || d.Prefix != "" && !ValidPrefix(d.Prefix) {
 			return errors.New("invalid S3 destination")
 		}
 	default:
