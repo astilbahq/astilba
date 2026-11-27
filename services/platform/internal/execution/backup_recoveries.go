@@ -14,7 +14,6 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
 	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
@@ -28,125 +27,175 @@ import (
 // server's reports: the agent reads what it restores out of the snapshot itself.
 func (s *Service) StartBackupRecovery(ctx context.Context, p store.Principal, ws, pid, env, id uuid.UUID, in api.BackupRecoveryRequest) (api.Operation, error) {
 	var out api.Operation
-	err := s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: true}, "backup.recovery.start", id, func(tx pgx.Tx) error {
-		v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+	var started *recoveryKeyStart
+	err := s.scope(ctx, p, ws, recoveryAccess, "backup.recovery.start", id, func(tx pgx.Tx) error {
+		replayed, done, err := recoveryReplay(ctx, tx, ws, id, in)
+		if err != nil || done {
+			out = replayed
+			return err
+		}
+		start, err := s.checkRecovery(ctx, tx, ws, pid, env, id, in)
 		if err != nil {
 			return err
 		}
-		if err = requireActive(v.State); err != nil {
+		if start.account != nil {
+			// A managed destination's restore mints its own key first, with no locks held.
+			started, err = s.startRecoveryKey(ctx, tx, ws, id, in, start)
 			return err
 		}
-		source, err := loadBackupPolicy(ctx, tx, ws, env, id)
-		if err != nil {
-			return err
-		}
-		previous, err := db.New(tx).OperationCommandByRequestKey(ctx, db.OperationCommandByRequestKeyParams{WorkspaceID: ws, RequestKey: in.RequestKey})
-		if err == nil {
-			var c api.ExecutionCommand
-			var r backup.Recovery
-			if json.Unmarshal(previous, &c) != nil || c.Kind != api.ExecutionCommandKindRestore || c.Backup == nil || json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Policy.ID != id || r.Snapshot != in.Snapshot {
-				return domain.Conflict
-			}
-			out, err = operationByRequestKey(ctx, tx, ws, in.RequestKey)
-			return err
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		if source.Method == "container-job" {
-			return domain.Invalid("policy.method")
-		}
-		// Only a policy whose server can no longer answer is restored elsewhere. A server that
-		// still answers restores its own snapshots, through its own schedule.
-		revoked, err := serverRevoked(ctx, tx, ws, source.ServerID)
-		if err != nil {
-			return err
-		}
-		if !revoked {
-			return domain.Invalid("policy.server")
-		}
-		if v.Server == nil || v.Applied == nil || *v.Server == source.ServerID {
-			return domain.Invalid("deployment")
-		}
-		server := *v.Server
-		if err = s.deploymentServer(ctx, tx, ws, server); err != nil {
-			return err
-		}
-		if err = requireRecoveryRestore(ctx, tx, ws, server); err != nil {
-			return err
-		}
-		raw, err := db.New(tx).BackupDestinationConfiguration(ctx, db.BackupDestinationConfigurationParams{WorkspaceID: ws, ID: source.DestinationID})
-		if err != nil {
-			return err
-		}
-		var destination backup.Destination
-		if err = json.Unmarshal(raw, &destination); err != nil {
-			return err
-		}
-		// A filesystem destination's repository was on the lost server.
-		if destination.Kind != "s3" {
-			return domain.Invalid("policy.destination")
-		}
-		if err = requireBackupPrefixes(ctx, tx, ws, server, destination); err != nil {
-			return err
-		}
-		receipts, err := db.New(tx).BackupSnapshotReceipts(ctx, db.BackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
-		if err != nil {
-			return err
-		}
-		var received backup.Receipts
-		if err = json.Unmarshal(receipts, &received); err != nil {
-			return err
-		}
-		reported, ok := received[in.Snapshot]
-		if !ok {
-			return domain.Invalid("snapshot")
-		}
-		planID, err := db.New(tx).EnvironmentRuntimePlan(ctx, db.EnvironmentRuntimePlanParams{WorkspaceID: ws, EnvironmentID: env})
-		if err != nil {
-			return err
-		}
-		plan, err := readPlan(ctx, tx, ws, env, planID)
-		if err != nil {
-			return err
-		}
-		plan = plan.PrimaryPlan()
-		if plan.ServerID != server {
-			return domain.Invalid("deployment")
-		}
-		if err = requireRecoveredResource(source, plan.Specification); err != nil {
-			return err
-		}
-		if err = requireAgentSupport(ctx, tx, ws, server, plan.Specification); err != nil {
-			return err
-		}
-		if err = requireReplicas(ctx, tx, ws, server, plan); err != nil {
-			return err
-		}
-		// The agent sees the policy's identity, destination and repository, bound to the server
-		// it restores on and the plan applied there now.
-		view := source
-		view.ServerID, view.Plan = server, plan
-		r := backup.Recovery{Installation: backup.Installation{Policy: view, Destination: destination}, RunID: uuid.New(), Snapshot: in.Snapshot, TargetID: uuid.New()}
-		if plan.Specification.Compose != nil {
-			r.TargetID = composeproject.ResourceID(plan.UnitID, "volume", "restored-"+r.RunID.String())
-		}
-		if r.Validate() != nil {
-			return domain.Invalid("policy")
-		}
-		generation, err := db.New(tx).AdvanceEnvironmentExecutionGeneration(ctx, db.AdvanceEnvironmentExecutionGenerationParams{WorkspaceID: ws, ID: env})
-		if err != nil {
-			return err
-		}
-		payload, _ := stablejson.Marshal(r)
-		value := jsontext.Value(payload)
-		c := api.ExecutionCommand{Id: uuid.New(), ServerId: server, EnvironmentId: env, Generation: generation, PlanHash: r.Digest(), Kind: api.ExecutionCommandKindRestore, Action: "inspect", ResourceId: id, Deadline: time.Now().Add(r.Lifetime()), Backup: &value}
-		if out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c); err != nil {
-			return err
-		}
-		return db.New(tx).InsertBackupRecovery(ctx, db.InsertBackupRecoveryParams{ID: r.RunID, WorkspaceID: ws, EnvironmentID: env, PolicyID: id, OperationID: out.Id, SourceServerID: source.ServerID, ServerID: server, PlanID: planID, Snapshot: in.Snapshot, FirstReportedAt: reported, TargetVolumeID: r.TargetID, CreatedAt: out.CreatedAt})
+		out, err = s.insertRecovery(ctx, tx, ws, env, id, in, start)
+		return err
 	})
+	if err == nil && started != nil {
+		out, err = s.finishRecoveryKey(ctx, p, ws, pid, env, id, in, *started)
+	}
 	return operationFor(p, out), err
+}
+
+// recoveryAccess admits a recovery: an owner's recent write, while the workspace is recovering.
+var recoveryAccess = workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: true}
+
+// recoveryReplay returns the operation a restore with this request key started, if one did.
+func recoveryReplay(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, in api.BackupRecoveryRequest) (api.Operation, bool, error) {
+	previous, err := db.New(tx).OperationCommandByRequestKey(ctx, db.OperationCommandByRequestKeyParams{WorkspaceID: ws, RequestKey: in.RequestKey})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return api.Operation{}, false, nil
+	} else if err != nil {
+		return api.Operation{}, true, err
+	}
+	var c api.ExecutionCommand
+	var r backup.Recovery
+	if json.Unmarshal(previous, &c) != nil || c.Kind != api.ExecutionCommandKindRestore || c.Backup == nil || json.Unmarshal(*c.Backup, &r) != nil || r.Installation.Policy.ID != id || r.Snapshot != in.Snapshot {
+		return api.Operation{}, true, domain.Conflict
+	}
+	out, err := operationByRequestKey(ctx, tx, ws, in.RequestKey)
+	return out, true, err
+}
+
+// recoveryStart is a restore that passed its checks, ready to be inserted.
+type recoveryStart struct {
+	server   uuid.UUID
+	sourceID uuid.UUID  // the revoked server the policy is bound to
+	account  *uuid.UUID // the destination's storage account, when management keys it
+	recovery backup.Recovery
+	planID   uuid.UUID
+	reported time.Time
+}
+
+// checkRecovery runs a restore's checks in tx. A managed restore runs them again once its key is
+// minted, so nothing that changed meanwhile is restored.
+func (s *Service) checkRecovery(ctx context.Context, tx pgx.Tx, ws, pid, env, id uuid.UUID, in api.BackupRecoveryRequest) (recoveryStart, error) {
+	var start recoveryStart
+	v, err := loadVisualEnvironment(ctx, tx, ws, pid, env)
+	if err != nil {
+		return start, err
+	}
+	if err = requireActive(v.State); err != nil {
+		return start, err
+	}
+	source, err := loadBackupPolicy(ctx, tx, ws, env, id)
+	if err != nil {
+		return start, err
+	}
+	if source.Method == "container-job" {
+		return start, domain.Invalid("policy.method")
+	}
+	// Only a policy whose server can no longer answer is restored elsewhere. A server that still
+	// answers restores its own snapshots, through its own schedule.
+	revoked, err := serverRevoked(ctx, tx, ws, source.ServerID)
+	if err != nil {
+		return start, err
+	}
+	if !revoked {
+		return start, domain.Invalid("policy.server")
+	}
+	if v.Server == nil || v.Applied == nil || *v.Server == source.ServerID {
+		return start, domain.Invalid("deployment")
+	}
+	server := *v.Server
+	if err = s.deploymentServer(ctx, tx, ws, server); err != nil {
+		return start, err
+	}
+	if err = requireRecoveryRestore(ctx, tx, ws, server); err != nil {
+		return start, err
+	}
+	stored, err := db.New(tx).BackupDestinationAccess(ctx, db.BackupDestinationAccessParams{WorkspaceID: ws, ID: source.DestinationID})
+	if err != nil {
+		return start, err
+	}
+	var destination backup.Destination
+	if err = json.Unmarshal(stored.Configuration, &destination); err != nil {
+		return start, err
+	}
+	// A filesystem destination's repository was on the lost server.
+	if destination.Kind != "s3" {
+		return start, domain.Invalid("policy.destination")
+	}
+	if err = requireBackupPrefixes(ctx, tx, ws, server, destination); err != nil {
+		return start, err
+	}
+	receipts, err := db.New(tx).BackupSnapshotReceipts(ctx, db.BackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
+	if err != nil {
+		return start, err
+	}
+	var received backup.Receipts
+	if err = json.Unmarshal(receipts, &received); err != nil {
+		return start, err
+	}
+	reported, ok := received[in.Snapshot]
+	if !ok {
+		return start, domain.Invalid("snapshot")
+	}
+	planID, err := db.New(tx).EnvironmentRuntimePlan(ctx, db.EnvironmentRuntimePlanParams{WorkspaceID: ws, EnvironmentID: env})
+	if err != nil {
+		return start, err
+	}
+	plan, err := readPlan(ctx, tx, ws, env, planID)
+	if err != nil {
+		return start, err
+	}
+	plan = plan.PrimaryPlan()
+	if plan.ServerID != server {
+		return start, domain.Invalid("deployment")
+	}
+	if err = requireRecoveredResource(source, plan.Specification); err != nil {
+		return start, err
+	}
+	if err = requireAgentSupport(ctx, tx, ws, server, plan.Specification); err != nil {
+		return start, err
+	}
+	if err = requireReplicas(ctx, tx, ws, server, plan); err != nil {
+		return start, err
+	}
+	// The agent sees the policy's identity, destination and repository, bound to the server it
+	// restores on and the plan applied there now.
+	view := source
+	view.ServerID, view.Plan = server, plan
+	r := backup.Recovery{Installation: backup.Installation{Policy: view, Destination: destination}, RunID: uuid.New(), Snapshot: in.Snapshot, TargetID: uuid.New()}
+	if plan.Specification.Compose != nil {
+		r.TargetID = composeproject.ResourceID(plan.UnitID, "volume", "restored-"+r.RunID.String())
+	}
+	if r.Validate() != nil {
+		return start, domain.Invalid("policy")
+	}
+	return recoveryStart{server: server, sourceID: source.ServerID, account: stored.AccountID, recovery: r, planID: planID, reported: reported}, nil
+}
+
+// insertRecovery inserts a checked restore's operation and its record.
+func (s *Service) insertRecovery(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID, in api.BackupRecoveryRequest, start recoveryStart) (api.Operation, error) {
+	r := start.recovery
+	generation, err := db.New(tx).AdvanceEnvironmentExecutionGeneration(ctx, db.AdvanceEnvironmentExecutionGenerationParams{WorkspaceID: ws, ID: env})
+	if err != nil {
+		return api.Operation{}, err
+	}
+	payload, _ := stablejson.Marshal(r)
+	value := jsontext.Value(payload)
+	c := api.ExecutionCommand{Id: uuid.New(), ServerId: start.server, EnvironmentId: env, Generation: generation, PlanHash: r.Digest(), Kind: api.ExecutionCommandKindRestore, Action: "inspect", ResourceId: id, Deadline: time.Now().Add(r.Lifetime()), Backup: &value}
+	out, err := s.insert(ctx, tx, ws, in.RequestKey, nil, c)
+	if err != nil {
+		return out, err
+	}
+	return out, db.New(tx).InsertBackupRecovery(ctx, db.InsertBackupRecoveryParams{ID: r.RunID, WorkspaceID: ws, EnvironmentID: env, PolicyID: id, OperationID: out.Id, SourceServerID: start.sourceID, ServerID: start.server, PlanID: start.planID, Snapshot: in.Snapshot, FirstReportedAt: start.reported, TargetVolumeID: r.TargetID, CreatedAt: out.CreatedAt})
 }
 
 // requireRecoveredResource refuses a restore whose resource the receiving deployment no longer
@@ -490,30 +539,6 @@ func recoveryRefusal(ctx context.Context, tx pgx.Tx, ws uuid.UUID, r backup.Reco
 	}
 	out.encrypted = stored.EncryptedAccess
 	return "", out, nil
-}
-
-// openRecoveryAccess fills a released restore's repository and destination access.
-func openRecoveryAccess(ctx context.Context, q *db.Queries, keys valueKeys, ws uuid.UUID, release recoveryRelease, r *backup.Recovery, c *api.ExecutionCommand) error {
-	policy := release.policy
-	if err := openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupPolicy, ID: c.ResourceId}, release.encrypted, &r.Installation.Access); err != nil {
-		return err
-	}
-	destination, err := q.BackupDestinationAccess(ctx, db.BackupDestinationAccessParams{WorkspaceID: ws, ID: policy.DestinationID})
-	if err != nil {
-		return err
-	}
-	if err = json.Unmarshal(destination.Configuration, &r.Installation.Destination); err != nil {
-		return err
-	}
-	var a backup.Access
-	if err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: policy.DestinationID}, destination.EncryptedAccess, &a); err != nil {
-		return err
-	}
-	r.Installation.Access.AccessKey, r.Installation.Access.SecretKey = a.AccessKey, a.SecretKey
-	raw, _ := stablejson.Marshal(r)
-	value := jsontext.Value(raw)
-	c.Backup = &value
-	return nil
 }
 
 // recoveryReport takes a restore command's report. Only a succeeded restore carries its result,

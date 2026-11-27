@@ -369,6 +369,8 @@ UNION ALL SELECT 'git',id,COALESCE(configuration->>'name','') FROM git_connectio
 UNION ALL SELECT 'registry',id,COALESCE(configuration->>'name','') FROM registries WHERE workspace_id = $1 AND id = ANY($2::uuid[])
 UNION ALL SELECT 'backup-destination',id,COALESCE(configuration->>'name','') FROM backup_destinations WHERE workspace_id = $1 AND id = ANY($2::uuid[])
 UNION ALL SELECT 'backup-policy',id,COALESCE(configuration->>'name','') FROM backup_policies WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'backup-storage-account',id,name FROM backup_storage_accounts WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+UNION ALL SELECT 'backup-storage-key',id,user_name FROM backup_storage_keys WHERE workspace_id = $1 AND id = ANY($2::uuid[])
 `
 
 type SecretAccessItemNamesParams struct {

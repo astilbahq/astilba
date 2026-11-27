@@ -1,5 +1,7 @@
 package portability
 
+import "slices"
+
 // These literals are the archive format, not database introspection. New schema
 // columns are excluded until their import and credential semantics are reviewed.
 type table struct{ Name, Columns string }
@@ -75,9 +77,10 @@ var version5Tables = func() []table {
 // revoking their preview's host released; version 13 added when each server's revocation began and
 // when management first received each backup snapshot; version 15 added restores of a revoked
 // server's backup snapshots onto another server; version 17 added each restore's latest discard;
-// version 19 added the server each backup destination is bound to. Versions 10, 12, 14, 16 and 18
-// are recovery bases.
-const ArchiveVersion = 19
+// version 19 added the server each backup destination is bound to; version 21 added managed backup
+// storage accounts and the keys management minted with them. Versions 10, 12, 14, 16, 18 and 20 are
+// recovery bases.
+const ArchiveVersion = 21
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -171,7 +174,7 @@ var version17Tables = func() []table {
 
 // Version 19 carries the server each S3 backup destination is bound to, and whether it is shared.
 // Version 18 is a recovery base.
-var tables = func() []table {
+var version19Tables = func() []table {
 	out := append([]table{}, version17Tables...)
 	for i := range out {
 		if out[i].Name == "backup_destinations" {
@@ -179,4 +182,23 @@ var tables = func() []table {
 		}
 	}
 	return out
+}()
+
+// Version 21 carries managed backup storage accounts, with their admin credentials, and the keys
+// management minted with them, with each server's revocation count their handovers are bound to,
+// and how many tries each re-minted key's installs have had.
+// An account comes before the destinations that name it. Version 20 is a recovery base.
+var tables = func() []table {
+	out := append([]table{}, version19Tables...)
+	for i := range out {
+		switch out[i].Name {
+		case "servers":
+			out[i].Columns += ",revocations"
+		case "backup_destinations":
+			out[i].Columns += ",account_id"
+		}
+	}
+	i := slices.IndexFunc(out, func(t table) bool { return t.Name == "backup_destinations" })
+	out = slices.Insert(out, i, table{Name: "backup_storage_accounts", Columns: "id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential,generation,peers,created_at"})
+	return append(out, table{Name: "backup_storage_keys", Columns: "id,workspace_id,account_id,destination_id,holder_server_id,purpose,recovery_request,recovery_policy_id,recovery_snapshot,recovery_id,scope,user_name,access_key_id,state,mint_deadline,handed_over,activated_at,revoked_at,installs,install_attempts,install_next_at,found_tags,encrypted_secret,created_at"})
 }()

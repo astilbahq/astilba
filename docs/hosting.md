@@ -1128,6 +1128,9 @@ replaces what each host holds, including peers the backup does not know about. S
    contains application secrets and provider credentials.
 2. Revoke the source server connections after export and avoid further source
    changes. Existing containers, volumes and installed schedules continue running.
+   Choose **hand over storage keys** for a server with [managed backup
+   keys](backups.md#managed-keys), or revoking it revokes them and its installed
+   schedules' backups fail.
 3. Sign in as the intended owner at the destination, complete MFA where required,
    and import the archive from Projects. A hosted destination also requires a
    workspace invitation. The importer becomes the owner and author of imported

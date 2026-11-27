@@ -145,6 +145,32 @@ func (s *Store) rewrapValues(ctx context.Context, rotation *secretbroker.Rotatio
 				return err
 			}
 		}
+		storageAccounts, err := q.AllBackupStorageAccountCredentials(ctx)
+		if err != nil {
+			return err
+		}
+		for _, v := range storageAccounts {
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BackupStorageAccount, ID: v.ID}, v.EncryptedCredential)
+			if err != nil {
+				return rewrapFailed("backup_storage_accounts", v.WorkspaceID, v.ID, err)
+			}
+			if err = q.RewrapBackupStorageAccountCredential(ctx, db.RewrapBackupStorageAccountCredentialParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedCredential: blob}); err != nil {
+				return err
+			}
+		}
+		storageKeys, err := q.AllBackupStorageKeySecrets(ctx)
+		if err != nil {
+			return err
+		}
+		for _, v := range storageKeys {
+			blob, err := rotation.Rewrap(v.WorkspaceID, secretbroker.Item{Kind: secretbroker.BackupStorageKey, ID: v.ID}, v.EncryptedSecret)
+			if err != nil {
+				return rewrapFailed("backup_storage_keys", v.WorkspaceID, v.ID, err)
+			}
+			if err = q.RewrapBackupStorageKeySecret(ctx, db.RewrapBackupStorageKeySecretParams{WorkspaceID: v.WorkspaceID, ID: v.ID, EncryptedSecret: blob}); err != nil {
+				return err
+			}
+		}
 		hooks, err := q.AllAlertWebhooks(ctx)
 		if err != nil {
 			return err

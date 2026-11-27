@@ -1999,6 +1999,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/backup-storage-accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["ListBackupStorageAccounts"];
+        put?: never;
+        /** @description Records an AWS account whose admin credential management mints backup storage keys with. Management checks the credential with sts:GetCallerIdentity and iam:ListUsers before storing it. Needs recent authentication. */
+        post: operations["CreateBackupStorageAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Replaces the admin credential with one of the same AWS account. Keys already minted keep working; delete the old admin key at AWS afterwards. Needs recent authentication. */
+        put: operations["ReplaceBackupStorageAccountCredential"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Asks for the account check to run again now. */
+        post: operations["CheckBackupStorageAccount"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/peers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Lists another installation that shares this account after a workspace transfer, so its users are shown as managed by it without an alert. Needs recent authentication. */
+        post: operations["AddBackupStorageAccountPeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/found-users/{userName}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Revokes an IAM user the account check found under this workspace's path with no record here. Its access is taken away and the user deleted at AWS. Needs recent authentication. */
+        post: operations["RevokeFoundBackupStorageUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-destinations/{destinationId}/keys/{keyId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Revokes a key that was handed over to a workspace transfer. Doing so after the transfer breaks the transferred server's backups. Needs recent authentication. */
+        post: operations["RevokeBackupStorageKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-destinations/{destinationId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Asks management to retry revoking this destination's keys now. */
+        post: operations["RetryBackupStorageKeys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies": {
         parameters: {
             query?: never;
@@ -4741,10 +4860,112 @@ export interface components {
             serverId: string | null;
             /** @description Whether this S3 destination was used by policies on more than one server before destinations were bound. Each of those servers holds its keys and can delete or overwrite the others' backups. Its policies keep using it, and no new policy can. */
             shared: boolean;
-            /** @description Whether a revoked server holds this S3 destination's storage keys: the server a policy using it is bound to, or one a restore of such a policy was recorded for. It can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement, and a backup_exposure alert fires for it. */
+            /** @description Whether a revoked server holds this S3 destination's storage keys: the server a policy using it is bound to, or one a restore of such a policy was recorded for. It can delete or overwrite any backup they reach until they are revoked at the provider. A new policy on it needs an acknowledgement, and a backup_exposure alert fires for it. A managed destination is exposed while one of its keys is being revoked, or a revoked server holds one that isn't handed over, and for an hour after each is revoked. */
             exposed: boolean;
+            /**
+             * Format: uuid
+             * @description The storage account a managed destination's keys are minted from, or null.
+             */
+            accountId: string | null;
+            /** @description A managed destination's minted keys: those not yet revoked, newest first, then the most recently revoked, up to 20 in all. Empty for any other. */
+            keys: components["schemas"]["BackupStorageKey"][];
+            /** @description Whether this is a managed destination none of whose keys has ever been active: its key is still being made, or making it failed and the destination goes once that key is revoked. No policy can use it. */
+            placeholder: boolean;
+            /** @description Why minting a renewed server's new key failed, as a fixed code; management retries. */
+            remintError: string | null;
             /** @description The backup policies using this destination. */
             policies: components["schemas"]["BackupDestinationPolicy"][];
+        };
+        ServerRevokeRequest: {
+            /** @description Hand the server's managed backup storage keys over to a workspace transfer instead of revoking them, so the transferred server's installed schedules keep working. See docs/hosting.md#transferring-a-workspace. */
+            handOverStorageKeys?: boolean;
+        };
+        BackupStorageAccountRequest: {
+            name: string;
+            accessKeyId: string;
+            secretAccessKey: string;
+            /** @description The ARN of the permissions-boundary policy every minted user is created with. */
+            boundary: string;
+        };
+        /** @description A replacement admin credential. The account's permissions boundary stays, since every user minted under it carries it. */
+        BackupStorageCredentialRequest: {
+            accessKeyId: string;
+            secretAccessKey: string;
+            /**
+             * Format: int64
+             * @description The generation the credential replaces, so two replacements can't interleave.
+             */
+            generation: number;
+        };
+        BackupStorageAccountPeerRequest: {
+            /** Format: uuid */
+            installationId: string;
+        };
+        /** @description An IAM user under the workspace's path with no record at this installation. */
+        BackupStorageFoundUser: {
+            userName: string;
+            /** @description Its astilba:installation tag, as found. */
+            installationId: string;
+            /** @description Its astilba:server tag, as found. */
+            serverId: string;
+            /** @description Whether it has the account's permissions boundary. */
+            bounded: boolean;
+            /** @description Whether its installation is one of the account's peers. */
+            peer: boolean;
+            /** @description Whether management is revoking it. */
+            revoking: boolean;
+            /** @description While it is being revoked, why the last attempt failed. */
+            lastError: string | null;
+        };
+        BackupStorageAccount: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            awsAccount: string;
+            adminArn: string;
+            boundary: string;
+            /** @description The IAM path minted users live under. */
+            path: string;
+            /**
+             * Format: uuid
+             * @description This installation, as minted users are tagged.
+             */
+            installationId: string;
+            /** Format: int64 */
+            generation: number;
+            peers: string[];
+            /**
+             * Format: date-time
+             * @description When the latest account check reported.
+             */
+            checkedAt: string | null;
+            /** @description Whether a check has been asked for, or is running, and hasn't reported yet. */
+            checking: boolean;
+            /** @description Why the latest account check failed, as a fixed code. */
+            checkError: string | null;
+            foundUsers: components["schemas"]["BackupStorageFoundUser"][];
+            /** @description Access keys the latest check found on minted users that management never made, and deleted. */
+            extraKeysDeleted: number;
+        };
+        /** @description A storage key management minted for a managed destination. */
+        BackupStorageKey: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            purpose: "server" | "recovery";
+            /** @enum {string} */
+            state: "minting" | "active" | "revoking" | "revoked";
+            userName: string;
+            /** Format: uuid */
+            serverId: string;
+            /** @description Whether the key is handed over to a workspace transfer at its server's current revocation. */
+            handedOver: boolean;
+            /** Format: date-time */
+            activatedAt: string | null;
+            /** Format: date-time */
+            revokedAt: string | null;
+            attempts: number;
+            lastError: string | null;
         };
         /** @description A destination's configuration as a server receives it. */
         BackupInstallationDestination: {
@@ -4781,7 +5002,7 @@ export interface components {
             /** @enum {string} */
             kind: "filesystem" | "s3";
             root: string;
-            /** @description An S3 destination's HTTPS origin, starting `https://` in lowercase, with a host of ASCII letters, digits, '.', '-' and '_', or an IP address. A host with an AWS access point's alias or label is refused with the field `endpoint`, as is a destination whose host names a bucket, such as `<bucket>.s3.<region>.amazonaws.com`, and so would keep its repositories in or around another of the workspace's destinations' part of it. */
+            /** @description An S3 destination's HTTPS origin, starting `https://` in lowercase, with a host of ASCII letters, digits, '.', '-' and '_', or an IP address. A host with an AWS access point's alias or label is refused with the field `endpoint`, as is a destination whose host names a bucket, such as `<bucket>.s3.<region>.amazonaws.com`, and so would keep its repositories in or around another of the workspace's destinations' part of it. Left empty for a managed destination, whose endpoint is AWS's for its region. */
             endpoint: string;
             /** @description An S3 destination's bucket: 3 to 63 lowercase letters, digits, '.' and '-', starting and ending with a letter or digit. An AWS access point's alias, ending in `-s3alias` or `--ol-s3`, is refused with the field `bucket`. */
             bucket: string;
@@ -4790,10 +5011,15 @@ export interface components {
             prefix?: string;
             /**
              * Format: uuid
+             * @description Makes a managed S3 destination: management mints its server's key from this storage account, limited to the destination's repositories, and revokes it when the server is revoked. The endpoint is then derived from the region, so `endpoint` must be empty, and `access` is left out. See docs/backups.md#managed-keys.
+             */
+            accountId?: string;
+            /**
+             * Format: uuid
              * @description Required for an S3 destination, and refused for a filesystem one: the deployment server its storage keys are given to. Only policies on that server can use it, so give it keys limited to its prefix or bucket. A server that is missing, revoked, a build server or not ready to deploy is refused with the field `serverId`.
              */
             serverId?: string;
-            access: components["schemas"]["BackupAccess"];
+            access?: components["schemas"]["BackupAccess"];
         };
         /** @description Daily wall-clock, five-field cron, or UTC elapsed interval. Omitted kind preserves the original daily format. */
         DailySchedule: {
@@ -5239,7 +5465,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held" | "backup_exposure";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held" | "backup_exposure" | "backup_account";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */
@@ -8365,7 +8591,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ServerRevokeRequest"];
+            };
+        };
         responses: {
             /** @description Success */
             204: {
@@ -10285,6 +10515,264 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["BackupDestination"];
                 };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ListBackupStorageAccounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupStorageAccount"][];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    CreateBackupStorageAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupStorageAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupStorageAccount"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ReplaceBackupStorageAccountCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupStorageCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupStorageAccount"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    CheckBackupStorageAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    AddBackupStorageAccountPeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupStorageAccountPeerRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    RevokeFoundBackupStorageUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                accountId: string;
+                userName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    RevokeBackupStorageKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                destinationId: string;
+                keyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    RetryBackupStorageKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                destinationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Error */
             default: {

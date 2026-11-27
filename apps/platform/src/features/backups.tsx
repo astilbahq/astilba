@@ -14,18 +14,22 @@ import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { BackupDestinationForm } from "./backup-destination-form";
+import { ExposureAcknowledgement } from "./backup-exposure";
 import { PolicyStatus } from "./backup-policy-status";
 import {
   BackupRecommendations,
   type RecommendedBackup,
 } from "./backup-recommendations";
-import { ExposureAcknowledgement } from "./backup-recovery";
 import {
   ScheduleFields,
   scheduleInput,
   scheduleTimeout,
 } from "./schedule-fields";
 import type { EnvironmentPath } from "./visual-editor";
+
+// A managed destination whose key has never worked, as management reports it: its key is still
+// being made, or making it failed. A policy can't use it until a key has been active.
+const placeholder = (d: Schema["BackupDestination"]) => d.placeholder;
 
 export function Backups({
   path,
@@ -56,7 +60,7 @@ export function Backups({
   });
   const servers = useQuery(serversOptions(path.workspaceId));
   const [destination, setDestination] = useState("");
-  const exposed = destinations.data?.find((d) => d.id === destination)?.exposed;
+  const chosen = destinations.data?.find((d) => d.id === destination);
   const [preset, setPreset] = useState<RecommendedBackup>();
   const createPolicy = useRef<HTMLDetailsElement>(null);
   return (
@@ -136,8 +140,8 @@ export function Backups({
                       },
                     }),
                   ).catch(async (error: unknown) => {
-                    // A destination exposed, or bound to a server, since the list loaded is
-                    // refused, so the list is refreshed to show why.
+                    // A destination exposed, bound to a server, or whose key isn't ready since
+                    // the list loaded is refused, so the list is refreshed to show why.
                     if (
                       error instanceof ApiError &&
                       error.detail.fields?.some((f) =>
@@ -145,6 +149,7 @@ export function Backups({
                           "destination.exposed",
                           "destination.server",
                           "destination.shared",
+                          "destination.key",
                         ].includes(f),
                       )
                     )
@@ -230,12 +235,14 @@ export function Backups({
                       <option value="">Choose a destination</option>
                       {destinations.data?.map((d) => (
                         // An S3 destination's keys belong to one server, and only its policies
-                        // can use it.
+                        // can use it. A managed one needs its key made first.
                         <option
                           key={d.id}
                           value={d.id}
                           disabled={
-                            d.shared || (!!d.serverId && d.serverId !== server)
+                            d.shared ||
+                            (!!d.serverId && d.serverId !== server) ||
+                            placeholder(d)
                           }
                         >
                           {d.name}
@@ -245,7 +252,10 @@ export function Backups({
                               ? " — shared by several servers, closed to new policies"
                               : d.serverId && d.serverId !== server
                                 ? ` — keys belong to ${servers.data?.find((v) => v.id === d.serverId)?.name ?? "another server"}`
-                                : ""}
+                                : placeholder(d)
+                                  ? " — its key is still being made, or making it failed"
+                                  : ""}
+                          {d.accountId ? " — keys made by management" : ""}
                           {d.exposed
                             ? " — keys exposed to a revoked server"
                             : ""}
@@ -253,7 +263,9 @@ export function Backups({
                       ))}
                     </Select>
                   </Label>
-                  {exposed && <ExposureAcknowledgement />}
+                  {chosen?.exposed && (
+                    <ExposureAcknowledgement managed={!!chosen.accountId} />
+                  )}
                   <Field
                     name="password"
                     label="Repository password (keep a recovery copy)"
@@ -304,24 +316,28 @@ export function Backups({
           </details>
         </>
       )}
-      {policies.data?.map((policy) => (
-        <PolicyStatus
-          key={policy.id}
-          path={path}
-          policy={policy}
-          server={servers.data?.find((v) => v.id === policy.serverId)}
-          exposed={
-            // A container job is never given a destination's keys.
-            policy.method !== "container-job" &&
-            !!destinations.data?.find((d) => d.id === policy.destinationId)
-              ?.exposed
-          }
-          owner={owner}
-          revision={revision}
-          dirty={dirty}
-          load={load}
-        />
-      ))}
+      {policies.data?.map((policy) => {
+        // A container job is never given a destination's keys.
+        const used =
+          policy.method !== "container-job"
+            ? destinations.data?.find((d) => d.id === policy.destinationId)
+            : undefined;
+        return (
+          <PolicyStatus
+            key={policy.id}
+            path={path}
+            policy={policy}
+            server={servers.data?.find((v) => v.id === policy.serverId)}
+            exposed={
+              used?.exposed ? (used.accountId ? "managed" : "owner") : undefined
+            }
+            owner={owner}
+            revision={revision}
+            dirty={dirty}
+            load={load}
+          />
+        );
+      })}
     </section>
   );
 }

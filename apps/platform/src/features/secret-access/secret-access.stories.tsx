@@ -122,6 +122,17 @@ const records: AccessRecord[] = [
     itemCount: 1,
     reason: "write",
     outcome: "used",
+  }), // Management opens a storage account's admin key to make a server's backup storage key.
+  record(9, {
+    purpose: "operate",
+    principal: { kind: "system", job: "backup-key-mint" },
+    items: [
+      { kind: "backup-storage-account", id: id(103), name: "Production AWS" },
+      { kind: "backup-storage-key", id: id(104) },
+    ],
+    itemCount: 2,
+    reason: "mint",
+    outcome: "used",
   }),
 ];
 const page = (value: AccessRecord[], next?: string) =>
@@ -174,6 +185,13 @@ export const Records: Story = {
     await expect(canvas.queryByText(/ more$/)).not.toBeInTheDocument();
     await expect(canvas.getByRole("cell", { name: "Unknown" })).toBeVisible();
     await expect(canvas.getByText("alert-delivery")).toBeVisible();
+    await expect(
+      canvas.getByText("Production AWS (Backup storage account admin key)"),
+    ).toBeVisible();
+    await expect(canvas.getByText("Backup storage key 00000104")).toBeVisible();
+    await expect(
+      canvas.getByRole("cell", { name: "Making a backup storage key" }),
+    ).toBeVisible();
     await expect(
       canvas.getByRole("cell", { name: "Installation maintenance" }),
     ).toBeVisible();
@@ -279,7 +297,7 @@ export const Paged: Story = {
       await canvas.findByRole("cell", { name: "Installation maintenance" }),
     ).toBeVisible();
     await expect(canvas.getByRole("status")).toHaveTextContent(
-      "Showing 8 records.",
+      "Showing 9 records.",
     );
     await expect(
       canvas.queryByRole("button", { name: "Load more" }),

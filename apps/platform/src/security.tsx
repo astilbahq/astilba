@@ -5,6 +5,7 @@ import { membersOptions } from "./api/members";
 import { Button } from "./components/button";
 import { Label } from "./components/label";
 import { Select } from "./components/select";
+import { BackupStorage } from "./features/backup-storage/backup-storage";
 import { CrossHostRecovery } from "./features/cross-host-recovery";
 import { SecretAccess } from "./features/secret-access/secret-access";
 import { SessionHistory } from "./features/troubleshooting/session-history";
@@ -58,6 +59,7 @@ export function Members() {
       </div>
       <WorkspaceSubscription workspaceId={id} owner={ws?.role === "owner"} />
       {ws && ws.role !== "viewer" && <CrossHostRecovery workspaceId={id} />}
+      {ws && <BackupStorage workspaceId={id} owner={ws.role === "owner"} />}
       {ws?.role === "owner" && <WorkspaceExport workspaceId={id} />}
       <ErrorNotice
         error={

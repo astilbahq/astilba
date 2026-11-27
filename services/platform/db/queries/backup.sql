@@ -6,20 +6,37 @@ UPDATE backup_destinations SET encrypted_access=$3 WHERE workspace_id=$1 AND id=
 SELECT workspace_id,id,encrypted_access FROM backup_policies FOR UPDATE;
 -- name: RewrapBackupPolicyAccess :exec
 UPDATE backup_policies SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2;
+-- name: AllBackupStorageAccountCredentials :many
+SELECT workspace_id,id,encrypted_credential FROM backup_storage_accounts FOR UPDATE;
+-- name: RewrapBackupStorageAccountCredential :exec
+UPDATE backup_storage_accounts SET encrypted_credential=$3 WHERE workspace_id=$1 AND id=$2;
+-- name: AllBackupStorageKeySecrets :many
+SELECT workspace_id,id,encrypted_secret FROM backup_storage_keys WHERE encrypted_secret IS NOT NULL FOR UPDATE;
+-- name: RewrapBackupStorageKeySecret :exec
+UPDATE backup_storage_keys SET encrypted_secret=$3 WHERE workspace_id=$1 AND id=$2;
 
 -- name: ListBackupDestinations :many
-SELECT configuration, server_id, shared FROM backup_destinations WHERE workspace_id = @workspace_id ORDER BY id LIMIT 100;
+-- placeholder is as BackupDestinationBinding has it.
+SELECT d.configuration, d.server_id, d.shared, d.account_id, d.remint_error,
+    (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
+FROM backup_destinations d WHERE d.workspace_id = @workspace_id ORDER BY d.id LIMIT 100;
 
 -- name: CountBackupDestinations :one
 SELECT count(*) FROM backup_destinations WHERE workspace_id = @workspace_id;
 
 -- name: InsertBackupDestination :exec
-INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access,server_id)
-VALUES(@id,@workspace_id,@configuration,@encrypted_access,sqlc.narg(server_id));
+INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access,server_id,account_id)
+VALUES(@id,@workspace_id,@configuration,@encrypted_access,sqlc.narg(server_id),sqlc.narg(account_id));
 
 -- name: BackupDestinationBinding :one
-SELECT configuration, server_id, shared FROM backup_destinations
-WHERE workspace_id = @workspace_id AND id = @id;
+-- A managed destination none of whose keys has ever been active is a placeholder: its key is
+-- still being made, or its making failed and it goes once that key is revoked.
+SELECT d.configuration, d.server_id, d.shared,
+    (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
+FROM backup_destinations d
+WHERE d.workspace_id = @workspace_id AND d.id = @id;
 
 -- name: BindBackupDestination :exec
 UPDATE backup_destinations SET server_id = @server_id WHERE workspace_id = @workspace_id AND id = @id;
@@ -28,7 +45,7 @@ UPDATE backup_destinations SET server_id = @server_id WHERE workspace_id = @work
 SELECT configuration FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: BackupDestinationAccess :one
-SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
+SELECT configuration,encrypted_access,account_id FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ListBackupPolicies :many
 SELECT configuration FROM backup_policies
@@ -193,16 +210,28 @@ UPDATE backup_recoveries SET discard_operation_id = @discard_operation_id
 WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id = @id;
 
 -- name: ExposedBackupDestinations :many
--- A destination is exposed while a revoked server holds its storage keys: the server a policy using
--- it is bound to, or one a restore of such a policy was recorded for, whether or not the restore
--- was released to it. Only an S3 destination has keys, and a container job is never given them.
+-- An owner-keyed destination is exposed while a revoked server holds its storage keys: the server a
+-- policy using it is bound to, or one a restore of such a policy was recorded for, whether or not
+-- the restore was released to it. Only an S3 destination has keys, and a container job is never
+-- given them. A managed destination's keys are its own rows: it is exposed while a revoked server
+-- holds one that was delivered and that is being revoked, is still active with no current
+-- handover, or was revoked within the hour IAM may take to stop honouring it. A key revoked from a
+-- server that isn't revoked, such as a restore's once it ends, exposes nothing.
 SELECT DISTINCT d.id
 FROM backup_destinations d
 JOIN backup_policies p ON p.workspace_id = d.workspace_id AND p.configuration->>'destinationId' = d.id::text
     AND p.configuration->>'method' <> 'container-job'
 JOIN servers s ON s.workspace_id = p.workspace_id AND s.revoked AND (s.id = p.server_id OR EXISTS(
     SELECT 1 FROM backup_recoveries r WHERE r.workspace_id = p.workspace_id AND r.policy_id = p.id AND r.server_id = s.id))
-WHERE d.workspace_id = @workspace_id AND d.configuration->>'kind' = 's3';
+WHERE d.workspace_id = @workspace_id AND d.configuration->>'kind' = 's3' AND d.account_id IS NULL
+UNION
+SELECT d.id
+FROM backup_destinations d
+JOIN backup_storage_keys k ON k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL
+JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id AND s.revoked
+WHERE d.workspace_id = @workspace_id AND d.account_id IS NOT NULL AND (k.state = 'revoking'
+    OR (k.state = 'active' AND (k.handed_over IS NULL OR k.handed_over <> s.revocations))
+    OR (k.state = 'revoked' AND k.revoked_at > clock_timestamp() - interval '1 hour'));
 
 -- name: BackupDestinationPolicies :many
 -- The policies using a workspace's destinations, with their environments. A container job uses none.

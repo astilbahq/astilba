@@ -14,6 +14,8 @@ SELECT v.kind::text AS kind, v.id::uuid AS id, v.sealed::bytea AS sealed, COALES
     UNION ALL SELECT 'build-secret', id, encrypted_value, NULL FROM build_secret_versions WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_value) IS NOT TRUE
     UNION ALL SELECT 'backup-destination', id, encrypted_access, NULL FROM backup_destinations WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
     UNION ALL SELECT 'backup-policy', id, encrypted_access, NULL FROM backup_policies WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_access) IS NOT TRUE
+    UNION ALL SELECT 'backup-storage-account', id, encrypted_credential, NULL FROM backup_storage_accounts WHERE workspace_id = @workspace::uuid AND custody_value_converted(encrypted_credential) IS NOT TRUE
+    UNION ALL SELECT 'backup-storage-key', id, encrypted_secret, NULL FROM backup_storage_keys WHERE workspace_id = @workspace::uuid AND encrypted_secret IS NOT NULL AND custody_value_converted(encrypted_secret) IS NOT TRUE
     UNION ALL SELECT 'alert-webhook', workspace_id, encrypted_webhook, NULL FROM alert_settings WHERE workspace_id = @workspace::uuid AND encrypted_webhook IS NOT NULL AND custody_value_converted(encrypted_webhook) IS NOT TRUE
 ) v
 WHERE (v.kind, v.id) > (@after_kind::text, @after_id::uuid)
@@ -42,6 +44,12 @@ UPDATE backup_destinations SET encrypted_access = @converted WHERE workspace_id 
 
 -- name: ConvertBackupPolicyAccess :execrows
 UPDATE backup_policies SET encrypted_access = @converted WHERE workspace_id = @workspace_id AND id = @id AND encrypted_access = @previous;
+
+-- name: ConvertBackupStorageAccountCredential :execrows
+UPDATE backup_storage_accounts SET encrypted_credential = @converted WHERE workspace_id = @workspace_id AND id = @id AND encrypted_credential = @previous;
+
+-- name: ConvertBackupStorageKeySecret :execrows
+UPDATE backup_storage_keys SET encrypted_secret = @converted WHERE workspace_id = @workspace_id AND id = @id AND encrypted_secret = @previous;
 
 -- name: ConvertAlertWebhook :execrows
 UPDATE alert_settings SET encrypted_webhook = @converted WHERE workspace_id = @workspace_id AND encrypted_webhook = @previous;
@@ -78,6 +86,8 @@ FROM (
     UNION ALL SELECT 'build-secret', encrypted_value FROM build_secret_versions
     UNION ALL SELECT 'backup-destination', encrypted_access FROM backup_destinations
     UNION ALL SELECT 'backup-policy', encrypted_access FROM backup_policies
+    UNION ALL SELECT 'backup-storage-account', encrypted_credential FROM backup_storage_accounts
+    UNION ALL SELECT 'backup-storage-key', encrypted_secret FROM backup_storage_keys WHERE encrypted_secret IS NOT NULL
     UNION ALL SELECT 'alert-webhook', encrypted_webhook FROM alert_settings WHERE encrypted_webhook IS NOT NULL
     UNION ALL SELECT 'totp', totp_secret FROM accounts WHERE totp_secret IS NOT NULL
     UNION ALL SELECT 'totp-pending', totp_pending FROM accounts WHERE totp_pending IS NOT NULL
@@ -88,7 +98,7 @@ GROUP BY v.kind ORDER BY v.kind;
 -- Holds every table with converted values against writes, not reads, until the transaction ends,
 -- so no value can be stored under the keyring between counting them and recording the stage.
 LOCK TABLE secret_versions, git_connections, github_app_authorizations, registries, build_secret_versions,
-    backup_destinations, backup_policies, alert_settings, accounts IN SHARE MODE;
+    backup_destinations, backup_policies, backup_storage_accounts, backup_storage_keys, alert_settings, accounts IN SHARE MODE;
 
 -- name: InstancesBelowStage :one
 -- unscoped: instances seen in the five minutes before this statement whose release completes a

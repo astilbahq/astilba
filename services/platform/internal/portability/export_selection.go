@@ -165,6 +165,7 @@ const archiveClosure = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,i
 	UNION ALL SELECT 'revision',d.revision_id FROM pipeline_auto_deployments d JOIN archive_keep k ON k.kind='run' AND k.id=d.id WHERE d.workspace_id=$1
 	UNION ALL SELECT 'revision',p.revision_id FROM preview_policies p WHERE p.workspace_id=$1
 	UNION ALL SELECT 'revision',c.revision_id FROM backup_cutovers c JOIN archive_keep k ON k.kind='env' AND k.id=c.environment_id WHERE c.workspace_id=$1
+	UNION ALL SELECT 'recovery',k.recovery_id FROM backup_storage_keys k WHERE k.workspace_id=$1 AND k.state IN ('active','revoking')
 ) edge WHERE id IS NOT NULL ON CONFLICT DO NOTHING`
 
 func archiveKept(kind, column string) string {
@@ -172,7 +173,7 @@ func archiveKept(kind, column string) string {
 }
 
 // archiveFilters narrow each archived table to the selection. Tables not named here hold
-// configuration and are carried whole: projects, servers, connections, registries, destinations,
+// configuration and are carried whole: projects, servers, connections, registries, destinations other than placeholders,
 // networks and members, preview policies, build secret versions and supported upgrades (both
 // capped at 100), and reservations, which an export refuses to carry.
 var archiveFilters = func() map[string]string {
@@ -196,8 +197,13 @@ var archiveFilters = func() map[string]string {
 		"preview_requests":          archiveKept("preview", "id"),
 		"audit_events":              archiveKept("audit", "id"),
 		"backup_recoveries":         archiveKept("recovery", "id"),
-		"execution_plans":           ` AND id IN (SELECT o.plan_id FROM execution_operations o JOIN archive_keep k ON k.kind='op' AND k.id=o.id)`,
-		"secret_versions":           ` AND secret_id IN (SELECT s.id FROM secrets s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1)`,
+		// A placeholder destination, whose key was never active, goes with its keys; so do keys
+		// still minting, which only their own request may finish. A recovery key goes with its
+		// restore, which a live key's always is (archiveClosure).
+		"backup_destinations": ` AND (account_id IS NULL OR EXISTS (SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id=$1 AND k.destination_id=backup_destinations.id AND k.activated_at IS NOT NULL))`,
+		"backup_storage_keys": ` AND state<>'minting' AND (destination_id IS NULL OR EXISTS (SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id=$1 AND k.destination_id=backup_storage_keys.destination_id AND k.activated_at IS NOT NULL)) AND (recovery_id IS NULL OR recovery_id IN (SELECT id FROM archive_keep WHERE kind='recovery'))`,
+		"execution_plans":     ` AND id IN (SELECT o.plan_id FROM execution_operations o JOIN archive_keep k ON k.kind='op' AND k.id=o.id)`,
+		"secret_versions":     ` AND secret_id IN (SELECT s.id FROM secrets s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1)`,
 	}
 	for _, table := range []string{"deployment_units", "environment_layouts", "secrets", "managed_volumes", "managed_resources", "route_claims", "visual_runtime", "cross_host_runtime", "git_sources", "build_targets", "backup_policies", "backup_cutovers"} {
 		out[table] = archiveKept("env", "environment_id")

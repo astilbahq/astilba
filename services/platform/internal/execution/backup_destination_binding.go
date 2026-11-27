@@ -25,6 +25,10 @@ var errDestinationServer = &domain.Error{Code: "invalid_input", Message: "This d
 // errDestinationShared refuses a new policy on a shared S3 destination.
 var errDestinationShared = &domain.Error{Code: "invalid_input", Message: "This destination's storage keys are held by more than one server, so each can delete the others' backups. Add a destination for this server, with keys limited to its own prefix or bucket.", Fields: []string{"destination.shared"}}
 
+// errDestinationMinting refuses a policy on a managed destination whose key isn't ready: a policy
+// would keep it from being deleted if the key's making fails.
+var errDestinationMinting = &domain.Error{Code: "invalid_input", Message: "This destination's storage key isn't ready: management is still making it, or making it failed. Try again once the destination's key is active.", Fields: []string{"destination.key"}}
+
 // bindPolicyDestination admits policy p onto its destination, and binds an S3 destination no
 // policy has used yet to p's server. Policy saves in a workspace are taken one at a time, so a
 // second policy saved at once sees the first's binding. creating says p is new.
@@ -46,6 +50,8 @@ func bindPolicyDestination(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p backu
 	switch {
 	case d.Kind != "s3":
 		return nil
+	case row.Placeholder:
+		return errDestinationMinting
 	case row.Shared && creating:
 		return errDestinationShared
 	case row.Shared:

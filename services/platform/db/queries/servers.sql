@@ -29,8 +29,8 @@ RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_request
 
 -- name: RevokeServer :execrows
 -- Revoking a revoked server again keeps the time its revocation began, or none when it began
--- before times were recorded.
-UPDATE servers SET revoked=true,revoked_at=CASE WHEN revoked THEN revoked_at ELSE clock_timestamp() END,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
+-- before times were recorded, and its revocation count.
+UPDATE servers SET revoked=true,revoked_at=CASE WHEN revoked THEN revoked_at ELSE clock_timestamp() END,revocations=CASE WHEN revoked THEN revocations ELSE revocations+1 END,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
 WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AdvanceServerUpdateGeneration :one

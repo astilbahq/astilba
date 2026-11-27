@@ -5,7 +5,7 @@ import { environmentRoot, revision } from "./environment-fixtures";
 // A policy whose server was revoked, after its environment moved to a replacement server, with
 // a destination the revoked server held the keys of.
 const revoked = "00000000-0000-4000-8000-000000000a01";
-const replacement = "00000000-0000-4000-8000-000000000a02";
+export const replacement = "00000000-0000-4000-8000-000000000a02";
 const destination = "00000000-0000-4000-8000-000000000a03";
 const policyId = "00000000-0000-4000-8000-000000000a04";
 const resource = "00000000-0000-4000-8000-000000000a05";
@@ -142,6 +142,37 @@ export function resetRevokedServerBackups() {
   reloadsToFail = 0;
 }
 
+const placeholderDestination: Schema["BackupDestination"] = {
+  id: "00000000-0000-4000-8000-000000000a10",
+  name: "Managed bucket",
+  kind: "s3",
+  root: "",
+  endpoint: "https://s3.eu-west-2.amazonaws.com",
+  bucket: "managed-backups",
+  region: "eu-west-2",
+  serverId: replacement,
+  shared: false,
+  exposed: false,
+  accountId: "00000000-0000-4000-8000-000000000a11",
+  keys: [
+    {
+      id: "00000000-0000-4000-8000-000000000a12",
+      purpose: "server",
+      state: "minting",
+      userName: "astilba-00000000-0000-4000-8000-000000000a12",
+      serverId: replacement,
+      handedOver: false,
+      activatedAt: null,
+      revokedAt: null,
+      attempts: 0,
+      lastError: null,
+    },
+  ],
+  placeholder: true,
+  remintError: null,
+  policies: [],
+};
+
 /**
  * With `refuseDiscard`, another owner's discard starts first, so the owner's own is refused.
  * With `failReload`, the reload after an accepted discard fails, and by the next one the
@@ -151,6 +182,8 @@ export function revokedServerBackupHandlers({
   refuseDiscard = false,
   failReload = false,
   loseReply = false,
+  // Adds a managed destination for the replacement server whose key management is still making.
+  placeholder = false,
 } = {}) {
   const policyPath = `${environmentRoot}/backup-policies/:policyId`;
   const withDiscard = (r: Schema["BackupRecoveryRecord"]) => ({
@@ -177,6 +210,10 @@ export function revokedServerBackupHandlers({
           serverId: revoked,
           shared: false,
           exposed: true,
+          accountId: null,
+          keys: [],
+          placeholder: false,
+          remintError: null,
           policies: [
             {
               id: policyId,
@@ -187,6 +224,7 @@ export function revokedServerBackupHandlers({
             },
           ],
         },
+        ...(placeholder ? [placeholderDestination] : []),
       ] satisfies Schema["BackupDestination"][]),
     ),
     http.get(`${environmentRoot}/backup-policies`, () =>

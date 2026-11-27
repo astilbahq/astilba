@@ -39,14 +39,19 @@ const (
 	Registry            Kind = "registry"
 	BackupDestination   Kind = "backup-destination"
 	BackupPolicy        Kind = "backup-policy"
-	AlertWebhook        Kind = "alert-webhook"
-	RecoveryCheckpoint  Kind = "recovery-checkpoint"
-	TOTP                Kind = "totp"
-	TOTPPending         Kind = "totp-pending"
+	// BackupStorageAccount is the admin credential management mints backup storage keys with. Only
+	// management uses it: no agent session or planning path may open it.
+	BackupStorageAccount Kind = "backup-storage-account"
+	// BackupStorageKey is a storage key management minted for one server.
+	BackupStorageKey   Kind = "backup-storage-key"
+	AlertWebhook       Kind = "alert-webhook"
+	RecoveryCheckpoint Kind = "recovery-checkpoint"
+	TOTP               Kind = "totp"
+	TOTPPending        Kind = "totp-pending"
 )
 
 // Integration kinds share one identity scheme with the kind's own name in it.
-var integrationKinds = []Kind{BuildSecret, Git, GitHubAuthorization, Registry, BackupDestination, BackupPolicy}
+var integrationKinds = []Kind{BuildSecret, Git, GitHubAuthorization, Registry, BackupDestination, BackupPolicy, BackupStorageAccount, BackupStorageKey}
 
 // Item is one stored value: its kind and the ID of its row.
 type Item struct {
@@ -124,7 +129,7 @@ var installationKinds = []Kind{TOTP, TOTPPending}
 var RecoveryKinds = slices.Clone(workspaceKinds)
 
 // CredentialKinds are the values a workspace export carries.
-var CredentialKinds = []Kind{SecretVersion, Git, Registry, BuildSecret, BackupDestination, BackupPolicy}
+var CredentialKinds = []Kind{SecretVersion, Git, Registry, BuildSecret, BackupDestination, BackupPolicy, BackupStorageAccount, BackupStorageKey}
 
 // rule is what a purpose allows.
 type rule struct {
@@ -147,12 +152,14 @@ var people = []PrincipalKind{AccountPrincipal, AutomationPrincipal, SystemPrinci
 var rules = map[Purpose]rule{
 	// A recovery checkpoint is opened again straight after sealing, to prove it reads back.
 	Seal:    {principals: people, seal: append(slices.Clone(workspaceKinds), installationKinds...), open: []Kind{RecoveryCheckpoint}, limit: defaultLimit},
-	Deliver: {principals: []PrincipalKind{AgentPrincipal}, open: []Kind{SecretVersion, BuildSecret, Git, GitHubAuthorization, Registry, BackupDestination, BackupPolicy, RecoveryCheckpoint}, limit: defaultLimit},
-	// Operating with a GitHub grant or connection can refresh and store it again.
-	Operate: {principals: people, open: []Kind{Git, GitHubAuthorization, Registry, AlertWebhook}, seal: []Kind{Git, GitHubAuthorization}, limit: defaultLimit},
+	Deliver: {principals: []PrincipalKind{AgentPrincipal}, open: []Kind{SecretVersion, BuildSecret, Git, GitHubAuthorization, Registry, BackupDestination, BackupPolicy, BackupStorageKey, RecoveryCheckpoint}, limit: defaultLimit},
+	// Operating with a GitHub grant or connection can refresh and store it again. Minting a backup
+	// storage key opens the storage account's credential and seals the key it mints; revoking one
+	// whose user AWS can't find opens the key, to check that AWS no longer accepts it.
+	Operate: {principals: people, open: []Kind{Git, GitHubAuthorization, Registry, AlertWebhook, BackupStorageAccount, BackupStorageKey}, seal: []Kind{Git, GitHubAuthorization, BackupStorageKey}, limit: defaultLimit},
 	// Planning work checks build inputs, and measures what a command will carry, before it
 	// stores a command an agent will receive.
-	Inspect:      {principals: people, open: []Kind{SecretVersion, BuildSecret, Registry, BackupPolicy, BackupDestination}, limit: defaultLimit},
+	Inspect:      {principals: people, open: []Kind{SecretVersion, BuildSecret, Registry, BackupPolicy, BackupDestination, BackupStorageKey}, limit: defaultLimit},
 	Copy:         {principals: people, open: []Kind{SecretVersion}, seal: []Kind{SecretVersion}, limit: defaultLimit},
 	Export:       {principals: []PrincipalKind{AccountPrincipal}, owner: true, open: workspaceKinds, limit: batchLimit},
 	Recover:      {principals: []PrincipalKind{AccountPrincipal, SystemPrincipal, OperatorPrincipal}, owner: true, open: workspaceKinds, seal: workspaceKinds, limit: batchLimit},

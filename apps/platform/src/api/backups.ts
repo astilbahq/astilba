@@ -19,3 +19,22 @@ export const backupDestinationsOptions = (workspaceId: string) =>
         }),
       ),
   });
+
+// AWS admin credentials management mints a managed destination's per-server keys with.
+export const backupStorageAccountsPath =
+  "/api/v1/workspaces/{workspaceId}/backup-storage-accounts" as const;
+export const backupStorageAccountPath =
+  `${backupStorageAccountsPath}/{accountId}` as const;
+export const backupDestinationPath =
+  `${backupDestinationsPath}/{destinationId}` as const;
+
+export const backupStorageAccountsOptions = (workspaceId: string) =>
+  queryOptions({
+    queryKey: ["backup-storage-accounts", workspaceId],
+    queryFn: () =>
+      result(
+        client.GET(backupStorageAccountsPath, {
+          params: { path: { workspaceId } },
+        }),
+      ),
+  });

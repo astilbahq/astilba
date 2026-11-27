@@ -351,6 +351,8 @@ export default interface Resources {
   "backup-recovery": {
     "exposed": {
       "acknowledge": "I understand that the revoked server can delete or overwrite this policy's backups until its keys are revoked at the provider.",
+      "managedPolicy": "A revoked server may still hold one of this destination's storage keys, so it can delete or overwrite these backups until AWS confirms the key revoked. Management revokes it itself, and this ends an hour after AWS confirms it.",
+      "managedWarning": "A revoked server may still hold one of this destination's storage keys, so it can delete or overwrite anything written here until management has revoked it at AWS.",
       "policy": "A revoked server was given this destination's storage keys. It can still delete or overwrite these backups until you revoke the keys at your storage provider. For backups it can't reach, add a destination with new keys and create a policy on it.",
       "warning": "A revoked server was given this destination's storage keys. It can still delete or overwrite anything written here until you revoke them at your storage provider."
     },
@@ -417,6 +419,127 @@ export default interface Resources {
       "title": "Restore from a revoked server",
       "unknownServer": "This policy's server"
     }
+  },
+  "backup-storage": {
+    "account": {
+      "admin": "Admin user",
+      "awsAccount": "AWS account",
+      "boundary": "Permissions boundary",
+      "check": "Check now",
+      "checkFailed": "The latest check failed: {{reason}}",
+      "checked": "Last checked {{date}}.",
+      "checking": "Checking…",
+      "extraKeys": "The latest check found {{count}} access key that management didn’t make on one of its users, and deleted it. Someone holding the admin key may have made it." | "The latest check found {{count}} access keys that management didn’t make on its users, and deleted them. Someone holding the admin key may have made them.",
+      "installation": "This installation",
+      "notChecked": "Not checked yet.",
+      "path": "IAM path of the users management makes",
+      "peers": "Peer installations",
+      "peersDescription": "Users these installations make in this AWS account are shown as theirs, with no alert."
+    },
+    "add": {
+      "added": "Storage account {{name}} added.",
+      "instructions": "Create the permissions boundary policy first. Then give an IAM user outside /astilba/ a policy that lets it manage only users under {{path}} that carry the boundary, and enter its access key here. Management checks the key with AWS before storing it and never shows it again.",
+      "label": "Add storage account",
+      "name": "Account name",
+      "submit": "Add storage account",
+      "summary": "Add a storage account"
+    },
+    "cancel": "Cancel",
+    "credential": {
+      "accessKeyId": "Admin access key ID",
+      "boundary": "Permissions boundary ARN, such as arn:aws:iam::123456789012:policy/astilba-backups",
+      "secretAccessKey": "Admin secret access key"
+    },
+    "description": "On AWS, management can make each server’s backup storage key itself and revoke it when the server is revoked, so no key outlives its server and none is copied by hand. Add a storage account once for each AWS account, then choose it when you add an S3 backup destination.",
+    "destination": {
+      "exposed": "A revoked server may still hold one of this destination’s keys, so it could delete or overwrite these backups. Management revokes its keys itself; this ends an hour after AWS confirms them revoked.",
+      "location": "Bucket {{bucket}} in {{region}}",
+      "locationPrefix": "Bucket {{bucket}} in {{region}}, under {{prefix}}",
+      "noKeys": "No keys yet.",
+      "remintFailed": "Management couldn’t make a key for the renewed server and keeps trying: {{reason}}",
+      "retry": "Retry now",
+      "retryRequested": "Management is trying again.",
+      "retrying": "Retrying…",
+      "revoked": "Recently revoked keys",
+      "server": "Keys for {{server}}",
+      "unknownServer": "server {{id}}"
+    },
+    "destinations": {
+      "loadFailed": "Destinations could not be loaded.",
+      "loading": "Loading destinations…",
+      "none": "No destination uses this account yet. Choose it when you add an S3 backup destination.",
+      "title": "Destinations using this account"
+    },
+    "empty": "No storage accounts yet. Backup destinations use storage keys you make and limit yourself.",
+    "failure": {
+      "accessDenied": "AWS refused the request. Check that the admin policy is still attached to the admin user.",
+      "accountChanged": "The admin key now belongs to another AWS account. Replace it with a key of the account it was added with.",
+      "credentialRefused": "AWS no longer accepts the account’s admin key. Replace it.",
+      "deleteConflict": "AWS won’t delete the user while something else is attached to it, such as a console password, an MFA device, a group or another policy. Management keeps it denied all access meanwhile. Remove those in the AWS console so management can delete it.",
+      "movedOffPath": "The user is no longer under the workspace’s path, so the admin key can’t change it, but AWS still accepts its key. Someone with wider IAM rights moved it. Delete the user in the AWS console, or move it back so management can revoke it.",
+      "notAdmin": "The admin key no longer belongs to an IAM user outside /astilba/.",
+      "notFound": "AWS couldn’t find the user or key.",
+      "notListed": "AWS refused the request for the user, and doesn’t list it under the workspace’s path, which is how IAM can answer for a user that no longer exists. Management counts it revoked once the user, if it existed, would be listed.",
+      "other": "Failure code {{code}}.",
+      "superseded": "Replaced by a newer key.",
+      "timeout": "AWS didn’t answer in time.",
+      "unavailable": "AWS couldn’t be reached or failed.",
+      "userMissing": "Its IAM user is gone at AWS."
+    },
+    "found": {
+      "addPeer": "Add installation as a peer",
+      "addPeerConfirm": "Add peer",
+      "addPeerDescription": "Users it makes in this AWS account are then shown as its, with no alert, and management never revokes them. Add only an installation this workspace was transferred to or from.",
+      "addPeerTitle": "Add installation {{installation}} as a peer?",
+      "description": "The latest check found these IAM users under this workspace’s path with no record here. One may have been restored from an older management backup, made by another installation, or made with a leaked admin key.",
+      "installation": "Tagged by installation {{installation}}",
+      "peer": "Made by a peer installation. Nothing needs doing.",
+      "revoke": "Revoke user",
+      "revokeDescription": "Management takes away the user’s access and deletes it at AWS. Anything using its key, such as another installation’s backups, stops working. This can’t be undone.",
+      "revokeFailing": "Management is revoking it, and its last attempt failed: {{reason}}",
+      "revokeTitle": "Revoke {{name}}?",
+      "revoking": "Management is revoking it.",
+      "self": "Tagged by this installation",
+      "server": "Tagged for server {{server}}",
+      "title": "Users management didn’t make",
+      "unbounded": "It has no permissions boundary, so the admin key can’t revoke it. Delete it in the AWS console.",
+      "untagged": "No installation tag"
+    },
+    "guide": "Managed backup keys setup guide",
+    "key": {
+      "activated": "Active since {{date}}.",
+      "failing": "Revoking it has failed {{count}} time: {{reason}} Fix the cause, then retry." | "Revoking it has failed {{count}} times: {{reason}} Fix the cause, then retry.",
+      "handedOver": "Handed over to a workspace transfer",
+      "label": "{{purpose}} for {{server}}",
+      "purpose": {
+        "recovery": "Restore key",
+        "server": "Server key"
+      },
+      "revoke": "Revoke key",
+      "revokeCurrent": "Management revokes the key at AWS and then makes the server a new one. The server’s backups can fail until it has installed the new key.",
+      "revokeHandedOver": "This key was handed over to a workspace transfer. Revoking it breaks the transferred server’s backups, which can then no longer reach this bucket.",
+      "revokeRecovery": "The restore using it can no longer read its snapshot. Management revokes it itself once the restore ends.",
+      "revokeTitle": "Revoke this key?",
+      "revokedAt": "Revoked {{date}}.",
+      "state": {
+        "active": "Active",
+        "minting": "Being made",
+        "revoked": "Revoked",
+        "revoking": "Being revoked"
+      }
+    },
+    "loadFailed": "Storage accounts could not be loaded.",
+    "loading": "Loading storage accounts…",
+    "replace": {
+      "boundaryStays": "The account keeps this permissions boundary, since every user management made under it carries it. To use another boundary, add another storage account.",
+      "instructions": "The new key must belong to the same AWS account. Keys management already made keep working. Delete the old admin key at AWS afterwards.",
+      "label": "Replace the admin key of {{name}}",
+      "replaced": "Admin key replaced. Delete the old one at AWS.",
+      "submit": "Replace admin key",
+      "summary": "Replace the admin key"
+    },
+    "retry": "Try again",
+    "title": "Backup storage accounts"
   },
   "common": {
     "appearance": {
@@ -843,6 +966,8 @@ export default interface Resources {
       "alertWebhook": "The alert webhook",
       "backupDestination": "All backup destinations",
       "backupPolicy": "All backup policies",
+      "backupStorageAccount": "All backup storage account admin keys",
+      "backupStorageKey": "All backup storage keys",
       "buildSecret": "All build secrets",
       "git": "All Git connections",
       "githubAuthorization": "All GitHub authorizations",
@@ -874,6 +999,8 @@ export default interface Resources {
       "alertWebhook": "Alert webhook",
       "backupDestination": "Backup destination",
       "backupPolicy": "Backup policy",
+      "backupStorageAccount": "Backup storage account admin key",
+      "backupStorageKey": "Backup storage key",
       "buildSecret": "Build secret",
       "git": "Git connection",
       "githubAuthorization": "GitHub authorization",
@@ -917,10 +1044,13 @@ export default interface Resources {
       "token": "Loading the token signing key"
     },
     "reason": {
+      "accountCheck": "Checking a backup storage account",
       "decision": "Deciding what to deliver",
       "firstRelease": "First delivery to this server",
       "installationKeyMaintenance": "Installation key maintenance",
+      "mint": "Making a backup storage key",
       "redelivery": "The server asked for the values again",
+      "revoke": "Revoking a backup storage key",
       "rewrap": "Encryption key change",
       "signIn": "Sign-in",
       "standard": "No further detail",

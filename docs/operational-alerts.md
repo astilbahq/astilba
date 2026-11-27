@@ -71,7 +71,14 @@ running; it is not an external uptime service.
   resource is the destination, and the Alerts page names it and the policies using it: one alert
   covers every policy on the destination. It recovers once each such server is renewed. Revoking
   the keys at the provider doesn't establish recovery, since Astilba can't see it; move backups to
-  a destination with new keys.
+  a destination with new keys. A [managed](backups.md#managed-keys) destination recovers an hour
+  after AWS confirms its keys revoked, which management does itself.
+- **A backup storage account's check failed or found keys management didn't make:** the daily
+  [account check](backups.md#managed-keys) couldn't list the account's users, for example
+  because its admin policy was detached, or found a user under the workspace's path that isn't
+  one of management's or a peer installation's, a user without the boundary, or another access
+  key on one of management's users, which it deleted. Its resource is the storage account. A
+  later check that finds none of these establishes recovery.
 - **Operation problem:** a deployment, image build or backup operation failed or
   needs attention. One record is created per operation, including when a
   needs-attention operation later fails. This is a historical event, not a claim
