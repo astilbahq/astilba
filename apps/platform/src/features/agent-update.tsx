@@ -25,7 +25,10 @@ export function AgentUpdate({
   onUpdate: (version: string) => void;
 }) {
   const note = useId();
-  const [choice, setChoice] = useState<string>();
+  const [choice, setChoice] = useState<{
+    version: string;
+    rollback: boolean;
+  }>();
   const capabilities = server.capabilities;
   const updates = server.agentUpdates;
   if (!capabilities || !updates) return null;
@@ -55,20 +58,30 @@ export function AgentUpdate({
   // With basis catalog the order tells, as long as this page's release list holds the agent's
   // release. The list loads less often than the server, so after management restarts with a new
   // catalog it may not: then the select starts on no release rather than guess.
-  const running = releases.findIndex(
-    (r) => r.arch === capabilities.arch && r.version === capabilities.version,
-  );
-  const newest = offered[0];
-  const newer =
+  const position = (version: string) =>
+    releases.findIndex(
+      (r) => r.arch === capabilities.arch && r.version === version,
+    );
+  const running = position(capabilities.version);
+  const newer = (version: string) =>
     updates.basis === "version" ||
-    (running >= 0 && !!newest && releases.indexOf(newest) < running);
-  const start = newest && newer ? newest.version : "";
+    (running >= 0 && position(version) >= 0 && position(version) < running);
+  const newest = offered[0]?.version;
+  const start = newest !== undefined && newer(newest) ? newest : "";
   // The select keeps showing a release while management sends it, whether the owner chose it or
-  // the select started there. Once management stops sending it, for example after an update
-  // installed it or raised the floor, the select starts again as above and keeps that release the
-  // same way, so a release it moved away from never comes back by itself.
-  const value = choice !== undefined && sent.has(choice) ? choice : start;
-  if (value !== choice) setChoice(value);
+  // the select started there, and while it stays on the same side of the agent's release. Once
+  // management stops sending it, for example after an update installed it or raised the floor,
+  // the select starts again as above and keeps that release the same way, so a release it moved
+  // away from never comes back by itself. An upgrade the agent has since passed, by an update made
+  // elsewhere, is a rollback now, so the select starts again rather than offer it; a rollback the
+  // owner picked stays.
+  const kept =
+    choice !== undefined &&
+    sent.has(choice.version) &&
+    (choice.rollback || newer(choice.version));
+  const value = kept ? choice.version : start;
+  if (!kept && (choice?.version !== start || choice.rollback))
+    setChoice({ version: start, rollback: false });
   return (
     <>
       {withheld && (
@@ -87,7 +100,12 @@ export function AgentUpdate({
               name="version"
               value={value}
               required
-              onChange={(e) => setChoice(e.target.value)}
+              onChange={(e) =>
+                setChoice({
+                  version: e.target.value,
+                  rollback: !newer(e.target.value),
+                })
+              }
               aria-describedby={withheld ? note : undefined}
             >
               {start === "" && (
