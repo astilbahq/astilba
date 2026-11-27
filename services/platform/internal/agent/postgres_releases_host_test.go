@@ -322,18 +322,19 @@ RESET ROLE;`); err != nil {
 		t.Fatal(err)
 	}
 	// PLAT-545. An interrupted DROP DATABASE leaves the database invalid, still marked as
-	// accepting connections; it is named, and the other databases are still rebuilt.
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `CREATE DATABASE broken TEMPLATE template0`); err != nil {
+	// accepting connections; it is named, and the other databases are still rebuilt. It is named
+	// as PostgreSQL quotes it, so a name with a comma and parentheses still reads as one database.
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `CREATE DATABASE "broken (Billing), ledger" TEMPLATE template0`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `UPDATE pg_database SET datconnlimit = -2 WHERE datname = 'broken'`); err != nil {
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `UPDATE pg_database SET datconnlimit = -2 WHERE datname = 'broken (Billing), ledger'`); err != nil {
 		t.Fatal(err)
 	}
 	served := files(updated, a)
 	if err = e.Journal.forgetPostgresData(volume); err != nil {
 		t.Fatal(err)
 	}
-	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, "broken ("+a.Name+") are invalid") || strings.Contains(note, "did not finish") {
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, `"broken (Billing), ledger" (`+a.Name+") are invalid") || strings.Contains(note, "did not finish") {
 		t.Fatalf("a closed or invalid database was not named: %q, %v", note, err)
 	}
 	if files(updated, a)["unbounded"] == served["unbounded"] {
@@ -346,7 +347,7 @@ RESET ROLE;`); err != nil {
 	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `ALTER DATABASE closed ALLOW_CONNECTIONS true`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE broken`); err != nil {
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE "broken (Billing), ledger"`); err != nil {
 		t.Fatal(err)
 	}
 	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "do not accept connections") || strings.Contains(note, "invalid") || files(updated, shut)["unbounded"] == was["unbounded"] {

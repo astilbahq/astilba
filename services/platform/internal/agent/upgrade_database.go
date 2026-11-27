@@ -105,7 +105,8 @@ const leftoversRoom = 400
 // userObjectsNote refuses a maintenance database holding user objects. It names, by kind and
 // qualified name but never content, those in temporary schemas: a connected session's temporary
 // functions and types are there, and so are those of a session that ended without cleaning up,
-// as when the server crashes, which PostgreSQL never removes on its own.
+// as when the server crashes, which stay until a later session given the same schema uses
+// temporary objects.
 func userObjectsNote(called string, leftovers []string) string {
 	if len(leftovers) == 0 {
 		return called + " contains user objects"
@@ -186,6 +187,7 @@ func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source st
 	if err = e.knownUpgradeWriters(ctx, helper, a, s.Command.Plan.Source); err != nil {
 		return nil, err
 	}
+	e.point("upgrade-preflight-clients-checked")
 	if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
 		return nil, err
 	}

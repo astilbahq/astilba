@@ -151,6 +151,16 @@ func TestNamesAreEscapedInNotes(t *testing.T) {
 	if list := listSome([]listed{{"a\nb" + override + "c\\d" + string([]byte{0xff}) + `"e"`, "Bill" + override + "ing"}}, exclusionsRoom); list != `a\nb`+escaped+`c\\d\xff"e" (Bill`+escaped+`ing)` {
 		t.Fatalf("a name wasn't escaped: %q", list)
 	}
+	// Names are escaped before they're cut, so escaped names keep within their room too.
+	escapes := make([]listed, 300)
+	for i := range escapes {
+		escapes[i] = listed{strings.Repeat(override+"\n", 30) + strconv.Itoa(i), strings.Repeat(override, 30)}
+	}
+	for _, room := range []int{unfinishedRoom, closedRoom, invalidRoom, exclusionsRoom, leftoversRoom} {
+		if list := listSome(escapes, room); len(list) > room || strings.Contains(list, override) {
+			t.Fatalf("a list of escaped names of %d bytes in a room of %d: %q", len(list), room, list)
+		}
+	}
 	long := "x\n" + strings.Repeat(override+"ä", 100)
 	note := reindexNote(nil, []listed{{long, "Billing"}}, nil, []string{long})
 	if !utf8.ValidString(note) || strings.Contains(note, override) || strings.Contains(note, "\n") || !strings.Contains(note, "… (Billing)") {

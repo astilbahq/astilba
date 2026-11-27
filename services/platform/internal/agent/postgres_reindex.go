@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"slices"
@@ -33,7 +34,8 @@ var reindexOptions = pgOptions("lock_timeout=10s", "statement_timeout=30min", "c
 // to page through a few indexes.
 var reindexPage = 1000
 
-// reindexLeft is what a rebuild left to the database's owner.
+// reindexLeft is what a rebuild left to the database's owner. Databases are named as PostgreSQL
+// quotes an identifier, as their indexes are.
 type reindexLeft struct {
 	// exclusions are the exclusion-constraint indexes the queries skip, named database.index.
 	exclusions []string
@@ -160,19 +162,23 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	own := reindexDatabase{connection: a.Postgres.Database}
 	// current reads a listed database's name and whether it can be rebuilt, by its oid, which a
 	// rename keeps: invalid after a DROP DATABASE interrupted part-way, closed, or open. found is
-	// false once it is dropped.
-	current := func(oid string) (state, name string, found bool, err error) {
+	// false once it is dropped. quoted is the name as PostgreSQL quotes an identifier, for notes, so
+	// a name with commas or parentheses can't read as several databases or another application's.
+	current := func(oid string) (state, name, quoted string, found bool, err error) {
 		// The oid goes into each session's SQL as text, so only a number is taken.
 		if _, err = strconv.ParseUint(oid, 10, 32); err != nil {
-			return "", "", false, errors.New("the listing returned something other than a database oid")
+			return "", "", "", false, errors.New("the listing returned something other than a database oid")
 		}
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		values, err := lines(own, "SELECT CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END || ':' || datname FROM pg_database WHERE oid = "+oid)
+		values, err := lines(own, "SELECT json_build_array(CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END, datname, quote_ident(datname))::text FROM pg_database WHERE oid = "+oid)
 		if err != nil || len(values) == 0 {
-			return "", "", false, err
+			return "", "", "", false, err
 		}
-		state, name, _ = strings.Cut(values[0], ":")
-		return state, name, true, nil
+		var read []string
+		if err = json.Unmarshal([]byte(values[0]), &read); err != nil || len(read) != 3 {
+			return "", "", "", false, errors.New("the listing returned an unreadable database")
+		}
+		return read[0], read[1], read[2], true, nil
 	}
 	// rebuild returns the exclusion-constraint indexes it skipped.
 	rebuild := func(database reindexDatabase) ([]string, error) {
@@ -241,7 +247,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			e.point("postgres-reindex-listed")
 		}
 		for _, oid := range oids {
-			state, name, found, err := current(oid)
+			state, name, quoted, found, err := current(oid)
 			if err != nil {
 				return reindexLeft{}, err
 			}
@@ -249,23 +255,23 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			case !found:
 				// Dropped since it was listed.
 			case state == "invalid":
-				left.invalid = append(left.invalid, name)
+				left.invalid = append(left.invalid, quoted)
 			case state == "closed":
-				left.closed = append(left.closed, name)
+				left.closed = append(left.closed, quoted)
 			default:
 				e.point("postgres-reindex-read " + name)
 				// psql reads its -d value as a connection string when it holds '='; quote it as one.
 				database := reindexDatabase{connection: "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(name) + "'", oid: oid}
 				skipped, err := rebuild(database)
 				if err != nil {
-					if _, now, found, lookup := current(oid); ctx.Err() == nil && lookup == nil && (!found || now != name) {
+					if _, now, _, found, lookup := current(oid); ctx.Err() == nil && lookup == nil && (!found || now != name) {
 						// Renamed or dropped during its rebuild: the next round finds it, or doesn't.
 						continue
 					}
 					return reindexLeft{}, err
 				}
 				for _, index := range skipped {
-					left.exclusions = append(left.exclusions, name+"."+index)
+					left.exclusions = append(left.exclusions, quoted+"."+index)
 				}
 			}
 			seen[oid] = true

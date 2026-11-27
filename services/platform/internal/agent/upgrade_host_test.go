@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -434,16 +435,17 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
 					t.Fatal("the dropped leftovers were still refused:", err)
 				}
-				// What a connected session holds goes with it, so an unknown client holding temporary
-				// functions is refused as a client, before the databases are checked.
+				// An unknown local client is refused as a client, before the databases are checked: the
+				// temporary functions it holds in postgres go with it.
 				stop = hold(admin, "BEGIN; CREATE FUNCTION pg_temp.held() RETURNS integer LANGUAGE sql AS 'SELECT 1'; COMMIT", "SELECT count(*) FROM pg_proc WHERE proname = 'held'")
 				clients := state
 				clients.Command.Plan.ID = uuid.New()
-				_, err = e.upgradePreflight(ctx, clients, source.ID, a)
+				_, err = e.upgradePreflight(checks, clients, source.ID, a)
 				stop()
 				if err == nil || !strings.Contains(err.Error(), "disconnect external or unknown database clients") {
-					t.Fatalf("an unknown client holding temporary functions wasn't refused as a client: %v", err)
+					t.Fatalf("an unknown local client holding temporary functions wasn't refused as a client: %v", err)
 				}
+				// So is one in the application's own database.
 				writerContext, stopWriter := context.WithCancel(ctx)
 				writerDone := make(chan struct{})
 				go func() {
@@ -704,11 +706,30 @@ func nativeStoppedPreflight(t *testing.T, e *Engine, s upgradeState, source stri
 	until("the lock was never held", locked, "1")
 	stopped, stop := context.WithTimeout(ctx, 5*time.Minute)
 	defer stop()
+	// The polls below are local, so unknown, clients: they start once the preflight has checked
+	// its clients, so it doesn't refuse them before its dump.
+	clientsChecked := make(chan struct{})
+	var once sync.Once
+	previous := e.Point
+	e.Point = func(point string) {
+		if point == "upgrade-preflight-clients-checked" {
+			once.Do(func() { close(clientsChecked) })
+		}
+		if previous != nil {
+			previous(point)
+		}
+	}
 	checked := make(chan error, 1)
 	go func() {
 		_, err := e.upgradePreflight(stopped, s, source, a)
 		checked <- err
 	}()
+	defer func() { e.Point = previous }()
+	select {
+	case <-clientsChecked:
+	case err := <-checked:
+		t.Fatal("the preflight ended before its dump:", err)
+	}
 	until("the preflight's dump never waited on the lock", "SELECT count(*) FROM pg_stat_activity WHERE application_name='pg_dump' AND wait_event_type='Lock' AND client_addr='127.0.0.1'", "1")
 	stop()
 	if err := <-checked; err == nil {

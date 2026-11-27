@@ -332,9 +332,9 @@ func listSome(names []listed, limit int) string {
 }
 
 // graphicName escapes, as Go quotes a string, each character in name that isn't graphic, each byte
-// that isn't UTF-8 and each backslash, so a name can't break the note's lines, reorder its text or
-// pass for another. Quotation marks, which PostgreSQL puts around unusual identifiers, stay as
-// they are.
+// that isn't UTF-8 and each backslash, so a name can't break the note's lines or reorder its text.
+// Quotation marks stay as they are: the names come quoted as PostgreSQL quotes identifiers, so one
+// with commas or parentheses can't pass for several or for another application's.
 func graphicName(name string) string {
 	var b strings.Builder
 	for i := 0; i < len(name); {
