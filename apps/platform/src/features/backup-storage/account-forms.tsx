@@ -17,13 +17,13 @@ import {
   text,
   useAction,
 } from "../../ui";
+import * as st from "./backup-storage.styles";
 
 export const managedKeysGuide =
   "https://github.com/astilbahq/astilba/blob/main/docs/backups.md#managed-keys";
 
-// The admin credential's fields. The server names a refused key `credential` and a boundary from
-// another account `boundary`; the boundary is the field of that name.
-function CredentialFields({ boundary }: { boundary?: string }) {
+// The admin credential's key. The server names a refused key `credential`.
+function KeyFields() {
   const { t } = useTranslation("backup-storage");
   return (
     <>
@@ -40,22 +40,13 @@ function CredentialFields({ boundary }: { boundary?: string }) {
         type="password"
         autoComplete="off"
       />
-      <Field
-        name="boundary"
-        label={t(($) => $.credential.boundary)}
-        autoComplete="off"
-        autoCapitalize="none"
-        spellCheck={false}
-        defaultValue={boundary}
-      />
     </>
   );
 }
 
-const credential = (d: FormData) => ({
+const adminKey = (d: FormData) => ({
   accessKeyId: text(d, "accessKeyId"),
   secretAccessKey: text(d, "secretAccessKey"),
-  boundary: text(d, "boundary").trim(),
 });
 
 /** Adds a storage account: an AWS admin credential management checks before storing it. */
@@ -87,7 +78,11 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
             const account = await result(
               client.POST(backupStorageAccountsPath, {
                 params: { path: { workspaceId } },
-                body: { name: text(d, "name"), ...credential(d) },
+                body: {
+                  name: text(d, "name"),
+                  ...adminKey(d),
+                  boundary: text(d, "boundary").trim(),
+                },
               }),
             );
             form.reset();
@@ -100,7 +95,15 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
       >
         <ErrorNotice error={action.error} />
         <Field name="name" label={t(($) => $.add.name)} />
-        <CredentialFields />
+        <KeyFields />
+        {/* The server names a boundary from another account `boundary`. */}
+        <Field
+          name="boundary"
+          label={t(($) => $.credential.boundary)}
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+        />
         <BusyButton busy={action.isPending}>
           {t(($) => $.add.submit)}
         </BusyButton>
@@ -111,9 +114,10 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
 }
 
 /**
- * Replaces a storage account's admin key with another of the same AWS account. The generation it
- * replaces keeps two replacements from interleaving; a refusal reloads the account, so the next
- * attempt replaces the current one.
+ * Replaces a storage account's admin key with another of the same AWS account. The account keeps
+ * its permissions boundary, which every user minted under it carries. The generation it replaces
+ * keeps two replacements from interleaving; a refusal reloads the account, so the next attempt
+ * replaces the current one.
  */
 export function ReplaceAdminKey({
   workspaceId,
@@ -135,6 +139,11 @@ export function ReplaceAdminKey({
       <summary>{t(($) => $.replace.summary)}</summary>
       <div className={s.stack}>
         <p>{t(($) => $.replace.instructions)}</p>
+        <dl className={st.facts}>
+          <dt>{t(($) => $.account.boundary)}</dt>
+          <dd className={st.identifier}>{account.boundary}</dd>
+        </dl>
+        <p className={s.muted}>{t(($) => $.replace.boundaryStays)}</p>
         <Form
           action={action}
           label={t(($) => $.replace.label, { name: account.name })}
@@ -144,7 +153,7 @@ export function ReplaceAdminKey({
               await result(
                 client.PUT(`${backupStorageAccountPath}/credential`, {
                   params: { path: { workspaceId, accountId: account.id } },
-                  body: { ...credential(d), generation: account.generation },
+                  body: { ...adminKey(d), generation: account.generation },
                 }),
               ).catch(async (error: unknown) => {
                 if (error instanceof ApiError && error.status === 409)
@@ -158,7 +167,7 @@ export function ReplaceAdminKey({
           }
         >
           <ErrorNotice error={action.error} />
-          <CredentialFields boundary={account.boundary} />
+          <KeyFields />
           <BusyButton busy={action.isPending}>
             {t(($) => $.replace.submit)}
           </BusyButton>

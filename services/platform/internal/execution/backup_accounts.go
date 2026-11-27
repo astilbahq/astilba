@@ -28,6 +28,8 @@ var (
 	errAccountBoundary     = &domain.Error{Code: "invalid_input", Message: "The permissions boundary must be a customer-managed policy in the same AWS account.", Fields: []string{"boundary"}}
 	errAccountOther        = &domain.Error{Code: "invalid_input", Message: "This access key belongs to another AWS account. A storage account's credential can only be replaced with one of the same account.", Fields: []string{"credential"}}
 	errAccountTaken        = &domain.Error{Code: "conflict", Message: "This workspace already has a storage account for this AWS account.", Fields: []string{"credential"}}
+	errFoundPeer           = &domain.Error{Code: "conflict", Message: "This user belongs to a peer installation, which may still use its key. Revoke it from that installation."}
+	errPeerLimit           = &domain.Error{Code: "conflict", Message: "A storage account lists at most 16 peer installations."}
 	errFoundUnbounded      = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so the storage account's admin policy can't change it. Delete it in the AWS console."}
 	errProviderUnavailable = &domain.Error{Code: "provider_unavailable", Message: "AWS could not be reached or failed. Try again shortly."}
 )
@@ -57,6 +59,8 @@ func errorCode(err error) string {
 		return "not_found"
 	case errors.Is(err, awskeys.ErrNotAdmin):
 		return "not_admin"
+	case errors.Is(err, awskeys.ErrConflict):
+		return "delete_conflict"
 	case errors.Is(err, errAccountMoved):
 		return "account_changed"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -128,7 +132,11 @@ func (s *Service) CreateBackupStorageAccount(ctx context.Context, p store.Princi
 			return err
 		}
 		sealed = true
-		return q.InsertBackupStorageAccount(ctx, db.InsertBackupStorageAccountParams{ID: account, WorkspaceID: ws, Name: name, AwsAccount: id.Account, AdminArn: id.ARN, Boundary: in.Boundary, EncryptedCredential: secret})
+		if err = q.InsertBackupStorageAccount(ctx, db.InsertBackupStorageAccountParams{ID: account, WorkspaceID: ws, Name: name, AwsAccount: id.Account, AdminArn: id.ARN, Boundary: in.Boundary, EncryptedCredential: secret}); err != nil {
+			return err
+		}
+		// A new account is checked at once, so the owner sees what is already under its path.
+		return s.queueAccountCheck(ctx, tx)
 	})
 	if err != nil {
 		return api.BackupStorageAccount{}, err
@@ -140,10 +148,10 @@ func (s *Service) ReplaceBackupStorageAccountCredential(ctx context.Context, p s
 	if err := s.Store.Admit(ctx, p, ws, ownerSettings.admission(), false); err != nil {
 		return api.BackupStorageAccount{}, err
 	}
-	var recorded string
+	var recorded db.BackupStorageAccountRow
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		row, err := db.New(tx).BackupStorageAccount(ctx, db.BackupStorageAccountParams{WorkspaceID: ws, ID: account})
-		recorded = row.AwsAccount
+		var err error
+		recorded, err = db.New(tx).BackupStorageAccount(ctx, db.BackupStorageAccountParams{WorkspaceID: ws, ID: account})
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -153,13 +161,15 @@ func (s *Service) ReplaceBackupStorageAccountCredential(ctx context.Context, p s
 	}
 	cred := awskeys.Credential{AccessKeyID: writeOnly(in.AccessKeyId), SecretAccessKey: writeOnly(in.SecretAccessKey)}
 	defer clearCredential(&cred)
-	id, err := s.checkAdmin(ctx, ws, cred, in.Boundary)
+	// The boundary stays the account's for its life: the admin policy can change only users with
+	// the boundary it names, and every user minted so far carries this one.
+	id, err := s.checkAdmin(ctx, ws, cred, recorded.Boundary)
 	if err != nil {
 		return api.BackupStorageAccount{}, err
 	}
 	// Minted users are deleted by the account they live in. Another account's credential would
 	// report every one of them missing, and so revoked.
-	if id.Account != recorded {
+	if id.Account != recorded.AwsAccount {
 		return api.BackupStorageAccount{}, errAccountOther
 	}
 	item := secretbroker.Item{Kind: secretbroker.BackupStorageAccount, ID: account}
@@ -176,7 +186,7 @@ func (s *Service) ReplaceBackupStorageAccountCredential(ctx context.Context, p s
 			return err
 		}
 		sealed = true
-		n, err := q.ReplaceBackupStorageAccountCredential(ctx, db.ReplaceBackupStorageAccountCredentialParams{WorkspaceID: ws, ID: account, Generation: in.Generation, AdminArn: id.ARN, Boundary: in.Boundary, EncryptedCredential: secret})
+		n, err := q.ReplaceBackupStorageAccountCredential(ctx, db.ReplaceBackupStorageAccountCredentialParams{WorkspaceID: ws, ID: account, Generation: in.Generation, AdminArn: id.ARN, EncryptedCredential: secret})
 		if err == nil && n != 1 {
 			return domain.Conflict
 		}
@@ -212,8 +222,12 @@ func (s *Service) BackupStorageAccounts(ctx context.Context, p store.Principal, 
 		if err != nil {
 			return err
 		}
+		revoking, err := q.RevokingFoundBackupStorageKeys(ctx, ws)
+		if err != nil {
+			return err
+		}
 		for _, row := range rows {
-			v, err := accountView(ws, installation, row)
+			v, err := accountView(ws, installation, row, revoking)
 			if err != nil {
 				return err
 			}
@@ -245,7 +259,10 @@ type accountReport struct {
 	Alert bool `json:"alert"`
 }
 
-func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow) (api.BackupStorageAccount, error) {
+// accountView is an account as its latest check found it, with the found users management is
+// still revoking, which a check no longer reports once their rows make them known, and why each
+// revocation last failed.
+func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow, revoking []db.RevokingFoundBackupStorageKeysRow) (api.BackupStorageAccount, error) {
 	var report accountReport
 	if len(row.Report) > 0 {
 		if err := json.Unmarshal(row.Report, &report); err != nil {
@@ -255,11 +272,27 @@ func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow
 	if report.Found == nil {
 		report.Found = []api.BackupStorageFoundUser{}
 	}
+	for _, k := range revoking {
+		if k.AccountID != row.ID {
+			continue
+		}
+		var tags map[string]string
+		if err := json.Unmarshal(k.FoundTags, &tags); err != nil {
+			return api.BackupStorageAccount{}, err
+		}
+		j := slices.IndexFunc(report.Found, func(f api.BackupStorageFoundUser) bool { return f.UserName == k.UserName })
+		if j < 0 {
+			// Only a bounded user can be revoked.
+			report.Found = append(report.Found, api.BackupStorageFoundUser{UserName: k.UserName, InstallationId: tags["astilba:installation"], ServerId: tags["astilba:server"], Bounded: true})
+			j = len(report.Found) - 1
+		}
+		report.Found[j].Revoking, report.Found[j].LastError = true, textPointer(k.LastError)
+	}
 	peers := slices.Clone(row.Peers)
 	if peers == nil {
 		peers = []uuid.UUID{}
 	}
-	return api.BackupStorageAccount{Id: row.ID, Name: row.Name, AwsAccount: row.AwsAccount, AdminArn: row.AdminArn, Boundary: row.Boundary, Path: awskeys.Path(ws.String()), InstallationId: installation, Generation: row.Generation, Peers: peers, CheckedAt: row.CheckedAt, CheckError: textPointer(row.CheckError), FoundUsers: report.Found, ExtraKeysDeleted: report.ExtraKeysDeleted}, nil
+	return api.BackupStorageAccount{Id: row.ID, Name: row.Name, AwsAccount: row.AwsAccount, AdminArn: row.AdminArn, Boundary: row.Boundary, Path: awskeys.Path(ws.String()), InstallationId: installation, Generation: row.Generation, Peers: peers, CheckedAt: row.ReportedAt, Checking: row.Checking, CheckError: textPointer(row.CheckError), FoundUsers: report.Found, ExtraKeysDeleted: report.ExtraKeysDeleted}, nil
 }
 
 // CheckBackupStorageAccount asks for the account check to run on the next pass.
@@ -287,13 +320,24 @@ func (s *Service) AddBackupStorageAccountPeer(ctx context.Context, p store.Princ
 		if in.InstallationId == self || in.InstallationId == uuid.Nil {
 			return domain.Invalid("installationId")
 		}
-		if _, err = q.BackupStorageAccount(ctx, db.BackupStorageAccountParams{WorkspaceID: ws, ID: account}); errors.Is(err, pgx.ErrNoRows) {
+		row, err := q.BackupStorageAccount(ctx, db.BackupStorageAccountParams{WorkspaceID: ws, ID: account})
+		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound
 		} else if err != nil {
 			return err
 		}
-		_, err = q.AddBackupStorageAccountPeer(ctx, db.AddBackupStorageAccountPeerParams{WorkspaceID: ws, ID: account, Peer: in.InstallationId})
-		return err
+		n, err := q.AddBackupStorageAccountPeer(ctx, db.AddBackupStorageAccountPeerParams{WorkspaceID: ws, ID: account, Peer: in.InstallationId})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			if slices.Contains(row.Peers, in.InstallationId) {
+				return nil
+			}
+			return errPeerLimit
+		}
+		// A check now shows the peer's users as its, so the alert they raised clears.
+		return errors.Join(q.RequestBackupStorageAccountCheck(ctx, db.RequestBackupStorageAccountCheckParams{WorkspaceID: ws, ID: account}), s.queueAccountCheck(ctx, tx))
 	})
 }
 
@@ -323,21 +367,18 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 		if !report.Found[j].Bounded {
 			return errFoundUnbounded
 		}
+		// A peer's user is that installation's to revoke: its key may be one a transferred
+		// server still uses.
+		if report.Found[j].Peer {
+			return errFoundPeer
+		}
 		tags, _ := stablejson.Marshal(map[string]string{"astilba:installation": report.Found[j].InstallationId, "astilba:server": report.Found[j].ServerId})
 		if err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: uuid.New(), WorkspaceID: ws, AccountID: account, UserName: user, FoundTags: tags}); err != nil {
 			return err
 		}
-		// The report shows the user as revoking until the next check, which no longer finds it
-		// once AWS confirms.
-		report.Found[j].Revoking = true
-		raw, err := stablejson.Marshal(report)
-		if err != nil {
-			return err
-		}
-		if err = q.RecordBackupStorageFoundRevoking(ctx, db.RecordBackupStorageFoundRevokingParams{WorkspaceID: ws, ID: account, Report: raw}); err != nil {
-			return err
-		}
-		return s.queueKeySweep(ctx, tx)
+		// The account shows the user as revoking from its row. A check now finds the user known,
+		// so the alert it raised clears without waiting a day.
+		return errors.Join(q.RequestBackupStorageAccountCheck(ctx, db.RequestBackupStorageAccountCheckParams{WorkspaceID: ws, ID: account}), s.queueKeySweep(ctx, tx), s.queueAccountCheck(ctx, tx))
 	})
 }
 

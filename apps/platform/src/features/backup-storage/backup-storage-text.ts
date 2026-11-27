@@ -15,6 +15,7 @@ const failures = {
   unavailable: "unavailable",
   superseded: "superseded",
   user_missing: "userMissing",
+  delete_conflict: "deleteConflict",
 } as const;
 
 // Turns a managed key's or storage account's machine values into plain words. Codes are an open

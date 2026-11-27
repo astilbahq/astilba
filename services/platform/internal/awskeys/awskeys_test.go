@@ -307,3 +307,22 @@ func TestValidation(t *testing.T) {
 		t.Fatal("credential")
 	}
 }
+
+func TestRevokeKeepsDenyingAUserItCantDelete(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	// A user made outside management, with a policy of its own that DeleteUser trips over.
+	key := f.aws.CreateUser("astilba-found", f.spec.Path, f.spec.Boundary, nil, `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":["*"]}]}`)
+	if err := f.client.Revoke(ctx, f.admin, "astilba-found"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("revoking a user with another policy: %v", err)
+	}
+	if len(f.aws.Keys("astilba-found")) != 0 {
+		t.Fatal("its access keys should be gone")
+	}
+	if f.aws.Policy("astilba-found", policyName) != denyAll {
+		t.Fatal("the user should keep the deny-all while it can't be deleted")
+	}
+	if err := reach(t, f.s3(credential(key)), "backups", "servers/one/data/1"); err == nil {
+		t.Fatal("the user's old key should do nothing")
+	}
+}

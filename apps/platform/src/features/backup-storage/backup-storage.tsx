@@ -10,7 +10,7 @@ import * as s from "../../styles";
 import { ErrorNotice } from "../../ui";
 import { AddStorageAccount } from "./account-forms";
 import * as st from "./backup-storage.styles";
-import { checkPending, StorageAccount } from "./storage-account";
+import { StorageAccount } from "./storage-account";
 
 /** The heading alerts and the destination form link to. */
 export const backupStorageSection = "backup-storage-accounts";
@@ -33,7 +33,7 @@ export function BackupStorage({
     ...backupStorageAccountsOptions(workspaceId),
     // An account check runs shortly after it is asked for and records what it found once done.
     refetchInterval: (query) =>
-      query.state.data?.some(checkPending) ? 5000 : false,
+      query.state.data?.some((a) => a.checking) ? 5000 : false,
   });
   const managed = !!accounts.data?.length;
   const destinations = useQuery({
@@ -72,6 +72,7 @@ export function BackupStorage({
           <div className={s.row}>
             <Button
               type="button"
+              focusableWhenDisabled
               disabled={accounts.isFetching}
               onClick={() => void accounts.refetch()}
             >
@@ -83,15 +84,14 @@ export function BackupStorage({
         <p>{t(($) => $.empty)}</p>
       ) : (
         <>
-          <ErrorNotice error={destinations.error ?? servers.error} />
+          {/* Each account says itself when its destinations fail to load. */}
+          <ErrorNotice error={servers.error} />
           {accounts.data.map((account) => (
             <StorageAccount
               key={account.id}
               workspaceId={workspaceId}
               account={account}
-              destinations={destinations.data?.filter(
-                (d) => d.accountId === account.id,
-              )}
+              destinations={destinations}
               servers={servers.data}
               owner={owner}
               refresh={refresh}

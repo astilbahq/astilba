@@ -431,7 +431,7 @@ export default interface Resources {
       "checking": "Checking…",
       "extraKeys": "The latest check found {{count}} access key that management didn’t make on one of its users, and deleted it. Someone holding the admin key may have made it." | "The latest check found {{count}} access keys that management didn’t make on its users, and deleted them. Someone holding the admin key may have made them.",
       "installation": "This installation",
-      "notChecked": "Waiting for a check, which runs shortly.",
+      "notChecked": "Not checked yet.",
       "path": "IAM path of the users management makes",
       "peers": "Peer installations",
       "peersDescription": "Users these installations make in this AWS account are shown as theirs, with no alert."
@@ -465,6 +465,8 @@ export default interface Resources {
       "unknownServer": "server {{id}}"
     },
     "destinations": {
+      "loadFailed": "Destinations could not be loaded.",
+      "loading": "Loading destinations…",
       "none": "No destination uses this account yet. Choose it when you add an S3 backup destination.",
       "title": "Destinations using this account"
     },
@@ -473,6 +475,7 @@ export default interface Resources {
       "accessDenied": "AWS refused the request. Check that the admin policy is still attached to the admin user.",
       "accountChanged": "The admin key now belongs to another AWS account. Replace it with a key of the account it was added with.",
       "credentialRefused": "AWS no longer accepts the account’s admin key. Replace it.",
+      "deleteConflict": "AWS won’t delete the user while something else is attached to it, such as a console password, an MFA device, a group or another policy. Management keeps it denied all access meanwhile. Remove those in the AWS console so management can delete it.",
       "notAdmin": "The admin key no longer belongs to an IAM user outside /astilba/.",
       "notFound": "AWS couldn’t find the user or key.",
       "other": "Failure code {{code}}.",
@@ -491,6 +494,7 @@ export default interface Resources {
       "peer": "Made by a peer installation. Nothing needs doing.",
       "revoke": "Revoke user",
       "revokeDescription": "Management takes away the user’s access and deletes it at AWS. Anything using its key, such as another installation’s backups, stops working. This can’t be undone.",
+      "revokeFailing": "Management is revoking it, and its last attempt failed: {{reason}}",
       "revokeTitle": "Revoke {{name}}?",
       "revoking": "Management is revoking it.",
       "self": "Tagged by this installation",
@@ -525,6 +529,7 @@ export default interface Resources {
     "loadFailed": "Storage accounts could not be loaded.",
     "loading": "Loading storage accounts…",
     "replace": {
+      "boundaryStays": "The account keeps this permissions boundary, since every user management made under it carries it. To use another boundary, add another storage account.",
       "instructions": "The new key must belong to the same AWS account. Keys management already made keep working. Delete the old admin key at AWS afterwards.",
       "label": "Replace the admin key of {{name}}",
       "replaced": "Admin key replaced. Delete the old one at AWS.",

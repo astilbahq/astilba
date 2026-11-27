@@ -17,8 +17,9 @@ CREATE TABLE backup_storage_accounts (
  -- Installations that share the account after a workspace transfer, whose users the check
  -- shows without an alert.
  peers uuid[] NOT NULL DEFAULT '{}' CHECK(cardinality(peers) <= 16),
- -- The latest account check: its time, a fixed error code, and what it found, as stable JSON.
- checked_at timestamptz, check_error text CHECK(length(check_error) <= 80),
+ -- The account check: when the latest was asked for (NULL) or claimed, which orders the checks,
+ -- when one last reported, its fixed error code, and what it found, as stable JSON.
+ checked_at timestamptz, reported_at timestamptz, check_error text CHECK(length(check_error) <= 80),
  report jsonb NOT NULL DEFAULT '{}' CHECK(octet_length(report::text) <= 262144),
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  UNIQUE(workspace_id,id), UNIQUE(workspace_id,aws_account)
@@ -58,6 +59,10 @@ CREATE TABLE backup_storage_keys (
  -- The policy generations whose install carries this key. An older server key is superseded only
  -- once the holder reports them all.
  installs jsonb NOT NULL DEFAULT '[]' CHECK(octet_length(installs::text) <= 65536),
+ -- Management's installs of those generations: the attempt whose request key is current, raised
+ -- when one ends without the server reporting it, and when the sweep next looks at them.
+ install_attempts integer NOT NULL DEFAULT 0 CHECK(install_attempts BETWEEN 0 AND 1000),
+ install_next_at timestamptz,
  -- A found user's tags as the account check saw them.
  found_tags jsonb CHECK(octet_length(found_tags::text) <= 8192),
  -- The minted secret, sealed under backup-storage-key once the key is active.

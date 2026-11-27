@@ -3,7 +3,8 @@ import type { Schema } from "../api/client";
 import { workshopFailure, workspaceRoot } from "./terminal-session-fixtures";
 
 // A workspace with one AWS storage account, whose latest check failed after finding users
-// management didn't make, and a managed destination with a key in each state.
+// management didn't make, one of which management can't delete, and a managed destination with a
+// key in each state.
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 export const installation = id(0xb01);
@@ -42,6 +43,7 @@ export const account: Schema["BackupStorageAccount"] = {
   generation: 2,
   peers: [peerInstallation],
   checkedAt: "2026-11-20T03:00:00Z",
+  checking: false,
   checkError: "access_denied",
   foundUsers: [
     {
@@ -51,6 +53,7 @@ export const account: Schema["BackupStorageAccount"] = {
       bounded: true,
       peer: false,
       revoking: false,
+      lastError: null,
     },
     {
       userName: "astilba-3b9e7a21-5c48-4d0f-b6e2-9a1c7f3d8e05",
@@ -59,6 +62,7 @@ export const account: Schema["BackupStorageAccount"] = {
       bounded: true,
       peer: true,
       revoking: false,
+      lastError: null,
     },
     {
       userName: "backup-writer",
@@ -67,6 +71,17 @@ export const account: Schema["BackupStorageAccount"] = {
       bounded: false,
       peer: false,
       revoking: false,
+      lastError: null,
+    },
+    {
+      // Management is revoking it, and AWS won't delete it while something else is attached.
+      userName: "astilba-8d4a2c17-6e0b-4f93-a1d5-3c7e9b2f6a80",
+      installationId: installation,
+      serverId: retired,
+      bounded: true,
+      peer: false,
+      revoking: true,
+      lastError: "delete_conflict",
     },
   ],
   extraKeysDeleted: 1,
@@ -133,15 +148,22 @@ const destination = (
 const revokedKeys = new Set<string>();
 const addedPeers = new Set<string>();
 const revokedUsers = new Set<string>();
+// The body of the latest admin key replacement, which names no boundary.
+let replacement: Record<string, unknown> | undefined;
+export const lastReplacement = () => replacement;
 export function resetBackupStorage() {
   revokedKeys.clear();
   addedPeers.clear();
   revokedUsers.clear();
+  replacement = undefined;
 }
 
 export function backupStorageHandlers({
   accounts = [account],
   failAccounts = false,
+  failDestinations = false,
+  // Revoking a found user is refused: its installation became a peer since the latest check.
+  refusePeerRevoke = false,
 } = {}) {
   const accountPath = `${workspaceRoot}/backup-storage-accounts/:accountId`;
   const destinationPath = `${workspaceRoot}/backup-destinations/:destinationId`;
@@ -164,7 +186,13 @@ export function backupStorageHandlers({
           ),
     ),
     http.get(`${workspaceRoot}/backup-destinations`, () =>
-      HttpResponse.json([destination(revokedKeys)]),
+      failDestinations
+        ? workshopFailure(
+            "internal",
+            "Server text the dashboard does not show.",
+            500,
+          )
+        : HttpResponse.json([destination(revokedKeys)]),
     ),
     http.get(`${workspaceRoot}/servers`, () =>
       HttpResponse.json([
@@ -184,6 +212,13 @@ export function backupStorageHandlers({
       `${accountPath}/check`,
       () => new HttpResponse(null, { status: 204 }),
     ),
+    http.put(`${accountPath}/credential`, async ({ request }) => {
+      replacement = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({
+        ...account,
+        generation: account.generation + 1,
+      });
+    }),
     http.post(`${accountPath}/peers`, async ({ request }) => {
       const body =
         (await request.json()) as Schema["BackupStorageAccountPeerRequest"];
@@ -191,6 +226,12 @@ export function backupStorageHandlers({
       return new HttpResponse(null, { status: 204 });
     }),
     http.post(`${accountPath}/found-users/:userName/revoke`, ({ params }) => {
+      if (refusePeerRevoke)
+        return workshopFailure(
+          "conflict",
+          "This user belongs to a peer installation, which may still use its key. Revoke it from that installation.",
+          409,
+        );
       revokedUsers.add(String(params.userName));
       return new HttpResponse(null, { status: 204 });
     }),

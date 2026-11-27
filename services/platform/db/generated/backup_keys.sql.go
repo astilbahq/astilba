@@ -116,11 +116,14 @@ func (q *Queries) AddBackupStorageAccountPeer(ctx context.Context, arg AddBackup
 }
 
 const alertingBackupStorageAccounts = `-- name: AlertingBackupStorageAccounts :many
-SELECT id FROM backup_storage_accounts
-WHERE workspace_id = $1 AND (check_error IS NOT NULL OR COALESCE((report->>'alert')::bool,false))
+SELECT a.id FROM backup_storage_accounts a
+WHERE a.workspace_id = $1 AND (a.check_error IS NOT NULL OR COALESCE((a.report->>'alert')::bool,false)
+    OR EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id
+        AND k.purpose = 'found' AND k.state = 'revoking' AND k.attempts >= 3))
 `
 
 // The accounts whose latest check failed or found something the owner should look at.
+// A found user whose revocation keeps failing is still a user management didn't make.
 func (q *Queries) AlertingBackupStorageAccounts(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, alertingBackupStorageAccounts, workspaceID)
 	if err != nil {
@@ -183,7 +186,7 @@ func (q *Queries) BackupStorageAccount(ctx context.Context, arg BackupStorageAcc
 }
 
 const backupStorageKey = `-- name: BackupStorageKey :one
-SELECT id, workspace_id, account_id, destination_id, holder_server_id, purpose, recovery_request, recovery_policy_id, recovery_snapshot, recovery_id, scope, user_name, access_key_id, state, mint_deadline, handed_over, activated_at, revoked_at, next_attempt_at, attempts, last_error, installs, found_tags, encrypted_secret, created_at FROM backup_storage_keys WHERE workspace_id = $1 AND id = $2
+SELECT id, workspace_id, account_id, destination_id, holder_server_id, purpose, recovery_request, recovery_policy_id, recovery_snapshot, recovery_id, scope, user_name, access_key_id, state, mint_deadline, handed_over, activated_at, revoked_at, next_attempt_at, attempts, last_error, installs, install_attempts, install_next_at, found_tags, encrypted_secret, created_at FROM backup_storage_keys WHERE workspace_id = $1 AND id = $2
 `
 
 type BackupStorageKeyParams struct {
@@ -217,6 +220,8 @@ func (q *Queries) BackupStorageKey(ctx context.Context, arg BackupStorageKeyPara
 		&i.Attempts,
 		&i.LastError,
 		&i.Installs,
+		&i.InstallAttempts,
+		&i.InstallNextAt,
 		&i.FoundTags,
 		&i.EncryptedSecret,
 		&i.CreatedAt,
@@ -633,6 +638,22 @@ func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFou
 	return err
 }
 
+const installOperationState = `-- name: InstallOperationState :one
+SELECT state FROM execution_operations WHERE workspace_id = $1 AND request_key = $2
+`
+
+type InstallOperationStateParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	RequestKey  uuid.UUID `json:"request_key"`
+}
+
+func (q *Queries) InstallOperationState(ctx context.Context, arg InstallOperationStateParams) (string, error) {
+	row := q.db.QueryRow(ctx, installOperationState, arg.WorkspaceID, arg.RequestKey)
+	var state string
+	err := row.Scan(&state)
+	return state, err
+}
+
 const latchBackupStorageKey = `-- name: LatchBackupStorageKey :execrows
 UPDATE backup_storage_keys SET state='revoking',last_error=COALESCE($1,last_error),
     next_attempt_at=clock_timestamp()
@@ -689,6 +710,22 @@ func (q *Queries) LatchEndedRecoveryKeys(ctx context.Context) ([]LatchEndedRecov
 	return items, nil
 }
 
+const latchExpiredMintingKeys = `-- name: LatchExpiredMintingKeys :execrows
+UPDATE backup_storage_keys SET state='revoking',last_error=COALESCE(last_error,'timeout'),next_attempt_at=clock_timestamp()
+WHERE state = 'minting' AND mint_deadline <= clock_timestamp()
+`
+
+// unscoped: a key still minting past its deadline was left by a mint that stopped before it could
+// activate or latch the key, such as one cut off by a restart. No create call for it starts after
+// the deadline, and ClaimDueBackupStorageKey still waits five minutes more before revoking it.
+func (q *Queries) LatchExpiredMintingKeys(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, latchExpiredMintingKeys)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const latchRevokedHolderBackupStorageKeys = `-- name: LatchRevokedHolderBackupStorageKeys :execrows
 UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestamp()
 FROM servers s
@@ -742,7 +779,8 @@ func (q *Queries) LatchServerBackupStorageKeys(ctx context.Context, arg LatchSer
 }
 
 const listBackupStorageAccounts = `-- name: ListBackupStorageAccounts :many
-SELECT id,name,aws_account,admin_arn,boundary,generation,peers,checked_at,check_error,report,created_at
+SELECT id,name,aws_account,admin_arn,boundary,generation,peers,reported_at,check_error,report,created_at,
+    (checked_at IS NULL OR ((reported_at IS NULL OR reported_at < checked_at) AND checked_at > clock_timestamp() - interval '10 minutes'))::bool AS checking
 FROM backup_storage_accounts WHERE workspace_id = $1 ORDER BY name,id LIMIT 100
 `
 
@@ -754,12 +792,15 @@ type ListBackupStorageAccountsRow struct {
 	Boundary   string      `json:"boundary"`
 	Generation int64       `json:"generation"`
 	Peers      []uuid.UUID `json:"peers"`
-	CheckedAt  *time.Time  `json:"checked_at"`
+	ReportedAt *time.Time  `json:"reported_at"`
 	CheckError pgtype.Text `json:"check_error"`
 	Report     []byte      `json:"report"`
 	CreatedAt  time.Time   `json:"created_at"`
+	Checking   bool        `json:"checking"`
 }
 
+// checking is a check asked for and not yet claimed, or one claimed in the last ten minutes, as long
+// as a check runs at most, that hasn't reported.
 func (q *Queries) ListBackupStorageAccounts(ctx context.Context, workspaceID uuid.UUID) ([]ListBackupStorageAccountsRow, error) {
 	rows, err := q.db.Query(ctx, listBackupStorageAccounts, workspaceID)
 	if err != nil {
@@ -777,10 +818,11 @@ func (q *Queries) ListBackupStorageAccounts(ctx context.Context, workspaceID uui
 			&i.Boundary,
 			&i.Generation,
 			&i.Peers,
-			&i.CheckedAt,
+			&i.ReportedAt,
 			&i.CheckError,
 			&i.Report,
 			&i.CreatedAt,
+			&i.Checking,
 		); err != nil {
 			return nil, err
 		}
@@ -832,27 +874,31 @@ func (q *Queries) ManagedBackupDestination(ctx context.Context, arg ManagedBacku
 }
 
 const pendingKeyInstalls = `-- name: PendingKeyInstalls :many
-SELECT k.workspace_id,k.id AS key_id,p.id AS policy_id,p.environment_id,(p.configuration->>'generation')::bigint AS generation
+SELECT k.workspace_id,k.id AS key_id,k.install_attempts,p.id AS policy_id,p.environment_id,(p.configuration->>'generation')::bigint AS generation
 FROM backup_storage_keys k
 JOIN backup_policies p ON p.workspace_id = k.workspace_id
     AND k.installs @> jsonb_build_array(jsonb_build_object('policy', p.id::text, 'generation', (p.configuration->>'generation')::bigint))
+JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id AND e.state = 'active'
 WHERE k.purpose = 'server' AND k.state = 'active' AND jsonb_array_length(k.installs) > 0
+    AND (k.install_next_at IS NULL OR k.install_next_at <= clock_timestamp())
     AND COALESCE((p.status->>'generation')::bigint,0) < (p.configuration->>'generation')::bigint
-ORDER BY k.activated_at,k.id,p.id
+ORDER BY k.install_next_at NULLS FIRST,k.id,p.id
 LIMIT 20
 `
 
 type PendingKeyInstallsRow struct {
-	WorkspaceID   uuid.UUID `json:"workspace_id"`
-	KeyID         uuid.UUID `json:"key_id"`
-	PolicyID      uuid.UUID `json:"policy_id"`
-	EnvironmentID uuid.UUID `json:"environment_id"`
-	Generation    int64     `json:"generation"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	KeyID           uuid.UUID `json:"key_id"`
+	InstallAttempts int32     `json:"install_attempts"`
+	PolicyID        uuid.UUID `json:"policy_id"`
+	EnvironmentID   uuid.UUID `json:"environment_id"`
+	Generation      int64     `json:"generation"`
 }
 
-// unscoped: the policies whose install would carry a re-minted key and that their server hasn't
-// installed yet, still at the generation the re-mint wrote. A later owner's save installs the key
-// too, so it ends the wait.
+// unscoped: the policies in active environments whose install would carry a re-minted key and
+// that their server hasn't installed yet, still at the generation the re-mint wrote, for keys whose
+// installs are due. A later owner's save installs the key too, so it ends the wait. Each pass moves
+// the keys it looks at on, so keys whose installs keep failing can't hold the head of the scan.
 func (q *Queries) PendingKeyInstalls(ctx context.Context) ([]PendingKeyInstallsRow, error) {
 	rows, err := q.db.Query(ctx, pendingKeyInstalls)
 	if err != nil {
@@ -865,6 +911,7 @@ func (q *Queries) PendingKeyInstalls(ctx context.Context) ([]PendingKeyInstallsR
 		if err := rows.Scan(
 			&i.WorkspaceID,
 			&i.KeyID,
+			&i.InstallAttempts,
 			&i.PolicyID,
 			&i.EnvironmentID,
 			&i.Generation,
@@ -949,7 +996,7 @@ func (q *Queries) RecordBackupRemintFailure(ctx context.Context, arg RecordBacku
 }
 
 const recordBackupStorageAccountCheck = `-- name: RecordBackupStorageAccountCheck :exec
-UPDATE backup_storage_accounts SET check_error = $1,report = $2
+UPDATE backup_storage_accounts SET check_error = $1,report = $2,reported_at = clock_timestamp()
 WHERE workspace_id = $3 AND id = $4 AND generation = $5
 `
 
@@ -969,23 +1016,6 @@ func (q *Queries) RecordBackupStorageAccountCheck(ctx context.Context, arg Recor
 		arg.ID,
 		arg.Generation,
 	)
-	return err
-}
-
-const recordBackupStorageFoundRevoking = `-- name: RecordBackupStorageFoundRevoking :exec
-UPDATE backup_storage_accounts SET report = $1
-WHERE workspace_id = $2 AND id = $3
-`
-
-type RecordBackupStorageFoundRevokingParams struct {
-	Report      []byte    `json:"report"`
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-}
-
-// The latest check's report, with a found user the owner has since revoked shown as revoking.
-func (q *Queries) RecordBackupStorageFoundRevoking(ctx context.Context, arg RecordBackupStorageFoundRevokingParams) error {
-	_, err := q.db.Exec(ctx, recordBackupStorageFoundRevoking, arg.Report, arg.WorkspaceID, arg.ID)
 	return err
 }
 
@@ -1023,6 +1053,27 @@ func (q *Queries) RecordBackupStorageKeyRevoked(ctx context.Context, arg RecordB
 	var destination_id *uuid.UUID
 	err := row.Scan(&destination_id)
 	return destination_id, err
+}
+
+const recordKeyInstallPass = `-- name: RecordKeyInstallPass :exec
+UPDATE backup_storage_keys SET install_attempts = LEAST(install_attempts + CASE WHEN $1::bool THEN 1 ELSE 0 END, 1000),
+    install_next_at = clock_timestamp() + CASE WHEN $1::bool
+        THEN LEAST(interval '1 hour', interval '1 minute' * power(2, LEAST(install_attempts,10))) ELSE interval '1 minute' END
+WHERE workspace_id = $2 AND id = $3
+`
+
+type RecordKeyInstallPassParams struct {
+	Retry       bool      `json:"retry"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// A key whose install ended without its server reporting it is tried again under a new request
+// key, backing off to an hour; one whose installs are queued or running is looked at again in a
+// minute.
+func (q *Queries) RecordKeyInstallPass(ctx context.Context, arg RecordKeyInstallPassParams) error {
+	_, err := q.db.Exec(ctx, recordKeyInstallPass, arg.Retry, arg.WorkspaceID, arg.ID)
+	return err
 }
 
 const recoveryBackupStorageKey = `-- name: RecoveryBackupStorageKey :one
@@ -1110,13 +1161,12 @@ func (q *Queries) RelatchRevokedBackupStorageKey(ctx context.Context, arg Relatc
 }
 
 const replaceBackupStorageAccountCredential = `-- name: ReplaceBackupStorageAccountCredential :execrows
-UPDATE backup_storage_accounts SET admin_arn = $1,boundary = $2,encrypted_credential = $3,generation=generation+1
-WHERE workspace_id = $4 AND id = $5 AND generation = $6
+UPDATE backup_storage_accounts SET admin_arn = $1,encrypted_credential = $2,generation=generation+1
+WHERE workspace_id = $3 AND id = $4 AND generation = $5
 `
 
 type ReplaceBackupStorageAccountCredentialParams struct {
 	AdminArn            string    `json:"admin_arn"`
-	Boundary            string    `json:"boundary"`
 	EncryptedCredential []byte    `json:"encrypted_credential"`
 	WorkspaceID         uuid.UUID `json:"workspace_id"`
 	ID                  uuid.UUID `json:"id"`
@@ -1124,10 +1174,10 @@ type ReplaceBackupStorageAccountCredentialParams struct {
 }
 
 // Only the generation the owner checked against is replaced, so two replacements can't interleave.
+// The boundary stays: every user minted under the account carries it.
 func (q *Queries) ReplaceBackupStorageAccountCredential(ctx context.Context, arg ReplaceBackupStorageAccountCredentialParams) (int64, error) {
 	result, err := q.db.Exec(ctx, replaceBackupStorageAccountCredential,
 		arg.AdminArn,
-		arg.Boundary,
 		arg.EncryptedCredential,
 		arg.WorkspaceID,
 		arg.ID,
@@ -1204,6 +1254,45 @@ func (q *Queries) RetryBackupStorageKeys(ctx context.Context, arg RetryBackupSto
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const revokingFoundBackupStorageKeys = `-- name: RevokingFoundBackupStorageKeys :many
+SELECT account_id,user_name,found_tags,last_error FROM backup_storage_keys
+WHERE workspace_id = $1 AND purpose = 'found' AND state = 'revoking'
+ORDER BY account_id,user_name LIMIT 1000
+`
+
+type RevokingFoundBackupStorageKeysRow struct {
+	AccountID uuid.UUID   `json:"account_id"`
+	UserName  string      `json:"user_name"`
+	FoundTags []byte      `json:"found_tags"`
+	LastError pgtype.Text `json:"last_error"`
+}
+
+// The found users management is revoking, for the accounts' views.
+func (q *Queries) RevokingFoundBackupStorageKeys(ctx context.Context, workspaceID uuid.UUID) ([]RevokingFoundBackupStorageKeysRow, error) {
+	rows, err := q.db.Query(ctx, revokingFoundBackupStorageKeys, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RevokingFoundBackupStorageKeysRow{}
+	for rows.Next() {
+		var i RevokingFoundBackupStorageKeysRow
+		if err := rows.Scan(
+			&i.AccountID,
+			&i.UserName,
+			&i.FoundTags,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateBackupPolicyConfiguration = `-- name: UpdateBackupPolicyConfiguration :exec

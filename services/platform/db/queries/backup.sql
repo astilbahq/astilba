@@ -26,8 +26,13 @@ INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access,s
 VALUES(@id,@workspace_id,@configuration,@encrypted_access,sqlc.narg(server_id),sqlc.narg(account_id));
 
 -- name: BackupDestinationBinding :one
-SELECT configuration, server_id, shared FROM backup_destinations
-WHERE workspace_id = @workspace_id AND id = @id;
+-- A managed destination none of whose keys has ever been active is a placeholder: its key is
+-- still being made, or its making failed and it goes once that key is revoked.
+SELECT d.configuration, d.server_id, d.shared,
+    (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
+FROM backup_destinations d
+WHERE d.workspace_id = @workspace_id AND d.id = @id;
 
 -- name: BindBackupDestination :exec
 UPDATE backup_destinations SET server_id = @server_id WHERE workspace_id = @workspace_id AND id = @id;
@@ -204,9 +209,10 @@ WHERE workspace_id = @workspace_id AND environment_id = @environment_id AND id =
 -- An owner-keyed destination is exposed while a revoked server holds its storage keys: the server a
 -- policy using it is bound to, or one a restore of such a policy was recorded for, whether or not
 -- the restore was released to it. Only an S3 destination has keys, and a container job is never
--- given them. A managed destination's keys are its own rows: it is exposed while one that was
--- delivered is being revoked, is still active with a revoked holder and no current handover, or
--- was revoked within the hour IAM may take to stop honouring it.
+-- given them. A managed destination's keys are its own rows: it is exposed while a revoked server
+-- holds one that was delivered and that is being revoked, is still active with no current
+-- handover, or was revoked within the hour IAM may take to stop honouring it. A key revoked from a
+-- server that isn't revoked, such as a restore's once it ends, exposes nothing.
 SELECT DISTINCT d.id
 FROM backup_destinations d
 JOIN backup_policies p ON p.workspace_id = d.workspace_id AND p.configuration->>'destinationId' = d.id::text
@@ -218,9 +224,9 @@ UNION
 SELECT d.id
 FROM backup_destinations d
 JOIN backup_storage_keys k ON k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL
-JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id AND s.revoked
 WHERE d.workspace_id = @workspace_id AND d.account_id IS NOT NULL AND (k.state = 'revoking'
-    OR (k.state = 'active' AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations))
+    OR (k.state = 'active' AND (k.handed_over IS NULL OR k.handed_over <> s.revocations))
     OR (k.state = 'revoked' AND k.revoked_at > clock_timestamp() - interval '1 hour'));
 
 -- name: BackupDestinationPolicies :many

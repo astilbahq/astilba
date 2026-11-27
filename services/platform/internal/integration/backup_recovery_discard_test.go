@@ -205,6 +205,14 @@ func TestARestoresDiscardTravelsWithItsWorkspace(t *testing.T) {
 	for _, row := range archive.Tables["backup_destinations"] {
 		delete(row, "server_id")
 		delete(row, "shared")
+		delete(row, "account_id")
+	}
+	// Nor storage accounts, keys, the exporting installation or servers' revocation counts.
+	delete(archive.Tables, "backup_storage_accounts")
+	delete(archive.Tables, "backup_storage_keys")
+	archive.Installation = uuid.Nil
+	for _, row := range archive.Tables["servers"] {
+		delete(row, "revocations")
 	}
 	older, err := stablejson.Marshal(archive)
 	if err != nil {

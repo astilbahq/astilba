@@ -40,6 +40,9 @@ var (
 	ErrDenied = errors.New("AWS refused the call: the credential's policy does not allow it")
 	// ErrNotFound is a user, or a bucket, that doesn't exist.
 	ErrNotFound = errors.New("not found at AWS")
+	// ErrConflict is a user AWS won't delete while something management didn't add is attached
+	// to it, such as a console password, an MFA device, a group or another policy.
+	ErrConflict = errors.New("AWS won't delete the user while something else is attached to it")
 	// ErrUnavailable is any other failure: the network, a timeout or an AWS error.
 	ErrUnavailable = errors.New("AWS could not be reached or failed")
 	// ErrNotAdmin is a credential that isn't an IAM user in the aws partition outside the
@@ -226,6 +229,8 @@ func classify(err error) error {
 			return ErrDenied
 		case "InvalidClientTokenId", "SignatureDoesNotMatch", "InvalidAccessKeyId", "ExpiredToken":
 			return ErrCredential
+		case "DeleteConflict":
+			return ErrConflict
 		}
 	}
 	return ErrUnavailable
@@ -383,12 +388,18 @@ func (c *Client) Probe(ctx context.Context, key Credential, spec Spec) error {
 
 // Revoke takes user's access away and deletes it: a deny-all policy first, so the user can do
 // nothing even while its keys are deleted, then its access keys, its policy and the user. It
-// reports gone when the user no longer exists. The caller must have checked that cred belongs
-// to the account the user was minted in, or a missing user proves nothing.
+// reports gone when the user no longer exists. A user AWS won't delete gets its deny-all back
+// before Revoke reports ErrConflict, so it stays unable to act until it is deleted. The caller
+// must have checked that cred belongs to the account the user was minted in, or a missing user
+// proves nothing.
 func (c *Client) Revoke(ctx context.Context, cred Credential, user string) error {
 	client := c.iamClient(cred)
-	if _, err := client.PutUserPolicy(ctx, &iam.PutUserPolicyInput{UserName: aws.String(user), PolicyName: aws.String(policyName), PolicyDocument: aws.String(denyAll)}); err != nil {
+	deny := func() error {
+		_, err := client.PutUserPolicy(ctx, &iam.PutUserPolicyInput{UserName: aws.String(user), PolicyName: aws.String(policyName), PolicyDocument: aws.String(denyAll)})
 		return classify(err)
+	}
+	if err := deny(); err != nil {
+		return err
 	}
 	if err := c.deleteKeys(ctx, client, user); err != nil {
 		return err
@@ -397,7 +408,10 @@ func (c *Client) Revoke(ctx context.Context, cred Credential, user string) error
 		return classify(err)
 	}
 	_, err := client.DeleteUser(ctx, &iam.DeleteUserInput{UserName: aws.String(user)})
-	return classify(err)
+	if err = classify(err); errors.Is(err, ErrConflict) {
+		return errors.Join(err, deny())
+	}
+	return err
 }
 
 // Users lists the users under path, with their tags and boundaries. It stops at limit users.

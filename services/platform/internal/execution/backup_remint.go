@@ -51,27 +51,31 @@ func (w *remintWorker) Work(ctx context.Context, job *river.Job[remintArgs]) err
 	} else if err != nil {
 		return s.remintFailed(ctx, ws, destination, err)
 	}
-	m, err := s.mintKey(ctx, remintPrincipal, ws, key)
+	// Once the key is recorded, the job finishes it even if River stops the job: the key is either
+	// activated or latched, never left minting.
+	work := context.WithoutCancel(ctx)
+	m, err := s.mintKey(work, remintPrincipal, ws, key)
 	defer m.clear()
 	if err == nil {
-		err = s.finishRemint(ctx, ws, destination, m)
+		err = s.finishRemint(work, ws, destination, m)
 	}
 	if err != nil {
-		if latch := s.latchKey(ctx, ws, key, err); latch != nil {
+		if latch := s.latchKey(work, ws, key, err); latch != nil {
 			return latch
 		}
-		return s.remintFailed(ctx, ws, destination, err)
+		return s.remintFailed(work, ws, destination, err)
 	}
-	return s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
-		return db.New(tx).RecordBackupRemint(ctx, db.RecordBackupRemintParams{WorkspaceID: ws, ID: destination})
+	return s.Store.WorkspaceWriteTransaction(work, ws, func(tx pgx.Tx) error {
+		return db.New(tx).RecordBackupRemint(work, db.RecordBackupRemintParams{WorkspaceID: ws, ID: destination})
 	})
 }
 
 var errNoRemint = errors.New("the destination doesn't need a new key")
 
 func (s *Service) remintFailed(ctx context.Context, ws, destination uuid.UUID, cause error) error {
-	return s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
-		return db.New(tx).RecordBackupRemintFailure(ctx, db.RecordBackupRemintFailureParams{WorkspaceID: ws, ID: destination, RemintError: fixedText(errorCode(cause))})
+	work := context.WithoutCancel(ctx)
+	return s.Store.WorkspaceWriteTransaction(work, ws, func(tx pgx.Tx) error {
+		return db.New(tx).RecordBackupRemintFailure(work, db.RecordBackupRemintFailureParams{WorkspaceID: ws, ID: destination, RemintError: fixedText(errorCode(cause))})
 	})
 }
 
@@ -110,8 +114,9 @@ func (s *Service) startRemint(ctx context.Context, ws, destination uuid.UUID) (u
 }
 
 // finishRemint activates the new key and moves each of the destination's policies past the
-// generation its server has, recording those generations on the key, whose older keys are
-// superseded once the server reports them. Management queues the installs itself (see
+// generation its server has, recording those generations on the key. The old key was latched when
+// its server was revoked; the generations let the sweep supersede an older active key only where a
+// management recovery merged two histories that each re-minted. Management queues the installs itself (see
 // queueKeyInstalls), so a coordinated schedule, which runs only at its installed generation,
 // never stops waiting for the owner.
 func (s *Service) finishRemint(ctx context.Context, ws, destination uuid.UUID, m minted) error {
@@ -119,7 +124,7 @@ func (s *Service) finishRemint(ctx context.Context, ws, destination uuid.UUID, m
 	if err != nil {
 		return err
 	}
-	err = s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
+	err = s.Store.WorkspaceWriteTransaction(ctx, ws, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		rows, err := q.DestinationPolicyGenerations(ctx, db.DestinationPolicyGenerationsParams{WorkspaceID: ws, DestinationID: destination.String()})
 		if err != nil {
@@ -156,32 +161,78 @@ func (s *Service) finishRemint(ctx context.Context, ws, destination uuid.UUID, m
 	return err
 }
 
-// installRequestKey is the request key of management's install of a policy generation for a key,
-// so retrying it never queues a second one.
-func installRequestKey(key, policy uuid.UUID, generation int64) uuid.UUID {
-	raw, _ := stablejson.Marshal(keyInstall{Policy: policy, Generation: generation})
+// installRequestKey is the request key of management's attempt to install a policy generation
+// for a key, so a pass that replays an attempt never queues a second one.
+func installRequestKey(key, policy uuid.UUID, generation int64, attempt int32) uuid.UUID {
+	raw, _ := stablejson.Marshal(struct {
+		keyInstall
+		Attempt int32 `json:"attempt"`
+	}{keyInstall{Policy: policy, Generation: generation}, attempt})
 	return uuid.NewSHA1(key, raw)
 }
 
 // queueKeyInstalls queues the installs re-mints are waiting for. An environment runs one operation
-// at a time, so an install that can't start now is tried again on a later pass.
+// at a time, so an install that can't start now is tried again a minute on. One that ended without
+// its server reporting the generation, for example because the agent was offline until the
+// command expired, is tried again under the key's next attempt, backing off.
 func (s *Service) queueKeyInstalls(ctx context.Context) error {
 	rows, err := s.Store.Queries.PendingKeyInstalls(ctx)
 	if err != nil {
 		return err
 	}
-	for _, row := range rows {
+	for len(rows) > 0 {
 		if ctx.Err() != nil {
 			return nil
 		}
-		err = s.Store.WorkspaceWriteTransaction(ctx, row.WorkspaceID, func(tx pgx.Tx) error {
-			_, err := s.backupCommand(ctx, tx, row.WorkspaceID, row.EnvironmentID, row.PolicyID, api.BackupCommandRequest{Action: "install", RequestKey: installRequestKey(row.KeyID, row.PolicyID, row.Generation)})
-			return err
-		})
-		var refused *domain.Error
-		if err != nil && !errors.As(err, &refused) {
+		n := 1
+		for n < len(rows) && rows[n].KeyID == rows[0].KeyID {
+			n++
+		}
+		if err = s.queueKeyInstall(ctx, rows[:n]); err != nil {
 			return err
 		}
+		rows = rows[n:]
 	}
 	return nil
+}
+
+// queueKeyInstall queues one key's pending installs and records when to look at them again.
+func (s *Service) queueKeyInstall(ctx context.Context, rows []db.PendingKeyInstallsRow) error {
+	ws, key := rows[0].WorkspaceID, rows[0].KeyID
+	return s.Store.WorkspaceWriteTransaction(ctx, ws, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		retry := false
+		for _, row := range rows {
+			request := installRequestKey(key, row.PolicyID, row.Generation, row.InstallAttempts)
+			state, err := q.InstallOperationState(ctx, db.InstallOperationStateParams{WorkspaceID: ws, RequestKey: request})
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+				err = s.queueInstall(ctx, tx, ws, row, request)
+			case err != nil:
+			case state == "failed" || state == "cancelled":
+				retry = true
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return q.RecordKeyInstallPass(ctx, db.RecordKeyInstallPassParams{WorkspaceID: ws, ID: key, Retry: retry})
+	})
+}
+
+// queueInstall queues one install under request, in a savepoint, so an install refused for now,
+// such as one whose environment is busy, leaves the rest of the pass's work standing.
+func (s *Service) queueInstall(ctx context.Context, tx pgx.Tx, ws uuid.UUID, row db.PendingKeyInstallsRow, request uuid.UUID) error {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = s.backupCommand(ctx, sp, ws, row.EnvironmentID, row.PolicyID, api.BackupCommandRequest{Action: "install", RequestKey: request})
+	var refused *domain.Error
+	if errors.As(err, &refused) {
+		return sp.Rollback(ctx)
+	} else if err != nil {
+		return errors.Join(err, sp.Rollback(ctx))
+	}
+	return sp.Commit(ctx)
 }

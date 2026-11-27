@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { backupStorageAccountPath } from "../../api/backups";
 import { client, result, type Schema } from "../../api/client";
 import * as s from "../../styles";
+import { useBackupStorageText } from "./backup-storage-text";
 import * as st from "./backup-storage.styles";
 import { ConfirmAction } from "./confirm-action";
 
@@ -12,10 +13,10 @@ type FoundUser = Schema["BackupStorageFoundUser"];
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The IAM users the latest account check found under the workspace's path with no record here.
- * A peer installation's need nothing; the admin key can revoke any other with the boundary, and a
- * user without it is left to the AWS console. A user tagged by another installation can make that
- * installation a peer, after a workspace transfer.
+ * The IAM users the latest account check found under the workspace's path with no record here,
+ * and those management is revoking. A peer installation's need nothing; the admin key can revoke
+ * any other with the boundary, and a user without it is left to the AWS console. A user tagged by
+ * another installation can make that installation a peer, after a workspace transfer.
  */
 export function FoundUsers({
   workspaceId,
@@ -72,6 +73,7 @@ function FoundUserItem({
   refresh: () => Promise<void>;
 }) {
   const { t } = useTranslation("backup-storage");
+  const text = useBackupStorageText();
   // Both actions take themselves away, so focus moves to the user, which then says why.
   const item = useRef<HTMLLIElement>(null);
   const revoking = user.revoking;
@@ -100,12 +102,23 @@ function FoundUserItem({
           </>
         )}
       </p>
-      {peer ? (
+      {revoking ? (
+        // Management keeps trying, and says why the last attempt failed.
+        user.lastError ? (
+          <p className={s.notice}>
+            {t(($) => $.found.revokeFailing, {
+              reason: text.failure(user.lastError),
+            })}
+          </p>
+        ) : (
+          <p>{t(($) => $.found.revoking)}</p>
+        )
+      ) : peer ? (
         <p>{t(($) => $.found.peer)}</p>
-      ) : !user.bounded ? (
-        <p className={s.notice}>{t(($) => $.found.unbounded)}</p>
       ) : (
-        revoking && <p>{t(($) => $.found.revoking)}</p>
+        !user.bounded && (
+          <p className={s.notice}>{t(($) => $.found.unbounded)}</p>
+        )
       )}
       {owner && !peer && user.bounded && (
         <ConfirmAction

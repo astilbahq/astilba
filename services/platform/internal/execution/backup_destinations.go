@@ -185,24 +185,27 @@ func (s *Service) CreateManagedBackupDestination(ctx context.Context, p store.Pr
 	if err != nil {
 		return api.BackupDestination{}, err
 	}
-	m, err := s.mintKey(ctx, p.Secrets(), ws, key)
+	// Once the key is recorded, the create finishes even if the owner's request ends: the key is
+	// either activated or latched, never left minting.
+	work := context.WithoutCancel(ctx)
+	m, err := s.mintKey(work, p.Secrets(), ws, key)
 	defer m.clear()
 	var session *secretbroker.Session
 	if err == nil {
-		session, err = s.activation(ctx, p.Secrets(), ws, key)
+		session, err = s.activation(work, p.Secrets(), ws, key)
 	}
 	if err == nil {
-		err = s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
-			ok, err := s.activateKey(ctx, tx, session, ws, m, nil, nil)
+		err = s.Store.WorkspaceWriteTransaction(work, ws, func(tx pgx.Tx) error {
+			ok, err := s.activateKey(work, tx, session, ws, m, nil, nil)
 			if err == nil && !ok {
 				err = errKeyNotMinting
 			}
 			return err
 		})
-		session.Close(ctx, secretbroker.UsedIf(err == nil))
+		session.Close(work, secretbroker.UsedIf(err == nil))
 	}
 	if err != nil {
-		if latch := s.latchKey(ctx, ws, key, err); latch != nil {
+		if latch := s.latchKey(work, ws, key, err); latch != nil {
 			return api.BackupDestination{}, errors.Join(latch, err)
 		}
 		return api.BackupDestination{}, mintError(err)

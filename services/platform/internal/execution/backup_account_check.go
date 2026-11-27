@@ -114,7 +114,7 @@ func (s *Service) checkAccount(ctx context.Context, ws, id uuid.UUID) error {
 // providerFailure says whether a check failed at AWS, which is recorded on the account, rather than
 // in management, which the job reports.
 func providerFailure(err error) bool {
-	for _, e := range []error{awskeys.ErrCredential, awskeys.ErrDenied, awskeys.ErrNotFound, awskeys.ErrUnavailable, awskeys.ErrNotAdmin, errAccountMoved, context.DeadlineExceeded} {
+	for _, e := range []error{awskeys.ErrCredential, awskeys.ErrDenied, awskeys.ErrNotFound, awskeys.ErrUnavailable, awskeys.ErrNotAdmin, awskeys.ErrConflict, errAccountMoved, context.DeadlineExceeded} {
 		if errors.Is(err, e) {
 			return true
 		}

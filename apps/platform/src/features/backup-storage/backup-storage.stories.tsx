@@ -2,7 +2,9 @@ import type { Meta, StoryObj } from "@storybook/tanstack-react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ShellPreview, session, workspace } from "../../workshop/app-preview";
 import {
+  account,
   backupStorageHandlers,
+  lastReplacement,
   otherInstallation,
   resetBackupStorage,
 } from "../../workshop/backup-storage-fixtures";
@@ -24,8 +26,9 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-// An account whose check failed and found users management didn't make, and a managed destination
-// with an active, a handed-over, a failing and a revoked key.
+// An account whose check failed and found users management didn't make, one of which AWS won't let
+// management delete, and a managed destination with an active, a handed-over, a failing and a
+// revoked key.
 export const Accounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -44,6 +47,13 @@ export const Accounts: Story = {
     await expect(
       view.getByText(/Delete it in the AWS console\./),
     ).toBeVisible();
+    await expect(
+      view.getByText(
+        /^Management is revoking it, and its last attempt failed: AWS won’t delete the user .* Remove those in the AWS console so management can delete it\.$/,
+      ),
+    ).toBeVisible();
+    await expect(view.getByText(/^Last checked /)).toBeVisible();
+    await expect(view.queryByText(/^Checking…/)).not.toBeInTheDocument();
     await expect(
       view.getAllByRole("button", { name: "Revoke user" }),
     ).toHaveLength(1);
@@ -96,6 +106,110 @@ export const RevokeHandedOverKey: Story = {
     await expect(
       item.queryByRole("button", { name: "Revoke key" }),
     ).not.toBeInTheDocument();
+  },
+};
+
+// A check asked for and not yet reported says so beside when the latest one reported.
+export const CheckRunning: Story = {
+  parameters: scenario(
+    session,
+    ...backupStorageHandlers({ accounts: [{ ...account, checking: true }] }),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const view = within(
+      await canvas.findByRole("article", { name: "Production AWS" }),
+    );
+    await expect(
+      view.getByText(/^Checking… Last checked /, { selector: "[role=status]" }),
+    ).toBeVisible();
+  },
+};
+
+// A found user whose installation became a peer since the latest check can't be revoked here:
+// the refusal stays in the dialog, beside the button that asked.
+export const RefusedPeerRevoke: Story = {
+  parameters: scenario(
+    session,
+    ...backupStorageHandlers({ refusePeerRevoke: true }),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Revoke user" }),
+    );
+    const body = within(canvasElement.ownerDocument.body);
+    const dialog = within(await body.findByRole("alertdialog"));
+    const confirm = dialog.getByRole("button", { name: "Revoke user" });
+    await userEvent.click(confirm);
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      /belongs to a peer installation.*Revoke it from that installation\./,
+    );
+    await expect(body.getByRole("alertdialog")).toBeVisible();
+    await expect(confirm).toHaveFocus();
+  },
+};
+
+// The replacement key keeps the account's boundary, which the form shows and doesn't send.
+export const ReplaceKey: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const view = within(
+      await canvas.findByRole("article", { name: "Production AWS" }),
+    );
+    await userEvent.click(view.getByText("Replace the admin key"));
+    const form = within(
+      view.getByRole("form", {
+        name: "Replace the admin key of Production AWS",
+      }),
+    );
+    await expect(
+      view.getByText(/^The account keeps this permissions boundary/),
+    ).toBeVisible();
+    await expect(
+      form.queryByLabelText(/^Permissions boundary/),
+    ).not.toBeInTheDocument();
+    await userEvent.type(
+      form.getByLabelText("Admin access key ID"),
+      "AKIAEXAMPLEEXAMPLE",
+    );
+    await userEvent.type(
+      form.getByLabelText("Admin secret access key"),
+      "example-secret",
+    );
+    await userEvent.click(
+      form.getByRole("button", { name: "Replace admin key" }),
+    );
+    await expect(
+      await view.findByText("Admin key replaced. Delete the old one at AWS."),
+    ).toBeVisible();
+    await expect(lastReplacement()).toEqual({
+      accessKeyId: "AKIAEXAMPLEEXAMPLE",
+      secretAccessKey: "example-secret",
+      generation: account.generation,
+    });
+  },
+};
+
+// Destinations that fail to load leave each account's controls in place, with a retry.
+export const DestinationsLoadFailure: Story = {
+  parameters: scenario(
+    session,
+    ...backupStorageHandlers({ failDestinations: true }),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const destinations = within(
+      await canvas.findByRole("region", {
+        name: "Destinations using this account",
+      }),
+    );
+    await expect(await destinations.findByRole("alert")).toHaveTextContent(
+      "Destinations could not be loaded.",
+    );
+    await expect(
+      destinations.getByRole("button", { name: "Try again" }),
+    ).toBeEnabled();
   },
 };
 

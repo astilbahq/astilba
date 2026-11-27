@@ -17,7 +17,8 @@ import (
 
 // The key sweep drives every minted key to the state its rows ask for. Revocation is desired
 // state, not an event: a key is latched (revoking) when its holder is revoked, its recovery has
-// ended, its mint failed, or a newer key has replaced it on a server that installed that one, and
+// ended, its mint failed or never finished, or a newer key has replaced it on a server that
+// installed that one, and
 // the sweep revokes latched keys at AWS until AWS confirms. It also starts re-mints for renewed
 // servers' destinations. See docs/backups.md#managed-keys.
 type keySweepWorker struct {
@@ -48,10 +49,14 @@ func (s *Service) runKeySweep(ctx context.Context) error {
 	return s.revokeDueKeys(ctx)
 }
 
-// latchDerivedKeys latches the keys whose rows say they are done with: recovery keys whose
-// operation has ended however it ended, and server keys replaced by a newer one that their
-// holder has installed.
+// latchDerivedKeys latches the keys whose rows say they are done with: keys still minting past
+// their deadline, recovery keys whose operation has ended however it ended, and server keys
+// replaced by a newer one that their holder has installed. Only a management recovery that merges
+// two histories, each of which re-minted the destination, leaves two active server keys.
 func (s *Service) latchDerivedKeys(ctx context.Context) error {
+	if _, err := s.Store.Queries.LatchExpiredMintingKeys(ctx); err != nil {
+		return err
+	}
 	if _, err := s.Store.Queries.LatchEndedRecoveryKeys(ctx); err != nil {
 		return err
 	}
@@ -168,19 +173,21 @@ func (s *Service) revokeKey(ctx context.Context, k db.ClaimDueBackupStorageKeyRo
 		// The pass ran out of time; the key keeps its claim's short delay and is tried again.
 		return nil
 	}
-	return s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), k.WorkspaceID, func(tx pgx.Tx) error {
+	// What AWS answered is recorded even once the pass has run out of time.
+	work := context.WithoutCancel(ctx)
+	return s.Store.WorkspaceWriteTransaction(work, k.WorkspaceID, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		if err != nil {
-			return q.RecordBackupStorageKeyFailure(ctx, db.RecordBackupStorageKeyFailureParams{WorkspaceID: k.WorkspaceID, ID: k.ID, LastError: fixedText(errorCode(err))})
+			return q.RecordBackupStorageKeyFailure(work, db.RecordBackupStorageKeyFailureParams{WorkspaceID: k.WorkspaceID, ID: k.ID, LastError: fixedText(errorCode(err))})
 		}
-		destination, err := q.RecordBackupStorageKeyRevoked(ctx, db.RecordBackupStorageKeyRevokedParams{WorkspaceID: k.WorkspaceID, ID: k.ID})
+		destination, err := q.RecordBackupStorageKeyRevoked(work, db.RecordBackupStorageKeyRevokedParams{WorkspaceID: k.WorkspaceID, ID: k.ID})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		} else if err != nil || destination == nil {
 			return err
 		}
 		// A failed create's placeholder goes once nothing of it is left to revoke.
-		_, err = q.DeleteBackupPlaceholder(ctx, db.DeleteBackupPlaceholderParams{WorkspaceID: k.WorkspaceID, DestinationID: *destination})
+		_, err = q.DeleteBackupPlaceholder(work, db.DeleteBackupPlaceholderParams{WorkspaceID: k.WorkspaceID, DestinationID: *destination})
 		return err
 	})
 }

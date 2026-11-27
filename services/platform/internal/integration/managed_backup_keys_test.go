@@ -267,6 +267,17 @@ func TestARenewedServerGetsANewKey(t *testing.T) {
 	if err := k.reach(cred, "astilba/"+k.ws.String()+"/"+policy.ID.String()+"/"); err != nil {
 		t.Fatal("the new key can't reach the policy's repository:", err)
 	}
+
+	// An install that fails is tried again under a new request key, not replayed.
+	agentRequest(t, k.f.server.Client(), k.f.server.URL, "/agent/v1/report", k.first.token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: "failed", Steps: []api.ExecutionStep{}}, 204, nil)
+	for range 2 {
+		k.exec(t, `UPDATE backup_storage_keys SET install_next_at=NULL`)
+		k.run(t, keySweep{})
+	}
+	status, again := k.poll(t, k.first)
+	if status != 200 || again == nil || again.Id == c.Id || again.Backup == nil || json.Unmarshal(*again.Backup, &b) != nil || b.Action != "install" {
+		t.Fatalf("after the failed install, polled %d %+v, want a new install", status, again)
+	}
 }
 
 // A workspace exported after a handover carries its storage account and handed-over key. The
@@ -352,6 +363,7 @@ func TestTheAccountCheckReportsUsersManagementDidntMake(t *testing.T) {
 	k.aws.CreateUser("unbounded", path, "", nil, "")
 	k.exec(t, `UPDATE backup_storage_keys SET activated_at=now() - interval '2 hours' WHERE id=$1`, d.Keys[0].Id)
 	extra := k.aws.IssueKey(d.Keys[0].UserName)
+	k.b.call("POST", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/check", nil, 204, nil)
 	k.run(t, accountCheck{})
 	var accounts []api.BackupStorageAccount
 	k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &accounts)

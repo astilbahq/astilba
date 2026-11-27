@@ -24,8 +24,12 @@ func (s *Server) CreateBackupDestination(w http.ResponseWriter, r *http.Request,
 	d := backup.Destination{Name: b.Name, Kind: string(b.Kind), Root: b.Root, Endpoint: b.Endpoint, Bucket: b.Bucket, Region: b.Region, Prefix: pipelineString(b.Prefix)}
 	if b.AccountId != nil {
 		// A managed destination's key is minted by management, so the request carries none.
-		if b.Access != nil || b.ServerId == nil {
+		if b.Access != nil {
 			s.fail(w, r, domain.Invalid("access"))
+			return
+		}
+		if b.ServerId == nil {
+			s.fail(w, r, domain.Invalid("serverId"))
 			return
 		}
 		v, e := s.Execution.CreateManagedBackupDestination(r.Context(), *principal(r.Context()), ws, d, *b.AccountId, *b.ServerId)

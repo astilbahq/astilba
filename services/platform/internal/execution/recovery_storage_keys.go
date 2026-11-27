@@ -41,9 +41,11 @@ func recoveryAccountKnowledge(prior, incoming portability.Row) (portability.Row,
 	return out, nil
 }
 
-// keyStates orders a storage key's states: a key only moves forward, so the copy further along
-// knows more, and revocation, once either copy has begun it, always finishes.
-var keyStates = map[string]int{"minting": 0, "active": 1, "revoking": 2, "revoked": 3}
+// keyStates orders a storage key's states: a key moves forward, so the copy further along knows
+// more, and revocation, once either copy has begun it, always finishes. Revoking ranks above
+// revoked because the account check moves a revoked key whose user AWS still has back to
+// revoking, and revoking a user that is gone again is harmless.
+var keyStates = map[string]int{"minting": 0, "active": 1, "revoked": 2, "revoking": 3}
 
 var errRecoveryKeyState = errors.New("storage key state conflicts with known management metadata")
 

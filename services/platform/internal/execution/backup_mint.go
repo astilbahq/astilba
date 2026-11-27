@@ -132,14 +132,16 @@ type keyInstall struct {
 }
 
 // latchKey moves a key to revoking in its own transaction, for a mint that failed or was refused,
-// and has the sweep run.
+// and has the sweep run. It runs whether or not the caller's context has ended, since a mint cut
+// short by it is the commonest reason to latch.
 func (s *Service) latchKey(ctx context.Context, ws, key uuid.UUID, cause error) error {
 	code := errorCode(cause)
-	return s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
-		if _, err := db.New(tx).LatchBackupStorageKey(ctx, db.LatchBackupStorageKeyParams{WorkspaceID: ws, ID: key, LastError: fixedText(code)}); err != nil {
+	work := context.WithoutCancel(ctx)
+	return s.Store.WorkspaceWriteTransaction(work, ws, func(tx pgx.Tx) error {
+		if _, err := db.New(tx).LatchBackupStorageKey(work, db.LatchBackupStorageKeyParams{WorkspaceID: ws, ID: key, LastError: fixedText(code)}); err != nil {
 			return err
 		}
-		return s.queueKeySweep(ctx, tx)
+		return s.queueKeySweep(work, tx)
 	})
 }
 

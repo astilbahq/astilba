@@ -27,6 +27,11 @@ import {
 } from "./schedule-fields";
 import type { EnvironmentPath } from "./visual-editor";
 
+// A managed destination whose key has never worked: management is still making it, or making it
+// failed. A policy can't use it until a key has been active.
+const placeholder = (d: Schema["BackupDestination"]) =>
+  !!d.accountId && !d.keys.some((k) => k.activatedAt);
+
 export function Backups({
   path,
   revision,
@@ -136,8 +141,8 @@ export function Backups({
                       },
                     }),
                   ).catch(async (error: unknown) => {
-                    // A destination exposed, or bound to a server, since the list loaded is
-                    // refused, so the list is refreshed to show why.
+                    // A destination exposed, bound to a server, or whose key isn't ready since
+                    // the list loaded is refused, so the list is refreshed to show why.
                     if (
                       error instanceof ApiError &&
                       error.detail.fields?.some((f) =>
@@ -145,6 +150,7 @@ export function Backups({
                           "destination.exposed",
                           "destination.server",
                           "destination.shared",
+                          "destination.key",
                         ].includes(f),
                       )
                     )
@@ -230,12 +236,14 @@ export function Backups({
                       <option value="">Choose a destination</option>
                       {destinations.data?.map((d) => (
                         // An S3 destination's keys belong to one server, and only its policies
-                        // can use it.
+                        // can use it. A managed one needs its key made first.
                         <option
                           key={d.id}
                           value={d.id}
                           disabled={
-                            d.shared || (!!d.serverId && d.serverId !== server)
+                            d.shared ||
+                            (!!d.serverId && d.serverId !== server) ||
+                            placeholder(d)
                           }
                         >
                           {d.name}
@@ -245,7 +253,9 @@ export function Backups({
                               ? " — shared by several servers, closed to new policies"
                               : d.serverId && d.serverId !== server
                                 ? ` — keys belong to ${servers.data?.find((v) => v.id === d.serverId)?.name ?? "another server"}`
-                                : ""}
+                                : placeholder(d)
+                                  ? " — its key is still being made, or making it failed"
+                                  : ""}
                           {d.accountId ? " — keys made by management" : ""}
                           {d.exposed
                             ? " — keys exposed to a revoked server"

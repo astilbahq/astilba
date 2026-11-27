@@ -7,9 +7,11 @@ import {
   workspace,
   examples,
   environments,
+  environmentsPath,
   projectHandlers,
 } from "../../workshop/app-preview";
 import {
+  replacement,
   resetRevokedServerBackups,
   revokedServerBackupHandlers,
 } from "../../workshop/backup-recovery-fixtures";
@@ -182,6 +184,44 @@ export const AnotherServersDestination: Story = {
     });
     const option = await within(form).findByRole("option", {
       name: /^Offsite bucket — keys belong to edge-1/,
+    });
+    await expect(option).toBeDisabled();
+  },
+};
+
+// A managed destination whose key has never been active can't take a policy yet, and says why.
+export const PlaceholderDestination: Story = {
+  parameters: scenario(
+    session,
+    // The environment runs on the server the destination's key is being made for.
+    http.get(environmentsPath, () =>
+      HttpResponse.json(
+        environments.map((e) =>
+          e.id === environments[0].id
+            ? {
+                ...e,
+                deploymentUnit: { ...e.deploymentUnit, serverId: replacement },
+              }
+            : e,
+        ),
+      ),
+    ),
+    ...revokedServerBackupHandlers({ placeholder: true }),
+    ...projectHandlers(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("tab", { name: "Deployments" }),
+    );
+    await userEvent.click(
+      await canvas.findByText("Create backup policy or container job"),
+    );
+    const form = await canvas.findByRole("form", {
+      name: "Create backup policy",
+    });
+    const option = await within(form).findByRole("option", {
+      name: /^Managed bucket — its key is still being made, or making it failed/,
     });
     await expect(option).toBeDisabled();
   },

@@ -1,3 +1,4 @@
+import type { UseQueryResult } from "@tanstack/react-query";
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { backupStorageAccountPath } from "../../api/backups";
@@ -27,8 +28,8 @@ export function StorageAccount({
 }: {
   workspaceId: string;
   account: Account;
-  /** The managed destinations whose keys this account mints. */
-  destinations: Schema["BackupDestination"][] | undefined;
+  /** The workspace's destinations; this account mints the keys of those naming it. */
+  destinations: UseQueryResult<Schema["BackupDestination"][]>;
   servers: Schema["Server"][] | undefined;
   owner: boolean;
   refresh: () => Promise<void>;
@@ -40,6 +41,7 @@ export function StorageAccount({
   const id = useId(),
     destinationsId = useId();
   const path = { workspaceId, accountId: account.id };
+  const managed = destinations.data?.filter((d) => d.accountId === account.id);
   return (
     <article className={s.panel} aria-labelledby={id}>
       <h3 id={id}>{account.name}</h3>
@@ -56,13 +58,14 @@ export function StorageAccount({
         <dd className={st.identifier}>{account.installationId}</dd>
       </dl>
       <div className={st.part}>
-        {/* Announces a check this page asked for as it waits and then reports. */}
+        {/* Announces a check as it starts and once it reports. */}
         <p role="status">
+          {account.checking && <>{t(($) => $.account.checking)} </>}
           {account.checkedAt
             ? t(($) => $.account.checked, {
                 date: text.date(account.checkedAt),
               })
-            : t(($) => $.account.notChecked)}
+            : !account.checking && t(($) => $.account.notChecked)}
         </p>
         {account.checkError && (
           <p className={s.notice}>
@@ -82,6 +85,8 @@ export function StorageAccount({
           <div className={s.row}>
             <Button
               type="button"
+              // Keeps focus while busy, so a refusal is read beside it.
+              focusableWhenDisabled
               disabled={check.isPending}
               onClick={() =>
                 check.run(async () => {
@@ -126,26 +131,42 @@ export function StorageAccount({
         <h4 id={destinationsId} className={st.subheading}>
           {t(($) => $.destinations.title)}
         </h4>
-        {destinations?.length
-          ? destinations.map((destination) => (
-              <ManagedDestination
-                key={destination.id}
-                workspaceId={workspaceId}
-                destination={destination}
-                servers={servers}
-                owner={owner}
+        {!managed ? (
+          destinations.isPending ? (
+            <p role="status">{t(($) => $.destinations.loading)}</p>
+          ) : (
+            <div className={s.stack}>
+              <ErrorNotice
+                error={destinations.error}
+                message={t(($) => $.destinations.loadFailed)}
               />
-            ))
-          : destinations && <p>{t(($) => $.destinations.none)}</p>}
+              <div className={s.row}>
+                <Button
+                  type="button"
+                  focusableWhenDisabled
+                  disabled={destinations.isFetching}
+                  onClick={() => void destinations.refetch()}
+                >
+                  {t(($) => $.retry)}
+                </Button>
+              </div>
+            </div>
+          )
+        ) : managed.length ? (
+          managed.map((destination) => (
+            <ManagedDestination
+              key={destination.id}
+              workspaceId={workspaceId}
+              destination={destination}
+              servers={servers}
+              owner={owner}
+            />
+          ))
+        ) : (
+          <p>{t(($) => $.destinations.none)}</p>
+        )}
       </section>
       {owner && <ReplaceAdminKey workspaceId={workspaceId} account={account} />}
     </article>
-  );
-}
-
-/** Whether a check of the account is still to report: one asked for, or one under way. */
-export function checkPending(account: Account) {
-  return (
-    !account.checkedAt || Date.now() - Date.parse(account.checkedAt) < 30_000
   );
 }

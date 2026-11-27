@@ -4885,10 +4885,10 @@ export interface components {
             /** @description The ARN of the permissions-boundary policy every minted user is created with. */
             boundary: string;
         };
+        /** @description A replacement admin credential. The account's permissions boundary stays, since every user minted under it carries it. */
         BackupStorageCredentialRequest: {
             accessKeyId: string;
             secretAccessKey: string;
-            boundary: string;
             /**
              * Format: int64
              * @description The generation the credential replaces, so two replacements can't interleave.
@@ -4912,6 +4912,8 @@ export interface components {
             peer: boolean;
             /** @description Whether management is revoking it. */
             revoking: boolean;
+            /** @description While it is being revoked, why the last attempt failed. */
+            lastError: string | null;
         };
         BackupStorageAccount: {
             /** Format: uuid */
@@ -4930,8 +4932,13 @@ export interface components {
             /** Format: int64 */
             generation: number;
             peers: string[];
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description When the latest account check reported.
+             */
             checkedAt: string | null;
+            /** @description Whether a check has been asked for, or is running, and hasn't reported yet. */
+            checking: boolean;
             /** @description Why the latest account check failed, as a fixed code. */
             checkError: string | null;
             foundUsers: components["schemas"]["BackupStorageFoundUser"][];

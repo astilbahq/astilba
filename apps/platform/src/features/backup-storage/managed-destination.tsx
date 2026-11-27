@@ -108,6 +108,8 @@ export function ManagedDestination({
         <div className={s.row}>
           <Button
             type="button"
+            // Keeps focus while busy, so a refusal is read beside it.
+            focusableWhenDisabled
             disabled={retry.isPending}
             onClick={() =>
               retry.run(async () => {

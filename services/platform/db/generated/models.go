@@ -207,6 +207,7 @@ type BackupStorageAccount struct {
 	Generation          int64       `json:"generation"`
 	Peers               []uuid.UUID `json:"peers"`
 	CheckedAt           *time.Time  `json:"checked_at"`
+	ReportedAt          *time.Time  `json:"reported_at"`
 	CheckError          pgtype.Text `json:"check_error"`
 	Report              []byte      `json:"report"`
 	CreatedAt           time.Time   `json:"created_at"`
@@ -235,6 +236,8 @@ type BackupStorageKey struct {
 	Attempts         int32       `json:"attempts"`
 	LastError        pgtype.Text `json:"last_error"`
 	Installs         []byte      `json:"installs"`
+	InstallAttempts  int32       `json:"install_attempts"`
+	InstallNextAt    *time.Time  `json:"install_next_at"`
 	FoundTags        []byte      `json:"found_tags"`
 	EncryptedSecret  []byte      `json:"encrypted_secret"`
 	CreatedAt        time.Time   `json:"created_at"`

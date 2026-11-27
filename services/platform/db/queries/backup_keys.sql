@@ -3,7 +3,10 @@ INSERT INTO backup_storage_accounts(id,workspace_id,name,aws_account,admin_arn,b
 VALUES(@id,@workspace_id,@name,@aws_account,@admin_arn,@boundary,@encrypted_credential);
 
 -- name: ListBackupStorageAccounts :many
-SELECT id,name,aws_account,admin_arn,boundary,generation,peers,checked_at,check_error,report,created_at
+-- checking is a check asked for and not yet claimed, or one claimed in the last ten minutes, as long
+-- as a check runs at most, that hasn't reported.
+SELECT id,name,aws_account,admin_arn,boundary,generation,peers,reported_at,check_error,report,created_at,
+    (checked_at IS NULL OR ((reported_at IS NULL OR reported_at < checked_at) AND checked_at > clock_timestamp() - interval '10 minutes'))::bool AS checking
 FROM backup_storage_accounts WHERE workspace_id = @workspace_id ORDER BY name,id LIMIT 100;
 
 -- name: BackupStorageAccount :one
@@ -12,7 +15,8 @@ FROM backup_storage_accounts WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ReplaceBackupStorageAccountCredential :execrows
 -- Only the generation the owner checked against is replaced, so two replacements can't interleave.
-UPDATE backup_storage_accounts SET admin_arn = @admin_arn,boundary = @boundary,encrypted_credential = @encrypted_credential,generation=generation+1
+-- The boundary stays: every user minted under the account carries it.
+UPDATE backup_storage_accounts SET admin_arn = @admin_arn,encrypted_credential = @encrypted_credential,generation=generation+1
 WHERE workspace_id = @workspace_id AND id = @id AND generation = @generation;
 
 -- name: AddBackupStorageAccountPeer :execrows
@@ -33,13 +37,14 @@ RETURNING workspace_id,id;
 UPDATE backup_storage_accounts SET checked_at=NULL WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: RecordBackupStorageAccountCheck :exec
-UPDATE backup_storage_accounts SET check_error = sqlc.narg(check_error),report = @report
+UPDATE backup_storage_accounts SET check_error = sqlc.narg(check_error),report = @report,reported_at = clock_timestamp()
 WHERE workspace_id = @workspace_id AND id = @id AND generation = @generation;
 
--- name: RecordBackupStorageFoundRevoking :exec
--- The latest check's report, with a found user the owner has since revoked shown as revoking.
-UPDATE backup_storage_accounts SET report = @report
-WHERE workspace_id = @workspace_id AND id = @id;
+-- name: RevokingFoundBackupStorageKeys :many
+-- The found users management is revoking, for the accounts' views.
+SELECT account_id,user_name,found_tags,last_error FROM backup_storage_keys
+WHERE workspace_id = @workspace_id AND purpose = 'found' AND state = 'revoking'
+ORDER BY account_id,user_name LIMIT 1000;
 
 -- name: InsertBackupStorageKey :exec
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,destination_id,holder_server_id,purpose,scope,user_name,recovery_request,recovery_policy_id,recovery_snapshot)
@@ -68,6 +73,13 @@ WHERE k.workspace_id = @workspace_id AND k.id = @id AND k.state = 'minting'
 UPDATE backup_storage_keys SET state='revoking',last_error=COALESCE(sqlc.narg(last_error),last_error),
     next_attempt_at=clock_timestamp()
 WHERE workspace_id = @workspace_id AND id = @id AND state IN ('minting','active');
+
+-- name: LatchExpiredMintingKeys :execrows
+-- unscoped: a key still minting past its deadline was left by a mint that stopped before it could
+-- activate or latch the key, such as one cut off by a restart. No create call for it starts after
+-- the deadline, and ClaimDueBackupStorageKey still waits five minutes more before revoking it.
+UPDATE backup_storage_keys SET state='revoking',last_error=COALESCE(last_error,'timeout'),next_attempt_at=clock_timestamp()
+WHERE state = 'minting' AND mint_deadline <= clock_timestamp();
 
 -- name: LatchServerBackupStorageKeys :many
 -- A revoked server's keys, except those handed over at its current revocation.
@@ -227,22 +239,40 @@ SELECT EXISTS(SELECT 1 FROM backup_storage_keys WHERE workspace_id = @workspace_
 UPDATE backup_policies SET configuration = @configuration WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: PendingKeyInstalls :many
--- unscoped: the policies whose install would carry a re-minted key and that their server hasn't
--- installed yet, still at the generation the re-mint wrote. A later owner's save installs the key
--- too, so it ends the wait.
-SELECT k.workspace_id,k.id AS key_id,p.id AS policy_id,p.environment_id,(p.configuration->>'generation')::bigint AS generation
+-- unscoped: the policies in active environments whose install would carry a re-minted key and
+-- that their server hasn't installed yet, still at the generation the re-mint wrote, for keys whose
+-- installs are due. A later owner's save installs the key too, so it ends the wait. Each pass moves
+-- the keys it looks at on, so keys whose installs keep failing can't hold the head of the scan.
+SELECT k.workspace_id,k.id AS key_id,k.install_attempts,p.id AS policy_id,p.environment_id,(p.configuration->>'generation')::bigint AS generation
 FROM backup_storage_keys k
 JOIN backup_policies p ON p.workspace_id = k.workspace_id
     AND k.installs @> jsonb_build_array(jsonb_build_object('policy', p.id::text, 'generation', (p.configuration->>'generation')::bigint))
+JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id AND e.state = 'active'
 WHERE k.purpose = 'server' AND k.state = 'active' AND jsonb_array_length(k.installs) > 0
+    AND (k.install_next_at IS NULL OR k.install_next_at <= clock_timestamp())
     AND COALESCE((p.status->>'generation')::bigint,0) < (p.configuration->>'generation')::bigint
-ORDER BY k.activated_at,k.id,p.id
+ORDER BY k.install_next_at NULLS FIRST,k.id,p.id
 LIMIT 20;
+
+-- name: InstallOperationState :one
+SELECT state FROM execution_operations WHERE workspace_id = @workspace_id AND request_key = @request_key;
+
+-- name: RecordKeyInstallPass :exec
+-- A key whose install ended without its server reporting it is tried again under a new request
+-- key, backing off to an hour; one whose installs are queued or running is looked at again in a
+-- minute.
+UPDATE backup_storage_keys SET install_attempts = LEAST(install_attempts + CASE WHEN @retry::bool THEN 1 ELSE 0 END, 1000),
+    install_next_at = clock_timestamp() + CASE WHEN @retry::bool
+        THEN LEAST(interval '1 hour', interval '1 minute' * power(2, LEAST(install_attempts,10))) ELSE interval '1 minute' END
+WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AlertingBackupStorageAccounts :many
 -- The accounts whose latest check failed or found something the owner should look at.
-SELECT id FROM backup_storage_accounts
-WHERE workspace_id = @workspace_id AND (check_error IS NOT NULL OR COALESCE((report->>'alert')::bool,false));
+-- A found user whose revocation keeps failing is still a user management didn't make.
+SELECT a.id FROM backup_storage_accounts a
+WHERE a.workspace_id = @workspace_id AND (a.check_error IS NOT NULL OR COALESCE((a.report->>'alert')::bool,false)
+    OR EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id
+        AND k.purpose = 'found' AND k.state = 'revoking' AND k.attempts >= 3));
 
 -- name: RelatchRevokedBackupStorageKey :execrows
 -- A key recorded revoked whose user the account check still finds an hour later is revoked again.

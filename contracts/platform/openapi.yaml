@@ -10053,13 +10053,13 @@
       properties:
         accessKeyId: {type: string, maxLength: 128, writeOnly: true}
         secretAccessKey: {type: string, maxLength: 128, writeOnly: true}
-        boundary: {type: string, maxLength: 2048}
         generation:
           type: integer
           format: int64
           minimum: 1
           description: The generation the credential replaces, so two replacements can't interleave.
-      required: [accessKeyId, secretAccessKey, boundary, generation]
+      required: [accessKeyId, secretAccessKey, generation]
+      description: A replacement admin credential. The account's permissions boundary stays, since every user minted under it carries it.
     BackupStorageAccountPeerRequest:
       type: object
       additionalProperties: false
@@ -10077,7 +10077,8 @@
         bounded: {type: boolean, description: "Whether it has the account's permissions boundary."}
         peer: {type: boolean, description: "Whether its installation is one of the account's peers."}
         revoking: {type: boolean, description: "Whether management is revoking it."}
-      required: [userName, installationId, serverId, bounded, peer, revoking]
+        lastError: {type: string, maxLength: 80, nullable: true, description: "While it is being revoked, why the last attempt failed."}
+      required: [userName, installationId, serverId, bounded, peer, revoking, lastError]
     BackupStorageAccount:
       type: object
       additionalProperties: false
@@ -10094,7 +10095,8 @@
           type: array
           maxItems: 16
           items: {type: string, format: uuid}
-        checkedAt: {type: string, format: date-time, nullable: true}
+        checkedAt: {type: string, format: date-time, nullable: true, description: "When the latest account check reported."}
+        checking: {type: boolean, description: "Whether a check has been asked for, or is running, and hasn't reported yet."}
         checkError:
           type: string
           nullable: true
@@ -10107,7 +10109,7 @@
         extraKeysDeleted:
           type: integer
           description: Access keys the latest check found on minted users that management never made, and deleted.
-      required: [id, name, awsAccount, adminArn, boundary, path, installationId, generation, peers, checkedAt, checkError, foundUsers, extraKeysDeleted]
+      required: [id, name, awsAccount, adminArn, boundary, path, installationId, generation, peers, checkedAt, checking, checkError, foundUsers, extraKeysDeleted]
     BackupStorageKey:
       type: object
       additionalProperties: false

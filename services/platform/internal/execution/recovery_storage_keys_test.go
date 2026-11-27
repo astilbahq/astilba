@@ -31,6 +31,10 @@ func TestRecoveryKeepsTheKeyFurtherAlong(t *testing.T) {
 		{keyRow("revoking", 2, "from", "prior"), keyRow("active", 3, "from", "incoming"), "revoking", "prior", "3"},
 		{keyRow("active", 4, "from", "prior"), keyRow("active", nil, "from", "incoming"), "active", "prior", "4"},
 		{keyRow("minting", nil, "from", "prior"), keyRow("active", 1, "from", "incoming"), "active", "incoming", "1"},
+		// The account check moves a revoked key whose user AWS still has back to revoking, so a
+		// copy revoking it again wins over one that recorded it revoked, either way round.
+		{keyRow("revoking", nil, "from", "prior"), keyRow("revoked", nil, "from", "incoming"), "revoking", "prior", "null"},
+		{keyRow("revoked", nil, "from", "prior"), keyRow("revoking", nil, "from", "incoming"), "revoking", "incoming", "null"},
 	}
 	for _, c := range cases {
 		got, err := recoveryKeyKnowledge(c.prior, c.incoming)

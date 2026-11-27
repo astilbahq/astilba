@@ -15,6 +15,7 @@ import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
 import { Anchor } from "../components/link";
 import * as s from "../styles";
+import { ErrorNotice, useAction } from "../ui";
 
 const protection: Record<string, string> = {
   tpm: "sealed to this machine's TPM; a copy of its disk can't use it",
@@ -50,12 +51,15 @@ export function ServerCredentials({
   server,
   busy,
   run,
+  refresh,
   onEnrollment,
 }: {
   workspaceId: string;
   server: Schema["Server"];
   busy: boolean;
   run: (fn: () => Promise<unknown>) => void;
+  /** Reloads the servers and their operations, after a change this component makes itself. */
+  refresh: () => Promise<void>;
   onEnrollment: (enrollment: Schema["Enrollment"]) => void;
 }) {
   const path = { workspaceId, serverId: server.id };
@@ -134,7 +138,7 @@ export function ServerCredentials({
           workspaceId={workspaceId}
           server={server}
           busy={busy}
-          run={run}
+          refresh={refresh}
           leak={leak}
         />
         <Button
@@ -187,32 +191,39 @@ const transferGuide =
 // Revoking a server ends its connection, after the owner confirms what it keeps. A server holding
 // an active key management minted for a managed backup destination can hand its keys over to a
 // workspace transfer instead of having them revoked at AWS, so its installed schedules keep
-// backing up once it joins the other installation (docs/backups.md#managed-keys).
+// backing up once it joins the other installation (docs/backups.md#managed-keys). Revoking needs
+// a recent confirmation of identity, which opens over the dialog; a refusal stays in the dialog,
+// which closes once the server is revoked and the page shows it.
 function RevokeServer({
   workspaceId,
   server,
   busy,
-  run,
+  refresh,
   leak,
 }: {
   workspaceId: string;
   server: Schema["Server"];
   busy: boolean;
-  run: (fn: () => Promise<unknown>) => void;
+  refresh: () => Promise<void>;
   leak: string;
 }) {
   const queries = useQueryClient();
+  const action = useAction({ recentAuth: true });
   const destinations = useQuery(backupDestinationsOptions(workspaceId));
-  const managed = !!destinations.data?.some(
-    (d) =>
-      d.accountId &&
-      d.keys.some(
-        (k) =>
-          k.purpose === "server" &&
-          k.state === "active" &&
-          k.serverId === server.id,
-      ),
-  );
+  const holds = (key: (k: Schema["BackupStorageKey"]) => boolean) =>
+    !!destinations.data?.some(
+      (d) =>
+        d.accountId && d.keys.some((k) => k.serverId === server.id && key(k)),
+    );
+  const managed = holds((k) => k.purpose === "server" && k.state === "active");
+  // A restore's own key is revoked with the server whatever happens to its server keys.
+  const restoring =
+    managed &&
+    holds(
+      (k) =>
+        k.purpose === "recovery" &&
+        (k.state === "minting" || k.state === "active"),
+    );
   const [open, setOpen] = useState(false);
   const [handOver, setHandOver] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -224,13 +235,19 @@ function RevokeServer({
         type="button"
         disabled={busy}
         onClick={() => {
+          action.reset();
           setHandOver(false);
           setOpen(true);
         }}
       >
         Revoke connection
       </Button>
-      <AlertDialogRoot open={open} onOpenChange={setOpen}>
+      <AlertDialogRoot
+        open={open}
+        onOpenChange={(next) => {
+          if (!next && !action.isPending) setOpen(false);
+        }}
+      >
         <AlertDialogContent finalFocus={trigger}>
           <AlertDialogTitle>Revoke {server.name}?</AlertDialogTitle>
           <AlertDialogDescription>
@@ -256,7 +273,9 @@ function RevokeServer({
                 it revokes them at AWS, so its installed schedules’ backups
                 fail. If you are moving this workspace to another installation,
                 hand them over instead: they keep working for the transferred
-                server, and the destinations stay unexposed.{" "}
+                server, and the destinations stay unexposed.
+                {restoring &&
+                  " A restore running on it loses its own key either way, and that restore’s destination is exposed until an hour after AWS confirms the key revoked."}{" "}
                 <Anchor href={transferGuide} target="_blank" rel="noreferrer">
                   Transferring a workspace
                 </Anchor>
@@ -264,6 +283,7 @@ function RevokeServer({
               <Label>
                 <Checkbox
                   checked={handOver}
+                  disabled={action.isPending}
                   onChange={(e) => setHandOver(e.target.checked)}
                   aria-describedby={explanation}
                 />
@@ -271,18 +291,22 @@ function RevokeServer({
               </Label>
             </>
           )}
+          <ErrorNotice error={action.error} />
           <AlertDialogActions>
-            <AlertDialogClose render={<Button>Cancel</Button>} />
+            <AlertDialogClose
+              render={<Button disabled={action.isPending}>Cancel</Button>}
+            />
             <Button
               type="button"
               variant="danger"
+              // Keeps focus while busy, so a refusal is read beside it.
+              focusableWhenDisabled
               // Whether the keys can be handed over is known once the destinations load.
-              disabled={destinations.isPending}
-              onClick={() => {
-                setOpen(false);
+              disabled={action.isPending || destinations.isPending}
+              onClick={(event) => {
                 // Only a server that holds managed keys can hand them over.
                 const transfer = managed && handOver;
-                run(async () => {
+                action.run(async () => {
                   await result(
                     client.POST(
                       "/api/v1/workspaces/{workspaceId}/servers/{serverId}/revoke",
@@ -295,13 +319,17 @@ function RevokeServer({
                     ),
                   );
                   // Revoking latches its keys, or hands them over, and can expose destinations.
-                  await queries.invalidateQueries({
-                    queryKey: backupDestinationsOptions(workspaceId).queryKey,
-                  });
-                });
+                  await Promise.all([
+                    refresh(),
+                    queries.invalidateQueries({
+                      queryKey: backupDestinationsOptions(workspaceId).queryKey,
+                    }),
+                  ]);
+                  setOpen(false);
+                }, event.currentTarget);
               }}
             >
-              Revoke connection
+              {action.isPending ? "Revoking…" : "Revoke connection"}
             </Button>
           </AlertDialogActions>
         </AlertDialogContent>

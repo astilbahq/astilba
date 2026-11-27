@@ -156,8 +156,11 @@ func (q *Queries) BackupDestinationAccess(ctx context.Context, arg BackupDestina
 }
 
 const backupDestinationBinding = `-- name: BackupDestinationBinding :one
-SELECT configuration, server_id, shared FROM backup_destinations
-WHERE workspace_id = $1 AND id = $2
+SELECT d.configuration, d.server_id, d.shared,
+    (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
+FROM backup_destinations d
+WHERE d.workspace_id = $1 AND d.id = $2
 `
 
 type BackupDestinationBindingParams struct {
@@ -169,12 +172,20 @@ type BackupDestinationBindingRow struct {
 	Configuration []byte     `json:"configuration"`
 	ServerID      *uuid.UUID `json:"server_id"`
 	Shared        bool       `json:"shared"`
+	Placeholder   bool       `json:"placeholder"`
 }
 
+// A managed destination none of whose keys has ever been active is a placeholder: its key is
+// still being made, or its making failed and it goes once that key is revoked.
 func (q *Queries) BackupDestinationBinding(ctx context.Context, arg BackupDestinationBindingParams) (BackupDestinationBindingRow, error) {
 	row := q.db.QueryRow(ctx, backupDestinationBinding, arg.WorkspaceID, arg.ID)
 	var i BackupDestinationBindingRow
-	err := row.Scan(&i.Configuration, &i.ServerID, &i.Shared)
+	err := row.Scan(
+		&i.Configuration,
+		&i.ServerID,
+		&i.Shared,
+		&i.Placeholder,
+	)
 	return i, err
 }
 
@@ -568,18 +579,19 @@ UNION
 SELECT d.id
 FROM backup_destinations d
 JOIN backup_storage_keys k ON k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL
-JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id AND s.revoked
 WHERE d.workspace_id = $1 AND d.account_id IS NOT NULL AND (k.state = 'revoking'
-    OR (k.state = 'active' AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations))
+    OR (k.state = 'active' AND (k.handed_over IS NULL OR k.handed_over <> s.revocations))
     OR (k.state = 'revoked' AND k.revoked_at > clock_timestamp() - interval '1 hour'))
 `
 
 // An owner-keyed destination is exposed while a revoked server holds its storage keys: the server a
 // policy using it is bound to, or one a restore of such a policy was recorded for, whether or not
 // the restore was released to it. Only an S3 destination has keys, and a container job is never
-// given them. A managed destination's keys are its own rows: it is exposed while one that was
-// delivered is being revoked, is still active with a revoked holder and no current handover, or
-// was revoked within the hour IAM may take to stop honouring it.
+// given them. A managed destination's keys are its own rows: it is exposed while a revoked server
+// holds one that was delivered and that is being revoked, is still active with no current
+// handover, or was revoked within the hour IAM may take to stop honouring it. A key revoked from a
+// server that isn't revoked, such as a restore's once it ends, exposes nothing.
 func (q *Queries) ExposedBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, exposedBackupDestinations, workspaceID)
 	if err != nil {
