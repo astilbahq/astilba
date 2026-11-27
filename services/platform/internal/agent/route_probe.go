@@ -22,12 +22,14 @@ import (
 const routeProbeName = "astilba-route-probe"
 
 // routeProbeScript sends each probe in turn as the proxy does, once and reading no body,
-// and kills it after $1 seconds, since wget's own timeout only bounds each read. It prints
-// the number of the first probe that fails and stops. The shell, the container's first
-// process, waits for each probe itself: busybox's timeout would leave a watcher running
-// for a second after every probe, and a round of quick probes would reach the container's
-// process limit. The URLs are arguments, never part of the script.
-const routeProbeScript = `limit=$1; shift; n=0; for probe; do n=$((n + 1)); wget -q --spider -T "$limit" "$probe" & pid=$!; ticks=0; while kill -0 "$pid" 2>/dev/null; do if [ "$ticks" -ge "$((limit * 50))" ]; then kill -9 "$pid"; break; fi; sleep 0.02; ticks=$((ticks + 1)); done; wait "$pid" || { echo "$n"; exit 1; }; done`
+// and kills it after $1 seconds, since wget's own timeout only bounds each read. With $2
+// "first" it prints the number of the first probe that fails and stops. With "every" it
+// prints the number of each probe that fails and goes on, and wget writes nothing. The
+// shell, the container's first process, waits for each probe itself: busybox's timeout
+// would leave a watcher running for a second after every probe, and a round of quick
+// probes would reach the container's process limit. The URLs are arguments, never part of
+// the script.
+const routeProbeScript = `limit=$1; mode=$2; shift 2; if [ "$mode" = every ]; then exec 2>/dev/null; fi; n=0; status=0; for probe; do n=$((n + 1)); wget -q --spider -T "$limit" "$probe" & pid=$!; ticks=0; while kill -0 "$pid" 2>/dev/null; do if [ "$ticks" -ge "$((limit * 50))" ]; then kill -9 "$pid"; break; fi; sleep 0.02; ticks=$((ticks + 1)); done; wait "$pid" || { echo "$n"; if [ "$mode" != every ]; then exit 1; fi; status=1; }; done; exit $status`
 
 // probeRound sends probes from a container of their own in the proxy's network namespace,
 // so they take the proxy's path, and resolve names as the proxy does, without running
@@ -39,17 +41,34 @@ const routeProbeScript = `limit=$1; shift; n=0; for probe; do n=$((n + 1)); wget
 // It returns the index of the first probe that failed and what wget wrote about it, or -1
 // when every probe passed.
 func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, stderr []byte, err error) {
+	out, stderr, err := e.runProbes(ctx, probes, "first")
+	if err != nil || out == nil {
+		return -1, nil, err
+	}
+	return out[0], stderr, nil
+}
+
+// probeEach sends every probe, as probeRound does, and returns the index of each that
+// failed.
+func (e *Engine) probeEach(ctx context.Context, probes []string) ([]int, error) {
+	failed, _, err := e.runProbes(ctx, probes, "every")
+	return failed, err
+}
+
+// runProbes runs a round of probes in mode, see routeProbeScript, and returns the index of
+// each probe that failed, nil when every one passed, and what wget wrote.
+func (e *Engine) runProbes(ctx context.Context, probes []string, mode string) (failed []int, stderr []byte, err error) {
 	cfg, err := e.Journal.Config()
 	if err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 	proxy, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
 	if err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 	cleanup := context.WithoutCancel(ctx)
 	if err = e.removeRouteProbe(ctx, cleanup, cfg.ServerID.String()); err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 	limit := strconv.Itoa(int(deployment.PoolHealthTimeout / time.Second))
 	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
@@ -57,7 +76,7 @@ func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, s
 		Config: &container.Config{
 			Image:        proxy.Container.Image,
 			Entrypoint:   []string{"sh", "-c", routeProbeScript, "probe"},
-			Cmd:          append([]string{limit}, probes...),
+			Cmd:          append([]string{limit, mode}, probes...),
 			Labels:       map[string]string{labelServer: cfg.ServerID.String(), labelKind: "route-probe-v1"},
 			AttachStdout: true,
 			AttachStderr: true,
@@ -72,7 +91,7 @@ func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, s
 		},
 	})
 	if err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 	defer func() {
 		remove, cancel := context.WithTimeout(cleanup, 30*time.Second)
@@ -83,7 +102,7 @@ func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, s
 	}()
 	attached, err := e.Docker.ContainerAttach(ctx, created.ID, client.ContainerAttachOptions{Stream: true, Stdout: true, Stderr: true})
 	if err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 	defer attached.Close()
 	// The client doesn't tie a hijacked stream to ctx.
@@ -103,7 +122,7 @@ func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, s
 		}
 	}()
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return 0, nil, err
+		return nil, nil, err
 	}
 	var out, errOut bytes.Buffer
 	stream := &io.LimitedReader{R: attached.Reader, N: maxProbeOutput}
@@ -112,30 +131,36 @@ func (e *Engine) probeRound(ctx context.Context, probes []string) (failed int, s
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		return 0, nil, err
+		return nil, nil, err
 	}
 	if stream.N == 0 {
-		return 0, nil, errProxyOutputLimit
+		return nil, nil, errProxyOutputLimit
 	}
 	var status int64
 	waited = true
 	select {
 	case result := <-wait.Result:
 		if result.Error != nil {
-			return 0, nil, errors.New(result.Error.Message)
+			return nil, nil, errors.New(result.Error.Message)
 		}
 		status = result.StatusCode
 	case err = <-wait.Error:
-		return 0, nil, err
+		return nil, nil, err
 	}
 	if status == 0 {
-		return -1, nil, nil
+		return nil, nil, nil
 	}
-	n, parseErr := strconv.Atoi(strings.TrimSpace(out.String()))
-	if parseErr != nil || n < 1 || n > len(probes) {
-		return 0, nil, fmt.Errorf("route probe ended with status %d", status)
+	for line := range strings.FieldsSeq(out.String()) {
+		n, parseErr := strconv.Atoi(line)
+		if parseErr != nil || n < 1 || n > len(probes) {
+			return nil, nil, fmt.Errorf("route probe ended with status %d", status)
+		}
+		failed = append(failed, n-1)
 	}
-	return n - 1, errOut.Bytes(), nil
+	if len(failed) == 0 {
+		return nil, nil, fmt.Errorf("route probe ended with status %d", status)
+	}
+	return failed, errOut.Bytes(), nil
 }
 
 // removeRouteProbe removes a probe container an interrupted round left, if it is one.

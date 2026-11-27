@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -239,7 +240,7 @@ func TestNativeRedirectedProbeLeavesNothing(t *testing.T) {
 }
 
 // A round may probe as many servers as an environment can run, and quick probes must not
-// add up to the probe container's process limit.
+// add up to the probe container's process limit, whether it stops at a failure or not.
 func TestNativeFullProbeRoundPasses(t *testing.T) {
 	h := newIsolationHost(t)
 	u := h.poolUnit("a", "pool")
@@ -254,6 +255,12 @@ func TestNativeFullProbeRoundPasses(t *testing.T) {
 	}
 	if failed, stderr, err := h.e.probeRound(t.Context(), probes); err != nil || failed != -1 {
 		t.Fatalf("a round of healthy probes gave %d, %v: %s", failed, err, stderr)
+	}
+	h.probesLeftNothing()
+	// A round that sends every probe names each that fails, not only the first.
+	probes[3], probes[7] = "http://"+host+":8080/missing", "http://"+host+":8081/"
+	if failed, err := h.e.probeEach(t.Context(), probes); err != nil || !slices.Equal(failed, []int{3, 7}) {
+		t.Fatalf("a round with two failing probes gave %v, %v", failed, err)
 	}
 	h.probesLeftNothing()
 }

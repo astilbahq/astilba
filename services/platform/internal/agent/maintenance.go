@@ -83,7 +83,7 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 		if err := e.recordUnready(ctx, c, &s); err != nil {
 			return refuse(err)
 		}
-		if err := e.recordRouted(ctx, c, &s); err != nil {
+		if err := e.recordRouted(ctx, &s); err != nil {
 			return refuse(err)
 		}
 	case "restore":

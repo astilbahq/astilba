@@ -212,8 +212,9 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 // Nothing converts a reserved host's routes until the reservation is released, so bare
 // backend names an earlier agent published would last as long as it does. Reserving
 // converts them first, and a host whose conversion fails is not reserved. The proxy counts
-// a renamed server up until it probes it, so a server it had out, here the other host's,
-// is still left out of what the reservation records.
+// every server up again when it loads the converted routes, until it probes it, so a
+// server it had out, here the other host's, is still left out of what the reservation
+// records.
 func TestNativeReservationConvertsBareBackends(t *testing.T) {
 	w := newRoutedWriter(t)
 	ctx := context.Background()
