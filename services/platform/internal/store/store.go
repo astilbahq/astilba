@@ -312,7 +312,8 @@ func browserAdmission(ctx context.Context, tx pgx.Tx, p Principal, isolation pgx
 	// This read cannot deadlock. It can wait while holding the workspace lock for a holder of
 	// those rows, such as a credential change or an import, but no holder goes on to wait for
 	// a workspace: a workspace lock is only ever taken with no transaction open. A write's
-	// audit insert already waits on the account row in the same order.
+	// audit insert already waits in the same order for a holder that locks the account FOR
+	// UPDATE, such as an import.
 	savepoint, err := tx.Begin(ctx)
 	if err != nil {
 		return err

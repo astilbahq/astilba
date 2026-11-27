@@ -376,10 +376,12 @@ export const nativeLanes = {
   },
 };
 
-// Main pushes run every lane once, and a newer run cannot cancel them. A run that
-// ran other lanes predates a rebalancing, so its times would misreport today's lanes,
-// and one with a lane that did not finish has no time for it. A run that selected no
-// native checks has no native lanes, so it is passed over.
+// Main pushes run every lane once, and a newer run cannot cancel them. A lane that did
+// not finish, such as one stopped at the job's time limit, has no time, so its run is
+// passed over, and today's lanes are those of the newest run whose lanes all finished.
+// A run that ran other lanes predates a rebalancing, so its times would misreport
+// today's lanes. A run that selected no native checks has no native lanes, so it is
+// passed over.
 export async function recentJobs(request, repository, lanesOf = raceLanes) {
   const { workflow_runs: runs } = await (
     await request(
@@ -403,14 +405,14 @@ export async function recentJobs(request, repository, lanesOf = raceLanes) {
       .map(({ lane }) => lane)
       .sort()
       .join();
-    current ??= names;
     if (
-      names !== current ||
       !lanes.every(({ conclusion }) =>
         ["success", "failure"].includes(conclusion),
       )
     )
       continue;
+    current ??= names;
+    if (names !== current) continue;
     sampled++;
     for (const { id: job, lane, target, conclusion } of lanes) {
       const log = await (

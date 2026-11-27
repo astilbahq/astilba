@@ -74,7 +74,7 @@ type Server struct {
 func New(st *store.Store, service *auth.Service, origin string, development bool, log *slog.Logger) (*Server, func()) {
 	sessions := scs.New()
 	backend := pgxstore.New(st.Pool)
-	sessions.Store = &sessionStore{PostgresStore: backend, queries: st.Queries, store: st}
+	sessions.Store = &sessionStore{PostgresStore: backend, queries: st.Queries}
 	sessions.HashTokenInStore = true
 	sessions.Lifetime = 12 * time.Hour
 	sessions.IdleTimeout = 30 * time.Minute
@@ -318,7 +318,9 @@ func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
 	s.Sessions.Put(ctx, "github-session", nonce)
 	return s.issueDevice(ctx, a)
 }
-func (s *Server) session(ctx context.Context) (api.Session, error) {
+
+// session is what a response shows of the session, read from q.
+func (s *Server) session(ctx context.Context, q *db.Queries) (api.Session, error) {
 	token := s.csrfToken(ctx)
 	if token == "" {
 		var err error
@@ -333,24 +335,24 @@ func (s *Server) session(ctx context.Context) (api.Session, error) {
 	if err != nil {
 		return out, nil
 	}
-	a, err := s.Store.Queries.AccountByID(ctx, id)
+	a, err := q.AccountByID(ctx, id)
 	if err != nil {
 		return out, err
 	}
-	count, err := s.Store.Queries.CountRecoveryCodes(ctx, id)
+	count, err := q.CountRecoveryCodes(ctx, id)
 	if err != nil {
 		return out, err
 	}
 	out.User = &api.Account{Id: a.ID, Name: a.Name, Email: openapi_types.Email(a.Email), MfaEnabled: len(a.TotpSecret) > 0, RecoveryCodesRemaining: int(count), EmailVerified: a.EmailVerifiedAt != nil, RecoveryCodesSaved: a.RecoveryCodesSaved}
 	out.RecentAuth = store.Recent(s.Sessions.GetTime(ctx, "recent"), s.Auth.Now())
-	ws, err := s.Store.Queries.ListWorkspaces(ctx, id)
+	ws, err := q.ListWorkspaces(ctx, id)
 	for _, w := range ws {
 		out.Workspaces = append(out.Workspaces, api.Workspace{Id: w.ID, Name: w.Name, Role: api.Role(w.Role), RequireMfa: w.RequireMfa})
 	}
 	return out, err
 }
 func (s *Server) sendSession(w http.ResponseWriter, r *http.Request) {
-	v, e := s.session(r.Context())
+	v, e := s.session(r.Context(), s.Store.Queries)
 	if e != nil {
 		s.fail(w, r, e)
 		return
@@ -364,27 +366,27 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.Login(r.Context(), string(b.Email), value(b.Password), s.clientSource(r), s.presentedDevices(r))
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	if len(a.TotpSecret) > 0 {
-		if e = s.renewToken(r.Context()); e == nil {
-			s.Sessions.Remove(r.Context(), "github-session")
-			s.Sessions.Remove(r.Context(), "account")
-			s.Sessions.Put(r.Context(), "pending", a.ID.String())
-			s.Sessions.Put(r.Context(), "pending-version", a.AuthVersion)
-			s.Sessions.Put(r.Context(), "pending-at", s.Auth.Now())
+	ctx := r.Context()
+	var out api.Session
+	_, e = s.Auth.Login(ctx, string(b.Email), value(b.Password), s.clientSource(r), s.presentedDevices(r), s.storeSession(ctx, &out, func(ctx context.Context, a db.Account) error {
+		if len(a.TotpSecret) == 0 {
+			return s.establish(ctx, a, false)
 		}
-	} else {
-		e = s.establish(r.Context(), a, false)
-	}
+		if err := s.renewToken(ctx); err != nil {
+			return err
+		}
+		s.Sessions.Remove(ctx, "github-session")
+		s.Sessions.Remove(ctx, "account")
+		s.Sessions.Put(ctx, "pending", a.ID.String())
+		s.Sessions.Put(ctx, "pending-version", a.AuthVersion)
+		s.Sessions.Put(ctx, "pending-at", s.Auth.Now())
+		return nil
+	}))
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	s.sendSession(w, r)
+	s.respond(w, 200, out)
 }
 func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.Code](r)
@@ -397,26 +399,28 @@ func (s *Server) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, domain.Credentials)
 		return
 	}
-	a, e := s.Auth.VerifyCode(r.Context(), id, s.Sessions.GetInt64(r.Context(), "pending-version"), b.Code)
-	if e == nil {
+	ctx := r.Context()
+	var out api.Session
+	_, e = s.Auth.VerifyCode(ctx, id, s.Sessions.GetInt64(ctx, "pending-version"), b.Code, s.storeSession(ctx, &out, func(ctx context.Context, a db.Account) error {
 		// The signed-in token continues the pending sign-in's lineage, so a logout that read
 		// the pending sign-in, such as choosing another account in another tab, ends what it
 		// became if it lands after. Signing in proves a credential, so it does not need the
 		// pending row itself: after such a logout it signs in, in a lineage of its own.
-		r.Context().Value(sessionLoadKey{}).(*sessionLoad).continueLineage = true
-		e = s.establish(r.Context(), a, true)
-	}
+		ctx.Value(sessionLoadKey{}).(*sessionLoad).continueLineage = true
+		return s.establish(ctx, a, true)
+	}))
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	s.sendSession(w, r)
+	s.respond(w, 200, out)
 }
 
 // Logout ends the session the browser presented and every token that renewed it since its
-// sign-in. That includes one whose account a credential change has moved on: its row remains
-// until the change renews it, and ending the lineage makes that renewal refuse. Nothing else
-// is needed for a session that had already ended.
+// sign-in, including one whose account a credential change has moved on, whose row remains
+// until it expires. A credential change under way in this session renews it in the change's own
+// transaction: a renewal after this refuses, so the change is not applied, and this ends the token
+// a renewal before it made. Nothing else is needed for a session that had already ended.
 func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 	loaded := r.Context().Value(sessionLoadKey{}).(*sessionLoad)
 	if loaded.lineage != uuid.Nil {
@@ -440,15 +444,14 @@ func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	a, e := s.Auth.ChangePassword(r.Context(), *principal(r.Context()), credential(b.Current), value(b.Password))
-	if e == nil {
-		e = s.rotate(r.Context(), a, len(a.TotpSecret) > 0)
-	}
+	ctx := r.Context()
+	var out api.Session
+	_, e = s.Auth.ChangePassword(ctx, *principal(ctx), credential(b.Current), value(b.Password), s.storeSession(ctx, &out, s.rotate))
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	s.sendSession(w, r)
+	s.respond(w, 200, out)
 }
 func (s *Server) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.ResetRequest](r)
@@ -514,86 +517,18 @@ func (s *Server) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	current := principal(r.Context())
-	a, e := s.Auth.AcceptInvitation(r.Context(), b.Token, value(b.Name), value(b.Password), s.clientSource(r), current)
-	if e == nil && (current == nil || current.Account.ID != a.ID) {
-		e = s.establish(r.Context(), a, false)
-	}
+	ctx := r.Context()
+	current := principal(ctx)
+	var out api.Session
+	_, e = s.Auth.AcceptInvitation(ctx, b.Token, value(b.Name), value(b.Password), s.clientSource(r), current, s.storeSession(ctx, &out, func(ctx context.Context, a db.Account) error {
+		if current != nil && current.Account.ID == a.ID {
+			return nil
+		}
+		return s.establish(ctx, a, false)
+	}))
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	s.sendSession(w, r)
-}
-
-// EnrollMFA starts enrolment. It needs no confirmation, because the authenticator does nothing
-// until ConfirmMFA, which needs the password.
-func (s *Server) EnrollMFA(w http.ResponseWriter, r *http.Request) {
-	secret, uri, e := s.Auth.BeginMFA(r.Context(), *principal(r.Context()))
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	s.respond(w, 200, api.MFAEnrollment{Secret: secret, Uri: uri})
-}
-func (s *Server) ConfirmMFA(w http.ResponseWriter, r *http.Request) {
-	b, e := decode[api.MFAConfirmation](r)
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	a, codes, e := s.Auth.ConfirmMFA(r.Context(), *principal(r.Context()), credential(b.Current), b.Code)
-	s.sendCodes(w, r, a, codes, e)
-}
-func (s *Server) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
-	b, e := decode[api.CredentialConfirmation](r)
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	a, codes, e := s.Auth.RegenerateRecovery(r.Context(), *principal(r.Context()), credential(b.Current))
-	s.sendCodes(w, r, a, codes, e)
-}
-func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account, codes []string, e error) {
-	if e == nil {
-		e = s.rotate(r.Context(), a, true)
-	}
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	session, e := s.session(r.Context())
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	s.respond(w, 200, api.RecoveryCodes{Codes: codes, Session: session, Generation: a.RecoveryCodesGeneration})
-}
-func (s *Server) DisableMFA(w http.ResponseWriter, r *http.Request) {
-	b, e := decode[api.CredentialConfirmation](r)
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	a, e := s.Auth.DisableMFA(r.Context(), *principal(r.Context()), credential(b.Current))
-	if e == nil {
-		e = s.rotate(r.Context(), a, false)
-	}
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	s.sendSession(w, r)
-}
-
-func (s *Server) AcknowledgeRecoveryCodes(w http.ResponseWriter, r *http.Request) {
-	b, e := decode[api.RecoveryCodesAcknowledgement](r)
-	if e == nil {
-		e = s.Auth.AcknowledgeRecoveryCodes(r.Context(), *principal(r.Context()), b.Generation)
-	}
-	if e != nil {
-		s.fail(w, r, e)
-		return
-	}
-	s.sendSession(w, r)
+	s.respond(w, 200, out)
 }

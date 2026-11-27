@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,7 +46,7 @@ func TestRestoreFromAnotherMajorIsRefusedBeforeTouchingTheHost(t *testing.T) {
 }
 
 // A report's note is refused past 1024 characters on every retry, so no note may grow past it,
-// however many databases a rebuild leaves unfinished or closed or exclusion indexes it names.
+// however many databases a rebuild leaves unfinished, closed or invalid, or exclusion indexes it names.
 // Whole after the longest note a report puts before it, the rebuild's also leads a maintenance
 // report's, so clipping never loses it.
 func TestReportNoteStaysWithinTheContract(t *testing.T) {
@@ -52,23 +56,108 @@ func TestReportNoteStaysWithinTheContract(t *testing.T) {
 		shapes["wide"] = append(shapes["wide"], strings.Repeat("a", 150)+strconv.Itoa(i))
 		shapes["short"] = append(shapes["short"], "x"+strconv.Itoa(i))
 	}
+	qualified := map[string][]listed{}
+	for shape, names := range shapes {
+		for _, name := range names {
+			qualified[shape] = append(qualified[shape], listed{name, name})
+		}
+	}
+	// Each list keeps within its room whatever its names, so the longest note is the note's own
+	// words with every list full.
+	for _, list := range []struct {
+		room      int
+		qualifies bool
+	}{{unfinishedRoom, false}, {closedRoom, true}, {invalidRoom, true}, {exclusionsRoom, false}} {
+		room, qualifies := list.room, list.qualifies
+		for _, more := range []int{0, 9, 999} {
+			for width := 1; width <= 130; width++ {
+				for _, first := range []string{strings.Repeat("a", width), strings.Repeat("ä", width)} {
+					names := []listed{{first, ""}}
+					for i := range more {
+						names = append(names, listed{"z" + strings.Repeat("y", i%90) + strconv.Itoa(i), ""})
+					}
+					if qualifies {
+						for i := range names {
+							names[i].application = names[i].name
+						}
+					}
+					if list := listSome(names, room); len(list) > room || !utf8.ValidString(list) {
+						t.Fatalf("a list of %d bytes in a room of %d: %q", len(list), room, list)
+					}
+				}
+			}
+		}
+	}
+	many := make([]listed, 100000)
+	for i := range many {
+		many[i] = listed{strconv.Itoa(i), "Billing"}
+	}
+	if list := listSome(many, closedRoom); len(list) > closedRoom {
+		t.Fatalf("a list of %d bytes in a room of %d", len(list), closedRoom)
+	}
 	before := "The selected local pool is recorded and retirement is confirmed. "
+	words := utf8.RuneCountInString(before+reindexNote([]string{"u"}, []listed{{"c", ""}}, []listed{{"i", ""}}, []string{"x"})) - 4
+	if longest := words + unfinishedRoom + closedRoom + invalidRoom + exclusionsRoom; longest > 1024 {
+		t.Fatalf("the longest note is %d characters", longest)
+	}
 	after := "This host's maintenance reservation is released. 1000000 instances were not required to be ready: they were already stopped or failing, or an operator accepted them."
 	for unfinishedShape, unfinished := range shapes {
-		for closedShape, closed := range shapes {
-			for exclusionShape, exclusions := range shapes {
-				rebuild := reindexNote(unfinished, closed, exclusions)
-				if note := before + rebuild; utf8.RuneCountInString(note) > 1024 || reportNote(note) != note || strings.Count(rebuild, " more") != 3 {
-					t.Errorf("%s, %s and %s names: a note of %d characters, or no count of the rest", unfinishedShape, closedShape, exclusionShape, utf8.RuneCountInString(note))
-				}
-				if !strings.HasPrefix(reportNote(rebuild+" "+after), rebuild) {
-					t.Errorf("%s, %s and %s names: a maintenance report clipped the rebuild's note", unfinishedShape, closedShape, exclusionShape)
+		for closedShape, closed := range qualified {
+			for invalidShape, invalid := range qualified {
+				for exclusionShape, exclusions := range shapes {
+					rebuild := reindexNote(unfinished, closed, invalid, exclusions)
+					if note := before + rebuild; utf8.RuneCountInString(note) > 1024 || reportNote(note) != note || strings.Count(rebuild, " more") != 4 {
+						t.Errorf("%s, %s, %s and %s names: a note of %d characters, or no count of the rest", unfinishedShape, closedShape, invalidShape, exclusionShape, utf8.RuneCountInString(note))
+					}
+					if !strings.HasPrefix(reportNote(rebuild+" "+after), rebuild) {
+						t.Errorf("%s, %s, %s and %s names: a maintenance report clipped the rebuild's note", unfinishedShape, closedShape, invalidShape, exclusionShape)
+					}
 				}
 			}
 		}
 	}
 	if reportNote("short") != "short" {
 		t.Fatal("a short note changed")
+	}
+}
+
+// PLAT-548. A name too long for its list is cut at a whole character, and a database's name
+// before its application's, so the note stays valid UTF-8 and still says whose it is.
+func TestLongNamesKeepWholeCharactersAndTheirApplication(t *testing.T) {
+	long := "x" + strings.Repeat("ä", 200)
+	for _, note := range []string{
+		reindexNote(nil, []listed{{long, "Billing"}}, nil, nil),
+		reindexNote(nil, nil, []listed{{long, "Billing"}}, nil),
+		reindexNote([]string{long}, nil, nil, []string{long + "." + long}),
+		reindexNote(nil, []listed{{long, long}}, nil, nil),
+	} {
+		if !utf8.ValidString(note) {
+			t.Fatalf("a cut name split a character: %q", note)
+		}
+	}
+	for _, note := range []string{reindexNote(nil, []listed{{long, "Billing"}}, nil, nil), reindexNote(nil, nil, []listed{{long, "Billing"}}, nil)} {
+		if !strings.Contains(note, "… (Billing)") {
+			t.Fatalf("a cut database name lost its application: %q", note)
+		}
+	}
+}
+
+// A lone name needs no room for a count of the rest, so one that fits its room is kept whole.
+func TestALoneNameThatFitsIsKeptWhole(t *testing.T) {
+	alone := strings.Repeat("d", 55)
+	if list := listSome([]listed{{alone, "Billing"}}, closedRoom); list != alone+" (Billing)" {
+		t.Fatalf("a lone name that fits was cut: %q", list)
+	}
+	if list := listSome(unqualified([]string{strings.Repeat("u", unfinishedRoom)}), unfinishedRoom); list != strings.Repeat("u", unfinishedRoom) {
+		t.Fatalf("a lone name that fills its room was cut: %q", list)
+	}
+}
+
+// An application keeps whatever room its database's whole name leaves.
+func TestAnApplicationKeepsTheRoomItsDatabaseLeaves(t *testing.T) {
+	application := "Customer billing and invoicing service"
+	if list := listSome([]listed{{"app", application}}, closedRoom); list != "app ("+application+")" {
+		t.Fatalf("an application name that fits was cut: %q", list)
 	}
 }
 
@@ -277,5 +366,126 @@ func TestStorageWithNoRecordKeepsItsRebuildWhateverPlansTheUnitSaves(t *testing.
 	}
 	if err := journal.postgresDataOpens(plan(oldest, served), served); !errors.Is(err, errPostgresVersionChange) {
 		t.Fatalf("an earlier release opened data the serving one wrote: %v", err)
+	}
+}
+
+// PLAT-549. PostgreSQL writes a volume's data from its first start, so a run that starts a
+// database records its release as serving the data first. A deployment whose run then fails, as
+// one whose service starts but never turns healthy does, still refuses a redeploy of the earlier
+// release. A run that only creates the container records nothing, one that names its services
+// records only theirs, and storage with no record gets the assumed record, served by the release.
+func TestFailedDeploymentStillRefusesTheEarlierRelease(t *testing.T) {
+	journal, identity := testVisualJournal(t)
+	docker, err := client.New(client.WithHost("unix:///nonexistent/astilba-test.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	cli := filepath.Join(t.TempDir(), "docker")
+	if err = os.WriteFile(cli, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Journal: journal, Docker: docker, DockerCLI: cli}
+	serving, _ := domain.CurrentPostgres(18)
+	oldest := oldestPostgres(18)
+	recorded, unrecorded := uuid.New(), uuid.New()
+	ids := map[uuid.UUID]uuid.UUID{recorded: uuid.New(), unrecorded: uuid.New()}
+	plan := func(r domain.PostgresRelease) deployment.Plan {
+		p := identity
+		image := r.Image
+		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}}
+		for _, volume := range []uuid.UUID{recorded, unrecorded} {
+			p.Specification.Volumes = append(p.Specification.Volumes, domain.Volume{ID: volume, Name: volume.String()})
+			p.Specification.Applications = append(p.Specification.Applications, domain.Application{ID: ids[volume], Name: volume.String(), Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: r.Mount}}})
+		}
+		return p.WithHash()
+	}
+	if err = journal.savePostgresData(recorded, postgresData{Image: oldest.Image}); err != nil {
+		t.Fatal(err)
+	}
+	update := plan(serving)
+	record := func(volume uuid.UUID) postgresData {
+		t.Helper()
+		v, _, err := journal.postgresData(volume)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if err = e.compose(t.Context(), update, []byte("{}"), nil, "up", "--force-recreate", "--no-start", "--no-deps"); err == nil || record(recorded) != (postgresData{Image: oldest.Image}) {
+		t.Fatalf("creating the containers recorded %+v: %v", record(recorded), err)
+	}
+	if err = e.compose(t.Context(), update, []byte("{}"), nil, "up", "--detach", "--no-deps", "--wait", "--wait-timeout", "60", deployment.ServiceName(ids[recorded])); err == nil {
+		t.Fatal("the failing run succeeded")
+	}
+	if got := record(recorded); got != (postgresData{Image: oldest.Image, Served: serving.Image}) {
+		t.Fatalf("the database's start recorded %+v", got)
+	}
+	if _, found, _ := journal.postgresData(unrecorded); found {
+		t.Fatal("a run recorded a database it does not start")
+	}
+	if err = e.compose(t.Context(), update, []byte("{}"), nil, "up", "--detach", "--wait"); err == nil {
+		t.Fatal("the failing run succeeded")
+	}
+	if got := record(unrecorded); got != assumedPostgresData(serving) {
+		t.Fatalf("storage with no record was recorded as %+v", got)
+	}
+	for _, volume := range []uuid.UUID{recorded, unrecorded} {
+		if err = journal.postgresDataOpens(plan(oldest), volume); !errors.Is(err, errPostgresVersionChange) {
+			t.Fatalf("a redeploy of the earlier release opened data the later one wrote: %v", err)
+		}
+		if err = journal.postgresDataOpens(update, volume); err != nil {
+			t.Fatalf("a retry of the update was refused: %v", err)
+		}
+	}
+}
+
+// PLAT-549. A restore cutover starts its replacement database outside Compose. The record says
+// the release serves the data before the start reaches Docker, and a release the record refuses
+// never starts.
+func TestStartingADatabaseOutsideComposeRecordsItsReleaseFirst(t *testing.T) {
+	journal, identity := testVisualJournal(t)
+	serving, _ := domain.CurrentPostgres(18)
+	oldest := oldestPostgres(18)
+	volume, app := uuid.New(), uuid.New()
+	plan := func(r domain.PostgresRelease) deployment.Plan {
+		p := identity
+		image := r.Image
+		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}},
+			Applications: []domain.Application{{ID: app, Name: "Database", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: r.Mount}}}}}
+		return p.WithHash()
+	}
+	var started []postgresData
+	transport := scheduleTransport(func(r *http.Request) (*http.Response, error) {
+		w := httptest.NewRecorder()
+		if !strings.HasSuffix(r.URL.Path, "/containers/replacement/start") {
+			w.WriteHeader(404)
+			return w.Result(), nil
+		}
+		record, _, err := journal.postgresData(volume)
+		if err != nil {
+			t.Error(err)
+		}
+		started = append(started, record)
+		w.WriteHeader(204)
+		return w.Result(), nil
+	})
+	docker, err := client.New(client.WithHost("http://docker-fixture"), client.WithHTTPClient(&http.Client{Transport: transport}), client.WithAPIVersion("1.56"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	e := &Engine{Journal: journal, Docker: docker}
+	if err = journal.savePostgresData(volume, postgresData{Image: oldest.Image}); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.startServingPostgres(t.Context(), plan(serving), app, "replacement"); err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 1 || started[0] != (postgresData{Image: oldest.Image, Served: serving.Image}) {
+		t.Fatalf("the database started with the record %+v", started)
+	}
+	if err = e.startServingPostgres(t.Context(), plan(oldest), app, "replacement"); !errors.Is(err, errPostgresVersionChange) || len(started) != 1 {
+		t.Fatalf("an earlier release started on data the later one wrote: %v", err)
 	}
 }

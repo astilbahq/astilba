@@ -58,9 +58,9 @@ func TestLogoutEndsARenewalThatRacedIt(t *testing.T) {
 	}
 }
 
-// A credential change commits to the account before it renews the session's token, and the
-// session is stale meanwhile. A logout in that gap must still win: the renewal is refused and
-// the browser ends signed out.
+// A credential change renews the session's token in its own transaction, after changing the
+// account. A logout that lands in between still wins: the renewal is refused, the change rolls
+// back with it, and the browser ends signed out.
 func TestLogoutBetweenCredentialChangeAndRenewal(t *testing.T) {
 	f := setup(t)
 	other := f.browser(t)
@@ -82,9 +82,10 @@ func TestLogoutBetweenCredentialChangeAndRenewal(t *testing.T) {
 	if remaining := lineageRows(t, f, lineage); remaining != 0 {
 		t.Fatal("the logout left sessions of its lineage: ", remaining)
 	}
-	if session := other.session(); session.User != nil {
-		t.Fatal("the password change did not end the other sign-in")
+	if session := other.session(); session.User == nil {
+		t.Fatal("the refused password change still ended the other sign-in")
 	}
+	f.browser(t).login("owner@example.test", f.password)
 }
 
 // Choosing another account at the second-factor step logs out the pending sign-in. If a code
@@ -166,8 +167,9 @@ func TestLogoutWithAnEndedTokenSucceeds(t *testing.T) {
 	}
 }
 
-// Creating a workspace waits for any holder of the account. A logout that lands during the
-// wait must stop the stolen session's workspace being created.
+// Creating a workspace waits for a transaction that locks the account FOR UPDATE, such as an
+// import. A logout that lands during the wait must stop the stolen session's workspace being
+// created.
 func TestCreateWorkspaceWaitingBehindAccountLock(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
@@ -203,7 +205,7 @@ func TestHostedAcceptanceWaitingBehindAccountLock(t *testing.T) {
 	held := holdAccount(t, f)
 	result := make(chan error, 1)
 	go func() {
-		_, _, err := f.auth.AcceptHosted(ctx, token, "", "", "Planted", auth.Source{Key: "test", Network: "test"}, &principal)
+		_, _, err := f.auth.AcceptHosted(ctx, token, "", "", "Planted", auth.Source{Key: "test", Network: "test"}, &principal, nil)
 		result <- err
 	}()
 	awaitLockWait(t, f, "name: MarkEmailVerified")

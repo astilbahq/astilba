@@ -11,6 +11,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -106,7 +107,7 @@ func (s *Service) operations(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error
 			var p struct {
 				Action string `json:"action"`
 			}
-			if c.Pipeline != nil && json.Unmarshal(*c.Pipeline, &p) == nil && (p.Action == "build" || p.Action == "build-preview") {
+			if c.Pipeline != nil && json.Unmarshal(*c.Pipeline, &p) == nil && pipeline.IsBuildAction(p.Action) {
 				kind = api.BuildProblem
 			}
 		case "backup", "schedule", "restore":

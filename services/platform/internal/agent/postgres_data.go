@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
@@ -26,8 +27,9 @@ import (
 type postgresData struct {
 	Image string `json:"image"`
 	// Served is the later release that served the data while a rebuild of Image's indexes is
-	// outstanding: set when a unit first saves a plan with storage that has no record, or before a
-	// rebuild starts, and dropped once it finishes. Image may then be one assumed of storage with
+	// outstanding: set just before a database first starts on a later release, when a unit first
+	// saves a plan with storage that has no record, or before a rebuild starts, and dropped once
+	// it finishes. Image may then be one assumed of storage with
 	// no record, the oldest release of its major, which says nothing of what wrote the data; Served
 	// is what the data must still open with.
 	Served string `json:"served,omitempty"`
@@ -78,18 +80,27 @@ func (j *Journal) postgresDataOpens(p deployment.Plan, volume uuid.UUID) error {
 			continue
 		}
 		record, found, err := j.postgresData(volume)
-		last := cmp.Or(record.Served, record.Image)
-		if err != nil || !found || last == *a.Source.Image {
+		if err != nil || !found {
 			return err
 		}
-		written, known := postgresReleaseOf(last)
-		serving, ok := postgresReleaseOf(*a.Source.Image)
-		if !known || !ok {
-			return errPostgresVersionChange
-		}
-		if err = serving.OpensDataFrom(written); err != nil {
-			return postgresDataRefusal{application: a.Name, reason: err}
-		}
+		return postgresDataRefuses(a, record)
+	}
+	return nil
+}
+
+// postgresDataRefuses says why a's release cannot open the data record describes, if it cannot.
+func postgresDataRefuses(a domain.Application, record postgresData) error {
+	last := cmp.Or(record.Served, record.Image)
+	if last == *a.Source.Image {
+		return nil
+	}
+	written, known := postgresReleaseOf(last)
+	serving, ok := postgresReleaseOf(*a.Source.Image)
+	if !known || !ok {
+		return errPostgresVersionChange
+	}
+	if err := serving.OpensDataFrom(written); err != nil {
+		return postgresDataRefusal{application: a.Name, reason: err}
 	}
 	return nil
 }
@@ -232,7 +243,8 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			}
 		}
 	}
-	var unfinished, exclusions, closed []string
+	var unfinished, exclusions []string
+	var closed, invalid []listed
 	for i, r := range due {
 		if i == 0 && begin != nil {
 			if err := begin(); err != nil {
@@ -250,11 +262,14 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			continue
 		}
 		exclusions = append(exclusions, left.exclusions...)
-		if len(left.closed) > 0 {
+		if len(left.closed) > 0 || len(left.invalid) > 0 {
 			// The record stays at the earlier release, so the next deployment rebuilds them once
-			// their owner allows connections again.
+			// their owner allows connections again or drops the invalid ones.
 			for _, database := range left.closed {
-				closed = append(closed, database+" ("+a.Name+")")
+				closed = append(closed, listed{database, a.Name})
+			}
+			for _, database := range left.invalid {
+				invalid = append(invalid, listed{database, a.Name})
 			}
 			continue
 		}
@@ -262,42 +277,94 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			return "", err
 		}
 	}
-	return reindexNote(unfinished, closed, exclusions), nil
+	return reindexNote(unfinished, closed, invalid, exclusions), nil
 }
 
-// reindexNote tells the owner what the rebuild left, within the room an operation's note has
-// after the longest note a report puts before it. A maintenance report puts its own after it.
-func reindexNote(unfinished, closed, exclusions []string) string {
+// The bytes each of reindexNote's lists takes at most. With the note's own words they fit the
+// room an operation's note has after the longest note a report puts before it.
+const (
+	unfinishedRoom = 100
+	closedRoom     = 70
+	invalidRoom    = 70
+	exclusionsRoom = 170
+)
+
+// reindexNote tells the owner what the rebuild left. A maintenance report puts its own note after it.
+func reindexNote(unfinished []string, closed, invalid []listed, exclusions []string) string {
 	var parts []string
 	if len(unfinished) > 0 {
-		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unfinished, 120)+"; the data is served on the new release and the next deployment retries it.")
+		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unqualified(unfinished), unfinishedRoom)+"; the data is served on the new release and the next deployment retries it.")
 	}
 	if len(closed) > 0 {
-		parts = append(parts, "The databases "+listSome(closed, 80)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
+		parts = append(parts, "The databases "+listSome(closed, closedRoom)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
+	}
+	if len(invalid) > 0 {
+		parts = append(parts, "The databases "+listSome(invalid, invalidRoom)+" are invalid after an interrupted DROP DATABASE; the deployment after they are dropped rebuilds them.")
 	}
 	if len(exclusions) > 0 {
-		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(exclusions, 220)+".")
+		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(unqualified(exclusions), exclusionsRoom)+".")
 	}
 	return strings.Join(parts, " ")
 }
 
-// listSome joins names up to about limit bytes, then counts the rest.
-func listSome(names []string, limit int) string {
-	slices.Sort(names)
+// listed is a name in an operation's note, with the application it belongs to when that says
+// which deployment's it is.
+type listed struct{ name, application string }
+
+// listSome joins names within limit bytes, its count of the rest included. A name longer than
+// 120 bytes, or than the room the count leaves, is cut at a whole character, its own part before
+// its application's, so the note still says whose it is. An application keeps whatever room its
+// database's whole name leaves, and at least half.
+func listSome(names []listed, limit int) string {
+	names = slices.Clone(names)
+	slices.SortFunc(names, func(a, b listed) int {
+		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.application, b.application))
+	})
 	names = slices.Compact(names)
+	rest := func(n int) string {
+		if n == 0 {
+			return ""
+		}
+		return " and " + strconv.Itoa(n) + " more"
+	}
+	// The first name always fits beside the count of the names after it.
+	width := min(limit-len(rest(max(len(names)-1, 0))), 120)
 	out := ""
-	for i, name := range names {
-		if len(name) > 120 {
-			name = name[:120] + "…"
+	for i, n := range names {
+		name := cutName(n.name, width)
+		if n.application != "" {
+			qualifier := " (" + cutName(n.application, max(width-len(n.name), width/2)-len(" ()")) + ")"
+			name = cutName(n.name, width-len(qualifier)) + qualifier
 		}
 		next := name
 		if out != "" {
 			next = out + ", " + name
 		}
-		if len(next) > limit && out != "" {
-			return out + " and " + strconv.Itoa(len(names)-i) + " more"
+		if out != "" && len(next)+len(rest(len(names)-i-1)) > limit {
+			return out + rest(len(names)-i)
 		}
 		out = next
+	}
+	return out
+}
+
+// cutName shortens name to whole characters within width bytes, the mark of the cut included.
+func cutName(name string, width int) string {
+	if len(name) <= width {
+		return name
+	}
+	end := max(width-len("…"), 0)
+	for end > 0 && !utf8.RuneStart(name[end]) {
+		end--
+	}
+	return name[:end] + "…"
+}
+
+// unqualified lists names that belong to no application in particular.
+func unqualified(v []string) []listed {
+	out := make([]listed, len(v))
+	for i, name := range v {
+		out[i] = listed{name: name}
 	}
 	return out
 }
@@ -318,6 +385,9 @@ type reindexLeft struct {
 	// closed are the databases that do not accept connections, so that nothing could rebuild
 	// their indexes.
 	closed []string
+	// invalid are the databases an interrupted DROP DATABASE left, which nothing can connect to
+	// until they are dropped.
+	invalid []string
 }
 
 // rebuildPostgresIndexes rebuilds one database's indexes, returning what it left to the owner,
@@ -423,6 +493,9 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	// alone. Names are listed apart from whether each accepts connections, which is read just
 	// before its rebuild: a name stays in its place in the listing's pages whatever the database
 	// does, and one closed after its check fails to connect, so the step is left unfinished.
+	// A DROP DATABASE interrupted part-way leaves the database invalid, datconnlimit -2, still
+	// listed and still marked as accepting connections, though no one can connect to it; it is
+	// named apart, since only dropping it finishes the rebuild.
 	// inline-sql: runs in a managed customer database through psql, not in the platform database
 	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn OR datname <> 'template0'")
 	if err != nil {
@@ -431,7 +504,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	var left reindexLeft
 	for _, database := range databases {
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		state, err := lines(a.Postgres.Database, "SELECT CASE WHEN datallowconn THEN 'open' ELSE 'closed' END FROM pg_database WHERE datname = convert_from(decode('"+hex.EncodeToString([]byte(database))+"', 'hex'), 'UTF8')")
+		state, err := lines(a.Postgres.Database, "SELECT CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END FROM pg_database WHERE datname = convert_from(decode('"+hex.EncodeToString([]byte(database))+"', 'hex'), 'UTF8')")
 		if err != nil {
 			return reindexLeft{}, err
 		}
@@ -439,7 +512,11 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			// Dropped since it was listed.
 			continue
 		}
-		if state[0] != "open" {
+		switch state[0] {
+		case "invalid":
+			left.invalid = append(left.invalid, database)
+			continue
+		case "closed":
 			left.closed = append(left.closed, database)
 			continue
 		}

@@ -2,9 +2,7 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base32"
 	"errors"
 	"strings"
 	"time"
@@ -30,6 +28,23 @@ type Service struct {
 	Tokens TokenSealer
 	// Queue takes reset requests. Only a serving process has one.
 	Queue *river.Client[pgx.Tx]
+}
+
+// Finish completes a sign-in, or a change to how an account signs in, in the transaction that
+// makes it, given the account as that transaction leaves it. The browser session the request
+// signs in or renews is stored there, so it commits with what authorized it or neither does: a
+// failure in between leaves a recovery code or authenticator code unspent, a password or
+// two-factor change unapplied, and the recovery codes the account had still valid, rather than
+// replaced by codes the failed response never showed.
+type Finish func(tx pgx.Tx, account db.Account) error
+
+// run runs f, if there is one: a caller with no session to store, such as one making a workspace,
+// passes none.
+func (f Finish) run(tx pgx.Tx, account db.Account) error {
+	if f == nil {
+		return nil
+	}
+	return f(tx, account)
 }
 
 // Hash is the stored lookup key for two kinds of value, neither a secret a person chose. Link
@@ -123,7 +138,7 @@ func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, keys *secretbroker.S
 // VerifyCode completes a sign-in that has proved the password. Signing in again restarts the
 // sign-in budgets, so besides five attempts in five minutes, each failure spends the code's
 // daily allowance, which confirming identity shares.
-func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (_ db.Account, err error) {
+func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string, finish Finish) (_ db.Account, err error) {
 	var account db.Account
 	attempt := codeGuess(id, code, budget{"mfa:" + id.String(), 5, 5 * time.Minute})
 	if err = s.spend(ctx, attempt); err != nil {
@@ -149,38 +164,22 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 		}
 		err = s.checkCode(ctx, tx, keys, &account, code)
 		wrong = errors.Is(err, domain.Credentials)
-		return err
+		if err != nil {
+			return err
+		}
+		return finish.run(tx, account)
 	})
 	return account, err
-}
-
-func recoveryCodes(ctx context.Context, q *db.Queries, id uuid.UUID) ([]string, error) {
-	generation := uuid.New()
-	if err := q.StartRecoveryCodes(ctx, db.StartRecoveryCodesParams{ID: id, RecoveryCodesGeneration: &generation}); err != nil {
-		return nil, err
-	}
-	if err := q.DeleteRecoveryCodes(ctx, id); err != nil {
-		return nil, err
-	}
-	codes := make([]string, 10)
-	for i := range codes {
-		var random [16]byte
-		if _, err := rand.Read(random[:]); err != nil {
-			return nil, err
-		}
-		codes[i] = base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(random[:])
-		if err := q.InsertRecoveryCode(ctx, db.InsertRecoveryCodeParams{AccountID: id, CodeHash: Hash(codes[i])}); err != nil {
-			return nil, err
-		}
-	}
-	return codes, nil
 }
 
 // lockCurrent locks the account for a browser session's change to it, then checks that the
 // session still stands. The request may have spent a long time hashing a password or queued
 // behind an import, and a logout neither changes the account's version nor waits for this
 // lock, so only reading the session after the wait sees one. A logout that lands after this
-// check, while the few statements of the change run, does not stop it.
+// check, while the few statements of the change run, stops only a change that then renews the
+// session. The lock does not make a row that refers to the account wait, such as an audit event
+// another transaction records while it holds a terminal session's row, which this change's
+// renewal may move.
 func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, error) {
 	account, _, err := lockCurrentLineage(ctx, q, p)
 	return account, err
@@ -188,7 +187,7 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 
 // lockCurrentLineage is lockCurrent, also returning the session's lineage.
 func lockCurrentLineage(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, uuid.UUID, error) {
-	account, err := q.LockAccount(ctx, p.Account.ID)
+	account, err := q.LockAccountForChange(ctx, p.Account.ID)
 	if err != nil {
 		return account, uuid.Nil, err
 	}
@@ -196,197 +195,7 @@ func lockCurrentLineage(ctx context.Context, q *db.Queries, p store.Principal) (
 	return account, lineage, err
 }
 
-// MFASetupElsewhere refuses to begin an enrolment while another signed-in browser session's
-// enrolment lasts.
-var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, sign that session out under Signed-in sessions, or wait up to 10 minutes."}
-
-// pendingEnrolment refuses a session that has no unexpired enrolment of its own to confirm, such as
-// one another session began, as it refuses a lapsed one. The account must not have an authenticator.
-func (s *Service) pendingEnrolment(account db.Account, lineage uuid.UUID) error {
-	// The new authenticator's code is not the credential that confirms identity, so an
-	// enrolment that has lapsed is refused as input to try again.
-	if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) || account.TotpPendingLineage == nil || *account.TotpPendingLineage != lineage {
-		return domain.Invalid("code")
-	}
-	return nil
-}
-
-// BeginMFA starts an enrolment bound to the browser session that asks, so that no other session,
-// such as an old one someone else holds, can replace the secret its holder scanned or confirm it.
-// The session may start again, which replaces its own.
-func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string, err error) {
-	var secret, uri string
-	keys, err := s.secondFactor(ctx, p.Account.ID, secretbroker.Seal, secretbroker.TOTPPending)
-	if err != nil {
-		return "", "", err
-	}
-	defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
-	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		// The enrolment is bound to the session's lineage, which stays the same when it renews
-		// its token, as confirming credentials does.
-		account, lineage, err := lockCurrentLineage(ctx, q, p)
-		if err != nil {
-			return err
-		}
-		if len(account.TotpSecret) > 0 {
-			return domain.Conflict
-		}
-		if other := account.TotpPendingLineage; other != nil && *other != lineage && account.TotpPendingExpiry != nil && account.TotpPendingExpiry.After(s.Now()) {
-			// An enrolment whose session has signed out is no one's, so it gives way.
-			live, err := q.SessionLineageLive(ctx, *other)
-			if err != nil {
-				return err
-			}
-			if live {
-				return MFASetupElsewhere
-			}
-		}
-		key, err := totp.Generate(totp.GenerateOpts{Issuer: "Astilba", AccountName: account.Email, Period: 30, SecretSize: 20, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
-		if err != nil {
-			return err
-		}
-		blob, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.TOTPPending, ID: account.ID}, []byte(key.Secret()))
-		if err != nil {
-			return err
-		}
-		expires := s.Now().Add(10 * time.Minute)
-		if err = q.SetPendingTOTP(ctx, db.SetPendingTOTPParams{ID: account.ID, TotpPending: blob, TotpPendingExpiry: &expires, TotpPendingLineage: &lineage}); err != nil {
-			return err
-		}
-		secret, uri = key.Secret(), key.URL()
-		return nil
-	})
-	return secret, uri, err
-}
-
-// ConfirmMFA turns on two-factor authentication with the authenticator BeginMFA gave the same
-// browser session, once the session's holder has given the password. Without it a stolen session
-// could enrol its own authenticator, and the account's owner could not sign in again even after
-// resetting the password.
-func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Credential, code string) (_ db.Account, _ []string, err error) {
-	id := p.Account.ID
-	var account db.Account
-	var codes []string
-	// Only the session that began the enrolment may try to confirm it, so no other session can
-	// spend the account's confirmation limit and keep the owner from confirming, and its
-	// attempts here spend no credential budget either. The refusal says only that this session
-	// has nothing to confirm, which its holder knows. A session that a credential change or
-	// logout has ended is refused as such first. Both are read in one snapshot: a logout or
-	// password change that ends the enrolment with the session, committing between two reads,
-	// would show a live session with nothing to confirm. The check is made again under the
-	// account's lock; the session's lineage stays the same, as it is fixed with its token.
-	var lineage uuid.UUID
-	var enrolling db.Account
-	err = s.Store.ReadSnapshot(ctx, func(q *db.Queries) (err error) {
-		if lineage, err = store.AdmittedLineage(ctx, q, p); err != nil {
-			return err
-		}
-		enrolling, err = q.AccountByID(ctx, id)
-		return store.IfMissing(err, domain.Unauthenticated)
-	})
-	if err != nil {
-		return account, nil, err
-	}
-	if err = s.pendingEnrolment(enrolling, lineage); err != nil {
-		return account, nil, err
-	}
-	if err = s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
-		return account, nil, err
-	}
-	var keys *secretbroker.Session
-	defer func() {
-		if keys != nil {
-			keys.Close(ctx, secretbroker.Done(err))
-		}
-	}()
-	openKeys := func() (err error) {
-		keys, err = s.secondFactor(ctx, id, secretbroker.Authenticate, secretbroker.TOTPPending, secretbroker.TOTP)
-		return err
-	}
-	err = s.withCredential(ctx, p, current, openKeys, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
-		account = *locked
-		if err := s.pendingEnrolment(account, lineage); err != nil {
-			return err
-		}
-		// A wrong code for the new authenticator is refused as input to try again.
-		secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTPPending, ID: id}, account.TotpPending)
-		if err != nil {
-			return err
-		}
-		step, ok := matchTOTP(strings.TrimSpace(code), string(secret), s.Now(), -1)
-		if !ok {
-			return domain.Invalid("code")
-		}
-		active, err := keys.Seal(ctx, q, secretbroker.Item{Kind: secretbroker.TOTP, ID: id}, secret)
-		if err != nil {
-			return err
-		}
-		if _, err = q.ActivateTOTP(ctx, db.ActivateTOTPParams{ID: id, TotpLastStep: step, TotpSecret: active}); err != nil {
-			return err
-		}
-		// Failed guesses at an earlier authenticator say nothing about this one.
-		if err = q.ClearAuthAttempts(ctx, Hash(codeFailures(id).scope)); err != nil {
-			return err
-		}
-		codes, err = recoveryCodes(ctx, q, id)
-		if err != nil {
-			return err
-		}
-		if err = s.securityEvent(ctx, tx, id, MFAEnabled); err != nil {
-			return err
-		}
-		account, err = q.AccountByID(ctx, id)
-		return err
-	})
-	return account, codes, credentialError(err, currentField)
-}
-func (s *Service) DisableMFA(ctx context.Context, p store.Principal, current Credential) (db.Account, error) {
-	id := p.Account.ID
-	var account db.Account
-	err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
-		if len(locked.TotpSecret) == 0 {
-			return domain.Conflict
-		}
-		if _, err := q.DisableTOTP(ctx, id); err != nil {
-			return err
-		}
-		if err := q.DeleteRecoveryCodes(ctx, id); err != nil {
-			return err
-		}
-		if err := s.securityEvent(ctx, tx, id, MFADisabled); err != nil {
-			return err
-		}
-		var err error
-		account, err = q.AccountByID(ctx, id)
-		return err
-	})
-	return account, credentialError(err, currentField)
-}
-func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal, current Credential) (db.Account, []string, error) {
-	id := p.Account.ID
-	var account db.Account
-	var codes []string
-	err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
-		if len(locked.TotpSecret) == 0 {
-			return domain.Conflict
-		}
-		var err error
-		codes, err = recoveryCodes(ctx, q, id)
-		if err != nil {
-			return err
-		}
-		if err := q.BumpAuthVersion(ctx, id); err != nil {
-			return err
-		}
-		if err := s.securityEvent(ctx, tx, id, RecoveryCodesRegenerated); err != nil {
-			return err
-		}
-		account, err = q.AccountByID(ctx, id)
-		return err
-	})
-	return account, codes, credentialError(err, currentField)
-}
-func (s *Service) ChangePassword(ctx context.Context, p store.Principal, current Credential, password string) (db.Account, error) {
+func (s *Service) ChangePassword(ctx context.Context, p store.Principal, current Credential, password string, finish Finish) (db.Account, error) {
 	id := p.Account.ID
 	var account db.Account
 	if err := domain.Password(password); err != nil {
@@ -406,7 +215,7 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, current
 		hash, err = s.hashNewPassword(ctx, passwordShare{"account:" + id.String(), true}, budgets, password)
 		return err
 	}
-	err := s.withCredential(ctx, p, current, hashNew, func(tx pgx.Tx, q *db.Queries, _ *db.Account) error {
+	account, err := s.withCredential(ctx, p, current, hashNew, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: id, PasswordHash: hash}); err != nil {
 			return err
 		}
@@ -417,9 +226,9 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, current
 			return err
 		}
 		var err error
-		account, err = q.AccountByID(ctx, id)
+		*locked, err = q.AccountByID(ctx, id)
 		return err
-	})
+	}, finish)
 	return account, credentialError(err, currentField)
 }
 
@@ -500,7 +309,7 @@ func (s *Service) ValidateInvitation(ctx context.Context, token, ip string) erro
 	return err
 }
 
-func (s *Service) AcceptInvitation(ctx context.Context, token, name, password string, from Source, current *store.Principal) (db.Account, error) {
+func (s *Service) AcceptInvitation(ctx context.Context, token, name, password string, from Source, current *store.Principal, finish Finish) (db.Account, error) {
 	var account db.Account
 	budgets := []budget{{"invite:" + from.Key, 20, attemptWindow}}
 	if err := s.refuseSpent(ctx, budgets); err != nil {
@@ -575,25 +384,12 @@ func (s *Service) AcceptInvitation(ctx context.Context, token, name, password st
 		if err := q.DeleteInvitation(ctx, db.DeleteInvitationParams{WorkspaceID: invite.WorkspaceID, ID: invite.ID}); err != nil {
 			return err
 		}
-		return store.Audit(ctx, q, store.Principal{Account: account}, invite.WorkspaceID, "invitation.accept", invite.ID)
+		if err := store.Audit(ctx, q, store.Principal{Account: account}, invite.WorkspaceID, "invitation.accept", invite.ID); err != nil {
+			return err
+		}
+		return finish.run(tx, account)
 	})
 	return account, err
 }
 
 func ptrTime(value time.Time) *time.Time { return &value }
-
-func (s *Service) AcknowledgeRecoveryCodes(ctx context.Context, p store.Principal, generation uuid.UUID) error {
-	if !p.MFA {
-		return domain.MFARequired
-	}
-	return s.Store.Transaction(ctx, func(q *db.Queries) error {
-		account, err := lockCurrent(ctx, q, p)
-		if err != nil {
-			return err
-		}
-		if len(account.TotpSecret) == 0 || account.RecoveryCodesGeneration == nil || *account.RecoveryCodesGeneration != generation {
-			return domain.Conflict
-		}
-		return q.MarkRecoveryCodesSaved(ctx, account.ID)
-	})
-}
