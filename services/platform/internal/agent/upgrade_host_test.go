@@ -328,6 +328,8 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						// A dump leaves out PostgreSQL's own schemas, which a superuser can add to too.
 						{"CREATE TABLE information_schema.kept(id integer)", "DROP TABLE information_schema.kept"},
 						{"CREATE FUNCTION pg_catalog.kept() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "DROP FUNCTION pg_catalog.kept()"},
+						// Only temporary tables are left out, not what else a temporary schema holds.
+						{"SET allow_system_table_mods = on; CREATE SCHEMA pg_temp_99999; CREATE FUNCTION pg_temp_99999.kept() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "SET allow_system_table_mods = on; DROP SCHEMA pg_temp_99999 CASCADE"},
 					} {
 						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.create); err != nil {
 							t.Fatal(err)
@@ -360,8 +362,8 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 				}
-				// Temporary objects go with their sessions, and the temporary schemas the sessions
-				// leave behind hold nothing; any role may use them in postgres.
+				// Temporary tables go with their sessions, and the temporary schemas the sessions
+				// leave behind hold nothing; any role may make them in postgres.
 				for _, database := range []domain.Application{admin, template} {
 					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, "CREATE TEMPORARY TABLE scratch(id integer)"); err != nil {
 						t.Fatal(err)
@@ -371,7 +373,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				held := make(chan struct{})
 				go func() {
 					defer close(held)
-					_, _ = e.pgQuery(holding, pgClient{container: source.ID}, admin, "BEGIN; CREATE TYPE pg_temp.mood AS ENUM ('calm'); CREATE TEMPORARY TABLE kept(id serial PRIMARY KEY, mood pg_temp.mood DEFAULT 'calm' CHECK (id > 0)); CREATE INDEX ON kept(mood); CREATE TEMPORARY VIEW seen AS SELECT * FROM kept; COMMIT; SELECT pg_sleep(120)")
+					_, _ = e.pgQuery(holding, pgClient{container: source.ID}, admin, "BEGIN; CREATE TEMPORARY TABLE kept(id serial PRIMARY KEY, mood text DEFAULT 'calm' CHECK (id > 0)); CREATE INDEX ON kept(mood); CREATE TEMPORARY VIEW seen AS SELECT * FROM kept; COMMIT; SELECT pg_sleep(120)")
 				}()
 				for n := 0; ; n++ {
 					out, err := e.pgQuery(ctx, pgClient{container: source.ID}, admin, "SELECT count(*) FROM pg_class WHERE relname = 'kept' AND relpersistence = 't'")
@@ -384,11 +386,11 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 					time.Sleep(100 * time.Millisecond)
 				}
 				err = e.upgradeDatabaseChecks(ctx, helper, a)
-				_, _ = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'BEGIN; CREATE TYPE pg_temp.mood%'")
+				_, _ = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'BEGIN; CREATE TEMPORARY TABLE kept%'")
 				release()
 				<-held
 				if err != nil {
-					t.Fatal("template1 and postgres as initdb made them, with temporary objects, were refused:", err)
+					t.Fatal("template1 and postgres as initdb made them, with temporary tables, were refused:", err)
 				}
 				writerContext, stopWriter := context.WithCancel(ctx)
 				writerDone := make(chan struct{})
