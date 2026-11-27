@@ -156,7 +156,7 @@ func (e *Engine) executeRetirement(ctx context.Context, c api.ExecutionCommand, 
 	return e.finish(c.Id, "succeeded", "Routes, services, networks and schedules were removed. Named volumes are kept.")
 }
 
-// retireSchedules removes the environment's backup and job schedules from both schedule buckets.
+// retireSchedules removes the environment's backup and job schedules from every schedule bucket.
 func (j *Journal) retireSchedules(server, env uuid.UUID) error {
 	return j.db.Update(func(tx *bolt.Tx) error {
 		ids := []string{}
@@ -169,7 +169,7 @@ func (j *Journal) retireSchedules(server, env uuid.UUID) error {
 			return err
 		}
 		for _, id := range ids {
-			for _, bucket := range []string{"schedules", "schedules-v2"} {
+			for _, bucket := range scheduleBuckets {
 				if err := tx.Bucket([]byte(bucket)).Delete([]byte(id)); err != nil {
 					return err
 				}

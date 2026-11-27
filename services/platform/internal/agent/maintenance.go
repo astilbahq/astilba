@@ -83,6 +83,9 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 		if err := e.recordUnready(ctx, c, &s); err != nil {
 			return refuse(err)
 		}
+		if err := e.recordRouted(ctx, &s); err != nil {
+			return refuse(err)
+		}
 	case "restore":
 		if s.Maintenance.Kind != "restore" || !p.Local.Primary || s.Phase != "paused" && s.Phase != "restoring" && s.Phase != "restored" {
 			return fail(errors.New("restored-volume activation requires the frozen primary writer pause"))
@@ -167,12 +170,17 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			return fail(errors.New("maintenance completion differs from the confirmed recovery target"))
 		}
 		// A host whose reservation never reached its pause has changed nothing.
+		unrouted := ""
 		if s.Pause != nil {
 			if err = e.waitLocalHealth(ctx, s, expected); err != nil {
 				return fail(err)
 			}
 			if _, err = e.inspectMaintenanceWriters(ctx, s, expected, current.Expected); err != nil {
 				return fail(fmt.Errorf("the resumed unit changed before maintenance completion: %w", err))
+			}
+			// Every host has resumed by now, so a pool's servers on other hosts run too.
+			if unrouted, err = e.confirmRouted(ctx, s, expected); err != nil {
+				return fail(fmt.Errorf("the resumed routes are not ready for maintenance completion: %w", err))
 			}
 		}
 		o, _, err := e.observeUnit(ctx, current.Plan, command.Secrets)
@@ -189,6 +197,9 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			note = "This host stopped nothing; its maintenance reservation is released."
 		} else if waived > 0 {
 			note = fmt.Sprintf("This host's maintenance reservation is released. %d instances were not required to be ready: they were already stopped or failing, or an operator accepted them.", waived)
+		}
+		if unrouted != "" {
+			note += " " + redactValues(unrouted, command.Secrets)
 		}
 		// A restored volume may be served by a later release than the one that filled it. Other
 		// maintenance changes no release; an unfinished rebuild waits for the next deployment.

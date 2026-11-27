@@ -95,7 +95,7 @@ func TestParkedBackupGivesUpItsAccessAndARetryGetsItBack(t *testing.T) {
 
 	secretKey, password := "storage-secret-parked-canary", "repository-password-parked-canary"
 	var dest backup.Destination
-	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "parked-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key-id", "secretKey": secretKey, "password": ""}}, 201, &dest)
+	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "serverId": enrolled.Server.Id, "root": "", "endpoint": "https://storage.example.test", "bucket": "parked-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key-id", "secretKey": secretKey, "password": ""}}, 201, &dest)
 	var policy backup.Policy
 	b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: "Daily backup", ResourceId: pg, DestinationId: dest.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
 	b.call("POST", path+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "check", RequestKey: uuid.New()}, 202, &op)

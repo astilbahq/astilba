@@ -6,7 +6,6 @@ import (
 	"errors"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
-	"io"
 	"net/netip"
 	"slices"
 	"sync"
@@ -68,6 +67,9 @@ type Engine struct {
 	// registryProgress is how fast a registry must send an answer in tests, which can't wait as
 	// long as defaultRegistryProgress, the policy when nil.
 	registryProgress *registryProgress
+	// pullLimit stands in for every limit on how long pulls take in tests, which can't wait as
+	// long as dockerPullTime and the commands' own, the limits when zero.
+	pullLimit time.Duration
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
@@ -365,14 +367,26 @@ func (e *Engine) start(ctx context.Context, c api.ExecutionCommand, r Record) er
 	}
 	// A timeout or process exit leaves the journal pending; no tool error proves absence.
 	if r.Checkpoint == "accepted" || r.Checkpoint == "pull" {
-		pull, err := e.Docker.ImagePull(ctx, c.Image, client.ImagePullOptions{})
-		if err != nil {
+		// The pull keeps the engine to the command, unlike a deployment's, see lend: the test image
+		// is small and its time short, so lending would let nothing run that waits long.
+		pulling, stop := e.pullContext(ctx, c, testPullTime)
+		err := e.pullImage(pulling, c.Image)
+		stop()
+		switch {
+		case err == nil:
+		case ctx.Err() != nil:
+			// The agent is stopping. The journal stays at the pull, which its next start makes again.
+			return ctx.Err()
+		case errors.Is(err, errPullCancelled):
+			return e.finish(c.Id, "cancelled", "Cancelled while Docker pulled the test image. No container was created.")
+		// A pull changes nothing the test runs, so one its registry stalled or kept slow fails the
+		// command, as it does a deployment, see pullFailure, and leaves the host free.
+		case errors.Is(err, errDockerPullStalled):
+			return e.finish(c.Id, "failed", "Image pull stalled: the registry stopped sending the test image to Docker. No container was created. Check that this server can reach the registry, then start the test again.")
+		case errors.Is(err, errPullTimedOut):
+			return e.finish(c.Id, "failed", "Docker did not pull the test image within the 10 minutes the agent allows. No container was created. Check this server's link to the registry, then start the test again.")
+		default:
 			return e.finish(c.Id, "needs_attention", "Image pull failed. Check Docker connectivity and available disk, then retry this operation.")
-		}
-		_, err = io.Copy(io.Discard, pull)
-		closeErr := pull.Close()
-		if err != nil || closeErr != nil {
-			return e.finish(c.Id, "needs_attention", "Image pull was interrupted; retry after inspecting Docker.")
 		}
 		if err = e.checkpoint(c.Id, "create"); err != nil {
 			return err
@@ -493,13 +507,14 @@ func (e *Engine) lockUnlessLent() bool {
 // commandContext ends at end, or once the command's owner cancels it.
 func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, end time.Time) (context.Context, func()) {
 	ctx, cancel := context.WithDeadline(parent, end)
-	cancellable, stop := untilCancelled(ctx, func() bool { return e.cancelled(c.Id) })
+	cancellable, stop := untilCancelled(ctx, func() bool { return e.cancelled(c.Id) }, nil)
 	return cancellable, func() { stop(); cancel() }
 }
 
-// untilCancelled is parent until cancelled, which it asks five times a second, returns true.
-func untilCancelled(parent context.Context, cancelled func() bool) (context.Context, func()) {
-	ctx, cancel := context.WithCancel(parent)
+// untilCancelled is parent until cancelled, which it asks five times a second, returns true. It
+// then ends with cause, or context.Canceled when cause is nil.
+func untilCancelled(parent context.Context, cancelled func() bool, cause error) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(parent)
 	done := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(200 * time.Millisecond)
@@ -512,13 +527,13 @@ func untilCancelled(parent context.Context, cancelled func() bool) (context.Cont
 				return
 			case <-tick.C:
 				if cancelled() {
-					cancel()
+					cancel(cause)
 					return
 				}
 			}
 		}
 	}()
-	return ctx, func() { close(done); cancel() }
+	return ctx, func() { close(done); cancel(nil) }
 }
 
 // reportNote keeps a note within the 1024 characters a report may carry, which the controller

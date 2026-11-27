@@ -26,7 +26,53 @@ type Destination struct {
 	Endpoint string    `json:"endpoint"`
 	Bucket   string    `json:"bucket"`
 	Region   string    `json:"region"`
+	// Prefix is where in an S3 bucket the destination's repositories are, so its keys can be
+	// limited to it. Destinations without one keep theirs at the bucket's root.
+	Prefix string `json:"prefix,omitempty"`
 }
+
+// prefixPattern is a destination's prefix: names of letters, digits, '.', '_' and '-' that start
+// with a letter or digit, joined by '/'.
+var prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
+
+// ValidPrefix says whether prefix can be an S3 destination's. A prefix can't begin with astilba,
+// where destinations without one keep their repositories, or keys limited to it would reach them.
+func ValidPrefix(prefix string) bool {
+	return len(prefix) <= 256 && prefixPattern.MatchString(prefix) && strings.Split(prefix, "/")[0] != "astilba"
+}
+
+// scope is the part of d's bucket its repositories are under, which its keys are limited to.
+func (d Destination) scope() string {
+	if d.Prefix == "" {
+		return "astilba"
+	}
+	return d.Prefix
+}
+
+// Overlaps says whether S3 destinations d and o keep their repositories in the same part of a
+// bucket of one name, or one inside the other's, so keys limited to one would reach the other's.
+// Their endpoints aren't compared: one bucket has many, such as a provider's regional and global
+// origins, or an origin with its port.
+func (d Destination) Overlaps(o Destination) bool {
+	if d.Kind != "s3" || o.Kind != "s3" || d.Bucket != o.Bucket {
+		return false
+	}
+	a, b := d.scope(), o.scope()
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+// Repository is restic's repository for policy p's backups on d.
+func (d Destination) Repository(p Policy) string {
+	if d.Kind == "filesystem" {
+		return filepath.Join(d.Root, p.WorkspaceID.String(), p.ID.String(), "repository")
+	}
+	key := "astilba/" + p.WorkspaceID.String() + "/" + p.ID.String()
+	if d.Prefix != "" {
+		key = d.Prefix + "/" + key
+	}
+	return "s3:" + d.Endpoint + "/" + d.Bucket + "/" + key
+}
+
 type Access struct {
 	DatabasePassword string `json:"databasePassword"`
 	AccessKey        string `json:"accessKey"`
@@ -161,12 +207,12 @@ func ValidateDestination(d Destination, a Access) error {
 	}
 	switch d.Kind {
 	case "filesystem":
-		if !filepath.IsAbs(d.Root) || filepath.Clean(d.Root) != d.Root || d.Root == "/" || d.Endpoint != "" || d.Bucket != "" || a.AccessKey != "" || a.SecretKey != "" {
+		if !filepath.IsAbs(d.Root) || filepath.Clean(d.Root) != d.Root || d.Root == "/" || d.Endpoint != "" || d.Bucket != "" || d.Prefix != "" || a.AccessKey != "" || a.SecretKey != "" {
 			return errors.New("invalid filesystem destination")
 		}
 	case "s3":
 		u, err := url.Parse(d.Endpoint)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || d.Root != "" || !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(d.Bucket) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") {
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || d.Root != "" || !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(d.Bucket) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") || d.Prefix != "" && !ValidPrefix(d.Prefix) {
 			return errors.New("invalid S3 destination")
 		}
 	default:

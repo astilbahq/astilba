@@ -41,7 +41,7 @@ func (g *revokedGroup) lostFilesAcross(t *testing.T, across ...uuid.UUID) lostFi
 		g.applied(t, &l.e, g.place(t, &l.e, l.gone.id, across...))
 	}
 	var bucket backup.Destination
-	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &bucket)
+	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "serverId": l.gone.id, "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &bucket)
 	password := "fixture-repository-password"
 	request := api.BackupPolicyRequest{Name: "Files", ResourceId: l.volume, DestinationId: bucket.ID, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
 	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &l.policy)
@@ -674,14 +674,15 @@ func (g *revokedGroup) exposureAlerts(t *testing.T) map[uuid.UUID]api.AlertState
 }
 
 // An S3 destination is exposed while a policy using it is bound to a revoked server, which was
-// given its storage keys. A new policy on it needs an acknowledgement, which is recorded, and one
-// alert names the destination. A filesystem destination has no keys, and its repository was on the
+// given its storage keys. Its keys stay with its own server, so the replacement can't take it. On
+// its own server, a new policy on it needs an acknowledgement, which is recorded, and one alert
+// names the destination. A filesystem destination has no keys, and its repository was on the
 // revoked server's own disk.
 func TestAnExposedDestinationNeedsAnAcknowledgement(t *testing.T) {
 	g := newRevokedGroup(t, 2)
 	l := g.lostFiles(t)
 	var unused api.BackupDestination
-	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Unused", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "unused-fixture", "region": "test-1", "access": map[string]string{"accessKey": "unused-key", "secretKey": "unused-secret", "password": ""}}, 201, &unused)
+	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Unused", "kind": "s3", "serverId": l.b.id, "root": "", "endpoint": "https://storage.example.test", "bucket": "unused-fixture", "region": "test-1", "access": map[string]string{"accessKey": "unused-key", "secretKey": "unused-secret", "password": ""}}, 201, &unused)
 	before := g.destinations()
 	if unused.Exposed || len(unused.Policies) != 0 || before[l.policy.DestinationID].Exposed || before[l.local.DestinationID].Exposed {
 		t.Fatal("a destination was exposed before its server was revoked")
@@ -704,11 +705,20 @@ func TestAnExposedDestinationNeedsAnAcknowledgement(t *testing.T) {
 
 	password := "replacement-repository-password"
 	request := api.BackupPolicyRequest{Name: "Files again", ResourceId: l.volume, DestinationId: l.policy.DestinationID, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: 3, Minute: 0, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
+	yes := true
+	request.ExposureAcknowledged = &yes
+	wantRefusedField(t, <-g.b.send("POST", l.e.path+"/backup-policies", request), "destination.server")
+	// A destination is exposed on its own server when a server it was restored onto is revoked
+	// and the lost server renewed. Rather than renew and enroll the lost host again, the test
+	// binds the destination to the replacement, as if it had been its own.
+	if _, err := g.f.st.Pool.Exec(g.ctx, "UPDATE backup_destinations SET server_id=$1 WHERE id=$2", l.b.id, l.policy.DestinationID); err != nil {
+		t.Fatal(err)
+	}
+	request.ExposureAcknowledged = nil
 	wantRefusedField(t, <-g.b.send("POST", l.e.path+"/backup-policies", request), "destination.exposed")
 	no := false
 	request.ExposureAcknowledged = &no
 	wantRefusedField(t, <-g.b.send("POST", l.e.path+"/backup-policies", request), "destination.exposed")
-	yes := true
 	request.ExposureAcknowledged = &yes
 	var created backup.Policy
 	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &created)

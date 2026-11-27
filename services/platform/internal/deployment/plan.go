@@ -475,7 +475,7 @@ func routeConfig(sets map[string]RouteSet, host func(unit uuid.UUID, service str
 				}
 				balancer := map[string]any{"servers": servers}
 				if backend.Health != nil && (len(addresses) > 1 || len(backend.Endpoints) > 0) {
-					check := map[string]any{"scheme": "http", "path": backend.Health.Path, "interval": "5s", "timeout": "2s"}
+					check := map[string]any{"scheme": "http", "path": backend.Health.Path, "interval": PoolHealthInterval.String(), "timeout": PoolHealthTimeout.String()}
 					if len(backend.Endpoints) == 0 {
 						check["port"] = backend.Health.Port
 					}

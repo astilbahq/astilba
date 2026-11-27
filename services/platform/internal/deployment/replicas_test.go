@@ -91,8 +91,10 @@ func TestReplicaGroupRenderingAndLegacyRouteRefusal(t *testing.T) {
 						URL string `json:"url"`
 					} `json:"servers"`
 					Health *struct {
-						Path string `json:"path"`
-						Port int    `json:"port"`
+						Path     string `json:"path"`
+						Port     int    `json:"port"`
+						Interval string `json:"interval"`
+						Timeout  string `json:"timeout"`
 					} `json:"healthCheck"`
 				} `json:"loadBalancer"`
 			} `json:"services"`
@@ -107,6 +109,10 @@ func TestReplicaGroupRenderingAndLegacyRouteRefusal(t *testing.T) {
 	for _, service := range routes.HTTP.Services {
 		if len(service.Balancer.Servers) != 3 || service.Balancer.Health == nil || service.Balancer.Health.Port != app.Health.Port || service.Balancer.Health.Path != app.Health.Path {
 			t.Fatal("traffic does not cover the whole pool with declared readiness")
+		}
+		// Hosts compare these bytes for drift, so they stay as earlier agents rendered them.
+		if service.Balancer.Health.Interval != "5s" || service.Balancer.Health.Timeout != "2s" {
+			t.Fatalf("pool health timing rendered as %q/%q", service.Balancer.Health.Interval, service.Balancer.Health.Timeout)
 		}
 	}
 	// The previous consumer knows only Address/InstanceID. Its required-address

@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -29,25 +30,64 @@ type scheduleState struct {
 	BeforeEffects uuid.UUID `json:",omitzero"`
 }
 
+// scheduleBuckets are the buckets a schedule can be in, newest first. A schedule that earlier
+// binaries would run wrongly is kept in the newest bucket they don't read, with a disabled mirror
+// in "schedules" that keeps its runs and writers, so they leave it alone:
+//   - schedules-v2 holds general and coordinated schedules.
+//   - schedules-v3 holds backups to a destination with a prefix. Every binary that reads
+//     schedules-v2 would drop the prefix, and back up to, prune and restore from the bucket's root.
+var scheduleBuckets = []string{"schedules-v3", "schedules-v2", "schedules"}
+
+// dropRetiredSchedules removes a schedule's record in a newer bucket once "schedules" no longer
+// holds it. Every agent keeps a schedule in "schedules", or its mirror there, for as long as it
+// keeps it at all, so a record left alone elsewhere was retired by an earlier agent, which knew
+// only the buckets before it.
+func dropRetiredSchedules(tx *bolt.Tx) error {
+	legacy := tx.Bucket([]byte("schedules"))
+	for _, bucket := range scheduleBuckets[:len(scheduleBuckets)-1] {
+		b := tx.Bucket([]byte(bucket))
+		retired := [][]byte{}
+		if err := b.ForEach(func(k, _ []byte) error {
+			if legacy.Get(k) == nil {
+				retired = append(retired, slices.Clone(k))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range retired {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (j *Journal) scheduleIn(tx *bolt.Tx, id string) (scheduleState, error) {
-	var legacy, advanced scheduleState
-	oldErr := j.get(tx, "schedules", id, &legacy)
-	newErr := j.get(tx, "schedules-v2", id, &advanced)
-	if oldErr != nil && !errors.Is(oldErr, os.ErrNotExist) {
-		return legacy, oldErr
+	var out scheduleState
+	found := false
+	for _, bucket := range scheduleBuckets {
+		var v scheduleState
+		err := j.get(tx, bucket, id, &v)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return v, err
+		}
+		// A schedule in an older bucket replaces one in a newer bucket only once an earlier binary
+		// has changed it since: its mirror is otherwise exactly as new.
+		if !found || v.Installation.Policy.Generation > out.Installation.Policy.Generation || v.Installation.Policy.Generation == out.Installation.Policy.Generation && v.Sequence > out.Sequence {
+			out = v
+		}
+		found = true
 	}
-	if newErr != nil && !errors.Is(newErr, os.ErrNotExist) {
-		return advanced, newErr
+	protectRestoreSources(&out)
+	if !found {
+		return out, os.ErrNotExist
 	}
-	if newErr != nil {
-		protectRestoreSources(&legacy)
-		return legacy, oldErr
-	}
-	if oldErr == nil && (legacy.Installation.Policy.Generation > advanced.Installation.Policy.Generation || legacy.Installation.Policy.Generation == advanced.Installation.Policy.Generation && legacy.Sequence > advanced.Sequence) {
-		advanced = legacy
-	}
-	protectRestoreSources(&advanced)
-	return advanced, nil
+	return out, nil
 }
 func (j *Journal) schedule(id uuid.UUID) (scheduleState, error) {
 	var v scheduleState
@@ -67,10 +107,23 @@ func (j *Journal) putSchedule(tx *bolt.Tx, v scheduleState) error {
 		return err
 	}
 	v.Sequence = old.Sequence + 1
-	if v.Installation.Policy.GeneralSchedule() || v.Installation.Policy.Coordinated {
-		if err = j.put(tx, "schedules-v2", id, v); err != nil {
+	bucket := "schedules"
+	switch {
+	case v.Installation.Destination.Prefix != "":
+		bucket = "schedules-v3"
+	case v.Installation.Policy.GeneralSchedule() || v.Installation.Policy.Coordinated:
+		bucket = "schedules-v2"
+	}
+	for _, other := range scheduleBuckets[:len(scheduleBuckets)-1] {
+		if other == bucket {
+			if err = j.put(tx, bucket, id, v); err != nil {
+				return err
+			}
+		} else if err = tx.Bucket([]byte(other)).Delete([]byte(id)); err != nil {
 			return err
 		}
+	}
+	if bucket != "schedules" {
 		// Old binaries retain uncertainty/writer fences without executing the
 		// advanced cadence. Newer legacy mutations still supersede this mirror.
 		mirror := v
@@ -78,16 +131,13 @@ func (j *Journal) putSchedule(tx *bolt.Tx, v scheduleState) error {
 		mirror.Installation.Policy.Schedule = backup.Schedule{Timezone: "UTC"}
 		mirror.Installation.Policy.TimeoutSeconds = 0
 		mirror.Installation.Next = time.Time{}
-		return j.put(tx, "schedules", id, mirror)
+		v = mirror
 	}
-	if err = j.put(tx, "schedules", id, v); err != nil {
-		return err
-	}
-	return tx.Bucket([]byte("schedules-v2")).Delete([]byte(id))
+	return j.put(tx, "schedules", id, v)
 }
 func (j *Journal) eachSchedule(tx *bolt.Tx, visit func(string, scheduleState) error) error {
 	seen := map[string]bool{}
-	for _, bucket := range []string{"schedules-v2", "schedules"} {
+	for _, bucket := range scheduleBuckets {
 		if err := tx.Bucket([]byte(bucket)).ForEach(func(k, v []byte) error {
 			id := string(k)
 			if seen[id] {
