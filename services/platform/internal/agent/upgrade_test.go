@@ -254,6 +254,20 @@ func TestUpgradeRetentionProtectsVolumes(t *testing.T) {
 	}
 }
 
+// An upgrade's note keeps 900 bytes of its error, so a refusal naming many long leftovers is kept whole.
+func TestUserObjectsNoteNamesLeftoversWithinTheNote(t *testing.T) {
+	if note := userObjectsNote("template1", nil); note != "template1 contains user objects" {
+		t.Fatalf("no leftovers: %q", note)
+	}
+	many := make([]string, 100000)
+	for i := range many {
+		many[i] = "function pg_temp_" + strings.Repeat("9", 10) + "." + strings.Repeat("é", 200) + strconv.Itoa(i) + "()"
+	}
+	if note := userObjectsNote("the postgres maintenance database", many); len(note) > 900 || !strings.Contains(note, "function pg_temp_9999999999.") || !strings.Contains(note, " more in temporary schemas") {
+		t.Fatalf("a note of %d bytes: %q", len(note), note)
+	}
+}
+
 // A native upgrade test restarts the agent at every fault point an upgrade passes, so a new one
 // can't go untested. Each fault a native test lists is a point an upgrade passes, either a fault
 // point or a step's checkpoint, and only one test lists it.

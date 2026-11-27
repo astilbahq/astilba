@@ -60,6 +60,12 @@ func maintenancePools(s routeSnapshot, raw []byte, unit uuid.UUID) ([]routePool,
 // not waited for. A proxy that cannot say what it routes refuses the reservation, as a
 // readiness probe that cannot run does, since completion could not confirm it either. A
 // record kept from an earlier delivery stands, since writers may have stopped since then.
+//
+// The proxy counts every server up whenever it loads its routes, as converting or
+// publishing them or obtaining a certificate makes it, until it next probes the server, and
+// it probes a pool's servers one at a time. So a server it reports up may have failed
+// since. It is recorded only if it also passes the proxy's probe, sent now from the proxy's
+// network as completion sends it, each bounded by PoolHealthTimeout.
 func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 	if s.Routed != nil {
 		return nil
@@ -79,10 +85,16 @@ func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 	}
 	routed := &maintenanceRoutes{Servers: []routedServer{}}
 	if len(pools) > 0 {
+		e.point("maintenance-routes-reading")
 		runtime, err := e.readIngressRuntime(ctx)
 		if err != nil {
 			return fmt.Errorf("the proxy did not report which route servers it routes: %w", err)
 		}
+		type candidate struct {
+			server routedServer
+			probe  string
+		}
+		up, probes, seen := []candidate{}, []string{}, map[string]bool{}
 		for _, pool := range pools {
 			for _, server := range pool.servers {
 				if runtime["services"][pool.service].ServerStatus[server.url] != "UP" {
@@ -92,7 +104,26 @@ func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 				if err != nil {
 					return err
 				}
-				routed.Servers = append(routed.Servers, routedServer{Service: pool.service, Backend: backend})
+				up = append(up, candidate{routedServer{Service: pool.service, Backend: backend}, server.probe})
+				if !seen[server.probe] {
+					seen[server.probe] = true
+					probes = append(probes, server.probe)
+				}
+			}
+		}
+		if len(probes) > 0 {
+			failed, err := e.probeEach(ctx, probes)
+			if err != nil {
+				return fmt.Errorf("the proxy's probe of its route servers could not run: %w", err)
+			}
+			failing := map[string]bool{}
+			for _, i := range failed {
+				failing[probes[i]] = true
+			}
+			for _, c := range up {
+				if !failing[c.probe] {
+					routed.Servers = append(routed.Servers, c.server)
+				}
 			}
 		}
 	}
