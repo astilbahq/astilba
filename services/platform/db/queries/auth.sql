@@ -4,6 +4,10 @@ SELECT * FROM accounts WHERE email = $1;
 SELECT * FROM accounts WHERE id = $1;
 -- name: LockAccount :one
 SELECT * FROM accounts WHERE id = $1 FOR UPDATE;
+-- name: LockAccountForChange :one
+-- Holds off any other change to the account, but not a foreign-key check of a row that refers
+-- to it, such as another transaction's audit event, which would otherwise wait on this lock.
+SELECT * FROM accounts WHERE id = $1 FOR NO KEY UPDATE;
 -- name: AccountCount :one
 SELECT count(*) FROM accounts;
 -- name: InsertAccount :one

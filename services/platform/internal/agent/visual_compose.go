@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -65,6 +66,17 @@ func (e *Engine) compose(ctx context.Context, p deployment.Plan, body []byte, se
 	args, err := e.fenceTerminals(ctx, p, args)
 	if err != nil {
 		return err
+	}
+	if slices.Contains(args, "up") && !slices.Contains(args, "--no-start") {
+		// A run that names no service starts all of them.
+		named := slices.ContainsFunc(p.Specification.Applications, func(app domain.Application) bool {
+			return slices.Contains(args, deployment.ServiceName(app.ID))
+		})
+		if err = e.Journal.recordPostgresServing(p, func(id uuid.UUID) bool {
+			return !named || slices.Contains(args, deployment.ServiceName(id))
+		}); err != nil {
+			return err
+		}
 	}
 	directory := e.Journal.dir
 	if p.Specification.Compose != nil {

@@ -138,7 +138,7 @@ func TestWorkspaceLockWaitersLeaveThePoolServing(t *testing.T) {
 			finished <- struct{}{}
 		}()
 		go func() {
-			_, _ = f.auth.AcceptInvitation(ctx, invitation, "", "", auth.Source{Key: "test", Network: "test"}, &invited)
+			_, _ = f.auth.AcceptInvitation(ctx, invitation, "", "", auth.Source{Key: "test", Network: "test"}, &invited, nil)
 			finished <- struct{}{}
 		}()
 	}

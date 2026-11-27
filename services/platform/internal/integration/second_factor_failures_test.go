@@ -120,7 +120,7 @@ func TestSignInConcurrentGuessesStayWithinTheDailyAllowance(t *testing.T) {
 	results := make(chan error, 5)
 	for range 5 {
 		go func() {
-			_, err := f.auth.VerifyCode(ctx, f.owner, account.AuthVersion, "000000")
+			_, err := f.auth.VerifyCode(ctx, f.owner, account.AuthVersion, "000000", nil)
 			results <- err
 		}()
 	}
@@ -148,7 +148,7 @@ func TestEndedPendingSignInSpendsNoFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.auth.VerifyCode(ctx, f.owner, account.AuthVersion-1, codeAt(t, secret, f.auth.Now())); !errors.Is(err, domain.Credentials) {
+	if _, err := f.auth.VerifyCode(ctx, f.owner, account.AuthVersion-1, codeAt(t, secret, f.auth.Now()), nil); !errors.Is(err, domain.Credentials) {
 		t.Fatal("an ended pending sign-in was accepted", err)
 	}
 	if got := codeFailureCount(t, f); got != 0 {

@@ -305,6 +305,34 @@ func (q *Queries) LockAccount(ctx context.Context, id uuid.UUID) (Account, error
 	return i, err
 }
 
+const lockAccountForChange = `-- name: LockAccountForChange :one
+SELECT id, email, name, password_hash, auth_version, totp_secret, totp_pending, totp_pending_expiry, totp_last_step, created_at, email_verified_at, recovery_codes_saved, recovery_codes_generation, totp_pending_lineage FROM accounts WHERE id = $1 FOR NO KEY UPDATE
+`
+
+// Holds off any other change to the account, but not a foreign-key check of a row that refers
+// to it, such as another transaction's audit event, which would otherwise wait on this lock.
+func (q *Queries) LockAccountForChange(ctx context.Context, id uuid.UUID) (Account, error) {
+	row := q.db.QueryRow(ctx, lockAccountForChange, id)
+	var i Account
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.PasswordHash,
+		&i.AuthVersion,
+		&i.TotpSecret,
+		&i.TotpPending,
+		&i.TotpPendingExpiry,
+		&i.TotpLastStep,
+		&i.CreatedAt,
+		&i.EmailVerifiedAt,
+		&i.RecoveryCodesSaved,
+		&i.RecoveryCodesGeneration,
+		&i.TotpPendingLineage,
+	)
+	return i, err
+}
+
 const lockBootstrap = `-- name: LockBootstrap :exec
 SELECT pg_advisory_xact_lock(4281642301)
 `
