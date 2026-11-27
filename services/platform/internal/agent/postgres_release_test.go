@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -198,6 +199,22 @@ func TestNamesAreEscapedInNotes(t *testing.T) {
 }
 
 // A lone name needs no room for a count of the rest, so one that fits its room is kept whole.
+// A database's name reaches psql as its bytes, percent-encoded in a URI's path: one another
+// database's encoding wrote needn't be UTF-8, which a command's arguments can't carry, and no byte
+// of it can read as part of a connection string.
+func TestDatabasesAreNamedToPsqlByTheirBytes(t *testing.T) {
+	for _, name := range []string{"app", "a=b moved", "caf\xe9 (x)", `it's \ host=elsewhere`, "x?sslmode=disable#y", "%41/b"} {
+		uri := databaseURI(name)
+		path, found := strings.CutPrefix(uri, "postgresql:///")
+		if !found || strings.Trim(path, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~%") != "" {
+			t.Fatalf("%q is named %q", name, uri)
+		}
+		if decoded, err := url.PathUnescape(path); err != nil || decoded != name {
+			t.Fatalf("%q is named %q, which reads as %q (%v)", name, uri, decoded, err)
+		}
+	}
+}
+
 func TestALoneNameThatFitsIsKeptWhole(t *testing.T) {
 	alone := strings.Repeat("d", 55)
 	if list := listSome([]listed{{alone, "Billing"}}, closedRoom); list != alone+" (Billing)" {

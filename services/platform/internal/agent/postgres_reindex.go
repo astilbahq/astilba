@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json/v2"
 	"errors"
 	"io"
 	"slices"
@@ -103,6 +102,23 @@ const reindexRounds = 5
 // connected to it, so the check holds for the whole session.
 type reindexDatabase struct{ connection, oid string }
 
+// databaseURI names a database to psql by its name's bytes, each percent-encoded but letters,
+// digits and -._~, as libpq decodes a URI's path. A name another database's encoding wrote needn't
+// be valid UTF-8, which a command's arguments can't carry, and no byte can read as part of a
+// connection string. The rest of the connection comes from the helper's environment.
+func databaseURI(name string) string {
+	var b strings.Builder
+	b.WriteString("postgresql:///")
+	for _, c := range []byte(name) {
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte("-._~", c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			b.WriteString("%" + strings.ToUpper(hex.EncodeToString([]byte{c})))
+		}
+	}
+	return b.String()
+}
+
 // runPostgresReindex runs each query in every database that accepts connections, after dropping
 // the leftovers of an interrupted run. A query returns index OIDs, each rebuilt with REINDEX INDEX
 // CONCURRENTLY in its own session, since it cannot run in a transaction. A rebuild that fails drops
@@ -164,21 +180,29 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	// rename keeps: invalid after a DROP DATABASE interrupted part-way, closed, or open. found is
 	// false once it is dropped. quoted is the name as PostgreSQL quotes an identifier, for notes, so
 	// a name with commas or parentheses can't read as several databases or another application's.
+	// Both are the name's bytes as the catalog holds them: in the encoding of the database it was
+	// made from, which needn't be this one's, so they travel hex-encoded from a bytea that escape
+	// decoding makes byte for byte, and the note escapes what isn't UTF-8.
 	current := func(oid string) (state, name, quoted string, found bool, err error) {
 		// The oid goes into each session's SQL as text, so only a number is taken.
 		if _, err = strconv.ParseUint(oid, 10, 32); err != nil {
 			return "", "", "", false, errors.New("the listing returned something other than a database oid")
 		}
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		values, err := lines(own, "SELECT json_build_array(CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END, datname, quote_ident(datname))::text FROM pg_database WHERE oid = "+oid)
+		values, err := lines(own, `SELECT CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END || ' ' || encode(decode(replace(datname::text, '\', '\\'), 'escape'), 'hex') || ' ' || encode(decode(replace(quote_ident(datname), '\', '\\'), 'escape'), 'hex') FROM pg_database WHERE oid = `+oid)
 		if err != nil || len(values) == 0 {
 			return "", "", "", false, err
 		}
-		var read []string
-		if err = json.Unmarshal([]byte(values[0]), &read); err != nil || len(read) != 3 {
+		read := strings.Fields(values[0])
+		if len(read) != 3 {
 			return "", "", "", false, errors.New("the listing returned an unreadable database")
 		}
-		return read[0], read[1], read[2], true, nil
+		raw, rawErr := hex.DecodeString(read[1])
+		quotedRaw, quotedErr := hex.DecodeString(read[2])
+		if rawErr != nil || quotedErr != nil || len(raw) == 0 {
+			return "", "", "", false, errors.New("the listing returned an unreadable database")
+		}
+		return read[0], string(raw), string(quotedRaw), true, nil
 	}
 	// rebuild returns the exclusion-constraint indexes it skipped.
 	rebuild := func(database reindexDatabase) ([]string, error) {
@@ -222,22 +246,26 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	// the owner model the database user is a superuser, so it can create, rename and close any
 	// database during the step. Databases are listed and read by oid, so a renamed one is
 	// rebuilt under its new name, in the next round if it moved while its own rebuild ran.
+	// A database is seen by its oid and its catalog row's xmin, which any change to the row
+	// replaces, so one dropped and made again under the same oid, which CREATE DATABASE lets a
+	// role that may create databases choose, from a template not yet rebuilt, is rebuilt again.
 	// A database that does not accept connections, which even the superuser then can't make, is
 	// named instead. One the deployment connects to fails the listing, so it is left unfinished.
-	// template0 never accepts connections and holds only the catalogs initdb made, which the
-	// queries leave alone. A DROP DATABASE interrupted part-way leaves the database invalid,
+	// template0, which is always oid 4, never accepts connections and holds only the catalogs initdb
+	// made, which the queries leave alone; another database a superuser names template0 is named
+	// if closed, as any other is. A DROP DATABASE interrupted part-way leaves the database invalid,
 	// datconnlimit -2, still marked as accepting connections, though no one can connect to it;
 	// it is named apart, since only dropping it finishes the rebuild.
 	var left reindexLeft
 	seen := map[string]bool{}
 	for round := 0; ; round++ {
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		oids, err := lines(own, "SELECT oid::text FROM pg_database WHERE datallowconn OR datname <> 'template0'")
+		listed, err := lines(own, "SELECT oid::text || ':' || xmin::text FROM pg_database WHERE datallowconn OR oid <> 4")
 		if err != nil {
 			return reindexLeft{}, err
 		}
-		oids = slices.DeleteFunc(oids, func(oid string) bool { return seen[oid] })
-		if len(oids) == 0 {
+		listed = slices.DeleteFunc(listed, func(key string) bool { return seen[key] })
+		if len(listed) == 0 {
 			return left, nil
 		}
 		if round == reindexRounds {
@@ -246,7 +274,8 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		if round == 0 {
 			e.point("postgres-reindex-listed")
 		}
-		for _, oid := range oids {
+		for _, key := range listed {
+			oid, _, _ := strings.Cut(key, ":")
 			state, name, quoted, found, err := current(oid)
 			if err != nil {
 				return reindexLeft{}, err
@@ -260,8 +289,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 				left.closed = append(left.closed, quoted)
 			default:
 				e.point("postgres-reindex-read " + name)
-				// psql reads its -d value as a connection string when it holds '='; quote it as one.
-				database := reindexDatabase{connection: "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(name) + "'", oid: oid}
+				database := reindexDatabase{connection: databaseURI(name), oid: oid}
 				skipped, err := rebuild(database)
 				if err != nil {
 					if _, now, _, found, lookup := current(oid); ctx.Err() == nil && lookup == nil && (!found || now != name) {
@@ -274,7 +302,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 					left.exclusions = append(left.exclusions, quoted+"."+index)
 				}
 			}
-			seen[oid] = true
+			seen[key] = true
 		}
 	}
 }
