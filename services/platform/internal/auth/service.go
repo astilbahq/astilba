@@ -27,7 +27,7 @@ type Service struct {
 	Mail      *mailer.Mailer
 	Now       func() time.Time
 	// Tokens seals the tokens this service issues to itself: device tokens and reset requests.
-	Tokens *secretbroker.Tokens
+	Tokens TokenSealer
 	// Queue takes reset requests. Only a serving process has one.
 	Queue *river.Client[pgx.Tx]
 }

@@ -38,7 +38,8 @@ type sessionLoad struct {
 	keepCookie bool
 	// keepRow leaves a destroyed session's row in place. See dropStaleSession.
 	keepRow bool
-	// deviceToken is sent as the device cookie unless saving the session failed. See issueDevice.
+	// deviceToken is sent as the device cookie unless saving the session failed or its renewal
+	// was discarded. See issueDevice and renewToken.
 	deviceToken string
 	// lineage is the loaded session's chain of renewed tokens, which a logout ends.
 	lineage uuid.UUID
@@ -47,6 +48,9 @@ type sessionLoad struct {
 	// continueLineage gives a new sign-in's token the loaded session's lineage while that
 	// session lasts, deleting it with the new token's insert. See VerifyMFA and continueSignIn.
 	continueLineage bool
+	// renewed is set once this request has replaced the session's token, which then commits
+	// only with a successful response. See renewToken.
+	renewed bool
 	// client summarizes the browser making this request, which a signed-in session records.
 	client sessionClient
 	// account and version are what the session being saved is signed in to, if anything. They
@@ -216,8 +220,8 @@ type sessionResponseGuard struct {
 // ended its session. A browser applies Set-Cookie in arrival order, so anything else sent
 // to a request carrying an old token could undo the cookie a credential change has just
 // renewed. Idle refreshes need no cookie: it lasts to the session's absolute deadline and
-// the row's expiry enforces the idle timeout.
-func (w *sessionResponseGuard) save() {
+// the row's expiry enforces the idle timeout. status is the response's.
+func (w *sessionResponseGuard) save(status int) {
 	if w.saved {
 		return
 	}
@@ -225,6 +229,12 @@ func (w *sessionResponseGuard) save() {
 	sessions, ctx := w.server.Sessions, w.request.Context()
 	switch sessions.Status(ctx) {
 	case scs.Modified:
+		if w.loaded.renewed && status >= 400 {
+			// The renewal and what followed it are one unit: a sign-in or credential change
+			// that failed after renewing stores no token, so nothing it began is signed in,
+			// and it sends neither cookie. See renewToken.
+			return
+		}
 		if account, err := uuid.Parse(sessions.GetString(ctx, "account")); err == nil {
 			w.loaded.account, w.loaded.version = &account, sessions.GetInt64(ctx, "version")
 		}
@@ -256,13 +266,13 @@ func (w *sessionResponseGuard) fail(r *http.Request, err error) {
 }
 
 func (w *sessionResponseGuard) WriteHeader(status int) {
-	w.save()
+	w.save(status)
 	if !w.failed {
 		w.ResponseWriter.WriteHeader(status)
 	}
 }
 func (w *sessionResponseGuard) Write(data []byte) (int, error) {
-	w.save()
+	w.save(http.StatusOK)
 	if w.failed {
 		return 0, errSessionResponse
 	}
@@ -270,7 +280,7 @@ func (w *sessionResponseGuard) Write(data []byte) (int, error) {
 }
 func (w *sessionResponseGuard) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *sessionResponseGuard) FlushError() error {
-	w.save()
+	w.save(http.StatusOK)
 	if w.failed {
 		return errSessionResponse
 	}
@@ -292,8 +302,23 @@ func (s *Server) browserSession(next http.Handler) http.Handler {
 		}
 		guard.request = r.WithContext(ctx)
 		next.ServeHTTP(guard, guard.request)
-		guard.save()
+		guard.save(http.StatusOK)
 	})
+}
+
+// renewToken replaces the session's token, for a sign-in, a reauthentication or a change to how
+// the account signs in. The new token is stored only if the request then succeeds, so a failure
+// after this point, such as a device token that could not be sealed, signs nothing in. The
+// browser keeps the token it presented. A session RenewToken deleted stays deleted, and a pending
+// sign-in or a reauthenticating session stays as it was, unless the request moved the account to
+// a new version, as a credential change or a recovery code does: then the old token grants
+// nothing and the pending sign-in cannot complete.
+func (s *Server) renewToken(ctx context.Context) error {
+	if err := s.Sessions.RenewToken(ctx); err != nil {
+		return err
+	}
+	ctx.Value(sessionLoadKey{}).(*sessionLoad).renewed = true
+	return nil
 }
 
 // rotate replaces the token after a change to the account's password or two-factor
