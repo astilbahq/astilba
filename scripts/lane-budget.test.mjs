@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   budgetSeconds,
+  commitBudgets,
   durationSeconds,
   familyMatcher,
   laneBudget,
@@ -10,7 +11,6 @@ import {
   nativeBudgets,
   nativeLaneBudget,
   nativeLanes,
-  nativeShare,
   packageTimes,
   recentJobs,
   splitReport,
@@ -420,7 +420,6 @@ test("every native lane in the Makefile has a budget for each package it runs", 
     assert.ok(packages.size, `${lane} runs no package`);
     for (const seconds of packages.values()) assert.ok(seconds > 0);
   }
-  assert.equal(nativeShare, 0.6);
 });
 
 const agent = "github.com/astilbahq/astilba/services/platform/internal/agent";
@@ -436,7 +435,7 @@ const nativeJob = (run, times, conclusion = "success", target = "a") => ({
 });
 
 test("holds each native package to its own budget and leaves out the bootstrap's", () => {
-  const budgets = nativeBudgets(nativeMakefile);
+  const budgets = () => nativeBudgets(nativeMakefile);
   const { problems, rows } = nativeLaneBudget(
     [1, 2, 3].map((run) =>
       nativeJob(run, { [agent]: 1100, [integrationNative]: 300, [host]: 9000 }),
@@ -463,7 +462,7 @@ test("holds each native package to its own budget and leaves out the bootstrap's
 });
 
 test("a native lane without a time for one of its packages fails rather than passes", () => {
-  const budgets = nativeBudgets(nativeMakefile);
+  const budgets = () => nativeBudgets(nativeMakefile);
   const missing = nativeLaneBudget(
     [nativeJob(1, { [agent]: 100, [host]: 60 })],
     budgets,
@@ -560,4 +559,81 @@ test("shows a budget column only where budgets differ", () => {
     timesTable(rows, true).split("\n")[2],
     "| a | `pkg` | 12 | 600 | 3 |",
   );
+});
+
+test("judges each native job by the Makefile of the commit it ran", () => {
+  // The newer commit renamed lane b to c and gave a 20-minute timeout to its package.
+  const renamed = nativeMakefile
+    .replaceAll("verify-agent-host-b", "verify-agent-host-c")
+    .replace("$(GO) -run", () => "$(GO) -timeout=20m -run");
+  const byCommit = new Map([
+    ["new", nativeBudgets(renamed)],
+    ["old", nativeBudgets(nativeMakefile)],
+  ]);
+  const jobs = [
+    { ...nativeJob(3, { [agent]: 500 }, "success", "c"), commit: "new" },
+    { ...nativeJob(2, { [agent]: 500 }, "success", "b"), commit: "old" },
+    {
+      ...nativeJob(1, { [agent]: 500, [integrationNative]: 10 }),
+      commit: "old",
+    },
+  ];
+  const { problems, rows } = nativeLaneBudget(jobs, (job) =>
+    byCommit.get(job.commit),
+  );
+  // b's run predates the rename, and is past b's own budget then, but has one sample.
+  assert.deepEqual(problems, []);
+  assert.deepEqual(
+    rows.map(({ lane, budget }) => [lane, budget]),
+    [
+      ["c (arm64)", 720],
+      ["b (arm64)", 360],
+      ["a (arm64)", 1080],
+      ["a (arm64)", 360],
+    ],
+  );
+});
+
+test("a native job whose Makefile could not be read is a check that did not run", () => {
+  const { problems } = nativeLaneBudget(
+    [1, 2].map((run) => ({ ...nativeJob(run, { [agent]: 1 }), commit: "x" })),
+    () => {
+      throw new Error("GET Makefile returned 404");
+    },
+  );
+  assert.deepEqual(
+    problems.filter(({ key }) => key.startsWith("makefile")),
+    [1, 2].map((run) => ({
+      key: `makefile\t${run}`,
+      line: `run ${run}: cannot read its Makefile: GET Makefile returned 404`,
+      check: true,
+    })),
+  );
+});
+
+test("reads each sampled commit's Makefile once", async () => {
+  const paths = [];
+  const budgetsOf = await commitBudgets(
+    async (path) => {
+      paths.push(path);
+      if (path.endsWith("ref=bad")) throw new Error("returned 404");
+      return {
+        json: async () => ({
+          encoding: "base64",
+          content: Buffer.from(nativeMakefile).toString("base64"),
+        }),
+      };
+    },
+    "o/r",
+    [{ commit: "good" }, { commit: "good" }, { commit: "bad" }],
+  );
+  assert.deepEqual(paths, [
+    "/repos/o/r/contents/Makefile?ref=good",
+    "/repos/o/r/contents/Makefile?ref=bad",
+  ]);
+  assert.deepEqual(
+    budgetsOf({ commit: "good" }),
+    nativeBudgets(nativeMakefile),
+  );
+  assert.throws(() => budgetsOf({ commit: "bad" }), /returned 404/);
 });

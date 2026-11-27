@@ -161,11 +161,15 @@ export function nativeBudgets(makefile, share = nativeShare) {
 const inDirectory = (name, directory) =>
   name === directory || name.endsWith(`/${directory}`);
 
-// Native jobs, timed by their lane's Makefile commands. Each job also runs packages
-// outside its lane's target, such as the bootstrap's, and those have their own limits in
-// the workflow, so only the target's packages are compared. A successful job without a
-// time for one of them means this check no longer reads it, so it must not read as a pass.
-export function nativeLaneBudget(jobs, budgets) {
+// Native jobs, timed by their lane's Makefile commands. Each job is judged by the Makefile
+// of the commit it ran, as its packages and timeouts were then: a run from before the
+// lanes changed is neither stale nor missing a package added since. A row's budget is
+// the newest run's. Each job also runs packages outside its lane's target, such as the
+// bootstrap's, and those have their own limits in the workflow, so only the target's
+// packages are compared. A successful job without a time for one of them means this
+// check no longer reads it, so it must not read as a pass. `budgetsOf` gives a job's
+// nativeBudgets, newest jobs first.
+export function nativeLaneBudget(jobs, budgetsOf) {
   // Every run repeats these, and the issue lists each once.
   const problems = new Map();
   const problem = (key, line) =>
@@ -173,6 +177,16 @@ export function nativeLaneBudget(jobs, budgets) {
   const allowed = new Map();
   const timed = [];
   for (const job of jobs) {
+    let budgets;
+    try {
+      budgets = budgetsOf(job);
+    } catch (error) {
+      problem(
+        `makefile\t${job.run}`,
+        `run ${job.run}: cannot read its Makefile: ${error.message}`,
+      );
+      continue;
+    }
     const packages = budgets.get(job.target);
     if (!packages) {
       problem(
@@ -187,8 +201,10 @@ export function nativeLaneBudget(jobs, budgets) {
       const found = job.times.filter(({ name }) =>
         inDirectory(name, directory),
       );
-      for (const { name } of found)
-        allowed.set(`${job.lane}\t${name}`, seconds);
+      for (const { name } of found) {
+        const key = `${job.lane}\t${name}`;
+        if (!allowed.has(key)) allowed.set(key, seconds);
+      }
       times.push(...found);
       if (!found.length) missing.push(directory);
     }
@@ -373,7 +389,7 @@ export async function recentJobs(request, repository, lanesOf = raceLanes) {
   let sampled = 0;
   let current;
   const jobs = [];
-  for (const { id } of runs) {
+  for (const { id, head_sha: commit } of runs) {
     if (sampled === sampledRuns) break;
     const { jobs: listed } = await (
       await request(`/repos/${repository}/actions/runs/${id}/jobs?per_page=100`)
@@ -402,6 +418,7 @@ export async function recentJobs(request, repository, lanesOf = raceLanes) {
       ).text();
       jobs.push({
         run: id,
+        commit,
         lane,
         ...(target && { target }),
         conclusion,
@@ -411,6 +428,33 @@ export async function recentJobs(request, repository, lanesOf = raceLanes) {
     }
   }
   return jobs;
+}
+
+// Reads the Makefile each sampled commit ran, once a commit. What one could not be read
+// for throws when a job of that commit asks, so only its jobs go unjudged.
+export async function commitBudgets(request, repository, jobs) {
+  const budgets = new Map();
+  for (const commit of new Set(jobs.map((job) => job.commit)))
+    try {
+      const { content, encoding } = await (
+        await request(
+          `/repos/${repository}/contents/Makefile?ref=${encodeURIComponent(commit)}`,
+        )
+      ).json();
+      if (encoding !== "base64")
+        throw new Error(`the Makefile came as ${encoding}`);
+      budgets.set(
+        commit,
+        nativeBudgets(Buffer.from(content, "base64").toString("utf8")),
+      );
+    } catch (error) {
+      budgets.set(commit, error);
+    }
+  return (job) => {
+    const found = budgets.get(job.commit);
+    if (found instanceof Error) throw found;
+    return found;
+  };
 }
 
 // The median times as Markdown, leaving out packages too quick to matter.
@@ -431,14 +475,14 @@ export function timesTable(rows, budgets = false) {
 async function report(
   request,
   repository,
-  { title, problems, undecided, table },
+  { heading, title, problems, undecided, table },
 ) {
-  console.log(table);
+  console.log(`${heading}\n\n${table}\n`);
   // Only the workflow reports, so a local run changes nothing.
   if (!process.env.GITHUB_RUN_ID) return;
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY,
-    `## ${title}\n\n${table}\n\n`,
+    `## ${heading}\n\n${table}\n\n`,
   );
   await syncIssue(request, repository, {
     title,
@@ -463,42 +507,65 @@ async function run() {
   if (!token) throw new Error("GITHUB_TOKEN must allow reading Actions");
   const repository = process.env.GITHUB_REPOSITORY ?? "astilbahq/astilba";
   const request = github(token);
-  const makefile = readFileSync("Makefile", "utf8");
-  const isFamily = familyMatcher(makefile);
-  const budgets = nativeBudgets(makefile);
-
-  const raceJobs = await recentJobs(request, repository);
-  const race = laneBudget(raceJobs);
-  await report(request, repository, {
-    title: issueTitle,
-    ...race,
-    table: [timesTable(race.rows), splitReport(nameSplit(raceJobs, isFamily))]
-      .filter(Boolean)
-      .join("\n\n"),
-  });
-  const native = nativeLaneBudget(
-    await recentJobs(request, repository, nativeLanes),
-    budgets,
-  );
-  await report(request, repository, {
-    title: nativeIssueTitle,
-    ...native,
-    table: timesTable(native.rows, true),
-  });
+  const isFamily = familyMatcher(readFileSync("Makefile", "utf8"));
+  const kinds = [
+    {
+      heading: "Go race lanes",
+      title: issueTitle,
+      check: async () => {
+        const jobs = await recentJobs(request, repository);
+        const result = laneBudget(jobs);
+        const table = [
+          timesTable(result.rows),
+          splitReport(nameSplit(jobs, isFamily)),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        return { ...result, table };
+      },
+    },
+    {
+      heading: "Native lanes",
+      title: nativeIssueTitle,
+      check: async () => {
+        const jobs = await recentJobs(request, repository, nativeLanes);
+        const result = nativeLaneBudget(
+          jobs,
+          await commitBudgets(request, repository, jobs),
+        );
+        return { ...result, table: timesTable(result.rows, true) };
+      },
+    },
+  ];
+  // One kind failing to check or report still lets the other report.
+  const results = [];
+  const failures = [];
+  for (const { check, ...kind } of kinds)
+    try {
+      const result = await check();
+      await report(request, repository, { ...kind, ...result });
+      results.push(result);
+    } catch (error) {
+      failures.push(`${kind.heading}: ${error.message}`);
+    }
 
   // In a workflow the issue is the notice, so the job fails only when it could not
   // check or report, which the scheduled scans' check on this workflow reports. Run by
   // hand, a lane past its budget fails.
-  const problems = [...race.problems, ...native.problems];
-  if (problems.length) {
-    const text = problems.map(({ line }) => line).join("\n");
-    if (!process.env.GITHUB_RUN_ID || problems.some(({ check }) => check))
+  const problems = results.flatMap((result) => result.problems);
+  if (failures.length || problems.length) {
+    const text = [...failures, ...problems.map(({ line }) => line)].join("\n");
+    if (
+      failures.length ||
+      !process.env.GITHUB_RUN_ID ||
+      problems.some(({ check }) => check)
+    )
       throw new Error(text);
     console.log(text);
     return;
   }
   console.log(
-    race.undecided || native.undecided
+    results.some(({ undecided }) => undecided)
       ? `No lane with ${minimumRuns} runs is past its budget, and some have fewer.`
       : `Every lane's packages are within budget: ${budgetSeconds}s for a Go race lane, and ${nativeShare * 100}% of its command's -timeout for a native one.`,
   );

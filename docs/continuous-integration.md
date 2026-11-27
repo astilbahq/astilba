@@ -142,7 +142,9 @@ fails its job, and in the merge queue that removes whichever pull request is bei
 tested, whatever it changed. So `make check-lane-budget` also reads the Host jobs of
 the last five `ci.yml` main runs of the current lanes, and holds each package a lane's
 target runs to 60% of its command's `-timeout` on each architecture, which a runner 28%
-slower still meets. Packages other steps run, such as the bootstrap's, are left out. It
+slower still meets. Each run is judged by the Makefile of the commit it ran, so a run
+from before the lanes changed is judged by the lanes it had. Packages other steps run,
+such as the bootstrap's, are left out. It
 keeps its own issue, `Native lanes are past their time budget`, as the
 [Go race lanes' budget](#application-go-verification) does, and lists each lane's
 package medians, with their budgets, in the job summary. `make check-ci` fails when a
@@ -268,7 +270,7 @@ one change reaches every test. Then apply the proposed split: give each name lan
 letters and the name the proposal gives it, adding or removing a variable, its rule,
 its place in `verify-app-core` and the workflow's matrix as needed. When one letter
 alone is past 400 seconds, the proposal says so: move a test family to a lane of its
-own instead. A lane of one test, such as `crosshost`, can only
+own instead. A lane of one test, such as the Go race `crosshost` lane, can only
 come down by shortening or splitting that test. Moving a family between existing lanes
 takes three main runs to show, because earlier runs stay in the sample; adding or
 renaming a lane, as a new split does, starts a new sample, and a lane with fewer than three runs neither fails the check nor
