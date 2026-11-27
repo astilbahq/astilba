@@ -218,3 +218,47 @@ func TestABusyEnvironmentDoesntHoldUpRevocation(t *testing.T) {
 		t.Fatal("the busy environment holds", pending, "unfinished backup operations", err)
 	}
 }
+
+// A key whose IAM user is gone at AWS is revoked, whether IAM answers a call on the missing user by
+// name with NoSuchEntity or, under the path-scoped admin policy, with AccessDenied. Refused by
+// name and unlisted counts as gone only once the user, had the mint made it, would be listed.
+func TestAKeyWhoseUserIsGoneIsRevokedWhateverIAMAnswers(t *testing.T) {
+	for _, report := range []bool{false, true} {
+		k := newKeysFixture(t)
+		k.aws.ReportMissingUsers(report)
+		var d api.BackupDestination
+		k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+		k.aws.DeleteUser(d.Keys[0].UserName)
+		// The account check asks IAM only about a key active well before it began.
+		k.exec(t, `UPDATE backup_storage_keys SET activated_at=now() - interval '2 hours' WHERE id=$1`, d.Keys[0].Id)
+		k.b.call("POST", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/check", nil, 204, nil)
+		k.run(t, accountCheck{})
+		state := func() (string, string) {
+			var s string
+			var e *string
+			if err := k.f.st.Pool.QueryRow(context.Background(), `SELECT state,last_error FROM backup_storage_keys WHERE id=$1`, d.Keys[0].Id).Scan(&s, &e); err != nil {
+				t.Fatal(err)
+			}
+			if e == nil {
+				return s, ""
+			}
+			return s, *e
+		}
+		waitFor(t, "the account check didn't find the user gone", 30*time.Second, func() bool { s, _ := state(); return s != "active" })
+		k.exec(t, `UPDATE backup_storage_keys SET next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
+		k.run(t, keySweep{})
+		if s, e := state(); report && s != "revoked" {
+			t.Fatalf("with NoSuchEntity, the key is %s (%s)", s, e)
+		} else if !report && (s != "revoking" || e != "not_listed") {
+			t.Fatalf("refused by name and unlisted just after its mint, the key is %s (%s)", s, e)
+		}
+		if report {
+			continue
+		}
+		k.exec(t, `UPDATE backup_storage_keys SET created_at=now() - interval '20 minutes',next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
+		k.run(t, keySweep{})
+		if s, e := state(); s != "revoked" {
+			t.Fatalf("refused by name and unlisted well after its mint, the key is %s (%s)", s, e)
+		}
+	}
+}

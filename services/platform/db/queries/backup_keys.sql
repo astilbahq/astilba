@@ -110,7 +110,7 @@ WHERE id=(SELECT k.id FROM backup_storage_keys k
         AND (k.activated_at IS NOT NULL OR k.purpose = 'found' OR k.mint_deadline + interval '5 minutes' <= clock_timestamp())
         AND k.workspace_id <> ALL(@stalled_workspaces::uuid[])
     ORDER BY k.next_attempt_at,k.id LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING workspace_id,id,account_id,user_name;
+RETURNING workspace_id,id,account_id,user_name,created_at;
 
 -- name: RecordBackupStorageKeyRevoked :one
 UPDATE backup_storage_keys SET state='revoked',revoked_at=clock_timestamp(),last_error=NULL

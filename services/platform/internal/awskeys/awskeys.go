@@ -43,6 +43,12 @@ var (
 	// ErrConflict is a user AWS won't delete while something management didn't add is attached
 	// to it, such as a console password, an MFA device, a group or another policy.
 	ErrConflict = errors.New("AWS won't delete the user while something else is attached to it")
+	// ErrUnlisted is a user AWS refused a call on by name, and that isn't listed under its path.
+	// For a user that doesn't exist, IAM may answer a call by name with AccessDenied rather than
+	// NoSuchEntity, since it checks the call against the user's ARN without its path, which a
+	// path-scoped admin policy doesn't match. ListUsers can lag a create, so only a caller that
+	// knows the user, if it exists, is older than that lag may take this as gone.
+	ErrUnlisted = errors.New("AWS refused a call on the user, and it isn't listed under its path")
 	// ErrUnavailable is any other failure: the network, a timeout or an AWS error.
 	ErrUnavailable = errors.New("AWS could not be reached or failed")
 	// ErrNotAdmin is a credential that isn't an IAM user in the aws partition outside the
@@ -388,20 +394,24 @@ func (c *Client) Probe(ctx context.Context, key Credential, spec Spec) error {
 
 // Revoke takes user's access away and deletes it: a deny-all policy first, so the user can do
 // nothing even while its keys are deleted, then its access keys, its policy and the user. It
-// reports gone when the user no longer exists. A deny-all AWS refuses, for example because someone
+// reports gone when the user no longer exists, and ErrUnlisted when IAM refused the user by name
+// and doesn't list it under path. A deny-all AWS refuses, for example because someone
 // with the admin key filled the user's inline policy quota, doesn't stop the rest: deleting the
 // access keys already leaves the user unable to act. A user AWS won't delete gets its deny-all back before
 // Revoke reports ErrConflict, so it stays unable to act until it is deleted. The caller must have
 // checked that cred belongs to the account the user was minted in, or a missing user proves
 // nothing.
-func (c *Client) Revoke(ctx context.Context, cred Credential, user string) error {
+func (c *Client) Revoke(ctx context.Context, cred Credential, path, user string) error {
 	client := c.iamClient(cred)
 	deny := func() error {
 		_, err := client.PutUserPolicy(ctx, &iam.PutUserPolicyInput{UserName: aws.String(user), PolicyName: aws.String(policyName), PolicyDocument: aws.String(denyAll)})
 		return classify(err)
 	}
 	denied := deny()
-	if errors.Is(denied, ErrNotFound) {
+	if errors.Is(denied, ErrDenied) {
+		denied = c.unlisted(ctx, client, path, user, denied)
+	}
+	if errors.Is(denied, ErrNotFound) || errors.Is(denied, ErrUnlisted) {
 		return denied
 	}
 	if err := c.deleteKeys(ctx, client, user); err != nil {
@@ -433,10 +443,15 @@ func (c *Client) Users(ctx context.Context, cred Credential, path string, limit 
 				break
 			}
 			got, err := client.GetUser(ctx, &iam.GetUserInput{UserName: u.UserName})
-			if classify(err) == ErrNotFound {
+			// A user deleted since the listing is skipped, however IAM answers for it by name.
+			err = classify(err)
+			if errors.Is(err, ErrDenied) {
+				err = c.unlisted(ctx, client, path, aws.ToString(u.UserName), err)
+			}
+			if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnlisted) {
 				continue
 			} else if err != nil || got.User == nil {
-				return nil, classify(err)
+				return nil, err
 			}
 			user := User{Name: aws.ToString(u.UserName), Tags: map[string]string{}}
 			if got.User.PermissionsBoundary != nil {
@@ -473,11 +488,35 @@ func (c *Client) DeleteAccessKey(ctx context.Context, cred Credential, user, id 
 	return err
 }
 
-// UserExists asks IAM for one user by name, which a listing that may lag can't settle.
-func (c *Client) UserExists(ctx context.Context, cred Credential, user string) (bool, error) {
-	_, err := c.iamClient(cred).GetUser(ctx, &iam.GetUserInput{UserName: aws.String(user)})
-	if err = classify(err); errors.Is(err, ErrNotFound) {
+// UserExists asks IAM for one user under path by name, which a listing that may lag can't settle
+// on its own. A user IAM refuses by name is missing only if it isn't listed either; the caller
+// asks only about users old enough to be listed.
+func (c *Client) UserExists(ctx context.Context, cred Credential, path, user string) (bool, error) {
+	client := c.iamClient(cred)
+	_, err := client.GetUser(ctx, &iam.GetUserInput{UserName: aws.String(user)})
+	if err = classify(err); errors.Is(err, ErrDenied) {
+		err = c.unlisted(ctx, client, path, user, err)
+	}
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnlisted) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// unlisted settles a call on user that IAM refused with denied: ErrUnlisted if no user of that
+// name is listed under path, and denied if one is, or if the listing fails too.
+func (c *Client) unlisted(ctx context.Context, client *iam.Client, path, user string, denied error) error {
+	pages := iam.NewListUsersPaginator(client, &iam.ListUsersInput{PathPrefix: aws.String(path)})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return errors.Join(denied, classify(err))
+		}
+		for _, u := range page.Users {
+			if aws.ToString(u.UserName) == user {
+				return denied
+			}
+		}
+	}
+	return ErrUnlisted
 }

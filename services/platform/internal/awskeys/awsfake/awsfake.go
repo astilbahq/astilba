@@ -54,6 +54,19 @@ type AWS struct {
 	// Before runs before each call is handled, outside the fake's lock, with the call's action.
 	Before func(action string)
 	serial int
+	// reportMissing answers a call by name on a user that doesn't exist with NoSuchEntity even
+	// for an admin confined to a path. See ReportMissingUsers.
+	reportMissing bool
+}
+
+// ReportMissingUsers sets how a call by name on a user that doesn't exist is answered for an
+// admin confined to a path. By default it is AccessDenied: IAM is reported to check such a call
+// against the user's ARN without its path, which the admin policy's resources don't match. With
+// report set it is NoSuchEntity, as for an admin with no path.
+func (a *AWS) ReportMissingUsers(report bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reportMissing = report
 }
 
 type user struct {

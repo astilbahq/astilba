@@ -284,7 +284,7 @@ WHERE id=(SELECT k.id FROM backup_storage_keys k
         AND (k.activated_at IS NOT NULL OR k.purpose = 'found' OR k.mint_deadline + interval '5 minutes' <= clock_timestamp())
         AND k.workspace_id <> ALL($1::uuid[])
     ORDER BY k.next_attempt_at,k.id LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING workspace_id,id,account_id,user_name
+RETURNING workspace_id,id,account_id,user_name,created_at
 `
 
 type ClaimDueBackupStorageKeyRow struct {
@@ -292,6 +292,7 @@ type ClaimDueBackupStorageKeyRow struct {
 	ID          uuid.UUID `json:"id"`
 	AccountID   uuid.UUID `json:"account_id"`
 	UserName    string    `json:"user_name"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // unscoped: the revocation sweep visits every workspace. Claiming moves the key's next attempt on,
@@ -307,6 +308,7 @@ func (q *Queries) ClaimDueBackupStorageKey(ctx context.Context, stalledWorkspace
 		&i.ID,
 		&i.AccountID,
 		&i.UserName,
+		&i.CreatedAt,
 	)
 	return i, err
 }

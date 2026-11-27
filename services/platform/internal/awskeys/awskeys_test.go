@@ -126,7 +126,7 @@ func TestRevokeTakesTheKeyAway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = f.client.Revoke(ctx, f.admin, f.spec.User); err != nil {
+	if err = f.client.Revoke(ctx, f.admin, f.spec.Path, f.spec.User); err != nil {
 		t.Fatal(err)
 	}
 	if users := f.aws.Users("/astilba/"); len(users) != 0 {
@@ -135,7 +135,8 @@ func TestRevokeTakesTheKeyAway(t *testing.T) {
 	if err = reach(t, f.s3(key), "backups", "servers/one/data/1"); !errors.Is(err, ErrCredential) {
 		t.Fatalf("revoked key: %v", err)
 	}
-	if err = f.client.Revoke(ctx, f.admin, f.spec.User); !errors.Is(err, ErrNotFound) {
+	// Under the path-scoped admin policy IAM refuses the missing user by name.
+	if err = f.client.Revoke(ctx, f.admin, f.spec.Path, f.spec.User); !errors.Is(err, ErrUnlisted) {
 		t.Fatalf("revoking again: %v", err)
 	}
 }
@@ -148,7 +149,7 @@ func TestRevokeDeniesFirstAndResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.aws.Fail("DeleteAccessKey", "ServiceFailure", "ServiceFailure", "ServiceFailure")
-	if err = f.client.Revoke(ctx, f.admin, f.spec.User); !errors.Is(err, ErrUnavailable) {
+	if err = f.client.Revoke(ctx, f.admin, f.spec.Path, f.spec.User); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("failing revocation: %v", err)
 	}
 	// The key still exists, but the deny-all policy already stops it.
@@ -158,7 +159,7 @@ func TestRevokeDeniesFirstAndResumes(t *testing.T) {
 	if err = reach(t, f.s3(key), "backups", "servers/one/data/1"); !errors.Is(err, ErrDenied) {
 		t.Fatalf("half-revoked key: %v", err)
 	}
-	if err = f.client.Revoke(ctx, f.admin, f.spec.User); err != nil {
+	if err = f.client.Revoke(ctx, f.admin, f.spec.Path, f.spec.User); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.aws.Users("/astilba/")) != 0 {
@@ -313,7 +314,7 @@ func TestRevokeKeepsDenyingAUserItCantDelete(t *testing.T) {
 	ctx := context.Background()
 	// A user made outside management, with a policy of its own that DeleteUser trips over.
 	key := f.aws.CreateUser("astilba-found", f.spec.Path, f.spec.Boundary, nil, `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":["*"]}]}`)
-	if err := f.client.Revoke(ctx, f.admin, "astilba-found"); !errors.Is(err, ErrConflict) {
+	if err := f.client.Revoke(ctx, f.admin, f.spec.Path, "astilba-found"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("revoking a user with another policy: %v", err)
 	}
 	if len(f.aws.Keys("astilba-found")) != 0 {
@@ -337,7 +338,7 @@ func TestRevokeGoesOnWhenTheDenyAllIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.aws.Fail("PutUserPolicy", "LimitExceeded")
-	if err = f.client.Revoke(ctx, f.admin, f.spec.User); err != nil {
+	if err = f.client.Revoke(ctx, f.admin, f.spec.Path, f.spec.User); err != nil {
 		t.Fatal(err)
 	}
 	if users := f.aws.Users("/astilba/"); len(users) != 0 {
@@ -345,5 +346,40 @@ func TestRevokeGoesOnWhenTheDenyAllIsRefused(t *testing.T) {
 	}
 	if err = reach(t, f.s3(key), "backups", "servers/one/data/1"); !errors.Is(err, ErrCredential) {
 		t.Fatalf("revoked key: %v", err)
+	}
+}
+
+// A user that doesn't exist is answered by name with NoSuchEntity, or, as IAM is reported to do
+// under a path-scoped admin policy, with AccessDenied. Either way it is settled as missing, and a
+// refusal for a user that is listed stays a refusal.
+func TestAMissingUserIsMissingWhateverIAMAnswers(t *testing.T) {
+	for _, report := range []bool{false, true} {
+		f := setup(t)
+		ctx := context.Background()
+		f.aws.ReportMissingUsers(report)
+		gone := ErrUnlisted
+		if report {
+			gone = ErrNotFound
+		}
+		if err := f.client.Revoke(ctx, f.admin, f.spec.Path, "astilba-never-made"); !errors.Is(err, gone) {
+			t.Fatalf("reporting missing users %v, revoking one: %v", report, err)
+		}
+		if exists, err := f.client.UserExists(ctx, f.admin, f.spec.Path, "astilba-never-made"); err != nil || exists {
+			t.Fatalf("reporting missing users %v, a missing user exists %v: %v", report, exists, err)
+		}
+		if _, err := f.client.Mint(ctx, f.admin, f.spec); err != nil {
+			t.Fatal(err)
+		}
+		if exists, err := f.client.UserExists(ctx, f.admin, f.spec.Path, f.spec.User); err != nil || !exists {
+			t.Fatalf("reporting missing users %v, a minted user exists %v: %v", report, exists, err)
+		}
+		// An admin policy that no longer allows the call refuses a user that is still listed.
+		f.aws.SetAdmin(awsfake.Admin{Name: "astilba-admin", Path: "/", Within: f.spec.Path, Boundary: f.spec.Boundary, Denied: map[string]bool{"PutUserPolicy": true, "ListAccessKeys": true, "GetUser": true}})
+		if err := f.client.Revoke(ctx, f.admin, f.spec.Path, f.spec.User); !errors.Is(err, ErrDenied) || errors.Is(err, ErrUnlisted) {
+			t.Fatalf("reporting missing users %v, revoking a listed user the policy refuses: %v", report, err)
+		}
+		if _, err := f.client.UserExists(ctx, f.admin, f.spec.Path, f.spec.User); !errors.Is(err, ErrDenied) {
+			t.Fatalf("reporting missing users %v, asking about a listed user the policy refuses: %v", report, err)
+		}
 	}
 }

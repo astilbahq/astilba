@@ -61,6 +61,8 @@ func errorCode(err error) string {
 		return "not_admin"
 	case errors.Is(err, awskeys.ErrConflict):
 		return "delete_conflict"
+	case errors.Is(err, awskeys.ErrUnlisted):
+		return "not_listed"
 	case errors.Is(err, errAccountMoved):
 		return "account_changed"
 	case errors.Is(err, context.DeadlineExceeded):

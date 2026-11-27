@@ -478,6 +478,7 @@ export default interface Resources {
       "deleteConflict": "AWS won’t delete the user while something else is attached to it, such as a console password, an MFA device, a group or another policy. Management keeps it denied all access meanwhile. Remove those in the AWS console so management can delete it.",
       "notAdmin": "The admin key no longer belongs to an IAM user outside /astilba/.",
       "notFound": "AWS couldn’t find the user or key.",
+      "notListed": "AWS refused the request for the user, and doesn’t list it under the workspace’s path, which is how IAM can answer for a user that no longer exists. Management counts it revoked once the user, if it existed, would be listed.",
       "other": "Failure code {{code}}.",
       "superseded": "Replaced by a newer key.",
       "timeout": "AWS didn’t answer in time.",

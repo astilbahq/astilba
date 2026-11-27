@@ -202,8 +202,19 @@ func (s *Service) revokeAtAWS(ctx context.Context, k db.ClaimDueBackupStorageKey
 	if id.Account != account.AwsAccount {
 		return errAccountMoved
 	}
-	if err = s.AWS.Revoke(ctx, admin, k.UserName); errors.Is(err, awskeys.ErrNotFound) {
+	err = s.AWS.Revoke(ctx, admin, awskeys.Path(k.WorkspaceID.String()), k.UserName)
+	switch {
+	case errors.Is(err, awskeys.ErrNotFound):
+		return nil
+	case errors.Is(err, awskeys.ErrUnlisted) && time.Since(k.CreatedAt) > unlistedAfter:
+		// IAM refuses a missing user by name under a path-scoped admin policy. The user, if any,
+		// was made after the key's row, by the mint, so by now it would be listed.
 		return nil
 	}
 	return err
 }
+
+// unlistedAfter is how old a key's row must be before a user IAM refuses by name and doesn't list
+// counts as gone: past the mint that may still be making the user, and a margin for ListUsers,
+// which can lag a create.
+const unlistedAfter = mintDeadline + 10*time.Minute

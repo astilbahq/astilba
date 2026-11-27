@@ -175,7 +175,7 @@ func (s *Service) listAccount(ctx context.Context, account db.BackupStorageAccou
 			if l.truncated || k.ActivatedAt == nil || k.ActivatedAt.After(l.began.Add(-time.Hour)) {
 				continue
 			}
-			exists, err := s.AWS.UserExists(ctx, admin, k.UserName)
+			exists, err := s.AWS.UserExists(ctx, admin, awskeys.Path(ws.String()), k.UserName)
 			if err != nil {
 				return l, err
 			}

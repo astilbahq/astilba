@@ -113,6 +113,14 @@ func (a *AWS) query(w http.ResponseWriter, who caller, action string, f form) {
 	reach := func(p, boundary string) bool {
 		return strings.HasPrefix(p, admin.Within) && (admin.Boundary == "" || boundary == admin.Boundary)
 	}
+	// missing answers a call by name on a user that doesn't exist.
+	missing := func() {
+		if a.reportMissing || cmpString(admin.Within, "/") == "/" {
+			a.queryError(w, "NoSuchEntity")
+		} else {
+			a.queryError(w, "AccessDenied")
+		}
+	}
 	switch action {
 	case "ListUsers":
 		prefix := cmpString(f.Get("PathPrefix"), "/")
@@ -151,7 +159,7 @@ func (a *AWS) query(w http.ResponseWriter, who caller, action string, f form) {
 		respond(w, "iam", action, result)
 	case "GetUser":
 		if target == nil {
-			a.queryError(w, "NoSuchEntity")
+			missing()
 			return
 		}
 		if !strings.HasPrefix(target.path, admin.Within) {
@@ -182,7 +190,7 @@ func (a *AWS) query(w http.ResponseWriter, who caller, action string, f form) {
 		respond(w, "iam", action, single{u.xml(true)})
 	default:
 		if target == nil {
-			a.queryError(w, "NoSuchEntity")
+			missing()
 			return
 		}
 		if !reach(target.path, target.boundary) {
