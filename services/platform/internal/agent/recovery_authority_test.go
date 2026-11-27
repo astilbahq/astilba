@@ -141,21 +141,11 @@ func TestRecoveryTransferHoldsReplayAndPreservesFrozenReservation(t *testing.T) 
 	if held, err := j.recoveryHeld(); err != nil || !held {
 		t.Fatal("a rejected open released the durable hold", err)
 	}
-	select {
-	case <-engine.routeConversionWake():
-		t.Fatal("a refused open woke the route conversion")
-	default:
-	}
 	if err = engine.Execute(context.Background(), open); err != nil {
 		t.Fatal(err)
 	}
 	if held, err := j.recoveryHeld(); err != nil || held {
 		t.Fatal("current-authority open did not release replay hold", err)
-	}
-	select {
-	case <-engine.routeConversionWake():
-	default:
-		t.Fatal("opening the replay hold did not wake the route conversion it defers")
 	}
 	state, err := j.crossHost()
 	if err != nil || state.ParentID != parent || state.Unit.Plan.Hash != p.Hash || state.Controller != 1 || state.Phase != "reserved" {

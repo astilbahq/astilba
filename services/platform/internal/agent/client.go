@@ -300,12 +300,11 @@ func (c *Client) Run(ctx context.Context) error {
 	// Nothing that reads ingress runs before the first attempt, which finishes a conversion
 	// a crash interrupted before a command could read it as drift. Heartbeats and polling
 	// carry on regardless, because a host must report while Docker is failing. Repeats
-	// because Docker may not be up yet, and as soon as a hold the conversion waits for ends.
-	// Once converted, this reads the journal and returns.
+	// because Docker may not be up yet. Once converted, this reads the journal and returns.
 	attempted := make(chan struct{})
 	wg.Go(func() {
 		first := true
-		loopUntilWoken(ctx, time.Minute, c.Engine.routeConversionWake(), func() error {
+		c.loop(ctx, time.Minute, func() error {
 			c.Engine.qualifyRouteBackends(ctx)
 			if first {
 				first = false
@@ -521,20 +520,6 @@ func (c *Client) loop(ctx context.Context, interval time.Duration, fn func() err
 		if !wait(ctx, interval) {
 			return
 		}
-	}
-}
-
-// loopUntilWoken is loop, but runs fn again early whenever wake is signalled.
-func loopUntilWoken(ctx context.Context, interval time.Duration, wake <-chan struct{}, fn func() error) {
-	for ctx.Err() == nil {
-		_ = fn()
-		t := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-		case <-t.C:
-		case <-wake:
-		}
-		t.Stop()
 	}
 }
 func wait(ctx context.Context, d time.Duration) bool {

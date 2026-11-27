@@ -90,6 +90,10 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 		if e.cancelled(c.Id) {
 			return finish("cancelled", "Cancelled before reserving this host.")
 		}
+		// Nothing converts the routes while the host is reserved, see QualifyRouteBackends.
+		if err := e.convertBareBackends(ctx); err != nil {
+			return finish("failed", "This host's routes could not be moved off the backend names an earlier agent published, so the host was not reserved. Try again once its proxy serves.")
+		}
 		o, _, err := e.observeUnit(ctx, p, command.Secrets)
 		expected := p.ExpectedState
 		if command.Maintenance != nil {

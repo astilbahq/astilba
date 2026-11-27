@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -205,6 +207,69 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 	if w.barrier() {
 		t.Fatal("the reservation is still held")
 	}
+}
+
+// Nothing converts a reserved host's routes until the reservation is released, so bare
+// backend names an earlier agent published would last as long as it does. Reserving
+// converts them first, and a host whose conversion fails is not reserved.
+func TestNativeReservationConvertsBareBackends(t *testing.T) {
+	w := newRoutedWriter(t)
+	ctx := context.Background()
+	state, err := w.journal.routing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := state.Current
+	bare.QualifiedBackends = false
+	if err = w.engine.replaceRouteFile(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	state.Current = bare
+	if err = w.journal.saveRouting(state); err != nil {
+		t.Fatal(err)
+	}
+	published, err := os.ReadFile(w.engine.routePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualified := func() bool {
+		t.Helper()
+		state, err := w.journal.routing()
+		if err != nil {
+			t.Fatal(err)
+		}
+		drift, err := w.engine.ingressDrift(ctx, state)
+		if err != nil || drift {
+			t.Fatalf("the host's routes drifted: %v", err)
+		}
+		return state.Current.QualifiedBackends
+	}
+
+	// A conversion the proxy never activates is put back.
+	broken := false
+	w.engine.Point = func(point string) {
+		if point == "route-published" && !broken {
+			broken = true
+			if err := os.WriteFile(w.engine.routePath(), []byte("{}"), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	w.phaseEnding("reserve", "failed")
+	w.engine.Point = nil
+	if w.barrier() || qualified() {
+		t.Fatal("a host whose conversion failed was reserved, or kept the conversion")
+	}
+	if raw, err := os.ReadFile(w.engine.routePath()); err != nil || !bytes.Equal(raw, published) {
+		t.Fatal("the failed conversion did not restore the route file", err)
+	}
+
+	w.phase("reserve")
+	if !w.barrier() || !qualified() {
+		t.Fatal("the host was reserved without converting its routes")
+	}
+	// The reservation recorded the servers the converted routes name.
+	w.routed()
 }
 
 // A proxy that cannot say which servers it routes could not confirm them at completion

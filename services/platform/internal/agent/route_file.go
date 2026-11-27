@@ -106,23 +106,32 @@ func (e *Engine) awaitRoutes(ctx context.Context, s routeSnapshot, raw []byte) e
 
 // QualifyRouteBackends moves a host off the bare backend names an older agent published.
 // No command may arrive for days after an upgrade, and until this runs another unit on
-// the host can answer for those names. It changes only the route file, so it never
-// restarts the proxy, whatever this agent would now choose to run: the routes and the
-// proxy's networks are already those the journal records. A failure restores the previous
-// file and is tried again later. The revision is derived so that a restart after the file
-// was written, before the journal, finds the same file here.
-//
-// It waits while the host is held: by a recovered controller that has not opened its
-// barrier, or by a coordinated reservation, whose phases expect the routes and the servers
-// they name to stay those they recorded. Waiting needs no record of its own, since the
-// journal still names bare backends, and the hold ending wakes the next attempt, see
-// wakeRouteConversion.
+// the host can answer for those names. It waits while a recovered controller has not
+// opened its barrier, and while a coordinated reservation holds the host, whose phases
+// expect the routes and the servers they name to stay as they recorded them. Reserving
+// converts first, see convertBareBackends, so a reservation never holds bare names.
 func (e *Engine) QualifyRouteBackends(ctx context.Context) error {
 	// While a command pulls its images, the next attempt converts.
 	if !e.lockUnlessLent() {
 		return nil
 	}
 	defer e.mu.Unlock()
+	if held, err := e.Journal.recoveryHeld(); err != nil || held {
+		return err
+	}
+	if reserved, err := e.Journal.hasCrossHostBarrier(); err != nil || reserved {
+		return err
+	}
+	return e.convertBareBackends(ctx)
+}
+
+// convertBareBackends converts a host's bare backend names, with mu held. It changes only
+// the route file, so it never restarts the proxy, whatever this agent would now choose to
+// run: the routes and the proxy's networks are already those the journal records. A
+// failure restores the previous file. Drift, or an attempt a command left, is left as it
+// is. The revision is derived so that a restart after the file was written, before the
+// journal, finds the same file here.
+func (e *Engine) convertBareBackends(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	state, err := e.Journal.routing()
@@ -132,12 +141,6 @@ func (e *Engine) QualifyRouteBackends(ctx context.Context) error {
 	current := state.Current
 	if state.Pending || current.QualifiedBackends || len(current.Sets) == 0 {
 		return nil
-	}
-	if held, err := e.Journal.recoveryHeld(); err != nil || held {
-		return err
-	}
-	if reserved, err := e.Journal.hasCrossHostBarrier(); err != nil || reserved {
-		return err
 	}
 	next := current
 	next.QualifiedBackends = true
@@ -174,21 +177,6 @@ func (e *Engine) replaceRouteFile(ctx context.Context, s routeSnapshot) error {
 	}
 	e.point("route-published")
 	return e.awaitRoutes(ctx, s, raw)
-}
-
-// routeConversionWake is signalled when a hold that QualifyRouteBackends waits for ends,
-// so the conversion runs once the command that ended it does, not up to a minute later.
-func (e *Engine) routeConversionWake() chan struct{} {
-	e.routeWakeOnce.Do(func() { e.routeWake = make(chan struct{}, 1) })
-	return e.routeWake
-}
-
-// wakeRouteConversion asks for another conversion attempt. One already asked for is enough.
-func (e *Engine) wakeRouteConversion() {
-	select {
-	case e.routeConversionWake() <- struct{}{}:
-	default:
-	}
 }
 
 // qualifyRouteBackends logs a failure and leaves it to the next attempt: converting must

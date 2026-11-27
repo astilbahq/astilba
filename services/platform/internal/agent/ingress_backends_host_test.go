@@ -281,29 +281,10 @@ func TestNativeRouteBackendConversion(t *testing.T) {
 	}
 	f.answers(proxyName, one.domain, "one")
 
-	// A coordinated reservation holds the routes it recorded until it is released.
-	release := holdReservation(t, j, p)
 	if err := e.QualifyRouteBackends(ctx); err != nil {
 		t.Fatal(err)
 	}
 	state, err := j.routing()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Current.QualifiedBackends || state.Current.Revision != legacy.Current.Revision || !strings.Contains(routeFile(), bareOne) || drift() {
-		t.Fatalf("the conversion ran during a reservation: %s", routeFile())
-	}
-	release(e)
-	select {
-	case <-e.routeConversionWake():
-	default:
-		t.Fatal("releasing the reservation did not wake the conversion")
-	}
-
-	if err = e.QualifyRouteBackends(ctx); err != nil {
-		t.Fatal(err)
-	}
-	state, err = j.routing()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,14 +475,14 @@ func TestRouteBackendConversionWaits(t *testing.T) {
 }
 
 // holdReservation installs a coordinated reservation of p's host, as a reserve phase does,
-// and returns what releases it, as completion does, through the engine's journal.
+// and returns what releases it, as completion does.
 func holdReservation(t *testing.T, j *Journal, p deployment.Plan) func(*Engine) {
 	t.Helper()
 	parent := uuid.New()
 	p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: true}
 	p = p.WithHash()
 	command := deployment.CrossHostCommand{ParentID: parent, GroupHash: strings.Repeat("a", 64), Phase: "reserve", Unit: deployment.DistributedUnit{Plan: p}}
-	phase := func(j *Journal, generation int64) api.ExecutionCommand {
+	phase := func(generation int64) api.ExecutionCommand {
 		raw, err := stablejson.Marshal(command)
 		if err != nil {
 			t.Fatal(err)
@@ -519,15 +500,15 @@ func holdReservation(t *testing.T, j *Journal, p deployment.Plan) func(*Engine) 
 		if err := e.finishCrossHost(c, command, deployment.Observation{}, command.Phase, release); err != nil {
 			t.Fatal(err)
 		}
-		r, err := e.Journal.Record(c.Id)
+		r, err := j.Record(c.Id)
 		if err == nil {
-			err = e.Journal.Acknowledge(c.Id, r.Report.Sequence)
+			err = j.Acknowledge(c.Id, r.Report.Sequence)
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	reserve := phase(j, 1)
+	reserve := phase(1)
 	if _, err := j.reserveCrossHost(reserve, command); err != nil {
 		t.Fatal(err)
 	}
@@ -535,16 +516,15 @@ func holdReservation(t *testing.T, j *Journal, p deployment.Plan) func(*Engine) 
 	return func(e *Engine) {
 		t.Helper()
 		command.Phase = "complete"
-		finish(e, phase(e.Journal, 2), true)
-		if reserved, err := e.Journal.hasCrossHostBarrier(); err != nil || reserved {
+		finish(e, phase(2), true)
+		if reserved, err := j.hasCrossHostBarrier(); err != nil || reserved {
 			t.Fatal("completion did not release the reservation", err)
 		}
 	}
 }
 
-// Coordinated maintenance expects the routes and the servers they name to stay those it
-// recorded, so a conversion waits for the reservation, across a restart, and is tried as
-// soon as the reservation is released. TestNativeRouteBackendConversion converts after it.
+// A reservation holds the routes as its phases recorded them, so the conversion waits for
+// it to be released, then goes on to the proxy. TestNativeRouteBackendConversion converts.
 func TestRouteBackendConversionWaitsForTheReservation(t *testing.T) {
 	j, p := testVisualJournal(t)
 	unit, app := uuid.New(), uuid.New()
@@ -565,7 +545,7 @@ func TestRouteBackendConversionWaitsForTheReservation(t *testing.T) {
 		}
 		after, err := stablejson.Marshal(current)
 		if err != nil || !bytes.Equal(before, after) {
-			t.Fatalf("routing state changed during the reservation: %v", errors.Join(err, errors.New(string(after))))
+			t.Fatalf("routing state changed: %v", errors.Join(err, errors.New(string(after))))
 		}
 	}
 	release := holdReservation(t, j, p)
@@ -576,29 +556,7 @@ func TestRouteBackendConversionWaitsForTheReservation(t *testing.T) {
 	}
 	unchanged()
 
-	dir := j.dir
-	j.Close()
-	if j, err = Open(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { j.Close() })
-	e = &Engine{Journal: j}
-	if err = e.QualifyRouteBackends(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	unchanged()
-
-	select {
-	case <-e.routeConversionWake():
-		t.Fatal("the conversion was woken while the reservation was held")
-	default:
-	}
 	release(e)
-	select {
-	case <-e.routeConversionWake():
-	default:
-		t.Fatal("releasing the reservation did not wake the conversion")
-	}
 	var inspected atomic.Int32
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -623,43 +581,6 @@ func TestRouteBackendConversionWaitsForTheReservation(t *testing.T) {
 		t.Fatalf("the released conversion did not go on to read the proxy: %d inspections", inspected.Load())
 	}
 	unchanged()
-}
-
-// A wake runs the loop again at once, and many wakes before it runs are one.
-func TestLoopUntilWokenRunsAgainOnWake(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	wake := make(chan struct{}, 1)
-	runs := make(chan struct{}, 8)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		loopUntilWoken(ctx, time.Hour, wake, func() error { runs <- struct{}{}; return nil })
-	}()
-	next := func(want bool) {
-		t.Helper()
-		select {
-		case <-runs:
-			if !want {
-				t.Fatal("the loop ran without a wake")
-			}
-		case <-time.After(200 * time.Millisecond):
-			if want {
-				t.Fatal("the loop did not run")
-			}
-		}
-	}
-	next(true)
-	next(false)
-	wake <- struct{}{}
-	next(true)
-	next(false)
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the loop did not stop when cancelled")
-	}
 }
 
 // A frozen exec must not outlast its deadline, and while a conversion waits on one the host
