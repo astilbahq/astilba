@@ -92,17 +92,36 @@ func (e *Engine) removeReindexHelper(ctx context.Context, name string, p deploym
 	return nil
 }
 
+// reindexRounds bounds how often a rebuild lists the databases again for ones that appeared or
+// moved during it.
+const reindexRounds = 5
+
+// reindexDatabase is a database a rebuild session connects to. One listed by oid is checked to be
+// that database at the start of every session: a database can't be renamed while a session is
+// connected to it, so the check holds for the whole session.
+type reindexDatabase struct{ connection, oid string }
+
 // runPostgresReindex runs each query in every database that accepts connections, after dropping
 // the leftovers of an interrupted run. A query returns index OIDs, each rebuilt with REINDEX INDEX
 // CONCURRENTLY in its own session, since it cannot run in a transaction. A rebuild that fails drops
 // what it left, so a half-built index does not slow every write until the next run. It returns the
 // exclusion-constraint indexes the queries skip and the databases it could not connect to.
 func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a domain.Application, queries []string) (reindexLeft, error) {
+	psql := func(flags string, database reindexDatabase, statement string) []string {
+		args := []string{"psql", flags, "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.MaintenanceUser(), "-d", database.connection}
+		if database.oid != "" {
+			// Fails, dividing by zero, in any database but the one listed, and returns one empty
+			// value, which a listing skips.
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
+			args = append(args, "-c", "SELECT '' WHERE 1 / (SELECT count(*)::int FROM pg_database WHERE oid = "+database.oid+" AND datname = current_database()) = 1")
+		}
+		return append(args, "-c", statement)
+	}
 	// lines lists a query's text values in pages, so no one listing outgrows its output limit
 	// however many indexes a database has. Values travel hex-encoded, one per line, so one holding a
 	// newline stays one, and the last value of a page comes back the same way. Paging is by value:
 	// a rebuilt index keeps its name but not its OID.
-	lines := func(database, query string) ([]string, error) {
+	lines := func(database reindexDatabase, query string) ([]string, error) {
 		var values []string
 		for {
 			after := ""
@@ -111,7 +130,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			}
 			out := &boundedOutput{limit: 1 << 20, stopOnLimit: true}
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			if err := e.containerExec(ctx, helper, out, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.MaintenanceUser(), "-d", database, "-c", "SELECT encode(convert_to(v, 'UTF8'), 'hex') FROM ("+query+") AS q(v)"+after+" ORDER BY v COLLATE \"C\" LIMIT "+strconv.Itoa(reindexPage)); err != nil {
+			if err := e.containerExec(ctx, helper, out, psql("-XAt", database, "SELECT encode(convert_to(v, 'UTF8'), 'hex') FROM ("+query+") AS q(v)"+after+" ORDER BY v COLLATE \"C\" LIMIT "+strconv.Itoa(reindexPage))...); err != nil {
 				return nil, err
 			}
 			page := 0
@@ -126,88 +145,128 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			}
 		}
 	}
-	run := func(connection string, statements []string) error {
+	run := func(database reindexDatabase, statements []string) error {
 		for _, statement := range statements {
-			if err := e.containerExec(ctx, helper, io.Discard, "psql", "-XAq", "-v", "ON_ERROR_STOP=1", "-U", a.Postgres.MaintenanceUser(), "-d", connection, "-c", statement); err != nil {
+			if err := e.containerExec(ctx, helper, io.Discard, psql("-XAq", database, statement)...); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	leftovers := func(connection string) ([]string, error) {
+	leftovers := func(database reindexDatabase) ([]string, error) {
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		return lines(connection, "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM ("+domain.ReindexLeftovers+") AS i(oid)")
+		return lines(database, "SELECT format('DROP INDEX CONCURRENTLY IF EXISTS %s', i.oid::regclass) FROM ("+domain.ReindexLeftovers+") AS i(oid)")
+	}
+	own := reindexDatabase{connection: a.Postgres.Database}
+	// current reads a listed database's name and whether it can be rebuilt, by its oid, which a
+	// rename keeps: invalid after a DROP DATABASE interrupted part-way, closed, or open. found is
+	// false once it is dropped.
+	current := func(oid string) (state, name string, found bool, err error) {
+		if _, err = strconv.ParseUint(oid, 10, 32); err != nil {
+			return "", "", false, errors.New("the listing returned something other than a database oid")
+		}
+		// inline-sql: runs in a managed customer database through psql, not in the platform database
+		values, err := lines(own, "SELECT CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END || ':' || datname FROM pg_database WHERE oid = "+oid)
+		if err != nil || len(values) == 0 {
+			return "", "", false, err
+		}
+		state, name, _ = strings.Cut(values[0], ":")
+		return state, name, true, nil
+	}
+	// rebuild returns the exclusion-constraint indexes it skipped.
+	rebuild := func(database reindexDatabase) ([]string, error) {
+		statements, err := leftovers(database)
+		if err != nil {
+			return nil, err
+		}
+		for _, query := range queries {
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
+			rebuilt, err := lines(database, "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM ("+query+") AS i(oid)")
+			if err != nil {
+				return nil, err
+			}
+			statements = append(statements, rebuilt...)
+		}
+		if err = run(database, statements); err != nil {
+			// Best effort: a drop that fails as well, or a stopping agent, leaves it to the next run.
+			if ctx.Err() == nil {
+				if dropped, listed := leftovers(database); listed == nil {
+					_ = run(database, dropped)
+				}
+			}
+			return nil, err
+		}
+		var skipped []string
+		for _, query := range queries {
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
+			indexes, err := lines(database, "SELECT i.oid::regclass::text FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
+			if err != nil {
+				return nil, err
+			}
+			skipped = append(skipped, indexes...)
+		}
+		return skipped, nil
 	}
 	// A database marked as a template is rebuilt like any other: its owner may mark their own
 	// database IS_TEMPLATE, and template1's indexes are what each new database copies. A copy
 	// made from a template while its rebuild is connected fails, as one made while any session
-	// is. A database that does not accept connections, which even the superuser then can't make,
-	// is named instead; before the owner model the database user is a superuser and can close
-	// any. One the deployment connects to fails the listing, so it is left unfinished. template0
-	// never accepts connections and holds only the catalogs initdb made, which the queries leave
-	// alone. Names are listed apart from whether each accepts connections, which is read just
-	// before its rebuild: a name stays in its place in the listing's pages whatever the database
-	// does, and one closed after its check fails to connect, so the step is left unfinished.
-	// A DROP DATABASE interrupted part-way leaves the database invalid, datconnlimit -2, still
-	// listed and still marked as accepting connections, though no one can connect to it; it is
-	// named apart, since only dropping it finishes the rebuild.
-	// inline-sql: runs in a managed customer database through psql, not in the platform database
-	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn OR datname <> 'template0'")
-	if err != nil {
-		return reindexLeft{}, err
-	}
+	// is; one made before then copies indexes not yet rebuilt, so once every listed database is
+	// rebuilt the databases are listed again, until a listing finds none it has not seen. Before
+	// the owner model the database user is a superuser, so it can create, rename and close any
+	// database during the step. Databases are listed and read by oid, so a renamed one is
+	// rebuilt under its new name, in the next round if it moved while its own rebuild ran.
+	// A database that does not accept connections, which even the superuser then can't make, is
+	// named instead. One the deployment connects to fails the listing, so it is left unfinished.
+	// template0 never accepts connections and holds only the catalogs initdb made, which the
+	// queries leave alone. A DROP DATABASE interrupted part-way leaves the database invalid,
+	// datconnlimit -2, still marked as accepting connections, though no one can connect to it;
+	// it is named apart, since only dropping it finishes the rebuild.
 	var left reindexLeft
-	for _, database := range databases {
+	seen := map[string]bool{}
+	for round := 0; ; round++ {
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		state, err := lines(a.Postgres.Database, "SELECT CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END FROM pg_database WHERE datname = convert_from(decode('"+hex.EncodeToString([]byte(database))+"', 'hex'), 'UTF8')")
+		oids, err := lines(own, "SELECT oid::text FROM pg_database WHERE datallowconn OR datname <> 'template0'")
 		if err != nil {
 			return reindexLeft{}, err
 		}
-		if len(state) == 0 {
-			// Dropped since it was listed.
-			continue
+		oids = slices.DeleteFunc(oids, func(oid string) bool { return seen[oid] })
+		if len(oids) == 0 {
+			return left, nil
 		}
-		switch state[0] {
-		case "invalid":
-			left.invalid = append(left.invalid, database)
-			continue
-		case "closed":
-			left.closed = append(left.closed, database)
-			continue
+		if round == reindexRounds {
+			return reindexLeft{}, errors.New("databases kept appearing or moving during the rebuild")
 		}
-		// psql reads its -d value as a connection string when it holds '='; quote it as one.
-		connection := "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(database) + "'"
-		statements, err := leftovers(connection)
-		if err != nil {
-			return reindexLeft{}, err
+		if round == 0 {
+			e.point("postgres-reindex-listed")
 		}
-		for _, query := range queries {
-			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			rebuild, err := lines(connection, "SELECT format('REINDEX INDEX CONCURRENTLY %s', i.oid::regclass) FROM ("+query+") AS i(oid)")
+		for _, oid := range oids {
+			state, name, found, err := current(oid)
 			if err != nil {
 				return reindexLeft{}, err
 			}
-			statements = append(statements, rebuild...)
-		}
-		if err = run(connection, statements); err != nil {
-			// Best effort: a drop that fails as well, or a stopping agent, leaves it to the next run.
-			if ctx.Err() == nil {
-				if dropped, listed := leftovers(connection); listed == nil {
-					_ = run(connection, dropped)
+			switch {
+			case !found:
+				// Dropped since it was listed.
+			case state == "invalid":
+				left.invalid = append(left.invalid, name)
+			case state == "closed":
+				left.closed = append(left.closed, name)
+			default:
+				// psql reads its -d value as a connection string when it holds '='; quote it as one.
+				database := reindexDatabase{connection: "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(name) + "'", oid: oid}
+				skipped, err := rebuild(database)
+				if err != nil {
+					if _, now, found, lookup := current(oid); ctx.Err() == nil && lookup == nil && (!found || now != name) {
+						// Renamed or dropped during its rebuild: the next round finds it, or doesn't.
+						continue
+					}
+					return reindexLeft{}, err
+				}
+				for _, index := range skipped {
+					left.exclusions = append(left.exclusions, name+"."+index)
 				}
 			}
-			return reindexLeft{}, err
-		}
-		for _, query := range queries {
-			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			skipped, err := lines(connection, "SELECT i.oid::regclass::text FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
-			if err != nil {
-				return reindexLeft{}, err
-			}
-			for _, index := range skipped {
-				left.exclusions = append(left.exclusions, database+"."+index)
-			}
+			seen[oid] = true
 		}
 	}
-	return left, nil
 }

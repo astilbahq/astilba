@@ -229,9 +229,41 @@ RESET ROLE;`); err != nil {
 	for i := 0; i < 300 && locked(); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
+	// Before the owner model the database user is a superuser, so once the rebuild has listed the
+	// databases it can rename one and copy template1 into a new one. Both are still rebuilt.
+	copied := a
+	copiedDatabase := *a.Postgres
+	copiedDatabase.Database = "copied"
+	copied.Postgres = &copiedDatabase
+	var copiedFiles, movedFiles map[string]string
+	e.Point = func(point string) {
+		if point != "postgres-reindex-listed" || copiedFiles != nil {
+			return
+		}
+		movedFiles = files(updated, other)
+		for _, statement := range []string{`ALTER DATABASE "a=b" RENAME TO "a=b moved"`, `CREATE DATABASE copied TEMPLATE template1`} {
+			if _, err := e.pgQuery(ctx, pgClient{container: updated}, a, statement); err != nil {
+				t.Fatal(statement, err)
+			}
+		}
+		copiedFiles = files(updated, copied)
+	}
 	note, err = e.reindexPostgres(ctx, after, begin)
-	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 {
+	e.Point = nil
+	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 || copiedFiles == nil {
 		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
+	}
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `ALTER DATABASE "a=b moved" RENAME TO "a=b"`); err != nil {
+		t.Fatal(err)
+	}
+	if got := files(updated, other); got["unbounded"] == movedFiles["unbounded"] || got["plain"] != movedFiles["plain"] {
+		t.Errorf("a database renamed during the rebuild was not rebuilt: %v, was %v", got, movedFiles)
+	}
+	if got := files(updated, copied); got["unbounded"] == copiedFiles["unbounded"] || got["plain"] != copiedFiles["plain"] {
+		t.Errorf("a database copied from template1 during the rebuild was not rebuilt: %v, was %v", got, copiedFiles)
+	}
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE copied`); err != nil {
+		t.Fatal(err)
 	}
 	for name, application := range databases {
 		got, was := files(updated, application), initial[name]
