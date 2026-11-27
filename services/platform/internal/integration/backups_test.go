@@ -31,7 +31,7 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	b.call("POST", path+"/secrets", map[string]string{"name": "Database password", "value": "database-password-canary"}, 201, &secret)
 	pg, vol := uuid.New(), uuid.New()
 	image := domain.PostgresImage
-	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: "app", PasswordSecretVersionID: secret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
 	var draft api.Revision
 	b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, &draft)
 	enrolled, in, token := enrollment(t, f, b, ws, "deployment")
@@ -145,7 +145,7 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 		}
 	}
 	manifest := backup.Manifest{Roles: []backup.Role{}, Extensions: []string{}, Recipe: 1, PolicyID: policy.ID, EnvironmentID: env.Id, ResourceID: pg, Method: "postgres-logical", Image: retired18}
-	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, RestoreImage: image, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
+	run := backup.Run{ID: uuid.New(), PolicyID: policy.ID, Generation: 1, ScheduledAt: now, StartedAt: now, FinishedAt: &now, State: "succeeded", Snapshot: strings.Repeat("a", 64), Verified: false, TargetID: target, RestoreImage: image, RestoreRoles: domain.PostgresOwner, Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
 	// A verified restore an agent from before the release rule made of an archive another
 	// PostgreSQL major wrote: its target was initialised with that major, which the deployed
 	// database cannot open.

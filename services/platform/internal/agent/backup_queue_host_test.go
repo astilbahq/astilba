@@ -23,20 +23,16 @@ import (
 // PLAT-388. A backup's pg_dump runs in a helper labelled with its run, sharing the source's
 // network namespace, so nothing runs in the source. Stopped while its dump waits on a lock, the
 // run fails once its helper is gone, and the dump's backend ends soon after, though the lock is
-// still held. Neither the helper's configuration nor its exec shows the database's password.
-func nativeStoppedDump(t *testing.T, e *Engine, in backup.Installation, source string, a domain.Application, command func(backup.Command) api.ExecutionCommand) {
+// still held. Neither the helper's configuration nor its exec shows password, the database user's.
+func nativeStoppedDump(t *testing.T, e *Engine, in backup.Installation, source string, a domain.Application, password string, command func(backup.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
-	db := pgClient{container: source}
+	// The database's settings, which the journey makes hostile, don't decide who these sessions
+	// run as, as they don't for the agent's.
+	db := pgClient{container: source, env: []string{pgOptions()}}
 	inspected, err := e.Docker.ContainerInspect(ctx, source, client.ContainerInspectOptions{})
 	if err != nil {
 		t.Fatal(err)
-	}
-	password := ""
-	for _, v := range inspected.Container.Config.Env {
-		if value, ok := strings.CutPrefix(v, "POSTGRES_PASSWORD="); ok {
-			password = value
-		}
 	}
 	if password == "" {
 		t.Fatal("the source has no password to look for")

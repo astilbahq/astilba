@@ -89,3 +89,31 @@ func TestRestoreFollowsTheDatabaseReleaseWithinItsMajor(t *testing.T) {
 		t.Error("a restore image Astilba never pinned was accepted")
 	}
 }
+
+// A restore moves its database onto the restored cluster's role model, so one whose database user
+// became its cluster's superuser never replaces a database in the owner model. A legacy database
+// moves onto either.
+func TestCutoverKeepsAnOwnerModelDatabaseOffASuperuserCluster(t *testing.T) {
+	policy, environment, database, volume, target := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	image := domain.PostgresImage
+	for _, c := range []struct {
+		name, source, restored string
+		refused                bool
+	}{
+		{name: "owner restored as owner", source: domain.PostgresOwner, restored: domain.PostgresOwner},
+		{name: "legacy restored as owner", restored: domain.PostgresOwner},
+		{name: "legacy restored as legacy"},
+		{name: "owner restored as legacy", source: domain.PostgresOwner, refused: true},
+	} {
+		p := Policy{ID: policy, EnvironmentID: environment, ResourceID: database, Method: "postgres-logical", Plan: deployment.Plan{Specification: domain.Specification{Applications: []domain.Application{{ID: database, Source: domain.ApplicationSource{Image: &image}, Postgres: &domain.Postgres{Roles: c.source}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(image)}}}}, Volumes: []domain.Volume{{ID: volume}}}}}
+		m := Manifest{PolicyID: policy, EnvironmentID: environment, ResourceID: database, Method: "postgres-logical", Image: image, Roles: []Role{}, Extensions: []string{}}
+		r := Run{PolicyID: policy, TargetID: target, State: "succeeded", Verified: true, Manifest: &m, ManifestHash: Hash(m), RestoreImage: image, RestoreRoles: c.restored}
+		old, err := CutoverVolume(p, r)
+		if c.refused != (err != nil) || !c.refused && old != volume {
+			t.Errorf("%s: cutover = %s, %v", c.name, old, err)
+		}
+		if _, err = RestoredVolume(p, target, m, image, c.restored); c.refused != (err != nil) {
+			t.Errorf("%s: recovery cutover refused = %v", c.name, err)
+		}
+	}
+}

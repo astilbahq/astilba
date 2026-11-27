@@ -117,6 +117,9 @@ func (s *Service) CreateUpgrade(ctx context.Context, p store.Principal, ws, pid,
 		out.Plan = upgrade.Plan{Group: group, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: policy.ID, ResourceID: in.ResourceId, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: in.RetainDays, ExpiresAt: time.Now().UTC().Add(10 * time.Minute), Source: source}
 		current, _ := domain.CurrentPostgres(18)
 		out.Plan.TargetImage = current.Image
+		// The target is new storage, which the owner model always gets; requireAgentSupport
+		// below refuses an agent that couldn't restore into it.
+		out.Plan.TargetRoles = domain.PostgresOwner
 		if out.Plan.Validate() != nil {
 			return domain.Invalid("upgrade.source")
 		}

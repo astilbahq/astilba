@@ -383,7 +383,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	converted.ID, converted.RevisionID = uuid.New(), uuid.New()
 	convertedAppliedRevision := current.RevisionID
 	converted.ExpectedAppliedID = &convertedAppliedRevision
-	converted.Specification.Applications[0] = domain.Application{ID: app, Name: "Converted database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "converted", Username: "app", PasswordSecretVersionID: passwordID}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgimage)}}}
+	converted.Specification.Applications[0] = domain.Application{ID: app, Name: "Converted database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "converted", Username: "app", PasswordSecretVersionID: passwordID, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgimage)}}}
 	converted.Specification.Volumes = append(converted.Specification.Volumes, domain.Volume{ID: volume, Name: "Conversion data"})
 	converted.Specification.Bindings = nil
 	converted.Specification.Routes = nil

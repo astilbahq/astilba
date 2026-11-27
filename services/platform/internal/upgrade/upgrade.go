@@ -31,6 +31,10 @@ type Plan struct {
 	// TargetImage is the PostgreSQL 18 release the plan restores into, fixed when the plan is made
 	// so a later pin does not change a plan already reviewed or under way.
 	TargetImage string `json:"targetImage,omitempty"`
+	// TargetRoles is the target database's role model, fixed when the plan is made. Every plan
+	// made since the owner model restores into it, as every restore does; one without it was made
+	// for an agent that restored with the database user as superuser.
+	TargetRoles string `json:"targetRoles,omitempty"`
 }
 
 // legacyTargetImage is the target of plans made before plans recorded theirs.
@@ -106,6 +110,9 @@ func (s Status) Allows(action string) bool {
 }
 func (p Plan) Validate() error {
 	if p.Recipe != Recipe || p.ID == uuid.Nil || p.PolicyID == uuid.Nil || p.ResourceID == uuid.Nil || p.TargetVolumeID == uuid.Nil || p.TargetPlanID == uuid.Nil || p.TargetRevisionID == uuid.Nil || p.RetainDays < 1 || p.RetainDays > 365 || p.ExpiresAt.IsZero() || p.Source.Validate(true) != nil || p.Source.Specification.Compose != nil {
+		return errors.New("invalid upgrade plan")
+	}
+	if p.TargetRoles != "" && p.TargetRoles != domain.PostgresOwner {
 		return errors.New("invalid upgrade plan")
 	}
 	if p.Group != nil && (p.Group.Validate(true) != nil || p.Group.Distributed == nil || p.Group.PrimaryPlan().Hash != p.Source.Hash) {
@@ -187,6 +194,11 @@ func (p Plan) targetPlan(source deployment.Plan, id uuid.UUID) deployment.Plan {
 			image := release.Image
 			a.Source.Image = &image
 			a.Mounts[0].VolumeID, a.Mounts[0].Target = p.TargetVolumeID, release.Mount
+			if p.TargetRoles != "" {
+				moved := *a.Postgres
+				moved.Roles = p.TargetRoles
+				a.Postgres = &moved
+			}
 			if target.Distributed == nil && target.Runs(a.ID) {
 				target.Images[a.ID.String()] = image
 			}

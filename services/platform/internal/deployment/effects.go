@@ -82,6 +82,13 @@ func Effects(spec, previous domain.Specification, hostChanges bool) []string {
 		}
 		out = append(out, line)
 	}
+	for _, old := range previous.Applications {
+		for _, next := range spec.Applications {
+			if next.ID == old.ID && old.Postgres != nil && next.Postgres != nil && !old.Postgres.Owner() && next.Postgres.Owner() {
+				out = append(out, "Run "+next.Name+" with its database user as the database's owner, no longer the cluster's superuser: the application can no longer create roles or databases, change server settings or run programs on the server.")
+			}
+		}
+	}
 	if len(spec.Volumes) > 0 {
 		out = append(out, "Named data volumes survive service replacement and deletion. Export does not copy their data.")
 	}

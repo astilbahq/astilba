@@ -133,7 +133,7 @@ func Recipes() []Recipe {
 	base := Maintenance{deployment, binding, manualBackup, manualRestore, manualUpgrade}
 	pg := Recipe{ID: "postgresql-18", Name: "PostgreSQL", Description: "PostgreSQL 18 with a retained data volume and secret-backed connection values.", Documentation: "https://hub.docker.com/_/postgres", Prerequisites: []string{private, "Staging generates the password into the secret store, or uses an existing secret version you choose. Initialization settings do not change credentials in an existing volume."}, Specification: template("postgresql-18", "PostgreSQL", "postgres", domain.PostgresImage, 0, "", domain.PostgresMount(domain.PostgresImage)), Support: base}
 	password := uuid.NewSHA1(uuid.NameSpaceURL, []byte("catalog/password-placeholder"))
-	pg.Specification.Applications[0].Postgres = &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: password}
+	pg.Specification.Applications[0].Postgres = &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: password, Roles: domain.PostgresOwner}
 	pg.Secrets = []Secret{{ID: password, ServiceID: pg.Specification.Applications[0].ID, Name: "password", Format: "token"}}
 	pg.Support.Backup = Support{"tested", "PostgreSQL logical backup using the existing encrypted off-server backup policy."}
 	pg.Support.Restore = Support{"tested", "Logical restore into fresh storage with a verified application check."}
@@ -175,7 +175,7 @@ func kaneo(base Maintenance) Recipe {
 	db := service(id, "database", "Kaneo database", "postgres", domain.PostgresImage, 0, "", domain.PostgresMount(domain.PostgresImage))
 	password, auth := placeholder(id, "database/password"), placeholder(id, "app/auth-secret")
 	database := &db.Applications[0]
-	database.Postgres = &domain.Postgres{Database: "kaneo", Username: "kaneo", PasswordSecretVersionID: password}
+	database.Postgres = &domain.Postgres{Database: "kaneo", Username: "kaneo", PasswordSecretVersionID: password, Roles: domain.PostgresOwner}
 	kaneo := &app.Applications[0]
 	// The first account becomes Kaneo's administrator even with registration closed, so the
 	// route admits only the owner's network until they have signed up (see Stage). Later

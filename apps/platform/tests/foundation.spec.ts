@@ -411,6 +411,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
         visual: true,
         serviceOutputs: true,
         postgresReleases: releases.map((r) => r.image),
+        postgresOwnerRole: true,
         ...acknowledgesReleases,
       },
       preflight: {
@@ -528,6 +529,12 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   const resolve = await poll();
   expect(resolve.visual.action).toBe("resolve");
   expect(JSON.stringify(resolve)).not.toContain("visual-browser-canary");
+  // The database the form staged runs its app as a user that isn't the superuser.
+  expect(
+    resolve.visual.plan.specification.applications.find(
+      (a: { kind: string }) => a.kind === "postgres",
+    ).postgres.roles,
+  ).toBe("owner");
   const images = Object.fromEntries(
     resolve.visual.plan.specification.applications.map(
       (a: { id: string; source: { image: string } }) => [a.id, a.source.image],

@@ -450,12 +450,17 @@ func (g *revokedGroup) respond(t *testing.T, h *aheadHost, c api.ExecutionComman
 	return report, true
 }
 
-// fixtureRecovery is what an agent reports after restoring the snapshot a recovery names: a
-// manifest read out of it that the policy admits.
+// fixtureRecovery is what a current agent reports after restoring the snapshot a recovery names: a
+// manifest read out of it that the policy admits, and, for a database, the owner model its
+// restored cluster holds.
 func fixtureRecovery(r backup.Recovery) backup.RecoveryResult {
 	p := r.Installation.Policy
 	m := backup.Manifest{Recipe: backup.Recipe, PolicyID: p.ID, RunID: uuid.New(), EnvironmentID: p.EnvironmentID, ResourceID: p.ResourceID, Method: p.Method, CreatedAt: time.Now().UTC().Truncate(time.Second), Bytes: 4096, SHA256: strings.Repeat("d", 64), Roles: []backup.Role{}, Extensions: []string{}}
-	return backup.RecoveryResult{Snapshot: r.Snapshot, TargetID: r.TargetID, Manifest: m}
+	out := backup.RecoveryResult{Snapshot: r.Snapshot, TargetID: r.TargetID, Manifest: m}
+	if p.Method == "postgres-logical" {
+		out.RestoreRoles = domain.PostgresOwner
+	}
+	return out
 }
 
 // note records that the host received a phase and says whether it will answer.
@@ -723,7 +728,7 @@ func (g *revokedGroup) parkedUpgrade(t *testing.T, gone, b *aheadHost) (primaryE
 	e := g.deployed(t, gone, func(path string) domain.Specification {
 		var secret api.SecretVersion
 		g.b.call("POST", path+"/secrets", map[string]string{"name": "Database", "value": "revoked-host-database-canary"}, 201, &secret)
-		return domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: data, Name: "Data"}}, Applications: []domain.Application{webApplication(web), {ID: database, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: data, Target: domain.PostgresMount(image)}}}}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: database, TargetID: web, Variable: "DATABASE_URL"}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: web, Protocol: "http", Domain: "upgrade.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
+		return domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: data, Name: "Data"}}, Applications: []domain.Application{webApplication(web), {ID: database, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: data, Target: domain.PostgresMount(image)}}}}, Bindings: []domain.Binding{{ID: uuid.New(), SourceID: database, TargetID: web, Variable: "DATABASE_URL"}}, Routes: []domain.Route{{ID: uuid.New(), TargetID: web, Protocol: "http", Domain: "upgrade.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}}
 	})
 	g.applied(t, &e, g.place(t, &e, gone.id, b.id))
 	password := "fixture-repository-password"

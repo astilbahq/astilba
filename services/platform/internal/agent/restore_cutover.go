@@ -40,7 +40,7 @@ func (e *Engine) validateLocalRestore(s crossHostState) (backup.Policy, error) {
 	if r == nil || target == nil {
 		return backup.Policy{}, errors.New("the restore target is not frozen")
 	}
-	expected, err := deployment.RestoreSpecification(s.Unit.Plan.Specification, r.OldVolumeID, r.TargetVolumeID)
+	expected, err := deployment.RestoreSpecification(s.Unit.Plan.Specification, r.OldVolumeID, r.TargetVolumeID, r.Roles)
 	if err != nil || deployment.Hash(expected) != deployment.Hash(target.Specification) || deployment.Hash(s.Unit.Plan.Images) != deployment.Hash(target.Images) || deployment.Hash(s.Unit.Plan.Local.Instances) != deployment.Hash(target.Local.Instances) || deployment.Hash(s.Unit.Plan.Local.Requests) != deployment.Hash(target.Local.Requests) || deployment.Hash(s.Unit.Plan.Local.Outputs) != deployment.Hash(target.Local.Outputs) || deployment.Hash(s.Unit.Plan.Local.Backends) != deployment.Hash(target.Local.Backends) || target.Release != nil || target.ReleaseOptions != nil {
 		return backup.Policy{}, errors.New("the restore target changes more than the approved volume")
 	}
@@ -53,7 +53,7 @@ func (e *Engine) validateLocalRestore(s crossHostState) (backup.Policy, error) {
 			continue
 		}
 		old, err := backup.CutoverVolume(state.Installation.Policy, run)
-		if err == nil && old == r.OldVolumeID && run.TargetID == r.TargetVolumeID && run.ManifestHash == r.ManifestHash {
+		if err == nil && old == r.OldVolumeID && run.TargetID == r.TargetVolumeID && run.ManifestHash == r.ManifestHash && run.RestoreRoles == r.Roles {
 			return state.Installation.Policy, nil
 		}
 		return backup.Policy{}, errors.New("the restored run is incompatible with the frozen target")

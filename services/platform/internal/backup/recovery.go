@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,8 @@ type RecoveryResult struct {
 	// RestoreImage is the PostgreSQL release that restored a logical snapshot. An agent from
 	// before the release rule restored in the archive's own image and leaves it out.
 	RestoreImage string `json:"restoreImage,omitempty"`
+	// RestoreRoles is the restored cluster's role model, as for a run.
+	RestoreRoles string `json:"restoreRoles,omitempty"`
 }
 
 // MaxManifestBytes bounds the manifest a recovery reads out of a snapshot before trusting it.
@@ -74,6 +77,18 @@ func ParseRecoveryResult(raw []byte, policy, environment uuid.UUID, snapshot str
 	return out, out.Manifest.recipeBounded()
 }
 
+// ValidDumpSettings reports whether s holds a value for each of DumpSettings and nothing else, each
+// at most 256 characters of printable ASCII. A backup refuses a database whose dump would run with
+// any other.
+func ValidDumpSettings(s map[string]string) bool {
+	valid := len(s) == len(DumpSettings)
+	for _, name := range DumpSettings {
+		v, ok := s[name]
+		valid = valid && ok && len(v) <= 256 && !strings.ContainsFunc(v, func(r rune) bool { return r < 0x20 || r > 0x7e })
+	}
+	return valid
+}
+
 // recipeBounded checks what a manifest holds against what the recipe writes.
 func (m Manifest) recipeBounded() error {
 	if m.Recipe != Recipe || m.RunID == uuid.Nil {
@@ -89,6 +104,9 @@ func (m Manifest) recipeBounded() error {
 	}
 	for _, x := range m.Extensions {
 		bounded = bounded && slices.Contains(Extensions, x)
+	}
+	if m.DumpSettings != nil {
+		bounded = bounded && ValidDumpSettings(m.DumpSettings)
 	}
 	if !bounded {
 		return errors.New("snapshot manifest is outside its recipe's bounds")
