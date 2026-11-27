@@ -235,9 +235,16 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			}
 			return false, tx.Commit(ctx)
 		}
+		// Build inputs that fail their check at delivery, such as public arguments that now hold one
+		// of the environment's runtime secrets, would fail it again at every poll until the
+		// deadline, so a build never delivered ends here, a preview's as an environment's. Its
+		// preview, if any, then shows the build failed.
 		var rejected *buildInputRejection
-		if errors.As(err, &rejected) && undelivered && p.Action == "build" && p.Preview == nil {
+		if errors.As(err, &rejected) && undelivered && p.IsBuild() {
 			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build rejected before runner delivery: " + rejected.note()}); err != nil {
+				return false, err
+			}
+			if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
 				return false, err
 			}
 			return false, tx.Commit(ctx)

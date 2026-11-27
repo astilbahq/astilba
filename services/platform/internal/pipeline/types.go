@@ -350,7 +350,12 @@ func EncryptionIdentity(ws, id uuid.UUID, kind string) string {
 	return "pipeline:" + kind + ":" + ws.String() + ":" + id.String()
 }
 
-func (c Command) IsBuild() bool { return c.Action == "build" || c.Action == "build-preview" }
+// IsBuildAction reports whether a pipeline action builds an image: an environment's build or a
+// preview's. Whatever holds for a build holds for both, unless it is about where the build came
+// from, which Preview says.
+func IsBuildAction(action string) bool { return action == "build" || action == "build-preview" }
+
+func (c Command) IsBuild() bool { return IsBuildAction(c.Action) }
 
 // StartStep is the first step a runner reports for a pipeline, once it has started it. Management
 // allows a pipeline whose start it heard of before the deadline to run for its lifetime past it.
