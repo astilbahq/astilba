@@ -192,24 +192,33 @@ func (h *runtimeHarness) proxyDiagnostics() string {
 	out.WriteString("state: " + h.proxyState() + "\n")
 	ctx, cancel := context.WithTimeout(context.Background(), diagnosticBound)
 	logs, err := hostCommand(ctx, h.config, nil, "logs", "--timestamps", "--tail", "200", h.proxy)
-	cancel()
 	switch {
 	case err != nil:
-		fmt.Fprintf(&out, "logs: unavailable: %v: %s\n", err, bytes.TrimSpace(logs))
+		fmt.Fprintf(&out, "logs: unavailable: %s: %s\n", commandFailure(ctx, err), bytes.TrimSpace(logs))
 	case len(bytes.TrimSpace(logs)) == 0:
 		out.WriteString("logs: the proxy wrote none\n")
 	default:
 		fmt.Fprintf(&out, "logs:\n%s\n", bytes.TrimSpace(logs))
 	}
+	cancel()
 	ctx, cancel = context.WithTimeout(context.Background(), diagnosticBound)
 	journal, err := exec.CommandContext(ctx, "journalctl", "--unit", "astilba-plat4-docker.service", "--since", fmt.Sprintf("@%d", h.started.Unix()), "--lines", "200", "--no-pager", "--output", "short-iso-precise").CombinedOutput()
-	cancel()
 	if err != nil {
-		fmt.Fprintf(&out, "daemon journal: unavailable: %v: %s", err, bytes.TrimSpace(journal))
+		fmt.Fprintf(&out, "daemon journal: unavailable: %s: %s", commandFailure(ctx, err), bytes.TrimSpace(journal))
 	} else {
 		fmt.Fprintf(&out, "daemon journal:\n%s", bytes.TrimSpace(journal))
 	}
+	cancel()
 	return out.String()
+}
+
+// commandFailure is why a diagnostic command bounded by ctx failed. A command that ran out
+// of time reports only that it was killed, so that case names the bound instead.
+func commandFailure(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Sprintf("no answer within %s", diagnosticBound)
+	}
+	return err.Error()
 }
 
 // proxyState is the proxy's container state, or why it could not be read.
@@ -227,11 +236,14 @@ func (h *runtimeHarness) proxyState() string {
 	return string(state)
 }
 
-// restartProxy restarts the proxy as a restart with no stop timeout does: kill, wait for
-// the exit, start. Each step is bounded and timed on its own, so a stall says which step
-// the daemon was in. A restart normally takes well under a second; the one CI run that
-// stalled held the container for more than 10 seconds and released it within about 30,
-// so a minute a step is a stall, not a slow host.
+// restartProxy restarts the proxy step by step: kill, wait for the exit, start. Each step
+// is bounded and timed on its own, so a stall says which step the daemon was in. The
+// daemon's kill already waits up to about 10 seconds for the exit, so the exit step times
+// only what remains; it still matters, since a kill can succeed while the daemon has yet
+// to record the exit, and a start then finds the proxy running and does nothing. A
+// restart normally takes well under a second; the one CI run that stalled held the
+// container for more than 10 seconds and released it within about 30, so a minute a step
+// is a stall, not a slow host.
 func (h *runtimeHarness) restartProxy(t *testing.T) {
 	t.Helper()
 	step := func(name string, run func(context.Context) error) time.Duration {
@@ -240,7 +252,7 @@ func (h *runtimeHarness) restartProxy(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		if err := run(ctx); err != nil {
-			t.Fatalf("proxy restart: %s failed after %s: %v; state %s", name, time.Since(started).Round(time.Millisecond), err, h.proxyState())
+			t.Fatalf("proxy restart: %s failed after %s: %v", name, time.Since(started).Round(time.Millisecond), err)
 		}
 		return time.Since(started).Round(time.Millisecond)
 	}
