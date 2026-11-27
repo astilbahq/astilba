@@ -25,10 +25,7 @@ export function AgentUpdate({
   onUpdate: (version: string) => void;
 }) {
   const note = useId();
-  const [choice, setChoice] = useState<{
-    version: string;
-    rollback: boolean;
-  }>();
+  const [choice, setChoice] = useState<{ version: string; against: string }>();
   const capabilities = server.capabilities;
   const updates = server.agentUpdates;
   if (!capabilities || !updates) return null;
@@ -68,20 +65,20 @@ export function AgentUpdate({
     (running >= 0 && position(version) >= 0 && position(version) < running);
   const newest = offered[0]?.version;
   const start = newest !== undefined && newer(newest) ? newest : "";
-  // The select keeps showing a release while management sends it, whether the owner chose it or
-  // the select started there, and while it stays on the same side of the agent's release. Once
-  // management stops sending it, for example after an update installed it or raised the floor,
-  // the select starts again as above and keeps that release the same way, so a release it moved
-  // away from never comes back by itself. An upgrade the agent has since passed, by an update made
-  // elsewhere, is a rollback now, so the select starts again rather than offer it; a rollback the
-  // owner picked stays.
+  // A selection, whether the owner chose it or the select started there, records the release the
+  // agent ran then. It stays while management sends it and this page lists it, as long as the
+  // agent still runs that release, or the selection is known to be newer than the one it runs now.
+  // Otherwise, for example after an update installed it, raised the floor, or moved the agent past
+  // it elsewhere, the select starts again as above and keeps that release the same way. So a
+  // release it moved away from never comes back by itself, and a release the owner chose against
+  // one agent release is never offered against another unless it is an upgrade there too.
   const kept =
     choice !== undefined &&
-    sent.has(choice.version) &&
-    (choice.rollback || newer(choice.version));
+    offered.some((r) => r.version === choice.version) &&
+    (choice.against === capabilities.version || newer(choice.version));
   const value = kept ? choice.version : start;
-  if (!kept && (choice?.version !== start || choice.rollback))
-    setChoice({ version: start, rollback: false });
+  if (choice?.version !== value || choice.against !== capabilities.version)
+    setChoice({ version: value, against: capabilities.version });
   return (
     <>
       {withheld && (
@@ -103,7 +100,7 @@ export function AgentUpdate({
               onChange={(e) =>
                 setChoice({
                   version: e.target.value,
-                  rollback: !newer(e.target.value),
+                  against: capabilities.version,
                 })
               }
               aria-describedby={withheld ? note : undefined}

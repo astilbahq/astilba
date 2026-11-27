@@ -271,6 +271,76 @@ export const PassedUpgradeIsDropped: Story = {
   },
 };
 
+// The page's release list is from before management added the agent's release, so it can't
+// tell which way the owner's pick goes. The owner picks 0.4.0, an upgrade. The agent is then
+// updated past it elsewhere, so 0.4.0, still sent, is a rollback now, and the select starts again
+// rather than keep a pick made against the release the agent no longer runs.
+export const PickWithoutTheOrderIsDroppedOncePassed: Story = {
+  args: {
+    catalog: [release("0.4.0", "0.1.0"), release("0.3.0", "0.1.0")],
+    laterCatalog: [release("0.5.0", "0.1.0"), ...sameFloor],
+    server: server("0.2.0", {
+      basis: "catalog",
+      minimumVersion: "0.1.0",
+      versions: ["0.4.0", "0.3.0"],
+    }),
+    later: [
+      server("0.5.0", {
+        basis: "catalog",
+        minimumVersion: "0.1.0",
+        versions: ["0.4.0", "0.3.0", "0.2.0"],
+      }),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const select = () => canvas.getByLabelText("Agent release");
+    await expect(select()).toHaveValue("");
+    await userEvent.selectOptions(select(), "0.4.0");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Refresh the server" }),
+    );
+    await expect(canvas.getByRole("option", { name: "0.4.0" })).toBeEnabled();
+    await expect(select()).toHaveValue("");
+    await userEvent.click(canvas.getByRole("button", { name: "Update agent" }));
+    await expect(canvas.queryByRole("status")).toBeNull();
+  },
+};
+
+// The owner picked 0.3.0, a rollback. Management then restarted without it, and the page's
+// release list caught up before the server did, so the server still names 0.3.0. The select can't
+// show a release the page doesn't list, so it starts again, on no release, rather than leave the
+// browser to select the first release it lists, another rollback the owner didn't pick.
+export const KeptReleaseLeavesTheList: Story = {
+  args: {
+    catalog: sameFloor,
+    laterCatalog: sameFloor.filter((r) => r.version !== "0.3.0"),
+    server: server("0.4.0", {
+      basis: "catalog",
+      minimumVersion: "0.1.0",
+      versions: ["0.3.0", "0.2.0"],
+    }),
+    later: [
+      server("0.4.0", {
+        basis: "catalog",
+        minimumVersion: "0.1.0",
+        versions: ["0.3.0", "0.2.0"],
+      }),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const select = () => canvas.getByLabelText("Agent release");
+    await userEvent.selectOptions(select(), "0.3.0");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Refresh the server" }),
+    );
+    await expect(select()).toHaveValue("");
+    await userEvent.click(canvas.getByRole("button", { name: "Update agent" }));
+    await expect(canvas.queryByRole("status")).toBeNull();
+  },
+};
+
 // The owner picked a rollback. Management restarted with a newer release, but the rollback the
 // owner picked stays rather than the select moving to the upgrade.
 export const PickedRollbackStays: Story = {
