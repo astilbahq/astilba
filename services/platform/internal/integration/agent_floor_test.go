@@ -27,12 +27,13 @@ func TestAgentUpdatesKeepTheAgentFloor(t *testing.T) {
 	f := setup(t)
 	b := f.browser(t)
 	ws := b.login("owner@example.test", f.password).Workspaces[0].Id
+	// Newest first, as agentrelease.Load orders the catalog.
 	f.execution.Releases = []api.AgentRelease{
-		catalogRelease("0.1.0", "0.0.0", "arm64"),
-		catalogRelease("0.2.0", "0.1.0", "arm64"),
-		catalogRelease("0.2.1", "0.1.0", "arm64"),
-		catalogRelease("0.3.0", "0.3.0", "arm64"),
 		catalogRelease("0.3.1", "0.0.0", "amd64"),
+		catalogRelease("0.3.0", "0.3.0", "arm64"),
+		catalogRelease("0.2.1", "0.1.0", "arm64"),
+		catalogRelease("0.2.0", "0.1.0", "arm64"),
+		catalogRelease("0.1.0", "0.0.0", "arm64"),
 	}
 	enroll := func(version string) uuid.UUID {
 		t.Helper()
@@ -51,7 +52,7 @@ func TestAgentUpdatesKeepTheAgentFloor(t *testing.T) {
 	for id, want := range map[uuid.UUID]api.AgentUpdates{
 		// The floor is the running release's minimum version: 0.1.0 is below it, and 0.3.1 is for
 		// another architecture.
-		catalogued: {Basis: "catalog", MinimumVersion: minimum("0.1.0"), Versions: []string{"0.2.1", "0.3.0"}},
+		catalogued: {Basis: "catalog", MinimumVersion: minimum("0.1.0"), Versions: []string{"0.3.0", "0.2.1"}},
 		// The running release isn't in the catalog, so its version bounds the floor.
 		uncatalogued: {Basis: "version", MinimumVersion: minimum("0.2.5"), Versions: []string{"0.3.0"}},
 		unknown:      {Basis: "unknown", Versions: []string{}},

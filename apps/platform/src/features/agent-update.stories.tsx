@@ -368,9 +368,64 @@ export const OnlyOlderReleases: Story = {
   },
 };
 
-// Management takes no update for a revoked server or one awaiting a transfer, which holds no
-// agent credential, so it sends no agent updates for them, and there is no form, though each
-// keeps the capabilities its agent last reported.
+// The owner installed the newest release, so management now sends only older ones. The select
+// leaves that release, which is gone, for no release rather than the first older one.
+export const NewestInstalled: Story = {
+  args: {
+    catalog: sameFloor,
+    server: server("0.3.0", {
+      basis: "catalog",
+      minimumVersion: "0.1.0",
+      versions: ["0.4.0", "0.2.0"],
+    }),
+    later: [
+      server("0.4.0", {
+        basis: "catalog",
+        minimumVersion: "0.1.0",
+        versions: ["0.3.0", "0.2.0"],
+      }),
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const select = () => canvas.getByLabelText("Agent release");
+    await expect(select()).toHaveValue("0.4.0");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Refresh the server" }),
+    );
+    await expect(select()).toHaveValue("");
+    await userEvent.click(canvas.getByRole("button", { name: "Update agent" }));
+    await expect(select()).toBeInvalid();
+    await expect(canvas.queryByRole("status")).toBeNull();
+  },
+};
+
+// Management restarted with a catalog that now holds the agent's release, but the page's release
+// list is from before, so it can't tell whether what management sends is newer or older. The
+// select starts on no release rather than on one that may be a rollback.
+export const ReleaseListOlderThanTheServer: Story = {
+  args: {
+    catalog: [release("0.9.0", "0.1.0")],
+    server: server("0.10.0", {
+      basis: "catalog",
+      minimumVersion: "0.1.0",
+      versions: ["0.9.0"],
+    }),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByLabelText("Agent release")).toHaveValue("");
+    await expect(
+      canvas.getByRole("option", { name: "Choose a release" }),
+    ).toBeDisabled();
+    await userEvent.click(canvas.getByRole("button", { name: "Update agent" }));
+    await expect(canvas.queryByRole("status")).toBeNull();
+  },
+};
+
+// Management takes no update for a revoked server, or for one awaiting a transfer or a new
+// enrollment, so it sends no agent updates for them and there is no form, though each keeps the
+// capabilities its agent last reported.
 export const RevokedServer: Story = {
   args: { server: { ...server("0.2.0"), status: "revoked" } },
   play: async ({ canvasElement }) => {
@@ -380,13 +435,6 @@ export const RevokedServer: Story = {
       canvas.queryByRole("button", { name: "Update agent" }),
     ).toBeNull();
   },
-};
-
-export const AwaitingTransfer: Story = {
-  args: {
-    server: { ...server("0.2.0"), status: "offline", transferRequired: true },
-  },
-  play: RevokedServer.play,
 };
 
 // The agent runs the newest release, whose floor no other release in the catalog meets.

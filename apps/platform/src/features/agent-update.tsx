@@ -50,22 +50,24 @@ export function AgentUpdate({
   // select starts there when that is newer than the release the agent runs, so accepting what it
   // shows never downgrades the agent. When management sends only older releases, for example once
   // the agent runs the newest, the select starts on no release, so a rollback is always one the
-  // owner picked. An agent whose release isn't in the catalog is sent only other releases whose
-  // minimum version, and so version, is at least its own, so every one of those is newer.
+  // owner picked. An agent whose release isn't in the catalog (basis version) is sent only other
+  // releases whose minimum version, and so version, is at least its own, so every one is newer.
+  // With basis catalog the order tells, as long as this page's release list holds the agent's
+  // release. The list loads less often than the server, so after management restarts with a new
+  // catalog it may not: then the select starts on no release rather than guess.
   const running = releases.findIndex(
     (r) => r.arch === capabilities.arch && r.version === capabilities.version,
   );
   const newest = offered[0];
-  const start =
-    newest && (running < 0 || releases.indexOf(newest) < running)
-      ? newest.version
-      : "";
+  const newer =
+    updates.basis === "version" ||
+    (running >= 0 && !!newest && releases.indexOf(newest) < running);
+  const start = newest && newer ? newest.version : "";
   // The select keeps showing a release while management sends it, whether the owner chose it or
   // the select started there. Once management stops sending it, for example after an update
   // installed it or raised the floor, the select starts again as above and keeps that release the
   // same way, so a release it moved away from never comes back by itself.
-  const value =
-    choice !== undefined && sent.has(choice) ? choice : start;
+  const value = choice !== undefined && sent.has(choice) ? choice : start;
   if (value !== choice) setChoice(value);
   return (
     <>
@@ -90,7 +92,9 @@ export function AgentUpdate({
             >
               {start === "" && (
                 <option value="" disabled>
-                  {`Choose a release older than ${capabilities.version}, which this agent runs`}
+                  {running >= 0
+                    ? `Choose a release older than ${capabilities.version}, which this agent runs`
+                    : "Choose a release"}
                 </option>
               )}
               {others.map((r) =>
