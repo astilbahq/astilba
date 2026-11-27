@@ -61,6 +61,26 @@ func (d Destination) Overlaps(o Destination) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
+// KeyScope is the part of S3 destination d's bucket that workspace ws's repositories on it are
+// under, ending with "/": all a minted server key for d may reach.
+func (d Destination) KeyScope(ws uuid.UUID) string {
+	key := "astilba/" + ws.String() + "/"
+	if d.Prefix != "" {
+		key = d.Prefix + "/" + key
+	}
+	return key
+}
+
+// PolicyScope is the part of d's bucket policy p's repository is under, ending with "/": all a
+// minted key for one restore of p may reach.
+func (d Destination) PolicyScope(p Policy) string {
+	return d.KeyScope(p.WorkspaceID) + p.ID.String() + "/"
+}
+
+// ManagedEndpoint is the S3 endpoint of an AWS region, which management derives for a managed
+// destination rather than taking one from the owner.
+func ManagedEndpoint(region string) string { return "https://s3." + region + ".amazonaws.com" }
+
 // Repository is restic's repository for policy p's backups on d.
 func (d Destination) Repository(p Policy) string {
 	if d.Kind == "filesystem" {

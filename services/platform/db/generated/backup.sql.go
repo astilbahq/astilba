@@ -73,6 +73,66 @@ func (q *Queries) AllBackupPolicyAccess(ctx context.Context) ([]AllBackupPolicyA
 	return items, nil
 }
 
+const allBackupStorageAccountCredentials = `-- name: AllBackupStorageAccountCredentials :many
+SELECT workspace_id,id,encrypted_credential FROM backup_storage_accounts FOR UPDATE
+`
+
+type AllBackupStorageAccountCredentialsRow struct {
+	WorkspaceID         uuid.UUID `json:"workspace_id"`
+	ID                  uuid.UUID `json:"id"`
+	EncryptedCredential []byte    `json:"encrypted_credential"`
+}
+
+func (q *Queries) AllBackupStorageAccountCredentials(ctx context.Context) ([]AllBackupStorageAccountCredentialsRow, error) {
+	rows, err := q.db.Query(ctx, allBackupStorageAccountCredentials)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AllBackupStorageAccountCredentialsRow{}
+	for rows.Next() {
+		var i AllBackupStorageAccountCredentialsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedCredential); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const allBackupStorageKeySecrets = `-- name: AllBackupStorageKeySecrets :many
+SELECT workspace_id,id,encrypted_secret FROM backup_storage_keys WHERE encrypted_secret IS NOT NULL FOR UPDATE
+`
+
+type AllBackupStorageKeySecretsRow struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ID              uuid.UUID `json:"id"`
+	EncryptedSecret []byte    `json:"encrypted_secret"`
+}
+
+func (q *Queries) AllBackupStorageKeySecrets(ctx context.Context) ([]AllBackupStorageKeySecretsRow, error) {
+	rows, err := q.db.Query(ctx, allBackupStorageKeySecrets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AllBackupStorageKeySecretsRow{}
+	for rows.Next() {
+		var i AllBackupStorageKeySecretsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID, &i.EncryptedSecret); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const backupDestinationAccess = `-- name: BackupDestinationAccess :one
 SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id = $1 AND id = $2
 `
@@ -991,6 +1051,36 @@ type RewrapBackupPolicyAccessParams struct {
 
 func (q *Queries) RewrapBackupPolicyAccess(ctx context.Context, arg RewrapBackupPolicyAccessParams) error {
 	_, err := q.db.Exec(ctx, rewrapBackupPolicyAccess, arg.WorkspaceID, arg.ID, arg.EncryptedAccess)
+	return err
+}
+
+const rewrapBackupStorageAccountCredential = `-- name: RewrapBackupStorageAccountCredential :exec
+UPDATE backup_storage_accounts SET encrypted_credential=$3 WHERE workspace_id=$1 AND id=$2
+`
+
+type RewrapBackupStorageAccountCredentialParams struct {
+	WorkspaceID         uuid.UUID `json:"workspace_id"`
+	ID                  uuid.UUID `json:"id"`
+	EncryptedCredential []byte    `json:"encrypted_credential"`
+}
+
+func (q *Queries) RewrapBackupStorageAccountCredential(ctx context.Context, arg RewrapBackupStorageAccountCredentialParams) error {
+	_, err := q.db.Exec(ctx, rewrapBackupStorageAccountCredential, arg.WorkspaceID, arg.ID, arg.EncryptedCredential)
+	return err
+}
+
+const rewrapBackupStorageKeySecret = `-- name: RewrapBackupStorageKeySecret :exec
+UPDATE backup_storage_keys SET encrypted_secret=$3 WHERE workspace_id=$1 AND id=$2
+`
+
+type RewrapBackupStorageKeySecretParams struct {
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ID              uuid.UUID `json:"id"`
+	EncryptedSecret []byte    `json:"encrypted_secret"`
+}
+
+func (q *Queries) RewrapBackupStorageKeySecret(ctx context.Context, arg RewrapBackupStorageKeySecretParams) error {
+	_, err := q.db.Exec(ctx, rewrapBackupStorageKeySecret, arg.WorkspaceID, arg.ID, arg.EncryptedSecret)
 	return err
 }
 

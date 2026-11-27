@@ -306,6 +306,18 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
+		var err error
+		out, err = s.backupCommand(ctx, tx, ws, env, id, in)
+		return err
+	})
+	return operationFor(p, out), err
+}
+
+// backupCommand queues a backup policy's command in tx, which holds the workspace's turn. An
+// owner's request and management's own install after a re-mint both start here.
+func (s *Service) backupCommand(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID, in api.BackupCommandRequest) (api.Operation, error) {
+	var out api.Operation
+	err := func() error {
 		v, err := loadBackupPolicy(ctx, tx, ws, env, id)
 		if err != nil {
 			return err
@@ -385,8 +397,8 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		}
 		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
 		return err
-	})
-	return operationFor(p, out), err
+	}()
+	return out, err
 }
 
 // hydrateBackup fills a backup command's access, or with nil keys only makes its checks.

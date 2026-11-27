@@ -154,12 +154,16 @@ type BackupCutover struct {
 }
 
 type BackupDestination struct {
-	ID              uuid.UUID  `json:"id"`
-	WorkspaceID     uuid.UUID  `json:"workspace_id"`
-	Configuration   []byte     `json:"configuration"`
-	EncryptedAccess []byte     `json:"encrypted_access"`
-	ServerID        *uuid.UUID `json:"server_id"`
-	Shared          bool       `json:"shared"`
+	ID              uuid.UUID   `json:"id"`
+	WorkspaceID     uuid.UUID   `json:"workspace_id"`
+	Configuration   []byte      `json:"configuration"`
+	EncryptedAccess []byte      `json:"encrypted_access"`
+	ServerID        *uuid.UUID  `json:"server_id"`
+	Shared          bool        `json:"shared"`
+	AccountID       *uuid.UUID  `json:"account_id"`
+	RemintAttempts  int32       `json:"remint_attempts"`
+	RemintNextAt    *time.Time  `json:"remint_next_at"`
+	RemintError     pgtype.Text `json:"remint_error"`
 }
 
 type BackupPolicy struct {
@@ -190,6 +194,50 @@ type BackupRecovery struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	Result             []byte     `json:"result"`
 	DiscardOperationID *uuid.UUID `json:"discard_operation_id"`
+}
+
+type BackupStorageAccount struct {
+	ID                  uuid.UUID   `json:"id"`
+	WorkspaceID         uuid.UUID   `json:"workspace_id"`
+	Name                string      `json:"name"`
+	AwsAccount          string      `json:"aws_account"`
+	AdminArn            string      `json:"admin_arn"`
+	Boundary            string      `json:"boundary"`
+	EncryptedCredential []byte      `json:"encrypted_credential"`
+	Generation          int64       `json:"generation"`
+	Peers               []uuid.UUID `json:"peers"`
+	CheckedAt           *time.Time  `json:"checked_at"`
+	CheckError          pgtype.Text `json:"check_error"`
+	Report              []byte      `json:"report"`
+	CreatedAt           time.Time   `json:"created_at"`
+}
+
+type BackupStorageKey struct {
+	ID               uuid.UUID   `json:"id"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	AccountID        uuid.UUID   `json:"account_id"`
+	DestinationID    *uuid.UUID  `json:"destination_id"`
+	HolderServerID   *uuid.UUID  `json:"holder_server_id"`
+	Purpose          string      `json:"purpose"`
+	RecoveryRequest  pgtype.Text `json:"recovery_request"`
+	RecoveryPolicyID *uuid.UUID  `json:"recovery_policy_id"`
+	RecoverySnapshot pgtype.Text `json:"recovery_snapshot"`
+	RecoveryID       *uuid.UUID  `json:"recovery_id"`
+	Scope            pgtype.Text `json:"scope"`
+	UserName         string      `json:"user_name"`
+	AccessKeyID      pgtype.Text `json:"access_key_id"`
+	State            string      `json:"state"`
+	MintDeadline     time.Time   `json:"mint_deadline"`
+	HandedOver       pgtype.Int8 `json:"handed_over"`
+	ActivatedAt      *time.Time  `json:"activated_at"`
+	RevokedAt        *time.Time  `json:"revoked_at"`
+	NextAttemptAt    time.Time   `json:"next_attempt_at"`
+	Attempts         int32       `json:"attempts"`
+	LastError        pgtype.Text `json:"last_error"`
+	Installs         []byte      `json:"installs"`
+	FoundTags        []byte      `json:"found_tags"`
+	EncryptedSecret  []byte      `json:"encrypted_secret"`
+	CreatedAt        time.Time   `json:"created_at"`
 }
 
 type BuildArtifact struct {
@@ -1026,6 +1074,7 @@ type Server struct {
 	EnrollmentIssuerID          *uuid.UUID  `json:"enrollment_issuer_id"`
 	EnrollmentIssuerAuthVersion pgtype.Int8 `json:"enrollment_issuer_auth_version"`
 	RevokedAt                   *time.Time  `json:"revoked_at"`
+	Revocations                 int64       `json:"revocations"`
 }
 
 type ServerDnsLease struct {

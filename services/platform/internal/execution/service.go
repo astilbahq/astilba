@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
-	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
-	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"net"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/astilbahq/astilba/services/platform/internal/applicationdns"
+	"github.com/astilbahq/astilba/services/platform/internal/awskeys"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/agentidentity"
@@ -51,7 +53,9 @@ type Service struct {
 	// ForkFencing clears a server's credential when management sees proof that a second holder has
 	// its key. Off, the proof only raises the owner's alert.
 	ForkFencing bool
-	nonce       nonceSecret
+	// AWS mints and revokes managed backup storage keys. Tests point it at a fake.
+	AWS   *awskeys.Client
+	nonce nonceSecret
 }
 
 // River stops a job at 10 seconds. A pass ends itself first so that running out of time
@@ -73,11 +77,14 @@ func sweepFailure(err error) error {
 }
 
 func New(st *store.Store) (*Service, error) {
-	s := &Service{Store: st, Policy: pipeline.Policy{Origins: strings.FieldsFunc(os.Getenv("ASTILBA_INTEGRATION_ORIGINS"), func(r rune) bool { return r == ',' })}}
+	s := &Service{Store: st, AWS: awskeys.New(), Policy: pipeline.Policy{Origins: strings.FieldsFunc(os.Getenv("ASTILBA_INTEGRATION_ORIGINS"), func(r rune) bool { return r == ',' })}}
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &domainWorker{service: s})
 	river.AddWorker(workers, &networkSweepWorker{service: s})
 	river.AddWorker(workers, &coordinatedScheduleWorker{service: s})
+	river.AddWorker(workers, &keySweepWorker{service: s})
+	river.AddWorker(workers, &remintWorker{service: s})
+	river.AddWorker(workers, &accountCheckWorker{service: s})
 	river.AddWorker(workers, &previewWorker{service: s})
 	river.AddWorker(workers, &previewSweepWorker{service: s})
 	river.AddWorker(workers, &troubleshootingSweepWorker{service: s})
@@ -95,7 +102,7 @@ func New(st *store.Store) (*Service, error) {
 	river.AddWorker(workers, s.ResetMail)
 	s.SecurityNotice = &auth.SecurityNoticeWorker{}
 	river.AddWorker(workers, s.SecurityNotice)
-	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretAccessExpiryArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(6*time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretLengthsArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(10*time.Minute), func() (river.JobArgs, *river.InsertOpts) { return custodyKeysArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}, auth.SecurityMailQueue: {MaxWorkers: 2}}, JobTimeout: 10 * time.Second})
+	q, err := river.NewClient(riverpgxv5.New(st.Pool), &river.Config{PeriodicJobs: []*river.PeriodicJob{river.NewPeriodicJob(river.PeriodicInterval(5*time.Second), func() (river.JobArgs, *river.InsertOpts) { return networkSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return coordinatedScheduleArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return keySweepArgs{}, &keySweepNow }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(10*time.Minute), func() (river.JobArgs, *river.InsertOpts) { return accountCheckArgs{}, &keySweepNow }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return previewSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(30*time.Second), func() (river.JobArgs, *river.InsertOpts) { return troubleshootingSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Minute), func() (river.JobArgs, *river.InsertOpts) { return secretAccessSweepArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretAccessExpiryArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(6*time.Hour), func() (river.JobArgs, *river.InsertOpts) { return secretLengthsArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}), river.NewPeriodicJob(river.PeriodicInterval(10*time.Minute), func() (river.JobArgs, *river.InsertOpts) { return custodyKeysArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true})}, Workers: workers, Queues: map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 4}, gitQueue: {MaxWorkers: gitQueueWorkers}, auth.ResetMailQueue: {MaxWorkers: 4}, auth.SecurityMailQueue: {MaxWorkers: 2}}, JobTimeout: 10 * time.Second})
 	s.Queue = q
 	return s, err
 }

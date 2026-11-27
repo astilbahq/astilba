@@ -309,7 +309,7 @@ func (s *Service) agentKeys(a Identity) runKeys {
 
 // deliveryKinds are what a delivery may open: everything a command can carry, and the values
 // the decisions made at delivery read.
-var deliveryKinds = []secretbroker.Kind{secretbroker.SecretVersion, secretbroker.BuildSecret, secretbroker.Git, secretbroker.Registry, secretbroker.BackupDestination, secretbroker.BackupPolicy}
+var deliveryKinds = []secretbroker.Kind{secretbroker.SecretVersion, secretbroker.BuildSecret, secretbroker.Git, secretbroker.Registry, secretbroker.BackupDestination, secretbroker.BackupPolicy, secretbroker.BackupStorageKey}
 
 // deliveryKeys open values for one release, noting each value's ID and ciphertext for the
 // release's digest. The digest names what was released without anything that would let a

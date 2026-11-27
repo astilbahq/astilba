@@ -2341,6 +2341,12 @@
   "/api/v1/workspaces/{workspaceId}/servers/{serverId}/revoke":
     "post":
       "operationId": "revokeServer"
+      "requestBody":
+        "required": false
+        "content":
+          "application/json":
+            "schema":
+              "$ref": "#/components/schemas/ServerRevokeRequest"
       "responses":
         "204":
           "description": "Success"
@@ -4119,6 +4125,256 @@
           application/json:
             schema:
               $ref: '#/components/schemas/BackupDestinationRequest'
+  /api/v1/workspaces/{workspaceId}/backup-storage-accounts:
+    get:
+      operationId: ListBackupStorageAccounts
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items:
+                  $ref: '#/components/schemas/BackupStorageAccount'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: CreateBackupStorageAccount
+      description: >-
+        Records an AWS account whose admin credential management mints backup storage keys with. Management
+        checks the credential with sts:GetCallerIdentity and iam:ListUsers before storing it. Needs recent
+        authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupStorageAccount'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupStorageAccountRequest'
+  /api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/credential:
+    put:
+      operationId: ReplaceBackupStorageAccountCredential
+      description: >-
+        Replaces the admin credential with one of the same AWS account. Keys already minted keep working;
+        delete the old admin key at AWS afterwards. Needs recent authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupStorageAccount'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupStorageCredentialRequest'
+  /api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/check:
+    post:
+      operationId: CheckBackupStorageAccount
+      description: Asks for the account check to run again now.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/peers:
+    post:
+      operationId: AddBackupStorageAccountPeer
+      description: >-
+        Lists another installation that shares this account after a workspace transfer, so its users are
+        shown as managed by it without an alert. Needs recent authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupStorageAccountPeerRequest'
+  /api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/found-users/{userName}/revoke:
+    post:
+      operationId: RevokeFoundBackupStorageUser
+      description: >-
+        Revokes an IAM user the account check found under this workspace's path with no record here. Its
+        access is taken away and the user deleted at AWS. Needs recent authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: userName
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 64
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/backup-destinations/{destinationId}/keys/{keyId}/revoke:
+    post:
+      operationId: RevokeBackupStorageKey
+      description: >-
+        Revokes a key that was handed over to a workspace transfer. Doing so after the transfer breaks the
+        transferred server's backups. Needs recent authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: destinationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/backup-destinations/{destinationId}/retry:
+    post:
+      operationId: RetryBackupStorageKeys
+      description: Asks management to retry revoking this destination's keys now.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: destinationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/workspaces/{workspaceId}/projects/{projectId}/environments/{environmentId}/backup-policies:
     get:
       operationId: ListBackupPolicies
@@ -9731,7 +9987,24 @@
             Whether a revoked server holds this S3 destination's storage keys: the server a policy
             using it is bound to, or one a restore of such a policy was recorded for. It can delete
             or overwrite any backup they reach until they are revoked at the provider. A new policy
-            on it needs an acknowledgement, and a backup_exposure alert fires for it.
+            on it needs an acknowledgement, and a backup_exposure alert fires for it. A managed
+            destination is exposed while one of its keys is being revoked, or a revoked server holds
+            one that isn't handed over, and for an hour after each is revoked.
+        accountId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The storage account a managed destination's keys are minted from, or null.
+        keys:
+          type: array
+          maxItems: 100
+          description: A managed destination's minted keys, newest first. Empty for any other.
+          items: {$ref: '#/components/schemas/BackupStorageKey'}
+        remintError:
+          type: string
+          nullable: true
+          maxLength: 80
+          description: Why minting a renewed server's new key failed, as a fixed code; management retries.
         policies:
           type: array
           maxItems: 100
@@ -9748,7 +10021,109 @@
         - serverId
         - shared
         - exposed
+        - accountId
+        - keys
+        - remintError
         - policies
+    ServerRevokeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        handOverStorageKeys:
+          type: boolean
+          description: >-
+            Hand the server's managed backup storage keys over to a workspace transfer instead of revoking
+            them, so the transferred server's installed schedules keep working. See
+            docs/hosting.md#transferring-a-workspace.
+    BackupStorageAccountRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        accessKeyId: {type: string, maxLength: 128, writeOnly: true}
+        secretAccessKey: {type: string, maxLength: 128, writeOnly: true}
+        boundary:
+          type: string
+          maxLength: 2048
+          description: The ARN of the permissions-boundary policy every minted user is created with.
+      required: [name, accessKeyId, secretAccessKey, boundary]
+    BackupStorageCredentialRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        accessKeyId: {type: string, maxLength: 128, writeOnly: true}
+        secretAccessKey: {type: string, maxLength: 128, writeOnly: true}
+        boundary: {type: string, maxLength: 2048}
+        generation:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The generation the credential replaces, so two replacements can't interleave.
+      required: [accessKeyId, secretAccessKey, boundary, generation]
+    BackupStorageAccountPeerRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        installationId: {type: string, format: uuid}
+      required: [installationId]
+    BackupStorageFoundUser:
+      type: object
+      additionalProperties: false
+      description: An IAM user under the workspace's path with no record at this installation.
+      properties:
+        userName: {type: string, maxLength: 64}
+        installationId: {type: string, maxLength: 128, description: "Its astilba:installation tag, as found."}
+        serverId: {type: string, maxLength: 128, description: "Its astilba:server tag, as found."}
+        bounded: {type: boolean, description: "Whether it has the account's permissions boundary."}
+        peer: {type: boolean, description: "Whether its installation is one of the account's peers."}
+        revoking: {type: boolean, description: "Whether management is revoking it."}
+      required: [userName, installationId, serverId, bounded, peer, revoking]
+    BackupStorageAccount:
+      type: object
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 80}
+        awsAccount: {type: string, maxLength: 12}
+        adminArn: {type: string, maxLength: 2048}
+        boundary: {type: string, maxLength: 2048}
+        path: {type: string, maxLength: 128, description: "The IAM path minted users live under."}
+        installationId: {type: string, format: uuid, description: "This installation, as minted users are tagged."}
+        generation: {type: integer, format: int64}
+        peers:
+          type: array
+          maxItems: 16
+          items: {type: string, format: uuid}
+        checkedAt: {type: string, format: date-time, nullable: true}
+        checkError:
+          type: string
+          nullable: true
+          maxLength: 80
+          description: Why the latest account check failed, as a fixed code.
+        foundUsers:
+          type: array
+          maxItems: 1000
+          items: {$ref: '#/components/schemas/BackupStorageFoundUser'}
+        extraKeysDeleted:
+          type: integer
+          description: Access keys the latest check found on minted users that management never made, and deleted.
+      required: [id, name, awsAccount, adminArn, boundary, path, installationId, generation, peers, checkedAt, checkError, foundUsers, extraKeysDeleted]
+    BackupStorageKey:
+      type: object
+      additionalProperties: false
+      description: A storage key management minted for a managed destination.
+      properties:
+        id: {type: string, format: uuid}
+        purpose: {type: string, enum: [server, recovery]}
+        state: {type: string, enum: [minting, active, revoking, revoked]}
+        userName: {type: string, maxLength: 64}
+        serverId: {type: string, format: uuid}
+        handedOver: {type: boolean, description: "Whether the key is handed over to a workspace transfer at its server's current revocation."}
+        activatedAt: {type: string, format: date-time, nullable: true}
+        revokedAt: {type: string, format: date-time, nullable: true}
+        attempts: {type: integer}
+        lastError: {type: string, nullable: true, maxLength: 80}
+      required: [id, purpose, state, userName, serverId, handedOver, activatedAt, revokedAt, attempts, lastError]
     BackupInstallationDestination:
       type: object
       additionalProperties: false
@@ -9863,6 +10238,14 @@
             workspace's destinations' in a bucket of the same name, at any endpoint, or a second
             destination without one there, is refused with the field `prefix`, since keys limited
             to one would reach the other's backups.
+        accountId:
+          type: string
+          format: uuid
+          description: >-
+            Makes a managed S3 destination: management mints its server's key from this storage
+            account, limited to the destination's repositories, and revokes it when the server is
+            revoked. The endpoint is then derived from the region, so `endpoint` must be empty, and
+            `access` is left out. See docs/backups.md#managed-keys.
         serverId:
           type: string
           format: uuid
@@ -9880,7 +10263,6 @@
         - endpoint
         - bucket
         - region
-        - access
     DailySchedule:
       type: object
       additionalProperties: false
@@ -10804,7 +11186,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held, backup_exposure]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held, backup_exposure, backup_account]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}

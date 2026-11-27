@@ -190,7 +190,7 @@ func (s *Service) UpgradeAction(ctx context.Context, p store.Principal, ws, pid,
 	}
 	// Planning hydrates the upgrade once, to refuse an effect too large or incompatible before
 	// anything is reserved: an inspection, for the owner, asked for in the pass that reaches it.
-	keys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Inspect, Principal: p.Secrets(), Kinds: []secretbroker.Kind{secretbroker.SecretVersion, secretbroker.Registry, secretbroker.BackupPolicy, secretbroker.BackupDestination}})
+	keys := s.passKeys(secretbroker.Request{Workspace: ws, Purpose: secretbroker.Inspect, Principal: p.Secrets(), Kinds: []secretbroker.Kind{secretbroker.SecretVersion, secretbroker.Registry, secretbroker.BackupPolicy, secretbroker.BackupDestination, secretbroker.BackupStorageKey}})
 	defer keys.close(ctx)
 	err := withProviderCalls(ctx, func() error {
 		return s.scope(ctx, p, ws, workspaceAccess{Write: true, Owner: true, Recent: true, Recovery: in.Action == "return" || in.Action == "reconcile"}, action, id, func(tx pgx.Tx) error {

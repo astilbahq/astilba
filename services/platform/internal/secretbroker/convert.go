@@ -407,6 +407,14 @@ func legacyValues(ctx context.Context, q *db.Queries, holder uuid.UUID, cursor c
 			v.store = func(ctx context.Context, q *db.Queries, converted []byte) (int64, error) {
 				return q.ConvertBackupPolicyAccess(ctx, db.ConvertBackupPolicyAccessParams{Converted: converted, WorkspaceID: ws, ID: id, Previous: previous})
 			}
+		case BackupStorageAccount:
+			v.store = func(ctx context.Context, q *db.Queries, converted []byte) (int64, error) {
+				return q.ConvertBackupStorageAccountCredential(ctx, db.ConvertBackupStorageAccountCredentialParams{Converted: converted, WorkspaceID: ws, ID: id, Previous: previous})
+			}
+		case BackupStorageKey:
+			v.store = func(ctx context.Context, q *db.Queries, converted []byte) (int64, error) {
+				return q.ConvertBackupStorageKeySecret(ctx, db.ConvertBackupStorageKeySecretParams{Converted: converted, WorkspaceID: ws, ID: id, Previous: previous})
+			}
 		case AlertWebhook:
 			v.store = func(ctx context.Context, q *db.Queries, converted []byte) (int64, error) {
 				return q.ConvertAlertWebhook(ctx, db.ConvertAlertWebhookParams{Converted: converted, WorkspaceID: ws, Previous: previous})

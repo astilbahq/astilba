@@ -6,6 +6,14 @@ UPDATE backup_destinations SET encrypted_access=$3 WHERE workspace_id=$1 AND id=
 SELECT workspace_id,id,encrypted_access FROM backup_policies FOR UPDATE;
 -- name: RewrapBackupPolicyAccess :exec
 UPDATE backup_policies SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2;
+-- name: AllBackupStorageAccountCredentials :many
+SELECT workspace_id,id,encrypted_credential FROM backup_storage_accounts FOR UPDATE;
+-- name: RewrapBackupStorageAccountCredential :exec
+UPDATE backup_storage_accounts SET encrypted_credential=$3 WHERE workspace_id=$1 AND id=$2;
+-- name: AllBackupStorageKeySecrets :many
+SELECT workspace_id,id,encrypted_secret FROM backup_storage_keys WHERE encrypted_secret IS NOT NULL FOR UPDATE;
+-- name: RewrapBackupStorageKeySecret :exec
+UPDATE backup_storage_keys SET encrypted_secret=$3 WHERE workspace_id=$1 AND id=$2;
 
 -- name: ListBackupDestinations :many
 SELECT configuration, server_id, shared FROM backup_destinations WHERE workspace_id = @workspace_id ORDER BY id LIMIT 100;

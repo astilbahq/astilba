@@ -40,3 +40,30 @@ func (s *Service) backupExposure(ctx context.Context, tx pgx.Tx, ws uuid.UUID) e
 	}
 	return nil
 }
+
+// backupAccount raises backup_account for each storage account whose latest check failed, or found
+// a user or access key management didn't make, until a check finds none.
+func (s *Service) backupAccount(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
+	q := db.New(tx)
+	alerting, err := q.AlertingBackupStorageAccounts(ctx, ws)
+	if err != nil {
+		return err
+	}
+	firing, err := q.FiringAlertResources(ctx, db.FiringAlertResourcesParams{WorkspaceID: ws, Kind: string(api.BackupAccount)})
+	if err != nil {
+		return err
+	}
+	for _, account := range alerting {
+		if err = s.condition(ctx, tx, ws, api.BackupAccount, target{resource: account}, bad); err != nil {
+			return err
+		}
+	}
+	for _, account := range firing {
+		if !slices.Contains(alerting, account) {
+			if err = s.condition(ctx, tx, ws, api.BackupAccount, target{resource: account}, good); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
