@@ -161,7 +161,9 @@ func (s *Service) serverView(row db.ListServersRow) (api.Server, error) {
 			return v, err
 		}
 	}
-	if v.Capabilities != nil {
+	// RequestUpdate takes an update only for a server it can reach with a protocol 1 agent, so
+	// the view offers none to any other, such as one revoked or awaiting a transfer.
+	if v.Capabilities != nil && row.Updatable && v.Capabilities.Protocol == 1 {
 		updates := agentUpdates(s.Releases, *v.Capabilities)
 		v.AgentUpdates = &updates
 	}
