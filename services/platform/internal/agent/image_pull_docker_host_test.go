@@ -88,10 +88,11 @@ func TestNativeDockerPullEndsWhenItsRegistryStalls(t *testing.T) {
 	const window = time.Second
 	for name, config := range map[string]bool{"a layer": false, "the config": true} {
 		t.Run("stalled on "+name, func(t *testing.T) {
-			image, stalled, ended := f.stallingImage(8<<20, 3<<20, false)
+			size, sent := 8<<20, 3<<20
 			if config {
-				image, stalled, ended = f.stallingImage(64<<10, 0, true)
+				size, sent = 64<<10, 0
 			}
+			image, stalled, ended := f.stallingImage(size, sent, config)
 			// The floor is a step of a layer each window, as containerd writes it, so the registry
 			// is ended by its second window without progress.
 			engine := &Engine{Docker: f.docker, registryProgress: &registryProgress{window: window, least: 1 << 20}}

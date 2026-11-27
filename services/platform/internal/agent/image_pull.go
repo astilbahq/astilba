@@ -368,7 +368,7 @@ func pullEnded(ctx context.Context, image string, err error) error {
 	}
 	var refused *imagePullRefused
 	switch {
-	case errors.As(err, &refused) || errors.Is(err, errPullCancelled):
+	case errors.As(err, &refused):
 		return err
 	case errors.Is(err, errPullTimedOut):
 		return notPulled(image, "putting the deployment's images into Docker took longer than the hour the agent allows", "Check that its registry is up and this server's link to it is fast enough, then {retry}.")

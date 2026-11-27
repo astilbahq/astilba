@@ -187,9 +187,9 @@ func reportStep(containerd bool, total int64) int64 {
 // dockerDownloads holds up to a step more of each, and a link just above the floor could fall
 // short.
 //
-// Docker does not report unpacking an image whose content it already holds, which counts as
-// time the registry owes it: a pull of such an image that unpacks for longer than the floor
-// allows ends as stalled.
+// Docker does not report unpacking an image whose content it already holds, or a layer the image
+// lists again, which counts as time the registry owes it: a pull that unpacks so for longer than
+// the floor allows ends as stalled.
 type dockerPullWatch struct {
 	progress registryProgress
 	// containerd is whether Docker keeps images in containerd, see reportStep.
@@ -278,8 +278,10 @@ func (w *dockerPullWatch) apply(m dockerPullMessage) {
 			b.total = m.Progress.Total
 		}
 	case strings.HasPrefix(m.Status, "Retrying in "):
-		// Docker downloads the rest of the blob again, and reports it from zero.
-		blob().current = 0
+		// Docker downloads the blob, or the rest of it, again, and reports it from zero, even
+		// after reporting it had it all, when it found the blob did not match its digest.
+		b := blob()
+		b.downloaded, b.current, b.total = false, 0, 0
 	case m.Status == "Verifying Checksum" || m.Status == "Download complete":
 		// Docker received the rest of the blob, which it may not have reported: at most a step
 		// of one whose size it never reported, see reportStep.
@@ -294,8 +296,9 @@ func (w *dockerPullWatch) apply(m dockerPullMessage) {
 	case m.Status == "Already exists":
 		blob().downloaded = true
 	case m.Status == "Extracting":
+		// Docker may unpack a layer again, one the image lists twice.
 		b := blob()
-		b.layer, b.downloaded = true, true
+		b.layer, b.downloaded, b.unpacked = true, true, false
 	case m.Status == "Pull complete":
 		b := blob()
 		b.layer, b.downloaded, b.unpacked = true, true, true

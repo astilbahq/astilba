@@ -424,10 +424,11 @@ func TestPullHonoursOnlyTheLastRetryAfter(t *testing.T) {
 	}
 }
 
-// Neither the end of the command's context nor its owner cancelling it, which ends the context
-// with errPullCancelled, see pullContext, waits out a retry.
+// Neither the end of the command's context while the agent waits to read again, nor its owner
+// cancelling it while the agent reads, which ends the context with errPullCancelled, see
+// pullContext, waits out a retry. TestCancelledPullIsCancelled has the owner cancel a wait.
 func TestPullDoesNotReadAgainOnceCancelled(t *testing.T) {
-	for _, by := range []string{"its context", "its owner", "its owner while the agent reads"} {
+	for _, by := range []string{"its context", "its owner while the agent reads"} {
 		t.Run(by, func(t *testing.T) {
 			p := newRegistryPull(t, true, "HTTP/1.1")
 			p.engine.registryRetry.backoff = []time.Duration{time.Hour, time.Hour}
@@ -439,8 +440,6 @@ func TestPullDoesNotReadAgainOnceCancelled(t *testing.T) {
 				switch by {
 				case "its context":
 					time.AfterFunc(50*time.Millisecond, func() { cancel(nil) })
-				case "its owner":
-					time.AfterFunc(50*time.Millisecond, func() { cancel(errPullCancelled) })
 				default:
 					cancel(errPullCancelled)
 				}
@@ -466,6 +465,9 @@ func TestPullDoesNotReadAgainOnceCancelled(t *testing.T) {
 // A deployment cancelled while it waits for a registry is cancelled, unless it had begun.
 func TestCancelledPullIsCancelled(t *testing.T) {
 	p := newRegistryPull(t, true, "HTTP/1.1")
+	// Longer than pullContext takes to notice the cancel, so the pull waits to read again.
+	p.engine.registryRetry.backoff = []time.Duration{time.Hour, time.Hour}
+	p.engine.registryRetry.window = 24 * time.Hour
 	p.fault = func(w http.ResponseWriter, _ *http.Request, _ string, _ int) bool {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return true

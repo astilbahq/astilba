@@ -146,6 +146,17 @@ func TestDockerPullWatch(t *testing.T) {
 				at(8)
 			},
 		},
+		"Docker unpacking a layer the image lists again": {
+			containerd: true, least: 512 << 10,
+			send: func(w *dockerPullWatch, at func(float64)) {
+				w.report(dockerPullMessage{ID: "a", Status: "Pulling fs layer"})
+				w.report(downloading("a", 4<<20, 4<<20))
+				w.report(dockerPullMessage{ID: "a", Status: "Download complete"})
+				w.report(dockerPullMessage{ID: "a", Status: "Pull complete"})
+				w.report(dockerPullMessage{ID: "a", Status: "Extracting"})
+				at(8)
+			},
+		},
 		// containerd writes a layer smaller than its mebibyte in one go, so Docker reports it
 		// only once it has it all.
 		"layers too small for Docker to report": {
@@ -175,6 +186,19 @@ func TestDockerPullWatch(t *testing.T) {
 					w.report(dockerPullMessage{ID: id, Status: "Pull complete"})
 				}
 			},
+		},
+		// Docker's classic store reports a resumed download whose blob does not match its digest
+		// as checked, then downloads it again.
+		"a registry that stops once Docker downloads a layer again": {
+			least: 128 << 10,
+			send: func(w *dockerPullWatch, _ func(float64)) {
+				w.report(dockerPullMessage{ID: "a", Status: "Pulling fs layer"})
+				w.report(downloading("a", 512<<10, 1<<20))
+				w.report(dockerPullMessage{ID: "a", Status: "Verifying Checksum"})
+				w.report(dockerPullMessage{ID: "a", Status: "Retrying in 5 seconds"})
+			},
+			// A step behind, four windows, ends it in the sixth, after the first's mebibyte.
+			stalled: true, after: 6,
 		},
 		"Docker downloading a layer again": {
 			least: 128 << 10,
