@@ -23,7 +23,7 @@ import (
 
 // Runs within the owned native visual fixture, before the same unit's backup
 // and PostgreSQL major-upgrade journey. Traffic is sampled independently.
-func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secrets map[string]string, resolve func(deployment.Plan) deployment.Plan, command func(string, deployment.Plan, map[string]string) api.ExecutionCommand, finish func(api.ExecutionCommand) Record) deployment.Plan {
+func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secrets map[string]string, resolve func(testing.TB, deployment.Plan) deployment.Plan, command func(string, deployment.Plan, map[string]string) api.ExecutionCommand, finish func(testing.TB, api.ExecutionCommand) Record) deployment.Plan {
 	t.Helper()
 	ctx := context.Background()
 	current := initial
@@ -95,7 +95,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 		}
 		p.Specification.Applications[0].Replicas = count
 		p.PrepareInstances(current)
-		p = resolve(p.WithHash())
+		p = resolve(t, p.WithHash())
 		options := deployment.DefaultReleaseOptions()
 		options.DrainSeconds = 1
 		p.Release = &deployment.Release{ApplicationID: app, PreviousPlanID: current.ID, Options: options}
@@ -165,7 +165,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 			time.Sleep(250 * time.Millisecond)
 		}
 	}
-	finish(command("deploy", slow, secrets))
+	finish(t, command("deploy", slow, secrets))
 	e.Point = nil
 	select {
 	case body := <-slowResult:
@@ -264,7 +264,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 		if !hit {
 			t.Fatal("fault was not injected")
 		}
-		finish(c)
+		finish(t, c)
 		e.Point = nil
 		for _, id := range current.InstanceIDs(app)[1:] {
 			if _, err := e.Docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{}); err == nil {
@@ -347,7 +347,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	migration.Specification.Applications[0].Command[2] = "wget -q --spider http://" + gateName + ":8080/cgi-bin/ready || exit 31; " + migration.Specification.Applications[0].Command[2]
 	migration.Release.Options.Command = []string{"wget", "-qO-", "http://" + gateName + ":8080/cgi-bin/migrate"}
 	migration = migration.WithHash()
-	finish(command("deploy", migration, secrets))
+	finish(t, command("deploy", migration, secrets))
 	current = migration
 	// Explicit rollback uses the retained immutable image and old application
 	// configuration, through a new candidate and the same readiness/switch path.
@@ -357,7 +357,7 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	rollback.ReplaceInstances(app)
 	rollback.Release.Options.Command = []string{}
 	rollback = rollback.WithHash()
-	finish(command("deploy", rollback, secrets))
+	finish(t, command("deploy", rollback, secrets))
 	current = rollback
 	if _, err = e.Docker.ContainerRemove(ctx, gate.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 		t.Fatal(err)
@@ -372,8 +372,8 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	// instance, and the following database upgrade must quiesce that same writer.
 	current.ID, current.RevisionID = uuid.New(), uuid.New()
 	current.Release = nil
-	current = resolve(current.WithHash())
-	finish(command("deploy", current, secrets))
+	current = resolve(t, current.WithHash())
+	finish(t, command("deploy", current, secrets))
 	raw, _ := stablejson.Marshal(current)
 	var converted deployment.Plan
 	_ = json.Unmarshal(raw, &converted)
@@ -388,8 +388,8 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	converted.Specification.Bindings = nil
 	converted.Specification.Routes = nil
 	delete(converted.Instances, app.String())
-	converted = resolve(converted.WithHash())
-	finish(command("deploy", converted, secrets))
+	converted = resolve(t, converted.WithHash())
+	finish(t, command("deploy", converted, secrets))
 	resources, err := e.ownedContainers(ctx, converted)
 	if err != nil {
 		t.Fatal(err)
@@ -407,10 +407,10 @@ func nativeReleaseJourney(t *testing.T, e *Engine, initial deployment.Plan, secr
 	backAppliedRevision := converted.RevisionID
 	current.ExpectedAppliedID = &backAppliedRevision
 	delete(current.Instances, app.String())
-	current = resolve(current.WithHash())
-	finish(command("deploy", current, secrets))
+	current = resolve(t, current.WithHash())
+	finish(t, command("deploy", current, secrets))
 	mapped := prepare("v-restored")
-	finish(command("deploy", mapped, secrets))
+	finish(t, command("deploy", mapped, secrets))
 	current = mapped
 	return current
 }
