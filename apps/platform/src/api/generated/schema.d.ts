@@ -4709,7 +4709,7 @@ export interface components {
             endpoint: string;
             bucket: string;
             region: string;
-            /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't begin with `astilba`. A prefix that equals, contains or is inside another of the workspace's destinations' in the same bucket, or a second destination without one there, is refused with the field `prefix`, since keys limited to one would reach the other's backups. */
+            /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't begin with `astilba`. A prefix that equals, contains or is inside another of the workspace's destinations' in a bucket of the same name, at any endpoint, or a second destination without one there, is refused with the field `prefix`, since keys limited to one would reach the other's backups. */
             prefix?: string;
             /**
              * Format: uuid

@@ -385,7 +385,9 @@ test("backup setup, restore verification and separate cutover use the real API",
   await dest.getByLabel("S3 HTTPS origin").fill("https://storage.example.test");
   await dest.getByLabel("S3 bucket").fill("browser-recovery");
   await dest.getByLabel("S3 region").fill("test-1");
-  await dest.getByLabel(/^Key prefix/).fill("servers/recovery");
+  await dest
+    .getByLabel(/^Key prefix/)
+    .fill(`servers/recovery-${info.project.name}`);
   await dest.getByLabel("S3 access key").fill("browser-key-id");
   await dest.getByLabel("S3 secret key").fill("browser-secret-canary");
   const s3 = page.waitForResponse(
@@ -401,7 +403,7 @@ test("backup setup, restore verification and separate cutover use the real API",
   expect(added.request().postDataJSON()).toMatchObject({
     kind: "s3",
     serverId: server.id,
-    prefix: "servers/recovery",
+    prefix: `servers/recovery-${info.project.name}`,
   });
   await openEnvironmentSection(page, "Deployments");
   await page

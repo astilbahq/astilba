@@ -70,7 +70,9 @@ func TestDestinationsOverlapWithinOneBucket(t *testing.T) {
 		{at(origin, "backups", "servers/web"), at(origin, "backups", "servers/web-1"), false},
 		{at(origin, "backups", ""), at(origin, "backups", "servers"), false},
 		{at(origin, "backups", ""), at(origin, "other", ""), false},
-		{at(origin, "backups", ""), at("https://elsewhere.example.test", "backups", ""), false},
+		{at(origin, "backups", ""), at("https://storage.example.test:443", "backups", ""), true},
+		{at("https://s3.amazonaws.com", "backups", ""), at("https://s3.eu-west-1.amazonaws.com", "backups", "servers"), false},
+		{at("https://s3.amazonaws.com", "backups", "servers"), at("https://s3.eu-west-1.amazonaws.com", "backups", "servers/web-1"), true},
 		{at(origin, "backups", ""), Destination{Kind: "filesystem", Root: "/srv/backups"}, false},
 	} {
 		if c.a.Overlaps(c.b) != c.overlap || c.b.Overlaps(c.a) != c.overlap {

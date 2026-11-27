@@ -49,10 +49,12 @@ func (d Destination) scope() string {
 	return d.Prefix
 }
 
-// Overlaps says whether S3 destinations d and o keep their repositories in the same part of one
-// bucket, or one inside the other's, so keys limited to one would reach the other's.
+// Overlaps says whether S3 destinations d and o keep their repositories in the same part of a
+// bucket of one name, or one inside the other's, so keys limited to one would reach the other's.
+// Their endpoints aren't compared: one bucket has many, such as a provider's regional and global
+// origins, or an origin with its port.
 func (d Destination) Overlaps(o Destination) bool {
-	if d.Kind != "s3" || o.Kind != "s3" || !strings.EqualFold(d.Endpoint, o.Endpoint) || d.Bucket != o.Bucket {
+	if d.Kind != "s3" || o.Kind != "s3" || d.Bucket != o.Bucket {
 		return false
 	}
 	a, b := d.scope(), o.scope()

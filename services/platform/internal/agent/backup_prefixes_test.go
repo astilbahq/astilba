@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,44 +82,143 @@ func TestBackupPrefixesWaitForTheirNegotiation(t *testing.T) {
 	}
 }
 
-// An older binary drops a destination's prefix, so it would back up at the bucket's root and save
-// the schedule back without it. A prefixed schedule is kept where only this binary reads it, with
-// a disabled copy for an older one, as an advanced cadence is.
-func TestAPrefixedScheduleIsHiddenFromOlderBinaries(t *testing.T) {
-	j, plan := testVisualJournal(t)
-	p := backup.Policy{ID: uuid.New(), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID, Generation: 1, Enabled: true, Method: "postgres-logical", Schedule: backup.Schedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Plan: plan}
-	d := backup.Destination{ID: uuid.New(), Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "backups", Prefix: "servers/web-1"}
-	s := scheduleState{Installation: backup.Installation{Policy: p, Destination: d, Next: time.Date(2026, 11, 27, 2, 30, 0, 0, time.UTC)}}
-	if err := j.saveSchedule(s); err != nil {
-		t.Fatal(err)
-	}
-	var legacy scheduleState
+// releasedSchedule is the schedule the released binaries read for id: those from before general
+// schedules read "schedules" alone, and later ones prefer "schedules-v2" unless "schedules" is
+// newer. Neither knows a destination's prefix.
+func releasedSchedule(t *testing.T, j *Journal, id uuid.UUID) (first, later scheduleState) {
+	t.Helper()
 	if err := j.db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket([]byte("schedules-v2")).Get([]byte(p.ID.String())) == nil {
-			t.Error("the prefixed schedule was kept only where an older binary reads it")
+		var advanced scheduleState
+		if err := j.get(tx, "schedules", id.String(), &first); err != nil {
+			return err
 		}
-		return j.get(tx, "schedules", p.ID.String(), &legacy)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if legacy.Installation.Policy.Enabled || !legacy.Installation.Next.IsZero() {
-		t.Fatal("an older binary could run the prefixed schedule")
-	}
-	got, err := j.schedule(p.ID)
-	if err != nil || !got.Installation.Policy.Enabled || got.Installation.Destination.Prefix != d.Prefix {
-		t.Fatal("this binary lost the prefixed schedule", err)
-	}
-	// Without a prefix it stays where it always was.
-	s.Installation.Destination.Prefix = ""
-	if err = j.saveSchedule(s); err != nil {
-		t.Fatal(err)
-	}
-	if err = j.db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket([]byte("schedules-v2")).Get([]byte(p.ID.String())) != nil {
-			t.Error("an unprefixed daily schedule was hidden from older binaries")
+		later = first
+		err := j.get(tx, "schedules-v2", id.String(), &advanced)
+		if err == nil && !(first.Installation.Policy.Generation > advanced.Installation.Policy.Generation || first.Installation.Policy.Generation == advanced.Installation.Policy.Generation && first.Sequence > advanced.Sequence) {
+			later = advanced
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	return first, later
+}
+
+// A released binary would back up a prefixed destination's policy to its bucket's root, so it
+// never finds that schedule enabled, whatever its cadence. This binary still runs it, and an
+// earlier binary's change to it since leaves it disabled here too, until management installs it
+// again.
+func TestAPrefixedScheduleIsHiddenFromOlderBinaries(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	d := backup.Destination{ID: uuid.New(), Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "backups", Prefix: "servers/web-1"}
+	next := time.Date(2026, 11, 27, 2, 30, 0, 0, time.UTC)
+	cadences := map[string]backup.Schedule{"daily": {Hour: 2, Minute: 30, Timezone: "UTC"}, "general": {Timezone: "UTC", Kind: "interval", IntervalMinutes: 90}}
+	for name, cadence := range cadences {
+		p := backup.Policy{ID: uuid.New(), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID, Generation: 1, Enabled: true, Method: "postgres-logical", Schedule: cadence, Plan: plan}
+		s := scheduleState{Installation: backup.Installation{Policy: p, Destination: d, Next: next}}
+		if err := j.saveSchedule(s); err != nil {
+			t.Fatal(err)
+		}
+		for _, released := range func() []scheduleState { a, b := releasedSchedule(t, j, p.ID); return []scheduleState{a, b} }() {
+			if released.Installation.Policy.Enabled || !released.Installation.Next.IsZero() || released.Installation.Policy.GeneralSchedule() {
+				t.Fatalf("a released binary could run the %s prefixed schedule", name)
+			}
+		}
+		got, err := j.schedule(p.ID)
+		if err != nil || !got.Installation.Policy.Enabled || !got.Installation.Next.Equal(next) || got.Installation.Destination.Prefix != d.Prefix {
+			t.Fatalf("this binary lost the %s prefixed schedule: %v", name, err)
+		}
+	}
+	p := backup.Policy{ID: uuid.New(), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID, Generation: 1, Enabled: true, Method: "postgres-logical", Schedule: cadences["daily"], Plan: plan}
+	s := scheduleState{Installation: backup.Installation{Policy: p, Destination: d, Next: next}}
+	if err := j.saveSchedule(s); err != nil {
+		t.Fatal(err)
+	}
+	// An earlier binary records something on the disabled mirror it reads.
+	first, _ := releasedSchedule(t, j, p.ID)
+	first.Sequence++
+	if err := j.db.Update(func(tx *bolt.Tx) error { return j.put(tx, "schedules", p.ID.String(), first) }); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := j.schedule(p.ID); err != nil || got.Installation.Policy.Enabled || got.Sequence != first.Sequence {
+		t.Fatal("this binary ignored a released binary's later change to the schedule", err)
+	}
+	// Without a prefix, the schedule is where released binaries read it.
+	s.Installation.Destination.Prefix = ""
+	if err := j.saveSchedule(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, later := releasedSchedule(t, j, p.ID); !later.Installation.Policy.Enabled {
+		t.Fatal("an unprefixed schedule was hidden from released binaries")
+	}
+	if err := j.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("schedules-v3")).Get([]byte(p.ID.String())) != nil {
+			t.Error("an unprefixed schedule kept its prefixed record")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Retiring the environment removes its prefixed schedules too.
+	if err := j.retireSchedules(plan.ServerID, plan.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	if states, err := j.scheduleStates(); err != nil || len(states) != 0 {
+		t.Fatal("retirement left schedules", len(states), err)
+	}
+}
+
+// An earlier agent that retires an environment removes its schedules only from the buckets it
+// knows. The prefixed schedule it leaves in schedules-v3 is gone once this agent opens the journal
+// again, so it never runs for a retired environment; schedules it still keeps are untouched.
+func TestAScheduleAnEarlierAgentRetiredStaysRetired(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	dir := j.dir
+	d := backup.Destination{ID: uuid.New(), Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "backups", Prefix: "servers/web-1"}
+	next := time.Date(2026, 11, 27, 2, 30, 0, 0, time.UTC)
+	policy := func(schedule backup.Schedule) backup.Policy {
+		return backup.Policy{ID: uuid.New(), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID, Generation: 1, Enabled: true, Method: "postgres-logical", Schedule: schedule, Plan: plan}
+	}
+	retired, kept, general := policy(backup.Schedule{Hour: 2, Minute: 30, Timezone: "UTC"}), policy(backup.Schedule{Hour: 3, Timezone: "UTC"}), policy(backup.Schedule{Timezone: "UTC", Kind: "interval", IntervalMinutes: 90})
+	for _, s := range []scheduleState{
+		{Installation: backup.Installation{Policy: retired, Destination: d, Next: next}},
+		{Installation: backup.Installation{Policy: kept, Destination: d, Next: next}},
+		{Installation: backup.Installation{Policy: general, Destination: backup.Destination{ID: uuid.New(), Kind: "s3", Endpoint: d.Endpoint, Bucket: "other"}, Next: next}},
+	} {
+		if err := j.saveSchedule(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// What an agent from before schedules-v3 does when it retires the schedule.
+	if err := j.db.Update(func(tx *bolt.Tx) error {
+		for _, bucket := range []string{"schedules", "schedules-v2"} {
+			if err := tx.Bucket([]byte(bucket)).Delete([]byte(retired.ID.String())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	j, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { j.Close() })
+	states, err := j.scheduleStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := map[uuid.UUID]bool{}
+	for _, s := range states {
+		enabled[s.Installation.Policy.ID] = s.Installation.Policy.Enabled
+	}
+	if len(states) != 2 || !enabled[kept.ID] || !enabled[general.ID] {
+		t.Fatalf("after reopening, the journal holds %v, want only the schedules still kept, enabled", enabled)
 	}
 }
