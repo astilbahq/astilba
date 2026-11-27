@@ -44,7 +44,7 @@ func (j *Journal) saveUnit(v unitState) error {
 		if err := j.get(tx, "units", v.Plan.UnitID.String(), &previous); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := j.recordPostgresWriters(tx, previous.Plan); err != nil {
+		if err := j.recordPostgresWriters(tx, previous.Plan, v.Plan); err != nil {
 			return err
 		}
 		if err := j.put(tx, "units", v.Plan.UnitID.String(), v); err != nil {

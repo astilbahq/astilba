@@ -289,8 +289,9 @@ RESET ROLE;`); err != nil {
 	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed") || strings.Contains(note, "did not finish") {
 		t.Fatalf("a closed database was not named: %q, %v", note, err)
 	}
-	if _, found, _ := e.Journal.postgresData(volume); found {
-		t.Fatal("a rebuild that left a closed database recorded its indexes as rebuilt")
+	// Storage with no record keeps the release the rebuild assumed beside the one serving it.
+	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != oldestPostgres(major).Image || record.Served != current.Image {
+		t.Fatalf("a rebuild that left a closed database recorded %+v", record)
 	}
 	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `ALTER DATABASE closed ALLOW_CONNECTIONS true`); err != nil {
 		t.Fatal(err)
