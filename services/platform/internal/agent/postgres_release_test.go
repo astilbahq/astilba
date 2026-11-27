@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -379,5 +381,55 @@ func TestFailedDeploymentStillRefusesTheEarlierRelease(t *testing.T) {
 		if err = journal.postgresDataOpens(update, volume); err != nil {
 			t.Fatalf("a retry of the update was refused: %v", err)
 		}
+	}
+}
+
+// PLAT-549. A restore cutover starts its replacement database outside Compose. The record says
+// the release serves the data before the start reaches Docker, and a release the record refuses
+// never starts.
+func TestStartingADatabaseOutsideComposeRecordsItsReleaseFirst(t *testing.T) {
+	journal, identity := testVisualJournal(t)
+	serving, _ := domain.CurrentPostgres(18)
+	oldest := oldestPostgres(18)
+	volume, app := uuid.New(), uuid.New()
+	plan := func(r domain.PostgresRelease) deployment.Plan {
+		p := identity
+		image := r.Image
+		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}},
+			Applications: []domain.Application{{ID: app, Name: "Database", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: r.Mount}}}}}
+		return p.WithHash()
+	}
+	var started []postgresData
+	transport := scheduleTransport(func(r *http.Request) (*http.Response, error) {
+		w := httptest.NewRecorder()
+		if !strings.HasSuffix(r.URL.Path, "/containers/replacement/start") {
+			w.WriteHeader(404)
+			return w.Result(), nil
+		}
+		record, _, err := journal.postgresData(volume)
+		if err != nil {
+			t.Error(err)
+		}
+		started = append(started, record)
+		w.WriteHeader(204)
+		return w.Result(), nil
+	})
+	docker, err := client.New(client.WithHost("http://docker-fixture"), client.WithHTTPClient(&http.Client{Transport: transport}), client.WithAPIVersion("1.56"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	e := &Engine{Journal: journal, Docker: docker}
+	if err = journal.savePostgresData(volume, postgresData{Image: oldest.Image}); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.startServingPostgres(t.Context(), plan(serving), app, "replacement"); err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 1 || started[0] != (postgresData{Image: oldest.Image, Served: serving.Image}) {
+		t.Fatalf("the database started with the record %+v", started)
+	}
+	if err = e.startServingPostgres(t.Context(), plan(oldest), app, "replacement"); !errors.Is(err, errPostgresVersionChange) || len(started) != 1 {
+		t.Fatalf("an earlier release started on data the later one wrote: %v", err)
 	}
 }

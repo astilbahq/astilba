@@ -239,6 +239,12 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if _, err := e.volumePath(ctx, policy, p.OldVolume()); err != nil {
 		return err
 	}
+	// The source release reads the old volume here and serves it again on return, so a later
+	// release recorded as serving it, as a deployment that failed after starting one leaves,
+	// refuses the upgrade before any writer stops.
+	if err := e.Journal.postgresDataOpens(p.Source, p.OldVolume()); err != nil {
+		return err
+	}
 	if _, err := e.Docker.VolumeInspect(ctx, deployment.VolumeName(p.TargetVolumeID), client.VolumeInspectOptions{}); !errdefs.IsNotFound(err) {
 		return errors.New("target volume must be absent")
 	}
