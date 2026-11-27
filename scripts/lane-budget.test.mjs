@@ -3,13 +3,19 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   budgetSeconds,
+  durationSeconds,
   familyMatcher,
   laneBudget,
   nameSplit,
+  nativeBudgets,
+  nativeLaneBudget,
+  nativeLanes,
+  nativeShare,
   packageTimes,
   recentJobs,
   splitReport,
   testTimes,
+  timesTable,
 } from "./lane-budget.mjs";
 
 const integration =
@@ -346,4 +352,212 @@ test("reports the split as a table, and nothing without test times", () => {
   );
   assert.equal(nameSplit([], noFamily), undefined);
   assert.equal(splitReport(undefined), "");
+});
+
+test("reads Go durations, and refuses what it cannot", () => {
+  assert.equal(durationSeconds("30m"), 1800);
+  assert.equal(durationSeconds("1h30m"), 5400);
+  assert.equal(durationSeconds("90s"), 90);
+  assert.equal(durationSeconds("1.5h"), 5400);
+  assert.equal(durationSeconds("1500ms"), 1.5);
+  for (const text of ["", "30", "30x", "-5m", "m"])
+    assert.throws(() => durationSeconds(text), /cannot read the duration/);
+});
+
+const nativeMakefile = [
+  "GO = go test -race -count=1 -v",
+  "verify-agent-host:",
+  "\t$(MAKE) verify-agent-host-a",
+  "\t$(MAKE) verify-agent-host-b",
+  "verify-agent-host-a:",
+  "\tcd services/platform && $(GO) -timeout=30m -run '^TestNativeA$$' ./internal/agent",
+  "\tcd services/platform && $(GO) -timeout=15m -timeout=10m -run '^TestNativeB$$' ./internal/integration",
+  "verify-agent-host-b:",
+  "\tcd services/platform && $(GO) -run '^TestNativeC$$' ./internal/agent",
+  "verify-other:",
+  "\tcd services/platform && $(GO) -timeout=1m ./internal/other",
+  "",
+].join("\n");
+
+test("allows each native package a share of its own command's timeout", () => {
+  assert.deepEqual(
+    nativeBudgets(nativeMakefile),
+    new Map([
+      [
+        "a",
+        new Map([
+          ["services/platform/internal/agent", 1080],
+          ["services/platform/internal/integration", 360],
+        ]),
+      ],
+      // Go's own default of 10 minutes, as go test applies the last -timeout above.
+      ["b", new Map([["services/platform/internal/agent", 360]])],
+    ]),
+  );
+});
+
+test("refuses a native package whose time it could not attribute to one command", () => {
+  assert.throws(
+    () =>
+      nativeBudgets(
+        nativeMakefile.replace("./internal/integration", "./internal/agent"),
+      ),
+    /verify-agent-host-a runs services\/platform\/internal\/agent in more than one go test command/,
+  );
+  assert.throws(
+    () =>
+      nativeBudgets(
+        nativeMakefile.replace("./internal/integration", "./internal/..."),
+      ),
+    /cannot list/,
+  );
+});
+
+test("every native lane in the Makefile has a budget for each package it runs", () => {
+  const budgets = nativeBudgets(readFileSync("Makefile", "utf8"));
+  assert.ok(budgets.has("core"));
+  for (const [lane, packages] of budgets) {
+    assert.ok(packages.size, `${lane} runs no package`);
+    for (const seconds of packages.values()) assert.ok(seconds > 0);
+  }
+  assert.equal(nativeShare, 0.6);
+});
+
+const agent = "github.com/astilbahq/astilba/services/platform/internal/agent";
+const integrationNative =
+  "github.com/astilbahq/astilba/services/platform/internal/integration";
+const host = "github.com/astilbahq/astilba/services/platform/host";
+const nativeJob = (run, times, conclusion = "success", target = "a") => ({
+  run,
+  lane: `${target} (arm64)`,
+  target,
+  conclusion,
+  times: Object.entries(times).map(([name, seconds]) => ({ name, seconds })),
+});
+
+test("holds each native package to its own budget and leaves out the bootstrap's", () => {
+  const budgets = nativeBudgets(nativeMakefile);
+  const { problems, rows } = nativeLaneBudget(
+    [1, 2, 3].map((run) =>
+      nativeJob(run, { [agent]: 1100, [integrationNative]: 300, [host]: 9000 }),
+    ),
+    budgets,
+  );
+  assert.deepEqual(
+    rows.map(({ lane, name, seconds, budget }) => [
+      lane,
+      name,
+      seconds,
+      budget,
+    ]),
+    [
+      ["a (arm64)", agent, 1100, 1080],
+      ["a (arm64)", integrationNative, 300, 360],
+    ],
+  );
+  assert.deepEqual(
+    problems.map(({ key }) => key),
+    [`over\ta (arm64)\t${agent}`],
+  );
+  assert.match(problems[0].line, /past the 1080s budget/);
+});
+
+test("a native lane without a time for one of its packages fails rather than passes", () => {
+  const budgets = nativeBudgets(nativeMakefile);
+  const missing = nativeLaneBudget(
+    [nativeJob(1, { [agent]: 100, [host]: 60 })],
+    budgets,
+  ).problems;
+  assert.deepEqual(missing, [
+    {
+      key: "untimed\ta (arm64)\tservices/platform/internal/integration",
+      line: "run 1: a (arm64) succeeded with no time for services/platform/internal/integration",
+      check: true,
+    },
+  ]);
+  // A failed job may have stopped before a package, and one with no time at all is
+  // reported once, as any lane's is.
+  assert.deepEqual(
+    nativeLaneBudget([nativeJob(1, { [agent]: 100 }, "failure")], budgets)
+      .problems,
+    [],
+  );
+  assert.deepEqual(
+    nativeLaneBudget([nativeJob(1, { [host]: 60 })], budgets).problems.map(
+      ({ line }) => line,
+    ),
+    [
+      "run 1: a (arm64) succeeded with no package times",
+      "found no lane times to compare",
+    ],
+  );
+  assert.deepEqual(
+    nativeLaneBudget(
+      [1, 2].map((run) => nativeJob(run, { [agent]: 1 }, "success", "gone")),
+      budgets,
+    ).problems.filter(({ key }) => key.startsWith("unknown")),
+    [
+      {
+        key: "unknown\tgone",
+        line: "run 1: gone (arm64) has no verify-agent-host-gone in the Makefile",
+        check: true,
+      },
+    ],
+  );
+});
+
+test("names a native lane by its target and architecture", async () => {
+  assert.deepEqual(nativeLanes.lane("Host (arm64, core)"), {
+    lane: "core (arm64)",
+    target: "core",
+  });
+  assert.equal(
+    nativeLanes.lane("Host (${{ matrix.platform.arch }}, ${{ matrix.lane }})"),
+    undefined,
+  );
+  assert.equal(nativeLanes.lane("Native verification"), undefined);
+  const paths = [];
+  const jobs = await recentJobs(
+    async (path) => {
+      paths.push(path);
+      if (path.includes("/workflows/"))
+        return { json: async () => ({ workflow_runs: [{ id: 1 }] }) };
+      if (path.includes("/runs/"))
+        return {
+          json: async () => ({
+            jobs: [
+              { id: 7, name: "Host (amd64, core)", conclusion: "success" },
+              { id: 0, name: "Native verification", conclusion: "success" },
+            ],
+          }),
+        };
+      return { text: async () => `ok  \t${agent}\t12.0s` };
+    },
+    "o/r",
+    nativeLanes,
+  );
+  assert.match(paths[0], /\/workflows\/ci\.yml\/runs\?branch=main&event=push/);
+  assert.deepEqual(
+    jobs.map(({ lane, target, times }) => [lane, target, times[0].seconds]),
+    [["core (amd64)", "core", 12]],
+  );
+});
+
+test("shows a budget column only where budgets differ", () => {
+  const rows = [
+    { lane: "a", name: "pkg", seconds: 12, budget: 600, samples: 3 },
+    { lane: "a", name: "quick", seconds: 2, budget: 600, samples: 3 },
+  ];
+  assert.equal(
+    timesTable(rows),
+    [
+      "| Lane | Package | Median seconds | Runs |",
+      "| --- | --- | --- | --- |",
+      "| a | `pkg` | 12 | 3 |",
+    ].join("\n"),
+  );
+  assert.equal(
+    timesTable(rows, true).split("\n")[2],
+    "| a | `pkg` | 12 | 600 | 3 |",
+  );
 });
