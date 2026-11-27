@@ -31,6 +31,13 @@ type deviceToken struct {
 	Expires time.Time `json:"expires"`
 }
 
+// TokenSealer seals and opens self-issued tokens. A serving process uses
+// secretbroker.Tokens.
+type TokenSealer interface {
+	Seal(kind secretbroker.TokenKind, plaintext []byte) ([]byte, error)
+	Open(kind secretbroker.TokenKind, ciphertext []byte) ([]byte, error)
+}
+
 // IssueDeviceToken ties a token to the account's current auth version, so a password change,
 // a recovery code or anything else that ends the account's sessions also ends these.
 func (s *Service) IssueDeviceToken(account db.Account) (string, error) {
