@@ -1,4 +1,4 @@
-.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-a-to-b verify-app-go-c-to-k verify-app-go-l-to-p verify-app-go-q-to-r verify-app-go-s-to-z verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-crosshost verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities report-pins check-lane-budget dev dev-wipe
+.PHONY: check verify verify-host verify-build verify-git verify-canvas check-app verify-app verify-app-core verify-app-build verify-app-go-a-to-b verify-app-go-c-to-k verify-app-go-l-to-p verify-app-go-q-to-r verify-app-go-s-to-z verify-app-go-operations verify-app-go-crosshost verify-app-go-preview verify-app-go-network verify-app-go-revoked-host verify-image verify-agent-host verify-agent-host-core verify-agent-host-crosshost verify-agent-host-recovery verify-agent-host-visual verify-agent-host-upgrade verify-agent-host-upgrade-faults verify-troubleshooting-soak verify-agent-colima check-ci check-hooks check-source-size check-inline-sql check-vulnerabilities report-pins check-lane-budget dev dev-wipe
 
 APP_COORDINATION_TESTS = ^TestCrossHostCoordinatedPlacement$$
 APP_PREVIEW_RECOVERY_TESTS = ^TestPreviewRemovalSurvivesCheckpointUnion$$
@@ -128,6 +128,7 @@ verify-agent-host:
 	$(MAKE) verify-agent-host-crosshost
 	$(MAKE) verify-agent-host-visual
 	$(MAKE) verify-agent-host-upgrade
+	$(MAKE) verify-agent-host-upgrade-faults
 
 verify-agent-host-core:
 	cd services/platform && $(NATIVE_GO) ASTILBA_NATIVE_NETWORK=1 ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -timeout=5m -v -run '^TestNative(ManagedLinks|NetworkKeySealedToTheMachine)$$' ./internal/hostnetwork
@@ -146,6 +147,9 @@ verify-agent-host-visual:
 
 verify-agent-host-upgrade:
 	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNativeSupportedMajorUpgrades$$' ./internal/agent
+
+verify-agent-host-upgrade-faults:
+	cd services/platform && $(NATIVE_AGENT_GO) -timeout=30m -run '^TestNativeInterruptedUpgrade(PreparationReturns|CutoverReconciles)$$' ./internal/agent
 
 # The real idle limit and maximum through every proxy, which takes more than 75 minutes.
 verify-troubleshooting-soak:

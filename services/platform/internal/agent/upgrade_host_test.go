@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +24,53 @@ import (
 )
 
 // Upgrades share the ingress, journal and command stream with an unrelated unit.
-// None of them may disturb that unit or hold back later commands on the host.
+// None of them may disturb that unit or hold back later commands on the host. Each
+// test below runs its journeys on a host of its own, so the tests can run in
+// separate lanes, and ends with the same checks of that unit and of later work.
+
+// The fault points an upgrade's prepare passes. Restarted at one, the agent ends
+// the prepare failed, and return serves the old database again.
+var upgradePreparationFaults = []string{"upgrade-admitted", "upgrade-preflight", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect"}
+
+// The fault points an upgrade's cutover passes. Restarted at one, the agent keeps
+// the new-write boundary, refuses a return that would lose writes, and reconcile
+// finishes the cutover.
+var upgradeCutoverFaults = []string{"upgrade-database-effect", "upgrade-routes-effect", "upgrade-writers-effect"}
+
+// The supported journeys start from a retired PostgreSQL 17 release, as a database
+// not yet updated in place does. The first source goes through the application
+// release journey, so the upgrade quiesces the writer a protected release left. A
+// plan made before plans recorded their target still finishes on the 18.4 it was
+// reviewed with.
 func TestNativeSupportedMajorUpgrades(t *testing.T) {
+	h := newNativeUpgradeHost(t)
+	retired := retiredPostgres17(t)
+	nativeUpgradeJourney(t, h.engine, []upgradeJourney{{"complete", "", retired.Image, domain.PostgresImage}, {"legacy_plan", "", retired.Image, ""}}, h.source(true), h.next)
+	h.undisturbed(t)
+}
+
+func TestNativeInterruptedUpgradePreparationReturns(t *testing.T) {
+	h := newNativeUpgradeHost(t)
+	nativeUpgradeJourney(t, h.engine, interruptedUpgrades(upgradePreparationFaults), h.source(false), h.next)
+	h.undisturbed(t)
+}
+
+func TestNativeInterruptedUpgradeCutoverReconciles(t *testing.T) {
+	h := newNativeUpgradeHost(t)
+	nativeUpgradeJourney(t, h.engine, interruptedUpgrades(upgradeCutoverFaults), h.source(false), h.next)
+	h.undisturbed(t)
+}
+
+// A host whose unrelated unit has three replicas, a database holding a record and
+// a TCP route to it.
+type nativeUpgradeHost struct {
+	*nativeVisualFixture
+	first       deployment.Plan
+	databaseURL string
+}
+
+func newNativeUpgradeHost(t *testing.T) *nativeUpgradeHost {
+	t.Helper()
 	f := newNativeVisualFixture(t)
 	ctx := context.Background()
 	first, firstSecrets := f.plan("first", true)
@@ -48,15 +94,21 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close(ctx)
+	return &nativeUpgradeHost{nativeVisualFixture: f, first: first, databaseURL: databaseURL.String()}
+}
 
-	releaseVerified := false
-	nativeUpgradeJourney(t, f.engine, func(t *testing.T, image string) (deployment.Plan, map[string]string) {
-		p, secrets := f.plan("upgrade-"+uuid.NewString(), true)
+// Deploys each journey's source unit from the given PostgreSQL image, with only its
+// HTTP route. With release, the first source goes through the application release
+// journey before its upgrade; every other source routes to two replicas, so an
+// upgrade publishes routes while the pool it routes to is stopped.
+func (h *nativeUpgradeHost) source(release bool) func(*testing.T, string) (deployment.Plan, map[string]string) {
+	releaseVerified := !release
+	return func(t *testing.T, image string) (deployment.Plan, map[string]string) {
+		p, secrets := h.plan("upgrade-"+uuid.NewString(), true)
 		p.Specification.Routes = p.Specification.Routes[:1]
 		p.Specification.Applications[1].Source.Image = &image
 		p.Specification.Applications[1].Mounts[0].Target = domain.PostgresMount(image)
 		if releaseVerified {
-			// An upgrade publishes routes while the pool it routes to is stopped.
 			p.Specification.Applications[0].Replicas = 2
 			p.PrepareInstances(deployment.Plan{})
 		}
@@ -65,28 +117,37 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 			p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf ready > /tmp/www/health; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}
 			p = p.WithHash()
 		}
-		p = f.resolve(p)
-		f.finish(f.command("deploy", p, secrets))
+		p = h.resolve(p)
+		h.finish(h.command("deploy", p, secrets))
 		if !releaseVerified {
-			p = nativeReleaseJourney(t, f.engine, p, secrets, f.resolve, f.command, f.finish)
+			p = nativeReleaseJourney(t, h.engine, p, secrets, h.resolve, h.command, h.finish)
 			releaseVerified = true
 		}
 		return p, secrets
-	}, func(cmd upgrade.Command) api.ExecutionCommand {
-		f.generation++
-		raw, _ := stablejson.Marshal(cmd)
-		value := jsontext.Value(raw)
-		return api.ExecutionCommand{Id: uuid.New(), ServerId: f.server, EnvironmentId: cmd.Plan.Source.EnvironmentID, ResourceId: cmd.Plan.ID, Kind: "upgrade", Action: "inspect", Generation: f.generation, PlanHash: cmd.Digest(), Upgrade: &value, Deadline: time.Now().Add(time.Hour)}
-	})
+	}
+}
 
-	// The scheduler, daemon and volume deletion also read finished upgrade records.
-	nativeFilesAndJobs(t, f.engine, f.server)
-	second, secondSecrets := f.plan("second", false)
-	second = f.resolve(second)
-	f.finish(f.command("deploy", second, secondSecrets))
-	f.request("first.example.test", "v1")
-	f.request("second.example.test", "v1")
-	db, err = pgx.Connect(ctx, databaseURL.String())
+// Upgrade commands share the host's command stream with its deployments.
+func (h *nativeUpgradeHost) next(cmd upgrade.Command) api.ExecutionCommand {
+	h.generation++
+	raw, _ := stablejson.Marshal(cmd)
+	value := jsontext.Value(raw)
+	return api.ExecutionCommand{Id: uuid.New(), ServerId: h.server, EnvironmentId: cmd.Plan.Source.EnvironmentID, ResourceId: cmd.Plan.ID, Kind: "upgrade", Action: "inspect", Generation: h.generation, PlanHash: cmd.Digest(), Upgrade: &value, Deadline: time.Now().Add(time.Hour)}
+}
+
+// After the journeys, the unrelated unit still serves its routes and data, and later
+// work on the host still runs. The scheduler, daemon and volume deletion also read
+// finished upgrade records.
+func (h *nativeUpgradeHost) undisturbed(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	nativeFilesAndJobs(t, h.engine, h.server)
+	second, secondSecrets := h.plan("second", false)
+	second = h.resolve(second)
+	h.finish(h.command("deploy", second, secondSecrets))
+	h.request("first.example.test", "v1")
+	h.request("second.example.test", "v1")
+	db, err := pgx.Connect(ctx, h.databaseURL)
 	if err != nil {
 		t.Fatal("upgrades disturbed an unrelated TCP route")
 	}
@@ -95,13 +156,43 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 	if err = db.QueryRow(ctx, "SELECT value FROM fixture").Scan(&value); err != nil || value != "data-survived" {
 		t.Fatal("upgrades disturbed an unrelated database", err)
 	}
-	nativeControllerTransfer(t, f.engine)
-	f.refuseInUseVolumeDeletion(first)
+	nativeControllerTransfer(t, h.engine)
+	h.refuseInUseVolumeDeletion(h.first)
 }
+
+// The release a database not yet updated in place runs.
+func retiredPostgres17(t *testing.T) domain.PostgresRelease {
+	t.Helper()
+	var retired domain.PostgresRelease
+	for _, r := range domain.PostgresReleases() {
+		if r.Major() == 17 && r.Retired() {
+			retired = r
+		}
+	}
+	if retired.Image == "" {
+		t.Fatal("no retired PostgreSQL 17 release")
+	}
+	return retired
+}
+
+// An upgrade from PostgreSQL 17 to 18, with the agent restarted at each fault point.
+// Each runs the current pins.
+func interruptedUpgrades(points []string) []upgradeJourney {
+	journeys := make([]upgradeJourney, 0, len(points))
+	for _, crash := range points {
+		journeys = append(journeys, upgradeJourney{strings.TrimPrefix(crash, "upgrade-"), crash, domain.Postgres17Image, domain.PostgresImage})
+	}
+	return journeys
+}
+
+// One upgrade, named for its subtest. A journey with a crash restarts the agent at
+// that fault point; one with no target image has a plan made before plans recorded
+// their target.
+type upgradeJourney struct{ name, crash, source, target string }
 
 // The surrounding native fixture supplies real Docker, ingress and the same
 // monotonically increasing command stream used by deployments and backups.
-func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, string) (deployment.Plan, map[string]string), next func(upgrade.Command) api.ExecutionCommand) {
+func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, newSource func(*testing.T, string) (deployment.Plan, map[string]string), next func(upgrade.Command) api.ExecutionCommand) {
 	t.Helper()
 	ctx := context.Background()
 	e.ResticCLI = "/opt/astilba-platform-tools/restic"
@@ -110,20 +201,6 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 		t.Fatal(err)
 	}
 	e.BackupRoots = append(e.BackupRoots, root)
-	var retired17 domain.PostgresRelease
-	for _, r := range domain.PostgresReleases() {
-		if r.Major() == 17 && r.Retired() {
-			retired17 = r
-		}
-	}
-	type journey struct{ name, crash, source, target string }
-	// The full journey starts from a retired PostgreSQL 17 release, as a database not yet
-	// updated in place does. A plan made before plans recorded their target still finishes
-	// on the 18.4 it was reviewed with. Each fault point runs the current pins.
-	journeys := []journey{{"complete", "", retired17.Image, domain.PostgresImage}, {"legacy_plan", "", retired17.Image, ""}}
-	for _, crash := range []string{"upgrade-admitted", "upgrade-preflight", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect", "upgrade-database-effect", "upgrade-routes-effect", "upgrade-writers-effect"} {
-		journeys = append(journeys, journey{strings.TrimPrefix(crash, "upgrade-"), crash, domain.Postgres17Image, domain.PostgresImage})
-	}
 	for _, j := range journeys {
 		crash := j.crash
 		t.Run(j.name, func(t *testing.T) {
@@ -331,7 +408,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				}
 				return r
 			}
-			cutoverCrash := strings.Contains(crash, "database-") || strings.Contains(crash, "routes-") || strings.Contains(crash, "writers-")
+			cutoverCrash := slices.Contains(upgradeCutoverFaults, crash)
 			r := send("prepare", crash != "" && !cutoverCrash)
 			state, err := e.Journal.upgrade(plan.ID)
 			if err != nil {

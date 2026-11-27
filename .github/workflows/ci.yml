@@ -83,7 +83,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
         # Every lane prepares its own disposable VM identically; none shares host state.
-        lane: [core, crosshost, recovery, visual, upgrade]
+        lane: [core, crosshost, recovery, visual, upgrade, upgrade-faults]
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
@@ -94,11 +94,13 @@ jobs:
         run: |
           printf 'GOCACHE=%s/astilba-native-go/build\nGOMODCACHE=%s/astilba-native-go/mod\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Cache native Go compilation
+        # The two upgrade lanes compile the same race-built ./internal/agent tests, so they
+        # share one entry rather than save the same build twice.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/astilba-native-go
-          key: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
-          restore-keys: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
+          key: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane == 'upgrade-faults' && 'upgrade' || matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-${{ hashFiles('**/go.sum', 'experiments/durable-execution/**/*.go', 'services/platform/**/*.go') }}
+          restore-keys: native-go-v2-${{ runner.os }}-${{ matrix.platform.arch }}-${{ matrix.lane == 'upgrade-faults' && 'upgrade' || matrix.lane }}-${{ hashFiles('.github/workflows/ci.yml', 'experiments/durable-execution/host/bootstrap.sh', '**/go.mod') }}-
       - name: Download native Go modules
         # Loading every package fetches the toolchain and the modules they import, keeping tool-only
         # modules out of the cache. A package load error also fails here, after the same attempts.
@@ -129,8 +131,8 @@ jobs:
       - name: Verify fresh production host bootstrap
         env:
           # core and visual block this host's Ubuntu archives, so the bootstrap must install from
-          # a pinned fallback; recovery installs from the host's own sources; crosshost and upgrade
-          # need no Ubuntu package at all.
+          # a pinned fallback; recovery installs from the host's own sources; crosshost and both
+          # upgrade lanes need no Ubuntu package at all.
           UBUNTU_SOURCES: ${{ (matrix.lane == 'core' || matrix.lane == 'visual') && 'blocked' || matrix.lane == 'recovery' && 'host' || 'unchanged' }}
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)
