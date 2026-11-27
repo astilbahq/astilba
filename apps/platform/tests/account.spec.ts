@@ -238,3 +238,72 @@ test("account credentials use shared forms and clear secrets and drafts after a 
   expect(await page.locator("body").innerText()).not.toContain(shownCode);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
+
+test("the account page lists signed-in sessions and signs out another", async ({
+  browser,
+  page,
+}) => {
+  const account = randomUUID();
+  const email = `${account}@example.test`;
+  await authFixtureSQL(
+    `INSERT INTO accounts(id,email,name,password_hash) SELECT '${account}','${email}','Sessions test',password_hash FROM accounts WHERE email='owner@example.test'`,
+  );
+  const signIn = async (target: typeof page) => {
+    await target.goto("/login?returnTo=/account");
+    await target.getByLabel("Email", { exact: true }).fill(email);
+    await target
+      .getByLabel("Password", { exact: true })
+      .fill("correct horse battery staple");
+    await target.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect(
+      target.getByRole("heading", { name: "Account security", exact: true }),
+    ).toBeVisible();
+  };
+  const elsewhere = await browser.newContext();
+  try {
+    const other = await elsewhere.newPage();
+    await signIn(other);
+    await signIn(page);
+
+    const sessions = page.getByRole("region", { name: "Signed-in sessions" });
+    await expect(sessions.getByRole("listitem")).toHaveCount(2);
+    const current = sessions
+      .getByRole("listitem")
+      .filter({ hasText: "This session" });
+    await expect(current).toContainText("Active now");
+    await expect(current.getByRole("button", { name: "Sign out" })).toHaveCount(
+      0,
+    );
+    expect(
+      (
+        await new AxeBuilder({ page })
+          .include("section[aria-labelledby='account-sessions']")
+          .analyze()
+      ).violations,
+    ).toEqual([]);
+
+    // Signing in just now is recent authentication, so nothing asks for it again.
+    await sessions
+      .getByRole("listitem")
+      .filter({ hasNotText: "This session" })
+      .getByRole("button")
+      .click();
+    await expect(sessions.getByRole("status")).toHaveText(
+      "Session signed out.",
+    );
+    await expect(sessions.getByRole("listitem")).toHaveCount(1);
+    await expect(
+      sessions.getByRole("heading", { name: "Signed-in sessions" }),
+    ).toBeFocused();
+    await expect(
+      sessions.getByText("No other sessions are signed in."),
+    ).toBeVisible();
+
+    await other.reload();
+    await expect(
+      other.getByRole("button", { name: "Sign in", exact: true }),
+    ).toBeVisible();
+  } finally {
+    await elsewhere.close();
+  }
+});

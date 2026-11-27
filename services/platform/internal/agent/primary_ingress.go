@@ -45,5 +45,5 @@ func (e *Engine) prepareIngress(ctx context.Context) error {
 		return err
 	}
 	next.ManagedEgress, next.PrivateIngress, next.Revision = true, true, uuid.NewString()
-	return e.attemptRoutes(ctx, state, next, false, "", false)
+	return e.attemptRoutes(ctx, state, next, false, routeWait{}, false)
 }
