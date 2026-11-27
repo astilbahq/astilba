@@ -164,6 +164,28 @@ func TestNetworkKeysAreSealedOnlyBetweenCommands(t *testing.T) {
 	}
 }
 
+// A command putting images into Docker lends the engine, so the keys are sealed meanwhile.
+func TestNetworkKeysAreSealedWhileACommandPullsImages(t *testing.T) {
+	ctx := context.Background()
+	store := InsecureKeyStore()
+	dir := privateDir(t)
+	j, err := OpenSealed(ctx, dir, storeOpener(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	member := uuid.New()
+	if _, err = (hostnetwork.Host{Dir: dir}).Identity(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Journal: j}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err = e.lend(func() error { return e.sealNetworkKeys(ctx, j.networkKeyStore()) }); err != nil || !sealedKeyFile(networkKeyFile(t, dir, member)) {
+		t.Fatal("private-link keys weren't sealed while a command pulled images", err)
+	}
+}
+
 // A copy of the state directory, such as a backup or disk snapshot, opens no journal on another
 // machine, and the private-link key in it stays as it was: sealing elsewhere neither opens nor
 // replaces it. hostnetwork's tests show the key itself doesn't open there.

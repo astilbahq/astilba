@@ -193,6 +193,14 @@ func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
 		data := p.blobs[p.layer]
 		return append(fmt.Appendf(nil, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", len(data)), data[:len(data)/2]...)
 	}
+	// A registry that stops sending, until the agent gives up on the answer.
+	stall := func(_ *testing.T, p *registryPull, w http.ResponseWriter, req *http.Request) {
+		data := p.blobs[p.layer]
+		w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+		_, _ = w.Write(data[:len(data)/2])
+		_ = http.NewResponseController(w).Flush()
+		<-req.Context().Done()
+	}
 	for name, tc := range map[string]struct {
 		proto    string
 		manifest bool
@@ -209,6 +217,8 @@ func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
 		"a blob's connection reset": {"HTTP/1.1", false, func(t *testing.T, p *registryPull, w http.ResponseWriter, _ *http.Request) {
 			hijacked(t, w, partial(p), true)
 		}},
+		"a blob that stops partway":         {"HTTP/1.1", false, stall},
+		"an HTTP/2 blob that stops partway": {"HTTP/2.0", false, stall},
 		"an HTTP/2 stream reset": {"HTTP/2.0", false, func(_ *testing.T, p *registryPull, w http.ResponseWriter, _ *http.Request) {
 			data := p.blobs[p.layer]
 			w.Header().Set("Content-Length", fmt.Sprint(len(data)))
@@ -230,6 +240,9 @@ func TestPullReadsAgainAfterARegistryRecovers(t *testing.T) {
 		for _, store := range []string{"containerd", "classic"} {
 			t.Run(name+"/"+store, func(t *testing.T) {
 				p := newRegistryPull(t, store == "containerd", tc.proto)
+				if strings.HasSuffix(name, "stops partway") {
+					p.engine.registryProgress = &registryProgress{window: 500 * time.Millisecond, least: 1 << 10}
+				}
 				failing := p.layer
 				if tc.manifest {
 					failing = p.root

@@ -48,7 +48,14 @@ type Engine struct {
 	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
-	mu          sync.Mutex
+	// mu is the host's execution lock: a command holds it from start to end, as do scheduled
+	// backups and other work that must not run inside a command.
+	mu sync.Mutex
+	// lent is whether the command holding mu has lent the engine, while it puts images into
+	// Docker, to work that may run beside it; see lend. lendMu guards it, and that work holds
+	// lendMu while it runs.
+	lendMu sync.Mutex
+	lent   bool
 	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
 	layerCostsOnce sync.Once
 	measuredLayers *layerCosts
@@ -58,6 +65,9 @@ type Engine struct {
 	// registryRetry is how often the agent reads an image again in tests, which can't wait as long
 	// as defaultRegistryRetry, the policy when nil.
 	registryRetry *registryRetry
+	// registryProgress is how fast a registry must send an answer in tests, which can't wait as
+	// long as defaultRegistryProgress, the policy when nil.
+	registryProgress *registryProgress
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
@@ -445,9 +455,51 @@ func (e *Engine) inspectOrRemove(ctx context.Context, c api.ExecutionCommand) er
 	return e.finish(c.Id, "succeeded", "Managed probe removed. No networks or volumes were removed.")
 }
 
+// lend runs put, a command's putting of images into Docker, with the engine lent to work that may
+// run beside a command, see betweenCommands. Reading an image from its registry can take minutes,
+// or as long as the registry keeps sending it, and changes nothing on the host that such work
+// reads or changes. The command goes on once that work has finished. Other work, such as
+// scheduled backups, skips its turn, see lockUnlessLent.
+func (e *Engine) lend(put func() error) error {
+	e.lendMu.Lock()
+	e.lent = true
+	e.lendMu.Unlock()
+	defer func() {
+		e.lendMu.Lock()
+		e.lent = false
+		e.lendMu.Unlock()
+	}()
+	return put()
+}
+
+// lockUnlessLent takes mu for work that must not run inside a command, such as a schedule tick,
+// and reports true. While a command has lent the engine it reports false without taking mu, so
+// that work skips its turn rather than waits behind a registry. Work already waiting on mu when a
+// command lends the engine waits for the command to end, as it always has.
+func (e *Engine) lockUnlessLent() bool {
+	if e.mu.TryLock() {
+		return true
+	}
+	e.lendMu.Lock()
+	lent := e.lent
+	e.lendMu.Unlock()
+	if lent {
+		return false
+	}
+	e.mu.Lock()
+	return true
+}
+
 // commandContext ends at end, or once the command's owner cancels it.
 func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, end time.Time) (context.Context, func()) {
 	ctx, cancel := context.WithDeadline(parent, end)
+	cancellable, stop := untilCancelled(ctx, func() bool { return e.cancelled(c.Id) })
+	return cancellable, func() { stop(); cancel() }
+}
+
+// untilCancelled is parent until cancelled, which it asks five times a second, returns true.
+func untilCancelled(parent context.Context, cancelled func() bool) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(200 * time.Millisecond)
@@ -459,7 +511,7 @@ func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, 
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if e.cancelled(c.Id) {
+				if cancelled() {
 					cancel()
 					return
 				}
