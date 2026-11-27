@@ -30,6 +30,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/custody"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/httpapi"
+	"github.com/astilbahq/astilba/services/platform/internal/lanebudget"
 	"github.com/astilbahq/astilba/services/platform/internal/mailer"
 	"github.com/astilbahq/astilba/services/platform/internal/randtoken"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
@@ -40,9 +41,6 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/pquerna/otp/totp"
 )
-
-// laneBudget is budgetSeconds in scripts/lane-budget.mjs, whose test holds the two together.
-const laneBudget = 600 * time.Second
 
 const postgresImage = "postgres:18.7-alpine3.23@sha256:e6014245dccbc0f28b07dac8e3f793c94a18420f78690e9db547957514a524f1"
 
@@ -103,7 +101,8 @@ func TestMain(m *testing.M) {
 	if testing.Short() {
 		os.Exit(m.Run())
 	}
-	began := time.Now()
+	// The time includes the test database's start, as go test's for the package does.
+	done := lanebudget.Start()
 	host := os.Getenv("PLAT_APP_DOCKER_HOST")
 	if !strings.HasPrefix(host, "unix:///") {
 		fmt.Fprintln(os.Stderr, "PLAT_APP_DOCKER_HOST must explicitly select a disposable local Unix socket")
@@ -186,17 +185,8 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	cleanup()
-	warnPastBudget(time.Since(began))
+	done()
 	os.Exit(code)
-}
-
-// warnPastBudget annotates the run that crosses the budget, so the pull request taking a
-// lane there shows it in its own checks. The Lane budget workflow only sees it after it
-// lands, and only as a median.
-func warnPastBudget(took time.Duration) {
-	if os.Getenv("GITHUB_ACTIONS") == "true" && took > laneBudget {
-		fmt.Printf("::warning title=Go race lane past its budget::internal/integration took %.0fs against a %.0fs budget, and go test stops at 900s. See docs/continuous-integration.md.\n", took.Seconds(), laneBudget.Seconds())
-	}
 }
 
 type fixture struct {

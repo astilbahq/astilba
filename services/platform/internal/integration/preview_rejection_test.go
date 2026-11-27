@@ -46,3 +46,59 @@ func TestPreviewBuildRejectionSettlesTheRequest(t *testing.T) {
 		t.Fatal("the corrected policy's preview has no environment")
 	}
 }
+
+// A preview build can be admitted while one of its environment's secrets is out of the check's
+// reach, and find that secret in its arguments at delivery. The build would be refused again at
+// every poll until its deadline, so the first poll ends it, and later polls neither deliver it nor
+// search the secrets again.
+func TestPreviewBuildRejectedAtDeliverySettlesOnce(t *testing.T) {
+	h := newHungPreview(t)
+	const canary = "preview-delivery-canary"
+	var secret api.SecretVersion
+	h.b.call("POST", h.path+"/secrets", map[string]string{"name": "TOKEN", "value": canary}, 201, &secret)
+	spec := h.spec
+	spec.Variables = append(append([]domain.Variable{}, spec.Variables...), domain.Variable{Name: "TOKEN", SecretVersionID: &secret.Id})
+	var draft api.Revision
+	h.b.call("PUT", h.path+"/draft", map[string]any{"baseRevisionId": h.draft.Id, "specification": spec}, 200, &draft)
+	h.policy["baseRevisionId"] = draft.Id
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+	preview := approvePreview(t, h, h.path)
+	first := nextPreviewCommand(t, h)
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: first.Id, Generation: first.Generation, PlanHash: first.PlanHash, Sequence: 1, State: "cancelled", Steps: []api.ExecutionStep{}}, 204, nil)
+	h.waitPreview(t, "failed")
+	// The next commit's build is admitted while the environment's copy of the secret is retired,
+	// and its arguments come to hold the secret's value. The copy is back before the runner polls.
+	execSQL(t, h.hungBuild, "UPDATE secrets SET retired_at=now() WHERE environment_id=$1", *preview.EnvironmentId)
+	execSQL(t, h.hungBuild, "UPDATE preview_requests SET configuration=jsonb_set(configuration,'{build,arguments}',jsonb_build_object('TOKEN',$1::text)) WHERE id=$2", canary, preview.Id)
+	pushPreviewCommit(t, h, strings.Repeat("b", 40))
+	preview = h.waitPreview(t, "building")
+	operation := *preview.OperationId
+	if operation == first.Id {
+		t.Fatal("the new commit's build was not admitted")
+	}
+	h.waitState(t, operation, "dispatched")
+	execSQL(t, h.hungBuild, "UPDATE secrets SET retired_at=NULL WHERE environment_id=$1", *preview.EnvironmentId)
+	var polled api.AgentPoll
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/poll", h.token, nil, 200, &polled)
+	if polled.Command != nil {
+		t.Fatal("the rejected build was delivered", polled.Command.Id)
+	}
+	var state, note string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state,note FROM execution_operations WHERE id=$1", operation).Scan(&state, &note); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" || !strings.HasSuffix(note, "Build rejected before runner delivery: Public build arguments contain a known secret value.") || strings.Contains(note, canary) {
+		t.Fatalf("the build ended %s with the note %q", state, note)
+	}
+	h.waitPreview(t, "failed")
+	searched := secretAccesses(t, h)
+	for range 3 {
+		agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/poll", h.token, nil, 200, &polled)
+		if polled.Command != nil {
+			t.Fatal("a later poll delivered", polled.Command.Id)
+		}
+	}
+	if secretAccesses(t, h) != searched {
+		t.Fatal("a later poll checked the settled build's inputs again")
+	}
+}
