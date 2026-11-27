@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
+	"github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 	"path/filepath"
 )
@@ -197,6 +198,10 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 	return h
 }
 
+// capacityInventory reports the host's capacity and the containers that run without a memory or CPU
+// bound. A container removed between the list and its inspect, as a release command's, a backup
+// dump's or a probe's is when it ends, no longer runs, so it is left out; any other inspect error
+// leaves the inventory unknown.
 func capacityInventory(ctx context.Context, docker *client.Client) (api.CrossHostInventory, error) {
 	info, infoErr := docker.Info(ctx, client.InfoOptions{})
 	containers, listErr := docker.ContainerList(ctx, client.ContainerListOptions{Limit: 1001})
@@ -205,6 +210,9 @@ func capacityInventory(ctx context.Context, docker *client.Client) (api.CrossHos
 	if known {
 		for _, row := range containers.Items {
 			c, err := docker.ContainerInspect(ctx, row.ID, client.ContainerInspectOptions{})
+			if errdefs.IsNotFound(err) {
+				continue
+			}
 			if err != nil {
 				known = false
 				break

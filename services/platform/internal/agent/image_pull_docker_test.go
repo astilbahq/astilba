@@ -421,8 +421,9 @@ func TestDeploymentEndsDockersPull(t *testing.T) {
 	}
 }
 
-// The test command's pull ends as its owner cancels it, a stall or its time ends it, with no
-// container created; an agent that stops leaves it to pull again when it starts.
+// The test command's pull ends as its owner cancels it, a stall or its time ends it, or Docker
+// fails it, with no container created, and only a cancel ends it other than failed; an agent that
+// stops leaves it to pull again when it starts.
 func TestTestCommandEndsDockersPull(t *testing.T) {
 	for name, tc := range map[string]struct {
 		pull   func(http.ResponseWriter, *http.Request)
@@ -439,7 +440,19 @@ func TestTestCommandEndsDockersPull(t *testing.T) {
 			state:  "failed", note: "the registry stopped sending the test image",
 		},
 		"its time running out": {pull: keepsUp, engine: &Engine{pullLimit: 300 * time.Millisecond}, state: "failed", note: "within the 10 minutes the agent allows"},
-		"the agent stopping":   {pull: stalls, stop: true},
+		"Docker failing it": {
+			pull: func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, `{"errorDetail":{"message":"no space left on device"},"error":"no space left on device"}`+"\n")
+			},
+			state: "failed", note: "Image pull failed. No container was created.",
+		},
+		"Docker refusing it": {
+			pull: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, `{"message":"pull access denied"}`, http.StatusNotFound)
+			},
+			state: "failed", note: "Image pull failed. No container was created.",
+		},
+		"the agent stopping": {pull: stalls, stop: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			daemon := newPullDaemon(t, tc.pull)
