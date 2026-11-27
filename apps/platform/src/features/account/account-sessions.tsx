@@ -240,7 +240,9 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
                           params: { path: { sessionId: session.id } },
                         }),
                       ),
+                    // Only a complete list shows it gone: one it fell out of says nothing.
                     (list) =>
+                      list.unlisted === 0 &&
                       !list.sessions.some(({ id }) => id === session.id),
                     origin,
                   )

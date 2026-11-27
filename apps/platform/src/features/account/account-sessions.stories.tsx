@@ -211,6 +211,45 @@ export const SignOutAnswerLost: Story = {
     ).toHaveFocus();
   },
 };
+// A failed sign-out whose session is missing from a list that leaves some out may still be signed
+// in, so it is reported as failed.
+export const SignOutFailsBeyondTheList: Story = {
+  ...sessionsScenario(signedIn, {
+    after: { sessions: [thisSession, phone], unlisted: 1 },
+    signOut: "lost",
+  }),
+  play: async ({ canvasElement }) => {
+    const list = sessionList(canvasElement);
+    await userEvent.click(
+      within((await list.findAllByRole("listitem"))[1]).getByRole("button", {
+        name: "Sign out Chrome on Windows",
+      }),
+    );
+    await expect(await list.findByRole("alert")).toHaveTextContent(
+      "The session could not be signed out.",
+    );
+    await expect(list.getAllByRole("listitem")).toHaveLength(2);
+  },
+};
+// Signing out the rest whose answer was lost after it ended them is done, as reading the list
+// again shows; focus moves to the section, since the button went with them.
+export const SignOutOtherSessionsAnswerLost: Story = {
+  ...sessionsScenario(signedIn, { after: alone, signOut: "lost" }),
+  play: async ({ canvasElement }) => {
+    const list = sessionList(canvasElement);
+    await userEvent.click(
+      await list.findByRole("button", { name: "Sign out all other sessions" }),
+    );
+    await expect(
+      await list.findByText("All other sessions signed out."),
+    ).toHaveAttribute("role", "status");
+    await expect(list.queryByRole("alert")).toBeNull();
+    await expect(list.getAllByRole("listitem")).toHaveLength(1);
+    await expect(
+      list.getByRole("heading", { name: "Signed-in sessions" }),
+    ).toHaveFocus();
+  },
+};
 // Failing to sign out the rest says so for all of them, and keeps focus on their button.
 export const SignOutOtherSessionsFails: Story = {
   ...sessionsScenario(signedIn, { signOut: "fails" }),
