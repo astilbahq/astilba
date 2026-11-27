@@ -108,9 +108,16 @@ func nativeS3Backup(t *testing.T, e *Engine, policy backup.Policy, databasePassw
 	policy.Retain = 1
 	destination := s3.destination
 	destination.ID = policy.DestinationID
+	// A destination's keys can be limited to its prefix, so its repositories are all under it.
+	destination.Prefix = "servers/" + policy.ServerID.String()
 	in := backup.Installation{Policy: policy, Destination: destination, Access: backup.Access{AccessKey: s3.access.AccessKey, SecretKey: s3.access.SecretKey, Password: "s3-repository-password-canary", DatabasePassword: databasePassword}}
 	if err := e.prepareRepository(ctx, &in, true); err != nil {
 		t.Fatal(err)
+	}
+	root := in
+	root.Destination.Prefix = ""
+	if _, err := e.restic(ctx, root, e.Journal.dir, "cat", "config"); err == nil {
+		t.Fatal("the policy's repository is at the bucket's root, outside the destination's prefix")
 	}
 	s := scheduleState{Installation: in, Runs: []backup.Run{}}
 	if err := e.runScheduled(ctx, &s, time.Now().UTC(), uuid.New(), "", uuid.Nil); err != nil {

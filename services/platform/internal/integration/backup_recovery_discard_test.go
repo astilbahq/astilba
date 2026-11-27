@@ -202,6 +202,10 @@ func TestARestoresDiscardTravelsWithItsWorkspace(t *testing.T) {
 	for _, row := range archive.Tables["backup_recoveries"] {
 		delete(row, "discard_operation_id")
 	}
+	for _, row := range archive.Tables["backup_destinations"] {
+		delete(row, "server_id")
+		delete(row, "shared")
+	}
 	older, err := stablejson.Marshal(archive)
 	if err != nil {
 		t.Fatal(err)

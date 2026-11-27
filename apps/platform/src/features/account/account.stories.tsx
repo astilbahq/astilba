@@ -2,13 +2,22 @@ import type { Meta, StoryObj } from "@storybook/tanstack-react";
 import type { QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw/http";
 import { expect, userEvent, waitFor, within } from "storybook/test";
-import { css } from "../../../styled-system/css";
-import { setSession, type Session, type Schema } from "../../api/client";
+import { setSession, type Session } from "../../api/client";
 import { sessionOptions } from "../../api/session";
-import { member, reject, scenario } from "../../workshop/fixtures";
+import { reject, scenario } from "../../workshop/fixtures";
 import { Account } from "./account";
+import {
+  accountPage,
+  confirmation,
+  confirmationClosed,
+  confirmWith,
+  enabled,
+  resetSent,
+  sent,
+  sessionMutation,
+  staleEnabled,
+} from "./account.workshop";
 
-const enabled: Session = { ...member, recentAuth: true };
 const disabled: Session = {
   ...enabled,
   user: { ...enabled.user!, mfaEnabled: false },
@@ -31,85 +40,15 @@ const enrollment = http.post("/api/v1/auth/mfa/enroll", () =>
   }),
 );
 
-// What the workshop server was sent, reset before each story.
-let sent: unknown[] = [];
-function sessionMutation(
-  initial: Session,
-  next: Session,
-  path: string,
-  response: Session | Schema["RecoveryCodes"] = next,
-) {
-  let current = initial;
-  const parameters = scenario(
-    initial,
-    http.post(`/api/v1/auth/${path}`, async ({ request }) => {
-      sent.push(await request.json());
-      current = next;
-      return HttpResponse.json(response);
-    }),
-  );
-  parameters.msw.handlers.session.unshift(
-    http.get("/api/v1/session", () => HttpResponse.json(current)),
-  );
-  return {
-    parameters,
-    beforeEach: () => {
-      current = initial;
-    },
-  };
-}
-
 const meta = {
   title: "Pages/Account security",
   component: Account,
-  decorators: [
-    (Story) => (
-      <main
-        id="main"
-        className={css({
-          padding: { base: "4", sm: "8" },
-          minBlockSize: "viewport",
-          backgroundColor: "page",
-        })}
-      >
-        <Story />
-      </main>
-    ),
-  ],
+  decorators: [accountPage],
   parameters: scenario(enabled),
-  beforeEach: () => {
-    sent = [];
-  },
+  beforeEach: resetSent,
 } satisfies Meta<typeof Account>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-
-// Changes to how the person signs in ask for the current credential in this dialog.
-const confirmation = (canvas: HTMLElement) =>
-  within(canvas.ownerDocument.body).findByRole("alertdialog", {
-    name: "Confirm your identity",
-  });
-// Answers the dialog with the password, or with an authenticator code when given none.
-async function confirmWith(canvas: HTMLElement, password?: string) {
-  const dialog = await confirmation(canvas);
-  const input = password
-    ? within(dialog).getByLabelText("Password")
-    : within(dialog).getAllByRole("textbox")[0];
-  await waitFor(() => expect(input).toHaveFocus());
-  await userEvent.keyboard(password ?? "123456");
-  await userEvent.click(
-    within(dialog).getByRole("button", { name: "Confirm" }),
-  );
-  return dialog;
-}
-const confirmationClosed = (canvas: HTMLElement) =>
-  waitFor(() =>
-    expect(
-      within(canvas.ownerDocument.body).queryByRole("alertdialog", {
-        name: "Confirm your identity",
-      }),
-    ).toBeNull(),
-  );
 
 export const AuthenticatorEnabled: Story = {};
 export const AuthenticatorDisabled: Story = {
@@ -287,7 +226,6 @@ export const ConfirmWithRecoveryCode: Story = {
   },
 };
 // Account security has its own way to confirm, for someone about to do several things.
-const staleEnabled: Session = { ...enabled, recentAuth: false };
 export const StandaloneConfirmation: Story = {
   ...sessionMutation(staleEnabled, enabled, "reauthenticate"),
   play: async (context) => {

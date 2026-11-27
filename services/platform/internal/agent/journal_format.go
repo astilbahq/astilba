@@ -280,7 +280,7 @@ func (j *Journal) legacyMigrationAllowed() error {
 			}
 		}
 		seen := map[string]bool{}
-		for _, bucket := range []string{"schedules-v2", "schedules"} {
+		for _, bucket := range scheduleBuckets {
 			b := tx.Bucket([]byte(bucket))
 			if b == nil {
 				continue

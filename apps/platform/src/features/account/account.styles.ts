@@ -50,3 +50,38 @@ export const actions = css({
   alignItems: "center",
   gap: "3",
 });
+export const sessions = css({
+  listStyle: "none",
+  margin: "0",
+  padding: "0",
+});
+export const session = css({
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "3",
+});
+export const sessionDetails = css({
+  display: "flex",
+  flexDirection: "column",
+  gap: "1",
+  minInlineSize: "0",
+});
+export const sessionClient = css({
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "2",
+  fontWeight: "medium",
+});
+export const sessionCurrent = css({
+  paddingInline: "2",
+  borderWidth: "1px",
+  borderStyle: "solid",
+  borderColor: "border",
+  borderRadius: "control",
+  color: "subtle",
+  fontSize: "secondary",
+  fontWeight: "normal",
+});

@@ -254,6 +254,16 @@ export function Form({
     </FormErrorContext>
   );
 }
+// fieldError marks a control that Field doesn't render, such as a select, when the form's last
+// refusal named it.
+export function useFieldError(name: string) {
+  const error = useContext(FormErrorContext);
+  const invalid = error.fields.includes(name);
+  return {
+    "aria-invalid": invalid || undefined,
+    "aria-describedby": invalid ? error.id : undefined,
+  };
+}
 export function Field({
   name,
   label,

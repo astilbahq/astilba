@@ -154,10 +154,12 @@ type BackupCutover struct {
 }
 
 type BackupDestination struct {
-	ID              uuid.UUID `json:"id"`
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
-	Configuration   []byte    `json:"configuration"`
-	EncryptedAccess []byte    `json:"encrypted_access"`
+	ID              uuid.UUID  `json:"id"`
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	Configuration   []byte     `json:"configuration"`
+	EncryptedAccess []byte     `json:"encrypted_access"`
+	ServerID        *uuid.UUID `json:"server_id"`
+	Shared          bool       `json:"shared"`
 }
 
 type BackupPolicy struct {
@@ -1054,10 +1056,17 @@ type ServerMetric struct {
 }
 
 type Session struct {
-	Token   string    `json:"token"`
-	Data    []byte    `json:"data"`
-	Expiry  time.Time `json:"expiry"`
-	Lineage uuid.UUID `json:"lineage"`
+	Token         string      `json:"token"`
+	Data          []byte      `json:"data"`
+	Expiry        time.Time   `json:"expiry"`
+	Lineage       uuid.UUID   `json:"lineage"`
+	AccountID     *uuid.UUID  `json:"account_id"`
+	AuthVersion   pgtype.Int8 `json:"auth_version"`
+	SignedInAt    *time.Time  `json:"signed_in_at"`
+	LastSeenAt    *time.Time  `json:"last_seen_at"`
+	ClientBrowser pgtype.Text `json:"client_browser"`
+	ClientOs      pgtype.Text `json:"client_os"`
+	ClientNetwork pgtype.Text `json:"client_network"`
 }
 
 type SourceSubmission struct {
