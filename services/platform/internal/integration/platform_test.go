@@ -417,7 +417,7 @@ func TestResetLocksAccountBeforeToken(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, e := f.auth.CompleteReset(ctx, token, "replacement password here", "test")
+		_, e := f.auth.CompleteReset(ctx, token, "replacement password here", "test", nil)
 		done <- e
 	}()
 	waiting := false
