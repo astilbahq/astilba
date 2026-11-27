@@ -81,7 +81,7 @@ func TestNativeDeploymentRecreatesAnUnfinishedCluster(t *testing.T) {
 	f := newNativeVisualFixture(t)
 	ctx := context.Background()
 	p, secrets := f.plan("unfinished", true)
-	p = f.resolve(p.WithHash())
+	p = f.resolve(t, p.WithHash())
 	a := p.Specification.Applications[1]
 	volume := a.Mounts[0].VolumeID
 	release, ok := domain.PostgresReleaseOf(*a.Source.Image)
@@ -102,7 +102,7 @@ func TestNativeDeploymentRecreatesAnUnfinishedCluster(t *testing.T) {
 	if _, err := f.docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: initName(volume), Config: &container.Config{Image: release.Image, Cmd: []string{"true"}, Labels: labels}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(volume), Target: release.Mount}}}}); err != nil {
 		t.Fatal(err)
 	}
-	f.finish(f.command("deploy", p, secrets))
+	f.finish(t, f.command("deploy", p, secrets))
 	if _, err := f.docker.ContainerInspect(ctx, initName(volume), client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
 		t.Fatalf("the unfinished creation's container survived: %v", err)
 	}
