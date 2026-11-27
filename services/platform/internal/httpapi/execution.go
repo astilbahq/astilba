@@ -171,7 +171,16 @@ func (s *Server) RequestRotation(w http.ResponseWriter, r *http.Request, ws, id 
 	s.executionResponse(w, r, 204, nil, e)
 }
 func (s *Server) RevokeServer(w http.ResponseWriter, r *http.Request, ws, id uuid.UUID) {
-	e := s.Execution.Control(r.Context(), *principal(r.Context()), ws, id, true)
+	// The body is optional: a revocation without one revokes the server's managed backup keys.
+	var b api.ServerRevokeRequest
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
+		var e error
+		if b, e = decode[api.ServerRevokeRequest](r); e != nil {
+			s.fail(w, r, e)
+			return
+		}
+	}
+	e := s.Execution.RevokeServer(r.Context(), *principal(r.Context()), ws, id, b.HandOverStorageKeys != nil && *b.HandOverStorageKeys)
 	s.executionResponse(w, r, 204, nil, e)
 }
 func (s *Server) ListAgentReleases(w http.ResponseWriter, r *http.Request, ws uuid.UUID) {

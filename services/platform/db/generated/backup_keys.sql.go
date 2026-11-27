@@ -363,9 +363,11 @@ func (q *Queries) DeleteBackupPlaceholder(ctx context.Context, arg DeleteBackupP
 }
 
 const destinationBackupStorageKeys = `-- name: DestinationBackupStorageKeys :many
-SELECT destination_id,id,purpose,state,user_name,holder_server_id,handed_over,activated_at,revoked_at,attempts,last_error
-FROM backup_storage_keys WHERE workspace_id = $1 AND destination_id IS NOT NULL
-ORDER BY destination_id,created_at DESC,id DESC LIMIT 2000
+SELECT k.destination_id,k.id,k.purpose,k.state,k.user_name,k.holder_server_id,k.activated_at,k.revoked_at,k.attempts,k.last_error,
+    (k.handed_over IS NOT NULL AND s.revoked AND k.handed_over = s.revocations)::bool AS handed_over
+FROM backup_storage_keys k JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+WHERE k.workspace_id = $1 AND k.destination_id IS NOT NULL
+ORDER BY k.destination_id,k.created_at DESC,k.id DESC LIMIT 2000
 `
 
 type DestinationBackupStorageKeysRow struct {
@@ -375,11 +377,11 @@ type DestinationBackupStorageKeysRow struct {
 	State          string      `json:"state"`
 	UserName       string      `json:"user_name"`
 	HolderServerID *uuid.UUID  `json:"holder_server_id"`
-	HandedOver     pgtype.Int8 `json:"handed_over"`
 	ActivatedAt    *time.Time  `json:"activated_at"`
 	RevokedAt      *time.Time  `json:"revoked_at"`
 	Attempts       int32       `json:"attempts"`
 	LastError      pgtype.Text `json:"last_error"`
+	HandedOver     bool        `json:"handed_over"`
 }
 
 // The keys of a workspace's managed destinations, for their views.
@@ -399,11 +401,11 @@ func (q *Queries) DestinationBackupStorageKeys(ctx context.Context, workspaceID 
 			&i.State,
 			&i.UserName,
 			&i.HolderServerID,
-			&i.HandedOver,
 			&i.ActivatedAt,
 			&i.RevokedAt,
 			&i.Attempts,
 			&i.LastError,
+			&i.HandedOver,
 		); err != nil {
 			return nil, err
 		}
@@ -1132,6 +1134,22 @@ func (q *Queries) RetryAccountBackupStorageKeys(ctx context.Context, arg RetryAc
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const retryBackupRemint = `-- name: RetryBackupRemint :exec
+UPDATE backup_destinations SET remint_next_at=NULL
+WHERE workspace_id = $1 AND id = $2 AND account_id IS NOT NULL AND remint_error IS NOT NULL
+`
+
+type RetryBackupRemintParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// The owner's retry starts a failing re-mint on the next pass.
+func (q *Queries) RetryBackupRemint(ctx context.Context, arg RetryBackupRemintParams) error {
+	_, err := q.db.Exec(ctx, retryBackupRemint, arg.WorkspaceID, arg.ID)
+	return err
 }
 
 const retryBackupStorageKeys = `-- name: RetryBackupStorageKeys :execrows

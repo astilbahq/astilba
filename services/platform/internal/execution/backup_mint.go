@@ -76,7 +76,8 @@ func (s *Service) mintKey(ctx context.Context, principal secretbroker.Principal,
 		return minted{}, err
 	}
 	if err = s.AWS.Probe(work, cred, spec); err != nil {
-		return minted{}, err
+		clearCredential(&cred)
+		return minted{}, errors.Join(errKeyProbe, err)
 	}
 	return minted{key: key, cred: cred}, nil
 }

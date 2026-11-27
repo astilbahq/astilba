@@ -185,6 +185,11 @@ WHERE workspace_id = @workspace_id AND id = @id;
 UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
 WHERE workspace_id = @workspace_id AND id = @id;
 
+-- name: RetryBackupRemint :exec
+-- The owner's retry starts a failing re-mint on the next pass.
+UPDATE backup_destinations SET remint_next_at=NULL
+WHERE workspace_id = @workspace_id AND id = @id AND account_id IS NOT NULL AND remint_error IS NOT NULL;
+
 -- name: ManagedBackupDestination :one
 SELECT d.configuration,d.server_id,d.account_id FROM backup_destinations d
 WHERE d.workspace_id = @workspace_id AND d.id = @id AND d.account_id IS NOT NULL;
@@ -201,9 +206,11 @@ FROM backup_storage_keys WHERE workspace_id = @workspace_id AND account_id = @ac
 
 -- name: DestinationBackupStorageKeys :many
 -- The keys of a workspace's managed destinations, for their views.
-SELECT destination_id,id,purpose,state,user_name,holder_server_id,handed_over,activated_at,revoked_at,attempts,last_error
-FROM backup_storage_keys WHERE workspace_id = @workspace_id AND destination_id IS NOT NULL
-ORDER BY destination_id,created_at DESC,id DESC LIMIT 2000;
+SELECT k.destination_id,k.id,k.purpose,k.state,k.user_name,k.holder_server_id,k.activated_at,k.revoked_at,k.attempts,k.last_error,
+    (k.handed_over IS NOT NULL AND s.revoked AND k.handed_over = s.revocations)::bool AS handed_over
+FROM backup_storage_keys k JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+WHERE k.workspace_id = @workspace_id AND k.destination_id IS NOT NULL
+ORDER BY k.destination_id,k.created_at DESC,k.id DESC LIMIT 2000;
 
 -- name: LiveServerKeyExists :one
 SELECT EXISTS(SELECT 1 FROM backup_storage_keys WHERE workspace_id = @workspace_id AND destination_id = @destination_id AND purpose = 'server' AND state IN ('minting','active'))::bool;

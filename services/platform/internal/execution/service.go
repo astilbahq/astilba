@@ -288,6 +288,17 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 	return out, err
 }
 func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UUID, revoke bool) error {
+	return s.control(ctx, p, ws, id, revoke, false)
+}
+
+// RevokeServer revokes server id. With handOver, its managed backup destinations' keys are bound
+// to this revocation rather than revoked, for a workspace transfer whose new installation keeps
+// using them; a later renewal and revocation revokes them. See docs/hosting.md.
+func (s *Service) RevokeServer(ctx context.Context, p store.Principal, ws, id uuid.UUID, handOver bool) error {
+	return s.control(ctx, p, ws, id, true, handOver)
+}
+
+func (s *Service) control(ctx context.Context, p store.Principal, ws, id uuid.UUID, revoke, handOver bool) error {
 	action := "server.rotate"
 	if revoke {
 		action = "server.revoke"
@@ -322,6 +333,15 @@ func (s *Service) Control(ctx context.Context, p store.Principal, ws, id uuid.UU
 		}
 		if n != 1 {
 			return domain.NotFound
+		}
+		if handOver {
+			// Recorded before the revocation's work settles, which revokes every key not handed over.
+			if _, e = q.HandOverServerBackupStorageKeys(ctx, db.HandOverServerBackupStorageKeysParams{WorkspaceID: ws, ServerID: &id}); e != nil {
+				return e
+			}
+			if e = store.Audit(ctx, q, p, ws, "backup.key.handover", id); e != nil {
+				return e
+			}
 		}
 		return s.settleRevokedWork(ctx, tx, ws, id)
 	})

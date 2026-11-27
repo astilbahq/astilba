@@ -134,7 +134,7 @@ func (q *Queries) AllBackupStorageKeySecrets(ctx context.Context) ([]AllBackupSt
 }
 
 const backupDestinationAccess = `-- name: BackupDestinationAccess :one
-SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id = $1 AND id = $2
+SELECT configuration,encrypted_access,account_id FROM backup_destinations WHERE workspace_id = $1 AND id = $2
 `
 
 type BackupDestinationAccessParams struct {
@@ -143,14 +143,15 @@ type BackupDestinationAccessParams struct {
 }
 
 type BackupDestinationAccessRow struct {
-	Configuration   []byte `json:"configuration"`
-	EncryptedAccess []byte `json:"encrypted_access"`
+	Configuration   []byte     `json:"configuration"`
+	EncryptedAccess []byte     `json:"encrypted_access"`
+	AccountID       *uuid.UUID `json:"account_id"`
 }
 
 func (q *Queries) BackupDestinationAccess(ctx context.Context, arg BackupDestinationAccessParams) (BackupDestinationAccessRow, error) {
 	row := q.db.QueryRow(ctx, backupDestinationAccess, arg.WorkspaceID, arg.ID)
 	var i BackupDestinationAccessRow
-	err := row.Scan(&i.Configuration, &i.EncryptedAccess)
+	err := row.Scan(&i.Configuration, &i.EncryptedAccess, &i.AccountID)
 	return i, err
 }
 
@@ -562,12 +563,23 @@ JOIN backup_policies p ON p.workspace_id = d.workspace_id AND p.configuration->>
     AND p.configuration->>'method' <> 'container-job'
 JOIN servers s ON s.workspace_id = p.workspace_id AND s.revoked AND (s.id = p.server_id OR EXISTS(
     SELECT 1 FROM backup_recoveries r WHERE r.workspace_id = p.workspace_id AND r.policy_id = p.id AND r.server_id = s.id))
-WHERE d.workspace_id = $1 AND d.configuration->>'kind' = 's3'
+WHERE d.workspace_id = $1 AND d.configuration->>'kind' = 's3' AND d.account_id IS NULL
+UNION
+SELECT d.id
+FROM backup_destinations d
+JOIN backup_storage_keys k ON k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL
+JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+WHERE d.workspace_id = $1 AND d.account_id IS NOT NULL AND (k.state = 'revoking'
+    OR (k.state = 'active' AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations))
+    OR (k.state = 'revoked' AND k.revoked_at > clock_timestamp() - interval '1 hour'))
 `
 
-// A destination is exposed while a revoked server holds its storage keys: the server a policy using
-// it is bound to, or one a restore of such a policy was recorded for, whether or not the restore
-// was released to it. Only an S3 destination has keys, and a container job is never given them.
+// An owner-keyed destination is exposed while a revoked server holds its storage keys: the server a
+// policy using it is bound to, or one a restore of such a policy was recorded for, whether or not
+// the restore was released to it. Only an S3 destination has keys, and a container job is never
+// given them. A managed destination's keys are its own rows: it is exposed while one that was
+// delivered is being revoked, is still active with a revoked holder and no current handover, or
+// was revoked within the hour IAM may take to stop honouring it.
 func (q *Queries) ExposedBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, exposedBackupDestinations, workspaceID)
 	if err != nil {
@@ -637,8 +649,8 @@ func (q *Queries) InsertBackupCutover(ctx context.Context, arg InsertBackupCutov
 }
 
 const insertBackupDestination = `-- name: InsertBackupDestination :exec
-INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access,server_id)
-VALUES($1,$2,$3,$4,$5)
+INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access,server_id,account_id)
+VALUES($1,$2,$3,$4,$5,$6)
 `
 
 type InsertBackupDestinationParams struct {
@@ -647,6 +659,7 @@ type InsertBackupDestinationParams struct {
 	Configuration   []byte     `json:"configuration"`
 	EncryptedAccess []byte     `json:"encrypted_access"`
 	ServerID        *uuid.UUID `json:"server_id"`
+	AccountID       *uuid.UUID `json:"account_id"`
 }
 
 func (q *Queries) InsertBackupDestination(ctx context.Context, arg InsertBackupDestinationParams) error {
@@ -656,6 +669,7 @@ func (q *Queries) InsertBackupDestination(ctx context.Context, arg InsertBackupD
 		arg.Configuration,
 		arg.EncryptedAccess,
 		arg.ServerID,
+		arg.AccountID,
 	)
 	return err
 }
@@ -699,13 +713,15 @@ func (q *Queries) InsertBackupRecovery(ctx context.Context, arg InsertBackupReco
 }
 
 const listBackupDestinations = `-- name: ListBackupDestinations :many
-SELECT configuration, server_id, shared FROM backup_destinations WHERE workspace_id = $1 ORDER BY id LIMIT 100
+SELECT configuration, server_id, shared, account_id, remint_error FROM backup_destinations WHERE workspace_id = $1 ORDER BY id LIMIT 100
 `
 
 type ListBackupDestinationsRow struct {
-	Configuration []byte     `json:"configuration"`
-	ServerID      *uuid.UUID `json:"server_id"`
-	Shared        bool       `json:"shared"`
+	Configuration []byte      `json:"configuration"`
+	ServerID      *uuid.UUID  `json:"server_id"`
+	Shared        bool        `json:"shared"`
+	AccountID     *uuid.UUID  `json:"account_id"`
+	RemintError   pgtype.Text `json:"remint_error"`
 }
 
 func (q *Queries) ListBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]ListBackupDestinationsRow, error) {
@@ -717,7 +733,13 @@ func (q *Queries) ListBackupDestinations(ctx context.Context, workspaceID uuid.U
 	items := []ListBackupDestinationsRow{}
 	for rows.Next() {
 		var i ListBackupDestinationsRow
-		if err := rows.Scan(&i.Configuration, &i.ServerID, &i.Shared); err != nil {
+		if err := rows.Scan(
+			&i.Configuration,
+			&i.ServerID,
+			&i.Shared,
+			&i.AccountID,
+			&i.RemintError,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

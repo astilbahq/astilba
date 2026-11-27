@@ -37,7 +37,9 @@ type remintWorker struct {
 }
 
 // A mint waits through IAM's propagation delay, up to its deadline.
-func (w *remintWorker) Timeout(*river.Job[remintArgs]) time.Duration { return mintDeadline + time.Minute }
+func (w *remintWorker) Timeout(*river.Job[remintArgs]) time.Duration {
+	return mintDeadline + time.Minute
+}
 
 var remintPrincipal = secretbroker.System("backup-remint")
 
