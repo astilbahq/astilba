@@ -60,8 +60,22 @@ type poolServer struct {
 }
 
 // healthCheckedPools are the pools of set's HTTP routes that the proxy probes, read from
-// the published file raw, which is what the proxy loaded.
+// the published file raw, which is what the proxy loaded. A pool whose check the proxy
+// refuses is an error, since the proxy never routes to its servers.
 func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error) {
+	pools, refused, err := probedPools(raw, set)
+	if err == nil && len(refused) > 0 {
+		err = &routeServersUnready{reason: fmt.Errorf("route %s: the proxy refuses a health check path that is not relative", refused[0])}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return pools, nil
+}
+
+// probedPools are the pools of set's HTTP routes that the proxy probes, read from raw, and
+// the domains of those whose check it refuses, which it leaves out.
+func probedPools(raw []byte, set deployment.RouteSet) (pools []routePool, refused []string, err error) {
 	var file struct {
 		HTTP struct {
 			Services map[string]struct {
@@ -78,9 +92,9 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 		} `json:"http"`
 	}
 	if err := json.Unmarshal(raw, &file); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	pools := []routePool{}
+	pools = []routePool{}
 	for _, r := range set.Routes {
 		if r.Protocol != "http" {
 			continue
@@ -94,10 +108,11 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 		// counts such a pool's servers up, and a probe there would leave the pool's servers.
 		path, err := url.Parse(balancer.HealthCheck.Path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if path.Host != "" || path.Scheme != "" {
-			return nil, &routeServersUnready{reason: fmt.Errorf("route %s: the proxy refuses a health check path that is not relative", r.Domain)}
+			refused = append(refused, r.Domain)
+			continue
 		}
 		pool := routePool{domain: r.Domain, service: name + "@file"}
 		for _, server := range balancer.Servers {
@@ -105,11 +120,11 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 			// check's port when it names one.
 			target, err := url.Parse(server.URL)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			probe, err := target.Parse(balancer.HealthCheck.Path)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if balancer.HealthCheck.Port != 0 {
 				probe.Host = net.JoinHostPort(probe.Hostname(), strconv.Itoa(balancer.HealthCheck.Port))
@@ -118,7 +133,7 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 		}
 		pools = append(pools, pool)
 	}
-	return pools, nil
+	return pools, refused, nil
 }
 
 // awaitRouteServers waits until the proxy routes every health-checked pool of unit's

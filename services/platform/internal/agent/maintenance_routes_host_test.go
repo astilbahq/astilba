@@ -25,26 +25,31 @@ func (w *unreadyWriter) routed() routedServer {
 	return s.Routed.Servers[0]
 }
 
-// routeStatus is what the proxy reports of server.
-func (w *unreadyWriter) routeStatus(server routedServer) string {
+// routeStatus is what the proxy reports of server, and the URL it reports it by.
+func (w *unreadyWriter) routeStatus(server routedServer) (status, at string) {
 	w.t.Helper()
 	runtime, err := w.engine.readIngressRuntime(context.Background())
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	return runtime["services"][server.Service].ServerStatus[server.URL]
+	for at, status := range runtime["services"][server.Service].ServerStatus {
+		if backend, err := backendOf(w.plan.UnitID, at); err == nil && backend == server.Backend {
+			return status, at
+		}
+	}
+	return "", ""
 }
 
 // waitRouteStatus waits for the proxy to report server as status.
 func (w *unreadyWriter) waitRouteStatus(server routedServer, status string) {
 	w.t.Helper()
 	for range 60 {
-		if w.routeStatus(server) == status {
+		if got, _ := w.routeStatus(server); got == status {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	w.t.Fatalf("the proxy never reported %s %s", server.URL, status)
+	w.t.Fatalf("the proxy never reported %s %s", server.Backend, status)
 }
 
 // restart opens the journal again, as an agent that restarts does.
@@ -91,8 +96,8 @@ func TestNativeCompletionWaitsForTheProxyToRouteAResumedWriter(t *testing.T) {
 	w.restart()
 	w.phase("resume-source")
 	w.phase("complete")
-	if status := w.routeStatus(server); status != "UP" {
-		t.Fatalf("completion released the reservation while the proxy reported %s %s", server.URL, status)
+	if status, at := w.routeStatus(server); status != "UP" {
+		t.Fatalf("completion released the reservation while the proxy reported %s %s", at, status)
 	}
 	if out, _, ok, err := w.engine.proxyExec(context.Background(), []string{"wget", "-T", "5", "-qO-", "--header", "Host: routed.example.test", "http://127.0.0.1:80/"}, 4096); err != nil || !ok || strings.TrimSpace(string(out)) != "writer" {
 		t.Fatalf("the route answered %q after completion: %v", out, err)
@@ -109,6 +114,7 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 	w := newRoutedWriter(t)
 	w.phase("reserve")
 	server := w.routed()
+	_, at := w.routeStatus(server)
 	w.phase("pause")
 	w.phase("resume-source")
 	w.writerExec("rm", "/www/health")
@@ -121,7 +127,7 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 	if report.State != "needs_attention" {
 		t.Fatalf("completion ended %s: %s", report.State, report.Note)
 	}
-	for _, want := range []string{"the resumed routes are not ready for maintenance completion", "route routed.example.test", "server " + server.URL} {
+	for _, want := range []string{"the resumed routes are not ready for maintenance completion", "route routed.example.test", "server " + at} {
 		if !strings.Contains(report.Note, want) {
 			t.Fatalf("the note %q does not say %q", report.Note, want)
 		}
@@ -137,5 +143,18 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 	}
 	if w.barrier() {
 		t.Fatal("the reservation is still held")
+	}
+}
+
+// A proxy that cannot say which servers it routes could not confirm them at completion
+// either, so the reservation is refused before anything stops.
+func TestNativeReservationRefusesAProxyThatCannotReport(t *testing.T) {
+	w := newRoutedWriter(t)
+	if _, err := w.docker.ContainerStop(context.Background(), proxyName, client.ContainerStopOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	w.phaseEnding("reserve", "failed")
+	if w.barrier() || !w.running() {
+		t.Fatal("a refused reservation held the host or stopped its writer")
 	}
 }

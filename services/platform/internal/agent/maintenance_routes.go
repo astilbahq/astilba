@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"fmt"
+	"net"
 	"net/url"
+	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/google/uuid"
 )
 
 // maintenanceRoutes are the route servers of a unit's health-checked pools that this host's
@@ -15,10 +18,36 @@ type maintenanceRoutes struct {
 	Servers []routedServer
 }
 
-// routedServer is a server of a pool, named as the published file and the proxy name it.
+// routedServer is a server of a pool: the pool's service, as the proxy names it, and the
+// backend the server reaches, as backendOf names it.
 type routedServer struct {
 	Service string
-	URL     string
+	Backend string
+}
+
+// backendOf names what a pool server of unit reaches, however the route file addresses it:
+// a service on the unit's network, by its bare or its qualified name, or another host's
+// private address, with the port. Converting a host's routes to qualified names changes
+// the URL but not this.
+func backendOf(unit uuid.UUID, server string) (string, error) {
+	target, err := url.Parse(server)
+	if err != nil {
+		return "", err
+	}
+	host := strings.TrimSuffix(target.Hostname(), "."+deployment.NetworkName(unit))
+	return net.JoinHostPort(host, target.Port()), nil
+}
+
+// maintenancePools are the health-checked pools of unit's routes in s, published as raw,
+// but for a pool whose check the proxy refuses: it never routes to that pool's servers, so
+// maintenance cannot take them out.
+func maintenancePools(s routeSnapshot, raw []byte, unit uuid.UUID) ([]routePool, error) {
+	set, ok := s.Sets[unit.String()]
+	if !ok {
+		return nil, nil
+	}
+	pools, _, err := probedPools(raw, set)
+	return pools, err
 }
 
 // recordRouted notes, before any host stops anything, which servers of the unit's
@@ -26,14 +55,14 @@ type routedServer struct {
 // out of their pools, and the proxy takes a server back only on a probe that passes, up to
 // an interval after its writer resumes, so completion waits for these again. A server the
 // proxy already had out is one maintenance cannot have taken out or bring back, so it is
-// not waited for: another host's writer that was already failing must not keep this host's
-// reservation, and this host cannot see why it failed. A record kept from an earlier
-// delivery stands, since writers may have stopped since then.
+// not waited for. A proxy that cannot say what it routes refuses the reservation, as a
+// readiness probe that cannot run does, since completion could not confirm it either. A
+// record kept from an earlier delivery stands, since writers may have stopped since then.
 func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 	if s.Routed != nil {
 		return nil
 	}
-	routed := &maintenanceRoutes{Servers: []routedServer{}}
+	unit := s.Unit.Plan.UnitID
 	state, err := e.Journal.routing()
 	if err != nil {
 		return err
@@ -42,25 +71,26 @@ func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 	if err != nil {
 		return err
 	}
-	pools, err := unitPools(state.Current, raw, s.Unit.Plan.UnitID.String())
-	// The proxy never counts up a server of a pool whose check it refuses.
-	if unready := new(*routeServersUnready); errors.As(err, unready) {
-		pools, err = nil, nil
-	}
+	pools, err := maintenancePools(state.Current, raw, unit)
 	if err != nil {
 		return err
 	}
+	routed := &maintenanceRoutes{Servers: []routedServer{}}
 	if len(pools) > 0 {
 		runtime, err := e.readIngressRuntime(ctx)
 		if err != nil {
-			// A proxy that cannot say what it routes routes nothing maintenance could take away.
-			slog.Warn("the proxy did not report its route servers before maintenance", "error", err)
+			return fmt.Errorf("the proxy did not report which route servers it routes: %w", err)
 		}
 		for _, pool := range pools {
 			for _, server := range pool.servers {
-				if err == nil && runtime["services"][pool.service].ServerStatus[server.url] == "UP" {
-					routed.Servers = append(routed.Servers, routedServer{Service: pool.service, URL: server.url})
+				if runtime["services"][pool.service].ServerStatus[server.url] != "UP" {
+					continue
 				}
+				backend, err := backendOf(unit, server.url)
+				if err != nil {
+					return err
+				}
+				routed.Servers = append(routed.Servers, routedServer{Service: pool.service, Backend: backend})
 			}
 		}
 	}
@@ -70,8 +100,7 @@ func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 
 // confirmRouted waits until the proxy routes again every server recordRouted noted that
 // p's unit still publishes, except a server of an instance on this host that completion
-// excuses from being ready. The routes are the settled ones, since no publish runs during
-// maintenance, and a server the routes no longer name is not waited for.
+// excuses from being ready. The routes must be the settled ones the journal records.
 func (e *Engine) confirmRouted(ctx context.Context, s crossHostState, p deployment.Plan) error {
 	if s.Routed == nil || len(s.Routed.Servers) == 0 {
 		return nil
@@ -91,7 +120,7 @@ func (e *Engine) confirmRouted(ctx context.Context, s crossHostState, p deployme
 	if err != nil {
 		return err
 	}
-	pools, err := unitPools(state.Current, raw, p.UnitID.String())
+	pools, err := maintenancePools(state.Current, raw, p.UnitID)
 	if err != nil {
 		return err
 	}
@@ -99,20 +128,20 @@ func (e *Engine) confirmRouted(ctx context.Context, s crossHostState, p deployme
 	for _, app := range p.LocalApplications() {
 		for _, id := range p.InstanceIDs(app.ID) {
 			if !s.mustBeReady(id) {
-				excused[deployment.BackendHost(p.UnitID, deployment.ServiceName(id))] = true
+				excused[deployment.ServiceName(id)] = true
 			}
 		}
 	}
-	required, err := requiredPools(pools, s.Routed.Servers, excused)
+	required, err := requiredPools(p.UnitID, pools, s.Routed.Servers, excused)
 	if err != nil || len(required) == 0 {
 		return err
 	}
 	return e.awaitPools(ctx, required, raw)
 }
 
-// requiredPools keeps of pools the servers that were recorded, but for those on an excused
-// host, and the pools that keep any.
-func requiredPools(pools []routePool, recorded []routedServer, excused map[string]bool) ([]routePool, error) {
+// requiredPools keeps of unit's pools the servers that were recorded, but for those whose
+// backend host is excused, and the pools that keep any.
+func requiredPools(unit uuid.UUID, pools []routePool, recorded []routedServer, excused map[string]bool) ([]routePool, error) {
 	routed := map[routedServer]bool{}
 	for _, server := range recorded {
 		routed[server] = true
@@ -121,11 +150,15 @@ func requiredPools(pools []routePool, recorded []routedServer, excused map[strin
 	for _, pool := range pools {
 		servers := []poolServer{}
 		for _, server := range pool.servers {
-			target, err := url.Parse(server.url)
+			backend, err := backendOf(unit, server.url)
 			if err != nil {
 				return nil, err
 			}
-			if routed[routedServer{Service: pool.service, URL: server.url}] && !excused[target.Hostname()] {
+			host, _, err := net.SplitHostPort(backend)
+			if err != nil {
+				return nil, err
+			}
+			if routed[routedServer{Service: pool.service, Backend: backend}] && !excused[host] {
 				servers = append(servers, server)
 			}
 		}
