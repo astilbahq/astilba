@@ -201,7 +201,7 @@ func TestReauthenticationCannotRestoreAnEndedSession(t *testing.T) {
 	if err := f.st.Queries.BumpAuthVersion(ctx, f.owner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Code: codeAt(t, secret, f.auth.Now())}, nil, nil); !errors.Is(err, domain.Unauthenticated) {
+	if _, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Code: codeAt(t, secret, f.auth.Now())}, nil); !errors.Is(err, domain.Unauthenticated) {
 		t.Fatal("an ended session was confirmed", err)
 	}
 }
@@ -223,7 +223,7 @@ func TestReauthenticationConcurrentGuessesStayWithinTheDailyAllowance(t *testing
 	results := make(chan error, 5)
 	for range 5 {
 		go func() {
-			_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Code: "000000"}, nil, nil)
+			_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Code: "000000"}, nil)
 			results <- err
 		}()
 	}

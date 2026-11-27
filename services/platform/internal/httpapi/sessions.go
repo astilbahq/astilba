@@ -154,19 +154,6 @@ func (s *sessionStore) renewLive(ctx context.Context, loaded *sessionLoad, token
 	return q.MoveTroubleshootingBrowserBinding(ctx, db.MoveTroubleshootingBrowserBindingParams{Renewed: newHash, Previous: oldHash})
 }
 
-// holdTerminals is the auth.Hold of a renewal that moves the loaded token's open terminal
-// sessions to the new one: their rows are locked before the transaction locks their account.
-func holdTerminals(ctx context.Context, loaded *sessionLoad) auth.Hold {
-	previous := loaded.token
-	return func(q *db.Queries) error {
-		binding, err := base64.RawURLEncoding.DecodeString(previous)
-		if err != nil {
-			return err
-		}
-		return q.HoldTroubleshootingBrowserBinding(ctx, binding)
-	}
-}
-
 // continueSignIn replaces a pending sign-in's token with the signed-in one, continuing its
 // lineage, and returns the lineage the new token has. A logout or expiry that ended the pending
 // token first ended its lineage, which nothing signs into again: signing in proves a credential,
@@ -462,7 +449,7 @@ func (s *Server) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	loaded := ctx.Value(sessionLoadKey{}).(*sessionLoad)
 	var out api.Session
-	_, e = s.Auth.Reauthenticate(ctx, *principal(ctx), credential(b), holdTerminals(ctx, loaded), s.storeSession(ctx, &out, func(ctx context.Context, a db.Account) error {
+	_, e = s.Auth.Reauthenticate(ctx, *principal(ctx), credential(b), s.storeSession(ctx, &out, func(ctx context.Context, a db.Account) error {
 		// Confirming credentials keeps open terminal sessions, unlike any other renewal. A
 		// recovery code changes the account's version, which ends them, so there is nothing
 		// to move.

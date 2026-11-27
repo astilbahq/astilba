@@ -118,13 +118,12 @@ type Credential struct {
 // sign-in: a time step is accepted once, and a recovery code is consumed and ends every other
 // session. A password is hashed before the transaction, because the hash can wait for
 // capacity and must not hold the account row or a connection meanwhile. prepare, if any, runs
-// after the password and before the transaction, for the same reason. hold, if any, runs first in
-// the transaction, before the account's row is locked.
+// after the password and before the transaction, for the same reason.
 //
 // Every attempt spends the reauthentication budget and, unless it is a recovery code, the daily
 // failure allowance of its credential, so a stolen session cannot guess more often by choosing
 // which change to attempt. One that does not fail on its credential gets its failure back.
-func (s *Service) withCredential(ctx context.Context, p store.Principal, c Credential, prepare func() error, hold Hold, change func(pgx.Tx, *db.Queries, *db.Account) error, finish Finish) (db.Account, error) {
+func (s *Service) withCredential(ctx context.Context, p store.Principal, c Credential, prepare func() error, change func(pgx.Tx, *db.Queries, *db.Account) error, finish Finish) (db.Account, error) {
 	var result db.Account
 	mfa := len(p.Account.TotpSecret) > 0
 	if mfa && c.Code == "" || !mfa && c.Password == "" {
@@ -165,11 +164,6 @@ func (s *Service) withCredential(ctx context.Context, p store.Principal, c Crede
 			defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
 		}
 		return s.Store.TransactionTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-			if hold != nil {
-				if err := hold(q); err != nil {
-					return err
-				}
-			}
 			account, err := lockCurrent(ctx, q, p)
 			if err != nil {
 				return err
@@ -214,8 +208,8 @@ func credentialError(err error, field func() string) error {
 func currentField() string { return "current" }
 
 // Reauthenticate renews a session's recent authentication with a current credential.
-func (s *Service) Reauthenticate(ctx context.Context, p store.Principal, c Credential, hold Hold, finish Finish) (db.Account, error) {
-	account, err := s.withCredential(ctx, p, c, nil, hold, nil, finish)
+func (s *Service) Reauthenticate(ctx context.Context, p store.Principal, c Credential, finish Finish) (db.Account, error) {
+	account, err := s.withCredential(ctx, p, c, nil, nil, finish)
 	return account, credentialError(err, func() string {
 		if len(p.Account.TotpSecret) > 0 {
 			return "code"

@@ -235,19 +235,6 @@ func (q *Queries) FindSession(ctx context.Context, token string) (FindSessionRow
 	return i, err
 }
 
-const holdTroubleshootingBrowserBinding = `-- name: HoldTroubleshootingBrowserBinding :exec
-SELECT id FROM troubleshooting_sessions
-WHERE browser_session_hash = $1 AND state <> 'closed' FOR UPDATE
-`
-
-// unscoped: the hashed browser session token identifies the sessions it opened.
-// Locks them for MoveTroubleshootingBrowserBinding before a transaction locks their account:
-// one that ends a session locks its row first, and its audit event then refers to the account.
-func (q *Queries) HoldTroubleshootingBrowserBinding(ctx context.Context, binding []byte) error {
-	_, err := q.db.Exec(ctx, holdTroubleshootingBrowserBinding, binding)
-	return err
-}
-
 const insertSession = `-- name: InsertSession :exec
 INSERT INTO sessions(token,data,expiry,lineage,account_id,auth_version,signed_in_at,last_seen_at,client_browser,client_os,client_network)
 SELECT $1,$2,$3,$4,i.account_id,

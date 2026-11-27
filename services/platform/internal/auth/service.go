@@ -47,10 +47,6 @@ func (f Finish) run(tx pgx.Tx, account db.Account) error {
 	return f(tx, account)
 }
 
-// Hold takes, first in such a transaction and before the account's row, the locks its Finish will
-// need on rows that other transactions lock before they refer to the account.
-type Hold func(q *db.Queries) error
-
 // Hash is the stored lookup key for two kinds of value, neither a secret a person chose. Link
 // and invitation tokens and recovery codes carry at least 128 random bits, so their keys cannot
 // be reversed by guessing. Rate-limit scopes are labels naming an operation and an address,
@@ -180,7 +176,10 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 // session still stands. The request may have spent a long time hashing a password or queued
 // behind an import, and a logout neither changes the account's version nor waits for this
 // lock, so only reading the session after the wait sees one. A logout that lands after this
-// check, while the few statements of the change run, does not stop it.
+// check, while the few statements of the change run, stops only a change that then renews the
+// session. The lock does not make a row that refers to the account wait, such as an audit event
+// another transaction records while it holds a terminal session's row, which this change's
+// renewal may move.
 func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, error) {
 	account, _, err := lockCurrentLineage(ctx, q, p)
 	return account, err
@@ -188,7 +187,7 @@ func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Acco
 
 // lockCurrentLineage is lockCurrent, also returning the session's lineage.
 func lockCurrentLineage(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, uuid.UUID, error) {
-	account, err := q.LockAccount(ctx, p.Account.ID)
+	account, err := q.LockAccountForChange(ctx, p.Account.ID)
 	if err != nil {
 		return account, uuid.Nil, err
 	}
@@ -216,7 +215,7 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, current
 		hash, err = s.hashNewPassword(ctx, passwordShare{"account:" + id.String(), true}, budgets, password)
 		return err
 	}
-	account, err := s.withCredential(ctx, p, current, hashNew, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+	account, err := s.withCredential(ctx, p, current, hashNew, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: id, PasswordHash: hash}); err != nil {
 			return err
 		}
