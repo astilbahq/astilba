@@ -79,6 +79,11 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 	if backup.ValidateDestination(d, a) != nil {
 		return api.BackupDestination{}, domain.Invalid("destination")
 	}
+	if d.Kind == "s3" {
+		if field := d.Unknowable(); field != "" {
+			return api.BackupDestination{}, domain.Invalid(field)
+		}
+	}
 	if (d.Kind == "s3") != (server != nil) {
 		return api.BackupDestination{}, domain.Invalid("serverId")
 	}
@@ -142,6 +147,10 @@ func (s *Service) CreateManagedBackupDestination(ctx context.Context, p store.Pr
 	// The destination's own access stays empty: its key lives on its key rows.
 	if backup.ValidateDestination(d, backup.Access{AccessKey: "managed", SecretKey: "managed"}) != nil {
 		return api.BackupDestination{}, domain.Invalid("destination")
+	}
+	// The endpoint is AWS's, so only an access point's alias as the bucket is refused here.
+	if field := d.Unknowable(); field != "" {
+		return api.BackupDestination{}, domain.Invalid(field)
 	}
 	key := uuid.New()
 	item := secretbroker.Item{Kind: secretbroker.BackupDestination, ID: d.ID}

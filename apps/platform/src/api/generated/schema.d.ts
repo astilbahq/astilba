@@ -5002,10 +5002,12 @@ export interface components {
             /** @enum {string} */
             kind: "filesystem" | "s3";
             root: string;
+            /** @description An S3 destination's HTTPS origin, starting `https://` in lowercase, with a host of ASCII letters, digits, '.', '-' and '_', or an IP address. A host with an AWS access point's alias or label is refused with the field `endpoint`, as is a destination whose host names a bucket, such as `<bucket>.s3.<region>.amazonaws.com`, and so would keep its repositories in or around another of the workspace's destinations' part of it. Left empty for a managed destination, whose endpoint is AWS's for its region. */
             endpoint: string;
+            /** @description An S3 destination's bucket: 3 to 63 lowercase letters, digits, '.' and '-', starting and ending with a letter or digit. An AWS access point's alias, ending in `-s3alias` or `--ol-s3`, is refused with the field `bucket`. */
             bucket: string;
             region: string;
-            /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't begin with `astilba`. A prefix that equals, contains or is inside another of the workspace's destinations' in a bucket of the same name, at any endpoint, or a second destination without one there, is refused with the field `prefix`, since keys limited to one would reach the other's backups. */
+            /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't begin with `astilba`. A prefix that equals, contains or is inside another of the workspace's destinations' in a bucket of the same name, at any endpoint, or a second destination without one there, is refused with the field `prefix`, since keys limited to one would reach the other's backups. So is a prefix in or around the part of its bucket that another destination reaches through an endpoint whose host names the bucket. */
             prefix?: string;
             /**
              * Format: uuid

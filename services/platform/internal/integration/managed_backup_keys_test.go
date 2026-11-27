@@ -177,6 +177,14 @@ func TestAManagedKeyIsScopedAndRevokedWithItsServer(t *testing.T) {
 	given := k.managed("Elsewhere", k.first.server)
 	given["endpoint"] = "https://storage.example.test"
 	wantRefusedField(t, <-k.b.send("POST", k.base+"/backup-destinations", given), "endpoint")
+	// Managed destinations take part in the bucket rules as any S3 destination does: an access
+	// point's alias reaches a bucket its name doesn't say, and an endpoint whose host names the
+	// managed bucket would keep its repositories in the managed destination's part of it.
+	alias := k.managed("Alias", k.first.server)
+	alias["bucket"] = "managed-backups-s3alias"
+	wantRefusedField(t, <-k.b.send("POST", k.base+"/backup-destinations", alias), "bucket")
+	hosted := s3Destination("Hosted", map[string]any{"serverId": k.first.server, "endpoint": "https://managed-backups.s3.eu-west-2.amazonaws.com", "bucket": "astilba"})
+	wantRefusedField(t, <-k.b.send("POST", k.base+"/backup-destinations", hosted), "endpoint")
 
 	var policy backup.Policy
 	k.b.call("POST", k.environment(k.first)+"/backup-policies", k.policy(k.first, "Managed", d.Id), 201, &policy)

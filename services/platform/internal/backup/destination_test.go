@@ -60,23 +60,123 @@ func TestDestinationsOverlapWithinOneBucket(t *testing.T) {
 	origin := "https://storage.example.test"
 	for _, c := range []struct {
 		a, b    Destination
-		overlap bool
+		overlap Overlap
 	}{
-		{at(origin, "backups", ""), at(origin, "backups", ""), true},
-		{at(origin, "backups", "servers"), at(origin, "backups", "servers"), true},
-		{at(origin, "backups", "servers"), at(origin, "backups", "servers/web-1"), true},
-		{at(origin, "backups", "servers/web-1"), at("https://STORAGE.example.test", "backups", "servers"), true},
-		{at(origin, "backups", "servers/web-1"), at(origin, "backups", "servers/web-2"), false},
-		{at(origin, "backups", "servers/web"), at(origin, "backups", "servers/web-1"), false},
-		{at(origin, "backups", ""), at(origin, "backups", "servers"), false},
-		{at(origin, "backups", ""), at(origin, "other", ""), false},
-		{at(origin, "backups", ""), at("https://storage.example.test:443", "backups", ""), true},
-		{at("https://s3.amazonaws.com", "backups", ""), at("https://s3.eu-west-1.amazonaws.com", "backups", "servers"), false},
-		{at("https://s3.amazonaws.com", "backups", "servers"), at("https://s3.eu-west-1.amazonaws.com", "backups", "servers/web-1"), true},
-		{at(origin, "backups", ""), Destination{Kind: "filesystem", Root: "/srv/backups"}, false},
+		{at(origin, "backups", ""), at(origin, "backups", ""), InBucket},
+		{at(origin, "backups", "servers"), at(origin, "backups", "servers"), InBucket},
+		{at(origin, "backups", "servers"), at(origin, "backups", "servers/web-1"), InBucket},
+		{at(origin, "backups", "servers/web-1"), at("https://STORAGE.example.test", "backups", "servers"), InBucket},
+		{at(origin, "backups", "servers/web-1"), at(origin, "backups", "servers/web-2"), Apart},
+		{at(origin, "backups", "servers/web"), at(origin, "backups", "servers/web-1"), Apart},
+		{at(origin, "backups", ""), at(origin, "backups", "servers"), Apart},
+		{at(origin, "backups", ""), at(origin, "other", ""), Apart},
+		{at(origin, "backups", ""), at("https://storage.example.test:443", "backups", ""), InBucket},
+		{at("https://s3.amazonaws.com", "backups", ""), at("https://s3.eu-west-1.amazonaws.com", "backups", "servers"), Apart},
+		{at("https://s3.amazonaws.com", "backups", "servers"), at("https://s3.eu-west-1.amazonaws.com", "backups", "servers/web-1"), InBucket},
+		{at("https://192.0.2.10", "backups", "servers"), at("https://s3.eu-west-1.amazonaws.com", "backups", "servers"), InBucket},
+		{at(origin, "backups", ""), Destination{Kind: "filesystem", Root: "/srv/backups"}, Apart},
 	} {
-		if c.a.Overlaps(c.b) != c.overlap || c.b.Overlaps(c.a) != c.overlap {
-			t.Errorf("%+v and %+v overlap: %v, want %v", c.a, c.b, c.a.Overlaps(c.b), c.overlap)
+		if c.a.Overlap(c.b) != c.overlap || c.b.Overlap(c.a) != c.overlap {
+			t.Errorf("%+v and %+v overlap: %v, want %v", c.a, c.b, c.a.Overlap(c.b), c.overlap)
 		}
+	}
+}
+
+// restic puts the bucket first in the path at an endpoint it doesn't recognise, so an endpoint
+// whose host names a bucket, as AWS, Backblaze B2 and others read it, keeps the destination's
+// repositories in that bucket under the destination's bucket. Two destinations reaching one part
+// of a bucket by spellings like that overlap, whatever case the host is in. The one whose host names
+// the bucket overlaps through its endpoint, and the other in its bucket.
+func TestDestinationsOverlapThroughAnEndpointThatNamesABucket(t *testing.T) {
+	at := func(endpoint, bucket, prefix string) Destination {
+		return Destination{Kind: "s3", Endpoint: endpoint, Bucket: bucket, Prefix: prefix}
+	}
+	aws := at("https://s3.eu-west-1.amazonaws.com", "victim", "servers/web-1")
+	for _, c := range []struct {
+		named, hosted Destination
+		overlap       bool
+	}{
+		// Repositories under victim/servers/web-1/astilba, the same part as aws's.
+		{aws, at("https://victim.s3.eu-west-1.amazonaws.com", "servers", "web-1"), true},
+		{aws, at("https://VICTIM.S3.eu-west-1.amazonaws.com", "servers", "web-1"), true},
+		{aws, at("https://victim.s3.eu-west-1.amazonaws.com.", "servers", "web-1"), true},
+		{aws, at("https://victim.s3.dualstack.eu-west-1.amazonaws.com:443", "servers", "web-1"), true},
+		// Inside aws's part, and around it.
+		{aws, at("https://victim.s3.eu-west-1.amazonaws.com", "servers", "web-1/inner"), true},
+		{at("https://s3.eu-west-1.amazonaws.com", "victim", "servers"), at("https://victim.s3.eu-west-1.amazonaws.com", "servers", ""), true},
+		// A destination without a prefix keeps its repositories under astilba/.
+		{at("https://s3.eu-west-1.amazonaws.com", "victim", ""), at("https://victim.s3.eu-west-1.amazonaws.com", "astilba", ""), true},
+		// A bucket name with dots, and a custom domain named after its bucket.
+		{at("https://s3.example.test", "backups.example.com", "servers"), at("https://backups.example.com", "servers", ""), true},
+		{at("https://s3.example.test", "my.backups", "servers"), at("https://my.backups.s3.example.test", "servers", "web-1"), true},
+		{at("https://s3.example.test", "victim", "servers/web-1"), at("https://victim.s3.eu-central-003.backblazeb2.com", "servers", "web-1"), true},
+		// Management can't tell a service's own host from a bucket's, so a bucket named like the
+		// start of another destination's host overlaps it, as the safe answer.
+		{at("https://storage.example.test", "minio", "backups"), at("https://minio.internal:9000", "backups", ""), true},
+		// Other parts of the named bucket, other buckets, and hosts that name none.
+		{aws, at("https://victim.s3.eu-west-1.amazonaws.com", "servers", ""), false},
+		{aws, at("https://victim.s3.eu-west-1.amazonaws.com", "servers", "web-2"), false},
+		{aws, at("https://other.s3.eu-west-1.amazonaws.com", "servers", "web-1"), false},
+		{aws, at("https://192.0.2.10", "servers", "web-1"), false},
+		{aws, at("https://192.0.2.10.", "servers", "web-1"), false},
+	} {
+		want := [2]Overlap{Apart, Apart}
+		if c.overlap {
+			want = [2]Overlap{InBucket, ThroughEndpoint}
+		}
+		if got := [2]Overlap{c.named.Overlap(c.hosted), c.hosted.Overlap(c.named)}; got != want {
+			t.Errorf("%+v and %+v overlap: %v, want %v", c.named, c.hosted, got, want)
+		}
+	}
+}
+
+// Management refuses a new S3 destination that hides which bucket its repositories are in, naming
+// the field. Agents keep running destinations stored before the rule, whose endpoints restic reaches.
+func TestDestinationBucketMustBeKnowable(t *testing.T) {
+	s3 := func(endpoint, bucket string) Destination {
+		return Destination{ID: uuid.New(), Name: "Bucket", Kind: "s3", Endpoint: endpoint, Bucket: bucket, Region: "test-1"}
+	}
+	for _, d := range []Destination{
+		s3("https://storage.example.test", "backups"),
+		s3("https://STORAGE.example.test.", "backups"),
+		s3("https://minio_store:9000", "backups"),
+		s3("https://192.0.2.10", "backups"),
+		s3("https://[2001:db8::1]:9000", "backups"),
+		s3("https://s3.eu-west-1.amazonaws.com", "backups"),
+		s3("https://victim.s3.eu-west-1.amazonaws.com", "servers"),
+		s3("https://s3.eu-west-1.amazonaws.com", "backups--usw2-az1--x-s3"),
+	} {
+		if field := d.Unknowable(); field != "" {
+			t.Errorf("%s %s refused on %q", d.Endpoint, d.Bucket, field)
+		}
+	}
+	for _, c := range []struct {
+		d     Destination
+		field string
+	}{
+		{s3("HTTPS://storage.example.test", "backups"), "endpoint"},
+		{s3("https://ｓｔｏｒａｇｅ.example.test", "backups"), "endpoint"},
+		{s3("https://bücket.example.test", "backups"), "endpoint"},
+		{s3("https://ap-123456789012.s3-accesspoint.eu-west-1.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://ap-123456789012.s3-accesspoint-fips.us-east-1.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://ap-123456789012.s3-accesspoint.eusc-de-east-1.amazonaws.eu", "servers"), "endpoint"},
+		{s3("https://ap-123456789012.s3-accesspoint.cn-north-1.amazonaws.com.cn.", "servers"), "endpoint"},
+		{s3("https://ap-123456789012.s3-object-lambda.eu-west-1.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://mfzwi23gnjvgw.mrap.accesspoint.s3-global.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://accesspoint.vpce-1a2b3c4d-5e6f.s3.us-east-1.vpce.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://ap-123456789012.op-01ac5d28a6a232904.s3-outposts.us-west-2.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://my-ap-hrzrlukc5m36ft7okagglf3gmwluquse1b-s3alias.s3.eu-west-1.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://my-olap-cbmlzmhtvbmhgh9nmsqfrbbzw6ogn--ol-s3.s3.eu-west-1.amazonaws.com", "servers"), "endpoint"},
+		{s3("https://s3.eu-west-1.amazonaws.com", "my-ap-hrzrlukc5m36ft7okagglf3gmwluquse1b-s3alias"), "bucket"},
+		{s3("https://s3.eu-west-1.amazonaws.com", "my-olap-cbmlzmhtvbmhgh9nmsqfrbbzw6ogn--ol-s3"), "bucket"},
+	} {
+		if field := c.d.Unknowable(); field != c.field {
+			t.Errorf("%s %s refused on %q, want %q", c.d.Endpoint, c.d.Bucket, field, c.field)
+		}
+	}
+	// Agents apply only the structural rules, so a destination stored before these still runs.
+	stored := s3("https://ap-123456789012.s3-accesspoint.eu-west-1.amazonaws.com.", "backups")
+	if err := ValidateDestination(stored, Access{AccessKey: "access", SecretKey: "secret"}); err != nil {
+		t.Errorf("stored destination refused: %v", err)
 	}
 }
