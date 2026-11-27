@@ -119,37 +119,31 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return false, tx.Commit(ctx)
 	}
 	// Management submits drafts itself, so a runner never holds a credential that can write. A
-	// runner submission queued before that receives none: one never delivered fails here, and one
-	// a runner may hold is cancelled through it.
+	// runner submission queued before that receives none.
 	if p.Action == "submit" {
 		const note = "Stopped: drafts are now submitted by management, never by a runner. Submit the draft again."
-		if undelivered {
-			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: note}); err != nil {
-				return false, err
-			}
-			return false, tx.Commit(ctx)
-		}
-		if err = queries.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
-			return false, err
-		}
-		c.CancelRequested = true
-		return true, tx.Commit(ctx)
+		return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, note, note)
 	}
 	if settled, err := s.settleBuildIsolation(ctx, tx, ws, c, p, undelivered); settled || err != nil {
 		return settled && c.CancelRequested, err
 	}
 	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
 		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil, false); err != nil {
+			// A runner that no longer applies build controls, as after a downgrade, gets them back
+			// only from an update, which this build would hold. Any other refusal, such as Docker
+			// not answering the agent, may pass by itself.
+			if runnerUpgradeRequired(err) {
+				const note = "Update the agent on the runner: it no longer applies build controls, such as this build's budget or watched paths. Start the build again once it is updated."
+				return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Build stopped before runner delivery. "+note, "Build stopped. "+note)
+			}
 			return false, err
 		}
 	}
 	// A build goes only to a runner that runs the Railpack pins it froze, not management's
 	// current ones, which a management upgrade or rollback may have moved since, so no other
-	// runner receives its hydrated inputs. Refusing the poll would hold every later command
-	// for the runner, its update included, until the build expired, so a build never
-	// delivered fails instead. One the runner may already hold keeps being refused until it
-	// ends: supported updates wait for it, so this is a build delivered by an earlier
-	// management to an agent that advertises no digest, or a runner replaced by hand.
+	// runner receives its hydrated inputs. One the runner may already hold is told to stop,
+	// which carries none: the agent refuses a build for other pins itself, and only an agent too
+	// old to advertise a digest, or a runner replaced by hand, could hold one.
 	if p.Build != nil && p.Build.UsesRailpack() {
 		if p.Railpack == nil {
 			return false, errors.New("invalid pipeline payload")
@@ -158,17 +152,8 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		if err != nil {
 			return false, err
 		}
-		if refusal != nil && !undelivered {
-			return false, refusal
-		}
 		if refusal != nil {
-			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build stopped before runner delivery. " + refusal.Message}); err != nil {
-				return false, err
-			}
-			if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
-				return false, err
-			}
-			return false, tx.Commit(ctx)
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Build stopped before runner delivery. "+refusal.Message, "Build stopped. "+refusal.Message)
 		}
 	}
 	if p.CacheScope != "" {
@@ -178,7 +163,8 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		}
 		var capabilities api.AgentCapabilities
 		if json.Unmarshal(raw, &capabilities) != nil || capabilities.BuildCache == nil || !*capabilities.BuildCache {
-			return false, errors.New("runner no longer supports the frozen project cache assignment")
+			const note = "its runner no longer supports the project build cache it was queued with. Start the build again."
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Build stopped before runner delivery: "+note, "Build stopped: "+note)
 		}
 	}
 	// The runner holds this command's credentials: what follows only decides whether new ones
@@ -187,13 +173,15 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if git == nil || time.Now().After(c.Deadline) {
 		return true, nil
 	}
+	// A connection whose repository is no longer the one the pipeline froze never becomes it again.
+	const moved = "the connection's repository is no longer the one this pipeline was queued for."
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
 	if err != nil {
 		return false, err
 	}
 	if app {
 		if current.Provider != p.Connection.Provider || current.BaseURL != p.Connection.BaseURL || current.Repository != p.Connection.Repository || current.RepositoryID != p.Connection.RepositoryID || current.Private != p.Connection.Private {
-			return false, errors.New("repository identity changed")
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+moved, "Stopped: "+moved)
 		}
 	} else {
 		repository, err := git.repository(ctx, tx, p.Connection.ID)
@@ -204,28 +192,13 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, repository.Err
 		}
 		if repository.Value.ID != p.Connection.RepositoryID || repository.Value.Private != p.Connection.Private {
-			return false, errors.New("repository identity changed")
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+moved, "Stopped: "+moved)
 		}
 	}
 	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Id, c.Deadline, &p); err != nil {
-		// A clone credential that can push, or that the Git server won't vouch for, is never sent,
-		// and refusing it at every poll would hold the runner queue, so the run ends here. A runner
-		// that may hold an earlier delivery is told to stop.
+		// A clone credential that can push, or that the Git server won't vouch for, is never sent.
 		if refusal, refused := cloneRefusal(err); refused {
-			if undelivered {
-				if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Refused before runner delivery: " + refusal.Message}); err != nil {
-					return false, err
-				}
-				if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
-					return false, err
-				}
-				return false, tx.Commit(ctx)
-			}
-			if err = queries.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: "Stopped: " + refusal.Message}); err != nil {
-				return false, err
-			}
-			c.CancelRequested = true
-			return true, tx.Commit(ctx)
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+refusal.Message, "Stopped: "+refusal.Message)
 		}
 		// GitHub limiting the App passes, so the pipeline says why it waits and is asked for at
 		// the runner's next poll, until its deadline.
@@ -235,19 +208,12 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			}
 			return false, tx.Commit(ctx)
 		}
-		// Build inputs that fail their check at delivery, such as public arguments that now hold one
-		// of the environment's runtime secrets, would fail it again at every poll until the
-		// deadline, so a build never delivered ends here, a preview's as an environment's. Its
-		// preview, if any, then shows the build failed.
+		// Build inputs can fail their check at delivery although they passed it at admission, such
+		// as public arguments that now hold one of the environment's runtime secrets. A preview's
+		// build ends as an environment's, and its preview then shows the build failed.
 		var rejected *buildInputRejection
-		if errors.As(err, &rejected) && undelivered && p.IsBuild() {
-			if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: "Build rejected before runner delivery: " + rejected.note()}); err != nil {
-				return false, err
-			}
-			if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
-				return false, err
-			}
-			return false, tx.Commit(ctx)
+		if errors.As(err, &rejected) && p.IsBuild() {
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Build rejected before runner delivery: "+rejected.note(), "Build stopped: "+rejected.note())
 		}
 		return false, err
 	}
@@ -266,6 +232,30 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	}
 	*carried = true
 	return true, nil
+}
+
+// settleRefusedPipeline ends a pipeline refused at delivery for a reason no later poll changes.
+// Refusing the poll instead would fail every poll by its runner until the pipeline's deadline, and
+// the poll serves the runner's oldest command first, so none of the runner's later commands, its
+// update included, would reach it. A pipeline never delivered fails with failedNote, and its
+// preview, if any, is told. One the runner may hold is told to stop, carrying nothing, and ends
+// when the runner reports it; stopNote says why.
+func (s *Service) settleRefusedPipeline(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, undelivered bool, failedNote, stopNote string) (bool, error) {
+	queries := db.New(tx)
+	if undelivered {
+		if err := queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: failedNote}); err != nil {
+			return false, err
+		}
+		if err := s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
+			return false, err
+		}
+		return false, tx.Commit(ctx)
+	}
+	if err := queries.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: stopNote}); err != nil {
+		return false, err
+	}
+	c.CancelRequested = true
+	return true, tx.Commit(ctx)
 }
 
 // gitHubBusyNote says why a pipeline's delivery waited. It is added once, and kept if the pipeline

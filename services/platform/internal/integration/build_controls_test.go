@@ -231,15 +231,21 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 			t.Fatal("summary was not rejected by assigned-input validation", rejection)
 		}
 	}
+	// A runner that may hold a build and no longer runs its pins, here one downgraded past the
+	// check, is told to stop it, without its inputs, rather than refused every poll until the
+	// build's deadline.
 	in.Capabilities.RailpackVersion, in.Capabilities.RailpackInputs = nil, nil
 	heartbeat()
-	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
-	b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
 	c = poll()
 	p = pipeline.Command{}
 	_ = json.Unmarshal(*c.Pipeline, &p)
-	if !c.CancelRequested || p.Access != nil || p.BuildSecrets != nil || p.RegistryAccess != nil {
-		t.Fatal("downgraded runner cancellation was not credential-free")
+	if c.Id != op.Id || !c.CancelRequested || p.Access != nil || p.BuildSecrets != nil || p.RegistryAccess != nil {
+		t.Fatal("a downgraded runner was not told to stop its build, credential-free")
+	}
+	var downgraded api.Operation
+	b.call("GET", path+"/operations/"+op.Id.String(), nil, 200, &downgraded)
+	if !strings.HasPrefix(downgraded.Note, "Build stopped. The runner does not run the Railpack pins") || !strings.Contains(downgraded.Note, "advertises none") {
+		t.Fatalf("the downgraded runner's build has the note %q", downgraded.Note)
 	}
 	report(c, "cancelled", pipeline.Result{})
 	in.Capabilities.RailpackVersion, in.Capabilities.RailpackInputs = &version, &digest
@@ -280,12 +286,12 @@ func TestBuildControlsAndSuccessfulWatchBaseline(t *testing.T) {
 		}
 		seedFirstSecretPage(t, f, ws, env.Id)
 		b.call("POST", path+"/secrets", map[string]string{"name": "LATER_TOKEN", "value": "later-runtime-canary"}, 201, nil)
-		// A previously admitted command must not receive newly secret public inputs.
-		agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
-		b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
+		// A previously admitted command must not receive newly secret public inputs: it is told
+		// to stop, without them.
 		c := poll()
-		if !c.CancelRequested {
-			t.Fatal("secret rejection prevented credential-free cancellation")
+		var stopped pipeline.Command
+		if c.Id != op.Id || !c.CancelRequested || json.Unmarshal(*c.Pipeline, &stopped) != nil || stopped.Access != nil || stopped.BuildSecrets != nil {
+			t.Fatal("secret rejection did not stop the build credential-free")
 		}
 		report(c, "cancelled", pipeline.Result{})
 
