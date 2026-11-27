@@ -7,11 +7,14 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/google/uuid"
+	"github.com/moby/moby/client"
 )
 
 // maintenanceRoutes are the route servers of a unit's health-checked pools that this host's
@@ -60,7 +63,8 @@ func maintenancePools(s routeSnapshot, raw []byte, unit uuid.UUID) ([]routePool,
 // not waited for. A proxy that cannot say what it routes refuses the reservation, as a
 // readiness probe that cannot run does, since completion could not confirm it either. A
 // record kept from an earlier delivery stands, since writers may have stopped since then.
-func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
+// What the proxy reports is read only once it has probed its servers, see awaitProbedRoutes.
+func (e *Engine) recordRouted(ctx context.Context, c api.ExecutionCommand, s *crossHostState) error {
 	if s.Routed != nil {
 		return nil
 	}
@@ -79,6 +83,9 @@ func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 	}
 	routed := &maintenanceRoutes{Servers: []routedServer{}}
 	if len(pools) > 0 {
+		if err = e.awaitProbedRoutes(ctx, c); err != nil {
+			return err
+		}
 		runtime, err := e.readIngressRuntime(ctx)
 		if err != nil {
 			return fmt.Errorf("the proxy did not report which route servers it routes: %w", err)
@@ -98,6 +105,53 @@ func (e *Engine) recordRouted(ctx context.Context, s *crossHostState) error {
 	}
 	s.Routed = routed
 	return e.Journal.saveCrossHost(*s)
+}
+
+// poolHealthSettle is how long the proxy takes to probe every server its routes name: it
+// loads a changed route file within a provider throttle, probes each server
+// PoolHealthInterval after loading it and waits PoolHealthTimeout. The margin covers the
+// throttle and the file watch, as awaitPools' does a probe's end.
+const poolHealthSettle = deployment.PoolHealthInterval + deployment.PoolHealthTimeout + 500*time.Millisecond
+
+// errProbeWaitCancelled ends a reservation cancelled while it waits for the proxy's probes.
+var errProbeWaitCancelled = errors.New("cancelled while the proxy probed this host's routes; nothing was stopped")
+
+// awaitProbedRoutes waits until the proxy has probed every server its routes name since it
+// last loaded them. It loads them when it starts and whenever the route file changes, as
+// converting or publishing routes does, and counts every server up until a probe fails,
+// so until then it reports a server it had out as routed. The file's modification time
+// and the proxy's start time survive an agent restart. The wait ends early if the command
+// is cancelled.
+func (e *Engine) awaitProbedRoutes(ctx context.Context, c api.ExecutionCommand) error {
+	info, err := os.Stat(e.routePath())
+	if err != nil {
+		return err
+	}
+	loaded := info.ModTime()
+	v, err := e.Docker.ContainerInspect(ctx, proxyName, client.ContainerInspectOptions{})
+	if err != nil {
+		return err
+	}
+	if v.Container.State != nil {
+		if started, err := time.Parse(time.RFC3339Nano, v.Container.State.StartedAt); err == nil && started.After(loaded) {
+			loaded = started
+		}
+	}
+	// A clock stepped back since then waits no longer than a probe round.
+	wait := min(time.Until(loaded.Add(poolHealthSettle)), poolHealthSettle)
+	if wait <= 0 {
+		return nil
+	}
+	cancellable, stop := untilCancelled(ctx, func() bool { return e.cancelled(c.Id) }, errProbeWaitCancelled)
+	defer stop()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-cancellable.Done():
+		return context.Cause(cancellable)
+	case <-timer.C:
+		return nil
+	}
 }
 
 // remoteRouteFloor is the least time completion waits for the proxy to route servers on

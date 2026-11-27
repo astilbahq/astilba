@@ -122,33 +122,32 @@ func (e *Engine) QualifyRouteBackends(ctx context.Context) error {
 	if reserved, err := e.Journal.hasCrossHostBarrier(); err != nil || reserved {
 		return err
 	}
-	_, err := e.convertBareBackends(ctx)
-	return err
+	return e.convertBareBackends(ctx)
 }
 
-// convertBareBackends converts a host's bare backend names, with mu held, and reports
-// whether it changed the route file. It changes only the route file, so it never restarts the proxy, whatever this agent would now choose to
+// convertBareBackends converts a host's bare backend names, with mu held. It changes only
+// the route file, so it never restarts the proxy, whatever this agent would now choose to
 // run: the routes and the proxy's networks are already those the journal records. A
 // failure restores the previous file. Drift, or an attempt a command left, is left as it
 // is. The revision is derived so that a restart after the file was written, before the
 // journal, finds the same file here.
-func (e *Engine) convertBareBackends(ctx context.Context) (bool, error) {
+func (e *Engine) convertBareBackends(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	state, err := e.Journal.routing()
 	if err != nil {
-		return false, err
+		return err
 	}
 	current := state.Current
 	if state.Pending || current.QualifiedBackends || len(current.Sets) == 0 {
-		return false, nil
+		return nil
 	}
 	next := current
 	next.QualifiedBackends = true
 	next.Revision = uuid.NewSHA1(uuid.NameSpaceOID, []byte("qualified-backends/"+current.Revision)).String()
 	published, err := renderSnapshot(next)
 	if err != nil {
-		return false, err
+		return err
 	}
 	// Drift is left for the owner's explicit reconciliation, which also converts.
 	observed := current
@@ -156,21 +155,17 @@ func (e *Engine) convertBareBackends(ctx context.Context) (bool, error) {
 		observed = next
 	}
 	if drift, err := e.ingressDrift(ctx, routeState{Current: observed}); err != nil || drift {
-		return false, err
+		return err
 	}
 	if err = e.replaceRouteFile(ctx, next); err != nil {
 		if restore := e.replaceRouteFile(ctx, current); restore != nil {
-			return false, fmt.Errorf("restoring routes after a failed conversion: %w", restore)
+			return fmt.Errorf("restoring routes after a failed conversion: %w", restore)
 		}
-		return false, err
+		return err
 	}
 	state.Current = next
-	return true, e.Journal.saveRouting(state)
+	return e.Journal.saveRouting(state)
 }
-
-// poolHealthSettle is how long after a route file names new servers the proxy takes to
-// report what it finds of them: it counts each one up until its first probe fails.
-const poolHealthSettle = deployment.PoolHealthInterval + deployment.PoolHealthTimeout
 
 func (e *Engine) replaceRouteFile(ctx context.Context, s routeSnapshot) error {
 	raw, err := renderSnapshot(s)
