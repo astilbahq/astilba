@@ -58,7 +58,7 @@ func (a *bindingArchive) destination(kind string, server *uuid.UUID, shared bool
 
 // policy adds a policy on server using destination.
 func (a *bindingArchive) policy(server, destination uuid.UUID, method string) {
-	configuration, _ := stablejson.Marshal(map[string]string{"method": method, "destinationId": destination.String()})
+	configuration, _ := stablejson.Marshal(map[string]string{"method": method, "serverId": server.String(), "destinationId": destination.String()})
 	row := Row{"workspace_id": a.Tables["servers"][0]["workspace_id"], "environment_id": a.Tables["environments"][0]["id"], "configuration": configuration, "encrypted_access": jsontext.Value(`null`), "status": jsontext.Value(`{}`), "status_sequence": jsontext.Value(`0`), "snapshot_receipts": jsontext.Value(`{}`)}
 	setValue(row, "id", uuid.New())
 	setValue(row, "server_id", server)
@@ -129,6 +129,13 @@ func TestArchiveBindingsMatchTheirPolicies(t *testing.T) {
 		},
 		"a policy on an unbound destination": func(a *bindingArchive) {
 			a.policy(a.first, a.destination("s3", nil, false), "postgres-logical")
+		},
+		// A restore reads the server its configuration names, and delivering keys its row's.
+		"a policy whose configuration names another server": func(a *bindingArchive) {
+			destination := a.destination("s3", &a.other, false)
+			a.policy(a.other, destination, "postgres-logical")
+			row := a.Tables["backup_policies"][len(a.Tables["backup_policies"])-1]
+			row["configuration"], _ = stablejson.Marshal(map[string]string{"method": "postgres-logical", "serverId": a.first.String(), "destinationId": destination.String()})
 		},
 	}
 	for name, change := range cases {

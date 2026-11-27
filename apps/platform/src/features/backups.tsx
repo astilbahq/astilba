@@ -30,12 +30,15 @@ import type { EnvironmentPath } from "./visual-editor";
 export function Backups({
   path,
   revision,
+  server,
   owner,
   dirty,
   load,
 }: {
   path: EnvironmentPath;
   revision: Schema["Revision"];
+  /** The environment's deployment server, which its new policies are on. */
+  server: string | null | undefined;
   owner: boolean;
   dirty: boolean;
   load: (revision: Schema["Revision"]) => boolean;
@@ -154,9 +157,16 @@ export function Backups({
                   form.reset();
                   setDestination("");
                   setPreset(undefined);
-                  await queries.invalidateQueries({
-                    queryKey: ["backup-policies", path],
-                  });
+                  // The policy may have bound its destination to this server.
+                  await Promise.all([
+                    queries.invalidateQueries({
+                      queryKey: ["backup-policies", path],
+                    }),
+                    queries.invalidateQueries({
+                      queryKey: backupDestinationsOptions(path.workspaceId)
+                        .queryKey,
+                    }),
+                  ]);
                 });
               }}
             >
@@ -219,14 +229,22 @@ export function Backups({
                     >
                       <option value="">Choose a destination</option>
                       {destinations.data?.map((d) => (
-                        <option key={d.id} value={d.id} disabled={d.shared}>
+                        // An S3 destination's keys belong to one server, and only its policies
+                        // can use it.
+                        <option
+                          key={d.id}
+                          value={d.id}
+                          disabled={
+                            d.shared || (!!d.serverId && d.serverId !== server)
+                          }
+                        >
                           {d.name}
                           {d.kind === "filesystem"
                             ? " — same server failure boundary"
                             : d.shared
                               ? " — shared by several servers, closed to new policies"
-                              : d.serverId
-                                ? ` — keys held by ${servers.data?.find((v) => v.id === d.serverId)?.name ?? "another server"}`
+                              : d.serverId && d.serverId !== server
+                                ? ` — keys belong to ${servers.data?.find((v) => v.id === d.serverId)?.name ?? "another server"}`
                                 : ""}
                           {d.exposed
                             ? " — keys exposed to a revoked server"

@@ -416,11 +416,12 @@ test("backup setup, restore verification and separate cutover use the real API",
       .locator("option")
       .filter({ hasText: `Recovery disk ${info.project.name}` }),
   ).toHaveCount(1);
+  // The bucket's keys belong to this environment's server, so its policies can use it.
   await expect(
-    form.getByLabel("Backup destination").locator("option", {
-      hasText: `Recovery bucket ${info.project.name} — keys held by Recovery ${info.project.name}`,
-    }),
-  ).toHaveCount(1);
+    form
+      .getByLabel("Backup destination")
+      .getByRole("option", { name: `Recovery bucket ${info.project.name}` }),
+  ).toBeEnabled();
   await form.getByLabel("Backup destination").selectOption({
     label: `Recovery disk ${info.project.name} — same server failure boundary`,
   });

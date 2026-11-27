@@ -10,16 +10,18 @@ import (
 type destinationUse struct{ servers map[uuid.UUID]bool }
 
 // destinationUses reads which servers the policies using each destination are on. A container
-// job uses none.
+// job uses none. A policy's configuration must name its row's server: a restore reads the one and
+// delivering its keys the other.
 func destinationUses(a Archive) (map[uuid.UUID]*destinationUse, error) {
 	out := map[uuid.UUID]*destinationUse{}
 	for _, row := range a.Tables["backup_policies"] {
 		var policy struct {
 			Method        string    `json:"method"`
+			ServerID      uuid.UUID `json:"serverId"`
 			DestinationID uuid.UUID `json:"destinationId"`
 		}
 		var server uuid.UUID
-		if json.Unmarshal(row["configuration"], &policy) != nil || json.Unmarshal(row["server_id"], &server) != nil {
+		if json.Unmarshal(row["configuration"], &policy) != nil || json.Unmarshal(row["server_id"], &server) != nil || policy.ServerID != server {
 			return nil, ErrArchive
 		}
 		if policy.Method == "container-job" {

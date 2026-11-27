@@ -25,45 +25,39 @@ var errDestinationServer = &domain.Error{Code: "invalid_input", Message: "This d
 // errDestinationShared refuses a new policy on a shared S3 destination.
 var errDestinationShared = &domain.Error{Code: "invalid_input", Message: "This destination's storage keys are held by more than one server, so each can delete the others' backups. Add a destination for this server, with keys limited to its own prefix or bucket.", Fields: []string{"destination.shared"}}
 
-// bindPolicyDestination admits policy p onto its destination, which it locks until the policy is
-// saved, and binds an S3 destination no policy has used yet to p's server. The lock orders two
-// policies saved at once, so the second sees the first's binding. creating says p is new.
-func bindPolicyDestination(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p backup.Policy, creating bool) (backup.Destination, error) {
-	var d backup.Destination
-	row, err := db.New(tx).LockBackupDestinationBinding(ctx, db.LockBackupDestinationBindingParams{WorkspaceID: ws, ID: p.DestinationID})
+// bindPolicyDestination admits policy p onto its destination, and binds an S3 destination no
+// policy has used yet to p's server. Policy saves in a workspace are taken one at a time, so a
+// second policy saved at once sees the first's binding. creating says p is new.
+func bindPolicyDestination(ctx context.Context, tx pgx.Tx, ws uuid.UUID, p backup.Policy, creating bool) error {
+	row, err := db.New(tx).BackupDestinationBinding(ctx, db.BackupDestinationBindingParams{WorkspaceID: ws, ID: p.DestinationID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return d, domain.NotFound
+		return domain.NotFound
 	}
 	if err != nil {
-		return d, err
+		return err
 	}
+	var d backup.Destination
 	if err = json.Unmarshal(row.Configuration, &d); err != nil {
-		return d, err
+		return err
 	}
 	if err = requireBackupPrefixes(ctx, tx, ws, p.ServerID, d); err != nil {
-		return d, err
+		return err
 	}
 	switch {
 	case d.Kind != "s3":
-		return d, nil
+		return nil
 	case row.Shared && creating:
-		return d, errDestinationShared
+		return errDestinationShared
 	case row.Shared:
 		// One of the policies that shared it before destinations were bound. It never changes
 		// server or destination.
-		return d, nil
+		return nil
 	case row.ServerID == nil:
-		return d, db.New(tx).BindBackupDestination(ctx, db.BindBackupDestinationParams{ServerID: &p.ServerID, WorkspaceID: ws, ID: p.DestinationID})
+		return db.New(tx).BindBackupDestination(ctx, db.BindBackupDestinationParams{ServerID: &p.ServerID, WorkspaceID: ws, ID: p.DestinationID})
 	case *row.ServerID != p.ServerID:
-		return d, errDestinationServer
+		return errDestinationServer
 	}
-	return d, nil
-}
-
-// destinationAdmits says whether an S3 destination bound to bound, or shared, gives its keys to
-// server. A filesystem destination has none to give.
-func destinationAdmits(kind string, bound *uuid.UUID, shared bool, server uuid.UUID) bool {
-	return kind != "s3" || shared || bound != nil && *bound == server
+	return nil
 }
 
 // backupPrefixesField marks a refusal an agent update clears.
@@ -84,4 +78,42 @@ func requireBackupPrefixes(ctx context.Context, q db.DBTX, ws, server uuid.UUID,
 		return nil
 	}
 	return &domain.Error{Code: "invalid_input", Message: "Update this server's agent before using a destination with a prefix: its agent would keep the backups at the bucket's root.", Fields: []string{backupPrefixesField}}
+}
+
+// admitDestination refuses new S3 destination d for server unless server is a deployment server
+// that can take it and d has a part of its bucket to itself.
+func (s *Service) admitDestination(ctx context.Context, tx pgx.Tx, ws, server uuid.UUID, d backup.Destination) error {
+	// A server that is missing, revoked, a build server or not ready can't take it.
+	var refused *domain.Error
+	if err := s.deploymentServer(ctx, tx, ws, server); errors.Is(err, pgx.ErrNoRows) || errors.As(err, &refused) {
+		return domain.Invalid("serverId")
+	} else if err != nil {
+		return err
+	}
+	if err := requireBackupPrefixes(ctx, tx, ws, server, d); err != nil {
+		return err
+	}
+	return requireOwnScope(ctx, tx, ws, d)
+}
+
+// errDestinationOverlaps refuses an S3 destination whose repositories would share part of a
+// bucket with another destination's, so neither's keys could be limited to its own.
+var errDestinationOverlaps = &domain.Error{Code: "invalid_input", Message: "Another destination keeps its backups in this part of the bucket, or around it, so keys limited to one would reach the other's. Choose a prefix that neither contains nor is inside another destination's, or another bucket.", Fields: []string{"prefix"}}
+
+// requireOwnScope refuses S3 destination d if it overlaps one of the workspace's destinations.
+func requireOwnScope(ctx context.Context, tx pgx.Tx, ws uuid.UUID, d backup.Destination) error {
+	rows, err := db.New(tx).ListBackupDestinations(ctx, ws)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var o backup.Destination
+		if err = json.Unmarshal(row.Configuration, &o); err != nil {
+			return err
+		}
+		if d.Overlaps(o) {
+			return errDestinationOverlaps
+		}
+	}
+	return nil
 }

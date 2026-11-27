@@ -418,7 +418,7 @@ func TestArchiveCarriesRevocationTimesAndSnapshotReceipts(t *testing.T) {
 		raw, _ := stablejson.Marshal(out)
 		return raw
 	}
-	policy := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "workspace_id": server["workspace_id"], "environment_id": a.Tables["environments"][0]["id"], "server_id": server["id"], "configuration": jsontext.Value(`{}`), "encrypted_access": jsontext.Value(`null`), "status": jsontext.Value(`{}`), "status_sequence": jsontext.Value(`0`), "snapshot_receipts": receipts(2)}
+	policy := Row{"id": jsontext.Value(`"` + uuid.NewString() + `"`), "workspace_id": server["workspace_id"], "environment_id": a.Tables["environments"][0]["id"], "server_id": server["id"], "configuration": jsontext.Value(`{"serverId":` + string(server["id"]) + `}`), "encrypted_access": jsontext.Value(`null`), "status": jsontext.Value(`{}`), "status_sequence": jsontext.Value(`0`), "snapshot_receipts": receipts(2)}
 	decode := func(version int, change func(Archive)) (Archive, error) {
 		t.Helper()
 		older := a

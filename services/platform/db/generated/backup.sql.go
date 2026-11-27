@@ -74,7 +74,7 @@ func (q *Queries) AllBackupPolicyAccess(ctx context.Context) ([]AllBackupPolicyA
 }
 
 const backupDestinationAccess = `-- name: BackupDestinationAccess :one
-SELECT configuration,encrypted_access,server_id,shared FROM backup_destinations WHERE workspace_id = $1 AND id = $2
+SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id = $1 AND id = $2
 `
 
 type BackupDestinationAccessParams struct {
@@ -83,21 +83,37 @@ type BackupDestinationAccessParams struct {
 }
 
 type BackupDestinationAccessRow struct {
-	Configuration   []byte     `json:"configuration"`
-	EncryptedAccess []byte     `json:"encrypted_access"`
-	ServerID        *uuid.UUID `json:"server_id"`
-	Shared          bool       `json:"shared"`
+	Configuration   []byte `json:"configuration"`
+	EncryptedAccess []byte `json:"encrypted_access"`
 }
 
 func (q *Queries) BackupDestinationAccess(ctx context.Context, arg BackupDestinationAccessParams) (BackupDestinationAccessRow, error) {
 	row := q.db.QueryRow(ctx, backupDestinationAccess, arg.WorkspaceID, arg.ID)
 	var i BackupDestinationAccessRow
-	err := row.Scan(
-		&i.Configuration,
-		&i.EncryptedAccess,
-		&i.ServerID,
-		&i.Shared,
-	)
+	err := row.Scan(&i.Configuration, &i.EncryptedAccess)
+	return i, err
+}
+
+const backupDestinationBinding = `-- name: BackupDestinationBinding :one
+SELECT configuration, server_id, shared FROM backup_destinations
+WHERE workspace_id = $1 AND id = $2
+`
+
+type BackupDestinationBindingParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type BackupDestinationBindingRow struct {
+	Configuration []byte     `json:"configuration"`
+	ServerID      *uuid.UUID `json:"server_id"`
+	Shared        bool       `json:"shared"`
+}
+
+func (q *Queries) BackupDestinationBinding(ctx context.Context, arg BackupDestinationBindingParams) (BackupDestinationBindingRow, error) {
+	row := q.db.QueryRow(ctx, backupDestinationBinding, arg.WorkspaceID, arg.ID)
+	var i BackupDestinationBindingRow
+	err := row.Scan(&i.Configuration, &i.ServerID, &i.Shared)
 	return i, err
 }
 
@@ -352,8 +368,7 @@ func (q *Queries) BackupSnapshotReceipts(ctx context.Context, arg BackupSnapshot
 }
 
 const bindBackupDestination = `-- name: BindBackupDestination :exec
-UPDATE backup_destinations SET server_id = $1
-WHERE workspace_id = $2 AND id = $3 AND server_id IS NULL AND NOT shared AND configuration->>'kind' = 's3'
+UPDATE backup_destinations SET server_id = $1 WHERE workspace_id = $2 AND id = $3
 `
 
 type BindBackupDestinationParams struct {
@@ -787,31 +802,6 @@ func (q *Queries) ListServerBackupStatuses(ctx context.Context, arg ListServerBa
 		return nil, err
 	}
 	return items, nil
-}
-
-const lockBackupDestinationBinding = `-- name: LockBackupDestinationBinding :one
-SELECT configuration, server_id, shared FROM backup_destinations
-WHERE workspace_id = $1 AND id = $2 FOR UPDATE
-`
-
-type LockBackupDestinationBindingParams struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-}
-
-type LockBackupDestinationBindingRow struct {
-	Configuration []byte     `json:"configuration"`
-	ServerID      *uuid.UUID `json:"server_id"`
-	Shared        bool       `json:"shared"`
-}
-
-// Held until the policy saving under it commits, so two policies on different servers can't both
-// bind a destination that has no server yet.
-func (q *Queries) LockBackupDestinationBinding(ctx context.Context, arg LockBackupDestinationBindingParams) (LockBackupDestinationBindingRow, error) {
-	row := q.db.QueryRow(ctx, lockBackupDestinationBinding, arg.WorkspaceID, arg.ID)
-	var i LockBackupDestinationBindingRow
-	err := row.Scan(&i.Configuration, &i.ServerID, &i.Shared)
-	return i, err
 }
 
 const lockBackupPolicyConfiguration = `-- name: LockBackupPolicyConfiguration :one

@@ -8,8 +8,12 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/google/uuid"
+	bolt "go.etcd.io/bbolt"
 )
 
 // An agent says it keeps a destination's repositories under its prefix only to a controller that
@@ -73,5 +77,47 @@ func TestBackupPrefixesWaitForTheirNegotiation(t *testing.T) {
 	}
 	if received.Load() != 2 || rejected.Load() != 1 {
 		t.Fatalf("after the controller stopped reading them, backup prefixes were advertised %d times in all, %d refused", received.Load(), rejected.Load())
+	}
+}
+
+// An older binary drops a destination's prefix, so it would back up at the bucket's root and save
+// the schedule back without it. A prefixed schedule is kept where only this binary reads it, with
+// a disabled copy for an older one, as an advanced cadence is.
+func TestAPrefixedScheduleIsHiddenFromOlderBinaries(t *testing.T) {
+	j, plan := testVisualJournal(t)
+	p := backup.Policy{ID: uuid.New(), ServerID: plan.ServerID, EnvironmentID: plan.EnvironmentID, Generation: 1, Enabled: true, Method: "postgres-logical", Schedule: backup.Schedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Plan: plan}
+	d := backup.Destination{ID: uuid.New(), Kind: "s3", Endpoint: "https://storage.example.test", Bucket: "backups", Prefix: "servers/web-1"}
+	s := scheduleState{Installation: backup.Installation{Policy: p, Destination: d, Next: time.Date(2026, 11, 27, 2, 30, 0, 0, time.UTC)}}
+	if err := j.saveSchedule(s); err != nil {
+		t.Fatal(err)
+	}
+	var legacy scheduleState
+	if err := j.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("schedules-v2")).Get([]byte(p.ID.String())) == nil {
+			t.Error("the prefixed schedule was kept only where an older binary reads it")
+		}
+		return j.get(tx, "schedules", p.ID.String(), &legacy)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Installation.Policy.Enabled || !legacy.Installation.Next.IsZero() {
+		t.Fatal("an older binary could run the prefixed schedule")
+	}
+	got, err := j.schedule(p.ID)
+	if err != nil || !got.Installation.Policy.Enabled || got.Installation.Destination.Prefix != d.Prefix {
+		t.Fatal("this binary lost the prefixed schedule", err)
+	}
+	// Without a prefix it stays where it always was.
+	s.Installation.Destination.Prefix = ""
+	if err = j.saveSchedule(s); err != nil {
+		t.Fatal(err)
+	}
+	if err = j.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("schedules-v2")).Get([]byte(p.ID.String())) != nil {
+			t.Error("an unprefixed daily schedule was hidden from older binaries")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

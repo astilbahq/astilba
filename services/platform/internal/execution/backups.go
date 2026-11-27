@@ -70,6 +70,9 @@ func destinationView(d backup.Destination, server *uuid.UUID, shared, exposed bo
 func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access, server *uuid.UUID) (api.BackupDestination, error) {
 	d.ID = uuid.New()
 	a.Password = ""
+	if d.Kind == "s3" && d.Prefix != "" && !backup.ValidPrefix(d.Prefix) {
+		return api.BackupDestination{}, domain.Invalid("prefix")
+	}
 	if backup.ValidateDestination(d, a) != nil {
 		return api.BackupDestination{}, domain.Invalid("destination")
 	}
@@ -92,10 +95,7 @@ func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal
 			return domain.Conflict
 		}
 		if server != nil {
-			if err = s.deploymentServer(ctx, tx, ws, *server); err != nil {
-				return err
-			}
-			if err = requireBackupPrefixes(ctx, tx, ws, *server, d); err != nil {
+			if err = s.admitDestination(ctx, tx, ws, *server, d); err != nil {
 				return err
 			}
 		}
@@ -243,7 +243,7 @@ func (s *Service) SaveBackupPolicy(ctx context.Context, p store.Principal, ws, p
 			return domain.Invalid("server.capabilities.schedules")
 		}
 		if out.Method != "container-job" {
-			if _, err = bindPolicyDestination(ctx, tx, ws, out, creating); err != nil {
+			if err = bindPolicyDestination(ctx, tx, ws, out, creating); err != nil {
 				return err
 			}
 			// A revoked server that held the destination's keys can still delete or overwrite what a
@@ -420,21 +420,6 @@ func (s *Service) hydrateBackup(ctx context.Context, keys valueKeys, c *api.Exec
 	if json.Unmarshal(stored.Configuration, &policy) != nil || policy.Generation != b.Installation.Policy.Generation {
 		return domain.Conflict
 	}
-	var destination db.BackupDestinationAccessRow
-	if b.Installation.Policy.Method != "container-job" {
-		destination, err = s.Store.Queries.BackupDestinationAccess(ctx, db.BackupDestinationAccessParams{WorkspaceID: b.Installation.Policy.WorkspaceID, ID: b.Installation.Policy.DestinationID})
-		if err != nil {
-			return err
-		}
-		if err = json.Unmarshal(destination.Configuration, &b.Installation.Destination); err != nil {
-			return err
-		}
-		// A destination's keys go only to the server it is bound to, or to the servers that
-		// shared it before destinations were bound.
-		if !destinationAdmits(b.Installation.Destination.Kind, destination.ServerID, destination.Shared, c.ServerId) {
-			return domain.Conflict
-		}
-	}
 	if keys == nil {
 		return nil
 	}
@@ -442,6 +427,13 @@ func (s *Service) hydrateBackup(ctx context.Context, keys valueKeys, c *api.Exec
 		return err
 	}
 	if b.Installation.Policy.Method != "container-job" {
+		destination, err := s.Store.Queries.BackupDestinationAccess(ctx, db.BackupDestinationAccessParams{WorkspaceID: b.Installation.Policy.WorkspaceID, ID: b.Installation.Policy.DestinationID})
+		if err != nil {
+			return err
+		}
+		if err = json.Unmarshal(destination.Configuration, &b.Installation.Destination); err != nil {
+			return err
+		}
 		var a backup.Access
 		if err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: b.Installation.Policy.DestinationID}, destination.EncryptedAccess, &a); err != nil {
 			return err

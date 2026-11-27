@@ -17,21 +17,18 @@ SELECT count(*) FROM backup_destinations WHERE workspace_id = @workspace_id;
 INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access,server_id)
 VALUES(@id,@workspace_id,@configuration,@encrypted_access,sqlc.narg(server_id));
 
--- name: LockBackupDestinationBinding :one
--- Held until the policy saving under it commits, so two policies on different servers can't both
--- bind a destination that has no server yet.
+-- name: BackupDestinationBinding :one
 SELECT configuration, server_id, shared FROM backup_destinations
-WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: BindBackupDestination :exec
-UPDATE backup_destinations SET server_id = @server_id
-WHERE workspace_id = @workspace_id AND id = @id AND server_id IS NULL AND NOT shared AND configuration->>'kind' = 's3';
+UPDATE backup_destinations SET server_id = @server_id WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: BackupDestinationConfiguration :one
 SELECT configuration FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: BackupDestinationAccess :one
-SELECT configuration,encrypted_access,server_id,shared FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
+SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ListBackupPolicies :many
 SELECT configuration FROM backup_policies

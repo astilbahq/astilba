@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -42,9 +41,9 @@ func (x *bindingFixture) policy(p *reportingPolicy, name string, destination uui
 	return api.BackupPolicyRequest{Name: name, ResourceId: p.policy.ResourceID, DestinationId: destination, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 4, Minute: 0, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
 }
 
-// s3 is a request for an S3 destination with extra fields.
+// s3Destination is a request for an S3 destination with a bucket of its own, and extra fields.
 func s3Destination(name string, extra map[string]any) map[string]any {
-	out := map[string]any{"name": name, "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "binding-fixture", "region": "test-1", "access": map[string]string{"accessKey": "binding-key", "secretKey": "binding-secret-canary", "password": ""}}
+	out := map[string]any{"name": name, "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "binding-" + strings.ToLower(strings.ReplaceAll(name, " ", "-")), "region": "test-1", "access": map[string]string{"accessKey": "binding-key", "secretKey": "binding-secret-canary", "password": ""}}
 	for k, v := range extra {
 		out[k] = v
 	}
@@ -113,16 +112,14 @@ func TestABackupDestinationIsBoundToOneServer(t *testing.T) {
 	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", s3Destination("Unbound", nil)), "serverId")
 	local := map[string]any{"name": "Local", "kind": "filesystem", "serverId": x.first.server, "root": "/srv/backups", "endpoint": "", "bucket": "", "region": "", "access": map[string]string{"accessKey": "", "secretKey": "", "password": ""}}
 	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", local), "serverId")
-	if got := <-x.b.send("POST", x.base+"/backup-destinations", s3Destination("Nowhere", map[string]any{"serverId": uuid.New()})); got.status != http.StatusNotFound {
-		t.Fatalf("a destination for an unknown server = %d %s", got.status, got.body)
-	}
+	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", s3Destination("Nowhere", map[string]any{"serverId": uuid.New()})), "serverId")
 	x.exec(t, "UPDATE servers SET role='build' WHERE id=$1", x.other.server)
-	if got := <-x.b.send("POST", x.base+"/backup-destinations", s3Destination("Builder", map[string]any{"serverId": x.other.server})); got.status != http.StatusForbidden {
-		t.Fatalf("a destination for a build server = %d %s", got.status, got.body)
-	}
+	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", s3Destination("Builder", map[string]any{"serverId": x.other.server})), "serverId")
 	x.exec(t, "UPDATE servers SET role='deployment' WHERE id=$1", x.other.server)
 
-	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", s3Destination("Bad prefix", map[string]any{"serverId": x.first.server, "prefix": "servers/../other"})), "destination")
+	for _, prefix := range []string{"servers/../other", "astilba", "astilba/first"} {
+		wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", s3Destination("Bad prefix", map[string]any{"serverId": x.first.server, "prefix": prefix})), "prefix")
+	}
 	prefixed := s3Destination("Prefixed", map[string]any{"serverId": x.first.server, "prefix": "servers/first"})
 	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", prefixed), "server.capabilities.backupPrefixes")
 	x.exec(t, `UPDATE servers SET capabilities = capabilities || '{"backupPrefixes": true}' WHERE id=$1`, x.first.server)
@@ -131,6 +128,21 @@ func TestABackupDestinationIsBoundToOneServer(t *testing.T) {
 	if created.Prefix == nil || *created.Prefix != "servers/first" || created.ServerId == nil || *created.ServerId != x.first.server {
 		t.Fatalf("created %+v", created)
 	}
+	// Keys limited to one destination's prefix would reach another's in or around it.
+	beside := func(prefix string) map[string]any {
+		out := s3Destination("Beside", map[string]any{"serverId": x.other.server, "bucket": "binding-prefixed"})
+		if prefix != "" {
+			out["prefix"] = prefix
+		}
+		return out
+	}
+	x.exec(t, `UPDATE servers SET capabilities = capabilities || '{"backupPrefixes": true}' WHERE id=$1`, x.other.server)
+	for _, prefix := range []string{"servers/first", "servers", "servers/first/inner"} {
+		wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", beside(prefix)), "prefix")
+	}
+	x.b.call("POST", x.base+"/backup-destinations", beside("servers/other"), 201, nil)
+	x.b.call("POST", x.base+"/backup-destinations", beside(""), 201, nil)
+	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", beside("")), "prefix")
 	var onPrefix backup.Policy
 	x.b.call("POST", x.environment(x.first)+"/backup-policies", x.policy(x.first, "Prefixed", created.Id), 201, &onPrefix)
 	// An agent that stops reading prefixes is refused the destination's commands rather than sent
@@ -139,9 +151,8 @@ func TestABackupDestinationIsBoundToOneServer(t *testing.T) {
 	wantRefusedField(t, <-x.b.send("POST", x.environment(x.first)+"/backup-policies/"+onPrefix.ID.String()+"/commands", api.BackupCommandRequest{Action: "check", RequestKey: uuid.New()}), "server.capabilities.backupPrefixes")
 }
 
-// A destination's storage keys are delivered only to the server it is bound to, with its prefix,
-// or to the servers that shared it before destinations were bound. A command for a server the
-// destination no longer admits is sent without them.
+// A destination's storage keys and prefix are delivered to the server it is bound to. A shared
+// destination keeps its policies, and no new one can choose it.
 func TestOnlyADestinationsServerIsGivenItsKeys(t *testing.T) {
 	x := newBindingFixture(t)
 	x.exec(t, `UPDATE servers SET capabilities = capabilities || '{"backupPrefixes": true}' WHERE id=$1`, x.first.server)
@@ -176,25 +187,9 @@ func TestOnlyADestinationsServerIsGivenItsKeys(t *testing.T) {
 	}
 	agentRequest(t, x.f.server.Client(), x.f.server.URL, "/agent/v1/report", x.first.token, api.AgentReport{Id: polled.Id, Generation: polled.Generation, PlanHash: polled.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
 
-	// Bound to the other server, as no request can make it, the keys aren't sent.
-	x.exec(t, "UPDATE backup_destinations SET server_id=$2 WHERE id=$1", prefixed.Id, x.other.server)
-	op = check()
-	if status, got = delivered(op); status == 200 && got.Installation.Access.SecretKey != "" {
-		t.Fatalf("a server the destination isn't bound to was given its keys: %+v", got.Installation.Access)
-	}
-	// A shared destination's keys still reach the servers whose policies used it.
+	// Shared, as migration 00075 leaves one that policies on several servers used, a new policy
+	// can't choose it, while its own can still be changed.
 	x.exec(t, "UPDATE backup_destinations SET server_id=NULL, shared=true WHERE id=$1", prefixed.Id)
-	for until := time.Now().Add(20 * time.Second); ; {
-		if status, got = delivered(op); status == 200 && got.Installation.Access.SecretKey == "binding-secret-canary" {
-			break
-		}
-		if time.Now().After(until) {
-			t.Fatalf("a shared destination's server wasn't given its keys: %d %+v", status, got.Installation.Access)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	agentRequest(t, x.f.server.Client(), x.f.server.URL, "/agent/v1/report", x.first.token, api.AgentReport{Id: polled.Id, Generation: polled.Generation, PlanHash: polled.PlanHash, Sequence: 1, State: "succeeded", Steps: []api.ExecutionStep{}}, 204, nil)
-	// A new policy can't choose it, while its own can still be changed.
 	wantRefusedField(t, <-x.b.send("POST", x.environment(x.first)+"/backup-policies", x.policy(x.first, "Shared", prefixed.Id)), "destination.shared")
 	update := x.policy(x.first, "Renamed", prefixed.Id)
 	update.BaseGeneration = policy.Generation
@@ -202,11 +197,10 @@ func TestOnlyADestinationsServerIsGivenItsKeys(t *testing.T) {
 }
 
 // A destination no policy has used yet, as one from before destinations were bound can be, is bound
-// by its first policy. Two policies on different servers can't both bind it: the second is decided
-// under the destination's lock, once the first's binding is committed.
+// by its first policy. Two policies on different servers can't both bind it: policy saves in a
+// workspace are taken one at a time, so the second sees the first's binding.
 func TestOnlyOneServerBindsAnUnboundDestination(t *testing.T) {
 	x := newBindingFixture(t)
-	ctx := context.Background()
 	unbound := func(name string) uuid.UUID {
 		t.Helper()
 		var d api.BackupDestination
@@ -238,36 +232,4 @@ func TestOnlyOneServerBindsAnUnboundDestination(t *testing.T) {
 			t.Fatalf("the raced destination = %+v, want bound to %s", got, winner)
 		}
 	}
-
-	// A binding committed while the policy waits for the destination's lock is the one it sees.
-	destination := unbound("Held")
-	tx, err := x.f.st.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, "SELECT 1 FROM backup_destinations WHERE id=$1 FOR UPDATE", destination); err != nil {
-		t.Fatal(err)
-	}
-	waiting := x.b.send("POST", x.environment(x.first)+"/backup-policies", x.policy(x.first, "Waiting", destination))
-	for until := time.Now().Add(20 * time.Second); ; {
-		var n int
-		if err = x.f.st.Pool.QueryRow(ctx, "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%FROM backup_destinations%FOR UPDATE%'").Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n == 1 {
-			break
-		}
-		if time.Now().After(until) {
-			t.Fatal("the policy never waited for the destination's lock")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if _, err = tx.Exec(ctx, "UPDATE backup_destinations SET server_id=$2 WHERE id=$1", destination, x.other.server); err != nil {
-		t.Fatal(err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	wantRefusedField(t, <-waiting, "destination.server")
 }

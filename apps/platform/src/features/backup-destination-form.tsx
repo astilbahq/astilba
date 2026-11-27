@@ -5,7 +5,14 @@ import { client, result, type Schema } from "../api/client";
 import { Label } from "../components/label";
 import { Select } from "../components/select";
 import * as s from "../styles";
-import { BusyButton, Field, Form, text, type useAction } from "../ui";
+import {
+  BusyButton,
+  Field,
+  Form,
+  text,
+  type useAction,
+  useFieldError,
+} from "../ui";
 import type { EnvironmentPath } from "./visual-editor";
 
 // Adds a reusable backup destination. An S3 destination's keys are given to one deployment
@@ -80,19 +87,7 @@ export function BackupDestinationForm({
         </Label>
         {s3 ? (
           <>
-            <Label>
-              Server given the storage keys
-              <Select name="serverId" required defaultValue="">
-                <option value="">Choose a deployment server</option>
-                {servers
-                  ?.filter((v) => v.role !== "build" && v.status !== "revoked")
-                  .map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name}
-                    </option>
-                  ))}
-              </Select>
-            </Label>
+            <ServerSelect servers={servers} />
             <Field name="endpoint" label="S3 HTTPS origin" />
             <Field name="bucket" label="S3 bucket" />
             <Field name="region" label="S3 region" />
@@ -120,5 +115,37 @@ export function BackupDestinationForm({
         <BusyButton busy={action.isPending}>Add destination</BusyButton>
       </Form>
     </details>
+  );
+}
+
+// The deployment servers a destination can be given to: enrolled ones whose agent can deploy.
+function ServerSelect({
+  servers,
+}: {
+  servers: Schema["Server"][] | undefined;
+}) {
+  const error = useFieldError("serverId");
+  return (
+    <Label>
+      Server given the storage keys
+      <Select name="serverId" required defaultValue="" {...error}>
+        <option value="">Choose a deployment server</option>
+        {servers
+          ?.filter(
+            (v) =>
+              v.role !== "build" &&
+              v.status !== "revoked" &&
+              v.status !== "pending" &&
+              !v.transferRequired &&
+              v.capabilities?.docker &&
+              v.preflight?.ready,
+          )
+          .map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.name}
+            </option>
+          ))}
+      </Select>
+    </Label>
   );
 }

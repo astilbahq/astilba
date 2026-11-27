@@ -67,8 +67,9 @@ func newReportingPolicy(t *testing.T, f *fixture, b *browser, ws uuid.UUID, name
 	var op api.Operation
 	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	report(poll(op.Id), deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: image}}, StateHash: strings.Repeat("b", 64)})
+	// Each policy's destination has a bucket of its own, as each server's does.
 	var dest backup.Destination
-	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": name + " bucket", "kind": "s3", "serverId": enrolled.Server.Id, "root": "", "endpoint": "https://storage.example.test", "bucket": "receipts-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &dest)
+	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": name + " bucket", "kind": "s3", "serverId": enrolled.Server.Id, "root": "", "endpoint": "https://storage.example.test", "bucket": "receipts-" + strings.ToLower(strings.ReplaceAll(name, " ", "-")), "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &dest)
 	password := "repository-password-fixture"
 	var policy backup.Policy
 	b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: "Daily backup", ResourceId: pg, DestinationId: dest.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)

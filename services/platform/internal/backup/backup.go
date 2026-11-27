@@ -35,6 +35,30 @@ type Destination struct {
 // with a letter or digit, joined by '/'.
 var prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
 
+// ValidPrefix says whether prefix can be an S3 destination's. A prefix can't begin with astilba,
+// where destinations without one keep their repositories, or keys limited to it would reach them.
+func ValidPrefix(prefix string) bool {
+	return len(prefix) <= 256 && prefixPattern.MatchString(prefix) && strings.Split(prefix, "/")[0] != "astilba"
+}
+
+// scope is the part of d's bucket its repositories are under, which its keys are limited to.
+func (d Destination) scope() string {
+	if d.Prefix == "" {
+		return "astilba"
+	}
+	return d.Prefix
+}
+
+// Overlaps says whether S3 destinations d and o keep their repositories in the same part of one
+// bucket, or one inside the other's, so keys limited to one would reach the other's.
+func (d Destination) Overlaps(o Destination) bool {
+	if d.Kind != "s3" || o.Kind != "s3" || !strings.EqualFold(d.Endpoint, o.Endpoint) || d.Bucket != o.Bucket {
+		return false
+	}
+	a, b := d.scope(), o.scope()
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
 // Repository is restic's repository for policy p's backups on d.
 func (d Destination) Repository(p Policy) string {
 	if d.Kind == "filesystem" {
@@ -186,7 +210,7 @@ func ValidateDestination(d Destination, a Access) error {
 		}
 	case "s3":
 		u, err := url.Parse(d.Endpoint)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || d.Root != "" || !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(d.Bucket) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") || d.Prefix != "" && (len(d.Prefix) > 256 || !prefixPattern.MatchString(d.Prefix)) {
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || d.Root != "" || !regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`).MatchString(d.Bucket) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") || d.Prefix != "" && !ValidPrefix(d.Prefix) {
 			return errors.New("invalid S3 destination")
 		}
 	default:

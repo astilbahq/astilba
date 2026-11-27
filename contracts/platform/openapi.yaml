@@ -9777,14 +9777,19 @@
             Where in the bucket an S3 destination keeps its repositories, as
             `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names
             of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'.
-            Without one, repositories are at the bucket's root.
+            Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't
+            begin with `astilba`. A prefix that equals, contains or is inside another of the
+            workspace's destinations' in the same bucket, or a second destination without one
+            there, is refused with the field `prefix`, since keys limited to one would reach the
+            other's backups.
         serverId:
           type: string
           format: uuid
           description: >-
             Required for an S3 destination, and refused for a filesystem one: the deployment server
             its storage keys are given to. Only policies on that server can use it, so give it keys
-            limited to its prefix or bucket.
+            limited to its prefix or bucket. A server that is missing, revoked, a build server or
+            not ready to deploy is refused with the field `serverId`.
         access:
           $ref: '#/components/schemas/BackupAccess'
       required:

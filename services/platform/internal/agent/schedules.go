@@ -67,7 +67,9 @@ func (j *Journal) putSchedule(tx *bolt.Tx, v scheduleState) error {
 		return err
 	}
 	v.Sequence = old.Sequence + 1
-	if v.Installation.Policy.GeneralSchedule() || v.Installation.Policy.Coordinated {
+	// An older binary would run a prefixed destination's backups at its bucket's root, and save
+	// the schedule back without the prefix, so it is advanced too.
+	if v.Installation.Policy.GeneralSchedule() || v.Installation.Policy.Coordinated || v.Installation.Destination.Prefix != "" {
 		if err = j.put(tx, "schedules-v2", id, v); err != nil {
 			return err
 		}

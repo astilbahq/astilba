@@ -25,7 +25,7 @@ func TestDestinationPrefixPlacesRepositories(t *testing.T) {
 }
 
 // A prefix is names joined by '/', none of which can climb out of it or be empty, and only an S3
-// destination has one.
+// destination has one. It can't begin with astilba, where destinations without one keep theirs.
 func TestDestinationPrefixIsValidated(t *testing.T) {
 	access := Access{AccessKey: "access", SecretKey: "secret"}
 	s3 := func(prefix string) Destination {
@@ -40,7 +40,7 @@ func TestDestinationPrefixIsValidated(t *testing.T) {
 	for range 257 {
 		long += "a"
 	}
-	for _, prefix := range []string{"/web", "web/", "web//db", "..", "web/../db", "./web", ".hidden", "web/-x", "web db", "web\x00", "web?x", "é", long} {
+	for _, prefix := range []string{"/web", "web/", "web//db", "..", "web/../db", "./web", ".hidden", "web/-x", "web db", "web\x00", "web?x", "é", "astilba", "astilba/web", long} {
 		if ValidateDestination(s3(prefix), access) == nil {
 			t.Errorf("prefix %q accepted", prefix)
 		}
@@ -48,5 +48,33 @@ func TestDestinationPrefixIsValidated(t *testing.T) {
 	fs := Destination{ID: uuid.New(), Name: "Local", Kind: "filesystem", Root: "/srv/backups", Prefix: "web"}
 	if ValidateDestination(fs, Access{}) == nil {
 		t.Error("a filesystem destination with a prefix was accepted")
+	}
+}
+
+// Two destinations overlap when one's repositories are in, or around, the part of a bucket the
+// other's are in, so keys limited to one's prefix would reach the other's.
+func TestDestinationsOverlapWithinOneBucket(t *testing.T) {
+	at := func(endpoint, bucket, prefix string) Destination {
+		return Destination{Kind: "s3", Endpoint: endpoint, Bucket: bucket, Prefix: prefix}
+	}
+	origin := "https://storage.example.test"
+	for _, c := range []struct {
+		a, b    Destination
+		overlap bool
+	}{
+		{at(origin, "backups", ""), at(origin, "backups", ""), true},
+		{at(origin, "backups", "servers"), at(origin, "backups", "servers"), true},
+		{at(origin, "backups", "servers"), at(origin, "backups", "servers/web-1"), true},
+		{at(origin, "backups", "servers/web-1"), at("https://STORAGE.example.test", "backups", "servers"), true},
+		{at(origin, "backups", "servers/web-1"), at(origin, "backups", "servers/web-2"), false},
+		{at(origin, "backups", "servers/web"), at(origin, "backups", "servers/web-1"), false},
+		{at(origin, "backups", ""), at(origin, "backups", "servers"), false},
+		{at(origin, "backups", ""), at(origin, "other", ""), false},
+		{at(origin, "backups", ""), at("https://elsewhere.example.test", "backups", ""), false},
+		{at(origin, "backups", ""), Destination{Kind: "filesystem", Root: "/srv/backups"}, false},
+	} {
+		if c.a.Overlaps(c.b) != c.overlap || c.b.Overlaps(c.a) != c.overlap {
+			t.Errorf("%+v and %+v overlap: %v, want %v", c.a, c.b, c.a.Overlaps(c.b), c.overlap)
+		}
 	}
 }
