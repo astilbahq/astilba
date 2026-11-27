@@ -484,14 +484,7 @@ func (s *Server) ValidatePasswordReset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) CompletePasswordReset(w http.ResponseWriter, r *http.Request) {
 	b, e := decode[api.ResetComplete](r)
 	if e == nil {
-		var a db.Account
-		a, e = s.Auth.CompleteReset(r.Context(), b.Token, value(b.Password), s.clientSourceKey(r))
-		if e == nil {
-			e = s.Sessions.Destroy(r.Context())
-		}
-		if e == nil {
-			e = s.issueDevice(r.Context(), a)
-		}
+		_, e = s.Auth.CompleteReset(r.Context(), b.Token, value(b.Password), s.clientSourceKey(r), s.endSession(r.Context()))
 	}
 	if e != nil {
 		s.fail(w, r, e)
