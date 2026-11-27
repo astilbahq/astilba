@@ -358,17 +358,24 @@ func (c *Client) deleteKeys(ctx context.Context, client *iam.Client, user string
 func (c *Client) Probe(ctx context.Context, key Credential, spec Spec) error {
 	client := c.s3Client(key, spec.Region)
 	wait := 500 * time.Millisecond
+	var last error
 	for {
 		_, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(spec.Bucket), Prefix: aws.String(spec.Scope), MaxKeys: aws.Int32(1)})
 		if err == nil {
 			return nil
 		}
+		e := classify(err)
+		// A call cut short by the deadline says less than AWS's last answer.
+		if ctx.Err() != nil && last != nil {
+			return last
+		}
 		// A key AWS hasn't propagated yet is unknown or denied for a while.
-		if e := classify(err); e != ErrCredential && e != ErrDenied {
+		if e != ErrCredential && e != ErrDenied {
 			return e
 		}
-		if e := c.sleep(ctx, wait); e != nil {
-			return classify(err)
+		last = e
+		if c.sleep(ctx, wait) != nil {
+			return e
 		}
 		wait = min(2*wait, 5*time.Second)
 	}

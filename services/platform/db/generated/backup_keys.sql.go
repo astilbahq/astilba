@@ -687,6 +687,23 @@ func (q *Queries) LatchEndedRecoveryKeys(ctx context.Context) ([]LatchEndedRecov
 	return items, nil
 }
 
+const latchRevokedHolderBackupStorageKeys = `-- name: LatchRevokedHolderBackupStorageKeys :execrows
+UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestamp()
+FROM servers s
+WHERE k.workspace_id = $1 AND k.state = 'active' AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+    AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations)
+`
+
+// An imported workspace's active keys whose holder the archive records revoked, other than those
+// handed over at that revocation, are revoked by the importer too.
+func (q *Queries) LatchRevokedHolderBackupStorageKeys(ctx context.Context, workspaceID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, latchRevokedHolderBackupStorageKeys, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const latchServerBackupStorageKeys = `-- name: LatchServerBackupStorageKeys :many
 UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=GREATEST(clock_timestamp(),k.mint_deadline + interval '5 minutes')
 FROM servers s

@@ -16,7 +16,7 @@ CREATE TABLE backup_storage_accounts (
  encrypted_credential bytea NOT NULL, generation bigint NOT NULL DEFAULT 1 CHECK(generation >= 1),
  -- Installations that share the account after a workspace transfer, whose users the check
  -- shows without an alert.
- peers uuid[] NOT NULL DEFAULT '{}',
+ peers uuid[] NOT NULL DEFAULT '{}' CHECK(cardinality(peers) <= 16),
  -- The latest account check: its time, a fixed error code, and what it found, as stable JSON.
  checked_at timestamptz, check_error text CHECK(length(check_error) <= 80),
  report jsonb NOT NULL DEFAULT '{}' CHECK(octet_length(report::text) <= 262144),

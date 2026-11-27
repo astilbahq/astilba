@@ -101,7 +101,7 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 				case "execution_operations":
 					selected, err = recoveryOperationKnowledge(prior, row)
 				case "servers":
-					err = recoveryMonotonic(selected, prior, row, []string{"revoked"}, []string{"controller_generation", "update_generation"})
+					err = recoveryMonotonic(selected, prior, row, []string{"revoked"}, []string{"controller_generation", "update_generation", "revocations"})
 					if err == nil {
 						err = recoveryRevocationTime(selected, prior, row)
 					}
@@ -153,6 +153,10 @@ func (s *Service) prepareRecoveryKnowledge(ctx context.Context, tx pgx.Tx, befor
 					}
 				case "preview_requests":
 					selected, err = recoveryPreviewRequestKnowledge(prior, row)
+				case "backup_storage_accounts":
+					selected, err = recoveryAccountKnowledge(prior, row)
+				case "backup_storage_keys":
+					selected, err = recoveryKeyKnowledge(prior, row)
 				case "deployment_units":
 					err = recoveryUnitKnowledge(selected, prior, row)
 				}

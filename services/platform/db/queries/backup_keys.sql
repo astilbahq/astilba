@@ -245,3 +245,11 @@ WHERE workspace_id = @workspace_id AND id = @id AND state = 'revoked';
 
 -- name: WorkspaceServerStates :many
 SELECT id,revoked FROM servers WHERE workspace_id = @workspace_id;
+
+-- name: LatchRevokedHolderBackupStorageKeys :execrows
+-- An imported workspace's active keys whose holder the archive records revoked, other than those
+-- handed over at that revocation, are revoked by the importer too.
+UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestamp()
+FROM servers s
+WHERE k.workspace_id = @workspace_id AND k.state = 'active' AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+    AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations);

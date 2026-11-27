@@ -6,6 +6,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,6 +30,9 @@ type Archive struct {
 	Tables     map[string][]Row `json:"tables"`
 	// Recovery is a recovery base's applied history, from RecoveryArchiveVersion on.
 	Recovery *RecoveryHistory `json:"recovery,omitzero"`
+	// Installation is the exporting installation, from version 21. An import lists it as a peer of
+	// each storage account, so the importer's account check shows the users it minted as its.
+	Installation uuid.UUID `json:"installation,omitzero"`
 }
 type Service struct{ Store *store.Store }
 
@@ -77,6 +81,14 @@ func credential(table string, row Row, environments secretEnvironments) (string,
 		field, kind = "encrypted_access", secretbroker.BackupDestination
 	case "backup_policies":
 		field, kind = "encrypted_access", secretbroker.BackupPolicy
+	case "backup_storage_accounts":
+		field, kind = "encrypted_credential", secretbroker.BackupStorageAccount
+	case "backup_storage_keys":
+		// A key that was never active, or a found user, holds no secret.
+		if string(row["encrypted_secret"]) == "null" {
+			return "", secretbroker.Item{}, nil
+		}
+		field, kind = "encrypted_secret", secretbroker.BackupStorageKey
 	default:
 		return "", secretbroker.Item{}, nil
 	}
@@ -184,10 +196,15 @@ func (s *Service) Export(ctx context.Context, p store.Principal, ws uuid.UUID, p
 		}
 		archive.Name = w.Name
 		archive.RequireMFA = w.RequireMFA
+		if archive.Installation, err = q.InstallationID(ctx); err != nil {
+			return err
+		}
 		archive, err = captureArchive(ctx, tx, archive, captureExport)
 		if err != nil {
 			return err
 		}
+		// A found user is this installation's to revoke: the importer's account check reports it.
+		archive.Tables["backup_storage_keys"] = slices.DeleteFunc(archive.Tables["backup_storage_keys"], func(row Row) bool { return string(row["purpose"]) == `"found"` })
 		environments, err := environmentsOf(archive)
 		if err != nil {
 			return err

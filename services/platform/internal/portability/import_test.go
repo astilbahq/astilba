@@ -479,6 +479,7 @@ func withoutVersionFifteen(a Archive) {
 // withoutVersionNineteen makes a decoded archive look as one written before it carried the server
 // each backup destination is bound to.
 func withoutVersionNineteen(a Archive) {
+	withoutVersionTwentyOne(a)
 	rows := []Row{}
 	for _, row := range a.Tables["backup_destinations"] {
 		row = maps.Clone(row)
@@ -553,5 +554,20 @@ func TestImportedRestoreResultsMatchTheirRestore(t *testing.T) {
 		if checkRecoveryResult(r) == nil {
 			t.Error("a result of", value, "was accepted")
 		}
+	}
+}
+
+// withoutVersionTwentyOne makes a decoded archive look as one written before managed storage keys.
+func withoutVersionTwentyOne(a Archive) {
+	delete(a.Tables, "backup_storage_accounts")
+	delete(a.Tables, "backup_storage_keys")
+	for table, column := range map[string]string{"backup_destinations": "account_id", "servers": "revocations"} {
+		rows := []Row{}
+		for _, row := range a.Tables[table] {
+			row = maps.Clone(row)
+			delete(row, column)
+			rows = append(rows, row)
+		}
+		a.Tables[table] = rows
 	}
 }

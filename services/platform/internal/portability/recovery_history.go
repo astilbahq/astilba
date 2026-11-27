@@ -20,10 +20,10 @@ import (
 // says which export version's tables each recovery base version carries
 // (TestExportVersionsStayBelowTheRecoveryBaseVersion). A release before it refuses such a base, so
 // cross-host recovery has to run on the release that sealed the newest base or a newer one.
-const RecoveryArchiveVersion = 20
+const RecoveryArchiveVersion = 22
 
 // recoveryBaseTables maps each recovery base version to the export version whose tables it carries.
-var recoveryBaseTables = map[int]int{10: 9, 12: 11, 14: 13, 16: 15, 18: 17, RecoveryArchiveVersion: ArchiveVersion}
+var recoveryBaseTables = map[int]int{10: 9, 12: 11, 14: 13, 16: 15, 18: 17, 20: 19, RecoveryArchiveVersion: ArchiveVersion}
 
 const (
 	// RecoveryWindowTarget is how far back a base's applied history reaches when it fits.

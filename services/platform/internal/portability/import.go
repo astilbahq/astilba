@@ -156,6 +156,36 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			return archive, err
 		}
 	}
+	// Version 21 carries managed storage accounts and their keys. None existed before it, and a
+	// revoked server had been revoked once.
+	if version < 21 {
+		for _, name := range []string{"backup_storage_accounts", "backup_storage_keys"} {
+			if _, exists := archive.Tables[name]; exists {
+				return archive, ErrArchive
+			}
+			archive.Tables[name] = []Row{}
+		}
+		if archive.Installation != uuid.Nil {
+			return archive, ErrArchive
+		}
+		for _, row := range archive.Tables["backup_destinations"] {
+			if _, exists := row["account_id"]; exists {
+				return archive, ErrArchive
+			}
+			setValue(row, "account_id", nil)
+		}
+		for _, row := range archive.Tables["servers"] {
+			var revoked bool
+			if _, exists := row["revocations"]; exists || json.Unmarshal(row["revoked"], &revoked) != nil {
+				return archive, ErrArchive
+			}
+			revocations := 0
+			if revoked {
+				revocations = 1
+			}
+			setValue(row, "revocations", revocations)
+		}
+	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
 	}
@@ -236,6 +266,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		{"backup_recoveries", "plan_id", "visual_requests"},
 		{"backup_recoveries", "source_server_id", "servers"},
 		{"backup_recoveries", "server_id", "servers"},
+		{"backup_destinations", "account_id", "backup_storage_accounts"},
+		{"backup_storage_keys", "account_id", "backup_storage_accounts"},
+		{"backup_storage_keys", "destination_id", "backup_destinations"},
+		{"backup_storage_keys", "holder_server_id", "servers"},
+		{"backup_storage_keys", "recovery_id", "backup_recoveries"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
 		{"network_members", "network_id", "workspace_networks"},
@@ -403,6 +438,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if e != nil {
 		return out, e
 	}
+	installation, e := q.InstallationID(ctx)
+	if e != nil {
+		return out, e
+	}
 	for _, table := range tables {
 		for _, row := range archive.Tables[table.Name] {
 			for _, actor := range []string{"author_id", "actor_id", "policy_actor"} {
@@ -421,6 +460,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 					setValue(row, "state", "failed")
 					setValue(row, "note", "Imported before this attempt was made. Submit the draft again.")
 					setValue(row, "finished_at", time.Now().UTC())
+				}
+			case "backup_storage_accounts":
+				if e = importPeer(row, archive.Installation, installation); e != nil {
+					return out, e
 				}
 			case "network_members":
 				setValue(row, "acknowledged_generation", 0)
@@ -545,6 +588,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		if _, e = tx.Exec(ctx, "UPDATE execution_operations SET visual_plan_id=$3 WHERE workspace_id=$1 AND id=$2", archive.Workspace, id, value); e != nil {
 			return out, store.Normalize(e)
 		}
+	}
+	// The exporter revoked these servers; only a key handed over at that revocation lives on.
+	if _, e = q.LatchRevokedHolderBackupStorageKeys(ctx, archive.Workspace); e != nil {
+		return out, e
 	}
 	if e = store.Audit(ctx, q, p, archive.Workspace, "workspace.import_owner_attribution", archive.Workspace); e != nil {
 		return out, e

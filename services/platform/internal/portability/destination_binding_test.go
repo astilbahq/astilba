@@ -52,6 +52,7 @@ func (a *bindingArchive) destination(kind string, server *uuid.UUID, shared bool
 	setValue(row, "id", id)
 	setValue(row, "server_id", server)
 	setValue(row, "shared", shared)
+	setValue(row, "account_id", nil)
 	a.Tables["backup_destinations"] = append(a.Tables["backup_destinations"], row)
 	return id
 }
