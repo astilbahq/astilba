@@ -16,7 +16,8 @@ import (
 
 func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domain.Application) error {
 	for _, check := range []struct{ sql, want, message string }{
-		{"SELECT count(*) FROM pg_database WHERE NOT datistemplate AND datname NOT IN (current_database(),'postgres')", "0", "additional databases require a separate recipe"},
+		// By name: a database its owner marked as a template is still one the upgrade would lose.
+		{"SELECT count(*) FROM pg_database WHERE datname NOT IN (current_database(),'postgres','template0','template1')", "0", "additional databases require a separate recipe"},
 		{"SELECT count(*) FROM pg_tablespace WHERE spcname NOT IN ('pg_default','pg_global')", "0", "custom tablespaces are unsupported"},
 		{"SELECT count(*) FROM pg_prepared_xacts", "0", "prepared transactions are unsupported"},
 		{"SELECT count(*) FROM pg_replication_slots", "0", "replication slots are unsupported"},

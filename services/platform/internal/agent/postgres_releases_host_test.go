@@ -104,9 +104,10 @@ func nativePostgresInPlaceUpdate(t *testing.T, e *Engine, base deployment.Plan, 
 		return created.ID
 	}
 	old := run(retired)
-	// Indexes the update must rebuild sit beside ones it must leave alone, in two databases, one
-	// of them named like a connection string. An exclusion constraint's index cannot be rebuilt
-	// concurrently, and a leftover of an interrupted rebuild is dropped rather than rebuilt.
+	// Indexes the update must rebuild sit beside ones it must leave alone, in the deployment's
+	// database, in one its owner named like a connection string and marked as a template, and in
+	// template1. An exclusion constraint's index cannot be rebuilt concurrently, and a leftover of
+	// an interrupted rebuild is dropped rather than rebuilt.
 	fixture := `CREATE DOMAIN code AS bpchar;
 CREATE DOMAIN short_code AS code;
 CREATE DOMAIN sized_code AS char(4);
@@ -138,13 +139,28 @@ UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'unbounded_ccnew'::reg
 		t.Fatal(err)
 	}
 	// The database's owner, not a superuser, plants closer matches for the functions the rebuild
-	// calls. The superuser session must never run them.
+	// calls. The superuser session must never run them. The owner also marks the database as a
+	// template, which leaves its indexes no less due.
 	if _, err := e.pgQuery(ctx, pgClient{container: old}, other, `SET ROLE tenant;
 CREATE FUNCTION public.format(text, regclass) RETURNS text LANGUAGE sql AS $$ SELECT 'ALTER ROLE tenant SUPERUSER' $$;
 CREATE FUNCTION public.unnest(oidvector) RETURNS SETOF oid LANGUAGE sql AS $$ SELECT oid FROM pg_opclass $$;
+ALTER DATABASE "a=b" IS_TEMPLATE true;
 RESET ROLE;`); err != nil {
 		t.Fatal(err)
 	}
+	if raw, err := e.pgQuery(ctx, pgClient{container: old}, a, `SELECT datistemplate FROM pg_database WHERE datname = 'a=b'`); err != nil || strings.TrimSpace(string(raw)) != "t" {
+		t.Fatalf("the owner did not mark the database as a template: %q, %v", raw, err)
+	}
+	// Before the owner model the database user is a superuser, so template1, which each new
+	// database copies, can hold its indexes too.
+	template := a
+	templateDatabase := *a.Postgres
+	templateDatabase.Database = "template1"
+	template.Postgres = &templateDatabase
+	if _, err := e.pgQuery(ctx, pgClient{container: old}, template, fixture); err != nil {
+		t.Fatal(err)
+	}
+	databases := map[string]domain.Application{"app": a, "a=b": other, "template1": template}
 	indexes := "('unbounded', 'sized', 'plain', 'tagged', 'nested', 'listed', 'fixed', 'records_slot_excl', 'unbounded_ccnew')"
 	files := func(container string, application domain.Application) map[string]string {
 		t.Helper()
@@ -159,7 +175,10 @@ RESET ROLE;`); err != nil {
 		}
 		return out
 	}
-	initial := map[string]map[string]string{"app": files(old, a), "a=b": files(old, other)}
+	initial := map[string]map[string]string{}
+	for name, application := range databases {
+		initial[name] = files(old, application)
+	}
 	// The unit applied the retired release; applying the update records what wrote the data.
 	if err := e.Journal.saveUnit(unitState{Plan: before, Expected: map[string]string{}}); err != nil {
 		t.Fatal(err)
@@ -214,7 +233,7 @@ RESET ROLE;`); err != nil {
 	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 {
 		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
 	}
-	for name, application := range map[string]domain.Application{"app": a, "a=b": other} {
+	for name, application := range databases {
 		got, was := files(updated, application), initial[name]
 		if _, left := got["unbounded_ccnew"]; left {
 			t.Errorf("%s: the leftover of an interrupted rebuild was kept", name)
@@ -244,6 +263,41 @@ RESET ROLE;`); err != nil {
 	}
 	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || steps != 3 || files(updated, a)["unbounded"] == rebuilt["unbounded"] {
 		t.Fatalf("storage without a record skipped its rebuild: %q, %v", note, err)
+	}
+	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
+		t.Fatalf("the rebuilt storage records %+v", record)
+	}
+	// Nothing can connect to a database its owner closed, the superuser included. The rebuild
+	// names it, and the record stays behind until a deployment after it opens again rebuilds it.
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `CREATE DATABASE closed TEMPLATE template0 OWNER tenant`); err != nil {
+		t.Fatal(err)
+	}
+	shut := a
+	shutDatabase := *a.Postgres
+	shutDatabase.Database = "closed"
+	shut.Postgres = &shutDatabase
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, shut, fixture); err != nil {
+		t.Fatal(err)
+	}
+	was := files(updated, shut)
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `SET ROLE tenant; ALTER DATABASE closed ALLOW_CONNECTIONS false; RESET ROLE;`); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Journal.forgetPostgresData(volume); err != nil {
+		t.Fatal(err)
+	}
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed") || strings.Contains(note, "did not finish") {
+		t.Fatalf("a closed database was not named: %q, %v", note, err)
+	}
+	// Storage with no record keeps the release the rebuild assumed beside the one serving it.
+	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != oldestPostgres(major).Image || record.Served != current.Image {
+		t.Fatalf("a rebuild that left a closed database recorded %+v", record)
+	}
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `ALTER DATABASE closed ALLOW_CONNECTIONS true`); err != nil {
+		t.Fatal(err)
+	}
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "do not accept connections") || files(updated, shut)["unbounded"] == was["unbounded"] {
+		t.Fatalf("the reopened database was not rebuilt: %q, %v", note, err)
 	}
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
 		t.Fatalf("the rebuilt storage records %+v", record)
