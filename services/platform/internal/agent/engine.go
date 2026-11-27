@@ -367,6 +367,8 @@ func (e *Engine) start(ctx context.Context, c api.ExecutionCommand, r Record) er
 	}
 	// A timeout or process exit leaves the journal pending; no tool error proves absence.
 	if r.Checkpoint == "accepted" || r.Checkpoint == "pull" {
+		// The pull keeps the engine to the command, unlike a deployment's, see lend: the test image
+		// is small and its time short, so lending would let nothing run that waits long.
 		pulling, stop := e.pullContext(ctx, c, testPullTime)
 		err := e.pullImage(pulling, c.Image)
 		stop()

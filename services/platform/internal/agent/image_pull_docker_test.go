@@ -384,3 +384,64 @@ func TestTestCommandEndsDockersPull(t *testing.T) {
 		})
 	}
 }
+
+// Pulls a command makes part-way through its work, the proxy's while it publishes routes and a
+// database release's in a restore or an upgrade, keep the engine to the command, and still end
+// once their registry stops sending or their time runs out.
+func TestUnlentPullsEndAsDockersPullsDo(t *testing.T) {
+	paths := map[string]func(context.Context, *Engine) error{
+		"the proxy's":            func(ctx context.Context, e *Engine) error { return e.pullProxyImage(ctx) },
+		"a restore or upgrade's": func(ctx context.Context, e *Engine) error { return e.ensureImage(ctx, "postgres:18.1") },
+		"the test command's": func(ctx context.Context, e *Engine) error {
+			c, _ := pullCommand(t, e)
+			r, _ := e.Journal.Record(c.Id)
+			if err := e.start(ctx, c, r); err != nil {
+				return err
+			}
+			r, _ = e.Journal.Record(c.Id)
+			return errors.New(r.Report.Note)
+		},
+	}
+	for path, pull := range paths {
+		for name, tc := range map[string]struct {
+			pull   func(http.ResponseWriter, *http.Request)
+			engine *Engine
+			want   error
+			note   string
+		}{
+			"a registry that stops": {
+				pull:   stalls,
+				engine: &Engine{registryProgress: &registryProgress{window: 50 * time.Millisecond, least: 1 << 20}},
+				want:   errDockerPullStalled, note: "stopped sending",
+			},
+			"its time running out": {pull: keepsUp, engine: &Engine{pullLimit: 300 * time.Millisecond}, want: errPullTimedOut, note: "within the 10 minutes"},
+		} {
+			t.Run(path+" with "+name, func(t *testing.T) {
+				e := tc.engine
+				var lent atomic.Bool
+				daemon := newPullDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+					e.lendMu.Lock()
+					lent.Store(e.lent)
+					e.lendMu.Unlock()
+					tc.pull(w, r)
+				})
+				e.Docker = daemon.docker
+				began := time.Now()
+				err := pull(t.Context(), e)
+				if path == "the test command's" {
+					if err == nil || !strings.Contains(err.Error(), tc.note) {
+						t.Fatal(err)
+					}
+				} else if !errors.Is(err, tc.want) {
+					t.Fatal(err)
+				}
+				if waited := time.Since(began); waited > 5*time.Second {
+					t.Fatal("ended after", waited)
+				}
+				if daemon.ended.Load() != 1 || lent.Load() {
+					t.Fatal("pulls", daemon.ended.Load(), "lent", lent.Load())
+				}
+			})
+		}
+	}
+}

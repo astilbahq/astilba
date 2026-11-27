@@ -75,7 +75,11 @@ func proxyImageNote(err error, otherwise, after string) string {
 	return otherwise
 }
 
-// pullProxyImage makes sure the host has the proxy image.
+// pullProxyImage makes sure the host has the proxy image. A command pulls it while it publishes
+// routes and keeps the engine meanwhile, unlike a deployment's images, see lend: the publication
+// is under way, and work lent the engine, such as restoring private links, would meet routes and
+// a proxy part-way through changing. Docker's pull still ends as stalled, and within
+// dockerPullTime, see pullImageAuth.
 func (e *Engine) pullProxyImage(ctx context.Context) error {
 	image := e.proxyImage()
 	_, err := e.Docker.ImageInspect(ctx, image)
