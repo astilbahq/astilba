@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 
 	"golang.org/x/mod/semver"
 
@@ -194,19 +196,33 @@ func ArtifactPath(dir string, r api.AgentRelease) string {
 	return filepath.Join(dir, r.Sha256)
 }
 
+// MaxReleases is the most releases a catalog holds. It is the contract's limit on the release
+// list (listAgentReleases, maxItems), which serves the whole catalog, so Load refuses a larger
+// catalog at startup rather than management serving a list its clients reject.
+const MaxReleases = 100
+
+// maxCatalogEntries bounds the catalog directory Load reads: room for MaxReleases manifests and
+// their artifacts, and a few other files.
+const maxCatalogEntries = 256
+
+// Load reads and verifies the catalog in dir, newest release first. Every consumer, from the
+// release list to what management offers a server, keeps that order, so the first release offered
+// is the newest. Two releases of one version, for different architectures, are in architecture
+// order.
 func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 	out := []api.AgentRelease{}
 	entries, e := os.ReadDir(dir)
 	if e != nil {
 		return nil, e
 	}
-	if len(entries) > 256 {
+	if len(entries) > maxCatalogEntries {
 		return nil, errors.New("release catalog exceeds limit")
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
+	manifests := slices.DeleteFunc(entries, func(entry os.DirEntry) bool { return entry.IsDir() || filepath.Ext(entry.Name()) != ".json" })
+	if len(manifests) > MaxReleases {
+		return nil, fmt.Errorf("release catalog has %d manifests, more than the %d releases management serves; remove releases that no agent runs", len(manifests), MaxReleases)
+	}
+	for _, entry := range manifests {
 		data, e := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if e != nil {
 			return nil, e
@@ -239,5 +255,12 @@ func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 		}
 		out = append(out, r)
 	}
+	// Directory order puts 0.10.0 before 0.9.0, so it says nothing about which release is newer.
+	slices.SortFunc(out, func(a, b api.AgentRelease) int {
+		if c := CompareVersions(b.Version, a.Version); c != 0 {
+			return c
+		}
+		return strings.Compare(string(a.Arch), string(b.Arch))
+	})
 	return out, nil
 }
