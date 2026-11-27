@@ -25,12 +25,12 @@ import (
 // first sent bytes of the layer, or with config of the image's config, before it stops sending,
 // holding the connection open. It returns the image, a channel closed once the registry has sent
 // them, and one closed once Docker ends the request.
-func (f *nativePullFixture) stallingImage(size, sent int, config bool) (image string, stalled, ended <-chan struct{}) {
-	f.t.Helper()
+func (f *nativePullFixture) stallingImage(t testing.TB, size, sent int, config bool) (image string, stalled, ended <-chan struct{}) {
+	t.Helper()
 	// Random content, so Docker has none of the layer already.
 	content := make([]byte, size)
 	_, _ = rand.Read(content)
-	layer := append(append(tarHeader(f.t, "content", size), content...), make([]byte, (512-size%512)%512+1024)...)
+	layer := append(append(tarHeader(t, "content", size), content...), make([]byte, (512-size%512)%512+1024)...)
 	layerDigest := sha(layer)
 	f.blobs[layerDigest] = layer
 	imageConfig := fmt.Appendf(nil, `{"architecture":%q,"os":"linux","rootfs":{"type":"layers","diff_ids":[%q]}}`, runtime.GOARCH, layerDigest)
@@ -38,18 +38,23 @@ func (f *nativePullFixture) stallingImage(size, sent int, config bool) (image st
 	manifest := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[{"mediaType":%q,"digest":%q,"size":%d}]}`, ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageConfig, sha(imageConfig), len(imageConfig), ocispec.MediaTypeImageLayer, layerDigest, len(layer))
 	f.docs[sha([]byte(manifest))] = [2]string{ocispec.MediaTypeImageManifest, manifest}
 	stalledCh, endedCh := make(chan struct{}), make(chan struct{})
-	// The registry lets go of the connection once the test ends, whether or not Docker does.
-	quit := make(chan struct{})
-	f.t.Cleanup(func() { close(quit) })
 	stalling := layer
 	if config {
 		stalling = imageConfig
 	}
+	// The registry lets go of the connection once the test ends, whether or not Docker does. The
+	// test reports a pull made again then, as its handler may run after the test has ended.
+	quit := make(chan struct{})
 	var requests atomic.Int32
+	t.Cleanup(func() {
+		close(quit)
+		if n := requests.Load(); n > 1 {
+			t.Logf("Docker asked for the blob %d times", n)
+		}
+	})
 	f.paced[sha(stalling)] = func(r *http.Request, w io.Writer) {
 		// A request after the first, a pull made again, gets nothing at all.
 		if requests.Add(1) > 1 {
-			f.t.Log("Docker asked for the blob again")
 			select {
 			case <-r.Context().Done():
 			case <-quit:
@@ -69,7 +74,7 @@ func (f *nativePullFixture) stallingImage(size, sent int, config bool) (image st
 }
 
 // tarHeader is a tar header for a regular file of size bytes named name.
-func tarHeader(t *testing.T, name string, size int) []byte {
+func tarHeader(t testing.TB, name string, size int) []byte {
 	t.Helper()
 	var header bytes.Buffer
 	w := tar.NewWriter(&header)
@@ -92,7 +97,7 @@ func TestNativeDockerPullEndsWhenItsRegistryStalls(t *testing.T) {
 			if config {
 				size, sent = 64<<10, 0
 			}
-			image, stalled, ended := f.stallingImage(size, sent, config)
+			image, stalled, ended := f.stallingImage(t, size, sent, config)
 			// The floor is a step of a layer each window, as containerd writes it, so the registry
 			// is ended by its second window without progress.
 			engine := &Engine{Docker: f.docker, registryProgress: &registryProgress{window: window, least: 1 << 20}}
@@ -126,7 +131,7 @@ func TestNativeDockerPullEndsWhenItsRegistryStalls(t *testing.T) {
 		})
 	}
 	t.Run("cancelled", func(t *testing.T) {
-		image, stalled, ended := f.stallingImage(8<<20, 3<<20, false)
+		image, stalled, ended := f.stallingImage(t, 8<<20, 3<<20, false)
 		journal, _ := testVisualJournal(t)
 		engine := &Engine{Docker: f.docker, Journal: journal}
 		command := api.ExecutionCommand{Id: uuid.New()}
