@@ -529,7 +529,7 @@ func TestNativeFailedPublishRestoresTheProxyGateway(t *testing.T) {
 	steady, failing := h.f.unit("e", "steady"), h.f.unit("f", "failing")
 	h.removeProxy()
 	previous := routeSnapshot{Revision: uuid.NewString(), Ports: []int{80, 443}, QualifiedBackends: true, Sets: map[string]deployment.RouteSet{steady.id.String(): steady.set()}}
-	if _, err := h.e.applyRoutes(t.Context(), previous, proxyAsNeeded, ""); err != nil {
+	if _, err := h.e.applyRoutes(t.Context(), previous, proxyAsNeeded, routeWait{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.e.rememberProxy(t.Context(), &previous); err != nil {

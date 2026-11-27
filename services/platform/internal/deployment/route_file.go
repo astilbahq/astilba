@@ -3,10 +3,20 @@ package deployment
 import (
 	"bytes"
 	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
+)
+
+// The proxy probes each server of a health-checked pool every PoolHealthInterval and
+// waits PoolHealthTimeout for an answer. It counts a server up until a probe fails, and a
+// server that fails one gets no requests until it passes the next. They are rendered
+// into every route file, so changing either changes the file a host compares for drift.
+const (
+	PoolHealthInterval = 5 * time.Second
+	PoolHealthTimeout  = 2 * time.Second
 )
 
 // RouteFile encodes a Traefik file provider configuration. The provider evaluates
