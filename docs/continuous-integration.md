@@ -741,9 +741,10 @@ share one entry. A matching toolchain cache can seed a changed source tree; Go c
 build inputs before reuse. Test commands retain `-race -count=1`.
 
 Every run restores, but only a passing job on `main` saves. Pull requests and merge
-groups can restore `main`'s entries, while an entry saved under their own refs serves no
-other run and pushes `main`'s out of the repository's cache limit. A pull request that
-changes a key's inputs, such as `ci.yml` or `go.mod`, compiles from cold until it merges.
+groups can restore `main`'s entries, while an entry saved under their own refs serves only
+that pull request or merge group and pushes `main`'s out of the repository's cache limit.
+A pull request that changes `ci.yml`, the pinned bootstrap script or a `go.mod` matches
+none of `main`'s entries, so its Host jobs compile from cold on every push until it merges.
 
 A separate step fetches the Go toolchain and modules before any test step, making
 up to three attempts, so a briefly dropped module download does not fail the
