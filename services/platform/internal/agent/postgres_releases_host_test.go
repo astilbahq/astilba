@@ -229,10 +229,48 @@ RESET ROLE;`); err != nil {
 	for i := 0; i < 300 && locked(); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
+	// Before the owner model the database user is a superuser, so during the rebuild it can copy
+	// template1 into a new database, and move a database's name to another just after the rebuild
+	// read it. The copy and the moved database are both still rebuilt, the moved one under its new
+	// name, and nothing meant for it runs in the database that took its name.
+	query := func(statements ...string) {
+		t.Helper()
+		for _, statement := range statements {
+			if _, err := e.pgQuery(ctx, pgClient{container: updated}, a, statement); err != nil {
+				t.Fatal(statement, err)
+			}
+		}
+	}
+	copied := a
+	copiedDatabase := *a.Postgres
+	copiedDatabase.Database = "copied"
+	copied.Postgres = &copiedDatabase
+	var copiedFiles, movedFiles map[string]string
+	moved := false
+	e.Point = func(point string) {
+		switch {
+		case point == "postgres-reindex-listed" && copiedFiles == nil:
+			movedFiles = files(updated, other)
+			query(`CREATE DATABASE copied TEMPLATE template1`, `CREATE DATABASE decoy TEMPLATE template0`)
+			copiedFiles = files(updated, copied)
+		case point == "postgres-reindex-read a=b" && !moved:
+			moved = true
+			query(`ALTER DATABASE "a=b" RENAME TO "a=b moved"`, `ALTER DATABASE decoy RENAME TO "a=b"`)
+		}
+	}
 	note, err = e.reindexPostgres(ctx, after, begin)
-	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 {
+	e.Point = nil
+	if err != nil || !strings.Contains(note, `"a=b moved".public.records_slot_excl`) || strings.Contains(note, "did not finish") || steps != 2 || !moved {
 		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
 	}
+	query(`ALTER DATABASE "a=b" RENAME TO decoy`, `ALTER DATABASE "a=b moved" RENAME TO "a=b"`)
+	if got := files(updated, other); got["unbounded"] == movedFiles["unbounded"] || got["plain"] != movedFiles["plain"] {
+		t.Errorf("a database renamed during the rebuild was not rebuilt: %v, was %v", got, movedFiles)
+	}
+	if got := files(updated, copied); got["unbounded"] == copiedFiles["unbounded"] || got["plain"] != copiedFiles["plain"] {
+		t.Errorf("a database copied from template1 during the rebuild was not rebuilt: %v, was %v", got, copiedFiles)
+	}
+	query(`DROP DATABASE copied`, `DROP DATABASE decoy`)
 	for name, application := range databases {
 		got, was := files(updated, application), initial[name]
 		if _, left := got["unbounded_ccnew"]; left {
@@ -284,18 +322,19 @@ RESET ROLE;`); err != nil {
 		t.Fatal(err)
 	}
 	// PLAT-545. An interrupted DROP DATABASE leaves the database invalid, still marked as
-	// accepting connections; it is named, and the other databases are still rebuilt.
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `CREATE DATABASE broken TEMPLATE template0`); err != nil {
+	// accepting connections; it is named, and the other databases are still rebuilt. It is named
+	// as PostgreSQL quotes it, so a name with a comma and parentheses still reads as one database.
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `CREATE DATABASE "broken (Billing), ledger" TEMPLATE template0`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `UPDATE pg_database SET datconnlimit = -2 WHERE datname = 'broken'`); err != nil {
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `UPDATE pg_database SET datconnlimit = -2 WHERE datname = 'broken (Billing), ledger'`); err != nil {
 		t.Fatal(err)
 	}
 	served := files(updated, a)
 	if err = e.Journal.forgetPostgresData(volume); err != nil {
 		t.Fatal(err)
 	}
-	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, "broken ("+a.Name+") are invalid") || strings.Contains(note, "did not finish") {
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, `"broken (Billing), ledger" (`+a.Name+") are invalid") || strings.Contains(note, "did not finish") {
 		t.Fatalf("a closed or invalid database was not named: %q, %v", note, err)
 	}
 	if files(updated, a)["unbounded"] == served["unbounded"] {
@@ -308,7 +347,7 @@ RESET ROLE;`); err != nil {
 	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `ALTER DATABASE closed ALLOW_CONNECTIONS true`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE broken`); err != nil {
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE "broken (Billing), ledger"`); err != nil {
 		t.Fatal(err)
 	}
 	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "do not accept connections") || strings.Contains(note, "invalid") || files(updated, shut)["unbounded"] == was["unbounded"] {

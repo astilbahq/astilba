@@ -142,6 +142,61 @@ func TestLongNamesKeepWholeCharactersAndTheirApplication(t *testing.T) {
 	}
 }
 
+// A name can't break a note's lines, reorder its text or pass for another: what isn't graphic is
+// escaped, in a database's name and its application's, and a cut still keeps whole characters and
+// the application.
+func TestNamesAreEscapedInNotes(t *testing.T) {
+	override := string(rune(0x202e))
+	escaped := "\\u" + "202e"
+	if list := listSome([]listed{{"a\nb" + override + "c\\d" + string([]byte{0xff}) + `"e"`, "Bill" + override + "ing"}}, exclusionsRoom); list != `a\nb`+escaped+`c\\d\xff"e" (Bill`+escaped+`ing)` {
+		t.Fatalf("a name wasn't escaped: %q", list)
+	}
+	// Names are escaped before they're cut, so escaped names keep within their room too.
+	escapes := make([]listed, 300)
+	for i := range escapes {
+		escapes[i] = listed{strings.Repeat(override+"\n", 30) + strconv.Itoa(i), strings.Repeat(override, 30)}
+	}
+	for _, room := range []int{unfinishedRoom, closedRoom, invalidRoom, exclusionsRoom, leftoversRoom} {
+		if list := listSome(escapes, room); len(list) > room || strings.Contains(list, override) {
+			t.Fatalf("a list of escaped names of %d bytes in a room of %d: %q", len(list), room, list)
+		}
+	}
+	// A cut keeps a quoted name's quotation marks balanced, so it still reads as one name: the
+	// longest database name PostgreSQL allows (63 bytes), quoted, alone or beside another, and a
+	// long quoted database.index.
+	database := `"prod (Billing), ` + strings.Repeat("x", 47) + `"`
+	exclusion := `"` + strings.Repeat(`a""b (Billing), `, 8) + `".public."` + strings.Repeat("i", 60) + `"`
+	if len(database) != 63+len(`""`) || len(exclusion) <= 120 {
+		t.Fatalf("names of %d and %d bytes", len(database), len(exclusion))
+	}
+	for _, list := range []struct {
+		names []listed
+		room  int
+	}{
+		{[]listed{{database, "Shop"}}, closedRoom},
+		{[]listed{{database, "Shop"}, {"other", "Shop"}}, closedRoom},
+		{[]listed{{database, "Shop"}, {"other", "Shop"}}, invalidRoom},
+		{unqualified([]string{exclusion}), exclusionsRoom},
+		{unqualified([]string{exclusion, "other.public.i"}), exclusionsRoom},
+	} {
+		if text := listSome(list.names, list.room); len(text) > list.room || strings.Count(text, `"`)%2 != 0 || !strings.Contains(text, `"…`) {
+			t.Fatalf("a cut quoted name of %d bytes in a room of %d: %q", len(text), list.room, text)
+		}
+	}
+	for width := len("…"); width <= 130; width++ {
+		for _, name := range []string{database, exclusion, `"` + strings.Repeat(`""`, 70) + `"`} {
+			if cut := cutName(name, width); len(cut) > width || strings.Count(cut, `"`)%2 != 0 || !utf8.ValidString(cut) {
+				t.Fatalf("%q cut within %d bytes: %q", name, width, cut)
+			}
+		}
+	}
+	long := "x\n" + strings.Repeat(override+"ä", 100)
+	note := reindexNote(nil, []listed{{long, "Billing"}}, nil, []string{long})
+	if !utf8.ValidString(note) || strings.Contains(note, override) || strings.Contains(note, "\n") || !strings.Contains(note, "… (Billing)") {
+		t.Fatalf("an escaped name broke the note: %q", note)
+	}
+}
+
 // A lone name needs no room for a count of the rest, so one that fits its room is kept whole.
 func TestALoneNameThatFitsIsKeptWhole(t *testing.T) {
 	alone := strings.Repeat("d", 55)
