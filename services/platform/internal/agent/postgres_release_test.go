@@ -41,7 +41,7 @@ func TestRestoreFromAnotherMajorIsRefusedBeforeTouchingTheHost(t *testing.T) {
 }
 
 // A report's note is refused past 1024 characters on every retry, so no note may grow past it,
-// however many databases a rebuild leaves unfinished or closed or exclusion indexes it names.
+// however many databases a rebuild leaves unfinished, closed or invalid, or exclusion indexes it names.
 // Whole after the longest note a report puts before it, the rebuild's also leads a maintenance
 // report's, so clipping never loses it.
 func TestReportNoteStaysWithinTheContract(t *testing.T) {
@@ -55,13 +55,15 @@ func TestReportNoteStaysWithinTheContract(t *testing.T) {
 	after := "This host's maintenance reservation is released. 1000000 instances were not required to be ready: they were already stopped or failing, or an operator accepted them."
 	for unfinishedShape, unfinished := range shapes {
 		for closedShape, closed := range shapes {
-			for exclusionShape, exclusions := range shapes {
-				rebuild := reindexNote(unfinished, closed, exclusions)
-				if note := before + rebuild; utf8.RuneCountInString(note) > 1024 || reportNote(note) != note || strings.Count(rebuild, " more") != 3 {
-					t.Errorf("%s, %s and %s names: a note of %d characters, or no count of the rest", unfinishedShape, closedShape, exclusionShape, utf8.RuneCountInString(note))
-				}
-				if !strings.HasPrefix(reportNote(rebuild+" "+after), rebuild) {
-					t.Errorf("%s, %s and %s names: a maintenance report clipped the rebuild's note", unfinishedShape, closedShape, exclusionShape)
+			for invalidShape, invalid := range shapes {
+				for exclusionShape, exclusions := range shapes {
+					rebuild := reindexNote(unfinished, closed, invalid, exclusions)
+					if note := before + rebuild; utf8.RuneCountInString(note) > 1024 || reportNote(note) != note || strings.Count(rebuild, " more") != 4 {
+						t.Errorf("%s, %s, %s and %s names: a note of %d characters, or no count of the rest", unfinishedShape, closedShape, invalidShape, exclusionShape, utf8.RuneCountInString(note))
+					}
+					if !strings.HasPrefix(reportNote(rebuild+" "+after), rebuild) {
+						t.Errorf("%s, %s, %s and %s names: a maintenance report clipped the rebuild's note", unfinishedShape, closedShape, invalidShape, exclusionShape)
+					}
 				}
 			}
 		}

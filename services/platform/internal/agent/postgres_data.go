@@ -222,7 +222,7 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			}
 		}
 	}
-	var unfinished, exclusions, closed []string
+	var unfinished, exclusions, closed, invalid []string
 	for i, r := range due {
 		if i == 0 && begin != nil {
 			if err := begin(); err != nil {
@@ -240,11 +240,14 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			continue
 		}
 		exclusions = append(exclusions, left.exclusions...)
-		if len(left.closed) > 0 {
+		if len(left.closed) > 0 || len(left.invalid) > 0 {
 			// The record stays at the earlier release, so the next deployment rebuilds them once
-			// their owner allows connections again.
+			// their owner allows connections again or drops the invalid ones.
 			for _, database := range left.closed {
 				closed = append(closed, database+" ("+a.Name+")")
+			}
+			for _, database := range left.invalid {
+				invalid = append(invalid, database+" ("+a.Name+")")
 			}
 			continue
 		}
@@ -252,33 +255,38 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			return "", err
 		}
 	}
-	return reindexNote(unfinished, closed, exclusions), nil
+	return reindexNote(unfinished, closed, invalid, exclusions), nil
 }
 
 // reindexNote tells the owner what the rebuild left, within the room an operation's note has
 // after the longest note a report puts before it. A maintenance report puts its own after it.
-func reindexNote(unfinished, closed, exclusions []string) string {
+func reindexNote(unfinished, closed, invalid, exclusions []string) string {
 	var parts []string
 	if len(unfinished) > 0 {
-		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unfinished, 120)+"; the data is served on the new release and the next deployment retries it.")
+		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unfinished, 100)+"; the data is served on the new release and the next deployment retries it.")
 	}
 	if len(closed) > 0 {
-		parts = append(parts, "The databases "+listSome(closed, 80)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
+		parts = append(parts, "The databases "+listSome(closed, 70)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
+	}
+	if len(invalid) > 0 {
+		parts = append(parts, "The databases "+listSome(invalid, 70)+" are invalid after an interrupted DROP DATABASE; drop them to finish the rebuild.")
 	}
 	if len(exclusions) > 0 {
-		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(exclusions, 220)+".")
+		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(exclusions, 170)+".")
 	}
 	return strings.Join(parts, " ")
 }
 
-// listSome joins names up to about limit bytes, then counts the rest.
+// listSome joins names up to about limit bytes, then counts the rest. A name longer than that,
+// or than 120 bytes, is cut.
 func listSome(names []string, limit int) string {
 	slices.Sort(names)
 	names = slices.Compact(names)
+	width := min(limit, 120)
 	out := ""
 	for i, name := range names {
-		if len(name) > 120 {
-			name = name[:120] + "…"
+		if len(name) > width {
+			name = name[:width] + "…"
 		}
 		next := name
 		if out != "" {
@@ -308,6 +316,9 @@ type reindexLeft struct {
 	// closed are the databases that do not accept connections, so that nothing could rebuild
 	// their indexes.
 	closed []string
+	// invalid are the databases an interrupted DROP DATABASE left, which nothing can connect to
+	// until they are dropped.
+	invalid []string
 }
 
 // rebuildPostgresIndexes rebuilds one database's indexes, returning what it left to the owner,
@@ -413,6 +424,9 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	// alone. Names are listed apart from whether each accepts connections, which is read just
 	// before its rebuild: a name stays in its place in the listing's pages whatever the database
 	// does, and one closed after its check fails to connect, so the step is left unfinished.
+	// A DROP DATABASE interrupted part-way leaves the database invalid, datconnlimit -2, still
+	// listed and still marked as accepting connections, though no one can connect to it; it is
+	// named apart, since only dropping it finishes the rebuild.
 	// inline-sql: runs in a managed customer database through psql, not in the platform database
 	databases, err := lines(a.Postgres.Database, "SELECT datname::text FROM pg_database WHERE datallowconn OR datname <> 'template0'")
 	if err != nil {
@@ -421,7 +435,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	var left reindexLeft
 	for _, database := range databases {
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		state, err := lines(a.Postgres.Database, "SELECT CASE WHEN datallowconn THEN 'open' ELSE 'closed' END FROM pg_database WHERE datname = convert_from(decode('"+hex.EncodeToString([]byte(database))+"', 'hex'), 'UTF8')")
+		state, err := lines(a.Postgres.Database, "SELECT CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END FROM pg_database WHERE datname = convert_from(decode('"+hex.EncodeToString([]byte(database))+"', 'hex'), 'UTF8')")
 		if err != nil {
 			return reindexLeft{}, err
 		}
@@ -429,7 +443,11 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			// Dropped since it was listed.
 			continue
 		}
-		if state[0] != "open" {
+		switch state[0] {
+		case "invalid":
+			left.invalid = append(left.invalid, database)
+			continue
+		case "closed":
 			left.closed = append(left.closed, database)
 			continue
 		}
