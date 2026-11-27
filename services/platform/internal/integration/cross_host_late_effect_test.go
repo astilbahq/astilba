@@ -18,7 +18,7 @@ import (
 func recoveryRuns(recovery backup.Policy, environment, resource uuid.UUID) (restored, historical backup.Run) {
 	at := time.Now().UTC()
 	manifest := backup.Manifest{Recipe: backup.Recipe, PolicyID: recovery.ID, RunID: uuid.New(), EnvironmentID: environment, ResourceID: resource, Method: "postgres-logical", Image: domain.PostgresImage, Database: "app", Username: "app", CreatedAt: at, Roles: []backup.Role{}, Extensions: []string{}, SHA256: strings.Repeat("f", 64), Bytes: 100}
-	restored = backup.Run{ID: uuid.New(), PolicyID: recovery.ID, Generation: recovery.Generation, ScheduledAt: at, StartedAt: at, FinishedAt: &at, State: "succeeded", Snapshot: strings.Repeat("e", 64), Verified: true, TargetID: uuid.New(), Manifest: &manifest, ManifestHash: backup.Hash(manifest)}
+	restored = backup.Run{ID: uuid.New(), PolicyID: recovery.ID, Generation: recovery.Generation, ScheduledAt: at, StartedAt: at, FinishedAt: &at, State: "succeeded", Snapshot: strings.Repeat("e", 64), Verified: true, TargetID: uuid.New(), Manifest: &manifest, ManifestHash: backup.Hash(manifest), RestoreRoles: domain.PostgresOwner}
 	older := manifest
 	older.Image = domain.Postgres17Image
 	historical = restored

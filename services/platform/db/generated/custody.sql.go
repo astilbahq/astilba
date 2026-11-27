@@ -160,10 +160,11 @@ func (q *Queries) InstallationKeyCanaries(ctx context.Context, backendID string)
 }
 
 const installationKeyEvents = `-- name: InstallationKeyEvents :many
-SELECT id,at,run_id,kind,operator,reason,backend_id,scope,workspace_id,generation,details FROM installation_key_events
-ORDER BY at DESC,id DESC LIMIT $1
+SELECT id,at,run_id,kind,operator,reason,backend_id,scope,workspace_id,generation,details,seq FROM installation_key_events
+ORDER BY seq DESC LIMIT $1
 `
 
+// The most recent events, newest first, in the order they were recorded.
 func (q *Queries) InstallationKeyEvents(ctx context.Context, pageSize int32) ([]InstallationKeyEvent, error) {
 	rows, err := q.db.Query(ctx, installationKeyEvents, pageSize)
 	if err != nil {
@@ -185,6 +186,7 @@ func (q *Queries) InstallationKeyEvents(ctx context.Context, pageSize int32) ([]
 			&i.WorkspaceID,
 			&i.Generation,
 			&i.Details,
+			&i.Seq,
 		); err != nil {
 			return nil, err
 		}
@@ -295,8 +297,8 @@ WHERE s.kind LIKE '%-started'
     AND NOT EXISTS(SELECT 1 FROM installation_key_events f WHERE f.run_id = s.run_id AND f.kind LIKE '%-finished')
     AND NOT EXISTS(
         SELECT 1 FROM installation_key_events l JOIN installation_key_events ls ON ls.run_id = l.run_id AND ls.kind = s.kind
-        WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.details->>'outcome' = 'used' AND ls.at > s.at)
-ORDER BY s.at
+        WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.details->>'outcome' = 'used' AND ls.seq > s.seq)
+ORDER BY s.seq
 `
 
 type UnfinishedCustodyRunsRow struct {
@@ -308,7 +310,8 @@ type UnfinishedCustodyRunsRow struct {
 
 // A command records `<name>-started` first and `<name>-finished` last, so a start with no finish is
 // one that stopped part way, or is running now. A run of the same command that started after it
-// and succeeded supersedes it: events are never removed, so nothing else could clear it.
+// and succeeded supersedes it: events are never removed, so nothing else could clear it. After
+// means recorded after, which the order of seq says even when two events share a time.
 func (q *Queries) UnfinishedCustodyRuns(ctx context.Context) ([]UnfinishedCustodyRunsRow, error) {
 	rows, err := q.db.Query(ctx, unfinishedCustodyRuns)
 	if err != nil {

@@ -35,7 +35,7 @@ type recoveryHost struct {
 }
 
 // newRecoveryHost applies spec on a new server, as its deployment would: the unit's network and
-// volumes, a PostgreSQL container created with password, and a worker.
+// volumes, a PostgreSQL cluster the agent created with password, and a worker.
 func newRecoveryHost(t *testing.T, docker *client.Client, spec domain.Specification, environment, unit uuid.UUID, password string) recoveryHost {
 	t.Helper()
 	ctx := context.Background()
@@ -48,7 +48,7 @@ func newRecoveryHost(t *testing.T, docker *client.Client, spec domain.Specificat
 		t.Fatal("fixture plan: ", err)
 	}
 	e := &Engine{Docker: docker, Journal: j, ResticCLI: "/opt/astilba-platform-tools/restic"}
-	if err := e.ensureStorage(ctx, p); err != nil {
+	if err := e.ensureStorage(ctx, p, map[string]string{db.Postgres.PasswordSecretVersionID.String(): password}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -65,7 +65,8 @@ func newRecoveryHost(t *testing.T, docker *client.Client, spec domain.Specificat
 		env   []string
 		out   *string
 	}{
-		{db, domain.PostgresImage, []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=" + password}, &h.db},
+		// The agent created the cluster, as it does a deployment's, so its container has no variables.
+		{db, domain.PostgresImage, nil, &h.db},
 		{worker, execution.TestImage, nil, &h.worker},
 	} {
 		mounts := []mount.Mount{}
@@ -178,7 +179,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 	image, worker := domain.PostgresImage, execution.TestImage
 	dbID, workerID, dbVolume, filesVolume := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: dbVolume, Name: "Data"}, {ID: filesVolume, Name: "Files"}}, Applications: []domain.Application{
-		{ID: dbID, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: uuid.New()}, Mounts: []domain.VolumeMount{{VolumeID: dbVolume, Target: "/var/lib/postgresql"}}},
+		{ID: dbID, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: uuid.New(), Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: dbVolume, Target: "/var/lib/postgresql"}}},
 		{ID: workerID, Name: "Worker", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &worker}, Command: []string{"sleep", "86400"}, Mounts: []domain.VolumeMount{{VolumeID: filesVolume, Target: "/data"}}},
 	}}
 	environment, unit, workspace := uuid.New(), uuid.New(), uuid.New()
@@ -191,7 +192,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 
 	// The lost server: its data, its policies, and their uploads.
 	lost := newRecoveryHost(t, docker, spec, environment, unit, password)
-	if _, err = lost.engine.pgQuery(ctx, pgClient{container: lost.db}, spec.Applications[0], "CREATE TABLE records(value text); INSERT INTO records VALUES ('recovered-record')"); err != nil {
+	if _, err = lost.engine.pgQuery(ctx, pgClient{container: lost.db}, spec.Applications[0], asDatabaseUserSQL(spec.Applications[0], "CREATE TABLE records(value text); INSERT INTO records VALUES ('recovered-record')")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = lost.engine.dataOutput(ctx, pgClient{container: lost.worker}, "sh", "-c", "printf 'recovered file' > /data/record.txt"); err != nil {
@@ -335,8 +336,16 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		if got.Snapshot != database.snapshot || got.TargetID != target || got.Manifest.SHA256 != database.manifest.SHA256 || got.Manifest.RunID != database.manifest.RunID {
 			t.Fatalf("restore reported another snapshot: %+v", got)
 		}
-		if v, err := docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(domain.PostgresImage) {
-			t.Fatal("the target does not record its PostgreSQL major: ", err)
+		if got.Manifest.DumpSettings != nil {
+			t.Fatal("the dump's settings were reported to management")
+		}
+		// A cutover refuses an owner-model database a restore that doesn't say its cluster's
+		// database user isn't the superuser.
+		if got.RestoreRoles != domain.PostgresOwner {
+			t.Fatalf("the restore reported roles %q", got.RestoreRoles)
+		}
+		if v, err := docker.VolumeInspect(ctx, deployment.VolumeName(target), client.VolumeInspectOptions{}); err != nil || v.Volume.Labels[labelPostgresMajor] != domain.PostgresMajor(domain.PostgresImage) || v.Volume.Labels[labelPostgresRoles] != postgresOwnerRoles {
+			t.Fatal("the target does not record its PostgreSQL major and role model: ", err)
 		}
 		created, err := docker.ContainerCreate(ctx, client.ContainerCreateOptions{Config: &container.Config{Image: domain.PostgresImage, Env: []string{"POSTGRES_PASSWORD=" + password}}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(target), Target: domain.PostgresMount(domain.PostgresImage)}}}})
 		if err != nil {
@@ -377,7 +386,7 @@ func TestNativeRecoveryRestore(t *testing.T) {
 		if !*inspected {
 			t.Fatal("the restore's container was not inspected")
 		}
-		if got := result(t, r); got.Snapshot != files.snapshot || got.Manifest.SHA256 != files.manifest.SHA256 {
+		if got := result(t, r); got.Snapshot != files.snapshot || got.Manifest.SHA256 != files.manifest.SHA256 || got.RestoreRoles != "" {
 			t.Fatalf("restore reported another snapshot: %+v", got)
 		}
 		view := files.in.Policy

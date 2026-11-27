@@ -109,13 +109,15 @@ VALUES(@workspace_id,@environment_id,@revision_id,@policy_id,@source_plan_id,@co
 
 -- name: ClaimRestoreTarget :one
 -- A verified restore's target becomes the environment's data volume when a cutover is prepared,
--- before any plan mounts it, with the PostgreSQL major the restore initialised it with, as an
--- upgrade's target does when it is planned. Another environment's or a deleted volume returns no row.
-INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_major)
-VALUES(@workspace_id,@environment_id,@unit_id,@id,sqlc.narg(postgres_major))
-ON CONFLICT(workspace_id,id) DO UPDATE SET postgres_major = COALESCE(managed_volumes.postgres_major,EXCLUDED.postgres_major)
+-- before any plan mounts it, with the PostgreSQL major the restore initialised it with and the
+-- database it holds, as an upgrade's target does when it is planned. A claim already recorded
+-- keeps what it recorded, which the caller compares. Another environment's or a deleted volume
+-- returns no row.
+INSERT INTO managed_volumes(workspace_id,environment_id,unit_id,id,postgres_major,postgres_init_hash)
+VALUES(@workspace_id,@environment_id,@unit_id,@id,sqlc.narg(postgres_major),sqlc.narg(postgres_init_hash))
+ON CONFLICT(workspace_id,id) DO UPDATE SET postgres_major = COALESCE(managed_volumes.postgres_major,EXCLUDED.postgres_major), postgres_init_hash = COALESCE(managed_volumes.postgres_init_hash,EXCLUDED.postgres_init_hash)
 WHERE managed_volumes.environment_id = EXCLUDED.environment_id AND NOT managed_volumes.deleted
-RETURNING postgres_major;
+RETURNING postgres_major, postgres_init_hash;
 
 -- name: OperationCommandByRequestKey :one
 SELECT command FROM execution_operations WHERE workspace_id = @workspace_id AND request_key = @request_key;

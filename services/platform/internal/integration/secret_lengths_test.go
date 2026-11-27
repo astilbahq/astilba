@@ -46,7 +46,7 @@ func TestPlanningMeasuresSecretsWithoutOpeningThem(t *testing.T) {
 		b.call("POST", path+"/secrets", map[string]string{"name": "DB_PASSWORD", "value": value}, 201, &secret)
 		app, pg, volume := uuid.New(), uuid.New(), uuid.New()
 		image, pgimage := execution.TestImage, domain.PostgresImage
-		spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}}, {ID: pg, Name: "Postgres", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: "/var/lib/postgresql"}}}}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}}, Bindings: []domain.Binding{}, Routes: []domain.Route{}}
+		spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &image}}, {ID: pg, Name: "Postgres", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: "/var/lib/postgresql"}}}}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}}, Bindings: []domain.Binding{}, Routes: []domain.Route{}}
 		var draft api.Revision
 		b.call("PUT", path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, &draft)
 		return secret.Id, func(status int) {

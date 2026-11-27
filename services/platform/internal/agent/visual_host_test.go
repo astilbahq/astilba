@@ -160,7 +160,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 	secrets := map[string]string{}
 	if withDB {
 		spec.Volumes = []domain.Volume{{ID: vol, Name: "Data"}}
-		spec.Applications = append(spec.Applications, domain.Application{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}})
+		spec.Applications = append(spec.Applications, domain.Application{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgimage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}})
 		spec.Bindings = []domain.Binding{{ID: uuid.New(), SourceID: pg, TargetID: app, Variable: "DATABASE_URL"}}
 		secrets[secret.String()] = "native/$secret@canary"
 		spec.Routes = append(spec.Routes, domain.Route{ID: uuid.New(), TargetID: pg, Protocol: "tcp", Domain: "db.example.test", Port: 5432, ListenPort: 15432, TLS: "off", AllowCIDRs: []string{"0.0.0.0/0"}})
@@ -292,8 +292,36 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close(ctx)
+	// PLAT-450. The app reaches its database as an ordinary role that owns it, never as the
+	// superuser, which the cluster keeps for Astilba's maintenance and won't let in over a network.
+	t.Run("database_user_is_not_the_superuser", func(t *testing.T) {
+		assertOrdinaryUser(t, func(user, password, sql string) error {
+			u := databaseURL
+			u.User = url.UserPassword(user, password)
+			c, err := pgx.Connect(ctx, u.String())
+			if err != nil {
+				return err
+			}
+			defer c.Close(ctx)
+			if strings.HasPrefix(sql, "SELECT") {
+				var v any
+				return c.QueryRow(ctx, sql).Scan(&v)
+			}
+			_, err = c.Exec(ctx, sql)
+			return err
+		}, "app", "app", password)
+		container, err := docker.ContainerInspect(ctx, deployment.UnitName(pg), client.ContainerInspectOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range container.Container.Config.Env {
+			if strings.HasPrefix(entry, "POSTGRES_") {
+				t.Fatalf("the database's container has %s", strings.SplitN(entry, "=", 2)[0])
+			}
+		}
+	})
 	t.Run("backup_and_fresh_restore", func(t *testing.T) {
-		nativeBackupJourney(t, f.engine, p, func(b backup.Command) api.ExecutionCommand {
+		nativeBackupJourney(t, f.engine, p, password, func(b backup.Command) api.ExecutionCommand {
 			f.generation++
 			raw, _ := stablejson.Marshal(b)
 			value := jsontext.Value(raw)

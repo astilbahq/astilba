@@ -514,7 +514,7 @@ func (q *Queries) MoveEnvironmentResources(ctx context.Context, arg MoveEnvironm
 }
 
 const moveEnvironmentVolumes = `-- name: MoveEnvironmentVolumes :exec
-UPDATE managed_volumes SET unit_id = $1 WHERE workspace_id = $2 AND environment_id = $3
+UPDATE managed_volumes SET unit_id = $1, postgres_init_hash = NULL WHERE workspace_id = $2 AND environment_id = $3
 `
 
 type MoveEnvironmentVolumesParams struct {
@@ -523,6 +523,7 @@ type MoveEnvironmentVolumesParams struct {
 	EnvironmentID uuid.UUID `json:"environment_id"`
 }
 
+// A moved volume starts empty on its new server, so no cluster initialises it there yet.
 func (q *Queries) MoveEnvironmentVolumes(ctx context.Context, arg MoveEnvironmentVolumesParams) error {
 	_, err := q.db.Exec(ctx, moveEnvironmentVolumes, arg.UnitID, arg.WorkspaceID, arg.EnvironmentID)
 	return err

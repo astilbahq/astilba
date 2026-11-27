@@ -145,6 +145,7 @@ func Preflight(ctx context.Context, docker *client.Client, version, dir string, 
 			releases = append(releases, r.Image)
 		}
 		h.Capabilities.PostgresReleases = &releases
+		h.Capabilities.PostgresOwnerRole = &visual
 	}
 	h.Capabilities.Visual = &visual
 	h.Capabilities.Compose = &visual

@@ -30,20 +30,22 @@ INSERT INTO installation_key_events(id,run_id,kind,operator,reason,backend_id,sc
 VALUES(@id,@run_id,@kind,sqlc.narg(operator),sqlc.narg(reason),sqlc.narg(backend_id),sqlc.narg(scope),sqlc.narg(workspace_id),sqlc.narg(generation),@details);
 
 -- name: InstallationKeyEvents :many
-SELECT id,at,run_id,kind,operator,reason,backend_id,scope,workspace_id,generation,details FROM installation_key_events
-ORDER BY at DESC,id DESC LIMIT @page_size;
+-- The most recent events, newest first, in the order they were recorded.
+SELECT id,at,run_id,kind,operator,reason,backend_id,scope,workspace_id,generation,details,seq FROM installation_key_events
+ORDER BY seq DESC LIMIT @page_size;
 
 -- name: UnfinishedCustodyRuns :many
 -- A command records `<name>-started` first and `<name>-finished` last, so a start with no finish is
 -- one that stopped part way, or is running now. A run of the same command that started after it
--- and succeeded supersedes it: events are never removed, so nothing else could clear it.
+-- and succeeded supersedes it: events are never removed, so nothing else could clear it. After
+-- means recorded after, which the order of seq says even when two events share a time.
 SELECT s.run_id,s.kind,s.at,s.operator FROM installation_key_events s
 WHERE s.kind LIKE '%-started'
     AND NOT EXISTS(SELECT 1 FROM installation_key_events f WHERE f.run_id = s.run_id AND f.kind LIKE '%-finished')
     AND NOT EXISTS(
         SELECT 1 FROM installation_key_events l JOIN installation_key_events ls ON ls.run_id = l.run_id AND ls.kind = s.kind
-        WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.details->>'outcome' = 'used' AND ls.at > s.at)
-ORDER BY s.at;
+        WHERE l.kind = left(s.kind, -length('-started')) || '-finished' AND l.details->>'outcome' = 'used' AND ls.seq > s.seq)
+ORDER BY s.seq;
 
 -- name: SampleSealedValues :many
 -- unscoped: before a backend's first canaries, start-up checks the keyring against one stored value

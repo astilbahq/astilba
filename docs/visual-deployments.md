@@ -20,6 +20,21 @@ Moving or selecting a card never deploys. Canvas positions have their own save a
 
 Plans expire after fifteen minutes. A changed draft, placement, applied revision or observed runtime state invalidates admission. Repeated application with the same request key returns the same operation. A unit supports twenty services and one hundred distinct secret references. Larger payloads are rejected before admission.
 
+## Managed database roles
+
+A managed PostgreSQL database's cluster keeps two kinds of role apart:
+
+- **The superuser, `postgres`,** is Astilba's alone. It has no password, so nothing can sign in as it over a network. Only the agent's helpers reach it, from inside the database's own network namespace, over the loopback address the cluster trusts. They use it for backups, restores, upgrades and index rebuilds.
+- **The database user** you name is an ordinary role. It owns the database and its `public` schema, so it can create schemas, tables and PostgreSQL's trusted extensions, such as `pgcrypto`, `hstore` or `citext`. It can't create roles or databases, read or write the server's files, run programs, change the server's settings or the ones only an administrator may choose, or create untrusted extensions such as `dblink` or `file_fdw`. Applications connect as this user, with its password secret.
+
+The agent creates each new database's cluster itself, in a container with no network, before the database's service first starts. It creates the database user with its password, an empty database the user owns, and the superuser without a password. The database's service then runs without the image's PostgreSQL variables, so if its volume were ever empty the image would refuse to start rather than create a cluster of its own. The user can't be named `postgres` or start with `pg_`, and the database can't be named `template0` or `template1`.
+
+A database's specification records this as `roles: "owner"`. Every new database uses it: the dashboard, templates, previews and clones set it, and plan creation refuses a new database without it, as an agent does. A server's agent must advertise `postgresOwnerRole`, or a plan that runs an owner-model database there is refused until the agent is updated.
+
+A database created before this keeps its own model, where the database user is the cluster's superuser. A cluster's first role is always its superuser, so the model never changes in place, only with new storage: a restore's cutover or a supported upgrade gives the database the owner model, since every restore creates one (see [backups](backups.md#restore-and-cutover)), and so does a [replacement of a revoked primary](cross-host-placement.md#a-revoked-primary), which starts the database's volume empty. A deployment plan's effects, and the review of a supported upgrade, say that the database moves to the owner model, since an application that relied on being the superuser stops working.
+
+An exported Compose bundle keeps the image's own variables, since no agent creates its cluster: on a fresh volume, its database user is the cluster's superuser. Its instructions say so.
+
 ## Observe and recover
 
 Operations persist in PostgreSQL and the agent's encrypted journal. The agent serializes host mutations and checkpoints each phase. It resumes interrupted work from the journal; closing the dashboard does not cancel it. Cancellation stops at a safe checkpoint and retains existing data and any completed effects.

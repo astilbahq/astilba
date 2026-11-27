@@ -56,13 +56,14 @@ func newLateDeliveryHost(t *testing.T, secret string) *lateDeliveryHost {
 	h.b.call("POST", h.path+"/secrets", map[string]string{"name": "Database password", "value": secret}, 201, &version)
 	vol := uuid.New()
 	image := domain.PostgresImage
-	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: h.pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: "app", PasswordSecretVersionID: version.Id}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
+	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{{ID: h.pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Username: "app", Database: "app", PasswordSecretVersionID: version.Id, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: vol, Target: "/var/lib/postgresql"}}}}, Volumes: []domain.Volume{{ID: vol, Name: "Data"}}}
 	h.b.call("PUT", h.path+"/draft", map[string]any{"baseRevisionId": env.DraftRevisionId, "specification": spec}, 200, &h.draft)
 	enrolled, in, token := enrollment(t, h.f, h.b, h.ws, "deployment")
 	yes := true
 	in.Capabilities.Visual = &yes
 	in.Capabilities.Backups = &yes
 	in.Capabilities.ExpiredCommands = &yes
+	in.Capabilities.PostgresOwnerRole = agentPostgresOwnerRole()
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
 	h.server, h.in, h.token = enrolled.Server.Id, in, token
 	return h

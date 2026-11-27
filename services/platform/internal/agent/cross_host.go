@@ -156,7 +156,7 @@ func (e *Engine) executeCrossHost(ctx context.Context, c api.ExecutionCommand, r
 				return finish(storageState(err), safeVisualError(err, command.Secrets))
 			}
 		}
-		if err = e.ensureStorage(ctx, p); err != nil {
+		if err = e.ensureStorage(ctx, p, command.Secrets); err != nil {
 			return finish(storageState(err), safeVisualError(err, command.Secrets))
 		}
 	case "prepare":
