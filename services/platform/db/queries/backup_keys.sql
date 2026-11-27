@@ -42,8 +42,8 @@ VALUES(@id,@workspace_id,@account_id,@destination_id,@holder_server_id,@purpose,
 
 -- name: InsertFoundBackupStorageKey :exec
 -- A user the account check found with no row, latched for the sweep to revoke.
-INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state,mint_deadline)
-VALUES(@id,@workspace_id,@account_id,'found',@user_name,@found_tags,'revoking',clock_timestamp() - interval '5 minutes')
+INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
+VALUES(@id,@workspace_id,@account_id,'found',@user_name,@found_tags,'revoking')
 ON CONFLICT (user_name) DO NOTHING;
 
 -- name: BackupStorageKey :one
@@ -58,15 +58,15 @@ WHERE k.workspace_id = @workspace_id AND k.id = @id AND k.state = 'minting'
     AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id AND NOT s.revoked;
 
 -- name: LatchBackupStorageKey :execrows
--- revoking is a latch: nothing moves a key back. The sweep waits until a minting key's deadline has
--- passed by five minutes, so it can't race a create call still in flight.
+-- revoking is a latch: nothing moves a key back. ClaimDueBackupStorageKey holds back a key latched
+-- while minting until no create call for it can still be in flight.
 UPDATE backup_storage_keys SET state='revoking',last_error=COALESCE(sqlc.narg(last_error),last_error),
-    next_attempt_at=GREATEST(clock_timestamp(),mint_deadline + interval '5 minutes')
+    next_attempt_at=clock_timestamp()
 WHERE workspace_id = @workspace_id AND id = @id AND state IN ('minting','active');
 
 -- name: LatchServerBackupStorageKeys :many
 -- A revoked server's keys, except those handed over at its current revocation.
-UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=GREATEST(clock_timestamp(),k.mint_deadline + interval '5 minutes')
+UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestamp()
 FROM servers s
 WHERE k.workspace_id = @workspace_id AND k.holder_server_id = @server_id AND k.state IN ('minting','active')
     AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
@@ -84,11 +84,13 @@ RETURNING k.id;
 -- name: ClaimDueBackupStorageKey :one
 -- unscoped: the revocation sweep visits every workspace. Claiming moves the key's next attempt on,
 -- so a pass that dies keeps its place without retrying at once; the result is recorded in the
--- key's own workspace.
+-- key's own workspace. A key that never activated may still have a create call in flight, so it
+-- waits until its mint deadline has passed by five minutes; an active key's mint has finished, and
+-- a found user was never minted here.
 UPDATE backup_storage_keys SET next_attempt_at=clock_timestamp() + interval '2 minutes'
 WHERE id=(SELECT k.id FROM backup_storage_keys k
     WHERE k.state = 'revoking' AND k.next_attempt_at <= clock_timestamp()
-        AND k.mint_deadline + interval '5 minutes' <= clock_timestamp()
+        AND (k.activated_at IS NOT NULL OR k.purpose = 'found' OR k.mint_deadline + interval '5 minutes' <= clock_timestamp())
         AND k.workspace_id <> ALL(@stalled_workspaces::uuid[])
     ORDER BY k.next_attempt_at,k.id LIMIT 1 FOR UPDATE SKIP LOCKED)
 RETURNING workspace_id,id,account_id,user_name;
@@ -105,12 +107,12 @@ UPDATE backup_storage_keys SET attempts=attempts+1,last_error = @last_error,
 WHERE workspace_id = @workspace_id AND id = @id AND state = 'revoking';
 
 -- name: RetryBackupStorageKeys :execrows
-UPDATE backup_storage_keys SET next_attempt_at=GREATEST(clock_timestamp(),mint_deadline + interval '5 minutes')
+UPDATE backup_storage_keys SET next_attempt_at=clock_timestamp()
 WHERE workspace_id = @workspace_id AND destination_id = @destination_id AND state = 'revoking';
 
 -- name: RetryAccountBackupStorageKeys :execrows
 -- A replaced admin credential retries the account's failing revocations at once.
-UPDATE backup_storage_keys SET next_attempt_at=GREATEST(clock_timestamp(),mint_deadline + interval '5 minutes')
+UPDATE backup_storage_keys SET next_attempt_at=clock_timestamp()
 WHERE workspace_id = @workspace_id AND account_id = @account_id AND state = 'revoking';
 
 -- name: DeleteBackupPlaceholder :execrows

@@ -276,7 +276,7 @@ const claimDueBackupStorageKey = `-- name: ClaimDueBackupStorageKey :one
 UPDATE backup_storage_keys SET next_attempt_at=clock_timestamp() + interval '2 minutes'
 WHERE id=(SELECT k.id FROM backup_storage_keys k
     WHERE k.state = 'revoking' AND k.next_attempt_at <= clock_timestamp()
-        AND k.mint_deadline + interval '5 minutes' <= clock_timestamp()
+        AND (k.activated_at IS NOT NULL OR k.purpose = 'found' OR k.mint_deadline + interval '5 minutes' <= clock_timestamp())
         AND k.workspace_id <> ALL($1::uuid[])
     ORDER BY k.next_attempt_at,k.id LIMIT 1 FOR UPDATE SKIP LOCKED)
 RETURNING workspace_id,id,account_id,user_name
@@ -291,7 +291,9 @@ type ClaimDueBackupStorageKeyRow struct {
 
 // unscoped: the revocation sweep visits every workspace. Claiming moves the key's next attempt on,
 // so a pass that dies keeps its place without retrying at once; the result is recorded in the
-// key's own workspace.
+// key's own workspace. A key that never activated may still have a create call in flight, so it
+// waits until its mint deadline has passed by five minutes; an active key's mint has finished, and
+// a found user was never minted here.
 func (q *Queries) ClaimDueBackupStorageKey(ctx context.Context, stalledWorkspaces []uuid.UUID) (ClaimDueBackupStorageKeyRow, error) {
 	row := q.db.QueryRow(ctx, claimDueBackupStorageKey, stalledWorkspaces)
 	var i ClaimDueBackupStorageKeyRow
@@ -606,8 +608,8 @@ func (q *Queries) InsertBackupStorageKey(ctx context.Context, arg InsertBackupSt
 }
 
 const insertFoundBackupStorageKey = `-- name: InsertFoundBackupStorageKey :exec
-INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state,mint_deadline)
-VALUES($1,$2,$3,'found',$4,$5,'revoking',clock_timestamp() - interval '5 minutes')
+INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
+VALUES($1,$2,$3,'found',$4,$5,'revoking')
 ON CONFLICT (user_name) DO NOTHING
 `
 
@@ -633,7 +635,7 @@ func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFou
 
 const latchBackupStorageKey = `-- name: LatchBackupStorageKey :execrows
 UPDATE backup_storage_keys SET state='revoking',last_error=COALESCE($1,last_error),
-    next_attempt_at=GREATEST(clock_timestamp(),mint_deadline + interval '5 minutes')
+    next_attempt_at=clock_timestamp()
 WHERE workspace_id = $2 AND id = $3 AND state IN ('minting','active')
 `
 
@@ -643,8 +645,8 @@ type LatchBackupStorageKeyParams struct {
 	ID          uuid.UUID   `json:"id"`
 }
 
-// revoking is a latch: nothing moves a key back. The sweep waits until a minting key's deadline has
-// passed by five minutes, so it can't race a create call still in flight.
+// revoking is a latch: nothing moves a key back. ClaimDueBackupStorageKey holds back a key latched
+// while minting until no create call for it can still be in flight.
 func (q *Queries) LatchBackupStorageKey(ctx context.Context, arg LatchBackupStorageKeyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, latchBackupStorageKey, arg.LastError, arg.WorkspaceID, arg.ID)
 	if err != nil {
@@ -705,7 +707,7 @@ func (q *Queries) LatchRevokedHolderBackupStorageKeys(ctx context.Context, works
 }
 
 const latchServerBackupStorageKeys = `-- name: LatchServerBackupStorageKeys :many
-UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=GREATEST(clock_timestamp(),k.mint_deadline + interval '5 minutes')
+UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestamp()
 FROM servers s
 WHERE k.workspace_id = $1 AND k.holder_server_id = $2 AND k.state IN ('minting','active')
     AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
@@ -1135,7 +1137,7 @@ func (q *Queries) RequestBackupStorageAccountCheck(ctx context.Context, arg Requ
 }
 
 const retryAccountBackupStorageKeys = `-- name: RetryAccountBackupStorageKeys :execrows
-UPDATE backup_storage_keys SET next_attempt_at=GREATEST(clock_timestamp(),mint_deadline + interval '5 minutes')
+UPDATE backup_storage_keys SET next_attempt_at=clock_timestamp()
 WHERE workspace_id = $1 AND account_id = $2 AND state = 'revoking'
 `
 
@@ -1170,7 +1172,7 @@ func (q *Queries) RetryBackupRemint(ctx context.Context, arg RetryBackupRemintPa
 }
 
 const retryBackupStorageKeys = `-- name: RetryBackupStorageKeys :execrows
-UPDATE backup_storage_keys SET next_attempt_at=GREATEST(clock_timestamp(),mint_deadline + interval '5 minutes')
+UPDATE backup_storage_keys SET next_attempt_at=clock_timestamp()
 WHERE workspace_id = $1 AND destination_id = $2 AND state = 'revoking'
 `
 

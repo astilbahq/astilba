@@ -198,6 +198,14 @@ func (a *AWS) CreateUser(name, userPath, boundary string, tags map[string]string
 	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}
 }
 
+// IssueKey gives an existing user another access key, as someone with IAM rights could.
+func (a *AWS) IssueKey(name string) Credential {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	k := a.issue(name)
+	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}
+}
+
 // DeleteUser removes a user and its keys directly, as someone with IAM rights would.
 func (a *AWS) DeleteUser(name string) {
 	a.mu.Lock()

@@ -146,7 +146,9 @@ type keySweepArgs struct{}
 
 func (keySweepArgs) Kind() string { return "platform_backup_key_sweep_v1" }
 
-var keySweepNow = river.InsertOpts{UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateScheduled, rivertype.JobStateRetryable}}}
+// keySweepNow queues at most one pass that hasn't finished. River requires a unique job's states to
+// include running, so a key latched while a pass runs waits for the next periodic one, a minute on.
+var keySweepNow = river.InsertOpts{UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled, rivertype.JobStateRetryable}}}
 
 // queueKeySweep has the key sweep run now, in tx, rather than at its next minute. A key latched
 // while minting waits for its deadline to pass anyway, which a later pass picks up.

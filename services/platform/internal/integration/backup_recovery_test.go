@@ -34,6 +34,14 @@ func (g *revokedGroup) lostFiles(t *testing.T) lostFiles {
 // lostFilesAcross is lostFiles with the web application placed on each of across.
 func (g *revokedGroup) lostFilesAcross(t *testing.T, across ...uuid.UUID) lostFiles {
 	t.Helper()
+	bucket := map[string]any{"name": "Bucket", "kind": "s3", "serverId": g.hosts[0].id, "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}
+	return g.lostFilesOn(t, bucket, across...)
+}
+
+// lostFilesOn is lostFilesAcross with the S3 policy on the destination bucket asks for, which
+// belongs to the first host.
+func (g *revokedGroup) lostFilesOn(t *testing.T, destination map[string]any, across ...uuid.UUID) lostFiles {
+	t.Helper()
 	l := lostFiles{gone: g.hosts[0], b: g.hosts[1], snapshot: snapshotID("e")}
 	l.e, l.volume = g.filesStack(t, l.gone)
 	if len(across) > 0 {
@@ -41,7 +49,7 @@ func (g *revokedGroup) lostFilesAcross(t *testing.T, across ...uuid.UUID) lostFi
 		g.applied(t, &l.e, g.place(t, &l.e, l.gone.id, across...))
 	}
 	var bucket backup.Destination
-	g.b.call("POST", g.base+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "serverId": l.gone.id, "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &bucket)
+	g.b.call("POST", g.base+"/backup-destinations", destination, 201, &bucket)
 	password := "fixture-repository-password"
 	request := api.BackupPolicyRequest{Name: "Files", ResourceId: l.volume, DestinationId: bucket.ID, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
 	g.b.call("POST", l.e.path+"/backup-policies", request, 201, &l.policy)

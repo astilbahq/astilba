@@ -24,6 +24,7 @@ type reportingPolicy struct {
 	policy   backup.Policy
 	server   uuid.UUID
 	token    string
+	enroll   api.AgentEnrollment // the server's enrollment, for enrolling it again
 	sequence int64
 }
 
@@ -73,7 +74,7 @@ func newReportingPolicy(t *testing.T, f *fixture, b *browser, ws uuid.UUID, name
 	password := "repository-password-fixture"
 	var policy backup.Policy
 	b.call("POST", path+"/backup-policies", api.BackupPolicyRequest{Name: "Daily backup", ResourceId: pg, DestinationId: dest.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
-	return &reportingPolicy{f: f, ws: ws, path: path + "/backup-policies/" + policy.ID.String(), project: project.Id, policy: policy, server: enrolled.Server.Id, token: token}
+	return &reportingPolicy{f: f, ws: ws, path: path + "/backup-policies/" + policy.ID.String(), project: project.Id, policy: policy, server: enrolled.Server.Id, token: token, enroll: in}
 }
 
 // upload is a run that uploaded snapshot, as its server reports it, at a time the server claims.

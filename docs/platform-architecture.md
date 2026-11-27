@@ -78,6 +78,8 @@ The self-hosted management installation consists of the application and PostgreS
 
 Deployment hosts run the agent, Docker and Traefik. Build-only hosts run the agent and build tools without production ingress. The agent initiates management connections, so it needs no publicly reachable administration port or stored SSH credentials in the dashboard. Public applications still require customer-provided reachable ingress and suitable DNS; outbound agent connectivity does not create an application tunnel. Customers configure the necessary registry, Git and backup connectivity.
 
+For [managed backup keys](backups.md#managed-keys), management itself calls AWS: only the fixed IAM, STS and regional S3 endpoints, with aws-sdk-go-v2, through the outbound client that refuses private and loopback addresses. It never calls an endpoint an owner supplies, and it records AWS's failures as fixed codes, never AWS's messages.
+
 ## Management deployment targets
 
 The management service does not require a dedicated VPS or have to share a machine with customer applications. It needs reachable compute for the API and workers, PostgreSQL, and HTTPS. The Go application serves the static dashboard and API from one origin. Running the management service on an existing server is supported by the same packaging; running it on a laptop is useful for development but remote agents still need a reachable endpoint while it is available.

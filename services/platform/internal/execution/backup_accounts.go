@@ -28,6 +28,7 @@ var (
 	errAccountBoundary     = &domain.Error{Code: "invalid_input", Message: "The permissions boundary must be a customer-managed policy in the same AWS account.", Fields: []string{"boundary"}}
 	errAccountOther        = &domain.Error{Code: "invalid_input", Message: "This access key belongs to another AWS account. A storage account's credential can only be replaced with one of the same account.", Fields: []string{"credential"}}
 	errAccountTaken        = &domain.Error{Code: "conflict", Message: "This workspace already has a storage account for this AWS account.", Fields: []string{"credential"}}
+	errFoundUnbounded      = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so the storage account's admin policy can't change it. Delete it in the AWS console."}
 	errProviderUnavailable = &domain.Error{Code: "provider_unavailable", Message: "AWS could not be reached or failed. Try again shortly."}
 )
 
@@ -317,6 +318,10 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 		j := slices.IndexFunc(report.Found, func(f api.BackupStorageFoundUser) bool { return f.UserName == user })
 		if j < 0 || strings.TrimSpace(user) == "" {
 			return domain.NotFound
+		}
+		// The admin policy can only change bounded users, so revoking one without would never end.
+		if !report.Found[j].Bounded {
+			return errFoundUnbounded
 		}
 		tags, _ := stablejson.Marshal(map[string]string{"astilba:installation": report.Found[j].InstallationId, "astilba:server": report.Found[j].ServerId})
 		if err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: uuid.New(), WorkspaceID: ws, AccountID: account, UserName: user, FoundTags: tags}); err != nil {

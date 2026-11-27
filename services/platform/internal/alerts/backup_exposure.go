@@ -13,7 +13,8 @@ import (
 // backupExposure raises backup_exposure for each destination whose storage keys a revoked server
 // holds, as execution.BackupDestinations reports it exposed: one alert per destination, since the
 // exposure belongs to its keys rather than to any one policy using them. It resolves once no
-// revoked server holds them. Once a destination's access can be replaced in place (PLAT-435), it
+// revoked server holds them, or, for a managed destination, an hour after AWS confirmed each such
+// key revoked. Once a destination's access can be replaced in place (PLAT-435), it
 // also resolves when every policy using the destination is on a newer access generation than any
 // revoked server was given.
 func (s *Service) backupExposure(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
