@@ -369,28 +369,69 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 				}
-				holding, release := context.WithCancel(ctx)
-				held := make(chan struct{})
-				go func() {
-					defer close(held)
-					_, _ = e.pgQuery(holding, pgClient{container: source.ID}, admin, "BEGIN; CREATE TEMPORARY TABLE kept(id serial PRIMARY KEY, mood text DEFAULT 'calm' CHECK (id > 0)); CREATE INDEX ON kept(mood); CREATE TEMPORARY VIEW seen AS SELECT * FROM kept; COMMIT; SELECT pg_sleep(120)")
-				}()
-				for n := 0; ; n++ {
-					out, err := e.pgQuery(ctx, pgClient{container: source.ID}, admin, "SELECT count(*) FROM pg_class WHERE relname = 'kept' AND relpersistence = 't'")
-					if err == nil && strings.TrimSpace(string(out)) == "1" {
-						break
+				// hold runs statement in a session of database that stays open, once ready returns 1
+				// in another session, until the returned stop ends it.
+				hold := func(database domain.Application, statement, ready string) (stop func()) {
+					holding, release := context.WithCancel(ctx)
+					held := make(chan struct{})
+					go func() {
+						defer close(held)
+						_, _ = e.pgQuery(holding, pgClient{container: source.ID}, database, statement+"; SELECT pg_sleep(120)")
+					}()
+					stop = func() {
+						_, _ = e.pgQuery(ctx, pgClient{container: source.ID}, database, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND query LIKE "+quoteLiteral(statement+"%"))
+						release()
+						<-held
 					}
-					if n == 100 {
-						t.Fatalf("the temporary table never appeared: %q (%v)", out, err)
+					for n := 0; ; n++ {
+						out, err := e.pgQuery(ctx, pgClient{container: source.ID}, database, ready)
+						if err == nil && strings.TrimSpace(string(out)) == "1" {
+							return stop
+						}
+						if n == 100 {
+							stop()
+							t.Fatalf("%s: %q never held: %q (%v)", database.Postgres.Database, statement, out, err)
+						}
+						time.Sleep(100 * time.Millisecond)
 					}
-					time.Sleep(100 * time.Millisecond)
 				}
+				stop := hold(admin, "BEGIN; CREATE TEMPORARY TABLE kept(id serial PRIMARY KEY, mood text DEFAULT 'calm' CHECK (id > 0)); CREATE INDEX ON kept(mood); CREATE TEMPORARY VIEW seen AS SELECT * FROM kept; COMMIT", "SELECT count(*) FROM pg_class WHERE relname = 'kept' AND relpersistence = 't'")
 				err = e.upgradeDatabaseChecks(ctx, helper, a)
-				_, _ = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'BEGIN; CREATE TEMPORARY TABLE kept%'")
-				release()
-				<-held
+				stop()
 				if err != nil {
 					t.Fatal("template1 and postgres as initdb made them, with temporary tables, were refused:", err)
+				}
+				// A permanent table using a temporary one's type outlives it, so it counts.
+				for _, database := range []domain.Application{admin, template} {
+					stop = hold(database, "BEGIN; CREATE TEMPORARY TABLE linked(id integer); CREATE TABLE information_schema.linked(id integer, kept pg_temp.linked); COMMIT", "SELECT count(*) FROM pg_class WHERE oid = 'information_schema.linked'::regclass")
+					err = e.upgradeDatabaseChecks(ctx, helper, a)
+					stop()
+					if _, dropErr := e.pgQuery(ctx, pgClient{container: source.ID}, database, "DROP TABLE information_schema.linked"); dropErr != nil {
+						t.Fatal(dropErr)
+					}
+					if err == nil {
+						t.Fatalf("%s: a permanent table using a temporary one was accepted", database.Postgres.Database)
+					}
+				}
+				// A session that ends uncleanly, as when the server crashes, leaves its temporary
+				// functions and types in its temporary schema. They're refused by name until dropped.
+				out, err := e.pgQuery(ctx, pgClient{container: source.ID}, admin, "SELECT min(nspname) FROM pg_namespace WHERE nspname ~ '^pg_temp_[0-9]+$'")
+				left := strings.TrimSpace(string(out))
+				if err != nil || left == "" {
+					t.Fatalf("no temporary schema was left: %q (%v)", out, err)
+				}
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "CREATE FUNCTION "+left+".leftover() RETURNS integer LANGUAGE sql AS 'SELECT 1'; CREATE TYPE "+left+".mood AS ENUM ('calm')"); err != nil {
+					t.Fatal(err)
+				}
+				err = e.upgradeDatabaseChecks(ctx, helper, a)
+				if err == nil || !strings.Contains(err.Error(), "function "+left+".leftover()") || !strings.Contains(err.Error(), "type "+left+".mood") || strings.Contains(err.Error(), "[]") {
+					t.Fatalf("a crashed session's leftovers weren't named: %v", err)
+				}
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "DROP FUNCTION "+left+".leftover(); DROP TYPE "+left+".mood"); err != nil {
+					t.Fatal(err)
+				}
+				if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+					t.Fatal("the dropped leftovers were still refused:", err)
 				}
 				writerContext, stopWriter := context.WithCancel(ctx)
 				writerDone := make(chan struct{})

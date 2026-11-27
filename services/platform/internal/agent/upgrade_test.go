@@ -7,6 +7,7 @@ import (
 	"encoding/json/jsontext"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -246,5 +247,19 @@ func TestUpgradeRetentionProtectsVolumes(t *testing.T) {
 				t.Fatalf("unprotected volume was refused: %s: %s", r.Report.State, r.Report.Note)
 			}
 		})
+	}
+}
+
+// An upgrade's note keeps 900 bytes of its error, so a refusal naming many long leftovers is kept whole.
+func TestUserObjectsNoteNamesLeftoversWithinTheNote(t *testing.T) {
+	if note := userObjectsNote("template1", nil); note != "template1 contains user objects" {
+		t.Fatalf("no leftovers: %q", note)
+	}
+	many := make([]string, 100000)
+	for i := range many {
+		many[i] = "function pg_temp_" + strings.Repeat("9", 10) + "." + strings.Repeat("é", 200) + strconv.Itoa(i) + "()"
+	}
+	if note := userObjectsNote("the postgres maintenance database", many); len(note) > 900 || !strings.Contains(note, "function pg_temp_9999999999.") || !strings.Contains(note, " more in temporary schemas") {
+		t.Fatalf("a note of %d bytes: %q", len(note), note)
 	}
 }

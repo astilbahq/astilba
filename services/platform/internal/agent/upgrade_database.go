@@ -85,10 +85,31 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		// inline-sql: reads a managed database's catalog, not the platform database.
 		raw, err = e.pgQuery(ctx, db, admin, uncountedSQL+"SELECT count(*) FROM ("+strings.Join(rows, " UNION ALL ")+") o WHERE (o.classid, o.oid) NOT IN (SELECT classid, objid FROM uncounted)")
 		if err != nil || strings.TrimSpace(string(raw)) != "0" {
-			return errors.New(called + " contains user objects")
+			// inline-sql: reads a managed database's catalog, not the platform database.
+			raw, err = e.pgQuery(ctx, db, admin, uncountedSQL+"SELECT coalesce(json_agg(pg_catalog.pg_describe_object(d.classid, d.objid, 0) ORDER BY 1), '[]') FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_namespace n ON d.refclassid = 'pg_catalog.pg_namespace'::regclass AND d.refobjid = n.oid WHERE n.nspname ~ '^pg_(toast_)?temp_[0-9]+$' AND d.objsubid = 0 AND (d.classid, d.objid) NOT IN (SELECT classid, objid FROM uncounted)")
+			var leftovers []string
+			if err != nil || json.Unmarshal(raw, &leftovers) != nil {
+				leftovers = nil
+			}
+			return errors.New(userObjectsNote(called, leftovers))
 		}
 	}
 	return nil
+}
+
+// The bytes userObjectsNote's list of leftovers takes at most. With the note's own words it fits
+// the 900 bytes an upgrade's note keeps of its error.
+const leftoversRoom = 400
+
+// userObjectsNote refuses a maintenance database holding user objects. It names, by kind and
+// qualified name but never content, those in temporary schemas: a session that ends without
+// cleaning up, as when the server crashes, leaves its temporary functions and types there, and
+// PostgreSQL removes only tables.
+func userObjectsNote(called string, leftovers []string) string {
+	if len(leftovers) == 0 {
+		return called + " contains user objects"
+	}
+	return called + " contains user objects, among them " + listSome(unqualified(leftovers), leftoversRoom) + " in temporary schemas, which a session that ended uncleanly leaves; drop them before upgrading"
 }
 
 // catalogName is a PostgreSQL system catalog's name, put into a query only once it matches.
@@ -96,9 +117,9 @@ var catalogName = regexp.MustCompile(`^pg_[a-z_]+$`)
 
 // uncountedSQL names, as uncounted(classid, objid), the temporary relations, the parts dropped
 // with them (row types, indexes, sequences, defaults, constraints, rules and the like) and the
-// temporary schemas. Only automatic and internal dependencies on a whole object are followed, so a
-// permanent object that merely uses a temporary one still counts, as does whatever else a temporary
-// schema holds. PostgreSQL reserves the pg_ prefix, so only a superuser can name a schema like those.
+// temporary schemas. Only automatic and internal dependencies whose dependent is a whole object are
+// followed, so a permanent object that merely uses a temporary one still counts, as does whatever
+// else a temporary schema holds. PostgreSQL reserves the pg_ prefix, so only a superuser can name a schema like those.
 // inline-sql: reads a managed database's catalog, not the platform database.
 const uncountedSQL = `WITH RECURSIVE temporary(classid, objid) AS (
 	SELECT 'pg_catalog.pg_class'::regclass, oid FROM pg_catalog.pg_class WHERE relpersistence = 't'
