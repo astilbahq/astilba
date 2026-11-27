@@ -167,8 +167,9 @@ func TestLogoutWithAnEndedTokenSucceeds(t *testing.T) {
 	}
 }
 
-// Creating a workspace waits for any holder of the account. A logout that lands during the
-// wait must stop the stolen session's workspace being created.
+// Creating a workspace waits for a transaction that locks the account FOR UPDATE, such as an
+// import. A logout that lands during the wait must stop the stolen session's workspace being
+// created.
 func TestCreateWorkspaceWaitingBehindAccountLock(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
