@@ -513,7 +513,8 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 	if err = e.upgradeStep(c, s, "routes"); err != nil {
 		return err
 	}
-	if err = e.publishVisualRoutes(ctx, target); err != nil {
+	// The writers are stopped until the next step, which confirms the proxy routes them.
+	if err = e.publishRoutesBeforeServers(ctx, target); err != nil {
 		return err
 	}
 	routes, err := e.Journal.routing()
@@ -538,6 +539,12 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 			if err = e.waitHTTP(ctx, c, target, a); err != nil {
 				return err
 			}
+		}
+	}
+	// A coordinated upgrade's writers run on other hosts and resume outside this command.
+	if c.ParentId == nil {
+		if err = e.confirmRouteServers(ctx, target.UnitID); err != nil {
+			return err
 		}
 	}
 	e.point("upgrade-writers-effect")

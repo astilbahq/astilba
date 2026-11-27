@@ -208,7 +208,7 @@ func TestUnpullableProxyImageKeepsTheRunningProxy(t *testing.T) {
 			}
 			next.Revision = uuid.NewString()
 
-			publishErr := e.attemptRoutes(t.Context(), state, next, false, "", false)
+			publishErr := e.attemptRoutes(t.Context(), state, next, false, routeWait{}, false)
 			if unavailable := new(*proxyImageUnavailable); !errors.As(publishErr, unavailable) || (*unavailable).image != deployment.ProxyImage {
 				t.Fatalf("the publish did not name the proxy image it couldn't pull: %v", publishErr)
 			}
@@ -366,7 +366,7 @@ func TestProxyPortsAreCheckedBeforeTheProxyGoes(t *testing.T) {
 			}
 			d := &ingressDaemon{server: plan.ServerID, s: previous, image: deployment.ProxyImage, pinned: true}
 			e := &Engine{Journal: j, Docker: d.serve(t)}
-			_, err := e.applyRoutes(t.Context(), next, proxyAsNeeded, "")
+			_, err := e.applyRoutes(t.Context(), next, proxyAsNeeded, routeWait{})
 			if err == nil || err.Error() != fmt.Sprintf("ingress port %d is already in use", busy) {
 				t.Fatalf("the publish did not refuse the port in use: %v", err)
 			}
