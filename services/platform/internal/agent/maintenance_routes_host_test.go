@@ -3,26 +3,83 @@ package agent
 import (
 	"context"
 	"errors"
+	"net"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
+	"github.com/google/uuid"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 )
 
-// routed is the one route server w's reservation recorded.
-func (w *unreadyWriter) routed() routedServer {
+// remoteAddress and remotePort are where a routed writer's fixture serves a pool as a
+// server on another host does: at the peer's private address, on an endpoint port.
+const (
+	remoteAddress = "10.251.0.2"
+	remotePort    = hostnetwork.FirstEndpointPort
+)
+
+// newRemoteServer serves a pool at remoteAddress as another host would, and returns the
+// container and the interface that gives this host the address. The proxy reaches it
+// through this host's network stack, as it reaches a peer's private address over the
+// host's private link.
+func newRemoteServer(t *testing.T, docker *client.Client) (name, link string) {
+	t.Helper()
+	link = "pr" + strings.ReplaceAll(uuid.NewString(), "-", "")[:10]
+	hostIP(t, "link", "add", link, "type", "dummy")
+	t.Cleanup(func() { _ = exec.Command("ip", "link", "del", link).Run() })
+	hostIP(t, "addr", "add", remoteAddress+"/32", "dev", link)
+	hostIP(t, "link", "set", link, "up")
+	name = "astilba-test-" + link
+	listen := remoteAddress + ":" + strconv.Itoa(remotePort)
+	created, err := docker.ContainerCreate(t.Context(), client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: execution.TestImage, Cmd: []string{"sh", "-c", "mkdir -p /www && echo remote > /www/index.html && touch /www/health && trap 'exit 0' TERM; httpd -f -p " + listen + " -h /www & wait"}}, HostConfig: &container.HostConfig{NetworkMode: "host"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = docker.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true})
+	})
+	if _, err = docker.ContainerStart(t.Context(), created.ID, client.ContainerStartOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return name, link
+}
+
+func hostIP(t *testing.T, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
+		t.Fatalf("ip %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+}
+
+// routed is the route server of w's writer and the one on the other host that w's
+// reservation recorded.
+func (w *unreadyWriter) routed() (local, remote routedServer) {
 	w.t.Helper()
 	s, err := w.journal.crossHost()
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	if s.Routed == nil || len(s.Routed.Servers) != 1 {
+	if s.Routed == nil || len(s.Routed.Servers) != 2 {
 		w.t.Fatalf("the reservation recorded %+v", s.Routed)
 	}
-	return s.Routed.Servers[0]
+	for _, server := range s.Routed.Servers {
+		if server.Backend == net.JoinHostPort(remoteAddress, strconv.Itoa(remotePort)) {
+			remote = server
+		} else {
+			local = server
+		}
+	}
+	if local.Backend == "" || remote.Backend == "" {
+		w.t.Fatalf("the reservation recorded %+v", s.Routed)
+	}
+	return local, remote
 }
 
 // routeStatus is what the proxy reports of server, and the URL it reports it by.
@@ -59,17 +116,17 @@ func (w *unreadyWriter) restart() {
 	w.engine = &Engine{Docker: w.docker, Journal: w.journal}
 }
 
-// writerExec runs cmd in the writer and requires it to succeed.
-func (w *unreadyWriter) writerExec(cmd ...string) {
+// containerExec runs cmd in the container named name and requires it to succeed.
+func (w *unreadyWriter) containerExec(name string, cmd ...string) {
 	w.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	exec, err := w.docker.ExecCreate(ctx, deployment.UnitName(w.id), client.ExecCreateOptions{Cmd: cmd})
+	created, err := w.docker.ExecCreate(ctx, name, client.ExecCreateOptions{Cmd: cmd})
 	if err == nil {
-		_, err = w.docker.ExecStart(ctx, exec.ID, client.ExecStartOptions{})
+		_, err = w.docker.ExecStart(ctx, created.ID, client.ExecStartOptions{})
 	}
 	for err == nil {
-		status, inspectErr := w.docker.ExecInspect(ctx, exec.ID, client.ExecInspectOptions{})
+		status, inspectErr := w.docker.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
 		if err = inspectErr; err != nil || !status.Running {
 			if err == nil && status.ExitCode != 0 {
 				err = errors.New("it exited " + strconv.Itoa(status.ExitCode))
@@ -79,7 +136,7 @@ func (w *unreadyWriter) writerExec(cmd ...string) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		w.t.Fatalf("%s failed in the writer: %v", strings.Join(cmd, " "), err)
+		w.t.Fatalf("%s failed in %s: %v", strings.Join(cmd, " "), name, err)
 	}
 }
 
@@ -90,7 +147,7 @@ func (w *unreadyWriter) writerExec(cmd ...string) {
 func TestNativeCompletionWaitsForTheProxyToRouteAResumedWriter(t *testing.T) {
 	w := newRoutedWriter(t)
 	w.phase("reserve")
-	server := w.routed()
+	server, _ := w.routed()
 	w.phase("pause")
 	w.waitRouteStatus(server, "DOWN")
 	w.restart()
@@ -108,16 +165,17 @@ func TestNativeCompletionWaitsForTheProxyToRouteAResumedWriter(t *testing.T) {
 }
 
 // A writer that passes its own readiness while the proxy cannot route to it keeps the
-// reservation, with its writers running, until the bound, and says which route and server.
+// reservation, with its writers running, until the bound, and says which route and server,
+// though the proxy routes the unit's servers on other hosts.
 // Accepting the host's writers as they are accepts its routes too, and completion finishes.
 func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 	w := newRoutedWriter(t)
 	w.phase("reserve")
-	server := w.routed()
+	server, remote := w.routed()
 	_, at := w.routeStatus(server)
 	w.phase("pause")
 	w.phase("resume-source")
-	w.writerExec("rm", "/www/health")
+	w.containerExec(deployment.UnitName(w.id), "rm", "/www/health")
 	complete := w.command("complete")
 	started := time.Now()
 	report := w.deliver(complete)
@@ -134,6 +192,9 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 	}
 	if !w.barrier() || !w.running() {
 		t.Fatal("a completion the proxy could not confirm released the reservation or stopped the writer")
+	}
+	if status, _ := w.routeStatus(remote); status != "UP" {
+		t.Fatalf("the proxy reports the other host's server %s, so it is not this host's that held completion", status)
 	}
 	if err := w.engine.AcceptUnreadyWriters(context.Background(), complete.Id); err != nil {
 		t.Fatal(err)
@@ -156,5 +217,54 @@ func TestNativeReservationRefusesAProxyThatCannotReport(t *testing.T) {
 	w.phaseEnding("reserve", "failed")
 	if w.barrier() || !w.running() {
 		t.Fatal("a refused reservation held the host or stopped its writer")
+	}
+}
+
+// A server on another host may never be routed again for reasons only its own host knows:
+// the host was revoked, its writer was stopped by hand so it refused the pause, or it
+// excuses its writer from being ready. Completion on this host waits for the server until
+// the bound, then releases the reservation, naming the route and server, once the proxy
+// routes this host's writer.
+func TestNativeCompletionReleasesWithoutAnotherHostsServer(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		leave func(w *unreadyWriter)
+	}{
+		{"revoked_host", func(w *unreadyWriter) { hostIP(w.t, "link", "del", w.link) }},
+		{"writer_stopped_by_hand", func(w *unreadyWriter) {
+			if _, err := w.docker.ContainerStop(context.Background(), w.remote, client.ContainerStopOptions{}); err != nil {
+				w.t.Fatal(err)
+			}
+		}},
+		{"excused_writer", func(w *unreadyWriter) { w.containerExec(w.remote, "rm", "/www/health") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newRoutedWriter(t)
+			w.phase("reserve")
+			local, remote := w.routed()
+			_, at := w.routeStatus(remote)
+			w.phase("pause")
+			c.leave(w)
+			w.phase("resume-source")
+			started := time.Now()
+			report := w.deliver(w.command("complete"))
+			if took := time.Since(started); took < routeServerWait || took > routeServerWait+20*time.Second {
+				t.Fatalf("completion gave up on the other host's server after %s", took)
+			}
+			if report.State != "succeeded" {
+				t.Fatalf("completion ended %s: %s", report.State, report.Note)
+			}
+			for _, want := range []string{"only their own hosts can excuse them", "route maintenance.example.test", "server " + at} {
+				if !strings.Contains(report.Note, want) {
+					t.Fatalf("the note %q does not say %q", report.Note, want)
+				}
+			}
+			if status, at := w.routeStatus(local); status != "UP" {
+				t.Fatalf("completion released the reservation while the proxy reported this host's %s %s", at, status)
+			}
+			if w.barrier() {
+				t.Fatal("the reservation is still held")
+			}
+		})
 	}
 }

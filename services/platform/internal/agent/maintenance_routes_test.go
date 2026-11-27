@@ -70,14 +70,15 @@ func TestEarlierReservationWaitsForNoRouteServer(t *testing.T) {
 	if s.Routed != nil {
 		t.Fatalf("an earlier reservation reads as recording %+v", s.Routed)
 	}
-	if err = (&Engine{Journal: j}).confirmRouted(context.Background(), s, plan); err != nil {
-		t.Fatal(err)
+	if unrouted, err := (&Engine{Journal: j}).confirmRouted(context.Background(), s, plan); err != nil || unrouted != "" {
+		t.Fatal(unrouted, err)
 	}
 }
 
 // Completion waits for a server only if the proxy routed it at reservation, and not for one
 // of this host's instances that completion excuses from being ready, whether the route
-// file names the unit's services by their bare or their qualified names.
+// file names the unit's services by their bare or their qualified names. It requires this
+// host's servers, and tells apart the servers on other hosts, which it does not.
 func TestCompletionWaitsOnlyForRecordedServers(t *testing.T) {
 	unit := uuid.New()
 	network := "." + deployment.NetworkName(unit)
@@ -96,13 +97,14 @@ func TestCompletionWaitsOnlyForRecordedServers(t *testing.T) {
 			{url: "http://10.251.0.3:20000", probe: "http://10.251.0.3:20000/health"},
 		}}
 		other := routePool{domain: "b.example.test", service: "unit-b@file", servers: []poolServer{{url: "http://10.251.0.3:20000", probe: "http://10.251.0.3:20000/"}}}
-		got, err := requiredPools(unit, []routePool{pool, other}, recorded, map[string]bool{"service-excused": true})
+		local, remote, err := requiredPools(unit, []routePool{pool, other}, recorded, map[string]bool{"service-excused": true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []routePool{{domain: "a.example.test", service: "unit-a@file", servers: []poolServer{pool.servers[0], pool.servers[2]}}}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("with names ending %q completion waits for %+v, want %+v", suffix, got, want)
+		wantLocal := []routePool{{domain: "a.example.test", service: "unit-a@file", servers: []poolServer{pool.servers[0]}}}
+		wantRemote := []routePool{{domain: "a.example.test", service: "unit-a@file", servers: []poolServer{pool.servers[2]}}}
+		if !reflect.DeepEqual(local, wantLocal) || !reflect.DeepEqual(remote, wantRemote) {
+			t.Fatalf("with names ending %q completion requires %+v and waits for %+v, want %+v and %+v", suffix, local, remote, wantLocal, wantRemote)
 		}
 	}
 }

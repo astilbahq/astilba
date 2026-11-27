@@ -170,6 +170,7 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			return fail(errors.New("maintenance completion differs from the confirmed recovery target"))
 		}
 		// A host whose reservation never reached its pause has changed nothing.
+		unrouted := ""
 		if s.Pause != nil {
 			if err = e.waitLocalHealth(ctx, s, expected); err != nil {
 				return fail(err)
@@ -178,7 +179,7 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 				return fail(fmt.Errorf("the resumed unit changed before maintenance completion: %w", err))
 			}
 			// Every host has resumed by now, so a pool's servers on other hosts run too.
-			if err = e.confirmRouted(ctx, s, expected); err != nil {
+			if unrouted, err = e.confirmRouted(ctx, s, expected); err != nil {
 				return fail(fmt.Errorf("the resumed routes are not ready for maintenance completion: %w", err))
 			}
 		}
@@ -196,6 +197,9 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			note = "This host stopped nothing; its maintenance reservation is released."
 		} else if waived > 0 {
 			note = fmt.Sprintf("This host's maintenance reservation is released. %d instances were not required to be ready: they were already stopped or failing, or an operator accepted them.", waived)
+		}
+		if unrouted != "" {
+			note += " " + redactValues(unrouted, command.Secrets)
 		}
 		// A restored volume may be served by a later release than the one that filled it. Other
 		// maintenance changes no release; an unfinished rebuild waits for the next deployment.

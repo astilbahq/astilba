@@ -144,7 +144,7 @@ func (e *Engine) awaitRouteServers(ctx context.Context, s routeSnapshot, raw []b
 	if err != nil || len(pools) == 0 {
 		return err
 	}
-	return e.awaitPools(ctx, pools, raw)
+	return e.awaitPools(ctx, pools, raw, time.Now().Add(routeServerWait))
 }
 
 // unitPools are the health-checked pools of unit's routes in s, published as raw.
@@ -156,15 +156,15 @@ func unitPools(s routeSnapshot, raw []byte, unit string) ([]routePool, error) {
 	return healthCheckedPools(raw, set)
 }
 
-// awaitPools waits until the proxy routes every server of pools, published as raw. The
-// proxy counts each server up from when it loads the file, and first probes it
+// awaitPools waits until the proxy routes every server of pools, published as raw, or the
+// deadline passes. The proxy counts each server up from when it loads the file, and first probes it
 // PoolHealthInterval later, so until then its report vouches for nothing: one failed probe
 // would then take the server out for another interval, and a pool with no server left
 // answers 503. It also probes a server it has marked down only every PoolHealthInterval.
 // So each server must pass the proxy's probe, sent over the proxy's network, and the proxy
 // must still report it up once any probe it started before that has ended.
-func (e *Engine) awaitPools(ctx context.Context, pools []routePool, raw []byte) error {
-	wait, cancel := context.WithTimeout(ctx, routeServerWait)
+func (e *Engine) awaitPools(ctx context.Context, pools []routePool, raw []byte, deadline time.Time) error {
+	wait, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	last := errors.New("no server was probed in time")
 	for {
