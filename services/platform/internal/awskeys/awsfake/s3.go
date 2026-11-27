@@ -112,12 +112,15 @@ func decodeChunked(r *http.Request, body []byte) []byte {
 		if !ok {
 			return out
 		}
-		size, _ := strconv.ParseInt(strings.SplitN(line, ";", 2)[0], 16, 64)
-		if size == 0 || int(size) > len(after) {
+		// A chunk's size is hex, parsed to fit an int, and must be positive and no longer than
+		// what follows.
+		size, err := strconv.ParseInt(strings.SplitN(line, ";", 2)[0], 16, 0)
+		if err != nil || size <= 0 || size > int64(len(after)) {
 			return out
 		}
-		out = append(out, after[:size]...)
-		rest = strings.TrimPrefix(after[size:], "\r\n")
+		n := int(size)
+		out = append(out, after[:n]...)
+		rest = strings.TrimPrefix(after[n:], "\r\n")
 	}
 }
 
