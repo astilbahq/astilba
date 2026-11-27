@@ -78,22 +78,24 @@ func browserCookies(t *testing.T, b *browser, path string) map[string]string {
 	return out
 }
 
-// refuseSessionWrites makes every insert into the session store fail while it is armed, as a
-// session store that cannot be written would, and returns its switch.
-func refuseSessionWrites(t *testing.T, f *fixture) func(bool) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := f.st.Pool.Exec(ctx, `CREATE FUNCTION refuse_session_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'session store unavailable'; END; $$`); err != nil {
-		t.Fatal(err)
-	}
-	return func(armed bool) {
+// refuseWrites returns a failure that, while armed, refuses writes to table with an error from
+// a trigger created by create, such as a session store that cannot be written would.
+func refuseWrites(create, table string) func(*testing.T, *fixture) func(bool) {
+	return func(t *testing.T, f *fixture) func(bool) {
 		t.Helper()
-		statement := `DROP TRIGGER refuse_session_write ON sessions`
-		if armed {
-			statement = `CREATE TRIGGER refuse_session_write BEFORE INSERT ON sessions FOR EACH ROW EXECUTE FUNCTION refuse_session_write()`
-		}
-		if _, err := f.st.Pool.Exec(ctx, statement); err != nil {
+		ctx := context.Background()
+		if _, err := f.st.Pool.Exec(ctx, `CREATE FUNCTION refuse_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'write refused'; END; $$`); err != nil {
 			t.Fatal(err)
+		}
+		return func(armed bool) {
+			t.Helper()
+			statement := "DROP TRIGGER refuse_write ON " + table
+			if armed {
+				statement = create + " FOR EACH ROW EXECUTE FUNCTION refuse_write()"
+			}
+			if _, err := f.st.Pool.Exec(ctx, statement); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
@@ -103,8 +105,9 @@ func refuseSessionWrites(t *testing.T, f *fixture) func(bool) {
 // code stays unspent, a password or two-factor change is not applied, recovery codes are not
 // replaced, an invitation is not used, and no security event or email is recorded. It signs
 // nothing in and sends the browser neither a session cookie nor a device cookie, and the same
-// request then succeeds. The failure is either the device token, the last step of establishing a
-// session, or the session's write itself.
+// request then succeeds. The failure is the device token, the last step of establishing a
+// session; the session's write itself; or the transaction's commit, after the session's write,
+// which a deferred trigger on the account's row refuses where the request changes that row.
 func TestFailedSignInChangesNothing(t *testing.T) {
 	const email = "owner@example.test"
 	password := func(f *fixture) map[string]string { return map[string]string{"password": f.password} }
@@ -117,13 +120,15 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 		// whether the failing browser's is one of them.
 		signedIn int
 		stays    bool
+		// account is whether the request writes the account's row.
+		account bool
 	}{
 		{"sign in", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			b := f.browser(t)
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/login", map[string]string{"email": email, "password": f.password})
 			}
-		}, 0, false},
+		}, 0, false, false},
 		{"two-factor sign-in", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			owner := f.browser(t)
 			owner.login(email, f.password)
@@ -136,7 +141,7 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 			// The next window's code, since the confirmation spent this one's.
 			code := codeAt(t, secret, time.Now().Add(30*time.Second))
 			return b, func() (int, []byte) { return b.request("POST", "/api/v1/auth/mfa", map[string]string{"code": code}) }
-		}, 1, false},
+		}, 1, false, true},
 		{"two-factor sign-in with a recovery code", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			codes := enableMFA(t, f.browser(t).withLogin(email, f.password))
 			b := f.browser(t)
@@ -146,31 +151,31 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]})
 			}
-		}, 1, false},
+		}, 1, false, true},
 		{"reauthentication", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			b := f.browser(t).withLogin(email, f.password)
 			return b, func() (int, []byte) { return b.request("POST", "/api/v1/auth/reauthenticate", password(f)) }
-		}, 1, true},
+		}, 1, true, false},
 		{"reauthentication with a recovery code", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			b := f.browser(t).withLogin(email, f.password)
 			codes := enableMFA(t, b)
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/reauthenticate", map[string]string{"code": codes.Codes[0]})
 			}
-		}, 1, true},
+		}, 1, true, true},
 		{"password change", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			b := f.browser(t).withLogin(email, f.password)
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": password(f)})
 			}
-		}, 1, true},
+		}, 1, true, true},
 		{"turning on two-factor authentication", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			b := f.browser(t).withLogin(email, f.password)
 			code := codeAt(t, enrollSecret(t, b), time.Now())
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": password(f)})
 			}
-		}, 1, true},
+		}, 1, true, true},
 		// The codes the account had stay valid: the same one confirms identity again after.
 		{"replacing recovery codes", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			b := f.browser(t).withLogin(email, f.password)
@@ -178,14 +183,14 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/mfa/recovery-codes", map[string]any{"current": map[string]string{"code": codes.Codes[0]}})
 			}
-		}, 1, true},
+		}, 1, true, true},
 		{"turning off two-factor authentication", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			b := f.browser(t).withLogin(email, f.password)
 			codes := enableMFA(t, b)
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/mfa/disable", map[string]any{"current": map[string]string{"code": codes.Codes[0]}})
 			}
-		}, 1, true},
+		}, 1, true, true},
 		{"accepting an invitation", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			owner := f.browser(t)
 			ws := owner.login(email, f.password).Workspaces[0].Id
@@ -195,7 +200,7 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token, "name": "Invited", "password": f.password})
 			}
-		}, 1, false},
+		}, 1, false, true},
 		{"hosted sign-up", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
 			f.st.Hosted = true
 			f.st.Hosting = hosting.Config{CohortLimit: 5, ServerLimit: 2}
@@ -207,21 +212,27 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 			return b, func() (int, []byte) {
 				return b.request("POST", "/api/v1/hosting/signup", map[string]string{"token": token, "workspace": "Beta", "name": "Beta", "password": f.password})
 			}
-		}, 0, false},
+		}, 0, false, true},
 	}
 	failures := []struct {
 		name string
 		arm  func(t *testing.T, f *fixture) func(bool)
+		// account is whether the failure needs a request that writes the account's row.
+		account bool
 	}{
 		{"device token", func(_ *testing.T, f *fixture) func(bool) {
 			tokens := &unsealableDevices{TokenSealer: f.auth.Tokens}
 			f.auth.Tokens = tokens
 			return tokens.armed.Store
-		}},
-		{"session write", refuseSessionWrites},
+		}, false},
+		{"session write", refuseWrites("CREATE TRIGGER refuse_write BEFORE INSERT ON sessions", "sessions"), false},
+		{"commit", refuseWrites("CREATE CONSTRAINT TRIGGER refuse_write AFTER INSERT OR UPDATE ON accounts DEFERRABLE INITIALLY DEFERRED", "accounts"), true},
 	}
 	for _, failure := range failures {
 		for _, c := range cases {
+			if failure.account && !c.account {
+				continue
+			}
 			t.Run(failure.name+"/"+c.name, func(t *testing.T) {
 				f := setup(t)
 				arm := failure.arm(t, f)
