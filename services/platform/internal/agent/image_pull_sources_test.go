@@ -152,7 +152,7 @@ func TestPullReadsItsSourcesAgain(t *testing.T) {
 func readSources(t *testing.T, sources []registryImage, root string) error {
 	t.Helper()
 	engine := &Engine{registryRetry: quickRegistryRetry()}
-	return engine.readRegistry(t.Context(), "fixture/app", never, func(ctx context.Context) error {
+	return engine.readRegistry(t.Context(), "fixture/app", func(ctx context.Context) error {
 		plan, source, err := planFromSources(ctx, sources, digest.Digest(root), amd64Server, pullTestLimit, false, nil)
 		if err != nil {
 			return err
@@ -279,7 +279,7 @@ func TestPullReadsAgainAfterAStall(t *testing.T) {
 				return err
 			}
 			engine := &Engine{registryRetry: quickRegistryRetry()}
-			if err := engine.readRegistry(t.Context(), "fixture/app", never, read); err != nil {
+			if err := engine.readRegistry(t.Context(), "fixture/app", read); err != nil {
 				t.Fatal(err)
 			}
 			if n := registry.count(root); n != asks+1 {
@@ -287,7 +287,7 @@ func TestPullReadsAgainAfterAStall(t *testing.T) {
 			}
 			engine.registryRetry.window = 100 * time.Millisecond
 			stalled.Store(nil)
-			if err := engine.readRegistry(t.Context(), "fixture/app", never, read); err == nil {
+			if err := engine.readRegistry(t.Context(), "fixture/app", read); err == nil {
 				t.Fatal("read again after its window")
 			}
 			if n := registry.count(root); n != 2*asks+1 {
@@ -394,7 +394,7 @@ func TestPullPassesOverAMirrorThatFailsBlobs(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err = engine.readImage(t.Context(), named.(reference.Canonical), []registryImage{passed, registry.source(t, nil)}, amd64Server, store == "containerd", never); err != nil {
+				if _, _, err = engine.readImage(t.Context(), named.(reference.Canonical), []registryImage{passed, registry.source(t, nil)}, amd64Server, store == "containerd"); err != nil {
 					t.Fatal(err)
 				}
 				if m, r := mirror.count(sha(layer)), registry.count(sha(layer)); m != 1 || r != 1 {

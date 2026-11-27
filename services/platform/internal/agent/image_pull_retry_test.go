@@ -38,8 +38,6 @@ func quickRegistryRetry() *registryRetry {
 	return &registryRetry{backoff: []time.Duration{time.Millisecond, 2 * time.Millisecond}, window: 30 * time.Second}
 }
 
-func never() bool { return false }
-
 // connKey is a request's connection in its context.
 type connKey struct{}
 
@@ -89,7 +87,7 @@ func newRegistryPull(t *testing.T, containerd bool, proto string) *registryPull 
 }
 
 func (p *registryPull) pull(ctx context.Context) error {
-	return p.engine.pullMeasuredImage(ctx, p.image, p.credential, never)
+	return p.engine.pullMeasuredImage(ctx, p.image, p.credential)
 }
 
 // note is the pull's refusal.
@@ -426,30 +424,30 @@ func TestPullHonoursOnlyTheLastRetryAfter(t *testing.T) {
 	}
 }
 
-// Neither the end of the command's context nor its owner cancelling it waits out a retry.
+// Neither the end of the command's context nor its owner cancelling it, which ends the context
+// with errPullCancelled, see pullContext, waits out a retry.
 func TestPullDoesNotReadAgainOnceCancelled(t *testing.T) {
 	for _, by := range []string{"its context", "its owner", "its owner while the agent reads"} {
 		t.Run(by, func(t *testing.T) {
 			p := newRegistryPull(t, true, "HTTP/1.1")
 			p.engine.registryRetry.backoff = []time.Duration{time.Hour, time.Hour}
 			p.engine.registryRetry.window = 24 * time.Hour
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			var cancelled atomic.Bool
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
 			p.fault = func(w http.ResponseWriter, _ *http.Request, _ string, _ int) bool {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				switch by {
 				case "its context":
-					time.AfterFunc(50*time.Millisecond, cancel)
+					time.AfterFunc(50*time.Millisecond, func() { cancel(nil) })
 				case "its owner":
-					time.AfterFunc(50*time.Millisecond, func() { cancelled.Store(true) })
+					time.AfterFunc(50*time.Millisecond, func() { cancel(errPullCancelled) })
 				default:
-					cancelled.Store(true)
+					cancel(errPullCancelled)
 				}
 				return true
 			}
 			done := make(chan error, 1)
-			go func() { done <- p.engine.pullMeasuredImage(ctx, p.image, nil, cancelled.Load) }()
+			go func() { done <- p.engine.pullMeasuredImage(ctx, p.image, nil) }()
 			select {
 			case err := <-done:
 				if by == "its context" && !errors.Is(err, context.Canceled) || by != "its context" && !errors.Is(err, errPullCancelled) {
@@ -506,7 +504,7 @@ func TestPullReadsOnlyWhatFailedAgain(t *testing.T) {
 	}
 	source := registry.source(t, nil)
 	engine := &Engine{registryRetry: quickRegistryRetry()}
-	if err := engine.readRegistry(t.Context(), "fixture/app", never, func(ctx context.Context) error {
+	if err := engine.readRegistry(t.Context(), "fixture/app", func(ctx context.Context) error {
 		plan, err := planRegistryImage(ctx, source, digest.Digest(root), amd64Server, pullTestLimit, false, nil)
 		if err != nil {
 			return err

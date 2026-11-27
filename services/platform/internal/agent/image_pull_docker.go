@@ -148,10 +148,11 @@ func (e *Engine) dockerPull(ctx context.Context, image, auth string, watch *dock
 // max-concurrent-downloads.
 const dockerDownloads = 3
 
-// reportStep is the most of a layer of total bytes, zero when unknown, that Docker receives before
-// it reports the layer's progress. With its containerd image store, Docker reports what containerd
-// has written of the layer, which containerd writes a mebibyte at a time. The classic store
-// reports every 512 KiB, or every 1% of the layer when that is less.
+// reportStep is the most of a blob of total bytes, zero when unknown, that Docker receives before
+// it reports the blob's progress. With its containerd image store, Docker reports what containerd
+// has written of the blob, which containerd writes a mebibyte at a time, so it reports a smaller
+// blob only once it has it all. The classic store reports every 512 KiB, or every 1% of the blob
+// when that is less.
 func reportStep(containerd bool, total int64) int64 {
 	switch {
 	case containerd && total > 0:
@@ -166,20 +167,29 @@ func reportStep(containerd bool, total int64) int64 {
 
 // dockerPullWatch ends a pull Docker makes itself once Docker's reports show that the registry
 // sent less than progress asks for, the floor the agent's own reads keep to, see slowAnswer. Time
-// counts while the registry owes Docker some of the image: until Docker has downloaded every layer
-// it named, including before it names any, while it reads the image's manifests. Time Docker
-// spends unpacking downloaded layers does not count.
+// counts until the pull ends, except while Docker unpacks layers it has downloaded and downloads
+// nothing. Docker fetches an image's manifests and config without reporting them, before it names
+// a layer or alongside the layers, so a pull with nothing left to report may still wait on its
+// registry. Docker reports blobs other than layers, such as an attestation's, only as it downloads
+// them, and unpacks none of them.
 //
-// Docker reports a layer only once it has received a step of it, see reportStep, so it can
-// hold up to a step of each layer it is downloading without saying so. A link that keeps up with
-// the floor can therefore show less in a window than the floor asks for, and make it up later. So
-// the registry may fall behind the floor by what Docker can hold unreported, the largest steps of
-// the layers it hasn't finished, as many as it downloads at once, before the pull ends. What it
-// sends beyond the floor in one window does not make up for a later one. A registry that stops is
-// caught once it is that far behind: with the containerd image store within five windows for a
-// layer of over 1 MiB on its own, and thirteen for three at once; with the classic store, within
-// three and seven. A host whose owner lets Docker download more layers at once than dockerDownloads
-// holds up to a step more of each, and a link just above the floor could fall short.
+// Docker reports a blob only once it has received a step of it, see reportStep, so it can hold up
+// to a step of each blob it is downloading without saying so. A link that keeps up with the floor
+// can therefore show less in a window than the floor asks for, and make it up later: once Docker
+// has a blob, the rest of it, unreported, counts toward the window, a step for a blob whose size
+// Docker never reported. So the registry may fall behind the floor by what Docker can hold
+// unreported, the largest steps of the blobs it is downloading, as many as it downloads at once,
+// or a step while it downloads none, before the pull ends. What it sends beyond the floor in one
+// window does not make up for a later one. A registry that stops is caught once it is that far
+// behind: with the containerd image store within five windows for a layer of over 1 MiB on its
+// own or the image's config, and thirteen for three layers at once; with the classic store,
+// within three and seven. A host whose owner lets Docker download more layers at once than
+// dockerDownloads holds up to a step more of each, and a link just above the floor could fall
+// short.
+//
+// Docker does not report unpacking an image whose content it already holds, which counts as
+// time the registry owes it: a pull of such an image that unpacks for longer than the floor
+// allows ends as stalled.
 type dockerPullWatch struct {
 	progress registryProgress
 	// containerd is whether Docker keeps images in containerd, see reportStep.
@@ -187,13 +197,12 @@ type dockerPullWatch struct {
 	stall      func()
 	// mu guards what follows, which the timer also reads and changes.
 	mu sync.Mutex
-	// timer ends the window while the registry owes Docker some of the image.
+	// timer ends the window while the registry may owe Docker some of the image.
 	timer *time.Timer
-	// layers are the layers Docker has named, by its ID for each.
-	layers map[string]*pulledLayer
-	// since is when the time counted in the window was last brought up to date, zero while the
-	// registry owes nothing. waited is the window's time so far, and sent what Docker reported
-	// receiving in it.
+	// blobs are the blobs Docker has reported, by its ID for each.
+	blobs map[string]*pulledBlob
+	// since is when the time counted in the window was last brought up to date, zero while Docker
+	// unpacks. waited is the window's time so far, and sent what Docker received in it.
 	since  time.Time
 	waited time.Duration
 	sent   int64
@@ -203,17 +212,21 @@ type dockerPullWatch struct {
 	stopped bool
 }
 
-// pulledLayer is what Docker has reported of a layer.
-type pulledLayer struct {
-	// downloaded is whether Docker has the whole layer.
-	downloaded bool
-	// current is how much of the layer Docker has reported receiving, of total, zero until it
+// pulledBlob is what Docker has reported of a blob it pulls: a layer, or another blob, such as an
+// attestation's, which Docker reports only as it downloads it.
+type pulledBlob struct {
+	// layer is whether Docker named the blob as a layer, which it unpacks once it has it.
+	layer bool
+	// downloaded is whether Docker has the whole blob, and unpacked whether it has unpacked the
+	// layer.
+	downloaded, unpacked bool
+	// current is how much of the blob Docker has reported receiving, of total, zero until it
 	// reports one.
 	current, total int64
 }
 
 func newDockerPullWatch(progress registryProgress, containerd bool, stall func()) *dockerPullWatch {
-	w := &dockerPullWatch{progress: progress, containerd: containerd, stall: stall, layers: map[string]*pulledLayer{}}
+	w := &dockerPullWatch{progress: progress, containerd: containerd, stall: stall, blobs: map[string]*pulledBlob{}}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.since = time.Now()
@@ -238,64 +251,81 @@ func (w *dockerPullWatch) report(m dockerPullMessage) {
 	w.resume(now)
 }
 
-// apply records m, a report on a layer.
+// apply records m, a report on a blob.
 func (w *dockerPullWatch) apply(m dockerPullMessage) {
-	layer := func() *pulledLayer {
-		l := w.layers[m.ID]
-		if l == nil {
-			l = &pulledLayer{}
-			w.layers[m.ID] = l
+	blob := func() *pulledBlob {
+		b := w.blobs[m.ID]
+		if b == nil {
+			b = &pulledBlob{}
+			w.blobs[m.ID] = b
 		}
-		return l
+		return b
 	}
 	switch {
 	case m.Status == "Pulling fs layer" || m.Status == "Waiting":
-		layer()
+		blob().layer = true
 	case m.Status == "Downloading":
-		l := layer()
+		b := blob()
 		if m.Progress == nil {
 			return
 		}
 		// A download Docker begins again counts from where it begins.
-		if m.Progress.Current > l.current {
-			w.sent += m.Progress.Current - l.current
+		if m.Progress.Current > b.current {
+			w.sent += m.Progress.Current - b.current
 		}
-		l.current = m.Progress.Current
+		b.current = m.Progress.Current
 		if m.Progress.Total > 0 {
-			l.total = m.Progress.Total
+			b.total = m.Progress.Total
 		}
 	case strings.HasPrefix(m.Status, "Retrying in "):
-		// Docker downloads the rest of the layer again, and reports it from zero.
-		layer().current = 0
-	case m.Status == "Verifying Checksum" || m.Status == "Download complete" || m.Status == "Extracting" || m.Status == "Pull complete" || m.Status == "Already exists":
-		layer().downloaded = true
+		// Docker downloads the rest of the blob again, and reports it from zero.
+		blob().current = 0
+	case m.Status == "Verifying Checksum" || m.Status == "Download complete":
+		// Docker received the rest of the blob, which it may not have reported: at most a step
+		// of one whose size it never reported, see reportStep.
+		if b := blob(); !b.downloaded {
+			b.downloaded = true
+			rest := reportStep(w.containerd, 0)
+			if b.total > 0 {
+				rest = max(0, b.total-b.current)
+			}
+			w.sent += rest
+		}
+	case m.Status == "Already exists":
+		blob().downloaded = true
+	case m.Status == "Extracting":
+		b := blob()
+		b.layer, b.downloaded = true, true
+	case m.Status == "Pull complete":
+		b := blob()
+		b.layer, b.downloaded, b.unpacked = true, true, true
 	}
-	// Any other report, such as which repository Docker pulls from, says nothing of a layer.
+	// Any other report, such as which repository Docker pulls from, says nothing of a blob.
 }
 
-// owed reports whether the registry owes Docker some of the image.
+// owed reports whether the registry may owe Docker some of the image: unless Docker is unpacking a
+// layer and downloading nothing, see dockerPullWatch.
 func (w *dockerPullWatch) owed() bool {
-	if len(w.layers) == 0 {
-		return true
-	}
-	for _, l := range w.layers {
-		if !l.downloaded {
+	unpacking := false
+	for _, b := range w.blobs {
+		if !b.downloaded {
 			return true
 		}
+		unpacking = unpacking || b.layer && !b.unpacked
 	}
-	return false
+	return !unpacking
 }
 
 // unreported is the most Docker can have received without reporting it, see dockerPullWatch.
 func (w *dockerPullWatch) unreported() int64 {
-	if len(w.layers) == 0 {
-		return reportStep(w.containerd, 0)
-	}
 	var steps []int64
-	for _, l := range w.layers {
-		if !l.downloaded {
-			steps = append(steps, reportStep(w.containerd, l.total))
+	for _, b := range w.blobs {
+		if !b.downloaded {
+			steps = append(steps, reportStep(w.containerd, b.total))
 		}
+	}
+	if len(steps) == 0 {
+		return reportStep(w.containerd, 0)
 	}
 	slices.SortFunc(steps, func(a, b int64) int { return cmp.Compare(b, a) })
 	var most int64
@@ -325,8 +355,8 @@ func (w *dockerPullWatch) count(now time.Time) {
 	}
 }
 
-// resume runs the window's time while the registry owes Docker some of the image, and stops it
-// otherwise.
+// resume runs the window's time while the registry may owe Docker some of the image, and stops
+// it while Docker unpacks.
 func (w *dockerPullWatch) resume(now time.Time) {
 	if !w.owed() {
 		w.since = time.Time{}
@@ -339,7 +369,7 @@ func (w *dockerPullWatch) resume(now time.Time) {
 	w.timer.Reset(w.progress.window - w.waited)
 }
 
-// windowEnds is the window ending while the registry owes Docker some of the image.
+// windowEnds is the window ending while the registry may owe Docker some of the image.
 func (w *dockerPullWatch) windowEnds() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

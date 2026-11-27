@@ -77,9 +77,9 @@ func (c *layerCosts) put(d digest.Digest, cost imageCost) {
 // has counted what that writes to Docker's storage within the host's limits. With Docker's
 // containerd image store the agent reads the image and loads it; with the classic store it
 // measures the image, then Docker pulls it while the agent watches Docker's storage.
-// A read its registry failed is made again, see readRegistry, until cancelled.
+// A read its registry failed is made again, see readRegistry, until ctx ends.
 // credential is the registry's, if it needs one; the agent keeps it only for this pull.
-func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential *pipeline.Credential, cancelled func() bool) error {
+func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential *pipeline.Credential) error {
 	refuse := func(err error) error {
 		var refused *imageLoadRefused
 		if errors.As(err, &refused) {
@@ -118,7 +118,7 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 	// Docker pulls the image for its own platform.
 	platform := ocispec.Platform{OS: "linux", Architecture: dockerArchitecture(info.Info.Architecture)}
 	loading := containerdImageStore(info.Info.DriverStatus)
-	plan, measured, err := e.readImage(ctx, canonical, sources, platform, loading, cancelled)
+	plan, measured, err := e.readImage(ctx, canonical, sources, platform, loading)
 	if err != nil || loading {
 		return refuse(err)
 	}
@@ -150,11 +150,11 @@ func (e *Engine) pullMeasuredImage(ctx context.Context, image string, credential
 // readImage reads the image named from the first of sources that serves it, and with Docker's
 // containerd image store, loading, loads it; with the classic store it returns what pulling it
 // writes. A mirror that fails to send the image's content gives way at once to the sources left,
-// see passOver. A read its registry failed is made again, see readRegistry, until cancelled.
-func (e *Engine) readImage(ctx context.Context, named reference.Canonical, sources []registryImage, platform ocispec.Platform, loading bool, cancelled func() bool) (*registryPlan, imageCost, error) {
+// see passOver. A read its registry failed is made again, see readRegistry, until ctx ends.
+func (e *Engine) readImage(ctx context.Context, named reference.Canonical, sources []registryImage, platform ocispec.Platform, loading bool) (*registryPlan, imageCost, error) {
 	var plan *registryPlan
 	var measured imageCost
-	err := e.readRegistry(ctx, named.String(), cancelled, func(ctx context.Context) error {
+	err := e.readRegistry(ctx, named.String(), func(ctx context.Context) error {
 		for {
 			// A failed load can leave blobs in Docker's storage until containerd collects them.
 			limit, err := e.imageLoadLimit(ctx)
@@ -415,7 +415,7 @@ func (e *Engine) putVisualImages(ctx context.Context, c api.ExecutionCommand, p 
 		if c, ok := p.RegistryAccess[key]; ok {
 			credential = &c
 		}
-		if err := e.pullMeasuredImage(ctx, image, credential, func() bool { return e.cancelled(c.Id) }); err != nil {
+		if err := e.pullMeasuredImage(ctx, image, credential); err != nil {
 			return pullEnded(ctx, image, err)
 		}
 	}

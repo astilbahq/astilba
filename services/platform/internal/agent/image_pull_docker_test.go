@@ -37,18 +37,16 @@ func downloading(id string, current, total int64) dockerPullMessage {
 
 // Docker's pull ends as stalled once its reports show the registry fell behind the floor by more
 // than Docker can hold unreported: not while a link keeps up with the floor in Docker's steps, nor
-// while Docker unpacks what it has, and not on what a fast window sent before.
+// while Docker unpacks what it has, and not on what a fast window sent before. Time Docker waits
+// on what it does not report, such as the image's config, counts.
 func TestDockerPullWatch(t *testing.T) {
 	const window = 100 * time.Millisecond
 	const total = 64 << 20
-	// wait waits n windows.
-	wait := func(n float64) {
-		time.Sleep(time.Duration(n * float64(window)))
-	}
 	for name, tc := range map[string]struct {
 		containerd bool
 		least      int64
-		send       func(w *dockerPullWatch)
+		// send reports to w, at(n) waiting until n windows after w began.
+		send func(w *dockerPullWatch, at func(n float64))
 		// stalled is whether the pull stalls, and after how many windows without progress at
 		// the least, with at most a window late.
 		stalled bool
@@ -56,27 +54,27 @@ func TestDockerPullWatch(t *testing.T) {
 	}{
 		"a link at the floor in containerd's steps": {
 			containerd: true, least: 512 << 10,
-			send: func(w *dockerPullWatch) {
+			send: func(w *dockerPullWatch, at func(float64)) {
 				w.report(dockerPullMessage{ID: "a", Status: "Pulling fs layer"})
 				for i := int64(1); i <= 6; i++ {
-					wait(1.9)
+					at(1.9 * float64(i))
 					w.report(downloading("a", i<<20, total))
 				}
 			},
 		},
 		"a link at the floor in the classic store's steps": {
 			least: 128 << 10,
-			send: func(w *dockerPullWatch) {
+			send: func(w *dockerPullWatch, at func(float64)) {
 				w.report(dockerPullMessage{ID: "a", Status: "Pulling fs layer"})
 				for i := int64(1); i <= 4; i++ {
-					wait(3.8)
+					at(3.8 * float64(i))
 					w.report(downloading("a", i*512<<10, total))
 				}
 			},
 		},
 		"a registry that stops mid-layer": {
 			containerd: true, least: 512 << 10,
-			send: func(w *dockerPullWatch) {
+			send: func(w *dockerPullWatch, _ func(float64)) {
 				w.report(downloading("a", 1<<20, total))
 			},
 			// A mebibyte behind Docker's step is three windows behind; the fourth ends it.
@@ -84,43 +82,107 @@ func TestDockerPullWatch(t *testing.T) {
 		},
 		"a registry that drips": {
 			containerd: true, least: 512 << 10,
-			send: func(w *dockerPullWatch) {
+			send: func(w *dockerPullWatch, at func(float64)) {
 				for i := int64(1); i <= 40; i++ {
 					w.report(downloading("a", i<<14, total))
-					wait(0.25)
+					at(0.25 * float64(i))
 				}
 			},
 			stalled: true, after: 3,
 		},
 		"a fast window followed by none": {
 			containerd: true, least: 512 << 10,
-			send: func(w *dockerPullWatch) {
+			send: func(w *dockerPullWatch, _ func(float64)) {
 				w.report(downloading("a", 32<<20, total))
 			},
 			stalled: true, after: 4,
 		},
 		"Docker never naming a layer": {
 			containerd: true, least: 512 << 10,
-			send:    func(*dockerPullWatch) {},
+			send:    func(*dockerPullWatch, func(float64)) {},
 			stalled: true, after: 3,
+		},
+		// Docker reports an attestation's blobs as it downloads them, while it may still wait on
+		// the image's config, before it names any layer.
+		"an attestation Docker downloads before it names a layer": {
+			containerd: true, least: 512 << 10,
+			send: func(w *dockerPullWatch, _ func(float64)) {
+				w.report(dockerPullMessage{ID: "c", Status: "Download complete"})
+			},
+			// A step for the attestation, then a mebibyte behind, three windows, ends it in the
+			// fourth.
+			stalled: true, after: 4,
+		},
+		// Docker's classic store fetches the config alongside the layers and waits for it after.
+		"a config Docker waits for once it has unpacked the layers": {
+			least: 128 << 10,
+			send: func(w *dockerPullWatch, _ func(float64)) {
+				w.report(dockerPullMessage{ID: "a", Status: "Pulling fs layer"})
+				w.report(downloading("a", 512<<10, 512<<10))
+				w.report(dockerPullMessage{ID: "a", Status: "Download complete"})
+				w.report(dockerPullMessage{ID: "a", Status: "Extracting"})
+				w.report(dockerPullMessage{ID: "a", Status: "Pull complete"})
+			},
+			// A step behind, four windows, ends it in the sixth, after the first's half mebibyte.
+			stalled: true, after: 6,
+		},
+		"a config Docker waits for with every layer already there": {
+			least: 128 << 10,
+			send: func(w *dockerPullWatch, _ func(float64)) {
+				w.report(dockerPullMessage{ID: "b", Status: "Already exists"})
+			},
+			stalled: true, after: 5,
 		},
 		"Docker unpacking what it has": {
 			containerd: true, least: 512 << 10,
-			send: func(w *dockerPullWatch) {
+			send: func(w *dockerPullWatch, at func(float64)) {
+				w.report(dockerPullMessage{ID: "a", Status: "Pulling fs layer"})
+				w.report(dockerPullMessage{ID: "c", Status: "Pulling fs layer"})
 				w.report(downloading("a", 4<<20, 4<<20))
 				w.report(dockerPullMessage{ID: "a", Status: "Download complete"})
 				w.report(dockerPullMessage{ID: "b", Status: "Already exists"})
+				w.report(dockerPullMessage{ID: "c", Status: "Already exists"})
 				w.report(dockerPullMessage{ID: "a", Status: "Extracting"})
-				wait(8)
+				at(8)
+			},
+		},
+		// containerd writes a layer smaller than its mebibyte in one go, so Docker reports it
+		// only once it has it all.
+		"layers too small for Docker to report": {
+			containerd: true, least: 256 << 10,
+			send: func(w *dockerPullWatch, at func(float64)) {
+				for i := range 8 {
+					id := fmt.Sprint("l", i)
+					at(2 * float64(i))
+					w.report(dockerPullMessage{ID: id, Status: "Pulling fs layer"})
+					at(2*float64(i) + 1.5)
+					w.report(dockerPullMessage{ID: id, Status: "Download complete"})
+					w.report(dockerPullMessage{ID: id, Status: "Pull complete"})
+				}
+			},
+		},
+		"the rest of each layer, which Docker does not report": {
+			containerd: true, least: 512 << 10,
+			send: func(w *dockerPullWatch, at func(float64)) {
+				for i := range 4 {
+					id := fmt.Sprint("l", i)
+					at(3 * float64(i))
+					w.report(dockerPullMessage{ID: id, Status: "Pulling fs layer"})
+					at(3*float64(i) + 0.5)
+					w.report(downloading(id, 1<<20, 1900<<10))
+					at(3*float64(i) + 2.5)
+					w.report(dockerPullMessage{ID: id, Status: "Download complete"})
+					w.report(dockerPullMessage{ID: id, Status: "Pull complete"})
+				}
 			},
 		},
 		"Docker downloading a layer again": {
 			least: 128 << 10,
-			send: func(w *dockerPullWatch) {
-				for range 3 {
+			send: func(w *dockerPullWatch, at func(float64)) {
+				for i := range 3 {
 					w.report(downloading("a", 512<<10, 1<<30))
 					w.report(dockerPullMessage{ID: "a", Status: "Retrying in 5 seconds"})
-					wait(2)
+					at(2 * float64(i+1))
 				}
 			},
 		},
@@ -134,7 +196,9 @@ func TestDockerPullWatch(t *testing.T) {
 				stalledAt.Store(int64(time.Since(began)))
 			})
 			defer w.stop()
-			tc.send(w)
+			tc.send(w, func(n float64) {
+				time.Sleep(time.Until(began.Add(time.Duration(n * float64(window)))))
+			})
 			sent := time.Since(began)
 			if !tc.stalled {
 				if stalls.Load() != 0 {
@@ -158,7 +222,7 @@ func TestDockerPullWatch(t *testing.T) {
 			}
 			// What Docker reports after the end changes nothing.
 			w.report(downloading("a", 1<<40, total))
-			wait(2)
+			time.Sleep(2 * window)
 			if stalls.Load() != 1 {
 				t.Fatal("stalled again")
 			}
@@ -212,6 +276,18 @@ func newPullDaemon(t *testing.T, pull func(w http.ResponseWriter, r *http.Reques
 	}
 	t.Cleanup(func() { _ = d.docker.Close() })
 	return d
+}
+
+// letGo waits for the client to let go of Docker's pull, which Docker sees as the request ending
+// soon after the client's call returns.
+func (d *pullDaemon) letGo(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); d.ended.Load() == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("Docker's pull did not end")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // stalls is a pull that receives a mebibyte of its one layer, then nothing more until its request
@@ -316,13 +392,7 @@ func TestDeploymentEndsDockersPull(t *testing.T) {
 			if state != tc.state || !strings.Contains(note, tc.note) || !strings.Contains(note, "Existing workloads are unchanged") {
 				t.Fatal(state, note)
 			}
-			// The client let go of Docker's pull, which Docker sees as the request ending.
-			for deadline := time.Now().Add(5 * time.Second); daemon.ended.Load() == 0; {
-				if time.Now().After(deadline) {
-					t.Fatal("Docker's pull did not end")
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			daemon.letGo(t)
 		})
 	}
 }
@@ -342,9 +412,9 @@ func TestTestCommandEndsDockersPull(t *testing.T) {
 		"a registry that stops": {
 			pull:   stalls,
 			engine: &Engine{registryProgress: &registryProgress{window: 50 * time.Millisecond, least: 1 << 20}},
-			state:  "needs_attention", note: "the registry stopped sending the test image",
+			state:  "failed", note: "the registry stopped sending the test image",
 		},
-		"its time running out": {pull: keepsUp, engine: &Engine{pullLimit: 300 * time.Millisecond}, state: "needs_attention", note: "within the 10 minutes the agent allows"},
+		"its time running out": {pull: keepsUp, engine: &Engine{pullLimit: 300 * time.Millisecond}, state: "failed", note: "within the 10 minutes the agent allows"},
 		"the agent stopping":   {pull: stalls, stop: true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -389,13 +459,13 @@ func TestTestCommandEndsDockersPull(t *testing.T) {
 // database release's in a restore or an upgrade, keep the engine to the command, and still end
 // once their registry stops sending or their time runs out.
 func TestUnlentPullsEndAsDockersPullsDo(t *testing.T) {
-	paths := map[string]func(context.Context, *Engine) error{
-		"the proxy's":            func(ctx context.Context, e *Engine) error { return e.pullProxyImage(ctx) },
-		"a restore or upgrade's": func(ctx context.Context, e *Engine) error { return e.ensureImage(ctx, "postgres:18.1") },
-		"the test command's": func(ctx context.Context, e *Engine) error {
+	paths := map[string]func(*testing.T, *Engine) error{
+		"the proxy's":            func(t *testing.T, e *Engine) error { return e.pullProxyImage(t.Context()) },
+		"a restore or upgrade's": func(t *testing.T, e *Engine) error { return e.ensureImage(t.Context(), "postgres:18.1") },
+		"the test command's": func(t *testing.T, e *Engine) error {
 			c, _ := pullCommand(t, e)
 			r, _ := e.Journal.Record(c.Id)
-			if err := e.start(ctx, c, r); err != nil {
+			if err := e.start(t.Context(), c, r); err != nil {
 				return err
 			}
 			r, _ = e.Journal.Record(c.Id)
@@ -427,7 +497,7 @@ func TestUnlentPullsEndAsDockersPullsDo(t *testing.T) {
 				})
 				e.Docker = daemon.docker
 				began := time.Now()
-				err := pull(t.Context(), e)
+				err := pull(t, e)
 				if path == "the test command's" {
 					if err == nil || !strings.Contains(err.Error(), tc.note) {
 						t.Fatal(err)
@@ -438,7 +508,7 @@ func TestUnlentPullsEndAsDockersPullsDo(t *testing.T) {
 				if waited := time.Since(began); waited > 5*time.Second {
 					t.Fatal("ended after", waited)
 				}
-				if daemon.ended.Load() != 1 || lent.Load() {
+				if daemon.letGo(t); daemon.ended.Load() != 1 || lent.Load() {
 					t.Fatal("pulls", daemon.ended.Load(), "lent", lent.Load())
 				}
 			})

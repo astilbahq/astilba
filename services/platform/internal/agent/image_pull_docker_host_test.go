@@ -21,10 +21,11 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// stallingImage adds an image of its own whose one layer, of size bytes, the registry sends the
-// first sent bytes of before it stops sending, holding the connection open. It returns the image,
-// a channel closed once the registry has sent them, and one closed once Docker ends the request.
-func (f *nativePullFixture) stallingImage(size, sent int) (image string, stalled, ended <-chan struct{}) {
+// stallingImage adds an image of its own, of one layer of size bytes, whose registry sends the
+// first sent bytes of the layer, or with config of the image's config, before it stops sending,
+// holding the connection open. It returns the image, a channel closed once the registry has sent
+// them, and one closed once Docker ends the request.
+func (f *nativePullFixture) stallingImage(size, sent int, config bool) (image string, stalled, ended <-chan struct{}) {
 	f.t.Helper()
 	// Random content, so Docker has none of the layer already.
 	content := make([]byte, size)
@@ -32,19 +33,23 @@ func (f *nativePullFixture) stallingImage(size, sent int) (image string, stalled
 	layer := append(append(tarHeader(f.t, "content", size), content...), make([]byte, (512-size%512)%512+1024)...)
 	layerDigest := sha(layer)
 	f.blobs[layerDigest] = layer
-	config := fmt.Appendf(nil, `{"architecture":%q,"os":"linux","rootfs":{"type":"layers","diff_ids":[%q]}}`, runtime.GOARCH, layerDigest)
-	f.blobs[sha(config)] = config
-	manifest := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[{"mediaType":%q,"digest":%q,"size":%d}]}`, ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageConfig, sha(config), len(config), ocispec.MediaTypeImageLayer, layerDigest, len(layer))
+	imageConfig := fmt.Appendf(nil, `{"architecture":%q,"os":"linux","rootfs":{"type":"layers","diff_ids":[%q]}}`, runtime.GOARCH, layerDigest)
+	f.blobs[sha(imageConfig)] = imageConfig
+	manifest := fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[{"mediaType":%q,"digest":%q,"size":%d}]}`, ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageConfig, sha(imageConfig), len(imageConfig), ocispec.MediaTypeImageLayer, layerDigest, len(layer))
 	f.docs[sha([]byte(manifest))] = [2]string{ocispec.MediaTypeImageManifest, manifest}
 	stalledCh, endedCh := make(chan struct{}), make(chan struct{})
 	// The registry lets go of the connection once the test ends, whether or not Docker does.
 	quit := make(chan struct{})
 	f.t.Cleanup(func() { close(quit) })
+	stalling := layer
+	if config {
+		stalling = imageConfig
+	}
 	var requests atomic.Int32
-	f.paced[layerDigest] = func(r *http.Request, w io.Writer) {
+	f.paced[sha(stalling)] = func(r *http.Request, w io.Writer) {
 		// A request after the first, a pull made again, gets nothing at all.
 		if requests.Add(1) > 1 {
-			f.t.Log("Docker asked for the layer again")
+			f.t.Log("Docker asked for the blob again")
 			select {
 			case <-r.Context().Done():
 			case <-quit:
@@ -52,7 +57,7 @@ func (f *nativePullFixture) stallingImage(size, sent int) (image string, stalled
 			return
 		}
 		defer close(endedCh)
-		_, _ = w.Write(layer[:sent])
+		_, _ = w.Write(stalling[:sent])
 		w.(http.Flusher).Flush()
 		close(stalledCh)
 		select {
@@ -75,47 +80,52 @@ func tarHeader(t *testing.T, name string, size int) []byte {
 	return header.Bytes()
 }
 
-// A registry that stops sending a layer mid-way ends Docker's pull as stalled within the floor's
-// windows, and its owner cancelling the command ends it within a second. Neither leaves the image
-// in Docker.
+// A registry that stops sending a layer mid-way, or the image's config, which Docker does not
+// report, ends Docker's pull as stalled within the floor's windows, and its owner cancelling the
+// command ends it within a second. None leaves the image in Docker.
 func TestNativeDockerPullEndsWhenItsRegistryStalls(t *testing.T) {
 	f := newNativePullFixture(t)
 	const window = time.Second
-	t.Run("stalled", func(t *testing.T) {
-		image, stalled, ended := f.stallingImage(8<<20, 3<<20)
-		// The floor is a step of the layer each window, as containerd writes it, so the registry
-		// is ended in its second window without progress.
-		engine := &Engine{Docker: f.docker, registryProgress: &registryProgress{window: window, least: 1 << 20}}
-		done := make(chan error, 1)
-		go func() { done <- engine.pullImage(f.ctx, image) }()
-		var began time.Time
-		select {
-		case <-stalled:
-			began = time.Now()
-		case err := <-done:
-			t.Fatal("the pull ended before the registry stalled", err)
-		case <-time.After(time.Minute):
-			t.Fatal("Docker did not read the layer")
-		}
-		select {
-		case err := <-done:
-			if !errors.Is(err, errDockerPullStalled) {
-				t.Fatal(err)
+	for name, config := range map[string]bool{"a layer": false, "the config": true} {
+		t.Run("stalled on "+name, func(t *testing.T) {
+			image, stalled, ended := f.stallingImage(8<<20, 3<<20, false)
+			if config {
+				image, stalled, ended = f.stallingImage(64<<10, 0, true)
 			}
-			// Within its third window, with time for the pull to stop.
-			if waited := time.Since(began); waited > 3*window+time.Second {
-				t.Fatal("stopped after", waited)
+			// The floor is a step of a layer each window, as containerd writes it, so the registry
+			// is ended by its second window without progress.
+			engine := &Engine{Docker: f.docker, registryProgress: &registryProgress{window: window, least: 1 << 20}}
+			done := make(chan error, 1)
+			go func() { done <- engine.pullImage(f.ctx, image) }()
+			var began time.Time
+			select {
+			case <-stalled:
+				began = time.Now()
+			case err := <-done:
+				t.Fatal("the pull ended before the registry stalled", err)
+			case <-time.After(time.Minute):
+				t.Fatal("Docker did not read", name)
 			}
-		case <-time.After(time.Minute):
-			t.Fatal("the stalled pull did not end")
-		}
-		dockerLetGo(t, f, ended, "stalled")
-		if _, err := f.docker.ImageInspect(f.ctx, image); !errdefs.IsNotFound(err) {
-			t.Fatal("the stalled pull left an image", err)
-		}
-	})
+			select {
+			case err := <-done:
+				if !errors.Is(err, errDockerPullStalled) {
+					t.Fatal(err)
+				}
+				// Within its third window, with time for the pull to stop.
+				if waited := time.Since(began); waited > 3*window+time.Second {
+					t.Fatal("stopped after", waited)
+				}
+			case <-time.After(time.Minute):
+				t.Fatal("the stalled pull did not end")
+			}
+			dockerLetGo(t, f, ended, "stalled")
+			if _, err := f.docker.ImageInspect(f.ctx, image); !errdefs.IsNotFound(err) {
+				t.Fatal("the stalled pull left an image", err)
+			}
+		})
+	}
 	t.Run("cancelled", func(t *testing.T) {
-		image, stalled, ended := f.stallingImage(8<<20, 3<<20)
+		image, stalled, ended := f.stallingImage(8<<20, 3<<20, false)
 		journal, _ := testVisualJournal(t)
 		engine := &Engine{Docker: f.docker, Journal: journal}
 		command := api.ExecutionCommand{Id: uuid.New()}
@@ -162,8 +172,8 @@ func TestNativeDockerPullEndsWhenItsRegistryStalls(t *testing.T) {
 }
 
 // dockerLetGo checks that Docker let go of the registry once the agent ended its pull. Docker's
-// classic image store does not: it keeps reading the layer, holding the connection open, until the
-// registry ends it, though it reads the layer afresh for a pull made again.
+// classic image store does not: it keeps reading the layer or config, holding the connection open,
+// until the registry ends it, though it reads it afresh for a pull made again.
 func dockerLetGo(t *testing.T, f *nativePullFixture, ended <-chan struct{}, how string) {
 	t.Helper()
 	info, err := f.docker.Info(f.ctx, client.InfoOptions{})

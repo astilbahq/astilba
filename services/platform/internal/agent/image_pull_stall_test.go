@@ -204,19 +204,20 @@ func TestPullReadsAgainAfterAnAnswerStalls(t *testing.T) {
 	}
 }
 
-// The command's owner cancelling it ends a read its registry is still sending, without waiting
-// for the registry or the transport's window.
+// The command's owner cancelling it, which ends its context, see pullContext, ends a read its
+// registry is still sending, without waiting for the registry or the transport's window.
 func TestPullStopsReadingOnceCancelled(t *testing.T) {
 	registry := newTestRegistry()
 	layer := gzipOf(t, tarOf(t, testFile{"app", 64 << 10}))
 	root := registry.image(layer)
 	source := stallingRegistry(t, registry, "HTTP/1.1", sha(layer), false, registryProgress{window: time.Hour, least: 1})
-	var cancelled atomic.Bool
-	time.AfterFunc(300*time.Millisecond, func() { cancelled.Store(true) })
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	time.AfterFunc(300*time.Millisecond, func() { cancel(errPullCancelled) })
 	engine := &Engine{registryRetry: quickRegistryRetry()}
 	done := make(chan error, 1)
 	go func() {
-		done <- engine.readRegistry(t.Context(), "fixture/app", cancelled.Load, func(ctx context.Context) error {
+		done <- engine.readRegistry(ctx, "fixture/app", func(ctx context.Context) error {
 			plan, err := planRegistryImage(ctx, source, digest.Digest(root), amd64Server, pullTestLimit, false, nil)
 			if err != nil {
 				return err
