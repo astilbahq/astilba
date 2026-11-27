@@ -13,7 +13,6 @@ package awskeys
 
 import (
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +24,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/outbound"
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
@@ -274,7 +274,7 @@ func Policy(spec Spec) string {
 		// stop a user minting them, so they may do nothing.
 		{Sid: "NoSessions", Effect: "Deny", Action: []string{"*"}, Resource: []string{"*"}, Condition: map[string]map[string]string{"Null": {"aws:TokenIssueTime": "false"}}},
 	}}
-	raw, _ := json.Marshal(document, json.Deterministic(true))
+	raw, _ := stablejson.Marshal(document)
 	return string(raw)
 }
 

@@ -21,6 +21,7 @@ var packages = map[string]bool{
 	"internal/pipeline/pipelinetest":   true,
 	"internal/secretbroker/brokertest": true,
 	"internal/custody/custodytest":     true,
+	"internal/awskeys/awsfake":         true,
 }
 
 // modules are the module paths packages are named under, so that a nested package such as

@@ -173,7 +173,7 @@ func (s *Server) RequestRotation(w http.ResponseWriter, r *http.Request, ws, id 
 func (s *Server) RevokeServer(w http.ResponseWriter, r *http.Request, ws, id uuid.UUID) {
 	// The body is optional: a revocation without one revokes the server's managed backup keys.
 	var b api.ServerRevokeRequest
-	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
+	if r.ContentLength != 0 {
 		var e error
 		if b, e = decode[api.ServerRevokeRequest](r); e != nil {
 			s.fail(w, r, e)

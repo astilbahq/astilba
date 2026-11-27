@@ -29,6 +29,7 @@ var rawReaders = map[string]bool{
 // and read what Astilba itself sends; testsupport keeps them to tests.
 var fakes = map[string]bool{
 	"internal/pipeline/pipelinetest": true,
+	"internal/awskeys/awsfake":       true,
 }
 
 func run(pass *analysis.Pass) (any, error) {

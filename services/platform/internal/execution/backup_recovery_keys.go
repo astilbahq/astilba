@@ -65,6 +65,10 @@ func (s *Service) finishRecoveryKey(ctx context.Context, p store.Principal, ws, 
 	defer m.clear()
 	work := context.WithoutCancel(ctx)
 	var out api.Operation
+	var session *secretbroker.Session
+	if err == nil {
+		session, err = s.activation(work, p.Secrets(), ws, k.key)
+	}
 	if err == nil {
 		err = s.scope(work, p, ws, recoveryAccess, "", uuid.Nil, func(tx pgx.Tx) error {
 			start, err := s.checkRecovery(work, tx, ws, pid, env, id, in)
@@ -77,12 +81,13 @@ func (s *Service) finishRecoveryKey(ctx context.Context, p store.Principal, ws, 
 			if out, err = s.insertRecovery(work, tx, ws, env, id, in, start); err != nil {
 				return err
 			}
-			ok, err := s.activateKey(work, tx, p.Secrets(), ws, m, nil, &start.recovery.RunID)
+			ok, err := s.activateKey(work, tx, session, ws, m, nil, &start.recovery.RunID)
 			if err == nil && !ok {
 				err = errKeyNotMinting
 			}
 			return err
 		})
+		session.Close(work, secretbroker.UsedIf(err == nil))
 	}
 	if err != nil {
 		if latch := s.latchKey(work, ws, k.key, err); latch != nil {

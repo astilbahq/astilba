@@ -187,14 +187,19 @@ func (s *Service) CreateManagedBackupDestination(ctx context.Context, p store.Pr
 	}
 	m, err := s.mintKey(ctx, p.Secrets(), ws, key)
 	defer m.clear()
+	var session *secretbroker.Session
+	if err == nil {
+		session, err = s.activation(ctx, p.Secrets(), ws, key)
+	}
 	if err == nil {
 		err = s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
-			ok, err := s.activateKey(ctx, tx, p.Secrets(), ws, m, nil, nil)
+			ok, err := s.activateKey(ctx, tx, session, ws, m, nil, nil)
 			if err == nil && !ok {
 				err = errKeyNotMinting
 			}
 			return err
 		})
+		session.Close(ctx, secretbroker.UsedIf(err == nil))
 	}
 	if err != nil {
 		if latch := s.latchKey(ctx, ws, key, err); latch != nil {

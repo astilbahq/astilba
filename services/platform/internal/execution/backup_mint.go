@@ -97,17 +97,19 @@ func (s *Service) adminCredential(ctx context.Context, principal secretbroker.Pr
 	return cred, err
 }
 
-// activateKey stores a minted key's secret and makes it active, in tx, which holds the workspace's
-// turn. It reports false, storing nothing, when the key was latched meanwhile or its holder
-// revoked: the sweep then revokes what the provider step made.
-func (s *Service) activateKey(ctx context.Context, tx pgx.Tx, principal secretbroker.Principal, ws uuid.UUID, m minted, installs []keyInstall, recovery *uuid.UUID) (bool, error) {
+// activation is the broker session that seals a minted key's secret, begun before the
+// transaction that activates the key, so that no transaction waits on the broker.
+func (s *Service) activation(ctx context.Context, principal secretbroker.Principal, ws, key uuid.UUID) (*secretbroker.Session, error) {
+	item := secretbroker.Item{Kind: secretbroker.BackupStorageKey, ID: key}
+	return s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Operate, Principal: principal, Items: []secretbroker.Item{item}, Reason: "mint"})
+}
+
+// activateKey stores a minted key's secret, sealed with session from activation, and makes it
+// active, in tx, which holds the workspace's turn. It reports false, storing nothing, when the
+// key was latched meanwhile or its holder revoked: the sweep then revokes what the provider step
+// made.
+func (s *Service) activateKey(ctx context.Context, tx pgx.Tx, session *secretbroker.Session, ws uuid.UUID, m minted, installs []keyInstall, recovery *uuid.UUID) (bool, error) {
 	item := secretbroker.Item{Kind: secretbroker.BackupStorageKey, ID: m.key}
-	session, err := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: ws, Purpose: secretbroker.Operate, Principal: principal, Items: []secretbroker.Item{item}, Reason: "mint"})
-	if err != nil {
-		return false, err
-	}
-	stored := false
-	defer func() { session.Close(ctx, secretbroker.UsedIf(stored)) }()
 	secret, err := sealIntegration(ctx, db.New(tx), session, item, mintedAccess{AccessKey: m.cred.AccessKeyID, SecretKey: m.cred.SecretAccessKey})
 	if err != nil {
 		return false, err
@@ -120,8 +122,7 @@ func (s *Service) activateKey(ctx context.Context, tx pgx.Tx, principal secretbr
 		return false, err
 	}
 	n, err := db.New(tx).ActivateBackupStorageKey(ctx, db.ActivateBackupStorageKeyParams{WorkspaceID: ws, ID: m.key, AccessKeyID: fixedText(m.cred.AccessKeyID), EncryptedSecret: secret, Installs: rawInstalls, RecoveryID: recovery})
-	stored = err == nil && n == 1
-	return stored, err
+	return err == nil && n == 1, err
 }
 
 // keyInstall is a policy generation whose install carries a key.

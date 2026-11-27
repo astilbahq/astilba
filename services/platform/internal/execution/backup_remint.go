@@ -115,7 +115,11 @@ func (s *Service) startRemint(ctx context.Context, ws, destination uuid.UUID) (u
 // queueKeyInstalls), so a coordinated schedule, which runs only at its installed generation,
 // never stops waiting for the owner.
 func (s *Service) finishRemint(ctx context.Context, ws, destination uuid.UUID, m minted) error {
-	return s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
+	session, err := s.activation(ctx, remintPrincipal, ws, m.key)
+	if err != nil {
+		return err
+	}
+	err = s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		rows, err := q.DestinationPolicyGenerations(ctx, db.DestinationPolicyGenerationsParams{WorkspaceID: ws, DestinationID: destination.String()})
 		if err != nil {
@@ -139,7 +143,7 @@ func (s *Service) finishRemint(ctx context.Context, ws, destination uuid.UUID, m
 			}
 			installs = append(installs, keyInstall{Policy: row.ID, Generation: p.Generation})
 		}
-		ok, err := s.activateKey(ctx, tx, remintPrincipal, ws, m, installs, nil)
+		ok, err := s.activateKey(ctx, tx, session, ws, m, installs, nil)
 		if err != nil {
 			return err
 		}
@@ -148,6 +152,8 @@ func (s *Service) finishRemint(ctx context.Context, ws, destination uuid.UUID, m
 		}
 		return nil
 	})
+	session.Close(ctx, secretbroker.UsedIf(err == nil))
+	return err
 }
 
 // installRequestKey is the request key of management's install of a policy generation for a key,
