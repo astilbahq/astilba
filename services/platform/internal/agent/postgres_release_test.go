@@ -198,7 +198,6 @@ func TestNamesAreEscapedInNotes(t *testing.T) {
 	}
 }
 
-// A lone name needs no room for a count of the rest, so one that fits its room is kept whole.
 // A database's name reaches psql as its bytes, percent-encoded in a URI's path: one another
 // database's encoding wrote needn't be UTF-8, which a command's arguments can't carry, and no byte
 // of it can read as part of a connection string.
@@ -215,6 +214,7 @@ func TestDatabasesAreNamedToPsqlByTheirBytes(t *testing.T) {
 	}
 }
 
+// A lone name needs no room for a count of the rest, so one that fits its room is kept whole.
 func TestALoneNameThatFitsIsKeptWhole(t *testing.T) {
 	alone := strings.Repeat("d", 55)
 	if list := listSome([]listed{{alone, "Billing"}}, closedRoom); list != alone+" (Billing)" {
