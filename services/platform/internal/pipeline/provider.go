@@ -115,7 +115,12 @@ func (p *Provider) apiPath() string {
 	}
 }
 
-type ProviderError struct{ Status int }
+// ProviderError is a provider answering a request with a status other than success. Limited
+// marks a refusal under the provider's rate limits, which passes, as a 403 can be on GitHub.
+type ProviderError struct {
+	Status  int
+	Limited bool
+}
 
 var errProviderResponseSize = errors.New("provider response exceeds its limit")
 
@@ -123,6 +128,12 @@ var errProviderResponseSize = errors.New("provider response exceeds its limit")
 var ErrBranchNotFound = errors.New("branch not found")
 
 func (e *ProviderError) Error() string { return fmt.Sprintf("provider returned HTTP %d", e.Status) }
+
+// refused is the error for a response that is not a success.
+func refused(response *http.Response) *ProviderError {
+	_, limited := outbound.RateLimit(response, time.Now())
+	return &ProviderError{Status: response.StatusCode, Limited: limited}
+}
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -153,12 +164,15 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 	}
 	response, err := p.client.Do(req)
 	if err != nil {
+		if status, moved := outbound.Moved(response); moved {
+			return &ProviderError{Status: status}
+		}
 		return errors.New("provider request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		p.unauthorized(response.StatusCode)
-		return &ProviderError{Status: response.StatusCode}
+		return refused(response)
 	}
 	if out == nil {
 		return nil

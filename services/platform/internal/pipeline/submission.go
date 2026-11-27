@@ -51,7 +51,7 @@ type SubmissionRefused struct{ Reason string }
 func (e *SubmissionRefused) Error() string { return e.Reason }
 
 // SubmissionRetryable reports whether err may pass on a later attempt: the provider could not
-// be reached, was failing, or asked for time.
+// be reached, was failing, asked for time or limited how fast Astilba could make requests.
 func SubmissionRetryable(err error) bool {
 	var refused *SubmissionRefused
 	if errors.As(err, &refused) {
@@ -59,7 +59,7 @@ func SubmissionRetryable(err error) bool {
 	}
 	var status *ProviderError
 	if errors.As(err, &status) {
-		return status.Status >= 500 || status.Status == http.StatusTooManyRequests || status.Status == http.StatusRequestTimeout
+		return status.Limited || status.Status >= 500 || status.Status == http.StatusTooManyRequests || status.Status == http.StatusRequestTimeout
 	}
 	return true
 }
@@ -498,18 +498,21 @@ func (p *Provider) CanPush(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, errors.New("Git server request failed")
 	}
-	response.Body.Close()
+	defer response.Body.Close()
 	switch {
 	case response.StatusCode >= 200 && response.StatusCode < 300:
 		return true, nil
-	// The server authenticated the credential and refused it write access.
-	case response.StatusCode == http.StatusForbidden, response.StatusCode == http.StatusNotFound:
-		return false, nil
 	// The server didn't accept the credential at all, so says nothing about what it could do.
 	case response.StatusCode == http.StatusUnauthorized:
 		return false, ErrCredentialRejected
 	}
-	return false, &ProviderError{Status: response.StatusCode}
+	// A refusal under the server's rate limits says nothing about the credential either.
+	refusal := refused(response)
+	// The server authenticated the credential and refused it write access.
+	if !refusal.Limited && (refusal.Status == http.StatusForbidden || refusal.Status == http.StatusNotFound) {
+		return false, nil
+	}
+	return false, refusal
 }
 
 // ErrCredentialRejected is CanPush's answer when the Git server did not accept the credential.

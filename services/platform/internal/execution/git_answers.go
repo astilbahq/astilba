@@ -97,12 +97,12 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 		return st, nil
 	}
 	if s.GitHub == nil {
-		st.unusable = domain.Invalid("githubApp.reauthorizationRequired")
+		st.unusable = &appUnusable{domain.Invalid("githubApp.reauthorizationRequired")}
 		return st, nil
 	}
 	binding, err := q.ShareActiveGitHubAppConnection(ctx, db.ShareActiveGitHubAppConnectionParams{WorkspaceID: ws, ConnectionID: id})
 	if errors.Is(err, pgx.ErrNoRows) {
-		st.unusable = domain.Invalid("githubApp.reauthorizationRequired")
+		st.unusable = &appUnusable{domain.Invalid("githubApp.reauthorizationRequired")}
 		return st, nil
 	}
 	if err != nil {
@@ -111,10 +111,19 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 	st.binding = &binding
 	c := st.connection
 	if c.Provider != "github" || c.BaseURL != "https://api.github.com" || c.RepositoryID != binding.RepositoryID || binding.AppID != s.GitHub.Config.ID {
-		st.unusable = domain.Forbidden
+		st.unusable = &appUnusable{domain.Forbidden}
 	}
 	return st, nil
 }
+
+// appUnusable is a GitHub App connection that cannot authenticate, as loadGitState finds without
+// a network call: management has no GitHub App, the connection's App binding is gone, or the
+// binding no longer matches the connection or management's App. It stays so until the repository
+// is connected again or the operator changes the App.
+type appUnusable struct{ err error }
+
+func (e *appUnusable) Error() string { return e.err.Error() }
+func (e *appUnusable) Unwrap() error { return e.err }
 
 // stored opens a connection's stored access in a pass. A pass without keys returns the call
 // that begins them between passes, and is made again.
@@ -329,6 +338,12 @@ func askProvider[T any](ctx context.Context, tx pgx.Tx, g *gitAnswers, id uuid.U
 			return gitAnswer[T]{Err: err, Setup: true}
 		}
 		value, err := call(ctx, provider)
+		// GitHub not accepting a token the App minted passes, as the token is dropped and the next
+		// call mints another, while a stored credential stays refused until someone replaces it.
+		var status *pipeline.ProviderError
+		if st.binding != nil && errors.As(err, &status) && status.Status == http.StatusUnauthorized {
+			err = fmt.Errorf("%w: %w", errGitHubTokenRejected, err)
+		}
 		return gitAnswer[T]{Value: value, Err: err}
 	})
 }

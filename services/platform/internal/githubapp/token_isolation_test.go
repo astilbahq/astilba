@@ -172,42 +172,9 @@ func TestRejectedTokenIsMintedAgain(t *testing.T) {
 	}
 }
 
-// GitHub's rate limits are told apart from other refusals, and once GitHub limits the App,
-// its requests wait out the time GitHub gives without asking again.
+// Once GitHub limits the App, its requests wait out the time GitHub gives without asking again.
+// outbound.RateLimit tells GitHub's limits apart from other refusals.
 func TestRateLimitsPauseAppRequests(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
-	for _, tc := range []struct {
-		name    string
-		status  int
-		headers map[string]string
-		body    string
-		until   time.Duration
-		limited bool
-	}{
-		{name: "retry-after", status: 403, headers: map[string]string{"Retry-After": "30"}, until: 30 * time.Second, limited: true},
-		{name: "primary limit reset", status: 403, headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(now.Add(10 * time.Minute).Unix())}, until: 10 * time.Minute, limited: true},
-		{name: "secondary limit without headers", status: 403, body: `{"message":"You have exceeded a secondary rate limit."}`, until: time.Minute, limited: true},
-		{name: "429 without headers", status: 429, until: time.Minute, limited: true},
-		{name: "reset beyond the hour", status: 429, headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(now.Add(48 * time.Hour).Unix())}, until: time.Hour, limited: true},
-		{name: "reset already passed", status: 429, headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(now.Add(-time.Minute).Unix())}, until: time.Second, limited: true},
-		{name: "forbidden", status: 403, body: `{"message":"Resource not accessible by integration"}`},
-		{name: "remaining requests", status: 403, headers: map[string]string{"X-RateLimit-Remaining": "12", "X-RateLimit-Reset": fmt.Sprint(now.Add(time.Minute).Unix())}},
-		{name: "unauthorized", status: 401, headers: map[string]string{"Retry-After": "30"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			res := &http.Response{StatusCode: tc.status, Header: http.Header{}, Body: http.NoBody}
-			for k, v := range tc.headers {
-				res.Header.Set(k, v)
-			}
-			if tc.body != "" {
-				res.Body = readCloser{strings.NewReader(tc.body)}
-			}
-			until, limited := rateLimit(res, now)
-			if limited != tc.limited || limited && !until.Equal(now.Add(tc.until)) {
-				t.Fatalf("got %v until %v", limited, until.Sub(now))
-			}
-		})
-	}
 	ctx := context.Background()
 	g := &revokingGitHub{limit: func(w http.ResponseWriter) {
 		w.Header().Set("Retry-After", "60")
@@ -241,10 +208,6 @@ func isLimited(err error) bool {
 	_, limited := Limited(err)
 	return limited
 }
-
-type readCloser struct{ *strings.Reader }
-
-func (readCloser) Close() error { return nil }
 
 // A rate limit on an installation-token request is the check's answer until GitHub's time, so a
 // delivery that waits on it doesn't ask GitHub again every second.

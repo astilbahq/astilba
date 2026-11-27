@@ -276,7 +276,8 @@ func submissionFailure(err error) (string, bool) {
 		return refused.Reason, true
 	}
 	var invalid *domain.Error
-	// GitHub limiting the App, or a cached token it stopped accepting, passes.
+	// GitHub limiting the App, or a cached token it stopped accepting, passes, as does a provider
+	// limiting a stored credential.
 	if errors.As(err, &invalid) && invalid.Code == "temporarily_busy" {
 		return invalid.Message, false
 	}
@@ -284,6 +285,9 @@ func submissionFailure(err error) (string, bool) {
 		return "The connection's credential cannot be used: " + invalid.Message, true
 	}
 	var status *pipeline.ProviderError
+	if errors.As(err, &status) && status.Limited {
+		return "The Git provider is limiting how fast Astilba can make requests. Try again in a minute.", false
+	}
 	if errors.As(err, &status) {
 		return "The Git provider refused a request with HTTP " + strconv.Itoa(status.Status) + ". Check that the connection's API credential can create branches, commits and reviews.", !pipeline.SubmissionRetryable(err)
 	}

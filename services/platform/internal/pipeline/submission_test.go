@@ -138,6 +138,22 @@ func TestCanPushAsksTheGitServer(t *testing.T) {
 			}
 		})
 	}
+	// A refusal under the server's rate limits says nothing about what the credential can do, so
+	// a credential that can push is never taken for read-only while the server limits it.
+	for name, limit := range map[string]http.HandlerFunc{
+		"retry-after": func(w http.ResponseWriter, r *http.Request) { w.Header().Set("Retry-After", "30"); w.WriteHeader(403) },
+		"body": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(403)
+			_, _ = w.Write([]byte("API rate limit exceeded"))
+		},
+	} {
+		limited := httptest.NewServer(limit)
+		p, _ := NewProvider(Connection{Provider: "gitea", BaseURL: limited.URL, Repository: "team/app"}, Credential{Password: pipelinetest.Writer}, Policy{Development: true})
+		if can, err := p.CanPush(context.Background()); err == nil {
+			t.Fatalf("a rate limit (%s) was taken for read-only: %t", name, can)
+		}
+		limited.Close()
+	}
 	// Redirects are not followed, so a redirect to a page that answers 200 proves nothing.
 	server := httptest.NewServer(http.RedirectHandler("/elsewhere", http.StatusFound))
 	defer server.Close()
