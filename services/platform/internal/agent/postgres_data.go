@@ -211,8 +211,8 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 		if len(queries) > 0 {
 			// Every outstanding rebuild is recorded before the first starts, so a later plan the
 			// unit saves does not record the release of the plan it leaves for storage with no
-			// record, which would mark its indexes rebuilt. Until it finishes, the data still refuses releases that cannot open what
-			// the serving one writes.
+			// record, which would mark its indexes rebuilt. Until it finishes, the data still
+			// refuses releases that cannot open what the serving one writes.
 			next = postgresData{Image: cmp.Or(record.Image, written.Image), Served: serving.Image}
 			due = append(due, rebuild{application: a, serving: serving, queries: queries})
 		}
