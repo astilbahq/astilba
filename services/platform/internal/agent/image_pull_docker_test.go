@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -211,45 +212,51 @@ func TestDockerPullWatch(t *testing.T) {
 			},
 		},
 	} {
+		// The watch runs on the bubble's clock, which moves only once the test, the watch's timer
+		// and the reports all wait. So a stall lands where the watch's counting puts it, however
+		// busy the machine is, and the bounds below can be exact.
 		t.Run(name, func(t *testing.T) {
-			var stalls atomic.Int32
-			var stalledAt atomic.Int64
-			began := time.Now()
-			w := newDockerPullWatch(registryProgress{window: window, least: tc.least}, tc.containerd, func() {
-				stalls.Add(1)
-				stalledAt.Store(int64(time.Since(began)))
-			})
-			defer w.stop()
-			tc.send(w, func(n float64) {
-				time.Sleep(time.Until(began.Add(time.Duration(n * float64(window)))))
-			})
-			sent := time.Since(began)
-			if !tc.stalled {
-				if stalls.Load() != 0 {
-					t.Fatal("stalled after", time.Duration(stalledAt.Load()))
+			synctest.Test(t, func(t *testing.T) {
+				// stalled receives when the watch ended the pull, from whichever goroutine ended it.
+				stalled := make(chan time.Duration, 2)
+				began := time.Now()
+				w := newDockerPullWatch(registryProgress{window: window, least: tc.least}, tc.containerd, func() {
+					stalled <- time.Since(began)
+				})
+				defer w.stop()
+				tc.send(w, func(n float64) {
+					time.Sleep(time.Until(began.Add(time.Duration(n * float64(window)))))
+				})
+				synctest.Wait()
+				if !tc.stalled {
+					select {
+					case at := <-stalled:
+						t.Fatal("stalled after", at)
+					default:
+					}
+					return
 				}
-				return
-			}
-			deadline := time.Now().Add(time.Duration(tc.after+10) * window)
-			for stalls.Load() == 0 && time.Now().Before(deadline) {
-				time.Sleep(window / 10)
-			}
-			if stalls.Load() != 1 {
-				t.Fatal("stalled", stalls.Load(), "times")
-			}
-			at := time.Duration(stalledAt.Load())
-			if early := time.Duration(tc.after * float64(window)); at < early && sent < early {
-				t.Fatal("stalled early, after", at)
-			}
-			if late := sent + time.Duration((tc.after+1)*float64(window)); at > late {
-				t.Fatal("stalled late, after", at)
-			}
-			// What Docker reports after the end changes nothing.
-			w.report(downloading("a", 1<<40, total))
-			time.Sleep(2 * window)
-			if stalls.Load() != 1 {
-				t.Fatal("stalled again")
-			}
+				var at time.Duration
+				select {
+				case at = <-stalled:
+				case <-time.After(time.Duration(tc.after+10) * window):
+					t.Fatal("did not stall")
+				}
+				if early := time.Duration(tc.after * float64(window)); at < early {
+					t.Fatal("stalled early, after", at)
+				}
+				if late := time.Duration((tc.after + 1) * float64(window)); at > late {
+					t.Fatal("stalled late, after", at)
+				}
+				// What Docker reports after the end changes nothing.
+				w.report(downloading("a", 1<<40, total))
+				time.Sleep(2 * window)
+				select {
+				case <-stalled:
+					t.Fatal("stalled again")
+				default:
+				}
+			})
 		})
 	}
 }
