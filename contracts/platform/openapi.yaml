@@ -1206,6 +1206,56 @@
           "application/json":
             "schema":
               "$ref": "#/components/schemas/CredentialConfirmation"
+  /api/v1/auth/sessions:
+    get:
+      operationId: listAccountSessions
+      description: The account's signed-in browser sessions, the one that asks first and then the most recently seen, marking the one that asks.
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: The account's signed-in sessions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSessions'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/auth/sessions/sign-out-others:
+    post:
+      operationId: signOutOtherSessions
+      description: Signs out every other session of the account, including any not listed. Needs recent authentication.
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: The account's signed-in sessions afterwards
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSessions'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/auth/sessions/{sessionId}:
+    parameters:
+      - {name: sessionId, in: path, required: true, schema: {type: string, format: uuid}}
+    delete:
+      operationId: signOutSession
+      description: Signs out another session of the account. Needs recent authentication; the session that asks logs out instead. A session that is not signed in, as one signed out elsewhere or expired, is not found.
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: The account's signed-in sessions afterwards
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSessions'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/auth/mfa/recovery-codes":
     "post":
       "operationId": "regenerateRecoveryCodes"
@@ -5905,6 +5955,9 @@
         recoveryRestore:
           type: boolean
           description: Runs the restore command kind, which restores a snapshot from a lost server's backup repository. Advertised only after Astilba-Agent-Recovery-Restore v1.
+        backupPrefixes:
+          type: boolean
+          description: Keeps an S3 destination's repositories under its prefix. A policy or restore on a destination with a prefix needs it. Advertised only after Astilba-Agent-Backup-Prefixes v1.
         backups:
           type: boolean
         upgrades:
@@ -6883,6 +6936,37 @@
         - "mfaPending"
         - "recentAuth"
         - "workspaces"
+    AccountSessions:
+      type: object
+      additionalProperties: false
+      properties:
+        sessions:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/AccountSession'}
+        unlisted:
+          type: integer
+          minimum: 0
+          description: Other signed-in sessions seen less recently than those listed. Signing out every other session ends them too.
+      required: [sessions, unlisted]
+    AccountSession:
+      type: object
+      additionalProperties: false
+      description: A signed-in browser session, from its sign-in across every renewal of its token. What it shows of the client is from its latest request.
+      properties:
+        id: {type: string, format: uuid}
+        current:
+          type: boolean
+          description: Whether this is the session that asked.
+        signedInAt: {type: string, format: date-time}
+        lastSeenAt: {type: string, format: date-time}
+        browser: {type: string, enum: [chrome, edge, firefox, safari, opera, other]}
+        os: {type: string, enum: [windows, macos, ios, android, chromeos, linux, other]}
+        network:
+          type: string
+          maxLength: 64
+          description: The network of the latest request, as an IPv4 /24 or IPv6 /48 prefix. Absent when the address was unknown.
+      required: [id, current, signedInAt, lastSeenAt, browser, os]
     "Login":
       "type": "object"
       "additionalProperties": false
@@ -9619,6 +9703,28 @@
         region:
           type: string
           maxLength: 80
+        prefix:
+          type: string
+          maxLength: 256
+          description: >-
+            Where in the bucket an S3 destination keeps its repositories, as
+            `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names
+            of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'.
+            Without one, repositories are at the bucket's root.
+        serverId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            The server an S3 destination's storage keys are given to. Only policies on it can use
+            the destination. Null for a filesystem destination, a shared one, and one created before
+            destinations were bound that no policy has used yet, which its first policy binds.
+        shared:
+          type: boolean
+          description: >-
+            Whether this S3 destination was used by policies on more than one server before
+            destinations were bound. Each of those servers holds its keys and can delete or
+            overwrite the others' backups. Its policies keep using it, and no new policy can.
         exposed:
           type: boolean
           description: >-
@@ -9639,6 +9745,8 @@
         - endpoint
         - bucket
         - region
+        - serverId
+        - shared
         - exposed
         - policies
     BackupInstallationDestination:
@@ -9669,6 +9777,14 @@
         region:
           type: string
           maxLength: 80
+        prefix:
+          type: string
+          maxLength: 256
+          description: >-
+            Where in the bucket an S3 destination keeps its repositories, as
+            `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names
+            of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'.
+            Without one, repositories are at the bucket's root.
       required:
         - id
         - name
@@ -9735,6 +9851,26 @@
         region:
           type: string
           maxLength: 80
+        prefix:
+          type: string
+          maxLength: 256
+          description: >-
+            Where in the bucket an S3 destination keeps its repositories, as
+            `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names
+            of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'.
+            Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't
+            begin with `astilba`. A prefix that equals, contains or is inside another of the
+            workspace's destinations' in a bucket of the same name, at any endpoint, or a second
+            destination without one there, is refused with the field `prefix`, since keys limited
+            to one would reach the other's backups.
+        serverId:
+          type: string
+          format: uuid
+          description: >-
+            Required for an S3 destination, and refused for a filesystem one: the deployment server
+            its storage keys are given to. Only policies on that server can use it, so give it keys
+            limited to its prefix or bucket. A server that is missing, revoked, a build server or
+            not ready to deploy is refused with the field `serverId`.
         access:
           $ref: '#/components/schemas/BackupAccess'
       required:
@@ -9788,6 +9924,10 @@
         destinationId:
           type: string
           format: uuid
+          description: >-
+            A new policy can use only an S3 destination bound to its server, or one no policy has
+            used yet, which it binds to its server. One bound to another server is refused with the
+            field `destination.server`, and a shared one with `destination.shared`.
         method:
           type: string
           enum:

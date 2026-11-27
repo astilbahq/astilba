@@ -216,6 +216,20 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 						t.Fatal(err)
 					}
 				}
+				// A database marked as a template is still one the upgrade would lose.
+				for _, statement := range []string{"CREATE DATABASE templated", "ALTER DATABASE templated IS_TEMPLATE true"} {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil || !strings.Contains(err.Error(), "additional databases") {
+					t.Fatalf("an additional database marked as a template was accepted: %v", err)
+				}
+				for _, statement := range []string{"ALTER DATABASE templated IS_TEMPLATE false", "DROP DATABASE templated"} {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, statement); err != nil {
+						t.Fatal(err)
+					}
+				}
 
 				admin := a
 				pg := *a.Postgres

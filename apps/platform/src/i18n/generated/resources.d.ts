@@ -35,6 +35,48 @@ export default interface Resources {
       "saved": "Password updated. Your other sessions have been signed out.",
       "title": "Password"
     },
+    "sessions": {
+      "activeNow": "Active now",
+      "alreadySignedOut": "That session was already signed out.",
+      "browser": {
+        "chrome": "Chrome",
+        "edge": "Edge",
+        "firefox": "Firefox",
+        "opera": "Opera",
+        "other": "Unknown browser",
+        "safari": "Safari"
+      },
+      "client": "{{browser}} on {{os}}",
+      "current": "This session",
+      "description": "Browsers signed in to your account. If you don’t recognize one, sign it out and change your password.",
+      "lastActive": "Last active {{at, datetime}}",
+      "loadFailed": "Your sessions could not be loaded.",
+      "loading": "Loading sessions…",
+      "network": "Network <network/>",
+      "networkUnknown": "Network unknown",
+      "noOthers": "No other sessions are signed in.",
+      "os": {
+        "android": "Android",
+        "chromeos": "ChromeOS",
+        "ios": "iOS",
+        "linux": "Linux",
+        "macos": "macOS",
+        "other": "an unknown system",
+        "windows": "Windows"
+      },
+      "othersSignOutFailed": "The other sessions could not be signed out.",
+      "othersSignedOut": "All other sessions signed out.",
+      "retry": "Try again",
+      "signOut": "Sign out",
+      "signOutFailed": "The session could not be signed out.",
+      "signOutNamed": "Sign out {{client}}",
+      "signOutOthers": "Sign out all other sessions",
+      "signedIn": "Signed in {{at, datetime}}",
+      "signedOut": "Session signed out.",
+      "signingOut": "Signing out…",
+      "title": "Signed-in sessions",
+      "unlisted": "{{count}} older session isn’t shown. Signing out all other sessions ends it too." | "{{count}} older sessions aren’t shown. Signing out all other sessions ends them too."
+    },
     "title": "Account security"
   },
   "app": {
@@ -295,7 +337,7 @@ export default interface Resources {
       "recoveryCodeRequired": "Enter a recovery code.",
       "requestFailed": "The request could not be completed. Try again.",
       "setupConflict": "This setup changed in another session. Check the current state and try again.",
-      "setupElsewhere": "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out your other sessions.",
+      "setupElsewhere": "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, sign that session out under Signed-in sessions, or wait up to 10 minutes.",
       "signupAccount": "Sign in with the invited email address before accepting this invitation.",
       "signupUnavailable": "This invitation cannot create a workspace right now. Try again or contact the person who invited you.",
       "stepUpCodeRateLimited": "Too many attempts. Try again later, or sign out and sign in again. If your authenticator code is still refused, use a recovery code.",

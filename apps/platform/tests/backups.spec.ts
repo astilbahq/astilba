@@ -354,6 +354,7 @@ test("backup setup, restore verification and separate cutover use the real API",
     agentHeaders,
     poll,
     report,
+    server,
   } = await managedDatabase(page, request, info.project.name);
   await page.goto(
     `/?workspace=${ws}&project=${project.id}&environment=${env.id}`,
@@ -372,6 +373,38 @@ test("backup setup, restore verification and separate cutover use the real API",
   await dest
     .getByRole("button", { name: "Add destination", exact: true })
     .click();
+  await expect(dest.getByLabel("Destination name")).toHaveValue("");
+  // An S3 destination's keys go to the one server chosen for it.
+  await dest
+    .getByLabel("Destination name")
+    .fill(`Recovery bucket ${info.project.name}`);
+  await dest.getByLabel("Storage type").selectOption("s3");
+  await dest
+    .getByLabel("Server given the storage keys")
+    .selectOption({ label: `Recovery ${info.project.name}` });
+  await dest.getByLabel("S3 HTTPS origin").fill("https://storage.example.test");
+  await dest.getByLabel("S3 bucket").fill("browser-recovery");
+  await dest.getByLabel("S3 region").fill("test-1");
+  await dest
+    .getByLabel(/^Key prefix/)
+    .fill(`servers/recovery-${info.project.name}`);
+  await dest.getByLabel("S3 access key").fill("browser-key-id");
+  await dest.getByLabel("S3 secret key").fill("browser-secret-canary");
+  const s3 = page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/backup-destinations") &&
+      r.request().method() === "POST",
+  );
+  await dest
+    .getByRole("button", { name: "Add destination", exact: true })
+    .click();
+  const added = await s3;
+  expect(added.status(), await added.text()).toBe(201);
+  expect(added.request().postDataJSON()).toMatchObject({
+    kind: "s3",
+    serverId: server.id,
+    prefix: `servers/recovery-${info.project.name}`,
+  });
   await openEnvironmentSection(page, "Deployments");
   await page
     .getByText("Create backup policy or container job", { exact: true })
@@ -385,6 +418,12 @@ test("backup setup, restore verification and separate cutover use the real API",
       .locator("option")
       .filter({ hasText: `Recovery disk ${info.project.name}` }),
   ).toHaveCount(1);
+  // The bucket's keys belong to this environment's server, so its policies can use it.
+  await expect(
+    form
+      .getByLabel("Backup destination")
+      .getByRole("option", { name: `Recovery bucket ${info.project.name}` }),
+  ).toBeEnabled();
   await form.getByLabel("Backup destination").selectOption({
     label: `Recovery disk ${info.project.name} — same server failure boundary`,
   });
