@@ -1206,6 +1206,56 @@
           "application/json":
             "schema":
               "$ref": "#/components/schemas/CredentialConfirmation"
+  /api/v1/auth/sessions:
+    get:
+      operationId: listAccountSessions
+      description: The account's signed-in browser sessions, the one that asks first and then the most recently seen, marking the one that asks.
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: The account's signed-in sessions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSessions'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/auth/sessions/sign-out-others:
+    post:
+      operationId: signOutOtherSessions
+      description: Signs out every other session of the account, including any not listed. Needs recent authentication.
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: The account's signed-in sessions afterwards
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSessions'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/auth/sessions/{sessionId}:
+    parameters:
+      - {name: sessionId, in: path, required: true, schema: {type: string, format: uuid}}
+    delete:
+      operationId: signOutSession
+      description: Signs out another session of the account. Needs recent authentication; the session that asks logs out instead. A session that is not signed in, as one signed out elsewhere or expired, is not found.
+      security: [{sessionCookie: []}]
+      responses:
+        '200':
+          description: The account's signed-in sessions afterwards
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccountSessions'}
+        default:
+          description: Error
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   "/api/v1/auth/mfa/recovery-codes":
     "post":
       "operationId": "regenerateRecoveryCodes"
@@ -6883,6 +6933,37 @@
         - "mfaPending"
         - "recentAuth"
         - "workspaces"
+    AccountSessions:
+      type: object
+      additionalProperties: false
+      properties:
+        sessions:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/AccountSession'}
+        unlisted:
+          type: integer
+          minimum: 0
+          description: Other signed-in sessions seen less recently than those listed. Signing out every other session ends them too.
+      required: [sessions, unlisted]
+    AccountSession:
+      type: object
+      additionalProperties: false
+      description: A signed-in browser session, from its sign-in across every renewal of its token. What it shows of the client is from its latest request.
+      properties:
+        id: {type: string, format: uuid}
+        current:
+          type: boolean
+          description: Whether this is the session that asked.
+        signedInAt: {type: string, format: date-time}
+        lastSeenAt: {type: string, format: date-time}
+        browser: {type: string, enum: [chrome, edge, firefox, safari, opera, other]}
+        os: {type: string, enum: [windows, macos, ios, android, chromeos, linux, other]}
+        network:
+          type: string
+          maxLength: 64
+          description: The network of the latest request, as an IPv4 /24 or IPv6 /48 prefix. Absent when the address was unknown.
+      required: [id, current, signedInAt, lastSeenAt, browser, os]
     "Login":
       "type": "object"
       "additionalProperties": false

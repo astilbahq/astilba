@@ -16,11 +16,10 @@ for (const theme of ["light", "dark"]) {
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
-    // Two-factor authentication's last action opens its confirmation dialog.
+    // Two-factor authentication's last action opens its confirmation dialog. The pseudo-locale
+    // changes every name, so the section is found by the heading that labels it.
     await page
-      .getByRole("main")
-      .getByRole("region")
-      .nth(-2)
+      .locator("section[aria-labelledby='account-mfa']")
       .getByRole("button")
       .last()
       .click();
@@ -74,6 +73,36 @@ for (const theme of ["light", "dark"]) {
     expect((await audit.analyze()).violations).toEqual([]);
     await page.screenshot({
       path: info.outputPath(`identity-confirmation-${theme}-rtl320.png`),
+      fullPage: true,
+    });
+  });
+}
+
+for (const theme of ["light", "dark"]) {
+  test(`Signed-in sessions fit expanded RTL at 320px in ${theme}`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width: 320, height: 720 });
+    await page.goto(
+      `/iframe.html?id=pages-account-security-signed-in-sessions--signed-in-sessions&viewMode=story&globals=theme:${theme};locale:en-XB;a11y.manual:!true`,
+    );
+    await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+    const sessions = page.locator(
+      "section[aria-labelledby='account-sessions']",
+    );
+    // This session and two others, each with its own button, and the note on those not listed.
+    await expect(sessions.getByRole("listitem")).toHaveCount(3);
+    await expect(sessions.getByRole("button")).toHaveCount(3);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    expect(
+      (await new AxeBuilder({ page }).include("main").analyze()).violations,
+    ).toEqual([]);
+    await page.screenshot({
+      path: info.outputPath(`account-sessions-${theme}-rtl320.png`),
       fullPage: true,
     });
   });

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	nginx = "nginx:1.30.6-alpine3.24@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a"
+	nginx = "nginx:1.30.7-alpine3.24@sha256:caf4e1e032a20f9c3c5e28fc7f25ffd768ad8677b4975c54193075997b3a97e3"
 	kaneo = "ghcr.io/usekaneo/kaneo:2.49.0@sha256:cd1826b1aba3ce736015cadf6f6c975d923aac00f4b6aaa7aedb29bc722dae49"
 	kuma  = "louislam/uptime-kuma:2.5.12-slim-rootless@sha256:212d2131952eded9b2508620455f15f5c2c85c262aafd23b97a7447c53e1d1bc"
 )
@@ -28,13 +28,13 @@ func TestRunPrintsTheImagesNotPulled(t *testing.T) {
 
 // The pull checks bytes against the digest, and the pin report finds a pin by its tag.
 func TestRunRefusesAnImageWithoutTagAndDigest(t *testing.T) {
-	digest := "@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a"
+	digest := "@sha256:caf4e1e032a20f9c3c5e28fc7f25ffd768ad8677b4975c54193075997b3a97e3"
 	for _, image := range []string{
 		"nginx",
-		"nginx:1.30.6-alpine3.24",
+		"nginx:1.30.7-alpine3.24",
 		"nginx" + digest,
-		"docker.io/library/nginx:1.30.6-alpine3.24" + digest,
-		"nginx:1.30.6-alpine3.24@sha256:901e",
+		"docker.io/library/nginx:1.30.7-alpine3.24" + digest,
+		"nginx:1.30.7-alpine3.24@sha256:caf4",
 		" " + nginx,
 	} {
 		t.Run(image, func(t *testing.T) {
