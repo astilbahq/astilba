@@ -108,6 +108,8 @@ export function goTests(line) {
     const runs = [];
     const skips = [];
     const packages = [];
+    // Go applies the last -timeout, and 10 minutes without one.
+    let timeout = "10m";
     for (let i = 0; i < args.length; i++) {
       const run = /^-run(?:=(.*))?$/.exec(args[i]);
       const skip = /^-skip(?:=(.*))?$/.exec(args[i]);
@@ -117,10 +119,11 @@ export function goTests(line) {
         packages.push(posix.join(directory, args[i]));
       else if (!goTestFlag.test(args[i]))
         throw new Error(`cannot read go test argument ${args[i]}`);
+      else if (args[i].startsWith("-timeout=")) timeout = args[i].slice(9);
     }
     if (!packages.length)
       throw new Error(`expected a ./ package: ${command.join(" ")}`);
-    found.push({ runs, skips, command: command.join(" "), packages });
+    found.push({ runs, skips, command: command.join(" "), packages, timeout });
   }
   return found;
 }

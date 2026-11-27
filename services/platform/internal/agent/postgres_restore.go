@@ -11,7 +11,11 @@ import (
 )
 
 // ensureImage pulls a pinned public image the host does not hold, such as the release a restore
-// or an upgrade runs when its database's container was removed.
+// or an upgrade runs when its database's container was removed, or the release a deployment
+// creates a new database's cluster with. The pull keeps the engine to the command, unlike a
+// deployment's pullVisualImages, see lend: the command is part-way through the database's data or
+// storage, which a scheduled backup that ran meanwhile would read or hold. Docker's pull still
+// ends as stalled, and within dockerPullTime, see pullImageAuth.
 func (e *Engine) ensureImage(ctx context.Context, image string) error {
 	_, err := e.Docker.ImageInspect(ctx, image)
 	if errdefs.IsNotFound(err) {

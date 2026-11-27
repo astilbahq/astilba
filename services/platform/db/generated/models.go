@@ -154,10 +154,12 @@ type BackupCutover struct {
 }
 
 type BackupDestination struct {
-	ID              uuid.UUID `json:"id"`
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
-	Configuration   []byte    `json:"configuration"`
-	EncryptedAccess []byte    `json:"encrypted_access"`
+	ID              uuid.UUID  `json:"id"`
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	Configuration   []byte     `json:"configuration"`
+	EncryptedAccess []byte     `json:"encrypted_access"`
+	ServerID        *uuid.UUID `json:"server_id"`
+	Shared          bool       `json:"shared"`
 }
 
 type BackupPolicy struct {
@@ -867,6 +869,8 @@ type PreviewRequest struct {
 	ReleasedByRevocation bool        `json:"released_by_revocation"`
 	ApprovedBy           *uuid.UUID  `json:"approved_by"`
 	ApprovedAuthVersion  pgtype.Int8 `json:"approved_auth_version"`
+	RefusedKey           string      `json:"refused_key"`
+	RefusalNote          string      `json:"refusal_note"`
 }
 
 type Project struct {

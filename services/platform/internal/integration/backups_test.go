@@ -65,7 +65,7 @@ func TestBackupScopeHydrationReportsAndCutover(t *testing.T) {
 	b.call("POST", path+"/deployment-plans/"+plan.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New(), ApproveHostChanges: approved()}, 201, &op)
 	report(poll(op.Id), &deployment.Observation{ObservedAt: time.Now(), Applied: true, Resources: []deployment.Resource{{ID: pg, Kind: "service", State: "healthy", Image: image}}, StateHash: strings.Repeat("b", 64)})
 	var dest backup.Destination
-	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Recovery bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key-canary", "secretKey": "storage-secret-canary", "password": ""}}, 201, &dest)
+	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Recovery bucket", "kind": "s3", "serverId": enrolled.Server.Id, "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key-canary", "secretKey": "storage-secret-canary", "password": ""}}, 201, &dest)
 	password := "repository-password-canary"
 	input := api.BackupPolicyRequest{Name: "Daily backup", ResourceId: pg, DestinationId: dest.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "Europe/London"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}
 	var policy backup.Policy
@@ -249,7 +249,7 @@ func TestBackupCredentialsNeedRecentAuthentication(t *testing.T) {
 		body         any
 		status       int
 	}{
-		{"POST", prefix + "/backup-destinations", map[string]any{"name": "Second bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "stale-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201},
+		{"POST", prefix + "/backup-destinations", map[string]any{"name": "Second bucket", "kind": "s3", "serverId": p.server, "root": "", "endpoint": "https://storage.example.test", "bucket": "stale-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201},
 		{"POST", environment + "/backup-policies", created, 201},
 		{"PUT", p.path, updated, 200},
 		{"POST", p.path + "/commands", api.BackupCommandRequest{Action: "install", RequestKey: uuid.New()}, 202},

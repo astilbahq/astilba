@@ -174,6 +174,8 @@ export function revokedServerBackupHandlers({
           endpoint: "https://storage.example.test",
           bucket: "backups",
           region: "eu-west-1",
+          serverId: revoked,
+          shared: false,
           exposed: true,
           policies: [
             {

@@ -16,6 +16,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 	"github.com/moby/moby/client"
+	bolt "go.etcd.io/bbolt"
 )
 
 // A backup from another major is refused with its reason before the host is touched: no
@@ -41,15 +42,30 @@ func TestRestoreFromAnotherMajorIsRefusedBeforeTouchingTheHost(t *testing.T) {
 }
 
 // A report's note is refused past 1024 characters on every retry, so no note may grow past it,
-// however many databases a rebuild leaves unfinished or exclusion indexes it names.
+// however many databases a rebuild leaves unfinished or closed or exclusion indexes it names.
+// Whole after the longest note a report puts before it, the rebuild's also leads a maintenance
+// report's, so clipping never loses it.
 func TestReportNoteStaysWithinTheContract(t *testing.T) {
-	var many []string
-	for i := range 60 {
-		many = append(many, strings.Repeat("ä", 70)+strconv.Itoa(i))
+	shapes := map[string][]string{}
+	for i := range 300 {
+		shapes["accented"] = append(shapes["accented"], strings.Repeat("ä", 70)+strconv.Itoa(i))
+		shapes["wide"] = append(shapes["wide"], strings.Repeat("a", 150)+strconv.Itoa(i))
+		shapes["short"] = append(shapes["short"], "x"+strconv.Itoa(i))
 	}
-	note := "This host's maintenance reservation is released. 12 instances were not required to be ready: they were already stopped or failing, or an operator accepted them. " + reindexNote(many, many)
-	if got := utf8.RuneCountInString(reportNote(note)); got > 1024 || !strings.Contains(reindexNote(many, many), "more") {
-		t.Fatalf("a note of %d characters, or no count of the rest", got)
+	before := "The selected local pool is recorded and retirement is confirmed. "
+	after := "This host's maintenance reservation is released. 1000000 instances were not required to be ready: they were already stopped or failing, or an operator accepted them."
+	for unfinishedShape, unfinished := range shapes {
+		for closedShape, closed := range shapes {
+			for exclusionShape, exclusions := range shapes {
+				rebuild := reindexNote(unfinished, closed, exclusions)
+				if note := before + rebuild; utf8.RuneCountInString(note) > 1024 || reportNote(note) != note || strings.Count(rebuild, " more") != 3 {
+					t.Errorf("%s, %s and %s names: a note of %d characters, or no count of the rest", unfinishedShape, closedShape, exclusionShape, utf8.RuneCountInString(note))
+				}
+				if !strings.HasPrefix(reportNote(rebuild+" "+after), rebuild) {
+					t.Errorf("%s, %s and %s names: a maintenance report clipped the rebuild's note", unfinishedShape, closedShape, exclusionShape)
+				}
+			}
+		}
 	}
 	if reportNote("short") != "short" {
 		t.Fatal("a short note changed")
@@ -57,7 +73,8 @@ func TestReportNoteStaysWithinTheContract(t *testing.T) {
 }
 
 // An agent that stops during the rebuild leaves the command to resume: it reports no outcome,
-// and the volume keeps recording the earlier release.
+// and the volume keeps recording the earlier release beside the serving one, whatever plan the
+// unit saves next.
 func TestStoppingDuringTheRebuildLeavesItToResume(t *testing.T) {
 	journal, base := testVisualJournal(t)
 	docker, err := client.New(client.WithHost("unix:///nonexistent/astilba-test.sock"))
@@ -73,8 +90,14 @@ func TestStoppingDuringTheRebuildLeavesItToResume(t *testing.T) {
 	}
 	id, volume, image := uuid.New(), uuid.New(), domain.PostgresImage
 	p := base
-	p.Specification.Applications = []domain.Application{{ID: id, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(image)}}}}
+	p.Specification.Applications = []domain.Application{
+		{ID: id, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(image)}}},
+	}
 	if err = journal.savePostgresData(volume, postgresData{Image: retired.Image}); err != nil {
+		t.Fatal(err)
+	}
+	p = p.WithHash()
+	if err = journal.saveUnit(unitState{Plan: p, Expected: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -82,8 +105,13 @@ func TestStoppingDuringTheRebuildLeavesItToResume(t *testing.T) {
 	if note, err := e.reindexPostgres(ctx, p, nil); !errors.Is(err, context.Canceled) || note != "" {
 		t.Fatalf("a stopping agent settled the rebuild: %q, %v", note, err)
 	}
-	if record, _, _ := journal.postgresData(volume); record.Image != retired.Image {
-		t.Fatalf("a stopped rebuild advanced the record to %s", record.Image)
+	next := p
+	next.ID = uuid.New()
+	if err = journal.saveUnit(unitState{Plan: next.WithHash(), Expected: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if record, _, _ := journal.postgresData(volume); record.Image != retired.Image || record.Served != image {
+		t.Fatalf("a stopped rebuild advanced the record: %+v", record)
 	}
 }
 
@@ -153,5 +181,101 @@ func TestRecoveryReportNamesItsRoleModelOnlyWhereItIsRead(t *testing.T) {
 	c.postgresOwnerRole.Store(false)
 	if got := c.advertisedCapabilities(api.AgentCapabilities{PostgresOwnerRole: ptr(true)}); got.PostgresOwnerRole != nil {
 		t.Fatal("a controller from before the owner model was sent the capability")
+	}
+}
+
+// While a rebuild is outstanding, the record holds both the release whose indexes the data holds,
+// for storage with no record the oldest of its major, and the later one serving it. A plan the unit
+// leaves does not record its own release over that, so the rebuild is not lost, and the data
+// still refuses what cannot open what the serving release wrote: an earlier release, or another
+// line, whatever the assumed one's line.
+func TestOutstandingRebuildKeepsTheServingReleasesRefusals(t *testing.T) {
+	journal, identity := testVisualJournal(t)
+	serving, _ := domain.CurrentPostgres(18)
+	otherLine := serving
+	otherLine.Version++
+	otherLine.Image, otherLine.Line = "postgres:"+otherLine.Name()+"-alpine3.24@sha256:"+strings.Repeat("a", 64), "alpine3.24"
+	postgresReleaseOf = func(image string) (domain.PostgresRelease, bool) {
+		if image == otherLine.Image {
+			return otherLine, true
+		}
+		return domain.PostgresReleaseOf(image)
+	}
+	t.Cleanup(func() { postgresReleaseOf = domain.PostgresReleaseOf })
+	volume := uuid.New()
+	plan := func(r domain.PostgresRelease) deployment.Plan {
+		p := identity
+		p.ID = uuid.New()
+		image := r.Image
+		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}},
+			Applications: []domain.Application{{ID: uuid.New(), Name: "Database", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: r.Mount}}}}}
+		return p.WithHash()
+	}
+	pending := postgresData{Image: oldestPostgres(18).Image, Served: serving.Image}
+	if err := journal.savePostgresData(volume, pending); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := journal.saveUnit(unitState{Plan: plan(serving), Expected: map[string]string{}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if record, found, err := journal.postgresData(volume); err != nil || !found || record != pending {
+		t.Fatalf("a plan the unit left replaced the outstanding rebuild's record: %+v, %v", record, err)
+	}
+	if err := journal.postgresDataOpens(plan(serving), volume); err != nil {
+		t.Fatalf("the serving release was refused: %v", err)
+	}
+	for _, refused := range []domain.PostgresRelease{oldestPostgres(18), otherLine} {
+		if err := journal.postgresDataOpens(plan(refused), volume); !errors.Is(err, errPostgresVersionChange) {
+			t.Fatalf("%s opened data %s served: %v", refused.Image, serving.Image, err)
+		}
+	}
+}
+
+// Storage with no record, such as a restore target an earlier agent filled, holds indexes no
+// release this agent saw rebuilt. An earlier agent's journal holds the unit's plan on the oldest
+// release. Saving a later release's plan records the storage it serves as holding the oldest
+// release's indexes, served by the later one, and the storage it no longer uses as the plan it
+// leaves served it. Saving the applied plan again, or another on the same release, changes
+// neither, so the rebuild stays due and the earlier release stays refused.
+func TestStorageWithNoRecordKeepsItsRebuildWhateverPlansTheUnitSaves(t *testing.T) {
+	journal, identity := testVisualJournal(t)
+	serving, _ := domain.CurrentPostgres(18)
+	oldest := oldestPostgres(18)
+	if oldest.Image == serving.Image || len(serving.ReindexSince(oldest)) == 0 {
+		t.Fatal("PostgreSQL 18 has no earlier release whose update rebuilds indexes")
+	}
+	served, kept := uuid.New(), uuid.New()
+	plan := func(r domain.PostgresRelease, volumes ...uuid.UUID) deployment.Plan {
+		p := identity
+		p.ID = uuid.New()
+		image := r.Image
+		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}}
+		for _, volume := range volumes {
+			p.Specification.Volumes = append(p.Specification.Volumes, domain.Volume{ID: volume, Name: volume.String()})
+			p.Specification.Applications = append(p.Specification.Applications, domain.Application{ID: uuid.New(), Name: volume.String(), Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: r.Mount}}})
+		}
+		return p.WithHash()
+	}
+	earlier := plan(oldest, served, kept)
+	if err := journal.db.Update(func(tx *bolt.Tx) error {
+		return journal.put(tx, "units", earlier.UnitID.String(), unitState{Plan: earlier, Expected: map[string]string{}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	applied := plan(serving, served)
+	for _, p := range []deployment.Plan{applied, applied, plan(serving, served)} {
+		if err := journal.saveUnit(unitState{Plan: p, Expected: map[string]string{}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for volume, want := range map[uuid.UUID]postgresData{served: {Image: oldest.Image, Served: serving.Image}, kept: {Image: oldest.Image}} {
+		if record, found, err := journal.postgresData(volume); err != nil || !found || record != want {
+			t.Fatalf("storage with no record was recorded as %+v, not %+v: %v", record, want, err)
+		}
+	}
+	if err := journal.postgresDataOpens(plan(oldest, served), served); !errors.Is(err, errPostgresVersionChange) {
+		t.Fatalf("an earlier release opened data the serving one wrote: %v", err)
 	}
 }

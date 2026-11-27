@@ -47,6 +47,7 @@ type Client struct {
 	purge                   atomic.Bool
 	schedules               atomic.Bool
 	recoveryRestore         atomic.Bool
+	backupPrefixes          atomic.Bool
 	replicas                atomic.Bool
 	crossHost               atomic.Bool
 	maintenanceContinuation atomic.Bool

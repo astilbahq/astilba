@@ -58,34 +58,27 @@ func (r registryRetry) wait(attempt int, elapsed, asked time.Duration) (time.Dur
 	return wait, true
 }
 
-// errPullCancelled is the owner cancelling the command while the agent read an image from its
-// registry, or waited to read it again.
-var errPullCancelled = errors.New("Cancelled while the agent read an image from its registry.")
+// errPullCancelled is the owner cancelling the command while it put an image into Docker: while
+// the agent read it from its registry, or waited to read it again, or Docker pulled it.
+var errPullCancelled = errors.New("Cancelled while the agent pulled an image from its registry.")
 
 // readRegistry runs read, one attempt at reading an image from its registry, until it succeeds,
 // fails for a reason other than reading the registry, or fails in a way the registry won't
-// recover from, within e's retry bounds. It returns errPullCancelled once cancelled, the
-// command's owner cancelling it, returns true, ending an attempt it is reading. A read that could not reach the
-// registry ends in registryUnreachable's refusal. Each failed read is logged with its cause,
-// without credentials.
-func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func() bool, read func(context.Context) error) error {
+// recover from, within e's retry bounds. Once ctx ends, ending an attempt it is reading or a wait
+// between attempts, it returns ctx's cause: errPullCancelled once the command's owner cancels it,
+// see pullContext. A read that could not reach the registry ends in registryUnreachable's
+// refusal. Each failed read is logged with its cause, without credentials.
+func (e *Engine) readRegistry(ctx context.Context, image string, read func(context.Context) error) error {
 	retry := defaultRegistryRetry
 	if e.registryRetry != nil {
 		retry = *e.registryRetry
 	}
 	began := time.Now()
 	for attempt := 1; ; attempt++ {
-		reading, stop := untilCancelled(ctx, cancelled)
-		err := read(reading)
-		// Before stop, only the command's own context or its owner ends reading.
-		ended := reading.Err() != nil
-		stop()
-		// Neither is the registry's failure.
+		err := read(ctx)
+		// The command's context ending is not the registry's failure.
 		if err != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err != nil && ended {
-			return errPullCancelled
+			return context.Cause(ctx)
 		}
 		var unread *imageArchiveUnread
 		if !errors.As(err, &unread) {
@@ -103,11 +96,12 @@ func (e *Engine) readRegistry(ctx context.Context, image string, cancelled func(
 			return registryUnreachable(unread.err)
 		}
 		log.Warn("the agent could not read an image from its registry and will read it again", "after", wait)
-		if !waitUnless(ctx, wait, cancelled) {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return errPullCancelled
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return context.Cause(ctx)
 		}
 	}
 }
@@ -121,26 +115,6 @@ func readFailure(err error) *sourceFailure {
 	failure := &sourceFailure{err: unread.err}
 	errors.As(unread.err, &failure)
 	return failure
-}
-
-// waitUnless waits for wait and reports true, or false as soon as ctx ends or cancelled.
-func waitUnless(ctx context.Context, wait time.Duration, cancelled func() bool) bool {
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	tick := time.NewTicker(200 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		if cancelled() {
-			return false
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-tick.C:
-		case <-timer.C:
-			return !cancelled()
-		}
-	}
 }
 
 // transientRegistryFailure reports whether err, a failure reading from a registry, is one the

@@ -307,18 +307,27 @@ func reviewedRoutesEnabled(s routeSnapshot, runtime proxyRuntime) error {
 
 func readProxyRuntime(ctx context.Context, docker *client.Client, id string) (proxyRuntime, error) {
 	var runtime proxyRuntime
-	exec, err := docker.ExecCreate(ctx, id, client.ExecCreateOptions{AttachStdout: true, AttachStderr: true, Cmd: []string{"wget", "-T", "2", "-qO-", "http://127.0.0.1:8080/api/rawdata"}})
+	raw, err := proxyRawdata(ctx, docker, id)
 	if err != nil {
 		return runtime, err
 	}
+	return runtime, json.Unmarshal(raw, &runtime)
+}
+
+// proxyRawdata is what the proxy container id reports of its routing.
+func proxyRawdata(ctx context.Context, docker *client.Client, id string) ([]byte, error) {
+	exec, err := docker.ExecCreate(ctx, id, client.ExecCreateOptions{AttachStdout: true, AttachStderr: true, Cmd: []string{"wget", "-T", "2", "-qO-", "http://127.0.0.1:8080/api/rawdata"}})
+	if err != nil {
+		return nil, err
+	}
 	attached, err := docker.ExecAttach(ctx, exec.ID, client.ExecAttachOptions{})
 	if err != nil {
-		return runtime, err
+		return nil, err
 	}
 	defer attached.Close()
 	var output bytes.Buffer
 	if _, err = stdcopy.StdCopy(&output, io.Discard, attached.Reader); err != nil {
-		return runtime, err
+		return nil, err
 	}
-	return runtime, json.Unmarshal(output.Bytes(), &runtime)
+	return output.Bytes(), nil
 }

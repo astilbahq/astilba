@@ -163,3 +163,24 @@ export const LostDiscardReply: Story = {
     ).toHaveAttribute("aria-disabled", "true");
   },
 };
+
+// A destination's keys belong to the server it was created for, so a new policy elsewhere can't
+// choose the revoked server's.
+export const AnotherServersDestination: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("tab", { name: "Deployments" }),
+    );
+    await userEvent.click(
+      await canvas.findByText("Create backup policy or container job"),
+    );
+    const form = await canvas.findByRole("form", {
+      name: "Create backup policy",
+    });
+    const option = await within(form).findByRole("option", {
+      name: /^Offsite bucket — keys belong to edge-1/,
+    });
+    await expect(option).toBeDisabled();
+  },
+};

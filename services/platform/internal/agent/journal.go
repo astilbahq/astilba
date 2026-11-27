@@ -137,12 +137,15 @@ func openJournal(ctx context.Context, dir string, store func(context.Context) (K
 		return fail(err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "upgrades", "releases", "preview-cleanups", "cross-host", "distributed-fences", "retained-pools", "recovery-heads", "recovery-checkpoints", "recovery-authority", "recovery-gc", "troubleshooting-shells", "troubleshooting-entered", postgresDataBucket, postgresCredentialBucket} {
+		for _, b := range []string{"identity", "operations", "generations", "units", "routing", "schedules", "schedules-v2", "schedules-v3", "upgrades", "releases", "preview-cleanups", "cross-host", "distributed-fences", "retained-pools", "recovery-heads", "recovery-checkpoints", "recovery-authority", "recovery-gc", "troubleshooting-shells", "troubleshooting-entered", postgresDataBucket, postgresCredentialBucket} {
 			if _, e := tx.CreateBucketIfNotExists([]byte(b)); e != nil {
 				return e
 			}
 		}
 		if err := j.dropSubmissionCredentials(tx); err != nil {
+			return err
+		}
+		if err := dropRetiredSchedules(tx); err != nil {
 			return err
 		}
 		if err := j.redactUnneeded(tx); err != nil {
@@ -266,7 +269,7 @@ func (j *Journal) put(tx *bolt.Tx, bucket, key string, value any) error {
 		return e
 	}
 	limit := 32768
-	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "upgrades" || bucket == "releases" || bucket == "cross-host" || bucket == "retained-pools" || bucket == "recovery-authority" {
+	if bucket == "units" || bucket == "routing" || bucket == "schedules" || bucket == "schedules-v2" || bucket == "schedules-v3" || bucket == "upgrades" || bucket == "releases" || bucket == "cross-host" || bucket == "retained-pools" || bucket == "recovery-authority" {
 		limit = 524288
 	}
 	if record, ok := value.(Record); ok && (record.Command.Kind == "visual" || record.Command.Kind == "pipeline" || record.Command.Kind == "backup" || record.Command.Kind == "schedule" || record.Command.Kind == "restore" || record.Command.Kind == "upgrade" || record.Command.Kind == "network" || record.Command.Kind == "crosshost") {

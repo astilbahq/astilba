@@ -33,7 +33,7 @@ const maxProbeOutput = 4 << 10
 type routeServersUnready struct{ reason error }
 
 func (u *routeServersUnready) Error() string {
-	return "the proxy cannot route to every server of the new routes: " + u.reason.Error()
+	return "the proxy cannot route to every server of the routes: " + u.reason.Error()
 }
 
 // routeServersNote is otherwise, followed by why the proxy could not route to a server
@@ -60,8 +60,22 @@ type poolServer struct {
 }
 
 // healthCheckedPools are the pools of set's HTTP routes that the proxy probes, read from
-// the published file raw, which is what the proxy loaded.
+// the published file raw, which is what the proxy loaded. A pool whose check the proxy
+// refuses is an error, since the proxy never routes to its servers.
 func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error) {
+	pools, refused, err := probedPools(raw, set)
+	if err == nil && len(refused) > 0 {
+		err = &routeServersUnready{reason: fmt.Errorf("route %s: the proxy refuses a health check path that is not relative", refused[0])}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return pools, nil
+}
+
+// probedPools are the pools of set's HTTP routes that the proxy probes, read from raw, and
+// the domains of those whose check it refuses, which it leaves out.
+func probedPools(raw []byte, set deployment.RouteSet) (pools []routePool, refused []string, err error) {
 	var file struct {
 		HTTP struct {
 			Services map[string]struct {
@@ -78,9 +92,9 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 		} `json:"http"`
 	}
 	if err := json.Unmarshal(raw, &file); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	pools := []routePool{}
+	pools = []routePool{}
 	for _, r := range set.Routes {
 		if r.Protocol != "http" {
 			continue
@@ -94,10 +108,11 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 		// counts such a pool's servers up, and a probe there would leave the pool's servers.
 		path, err := url.Parse(balancer.HealthCheck.Path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if path.Host != "" || path.Scheme != "" {
-			return nil, &routeServersUnready{reason: fmt.Errorf("route %s: the proxy refuses a health check path that is not relative", r.Domain)}
+			refused = append(refused, r.Domain)
+			continue
 		}
 		pool := routePool{domain: r.Domain, service: name + "@file"}
 		for _, server := range balancer.Servers {
@@ -105,11 +120,11 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 			// check's port when it names one.
 			target, err := url.Parse(server.URL)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			probe, err := target.Parse(balancer.HealthCheck.Path)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if balancer.HealthCheck.Port != 0 {
 				probe.Host = net.JoinHostPort(probe.Hostname(), strconv.Itoa(balancer.HealthCheck.Port))
@@ -118,27 +133,38 @@ func healthCheckedPools(raw []byte, set deployment.RouteSet) ([]routePool, error
 		}
 		pools = append(pools, pool)
 	}
-	return pools, nil
+	return pools, refused, nil
 }
 
 // awaitRouteServers waits until the proxy routes every health-checked pool of unit's
-// routes in s, published as raw. The proxy counts each server up from when it loads the
-// file, and first probes it PoolHealthInterval later, so until then its report vouches
-// for nothing: one failed probe would then take the server out for another interval, and
-// a pool with no server left answers 503. So each server must pass the proxy's probe,
-// sent over the proxy's network, and the proxy must still report it up once any probe it
-// started before that has ended. Only unit's pools are waited for: another environment's
+// routes in s, published as raw. Only unit's pools are waited for: another environment's
 // server, down or not, must not stop this publish.
 func (e *Engine) awaitRouteServers(ctx context.Context, s routeSnapshot, raw []byte, unit string) error {
-	set, ok := s.Sets[unit]
-	if !ok {
-		return nil
-	}
-	pools, err := healthCheckedPools(raw, set)
+	pools, err := unitPools(s, raw, unit)
 	if err != nil || len(pools) == 0 {
 		return err
 	}
-	wait, cancel := context.WithTimeout(ctx, routeServerWait)
+	return e.awaitPools(ctx, pools, raw, time.Now().Add(routeServerWait))
+}
+
+// unitPools are the health-checked pools of unit's routes in s, published as raw.
+func unitPools(s routeSnapshot, raw []byte, unit string) ([]routePool, error) {
+	set, ok := s.Sets[unit]
+	if !ok {
+		return nil, nil
+	}
+	return healthCheckedPools(raw, set)
+}
+
+// awaitPools waits until the proxy routes every server of pools, published as raw, or the
+// deadline passes. The proxy counts each server up from when it loads the file, and first probes it
+// PoolHealthInterval later, so until then its report vouches for nothing: one failed probe
+// would then take the server out for another interval, and a pool with no server left
+// answers 503. It also probes a server it has marked down only every PoolHealthInterval.
+// So each server must pass the proxy's probe, sent over the proxy's network, and the proxy
+// must still report it up once any probe it started before that has ended.
+func (e *Engine) awaitPools(ctx context.Context, pools []routePool, raw []byte, deadline time.Time) error {
+	wait, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	last := errors.New("no server was probed in time")
 	for {

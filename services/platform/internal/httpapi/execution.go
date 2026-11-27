@@ -68,6 +68,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Schedules", "v1")
 		// v1 reads recoveryRestore, an agent that runs the restore command kind.
 		w.Header().Set("Astilba-Agent-Recovery-Restore", "v1")
+		// v1 reads backupPrefixes, an agent that keeps an S3 destination's repositories under its prefix.
+		w.Header().Set("Astilba-Agent-Backup-Prefixes", "v1")
 		w.Header().Set("Astilba-Agent-Replicas", "v1")
 		w.Header().Set("Astilba-Agent-Cross-Host", "v1")
 		w.Header().Set("Astilba-Agent-Maintenance-Continuation", "v1")
