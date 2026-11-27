@@ -49,6 +49,12 @@ func ExportConfiguration(plan Plan) (Export, error) {
 	for _, v := range plan.Specification.Volumes {
 		readme += "Create the volume only for a fresh target (never replace existing data): docker volume create " + VolumeName(v.ID) + "\n"
 	}
+	for _, a := range plan.Specification.Applications {
+		if a.Postgres != nil && a.Postgres.Owner() {
+			readme += "On a fresh volume, the PostgreSQL image creates the database with its user as the cluster's superuser. Astilba's own deployment keeps the superuser for maintenance and gives that user only the database it owns.\n"
+			break
+		}
+	}
 	files := []composeproject.File{}
 	if plan.Specification.Compose != nil {
 		for _, file := range plan.Specification.Compose.Files {

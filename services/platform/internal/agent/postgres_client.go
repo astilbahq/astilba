@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
@@ -20,24 +22,60 @@ var errUnsupportedPostgresImage = errors.New("the database's PostgreSQL image is
 
 // pgClient is where the agent runs PostgreSQL's client tools. It is a container the agent owns:
 // either a database container, reached over its Unix socket, or a helper that shares a database
-// container's network namespace and reaches it over TCP with the database's credential. The
-// agent never runs anything in a database container it doesn't own.
+// container's network namespace and reaches it over TCP on the loopback address, which the
+// cluster trusts without a password, as the pinned image's initdb sets it up. Only the database
+// and the agent's helpers are in that namespace, so only they can connect as the cluster's
+// superuser. The agent never runs anything in a database container it doesn't own.
 type pgClient struct {
 	container string
 	env       []string
 }
 
+// sessionOptions are the settings every session the agent opens to a managed database starts with.
+// A client's options outrank the database's and its roles' settings, which in the owner model the
+// database's user sets, and the agent's sessions are often the cluster's superuser. So none of
+// those settings decides who a session runs as (role), which functions and operators its SQL
+// resolves to (search_path), what a quoted literal means (standard_conforming_strings), what is
+// loaded into it (local_preload_libraries), whether it can write (default_transaction_read_only),
+// or how it encodes text (client_encoding). How it shows dates and times stays the database's, so
+// a restore loads them as its archive's dump did.
+const sessionOptions = identityOptions + " -c standard_conforming_strings=on -c client_encoding=UTF8"
+
+// identityOptions are sessionOptions less how a session quotes literals and encodes text, for a
+// session as the database's user that reads how the user's own sessions do both.
+const identityOptions = "-c role=none -c search_path=pg_catalog,pg_temp -c local_preload_libraries= -c default_transaction_read_only=off"
+
+// pgOptions is the PGOPTIONS a client of a managed database runs with: sessionOptions and then
+// each of extra, a name=value setting. PGOPTIONS replaces any a container already has, so every
+// client gets it whole.
+func pgOptions(extra ...string) string {
+	options := "PGOPTIONS=" + sessionOptions
+	for _, setting := range extra {
+		options += " -c " + setting
+	}
+	return options
+}
+
+// dumpOptions are the settings, for pgOptions, that a session dumps with as the dump that recorded
+// settings did. A later setting in PGOPTIONS replaces an earlier one, so they also replace
+// sessionOptions' encoding and quoting. PGOPTIONS splits at spaces and takes a backslash as
+// escaping the next character.
+func dumpOptions(settings map[string]string) []string {
+	escape := strings.NewReplacer(`\`, `\\`, " ", `\ `)
+	options := make([]string, 0, len(backup.DumpSettings))
+	for _, name := range backup.DumpSettings {
+		options = append(options, name+"="+escape.Replace(settings[name]))
+	}
+	return options
+}
+
 // postgresHelper starts a helper for the database in container source, from that database's own
 // pinned image so its tools match the server. The helper runs as the postgres user with nothing
 // writable, sleeping only until ctx's deadline and a minute more, so one an agent crash leaves
-// behind stops by itself but never before the work it serves. The credential goes only in each
-// command's environment, never in the helper's configuration. The caller removes the helper.
-func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[string]string, source, image, password string) (pgClient, error) {
+// behind stops by itself but never before the work it serves. The caller removes the helper.
+func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[string]string, source, image string) (pgClient, error) {
 	if _, ok := domain.PostgresReleaseOf(image); !ok {
 		return pgClient{}, errUnsupportedPostgresImage
-	}
-	if password == "" {
-		return pgClient{}, errors.New("database initialization credential unavailable")
 	}
 	end, bounded := ctx.Deadline()
 	if !bounded {
@@ -63,7 +101,7 @@ func (e *Engine) postgresHelper(ctx context.Context, name string, labels map[str
 	}
 	// A backend checks its client is still there while it waits, such as on a lock, so removing
 	// the helper ends it within a second rather than once it next writes.
-	helper := pgClient{container: created.ID, env: []string{"PGHOST=127.0.0.1", "PGPASSWORD=" + password, "PGOPTIONS=-c client_connection_check_interval=1000"}}
+	helper := pgClient{container: created.ID, env: []string{"PGHOST=127.0.0.1", pgOptions("client_connection_check_interval=1000")}}
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		e.removeHelper(helper)
 		return pgClient{}, err

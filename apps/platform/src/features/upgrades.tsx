@@ -93,6 +93,12 @@ export function Upgrades({
             checks these conditions before stopping services.
           </p>
           <p>
+            The new database&apos;s user owns the database but is never the
+            cluster&apos;s superuser, even if the old one&apos;s was: the
+            application can no longer create roles or databases, change server
+            settings or run programs on the server.
+          </p>
+          <p>
             Reserve free host space for three times the database size, plus 256
             MiB, and staging space for twice its size, plus 256 MiB. The agent
             also checks the actual archive size before restore. Keep the backup

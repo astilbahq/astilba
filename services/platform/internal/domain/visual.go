@@ -83,7 +83,34 @@ type Postgres struct {
 	Database                string    `json:"database"`
 	Username                string    `json:"username"`
 	PasswordSecretVersionID uuid.UUID `json:"passwordSecretVersionId"`
+	// Roles says who the cluster's superuser is. PostgresOwner, which every new database uses,
+	// keeps the superuser for Astilba's own maintenance: Username is an ordinary role that owns
+	// Database. Empty is a database from before, where Username is the superuser. A volume keeps
+	// the value it was initialised with; only new storage, such as an upgrade's or a restore's
+	// target, changes it.
+	Roles string `json:"roles,omitempty"`
 }
+
+// PostgresOwner is the role model where the database user owns its database but isn't the
+// cluster's superuser.
+const PostgresOwner = "owner"
+
+// PostgresSuperuser is the superuser of a cluster in the owner model. It has no password, so only
+// a client in the database's own network namespace, which only the agent's helpers join, can
+// reach it.
+const PostgresSuperuser = "postgres"
+
+// Owner says whether the database user is an ordinary role that owns the database.
+func (p Postgres) Owner() bool { return p.Roles == PostgresOwner }
+
+// MaintenanceUser is the superuser Astilba's own maintenance connects as.
+func (p Postgres) MaintenanceUser() string {
+	if p.Owner() {
+		return PostgresSuperuser
+	}
+	return p.Username
+}
+
 type Binding struct {
 	Output   string    `json:"output,omitempty"`
 	ID       uuid.UUID `json:"id"`
@@ -245,6 +272,18 @@ func ValidateVisual(s Specification) error {
 		if a.ServiceKind() == "postgres" {
 			if a.Postgres == nil || !dbName.MatchString(a.Postgres.Database) || !dbName.MatchString(a.Postgres.Username) || a.Postgres.PasswordSecretVersionID == uuid.Nil || a.Source.Kind != "image" || a.Source.Image == nil || !knownPostgres(*a.Source.Image) || len(a.Command) != 0 {
 				return Invalid("applications.postgres")
+			}
+			if a.Postgres.Roles != "" && a.Postgres.Roles != PostgresOwner {
+				return Invalid("applications.postgres.roles")
+			}
+			// The owner model's superuser has its own name, and PostgreSQL reserves pg_ for its
+			// predefined roles.
+			if a.Postgres.Owner() && (a.Postgres.Username == PostgresSuperuser || strings.HasPrefix(a.Postgres.Username, "pg_")) {
+				return &Error{Code: "invalid_input", Message: "Choose another database user name: " + a.Postgres.Username + " is reserved for PostgreSQL's own roles.", Fields: []string{"applications.postgres.username"}}
+			}
+			// Every cluster has its template databases, which the superuser owns.
+			if a.Postgres.Owner() && (a.Postgres.Database == "template0" || a.Postgres.Database == "template1") {
+				return &Error{Code: "invalid_input", Message: "Choose another database name: " + a.Postgres.Database + " is one of PostgreSQL's own databases.", Fields: []string{"applications.postgres.database"}}
 			}
 			if len(a.Mounts) != 1 || a.Mounts[0].Target != PostgresMount(*a.Source.Image) || a.Mounts[0].ReadOnly {
 				return Invalid("applications.postgres.mounts")

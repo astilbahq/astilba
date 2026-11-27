@@ -83,6 +83,15 @@ func TestRecoveryAdmitsOnlyThePolicysManifest(t *testing.T) {
 	if err := r.Admits(m); err != nil {
 		t.Fatal("a manifest with the recipe's extensions was refused: ", err)
 	}
+	settings := func(change func(map[string]string)) map[string]string {
+		s := map[string]string{"TimeZone": "Europe/Paris", "bytea_output": "hex", "lc_monetary": "en_US.utf8", "quote_all_identifiers": "off", "client_encoding": "UTF8", "standard_conforming_strings": "on"}
+		change(s)
+		return s
+	}
+	m.DumpSettings = settings(func(map[string]string) {})
+	if err := r.Admits(m); err != nil {
+		t.Fatal("a manifest with its dump's settings was refused: ", err)
+	}
 	for name, change := range map[string]func(*Manifest){
 		"another policy":      func(m *Manifest) { m.PolicyID = uuid.New() },
 		"another environment": func(m *Manifest) { m.EnvironmentID = uuid.New() },
@@ -106,6 +115,18 @@ func TestRecoveryAdmitsOnlyThePolicysManifest(t *testing.T) {
 		"an unnamed role": func(m *Manifest) { m.Roles = []Role{{}} },
 		"a long image":    func(m *Manifest) { m.Image = strings.Repeat("i", 513) },
 		"a long database": func(m *Manifest) { m.Database = strings.Repeat("d", 101) },
+		"a dump setting missing": func(m *Manifest) {
+			m.DumpSettings = settings(func(s map[string]string) { delete(s, "TimeZone") })
+		},
+		"another dump setting": func(m *Manifest) {
+			m.DumpSettings = settings(func(s map[string]string) { s["search_path"] = "public" })
+		},
+		"a dump setting with a control character": func(m *Manifest) {
+			m.DumpSettings = settings(func(s map[string]string) { s["TimeZone"] = "UTC\n-c role=postgres" })
+		},
+		"a long dump setting": func(m *Manifest) {
+			m.DumpSettings = settings(func(s map[string]string) { s["lc_monetary"] = strings.Repeat("l", 257) })
+		},
 	} {
 		changed := m
 		change(&changed)

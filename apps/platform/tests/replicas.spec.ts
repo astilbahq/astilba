@@ -31,6 +31,7 @@ test("replica staging retains failed and conflicting drafts and reviews a comple
         backups: true,
         upgrades: true,
         postgresReleases: f.releases.map((r) => r.image),
+        postgresOwnerRole: true,
       },
       preflight: {
         ready: true,

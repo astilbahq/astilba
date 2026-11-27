@@ -303,7 +303,7 @@ func (s *Server) establish(ctx context.Context, a db.Account, mfa bool) error {
 	if err != nil {
 		return err
 	}
-	if err := s.Sessions.RenewToken(ctx); err != nil {
+	if err := s.renewToken(ctx); err != nil {
 		return err
 	}
 	s.Sessions.Remove(ctx, "pending")
@@ -370,7 +370,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(a.TotpSecret) > 0 {
-		if e = s.Sessions.RenewToken(r.Context()); e == nil {
+		if e = s.renewToken(r.Context()); e == nil {
 			s.Sessions.Remove(r.Context(), "github-session")
 			s.Sessions.Remove(r.Context(), "account")
 			s.Sessions.Put(r.Context(), "pending", a.ID.String())

@@ -259,7 +259,7 @@ func (e *Engine) executeVisual(ctx context.Context, c api.ExecutionCommand, r Re
 	if err = e.checkpoint(c.Id, "storage"); err != nil {
 		return err
 	}
-	if err = e.ensureStorage(ctx, p.Plan); err != nil {
+	if err = e.ensureStorage(ctx, p.Plan, p.Secrets); err != nil {
 		return e.visualFinish(ctx, c, p, storageState(err), safeVisualError(err, p.Secrets))
 	}
 	if err = e.checkpoint(c.Id, "services"); err != nil {

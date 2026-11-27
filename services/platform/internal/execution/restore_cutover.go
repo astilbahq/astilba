@@ -51,7 +51,7 @@ func validateRestoreRun(ctx context.Context, tx pgx.Tx, ws, env uuid.UUID, sourc
 			continue
 		}
 		old, err := backup.CutoverVolume(p, run)
-		if err != nil || old != r.OldVolumeID || run.TargetID != r.TargetVolumeID || run.ManifestHash != r.ManifestHash {
+		if err != nil || old != r.OldVolumeID || run.TargetID != r.TargetVolumeID || run.ManifestHash != r.ManifestHash || run.RestoreRoles != r.Roles {
 			return domain.Invalid("restore.compatibility")
 		}
 		return nil

@@ -118,3 +118,40 @@ func TestRecoveryReportNamesItsReleaseOnlyWhereItIsRead(t *testing.T) {
 		t.Fatal("a controller that reads the release was not sent it")
 	}
 }
+
+// PLAT-450. A recovery result names the role model its restore created only to a controller that
+// reads it, and keeps the release for one that reads only that.
+func TestRecoveryReportNamesItsRoleModelOnlyWhereItIsRead(t *testing.T) {
+	raw, err := stablejson.Marshal(backup.RecoveryResult{Snapshot: strings.Repeat("a", 64), TargetID: uuid.New(), RestoreImage: domain.PostgresImage, RestoreRoles: domain.PostgresOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := api.BackupRecoveryResult(raw)
+	read := func(v api.AgentReport) backup.RecoveryResult {
+		var result backup.RecoveryResult
+		if json.Unmarshal(*v.Restore, &result) != nil {
+			t.Fatal("the report's result no longer parses")
+		}
+		return result
+	}
+	c := &Client{}
+	c.postgresReleases.Store(true)
+	if _, ready := c.advertisedReport(api.AgentReport{Restore: &restore}); ready {
+		t.Fatal("a report naming its role model went out before negotiation")
+	}
+	c.markNegotiated()
+	if v, ready := c.advertisedReport(api.AgentReport{Restore: &restore}); !ready || read(v).RestoreRoles != "" || read(v).RestoreImage != domain.PostgresImage {
+		t.Fatal("a controller from before the owner model was sent the role model, or lost the release")
+	}
+	c.postgresOwnerRole.Store(true)
+	if v, ready := c.advertisedReport(api.AgentReport{Restore: &restore}); !ready || read(v).RestoreRoles != domain.PostgresOwner {
+		t.Fatal("a controller that reads the role model was not sent it")
+	}
+	if got := c.advertisedCapabilities(api.AgentCapabilities{PostgresOwnerRole: ptr(true)}); got.PostgresOwnerRole == nil {
+		t.Fatal("a controller that reads the capability was not sent it")
+	}
+	c.postgresOwnerRole.Store(false)
+	if got := c.advertisedCapabilities(api.AgentCapabilities{PostgresOwnerRole: ptr(true)}); got.PostgresOwnerRole != nil {
+		t.Fatal("a controller from before the owner model was sent the capability")
+	}
+}

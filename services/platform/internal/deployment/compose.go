@@ -188,3 +188,23 @@ func Claims(p Plan) ([]string, error) {
 func SecretEnvironmentName(id uuid.UUID) string {
 	return "ASTILBA_SECRET_" + strings.ReplaceAll(id.String(), "-", "")
 }
+
+// postgresVariables sets a managed database's image variables in env. The agent creates an
+// owner-model database's cluster before its service starts, so the image has nothing to create
+// and no variable for it: on an empty volume it refuses to start rather than make a cluster whose
+// superuser the deployment knows the password of. A database from before the owner model keeps
+// the variables its image created it with, and so does an export, which runs without the agent:
+// its README says what that means.
+func postgresVariables(a domain.Application, export bool, value func(uuid.UUID) (string, error), escape func(string) string, env map[string]string) error {
+	if a.Postgres == nil || !export && a.Postgres.Owner() {
+		return nil
+	}
+	pass, err := value(a.Postgres.PasswordSecretVersionID)
+	if err != nil {
+		return err
+	}
+	env["POSTGRES_PASSWORD"] = escape(pass)
+	env["POSTGRES_DB"] = a.Postgres.Database
+	env["POSTGRES_USER"] = a.Postgres.Username
+	return nil
+}
