@@ -94,6 +94,8 @@ type previewRecord struct {
 	ResumeAfterCancel                bool
 	CleanupActor                     *uuid.UUID
 	CleanupAuth, CleanupController   *int64
+	// RefusedKey and RefusalNote are the step last refused for good and why (preview_refusals.go).
+	RefusedKey, RefusalNote string
 }
 
 func loadPreview(ctx context.Context, tx pgx.Tx, id uuid.UUID) (previewRecord, error) {
@@ -101,7 +103,7 @@ func loadPreview(ctx context.Context, tx pgx.Tx, id uuid.UUID) (previewRecord, e
 	var raw []byte
 	var released bool
 	var ws uuid.UUID
-	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,workspace_id,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &released, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &ws, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated)
+	err := tx.QueryRow(ctx, "SELECT "+previewColumns+",policy_id,application_id,policy_generation,configuration,workspace_id,build_id,plan_id,built_head,closed_at,cleanup_requested,cleanup_actor,cleanup_auth_version,cleanup_controller,resume_after_cancel,updated_at,refused_key,refusal_note FROM preview_requests WHERE id=$1", id).Scan(&r.View.Id, &r.View.Number, &r.View.Head, &r.View.HeadRepository, &r.View.Fork, &r.View.State, &r.View.Note, &r.View.Generation, &r.View.EnvironmentId, &r.View.OperationId, &r.View.CleanupAt, &released, &r.Policy, &r.App, &r.PolicyGeneration, &raw, &ws, &r.Build, &r.Plan, &r.BuiltHead, &r.Closed, &r.Cleanup, &r.CleanupActor, &r.CleanupAuth, &r.CleanupController, &r.ResumeAfterCancel, &r.Updated, &r.RefusedKey, &r.RefusalNote)
 	if err == nil {
 		// A fork commit's approval counts only while the owner who gave it is still one.
 		var approval db.PreviewForkApprovalRow
@@ -371,7 +373,8 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		}
 	}
 	if r.View.State == "deleted" {
-		if _, err := tx.Exec(ctx, "UPDATE preview_requests SET environment_id=NULL,application_id=NULL,configuration=NULL,build_id=NULL,plan_id=NULL,operation_id=NULL,built_head='',cleanup_requested=false WHERE id=$1", id); err != nil {
+		// A preview created again starts over, including any step refused before.
+		if _, err := tx.Exec(ctx, "UPDATE preview_requests SET environment_id=NULL,application_id=NULL,configuration=NULL,build_id=NULL,plan_id=NULL,operation_id=NULL,built_head='',cleanup_requested=false,refused_key='',refusal_note='' WHERE id=$1", id); err != nil {
 			return err
 		}
 		r.View.EnvironmentId = nil
@@ -381,6 +384,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		r.Plan = nil
 		r.View.OperationId = nil
 		r.BuiltHead = ""
+		r.RefusedKey, r.RefusalNote = "", ""
 	}
 	changed := r.View.Head != pr.Head || r.View.HeadRepository != pr.HeadRepository
 	if changed {
@@ -405,7 +409,16 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		return s.previewState(ctx, tx, id, r.View.State, "Waiting for the assigned agent to finish or acknowledge cancellation.", time.Minute)
 	}
 	var allocation pgx.Tx
+	// refusedKey is the key a refusal of this pass's build is recorded under: the creation's when
+	// the pass creates the environment, since refusing the build rolls the environment back.
+	var refusedKey string
 	if r.View.EnvironmentId == nil {
+		if refusedKey, err = s.previewCreationKey(ctx, tx, p, pr, connection); err != nil {
+			return err
+		}
+		if refusedKey == r.RefusedKey {
+			return stillRefused(ctx, tx, p.Workspace, r)
+		}
 		var active, serverActive int
 		// A host's slots are the previews running on it, wherever their policies now point.
 		if err = tx.QueryRow(ctx, "SELECT count(*),count(*) FILTER(WHERE EXISTS(SELECT 1 FROM deployment_units u WHERE u.workspace_id=r.workspace_id AND u.environment_id=r.environment_id AND u.primary_unit AND u.server_id=$2)) FROM preview_requests r WHERE r.workspace_id=$1 AND r.environment_id IS NOT NULL AND r.state<>'deleted'", p.Workspace, p.Server).Scan(&active, &serverActive); err != nil {
@@ -431,7 +444,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		if why != "" {
-			return s.previewState(ctx, tx, id, "failed", "Preview environment was not created: "+why, 5*time.Minute)
+			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview environment was not created: "+why)
 		}
 		git.createdEnvironments[*r.View.EnvironmentId] = true
 	}
@@ -463,6 +476,14 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 	}
 
 	if r.BuiltHead != pr.Head || r.Build == nil {
+		if allocation == nil {
+			if refusedKey, err = previewBuildKey(ctx, tx, p, r, pr, connection); err != nil {
+				return err
+			}
+			if refusedKey == r.RefusedKey {
+				return stillRefused(ctx, tx, p.Workspace, r)
+			}
+		}
 		var builds int
 		if err = tx.QueryRow(ctx, "SELECT count(*) FROM preview_requests r JOIN execution_operations o ON o.id=r.build_id WHERE r.policy_id=$1 AND o.state IN ('queued','dispatched','running','needs_attention')", p.ID).Scan(&builds); err != nil {
 			return err
@@ -485,20 +506,20 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 					return err
 				}
 			}
-			return s.previewState(ctx, tx, id, "failed", "Preview build rejected before runner delivery: "+refusal.Message, 5*time.Minute)
+			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview build rejected before runner delivery: "+refusal.Message)
 		}
 		hash := buildInputHash(connection, pr.Head, cfg)
 		op, err := s.insertPipeline(ctx, tx, git, p.Workspace, *r.View.EnvironmentId, uuid.New(), p.Server, pipeline.Command{Preview: &pipeline.PreviewSource{RequestID: id, Generation: r.View.Generation, Number: pr.Number, HeadRepository: pr.HeadRepository}, Action: "build-preview", Connection: connection, Commit: pr.Head, Branch: cfg.Branch, RevisionID: v.Revision, UnitID: v.Unit, AppID: *r.App, Build: &cfg, InputHash: hash, SubmittedAt: time.Now().UTC()})
-		// A policy saved under an earlier check can fail this one. Failing the job would roll
-		// back the reason and leave every retry and sweep to ask the provider again.
-		var rejected *buildInputRejection
-		if errors.As(err, &rejected) {
+		// A policy saved under an earlier check can fail this one, and a host's agent can need
+		// an update. Failing the job would roll back the reason and leave every retry and sweep
+		// to ask the provider again.
+		if why := previewBuildRefusal(err); why != "" {
 			if allocation != nil {
 				if err = allocation.Rollback(ctx); err != nil {
 					return err
 				}
 			}
-			return s.previewState(ctx, tx, id, "failed", "Preview build rejected before runner delivery: "+rejected.note(), 5*time.Minute)
+			return refusePreview(ctx, tx, p.Workspace, id, refusedKey, "Preview build rejected before runner delivery: "+why)
 		}
 		if err != nil {
 			return err
@@ -507,7 +528,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		if _, err = tx.Exec(ctx, "INSERT INTO build_targets(workspace_id,environment_id,application_id,connection_id,configuration,input_hash,requested_commit,policy_actor,policy_auth_version,policy_owner) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,policy_approver_holds($1,$8,$9,true)) ON CONFLICT(workspace_id,environment_id,application_id) DO UPDATE SET configuration=EXCLUDED.configuration,input_hash=EXCLUDED.input_hash,requested_commit=EXCLUDED.requested_commit,policy_actor=EXCLUDED.policy_actor,policy_auth_version=EXCLUDED.policy_auth_version,policy_owner=EXCLUDED.policy_owner,rejected_commit=NULL,rejection_reason=NULL,rejected_at=NULL,waiting_commit=NULL,waiting_reason=NULL,waiting_runner_id=NULL,waiting_since=NULL,waiting_until=NULL", p.Workspace, *r.View.EnvironmentId, *r.App, p.Connection, raw, hash, pr.Head, p.Actor, p.AuthVersion); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET build_id=$2,built_head=$3,plan_id=NULL,operation_id=$2 WHERE id=$1", id, op.Id, pr.Head); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET build_id=$2,built_head=$3,plan_id=NULL,operation_id=$2,refused_key='',refusal_note='' WHERE id=$1", id, op.Id, pr.Head); err != nil {
 			return err
 		}
 		return s.previewState(ctx, tx, id, "building", "Building the verified request commit.", time.Minute)
@@ -520,6 +541,13 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		return s.previewState(ctx, tx, id, "failed", "Preview build failed or was cancelled. Push another commit to retry.", 5*time.Minute)
 	}
 	if r.Plan == nil {
+		key, err := s.previewPromotionKey(ctx, tx, p, r)
+		if err != nil {
+			return err
+		}
+		if key == r.RefusedKey {
+			return stillRefused(ctx, tx, p.Workspace, r)
+		}
 		var raw []byte
 		if err = tx.QueryRow(ctx, "SELECT identity FROM build_artifacts WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", p.Workspace, *r.View.EnvironmentId, *r.Build).Scan(&raw); err != nil {
 			return err
@@ -546,13 +574,13 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 			return err
 		}
 		if why != "" {
-			return s.previewState(ctx, tx, id, "failed", "Preview was not deployed: "+why, 5*time.Minute)
+			return refusePreview(ctx, tx, p.Workspace, id, key, "Preview was not deployed: "+why)
 		}
 		status, err := s.createVisualPlan(ctx, tx, git.keys.inspect, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET plan_id=$2,operation_id=$3 WHERE id=$1", id, status.ID, status.OperationID); err != nil {
+		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET plan_id=$2,operation_id=$3,refused_key='',refusal_note='' WHERE id=$1", id, status.ID, status.OperationID); err != nil {
 			return err
 		}
 		return s.previewState(ctx, tx, id, "deploying", "Resolving preview images and runtime state.", time.Minute)

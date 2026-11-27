@@ -1,17 +1,15 @@
 package integration
 
 import (
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"slices"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
-	"github.com/astilbahq/astilba/services/platform/internal/pipeline"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
@@ -84,15 +82,21 @@ func TestAutomaticDeploymentOverTheLimitKeepsTheBuild(t *testing.T) {
 }
 
 // A preview environment's generated hostnames can take its template over the limit. The preview
-// fails with the reason rather than leaving its job to retry, and holds no environment.
+// fails with the reason rather than leaving its job to retry, and holds no environment. Later passes
+// neither create the environment again nor copy the template's secrets for it; a refresh does, and
+// so does a pass after the policy changes.
 func TestPreviewCreationOverTheLimitFails(t *testing.T) {
 	h := newHungPreview(t)
 	h.f.st.ApplicationDomain = "apps.example.test"
 	execSQL(t, h.hungBuild, "INSERT INTO server_domains(server_id,workspace_id,base,ipv4,approved_controller,state,observed_at) SELECT id,workspace_id,$2,'198.51.100.1',controller_generation,'applied',now() FROM servers WHERE id=$1", h.server, h.f.st.ApplicationDomain)
+	var secret api.SecretVersion
+	h.b.call("POST", h.path+"/secrets", map[string]string{"name": "TOKEN", "value": "creation-canary"}, 201, &secret)
 	spec := h.spec
 	spec.Applications = slices.Clone(spec.Applications)
 	spec.Applications[0].Kind = ""
 	spec.Applications[0].Health = &domain.HealthCheck{Port: 8080, Path: "/"}
+	// The padding replaces the template's own variables, so the application holds the secret.
+	spec.Applications[0].Variables = []domain.Variable{{Name: "TOKEN", SecretVersionID: &secret.Id}}
 	spec.Routes = []domain.Route{{ID: uuid.New(), TargetID: h.app, Protocol: "http", Domain: "p.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}
 	hostname := domain.ApplicationHostname(h.f.st.ApplicationDomain, uuid.New(), uuid.New(), h.app, h.server)
 	padded := paddedBelowTheLimit(t, h.f, spec, func(s domain.Specification) domain.Specification {
@@ -104,17 +108,39 @@ func TestPreviewCreationOverTheLimitFails(t *testing.T) {
 	var draft api.Revision
 	h.b.call("PUT", h.path+"/draft", map[string]any{"baseRevisionId": h.draft.Id, "specification": padded}, 200, &draft)
 	h.policy["baseRevisionId"], h.policy["generatedDomains"] = draft.Id, true
-	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
+	var policy api.PreviewPolicy
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, &policy)
+	environments := countInserts(t, h, "environments")
 	preview := h.waitPreview(t, "approval_required")
 	h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "approve", "head": preview.Head, "headRepository": preview.HeadRepository}, 200, nil)
 	preview = h.waitPreview(t, "failed")
-	if preview.Note != "Preview environment was not created: "+overTheLimit || preview.EnvironmentId != nil {
+	if preview.Note != "Preview environment was not created: "+overTheLimit+refusalRetry || preview.EnvironmentId != nil {
 		t.Fatal("the preview did not fail with the reason, or kept an environment", preview.Note, preview.EnvironmentId)
+	}
+	stillRefused(t, h, preview, []func() int64{environments}, true)
+	// A refresh asks for the creation again.
+	created, opened := environments(), secretAccesses(t, h)
+	h.b.call("POST", h.path+"/previews/"+preview.Id.String()+"/actions", map[string]any{"action": "refresh", "head": preview.Head, "headRepository": preview.HeadRepository}, 200, nil)
+	deadline := time.Now().Add(20 * time.Second)
+	for environments() == created || secretAccesses(t, h) == opened {
+		if time.Now().After(deadline) {
+			t.Fatal("a refresh did not create the preview again")
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if again := h.waitPreview(t, "failed"); again.Note != preview.Note {
+		t.Fatalf("the refreshed preview's note is %q", again.Note)
+	}
+	// A policy without the generated hostnames fits, and its preview is created.
+	h.policy["generatedDomains"] = false
+	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": policy.Generation, "configuration": h.policy}, 200, nil)
+	if preview = approvePreview(t, h, h.path); preview.EnvironmentId == nil {
+		t.Fatal("the changed policy's preview has no environment")
 	}
 }
 
 // Promoting a preview's build can take its draft over the limit. The preview fails with the reason,
-// and the build's report is accepted.
+// and the build's report is accepted. A later pass leaves it so.
 func TestPreviewPromotionOverTheLimitFails(t *testing.T) {
 	h := newHungPreview(t)
 	padded := paddedBelowTheLimit(t, h.f, h.spec, promoted)
@@ -122,18 +148,10 @@ func TestPreviewPromotionOverTheLimitFails(t *testing.T) {
 	h.b.call("PUT", h.path+"/draft", map[string]any{"baseRevisionId": h.draft.Id, "specification": padded}, 200, &draft)
 	h.policy["baseRevisionId"] = draft.Id
 	h.b.call("PUT", h.path+"/preview-policy", map[string]any{"enabled": true, "generation": 0, "configuration": h.policy}, 200, nil)
-	preview := approvePreview(t, h, h.path)
-	build := nextPreviewCommand(t, h)
-	var command pipeline.Command
-	if err := json.Unmarshal(*build.Pipeline, &command); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := stablejson.Marshal(pipeline.Result{Commit: command.Commit, Image: "astilba-build-" + build.Id.String() + ":built", Digest: "sha256:" + strings.Repeat("c", 64), Architecture: "arm64"})
-	result := jsontext.Value(raw)
-	report := api.AgentReport{Id: build.Id, Generation: build.Generation, PlanHash: build.PlanHash, Sequence: 2, State: "succeeded", Steps: []api.ExecutionStep{}, Pipeline: &result}
-	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, report, 204, nil)
-	preview = h.waitPreview(t, "failed")
-	if preview.Note != "Preview was not deployed: "+overTheLimit {
+	approvePreview(t, h, h.path)
+	reportPreviewBuild(t, h)
+	preview := h.waitPreview(t, "failed")
+	if preview.Note != "Preview was not deployed: "+overTheLimit+refusalRetry {
 		t.Fatalf("the preview's note is %q", preview.Note)
 	}
 	var plans int
@@ -143,6 +161,7 @@ func TestPreviewPromotionOverTheLimitFails(t *testing.T) {
 	if plans != 0 {
 		t.Fatal("the refused promotion left a deployment plan behind")
 	}
+	stillRefused(t, h, preview, nil, false)
 }
 
 // An upgrade stores its target revision only once the host serves the target, when nothing can

@@ -867,6 +867,8 @@ type PreviewRequest struct {
 	ReleasedByRevocation bool        `json:"released_by_revocation"`
 	ApprovedBy           *uuid.UUID  `json:"approved_by"`
 	ApprovedAuthVersion  pgtype.Int8 `json:"approved_auth_version"`
+	RefusedKey           string      `json:"refused_key"`
+	RefusalNote          string      `json:"refusal_note"`
 }
 
 type Project struct {
