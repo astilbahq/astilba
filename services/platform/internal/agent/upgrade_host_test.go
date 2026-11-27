@@ -326,6 +326,39 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				}
 				return r
 			}
+			if j.name == "complete" {
+				// PLAT-549. A deployment that failed after a later release started on the data leaves
+				// that release recorded as serving it, so the upgrade from the earlier one is refused
+				// before any writer stops.
+				recorded, found, err := e.Journal.postgresData(plan.OldVolume())
+				if err != nil || !found {
+					t.Fatal("the source database's storage has no record", err)
+				}
+				ahead := postgresData{Image: recorded.Image, Served: domain.Postgres17Image}
+				if err = e.Journal.savePostgresData(plan.OldVolume(), ahead); err != nil {
+					t.Fatal(err)
+				}
+				refused := plan
+				refused.ID = uuid.New()
+				cmd := next(upgrade.Command{Action: "prepare", Plan: refused, Installation: in, Secrets: secrets})
+				if err = e.Execute(ctx, cmd); err != nil {
+					t.Fatal(err)
+				}
+				if r, err := e.Journal.Record(cmd.Id); err != nil || e.Journal.Acknowledge(cmd.Id, r.Report.Sequence) != nil {
+					t.Fatal("the refused upgrade has no record", err)
+				}
+				state, err := e.Journal.upgrade(refused.ID)
+				reason := postgresDataRefuses(a, ahead)
+				if err != nil || reason == nil || state.Status.Phase != "rejected" || len(state.Writers) != 0 || !strings.Contains(state.Status.Note, reason.Error()) {
+					t.Fatalf("an upgrade from a release the data refuses was prepared: %+v: %v", state.Status, err)
+				}
+				if v, err := e.Docker.ContainerInspect(ctx, source.ID, client.ContainerInspectOptions{}); err != nil || !v.Container.State.Running {
+					t.Fatal("the refused upgrade stopped the source database", err)
+				}
+				if err = e.Journal.savePostgresData(plan.OldVolume(), recorded); err != nil {
+					t.Fatal(err)
+				}
+			}
 			cutoverCrash := strings.Contains(crash, "database-") || strings.Contains(crash, "routes-") || strings.Contains(crash, "writers-")
 			r := send("prepare", crash != "" && !cutoverCrash)
 			state, err := e.Journal.upgrade(plan.ID)

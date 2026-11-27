@@ -62,7 +62,44 @@ func TestReportNoteStaysWithinTheContract(t *testing.T) {
 			qualified[shape] = append(qualified[shape], listed{name, name})
 		}
 	}
+	// Each list keeps within its room whatever its names, so the longest note is the note's own
+	// words with every list full.
+	for _, list := range []struct {
+		room      int
+		qualifies bool
+	}{{unfinishedRoom, false}, {closedRoom, true}, {invalidRoom, true}, {exclusionsRoom, false}} {
+		room, qualifies := list.room, list.qualifies
+		for _, more := range []int{0, 9, 999} {
+			for width := 1; width <= 130; width++ {
+				for _, first := range []string{strings.Repeat("a", width), strings.Repeat("ä", width)} {
+					names := []listed{{first, ""}}
+					for i := range more {
+						names = append(names, listed{"z" + strings.Repeat("y", i%90) + strconv.Itoa(i), ""})
+					}
+					if qualifies {
+						for i := range names {
+							names[i].application = names[i].name
+						}
+					}
+					if list := listSome(names, room); len(list) > room || !utf8.ValidString(list) {
+						t.Fatalf("a list of %d bytes in a room of %d: %q", len(list), room, list)
+					}
+				}
+			}
+		}
+	}
+	many := make([]listed, 100000)
+	for i := range many {
+		many[i] = listed{strconv.Itoa(i), "Billing"}
+	}
+	if list := listSome(many, closedRoom); len(list) > closedRoom {
+		t.Fatalf("a list of %d bytes in a room of %d", len(list), closedRoom)
+	}
 	before := "The selected local pool is recorded and retirement is confirmed. "
+	words := utf8.RuneCountInString(before+reindexNote([]string{"u"}, []listed{{"c", ""}}, []listed{{"i", ""}}, []string{"x"})) - 4
+	if longest := words + unfinishedRoom + closedRoom + invalidRoom + exclusionsRoom; longest > 1024 {
+		t.Fatalf("the longest note is %d characters", longest)
+	}
 	after := "This host's maintenance reservation is released. 1000000 instances were not required to be ready: they were already stopped or failing, or an operator accepted them."
 	for unfinishedShape, unfinished := range shapes {
 		for closedShape, closed := range qualified {

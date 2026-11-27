@@ -280,21 +280,29 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 	return reindexNote(unfinished, closed, invalid, exclusions), nil
 }
 
-// reindexNote tells the owner what the rebuild left, within the room an operation's note has
-// after the longest note a report puts before it. A maintenance report puts its own after it.
+// The bytes each of reindexNote's lists takes at most. With the note's own words they fit the
+// room an operation's note has after the longest note a report puts before it.
+const (
+	unfinishedRoom = 100
+	closedRoom     = 70
+	invalidRoom    = 70
+	exclusionsRoom = 170
+)
+
+// reindexNote tells the owner what the rebuild left. A maintenance report puts its own note after it.
 func reindexNote(unfinished []string, closed, invalid []listed, exclusions []string) string {
 	var parts []string
 	if len(unfinished) > 0 {
-		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unqualified(unfinished), 100)+"; the data is served on the new release and the next deployment retries it.")
+		parts = append(parts, "Rebuilding the indexes the PostgreSQL release notes name did not finish for "+listSome(unqualified(unfinished), unfinishedRoom)+"; the data is served on the new release and the next deployment retries it.")
 	}
 	if len(closed) > 0 {
-		parts = append(parts, "The databases "+listSome(closed, 70)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
+		parts = append(parts, "The databases "+listSome(closed, closedRoom)+" do not accept connections, so their indexes were not rebuilt; the next deployment after they do rebuilds them.")
 	}
 	if len(invalid) > 0 {
-		parts = append(parts, "The databases "+listSome(invalid, 70)+" are invalid after an interrupted DROP DATABASE; the deployment after they are dropped rebuilds them.")
+		parts = append(parts, "The databases "+listSome(invalid, invalidRoom)+" are invalid after an interrupted DROP DATABASE; the deployment after they are dropped rebuilds them.")
 	}
 	if len(exclusions) > 0 {
-		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(unqualified(exclusions), 160)+".")
+		parts = append(parts, "Rebuild these exclusion-constraint indexes with REINDEX INDEX when writes can pause, as the release notes advise: "+listSome(unqualified(exclusions), exclusionsRoom)+".")
 	}
 	return strings.Join(parts, " ")
 }
@@ -303,44 +311,48 @@ func reindexNote(unfinished []string, closed, invalid []listed, exclusions []str
 // which deployment's it is.
 type listed struct{ name, application string }
 
-// listSome joins names up to about limit bytes, then counts the rest. A name longer than that,
-// or than 120 bytes, is cut at a whole character, its own part before its application's, so the
-// note still says whose it is.
+// listSome joins names within limit bytes, its count of the rest included. A name longer than
+// 120 bytes, or than the room the count leaves, is cut at a whole character, its own part before
+// its application's, so the note still says whose it is.
 func listSome(names []listed, limit int) string {
 	names = slices.Clone(names)
 	slices.SortFunc(names, func(a, b listed) int {
 		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.application, b.application))
 	})
 	names = slices.Compact(names)
-	width := min(limit, 120)
-	shown := make([]string, len(names))
+	rest := func(n int) string {
+		if n == 0 {
+			return ""
+		}
+		return " and " + strconv.Itoa(n) + " more"
+	}
+	// The first name always fits beside the longest count.
+	width := min(limit-len(rest(len(names))), 120)
+	out := ""
 	for i, n := range names {
-		shown[i] = cutName(n.name, width)
+		name := cutName(n.name, width)
 		if n.application != "" {
 			qualifier := " (" + cutName(n.application, width/2) + ")"
-			shown[i] = cutName(n.name, max(width-len(qualifier), width/4)) + qualifier
+			name = cutName(n.name, width-len(qualifier)) + qualifier
 		}
-	}
-	out := ""
-	for i, name := range shown {
 		next := name
 		if out != "" {
 			next = out + ", " + name
 		}
-		if len(next) > limit && out != "" {
-			return out + " and " + strconv.Itoa(len(shown)-i) + " more"
+		if out != "" && len(next)+len(rest(len(names)-i-1)) > limit {
+			return out + rest(len(names)-i)
 		}
 		out = next
 	}
 	return out
 }
 
-// cutName shortens name to whole characters within width bytes, marking the cut.
+// cutName shortens name to whole characters within width bytes, the mark of the cut included.
 func cutName(name string, width int) string {
 	if len(name) <= width {
 		return name
 	}
-	end := width
+	end := max(width-len("…"), 0)
 	for end > 0 && !utf8.RuneStart(name[end]) {
 		end--
 	}
