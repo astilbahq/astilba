@@ -83,7 +83,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
         # Every lane prepares its own disposable VM identically; none shares host state.
-        lane: [core, recovery, visual, upgrade]
+        lane: [core, crosshost, recovery, visual, upgrade]
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
@@ -129,8 +129,8 @@ jobs:
       - name: Verify fresh production host bootstrap
         env:
           # core and visual block this host's Ubuntu archives, so the bootstrap must install from
-          # a pinned fallback; recovery installs from the host's own sources; upgrade needs no
-          # Ubuntu package at all.
+          # a pinned fallback; recovery installs from the host's own sources; crosshost and upgrade
+          # need no Ubuntu package at all.
           UBUNTU_SOURCES: ${{ (matrix.lane == 'core' || matrix.lane == 'visual') && 'blocked' || matrix.lane == 'recovery' && 'host' || 'unchanged' }}
         run: |
           owner=$(cat /proc/sys/kernel/random/uuid)
