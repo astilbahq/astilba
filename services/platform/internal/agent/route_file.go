@@ -112,7 +112,10 @@ func (e *Engine) awaitRoutes(ctx context.Context, s routeSnapshot, raw []byte) e
 // file and is tried again later. The revision is derived so that a restart after the file
 // was written, before the journal, finds the same file here.
 func (e *Engine) QualifyRouteBackends(ctx context.Context) error {
-	e.mu.Lock()
+	// While a command pulls its images, the next attempt converts.
+	if !e.lockUnlessLent() {
+		return nil
+	}
 	defer e.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
