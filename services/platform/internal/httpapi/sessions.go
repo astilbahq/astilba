@@ -37,7 +37,8 @@ type sessionLoad struct {
 	keepCookie bool
 	// keepRow leaves a destroyed session's row in place. See dropStaleSession.
 	keepRow bool
-	// deviceToken is sent as the device cookie unless saving the session failed. See issueDevice.
+	// deviceToken is sent as the device cookie unless saving the session failed or its renewal
+	// was discarded. See issueDevice and renewToken.
 	deviceToken string
 	// lineage is the loaded session's chain of renewed tokens, which a logout ends.
 	lineage uuid.UUID
@@ -298,9 +299,10 @@ func (s *Server) browserSession(next http.Handler) http.Handler {
 // renewToken replaces the session's token, for a sign-in, a reauthentication or a change to how
 // the account signs in. The new token is stored only if the request then succeeds, so a failure
 // after this point, such as a device token that could not be sealed, signs nothing in. The
-// browser keeps the token it presented: a session RenewToken deleted stays deleted, a pending
-// sign-in or a reauthenticating session stays as it was, and after a credential change the old
-// token is on the account's old version, which grants nothing.
+// browser keeps the token it presented. A session RenewToken deleted stays deleted, and a pending
+// sign-in or a reauthenticating session stays as it was, unless the request moved the account to
+// a new version, as a credential change or a recovery code does: then the old token grants
+// nothing and the pending sign-in cannot complete.
 func (s *Server) renewToken(ctx context.Context) error {
 	if err := s.Sessions.RenewToken(ctx); err != nil {
 		return err
