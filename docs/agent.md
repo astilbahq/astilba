@@ -77,7 +77,7 @@ Releases are built by `.github/workflows/agent-release.yml`, never on a workstat
 
 Generate the protected signing key once, with `go run ./cmd/agent release-keygen --key /secure/release.pem` from `services/platform`. Keep the private key outside the repository, CI and the management container. Publish the fingerprint of `release.pem.pub` through your own trusted channel.
 
-Configure management with `ASTILBA_AGENT_RELEASES` pointing to the read-only catalog, and `ASTILBA_AGENT_RELEASE_KEY` pointing to the public PEM. Startup verifies every manifest and artifact, and refuses a catalog with two entries for one version and architecture. The catalog names each artifact by its SHA-256, and the dashboard only offers catalog entries. Both management deployments use this same catalog configuration. Mount it into the container if you distribute your own builds.
+Configure management with `ASTILBA_AGENT_RELEASES` pointing to the read-only catalog, and `ASTILBA_AGENT_RELEASE_KEY` pointing to the public PEM. Startup verifies every manifest and artifact, and refuses a catalog with two entries for one version and architecture, or with more than 100 releases, the most the release list carries. Management lists the catalog newest release first, by version rather than by file name. The catalog names each artifact by its SHA-256, and the dashboard only offers catalog entries. Both management deployments use this same catalog configuration. Mount it into the container if you distribute your own builds.
 
 ### Verify a downloaded release by hand
 
@@ -243,7 +243,7 @@ sudo systemctl start astilba-agent
 
 ## Explicit updates
 
-An owner with recent authentication selects a catalog release on the Servers page. Updates are serialized with all other host mutations. The agent verifies protocol, architecture, Ed25519 signature, size, hash, that the release's minimum version is at least that of the release it runs, and the binary's compiled identity, including its commit and minimum version, then fsyncs and atomically replaces only its own executable. Systemd restarts it; the durable operation reports on reconnect. `/usr/local/bin/astilba-agent.previous` retains the previous binary. Workloads stay running. No automatic update policy is enabled.
+An owner with recent authentication selects a catalog release on the Servers page. The page offers an update only to a server that holds an agent credential, so not to one that is revoked or awaiting a transfer or a new enrollment. It starts on the newest release management sends when that is newer than the one the agent runs; when only older releases are sent, or the page can't tell, it starts on none, so a rollback is always chosen. Updates are serialized with all other host mutations. The agent verifies protocol, architecture, Ed25519 signature, size, hash, that the release's minimum version is at least that of the release it runs, and the binary's compiled identity, including its commit and minimum version, then fsyncs and atomically replaces only its own executable. Systemd restarts it; the durable operation reports on reconnect. `/usr/local/bin/astilba-agent.previous` retains the previous binary. Workloads stay running. No automatic update policy is enabled.
 
 For a disconnected host, stop the service, inspect its operation state, download and verify the same signed artifacts, then use:
 

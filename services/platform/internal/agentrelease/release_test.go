@@ -10,8 +10,10 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -165,6 +167,25 @@ func TestRunningFloor(t *testing.T) {
 	}
 }
 
+// writeRelease signs a release of data and adds its manifest, named name, and its artifact to the
+// catalog in dir.
+func writeRelease(t *testing.T, dir, name string, private ed25519.PrivateKey, r api.AgentRelease, data []byte) {
+	t.Helper()
+	sum := sha256.Sum256(data)
+	r.Commit, r.Protocol, r.Size, r.Sha256 = strings.Repeat("a", 40), 1, int64(len(data)), hex.EncodeToString(sum[:])
+	r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, Message(r)))
+	manifest, e := stablejson.Marshal(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(dir, name), manifest, 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(ArtifactPath(dir, r), data, 0600); e != nil {
+		t.Fatal(e)
+	}
+}
+
 // An agent's floor comes from the one catalog entry for its version and architecture.
 func TestLoadRefusesTwoEntriesForARelease(t *testing.T) {
 	public, private, e := ed25519.GenerateKey(rand.Reader)
@@ -173,19 +194,7 @@ func TestLoadRefusesTwoEntriesForARelease(t *testing.T) {
 	}
 	write := func(dir, name string, data []byte, arch api.AgentReleaseArch, minimum string) {
 		t.Helper()
-		sum := sha256.Sum256(data)
-		r := api.AgentRelease{Version: "1.4.0", MinimumVersion: minimum, Commit: strings.Repeat("a", 40), Protocol: 1, Arch: arch, Size: int64(len(data)), Sha256: hex.EncodeToString(sum[:])}
-		r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, Message(r)))
-		manifest, e := stablejson.Marshal(r)
-		if e != nil {
-			t.Fatal(e)
-		}
-		if e = os.WriteFile(filepath.Join(dir, name), manifest, 0600); e != nil {
-			t.Fatal(e)
-		}
-		if e = os.WriteFile(ArtifactPath(dir, r), data, 0600); e != nil {
-			t.Fatal(e)
-		}
+		writeRelease(t, dir, name, private, api.AgentRelease{Version: "1.4.0", MinimumVersion: minimum, Arch: arch}, data)
 	}
 	dir := t.TempDir()
 	write(dir, "a.json", []byte("arm64 build"), "arm64", "1.2.0")
@@ -196,6 +205,65 @@ func TestLoadRefusesTwoEntriesForARelease(t *testing.T) {
 	write(dir, "c.json", []byte("another arm64 build"), "arm64", "1.0.0")
 	if _, e := Load(dir, public); e == nil || !strings.Contains(e.Error(), "already has release 1.4.0 for arm64") {
 		t.Fatalf("two entries for one release: %v", e)
+	}
+}
+
+// Manifests are named <version>-<arch>.json, so directory order puts 0.10.0 before 0.9.0. The
+// catalog is newest first whatever the names, so the first release offered is never a downgrade.
+func TestLoadPutsTheNewestReleaseFirst(t *testing.T) {
+	public, private, e := ed25519.GenerateKey(rand.Reader)
+	if e != nil {
+		t.Fatal(e)
+	}
+	dir := t.TempDir()
+	for _, r := range []api.AgentRelease{
+		{Version: "0.10.0", Arch: "arm64"}, {Version: "0.10.0", Arch: "amd64"}, {Version: "0.10.0-rc.1", Arch: "arm64"},
+		{Version: "0.2.0", Arch: "arm64"}, {Version: "0.9.0", Arch: "amd64"}, {Version: "0.9.0", Arch: "arm64"},
+	} {
+		r.MinimumVersion = "0.1.0"
+		writeRelease(t, dir, r.Version+"-"+string(r.Arch)+".json", private, r, []byte(r.Version+" "+string(r.Arch)))
+	}
+	releases, e := Load(dir, public)
+	if e != nil {
+		t.Fatal(e)
+	}
+	got := []string{}
+	for _, r := range releases {
+		got = append(got, r.Version+"-"+string(r.Arch))
+	}
+	want := []string{"0.10.0-amd64", "0.10.0-arm64", "0.10.0-rc.1-arm64", "0.9.0-amd64", "0.9.0-arm64", "0.2.0-arm64"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("catalog order %v, want %v", got, want)
+	}
+}
+
+// The release list serves the whole catalog, so Load refuses a catalog larger than the contract
+// lets that list be.
+func TestLoadKeepsToTheContractsReleaseLimit(t *testing.T) {
+	spec, e := api.GetSpec()
+	if e != nil {
+		t.Fatal(e)
+	}
+	list := spec.Paths.Find("/api/v1/workspaces/{workspaceId}/agent-releases").Get.Responses.Status(200).Value.Content.Get("application/json").Schema.Value
+	if list.MaxItems == nil || *list.MaxItems != MaxReleases {
+		t.Fatalf("the contract's release list holds at most %v releases, Load %d", list.MaxItems, MaxReleases)
+	}
+	public, private, e := ed25519.GenerateKey(rand.Reader)
+	if e != nil {
+		t.Fatal(e)
+	}
+	dir := t.TempDir()
+	for i := range MaxReleases {
+		r := api.AgentRelease{Version: fmt.Sprintf("1.0.%d", i), MinimumVersion: "1.0.0", Arch: "arm64"}
+		writeRelease(t, dir, r.Version+"-arm64.json", private, r, []byte(r.Version))
+	}
+	if releases, e := Load(dir, public); e != nil || len(releases) != MaxReleases {
+		t.Fatalf("a catalog at the limit: %d releases, %v", len(releases), e)
+	}
+	r := api.AgentRelease{Version: "2.0.0", MinimumVersion: "1.0.0", Arch: "arm64"}
+	writeRelease(t, dir, "2.0.0-arm64.json", private, r, []byte(r.Version))
+	if _, e := Load(dir, public); e == nil || !strings.Contains(e.Error(), fmt.Sprintf("%d manifests, more than the %d releases", MaxReleases+1, MaxReleases)) {
+		t.Fatalf("a catalog over the limit: %v", e)
 	}
 }
 
