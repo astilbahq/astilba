@@ -189,15 +189,30 @@ try {
   const keys = generateKeyPairSync("ed25519");
   const releaseKey = join(directory, "release-public.pem");
   await writeFile(releaseKey, keys.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o600 });
-  const artifact = Buffer.from("Astilba browser download fixture\n");
-  const release = { version: "0.1.0-fixture.download", protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex"), commit: "0123456789abcdef0123456789abcdef01234567", minimumVersion: "0.0.0" };
-  // agentrelease.Message: the v2 format, one LF-terminated field per line.
-  const message = `astilba-agent-release-signature-v2\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n${release.commit}\n${release.minimumVersion}\n`;
-  release.signature = sign(null, Buffer.from(message), keys.privateKey).toString("base64");
-  await writeFile(join(releases, release.sha256), artifact, { mode: 0o600 });
-  await writeFile(join(releases, "fixture.json"), JSON.stringify(release), { mode: 0o600 });
+  const signRelease = async (name, version, minimumVersion) => {
+    const artifact = Buffer.from(`Astilba browser ${name} fixture\n`);
+    const release = { version, protocol: 1, arch: "arm64", size: artifact.length, sha256: createHash("sha256").update(artifact).digest("hex"), commit: "0123456789abcdef0123456789abcdef01234567", minimumVersion };
+    // agentrelease.Message: the v2 format, one LF-terminated field per line.
+    const message = `astilba-agent-release-signature-v2\n${release.version}\n${release.protocol}\n${release.arch}\n${release.size}\n${release.sha256}\n${release.commit}\n${release.minimumVersion}\n`;
+    release.signature = sign(null, Buffer.from(message), keys.privateKey).toString("base64");
+    await writeFile(join(releases, release.sha256), artifact, { mode: 0o600 });
+    await writeFile(join(releases, `${name}.json`), JSON.stringify(release), { mode: 0o600 });
+  };
+  await signRelease("download", "0.1.0-fixture.download", "0.0.0");
+  // An agent running fixture.floor has floor 0.1.0: it installs fixture.raised, never download.
+  await signRelease("floor", "0.2.0-fixture.floor", "0.1.0");
+  await signRelease("raised", "0.3.0-fixture.raised", "0.2.0");
+  // Credentials come only from what this fixture sets, never the caller's shell: hosting refuses
+  // any in the environment, and a stray _FILE would clash with the fixture's own.
+  const clearedSecrets = Object.fromEntries(
+    ["ASTILBA_DATABASE_URL", "ASTILBA_DNS_CLOUDFLARE_TOKEN", "ASTILBA_SMTP_PASSWORD", "ASTILBA_STRIPE_SECRET", "ASTILBA_STRIPE_WEBHOOK_SECRET", "ASTILBA_GITHUB_APP_CLIENT_SECRET", "ASTILBA_GITHUB_APP_WEBHOOK_SECRET", "ASTILBA_GITHUB_APP_PRIVATE_KEY"]
+      .flatMap((name) => [name, `${name}_FILE`])
+      .concat("PGPASSWORD", "PGSSLPASSWORD")
+      .map((name) => [name, ""]),
+  );
   const env = {
     ...process.env,
+    ...clearedSecrets,
     ASTILBA_APPLICATION_DOMAIN: "apps.example.test",
     ASTILBA_AGENT_RELEASES: releases,
     ASTILBA_AGENT_RELEASE_KEY: releaseKey,
@@ -228,6 +243,10 @@ try {
       stdio: ["pipe", "inherit", "inherit"],
     },
   );
+  // The shared owner signs in with a password alone, so its workspace stands for one that
+  // doesn't require two-factor authentication, as one made before new workspaces did.
+  // workspace-mfa.spec.ts covers the requirement new ones start with.
+  docker(["exec", name, "psql", "--username", "postgres", "--dbname", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "UPDATE workspaces SET require_mfa=false WHERE name='Personal'"]);
   const start = (cmd, args, environment) => {
     const child = spawn(cmd, args, {
       cwd: root,
@@ -248,11 +267,15 @@ try {
   });
   const hostedDatabase = `hosted_${owned.replaceAll("-", "")}`;
   docker(["exec", name, "createdb", "--username", "postgres", hostedDatabase]);
+  // Hosting reads credentials only from private files.
+  const hostedDatabaseURL = join(directory, "hosted-database-url");
+  await writeFile(hostedDatabaseURL, `postgres://postgres:${password}@${address}/${hostedDatabase}?sslmode=disable\n`, { mode: 0o600 });
   const hostedEnv = {
     ...env,
     // Hosted refuses generated names on a base the Public Suffix List does not isolate.
     ASTILBA_APPLICATION_DOMAIN: "",
-    ASTILBA_DATABASE_URL: `postgres://postgres:${password}@${address}/${hostedDatabase}?sslmode=disable`,
+    ASTILBA_DATABASE_URL: "",
+    ASTILBA_DATABASE_URL_FILE: hostedDatabaseURL,
     ASTILBA_KEYRING: join(directory, "hosted-keyring.json"),
     ASTILBA_DEVELOPMENT: "false", ASTILBA_HOSTED: "true",
     ASTILBA_HOSTED_COHORT_LIMIT: "5", ASTILBA_HOSTED_SERVER_LIMIT: "2",
@@ -272,7 +295,7 @@ try {
   }
   start(binary,["serve"],hostedEnv);
   await mkdir(dirname(hostedInfo),{recursive:true});
-  const operatorEnv=Object.fromEntries(["ASTILBA_DATABASE_URL","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]));
+  const operatorEnv={...clearedSecrets,...Object.fromEntries(["ASTILBA_DATABASE_URL_FILE","ASTILBA_KEYRING","ASTILBA_INSTALLATION_ID","ASTILBA_HOSTED","ASTILBA_HOSTED_COHORT_LIMIT","ASTILBA_HOSTED_SERVER_LIMIT","ASTILBA_HOSTED_SUPPORT"].map(key=>[key,hostedEnv[key]]))};
   ownsHostedInfo = true;
   await writeFile(hostedInfo,JSON.stringify({binary,env:operatorEnv,host,container:name,owner:owned,database:hostedDatabase}),{mode:0o600});
   const waitReady = async (port) => {

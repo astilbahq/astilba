@@ -28,6 +28,7 @@ type AdvanceServerUpdateGenerationRow struct {
 	UpdateGeneration int64  `json:"update_generation"`
 }
 
+// ListServers reports this condition as updatable.
 func (q *Queries) AdvanceServerUpdateGeneration(ctx context.Context, arg AdvanceServerUpdateGenerationParams) (AdvanceServerUpdateGenerationRow, error) {
 	row := q.db.QueryRow(ctx, advanceServerUpdateGeneration, arg.WorkspaceID, arg.ID)
 	var i AdvanceServerUpdateGenerationRow
@@ -52,7 +53,8 @@ func (q *Queries) AttachOperationJob(ctx context.Context, arg AttachOperationJob
 
 const authenticateAgent = `-- name: AuthenticateAgent :one
 SELECT workspace_id,role,(credential_hash <> $1)::boolean AS previous,
-    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
+    COALESCE((capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases,
+    COALESCE((capabilities->>'expiredCommands')::boolean,false)::boolean AS reads_expiry
 FROM servers
 WHERE id = $2 AND NOT revoked AND NOT awaiting_transfer
     AND (credential_hash = $1 OR (previous_hash = $1 AND previous_until>now()))
@@ -68,6 +70,7 @@ type AuthenticateAgentRow struct {
 	Role                 string    `json:"role"`
 	Previous             bool      `json:"previous"`
 	AcknowledgesReleases bool      `json:"acknowledges_releases"`
+	ReadsExpiry          bool      `json:"reads_expiry"`
 }
 
 // unscoped: the presented agent credential establishes the workspace.
@@ -79,6 +82,7 @@ func (q *Queries) AuthenticateAgent(ctx context.Context, arg AuthenticateAgentPa
 		&i.Role,
 		&i.Previous,
 		&i.AcknowledgesReleases,
+		&i.ReadsExpiry,
 	)
 	return i, err
 }
@@ -299,7 +303,8 @@ func (q *Queries) InsertSecondaryUnit(ctx context.Context, arg InsertSecondaryUn
 const insertServer = `-- name: InsertServer :one
 INSERT INTO servers(id,workspace_id,name,role,enrollment_hash,enrollment_expires,enrollment_issuer_id,enrollment_issuer_auth_version,preview_only)
 VALUES($1,$2,$3,$4,$5,$6,$7::uuid,$8::bigint,$9)
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at,
+    (NOT revoked AND credential_hash IS NOT NULL)::boolean AS updatable
 `
 
 type InsertServerParams struct {
@@ -326,6 +331,7 @@ type InsertServerRow struct {
 	AwaitingTransfer  bool       `json:"awaiting_transfer"`
 	PreviewOnly       bool       `json:"preview_only"`
 	RevokedAt         *time.Time `json:"revoked_at"`
+	Updatable         bool       `json:"updatable"`
 }
 
 func (q *Queries) InsertServer(ctx context.Context, arg InsertServerParams) (InsertServerRow, error) {
@@ -353,12 +359,14 @@ func (q *Queries) InsertServer(ctx context.Context, arg InsertServerParams) (Ins
 		&i.AwaitingTransfer,
 		&i.PreviewOnly,
 		&i.RevokedAt,
+		&i.Updatable,
 	)
 	return i, err
 }
 
 const listServers = `-- name: ListServers :many
-SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
+SELECT id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at,
+    (NOT revoked AND credential_hash IS NOT NULL)::boolean AS updatable
 FROM servers WHERE workspace_id = $1 ORDER BY name,id LIMIT 100
 `
 
@@ -374,8 +382,12 @@ type ListServersRow struct {
 	AwaitingTransfer  bool       `json:"awaiting_transfer"`
 	PreviewOnly       bool       `json:"preview_only"`
 	RevokedAt         *time.Time `json:"revoked_at"`
+	Updatable         bool       `json:"updatable"`
 }
 
+// updatable is the condition AdvanceServerUpdateGeneration admits an update on, so the Servers page
+// offers an update only where RequestUpdate takes one. InsertServer and RenewServerEnrollment
+// return the same columns.
 func (q *Queries) ListServers(ctx context.Context, workspaceID uuid.UUID) ([]ListServersRow, error) {
 	rows, err := q.db.Query(ctx, listServers, workspaceID)
 	if err != nil {
@@ -397,6 +409,7 @@ func (q *Queries) ListServers(ctx context.Context, workspaceID uuid.UUID) ([]Lis
 			&i.AwaitingTransfer,
 			&i.PreviewOnly,
 			&i.RevokedAt,
+			&i.Updatable,
 		); err != nil {
 			return nil, err
 		}
@@ -511,7 +524,7 @@ func (q *Queries) MoveEnvironmentResources(ctx context.Context, arg MoveEnvironm
 }
 
 const moveEnvironmentVolumes = `-- name: MoveEnvironmentVolumes :exec
-UPDATE managed_volumes SET unit_id = $1 WHERE workspace_id = $2 AND environment_id = $3
+UPDATE managed_volumes SET unit_id = $1, postgres_init_hash = NULL WHERE workspace_id = $2 AND environment_id = $3
 `
 
 type MoveEnvironmentVolumesParams struct {
@@ -520,6 +533,7 @@ type MoveEnvironmentVolumesParams struct {
 	EnvironmentID uuid.UUID `json:"environment_id"`
 }
 
+// A moved volume starts empty on its new server, so no cluster initialises it there yet.
 func (q *Queries) MoveEnvironmentVolumes(ctx context.Context, arg MoveEnvironmentVolumesParams) error {
 	_, err := q.db.Exec(ctx, moveEnvironmentVolumes, arg.UnitID, arg.WorkspaceID, arg.EnvironmentID)
 	return err
@@ -712,7 +726,8 @@ UPDATE servers SET enrollment_hash = $1,enrollment_expires = $2,
     credential_hash=NULL,previous_hash=NULL,previous_until=NULL,revoked=false,revoked_at=NULL,rotation_requested=false,rotate_key_requested=false,
     machine_id=CASE WHEN revoked AND preview_only THEN NULL ELSE machine_id END
 WHERE workspace_id = $5 AND id = $6
-RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at
+RETURNING id,name,role,last_seen,capabilities,preflight,revoked,rotation_requested,awaiting_transfer,preview_only,revoked_at,
+    (NOT revoked AND credential_hash IS NOT NULL)::boolean AS updatable
 `
 
 type RenewServerEnrollmentParams struct {
@@ -736,6 +751,7 @@ type RenewServerEnrollmentRow struct {
 	AwaitingTransfer  bool       `json:"awaiting_transfer"`
 	PreviewOnly       bool       `json:"preview_only"`
 	RevokedAt         *time.Time `json:"revoked_at"`
+	Updatable         bool       `json:"updatable"`
 }
 
 // Revoking a preview host released its previews without anything confirming their removal, so it
@@ -763,6 +779,7 @@ func (q *Queries) RenewServerEnrollment(ctx context.Context, arg RenewServerEnro
 		&i.AwaitingTransfer,
 		&i.PreviewOnly,
 		&i.RevokedAt,
+		&i.Updatable,
 	)
 	return i, err
 }

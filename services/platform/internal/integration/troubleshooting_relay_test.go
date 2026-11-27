@@ -567,6 +567,42 @@ func TestTroubleshootingTypingRefreshesTheBrowserSession(t *testing.T) {
 	}
 }
 
+// A keystroke that lands after the browser session expired, before the relay's review ends the
+// stream, leaves the session expired. The session is only offered, so no review runs meanwhile.
+func TestTroubleshootingTypingAfterExpiryLeavesTheBrowserSessionEnded(t *testing.T) {
+	x := relayFixture(t)
+	ctx := context.Background()
+	opened := x.open(t, x.owner, x.app, 1, 201)
+	expiry := func(set string) time.Time {
+		t.Helper()
+		var at time.Time
+		if err := x.f.st.Pool.QueryRow(ctx, browserSessionExpiry(set)+" RETURNING b.expiry", opened.Session.Id).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	refresh := func() {
+		t.Helper()
+		if err := x.f.execution.RefreshTroubleshootingBrowser(ctx, x.ws, opened.Session.Id, time.Hour, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// While the session lasts a keystroke extends it, so what follows is the expiry's doing.
+	live := expiry("clock_timestamp()+interval '1 minute'")
+	refresh()
+	if extended := expiry("b.expiry"); !extended.After(live.Add(10 * time.Minute)) {
+		t.Fatalf("a live session was not refreshed: %v, then %v", live, extended)
+	}
+	ended := expiry("clock_timestamp()-interval '1 second'")
+	refresh()
+	if after := expiry("b.expiry"); !after.Equal(ended) {
+		t.Fatalf("a keystroke revived an expired session: %v became %v", ended, after)
+	}
+	if v := x.owner.session(); v.User != nil {
+		t.Fatal("the expired browser session still signs its holder in")
+	}
+}
+
 // A stream past its allowance waits instead of buffering, in both directions.
 func TestTroubleshootingRelayPacesBothDirections(t *testing.T) {
 	x := relayFixture(t)

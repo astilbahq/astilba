@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/astilbahq/astilba/services/platform/internal/composeproject"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -293,11 +294,11 @@ func (s *Service) PrepareRecoveryCutover(ctx context.Context, p store.Principal,
 		}
 		view := source
 		view.ServerID, view.Plan = row.ServerID, plan
-		old, err := backup.RestoredVolume(view, row.TargetVolumeID, result.Manifest, result.RestoredImage())
+		old, err := backup.RestoredVolume(view, row.TargetVolumeID, result.Manifest, result.RestoredImage(), result.RestoreRoles)
 		if err != nil {
 			return restoreIncompatible(err)
 		}
-		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, view, recovery, row.TargetVolumeID, old, result.RestoredImage(), nil)
+		out, err = writeRestoreDraft(ctx, tx, p, ws, env, v, view, recovery, row.TargetVolumeID, old, result.RestoredImage(), result.RestoreRoles, nil)
 		return err
 	})
 	return out, err
@@ -403,7 +404,7 @@ func (s *Service) hydrateRecovery(ctx context.Context, a Identity, keys valueKey
 	if Terminal(api.ExecutionState(op.State)) {
 		return false, false, nil
 	}
-	cancelled, expired := c.CancelRequested || op.CancelRequested, time.Now().After(c.Deadline)
+	cancelled, expired := c.CancelRequested || op.CancelRequested, deadline.Passed(*c)
 	if !op.Held && (cancelled || expired) {
 		// No agent has it, so it ends here rather than reaching one that may not know the kind.
 		return false, false, finishUndeliveredRecovery(ctx, tx, c.Id, ws, "cancelled", recoveryUndeliveredNote)
@@ -530,7 +531,7 @@ func recoveryReport(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.Executio
 	}
 	var v backup.Recovery
 	var result backup.RecoveryResult
-	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil || unknownRestoreImage(result.RestoreImage) {
+	if r.Restore == nil || c.Backup == nil || json.Unmarshal(*c.Backup, &v) != nil || json.Unmarshal(*r.Restore, &result) != nil || result.Snapshot != v.Snapshot || result.TargetID != v.TargetID || v.Admits(result.Manifest) != nil || unknownRestoreImage(result.RestoreImage) || unknownRestoreRoles(result.RestoreRoles) {
 		return domain.Invalid("restore")
 	}
 	raw, err := stablejson.Marshal(result)

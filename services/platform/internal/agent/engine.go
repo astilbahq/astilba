@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
@@ -47,13 +48,26 @@ type Engine struct {
 	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
-	mu          sync.Mutex
+	// mu is the host's execution lock: a command holds it from start to end, as do scheduled
+	// backups and other work that must not run inside a command.
+	mu sync.Mutex
+	// lent is whether the command holding mu has lent the engine, while it puts images into
+	// Docker, to work that may run beside it; see lend. lendMu guards it, and that work holds
+	// lendMu while it runs.
+	lendMu sync.Mutex
+	lent   bool
 	// measuredLayers are the layers whose unpacked size the agent has measured for pulls.
 	layerCostsOnce sync.Once
 	measuredLayers *layerCosts
 	// checkedSiblings are index entries the agent found harmless for loads.
 	checkedOnce     sync.Once
 	checkedSiblings *checkedManifests
+	// registryRetry is how often the agent reads an image again in tests, which can't wait as long
+	// as defaultRegistryRetry, the policy when nil.
+	registryRetry *registryRetry
+	// registryProgress is how fast a registry must send an answer in tests, which can't wait as
+	// long as defaultRegistryProgress, the policy when nil.
+	registryProgress *registryProgress
 	// networkMu orders choosing a network's subnet with joining a managed network, so a
 	// subnet is never chosen inside a prefix this host is about to hold.
 	networkMu sync.Mutex
@@ -152,7 +166,7 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 	if c.ServerId != cfg.ServerID || c.Id == uuid.Nil || c.Generation < 1 || len(c.PlanHash) != 64 || (cfg.Role == "build" && c.Kind != "update" && c.Kind != "pipeline") || (cfg.Role == "deployment" && c.Kind == "pipeline") {
 		return errors.New("command identity or role rejected")
 	}
-	if _, known := commandKinds[c.Kind]; !known {
+	if !deadline.KnownKind(c.Kind) {
 		return errors.New("unsupported command")
 	}
 	preview := false
@@ -216,13 +230,13 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		return e.finish(c.Id, "failed", err.Error())
 	}
 	updateContinuation := c.Kind == "update" && e.Journal.startupUpdates[c.Id] && (r.AcceptedAt == nil || !r.AcceptedAt.After(c.Deadline)) && !e.cancelled(c.Id) && c.Release != nil && execution.Hash(c.Release) == c.PlanHash
-	if commandDeadline(c) != ownDeadline && !updateContinuation && r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	if deadline.Of(c) != deadline.OwnDeadline && !updateContinuation && r.Checkpoint == "accepted" && deadline.Passed(r.Command) {
 		late, err := e.runsLate(c)
 		if err != nil {
 			return err
 		}
 		if !late {
-			return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+			return e.finish(c.Id, "cancelled", lateNote(r.Command))
 		}
 	}
 	upgrades, err := e.Journal.upgrades()
@@ -272,13 +286,18 @@ func (e *Engine) Execute(ctx context.Context, c api.ExecutionCommand) error {
 		if updateContinuation && e.VerifyInstalledUpdate != nil && e.VerifyInstalledUpdate(*c.Release) == nil {
 			return e.finish(c.Id, "succeeded", "Agent artifact verified and installed.")
 		}
-		if time.Now().After(c.Deadline) {
-			return e.finish(c.Id, "cancelled", "The admission deadline passed before execution.")
+		if deadline.Passed(r.Command) {
+			return e.finish(c.Id, "cancelled", lateNote(r.Command))
 		}
 		if e.Update == nil {
 			return e.finish(c.Id, "needs_attention", "This installation needs the documented local update procedure.")
 		}
 		if err = e.Update(ctx, *c.Release); err != nil {
+			// A refused release left the host as it was, so nothing needs attention.
+			var refused *Refused
+			if errors.As(err, &refused) {
+				return e.finish(c.Id, "failed", refused.Note())
+			}
 			return e.finish(c.Id, "needs_attention", "Agent update did not finish. Inspect the local update state and retry the local procedure.")
 		}
 		return e.finish(c.Id, "succeeded", "Agent artifact verified and installed.")
@@ -436,9 +455,51 @@ func (e *Engine) inspectOrRemove(ctx context.Context, c api.ExecutionCommand) er
 	return e.finish(c.Id, "succeeded", "Managed probe removed. No networks or volumes were removed.")
 }
 
+// lend runs put, a command's putting of images into Docker, with the engine lent to work that may
+// run beside a command, see betweenCommands. Reading an image from its registry can take minutes,
+// or as long as the registry keeps sending it, and changes nothing on the host that such work
+// reads or changes. The command goes on once that work has finished. Other work, such as
+// scheduled backups, skips its turn, see lockUnlessLent.
+func (e *Engine) lend(put func() error) error {
+	e.lendMu.Lock()
+	e.lent = true
+	e.lendMu.Unlock()
+	defer func() {
+		e.lendMu.Lock()
+		e.lent = false
+		e.lendMu.Unlock()
+	}()
+	return put()
+}
+
+// lockUnlessLent takes mu for work that must not run inside a command, such as a schedule tick,
+// and reports true. While a command has lent the engine it reports false without taking mu, so
+// that work skips its turn rather than waits behind a registry. Work already waiting on mu when a
+// command lends the engine waits for the command to end, as it always has.
+func (e *Engine) lockUnlessLent() bool {
+	if e.mu.TryLock() {
+		return true
+	}
+	e.lendMu.Lock()
+	lent := e.lent
+	e.lendMu.Unlock()
+	if lent {
+		return false
+	}
+	e.mu.Lock()
+	return true
+}
+
 // commandContext ends at end, or once the command's owner cancels it.
 func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, end time.Time) (context.Context, func()) {
 	ctx, cancel := context.WithDeadline(parent, end)
+	cancellable, stop := untilCancelled(ctx, func() bool { return e.cancelled(c.Id) })
+	return cancellable, func() { stop(); cancel() }
+}
+
+// untilCancelled is parent until cancelled, which it asks five times a second, returns true.
+func untilCancelled(parent context.Context, cancelled func() bool) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(200 * time.Millisecond)
@@ -450,7 +511,7 @@ func (e *Engine) commandContext(parent context.Context, c api.ExecutionCommand, 
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if e.cancelled(c.Id) {
+				if cancelled() {
 					cancel()
 					return
 				}

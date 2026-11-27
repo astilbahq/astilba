@@ -140,7 +140,8 @@ WHERE workspace_id = @workspace_id AND id = @id AND superseded_at IS NULL AND re
 -- unscoped: the presented token establishes the workspace. A token is live only while its lineage
 -- is the server's current one, in the current epoch, for the server's current key.
 SELECT s.workspace_id,s.role,l.id AS lineage,l.key_hash,
-    COALESCE((s.capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases
+    COALESCE((s.capabilities->>'acknowledgesReleases')::boolean,false)::boolean AS acknowledges_releases,
+    COALESCE((s.capabilities->>'expiredCommands')::boolean,false)::boolean AS reads_expiry
 FROM agent_lineages l JOIN servers s ON s.id = l.server_id AND s.workspace_id = l.workspace_id
 WHERE l.server_id = @server_id AND l.superseded_at IS NULL AND l.epoch = s.enrollment_epoch
     AND s.credential_hash = l.key_hash AND NOT s.revoked AND NOT s.awaiting_transfer

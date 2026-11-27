@@ -44,6 +44,11 @@ export default interface Resources {
       "signOut": "Sign out",
       "source": "Licence and source"
     },
+    "mfaSetup": {
+      "action": "Set up two-factor authentication",
+      "description": "This workspace requires two-factor authentication. You can look around, but you can’t change anything until you set it up.",
+      "title": "Set up two-factor authentication"
+    },
     "name": "Astilba",
     "navigation": {
       "account": "Account security",
@@ -176,7 +181,6 @@ export default interface Resources {
       "saveDescription": "Store these codes in your password manager or somewhere safe offline. Each code works once if you lose access to your authenticator.",
       "saved": "I have saved my codes",
       "scan": "Scan this code with your authenticator app, or enter the setup key manually.",
-      "selfHosted": "This installation does not require a hosted subscription.",
       "settings": "Open workspace settings",
       "signIn": "Sign in to continue",
       "subscription": "Billing",
@@ -262,6 +266,7 @@ export default interface Resources {
       "useRecovery": "Use a recovery code"
     },
     "validation": {
+      "codeRateLimited": "Too many attempts. Try again later. If your authenticator code is still refused, use a recovery code.",
       "codeRequired": "Enter the six-digit code from your authenticator app.",
       "emailInvalid": "Enter a valid email address.",
       "emailRequired": "Enter your email address.",
@@ -290,8 +295,10 @@ export default interface Resources {
       "recoveryCodeRequired": "Enter a recovery code.",
       "requestFailed": "The request could not be completed. Try again.",
       "setupConflict": "This setup changed in another session. Check the current state and try again.",
+      "setupElsewhere": "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out your other sessions.",
       "signupAccount": "Sign in with the invited email address before accepting this invitation.",
       "signupUnavailable": "This invitation cannot create a workspace right now. Try again or contact the person who invited you.",
+      "stepUpCodeRateLimited": "Too many attempts. Try again later, or sign out and sign in again. If your authenticator code is still refused, use a recovery code.",
       "stepUpRateLimited": "Too many attempts. Try again later, or sign out and sign in again to continue.",
       "temporarilyBusy": "Too many sign-ins are in progress. Try again in a few seconds.",
       "workspaceInvalid": "Enter a workspace name without line breaks or control characters.",

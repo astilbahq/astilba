@@ -305,6 +305,15 @@ func TestPrePreviewWorkspaceArchiveRemainsImportable(t *testing.T) {
 	if purpose != "standard" || reserved {
 		t.Fatal("legacy archive gained preview authority")
 	}
+	// The archive's workspace didn't require two-factor authentication, which an import keeps
+	// rather than taking the requirement new workspaces start with.
+	var required bool
+	if err = f.st.Pool.QueryRow(ctx, "SELECT require_mfa FROM workspaces WHERE id=$1", imported.ID).Scan(&required); err != nil {
+		t.Fatal(err)
+	}
+	if required {
+		t.Fatal("import replaced the archive's two-factor requirement with the new-workspace default")
+	}
 }
 
 func TestOfflineRecoveryMergePreservesImmutableHistory(t *testing.T) {

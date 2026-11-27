@@ -47,18 +47,38 @@ type Running struct {
 	StateVersion int
 }
 
+// Refused is how Install turns down a release that this agent may not install. It is returned
+// before anything on the host changes, so the host is as it was, and the same release would be
+// refused again.
+type Refused struct {
+	Release string
+	Err     error
+}
+
+func (e *Refused) Error() string { return e.Err.Error() }
+func (e *Refused) Unwrap() error { return e.Err }
+
+// Note is what the agent reports to management about the refusal.
+func (e *Refused) Note() string {
+	var below *agentrelease.BelowFloor
+	if errors.As(e.Err, &below) {
+		return fmt.Sprintf("The agent refused release %s: its minimum version %s is below %s, the minimum version of the release the agent runs. Nothing on the host changed. Choose a release whose minimum version is %s or later.", below.Version, below.MinimumVersion, below.Floor, below.Floor)
+	}
+	return fmt.Sprintf("The agent refused release %s: %s. Nothing on the host changed.", e.Release, e.Err)
+}
+
 // Install only replaces the agent executable. It never stops a workload or edits Docker.
 // The process supervisor restarts it after the current update operation is journaled.
 // Install verifies and installs a signed release that the running agent permits.
 func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, source io.Reader, executable string, running Running) error {
 	if r.Arch != api.AgentReleaseArch(runtime.GOARCH) {
-		return errors.New("wrong host architecture")
+		return &Refused{Release: r.Version, Err: errors.New("wrong host architecture")}
 	}
 	if e := agentrelease.Validate(r, key); e != nil {
 		return e
 	}
 	if e := agentrelease.Permits(running.MinimumVersion, r); e != nil {
-		return e
+		return &Refused{Release: r.Version, Err: e}
 	}
 	current, e := os.Open(executable)
 	if e != nil {
@@ -105,11 +125,11 @@ func Install(ctx context.Context, r api.AgentRelease, key ed25519.PublicKey, sou
 		return errors.New("artifact identity does not match manifest")
 	}
 	if running.Keyed && identity.KeyAuth < 1 {
-		return errors.New("this agent authenticates with a key, and this release can't; install a release that can")
+		return &Refused{Release: r.Version, Err: errors.New("this agent authenticates with a key, and this release can't; install a release that can")}
 	}
 	// Releases from before the field read every format up to the keyed one, which Keyed covers.
 	if running.StateVersion > keyedStateVersion && identity.StateVersion < running.StateVersion {
-		return fmt.Errorf("this agent's state is in format %d, and this release reads formats up to %d, so it couldn't open the sealed journal keyring or private-link keys; install a release that can", running.StateVersion, identity.StateVersion)
+		return &Refused{Release: r.Version, Err: fmt.Errorf("this agent's state is in format %d, and this release reads formats up to %d, so it couldn't open the sealed journal keyring or private-link keys; install a release that can", running.StateVersion, identity.StateVersion)}
 	}
 	backup := temp.Name() + ".previous"
 	if e = os.Link(executable, backup); e != nil {

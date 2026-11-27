@@ -154,12 +154,18 @@ func (s *Service) scopeIn(ctx context.Context, p store.Principal, ws uuid.UUID, 
 
 // serverView maps the server columns shared by ListServers, InsertServer and
 // RenewServerEnrollment; their generated row types convert to ListServersRow.
-func serverView(row db.ListServersRow) (api.Server, error) {
+func (s *Service) serverView(row db.ListServersRow) (api.Server, error) {
 	v := api.Server{Id: row.ID, Name: row.Name, Role: api.ServerRole(row.Role), LastSeen: row.LastSeen, RotationRequested: row.RotationRequested, TransferRequired: &row.AwaitingTransfer, PreviewOnly: &row.PreviewOnly}
 	if len(row.Capabilities) > 0 {
 		if err := json.Unmarshal(row.Capabilities, &v.Capabilities); err != nil {
 			return v, err
 		}
+	}
+	// RequestUpdate takes an update only for a server it can reach with a protocol 1 agent, so
+	// the view offers none to any other, such as one revoked or awaiting a transfer.
+	if v.Capabilities != nil && row.Updatable && v.Capabilities.Protocol == 1 {
+		updates := agentUpdates(s.Releases, *v.Capabilities)
+		v.AgentUpdates = &updates
 	}
 	if len(row.Preflight) > 0 {
 		if err := json.Unmarshal(row.Preflight, &v.Preflight); err != nil {
@@ -197,7 +203,7 @@ func (s *Service) Servers(ctx context.Context, p store.Principal, ws uuid.UUID) 
 			return err
 		}
 		for _, row := range rows {
-			v, e := serverView(row)
+			v, e := s.serverView(row)
 			if e != nil {
 				return e
 			}
@@ -241,7 +247,7 @@ func (s *Service) CreateServer(ctx context.Context, p store.Principal, ws uuid.U
 		if e != nil {
 			return e
 		}
-		out.Server, e = serverView(db.ListServersRow(row))
+		out.Server, e = s.serverView(db.ListServersRow(row))
 		return e
 	})
 	return out, err
@@ -269,7 +275,7 @@ func (s *Service) RenewEnrollment(ctx context.Context, p store.Principal, ws, id
 		if e != nil {
 			return e
 		}
-		out.Server, e = serverView(db.ListServersRow(row))
+		out.Server, e = s.serverView(db.ListServersRow(row))
 		return e
 	})
 	return out, err
@@ -341,6 +347,9 @@ type Identity struct {
 	// AcknowledgesReleases is an agent that acknowledges the secret releases it holds, and so may
 	// receive them.
 	AcknowledgesReleases bool
+	// ReadsExpiry is an agent that reads a command's expired mark: management's verdict that its
+	// deadline has passed, which the agent applies whatever its own clock says.
+	ReadsExpiry bool
 }
 
 // instance names what holds a release: the agent's key, whose journal outlives its token
@@ -372,7 +381,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return v, keyNotCurrent
 		}
-		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.AcknowledgesReleases = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.AcknowledgesReleases
+		v.Kind, v.Workspace, v.Role, v.Credential, v.Lineage, v.AcknowledgesReleases, v.ReadsExpiry = identityToken, row.WorkspaceID, api.ServerRole(row.Role), row.KeyHash, row.Lineage, row.AcknowledgesReleases, row.ReadsExpiry
 		return v, err
 	}
 	if len(token) != 43 {
@@ -380,7 +389,7 @@ func (s *Service) Authenticate(ctx context.Context, id uuid.UUID, token string) 
 	}
 	row, err := s.Store.Queries.AuthenticateAgent(ctx, db.AuthenticateAgentParams{ServerID: id, CredentialHash: hash(token)})
 	v.Kind, v.Credential = identityBearer, hash(token)
-	v.Workspace, v.Role, v.Previous, v.AcknowledgesReleases = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.AcknowledgesReleases
+	v.Workspace, v.Role, v.Previous, v.AcknowledgesReleases, v.ReadsExpiry = row.WorkspaceID, api.ServerRole(row.Role), row.Previous, row.AcknowledgesReleases, row.ReadsExpiry
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = domain.Unauthenticated
 	}

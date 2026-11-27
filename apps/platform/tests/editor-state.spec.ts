@@ -224,7 +224,11 @@ test("discard and reload resets a staged volume name without clearing unrelated 
     .click();
   await expect(page.getByText("Current revision loaded.")).toBeVisible();
   await expect(name).toHaveValue("data");
+  // The dialog returns focus as it finishes closing, which can be after the reload:
+  // typing before then would land wherever focus goes.
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
   await name.fill("still-editing");
+  await expect(name).toHaveValue("still-editing");
   await page.getByText("Advanced specification", { exact: true }).click();
   const editor = page.getByLabel("Specification (JSON)");
   const specification = JSON.parse(await editor.inputValue());

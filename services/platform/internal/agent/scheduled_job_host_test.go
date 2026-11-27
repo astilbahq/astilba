@@ -26,7 +26,7 @@ func nativeFilesAndJobs(t *testing.T, e *Engine, server uuid.UUID) {
 	app, volume := uuid.New(), uuid.New()
 	image := execution.TestImage
 	p := deployment.Plan{ID: uuid.New(), ServerID: server, EnvironmentID: uuid.New(), UnitID: uuid.New(), RevisionID: uuid.New(), Recipe: 1, ExpiresAt: time.Now().Add(time.Hour), Images: map[string]string{app.String(): image}, Specification: domain.Specification{Version: 1, Applications: []domain.Application{{ID: app, Name: "Scheduled worker", Kind: "worker", Source: domain.ApplicationSource{Kind: "image", Image: &image}, Command: []string{"sleep", "86400"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: "/data"}}}}, Variables: []domain.Variable{}, Volumes: []domain.Volume{{ID: volume, Name: "Files"}}}}.WithHash()
-	if err := e.ensureStorage(ctx, p); err != nil {
+	if err := e.ensureStorage(ctx, p, nil); err != nil {
 		t.Fatal(err)
 	}
 	worker, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: deployment.UnitName(app), Config: &container.Config{Image: image, Cmd: []string{"sleep", "86400"}, Labels: visualLabels(p, app)}, HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode(deployment.NetworkName(p.UnitID)), Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(volume), Target: "/data"}}}})

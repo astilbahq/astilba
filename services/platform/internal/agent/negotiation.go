@@ -33,6 +33,7 @@ func (c *Client) hearFeatures(h http.Header) {
 	c.safeReleases.Store(h.Get("Astilba-Agent-Safe-Releases") == "v1")
 	c.serviceOutputs.Store(h.Get("Astilba-Agent-Service-Outputs") == "v1")
 	c.postgresReleases.Store(h.Get("Astilba-Agent-Postgres-Releases") == "v1")
+	c.postgresOwnerRole.Store(h.Get("Astilba-Agent-Postgres-Owner-Role") == "v1")
 	c.previews.Store(h.Get("Astilba-Agent-Previews") == "v1")
 	c.retirement.Store(h.Get("Astilba-Agent-Retirement") == "v1")
 	c.purge.Store(h.Get("Astilba-Agent-Purge") == "v1")
@@ -46,6 +47,7 @@ func (c *Client) hearFeatures(h http.Header) {
 	c.machineRotation.Store(h.Get("Astilba-Agent-Machine-Rotation") == "v1")
 	c.secretReleases.Store(h.Get("Astilba-Agent-Secret-Releases") == "v1")
 	c.containerRanges.Store(h.Get("Astilba-Agent-Container-Ranges") == "v1")
+	c.expiredCommands.Store(h.Get("Astilba-Agent-Expired-Commands") == "v1")
 	c.keysSupported.Store(h.Get(agentidentity.KeysHeader) == "v1")
 	if c.Engine != nil {
 		read := refusalsUnread
@@ -159,6 +161,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	if !c.postgresReleases.Load() {
 		v.PostgresReleases = nil
 	}
+	if !c.postgresOwnerRole.Load() {
+		v.PostgresOwnerRole = nil
+	}
 	if !c.safeReleases.Load() {
 		v.SafeReleases = nil
 	}
@@ -192,6 +197,9 @@ func (c *Client) advertisedCapabilities(v api.AgentCapabilities) api.AgentCapabi
 	}
 	if !c.containerRanges.Load() {
 		v.ContainerRanges = nil
+	}
+	if !c.expiredCommands.Load() {
+		v.ExpiredCommands = nil
 	}
 	return v
 }
@@ -234,26 +242,33 @@ func (c *Client) heartbeat(ctx context.Context, credential string, status *api.A
 	return c.call(ctx, "POST", "/agent/v1/heartbeat", h, status, credential)
 }
 
-// advertisedReport leaves a restore's PostgreSQL release out of a report to a controller from
-// before PostgreSQL releases, whose result schema refuses it. That controller reads the archive's
-// own image as the one that restored, which is all its agents did. Only a controller that
-// negotiates sends restores, so a report naming the release is not ready until it has answered:
-// an accepted report is not sent again.
+// advertisedReport leaves what a controller doesn't read out of a restore's report: the
+// PostgreSQL release, for one from before releases, which reads the archive's own image as the one
+// that restored, and the role model, for one from before the owner model, which drafts a cutover
+// the agent then refuses, since the restored cluster isn't the kind that controller plans. Only a
+// controller that negotiates sends restores, so a report naming either is not ready until it has
+// answered: an accepted report is not sent again.
 func (c *Client) advertisedReport(v api.AgentReport) (api.AgentReport, bool) {
 	// hearFeatures stores what management reads before marking negotiation, so reading the mark
-	// first means the release flag read next is the one that negotiation heard.
+	// first means the flags read next are the ones that negotiation heard.
 	negotiated := c.negotiated.Load()
-	if c.postgresReleases.Load() || v.Restore == nil {
+	releases, roles := c.postgresReleases.Load(), c.postgresOwnerRole.Load()
+	if releases && roles || v.Restore == nil {
 		return v, true
 	}
 	var result backup.RecoveryResult
-	if json.Unmarshal(*v.Restore, &result) != nil || result.RestoreImage == "" {
+	if json.Unmarshal(*v.Restore, &result) != nil || (releases || result.RestoreImage == "") && (roles || result.RestoreRoles == "") {
 		return v, true
 	}
 	if !negotiated {
 		return v, false
 	}
-	result.RestoreImage = ""
+	if !releases {
+		result.RestoreImage = ""
+	}
+	if !roles {
+		result.RestoreRoles = ""
+	}
 	raw, err := stablejson.Marshal(result)
 	if err != nil {
 		return v, true

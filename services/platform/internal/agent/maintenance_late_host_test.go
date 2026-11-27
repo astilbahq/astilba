@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
@@ -78,7 +79,7 @@ func TestNativeLateRestoreLeavesTheSourceToResume(t *testing.T) {
 	w.intent = deployment.Maintenance{Kind: "restore", ResourceID: boundary.PolicyID, RunID: boundary.RunID, Restore: &boundary, EffectHash: deployment.Hash(boundary), ExpectedState: w.intent.ExpectedState, Target: &target}
 	// Reserving a restore checks the restored run, which this test has no need of.
 	reserve := w.command("reserve")
-	body, err := crossHostCommand(reserve)
+	body, err := deadline.CrossHost(reserve)
 	if err != nil {
 		t.Fatal(err)
 	}

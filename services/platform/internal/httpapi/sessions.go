@@ -37,14 +37,19 @@ type sessionLoad struct {
 	keepCookie bool
 	// keepRow leaves a destroyed session's row in place. See dropStaleSession.
 	keepRow bool
-	// deviceToken is sent as the device cookie unless saving the session failed. See issueDevice.
+	// deviceToken is sent as the device cookie unless saving the session failed or its renewal
+	// was discarded. See issueDevice and renewToken.
 	deviceToken string
 	// lineage is the loaded session's chain of renewed tokens, which a logout ends.
 	lineage uuid.UUID
 	// staleCSRF is the CSRF token of a loaded session that dropStaleSession ended. See csrfToken.
 	staleCSRF string
-	// continueLineage gives a new sign-in's token the loaded session's lineage. See VerifyMFA.
+	// continueLineage gives a new sign-in's token the loaded session's lineage while that
+	// session lasts, deleting it with the new token's insert. See VerifyMFA and continueSignIn.
 	continueLineage bool
+	// renewed is set once this request has replaced the session's token, which then commits
+	// only with a successful response. See renewToken.
+	renewed bool
 }
 
 type sessionStore struct {
@@ -54,7 +59,7 @@ type sessionStore struct {
 }
 
 func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
-	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.keepRow) && loaded.token == token {
+	if loaded, _ := ctx.Value(sessionLoadKey{}).(*sessionLoad); loaded != nil && (loaded.replaceLive || loaded.continueLineage || loaded.keepRow) && loaded.token == token {
 		return nil
 	}
 	return s.PostgresStore.DeleteCtx(ctx, token)
@@ -64,11 +69,23 @@ func (s *sessionStore) DeleteCtx(ctx context.Context, token string) error {
 // this request loaded it, such as a password change from another tab. The lock orders this
 // with a renewal of the lineage: one that committed first has its new token deleted here,
 // and one that comes after finds its old token gone and refuses. A later sign-in stays signed
-// in: it starts its own lineage, or completes a pending one after this delete has run.
+// in, in a lineage of its own, even one completing a pending sign-in this delete ended. An
+// authenticator enrolment the lineage began ends with it. Only a logout that has one to end
+// writes to accounts, so the rest never wait for a hold on that table, such as a custody
+// conversion's.
 func endLineage(ctx context.Context, st *store.Store, lineage uuid.UUID) error {
 	return st.Transaction(ctx, func(q *db.Queries) error {
 		if err := q.LockSessionLineage(ctx, lineage); err != nil {
 			return err
+		}
+		enrolling, err := q.LockLineageEnrolments(ctx, lineage)
+		if err != nil {
+			return err
+		}
+		if len(enrolling) > 0 {
+			if err = q.EndEnrolments(ctx, enrolling); err != nil {
+				return err
+			}
 		}
 		return q.DeleteSessionLineage(ctx, lineage)
 	})
@@ -103,6 +120,25 @@ func (s *sessionStore) renewLive(ctx context.Context, previous, token string, li
 		}
 		return q.MoveTroubleshootingBrowserBinding(ctx, db.MoveTroubleshootingBrowserBindingParams{Renewed: newHash, Previous: oldHash})
 	})
+}
+
+// continueSignIn replaces a pending sign-in's token with the signed-in one, continuing its
+// lineage, and returns the lineage the new token has. A logout or expiry that ended the pending
+// token first ended its lineage, which nothing signs into again: signing in proves a credential,
+// so it still succeeds, in a lineage of its own. The lock orders this with that logout.
+func (s *sessionStore) continueSignIn(ctx context.Context, previous, token string, lineage uuid.UUID, data []byte, expiry time.Time) (uuid.UUID, error) {
+	err := s.store.Transaction(ctx, func(q *db.Queries) error {
+		if err := q.LockSessionLineage(ctx, lineage); err != nil {
+			return err
+		}
+		if n, err := q.DeleteRenewedSession(ctx, previous); err != nil {
+			return err
+		} else if n == 0 {
+			lineage = uuid.New()
+		}
+		return q.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage})
+	})
+	return lineage, err
 }
 
 func (s *sessionStore) FindCtx(ctx context.Context, token string) ([]byte, bool, error) {
@@ -149,9 +185,11 @@ func (s *sessionStore) CommitCtx(ctx context.Context, token string, data []byte,
 		// unless it completes the sign-in that session began.
 		lineage := uuid.New()
 		if loaded.continueLineage {
-			lineage = loaded.lineage
-		}
-		if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
+			var err error
+			if lineage, err = s.continueSignIn(ctx, loaded.token, token, loaded.lineage, data, expiry); err != nil {
+				return err
+			}
+		} else if err := s.queries.InsertSession(ctx, db.InsertSessionParams{Token: token, Data: data, Expiry: expiry, Lineage: lineage}); err != nil {
 			return err
 		}
 		loaded.lineage = lineage
@@ -175,8 +213,8 @@ type sessionResponseGuard struct {
 // ended its session. A browser applies Set-Cookie in arrival order, so anything else sent
 // to a request carrying an old token could undo the cookie a credential change has just
 // renewed. Idle refreshes need no cookie: it lasts to the session's absolute deadline and
-// the row's expiry enforces the idle timeout.
-func (w *sessionResponseGuard) save() {
+// the row's expiry enforces the idle timeout. status is the response's.
+func (w *sessionResponseGuard) save(status int) {
 	if w.saved {
 		return
 	}
@@ -184,6 +222,12 @@ func (w *sessionResponseGuard) save() {
 	sessions, ctx := w.server.Sessions, w.request.Context()
 	switch sessions.Status(ctx) {
 	case scs.Modified:
+		if w.loaded.renewed && status >= 400 {
+			// The renewal and what followed it are one unit: a sign-in or credential change
+			// that failed after renewing stores no token, so nothing it began is signed in,
+			// and it sends neither cookie. See renewToken.
+			return
+		}
 		token, _, err := sessions.Commit(ctx)
 		if err != nil {
 			w.fail(w.request, err)
@@ -212,13 +256,13 @@ func (w *sessionResponseGuard) fail(r *http.Request, err error) {
 }
 
 func (w *sessionResponseGuard) WriteHeader(status int) {
-	w.save()
+	w.save(status)
 	if !w.failed {
 		w.ResponseWriter.WriteHeader(status)
 	}
 }
 func (w *sessionResponseGuard) Write(data []byte) (int, error) {
-	w.save()
+	w.save(http.StatusOK)
 	if w.failed {
 		return 0, errSessionResponse
 	}
@@ -226,7 +270,7 @@ func (w *sessionResponseGuard) Write(data []byte) (int, error) {
 }
 func (w *sessionResponseGuard) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *sessionResponseGuard) FlushError() error {
-	w.save()
+	w.save(http.StatusOK)
 	if w.failed {
 		return errSessionResponse
 	}
@@ -248,8 +292,23 @@ func (s *Server) browserSession(next http.Handler) http.Handler {
 		}
 		guard.request = r.WithContext(ctx)
 		next.ServeHTTP(guard, guard.request)
-		guard.save()
+		guard.save(http.StatusOK)
 	})
+}
+
+// renewToken replaces the session's token, for a sign-in, a reauthentication or a change to how
+// the account signs in. The new token is stored only if the request then succeeds, so a failure
+// after this point, such as a device token that could not be sealed, signs nothing in. The
+// browser keeps the token it presented. A session RenewToken deleted stays deleted, and a pending
+// sign-in or a reauthenticating session stays as it was, unless the request moved the account to
+// a new version, as a credential change or a recovery code does: then the old token grants
+// nothing and the pending sign-in cannot complete.
+func (s *Server) renewToken(ctx context.Context) error {
+	if err := s.Sessions.RenewToken(ctx); err != nil {
+		return err
+	}
+	ctx.Value(sessionLoadKey{}).(*sessionLoad).renewed = true
+	return nil
 }
 
 // rotate replaces the token after a change to the account's password or two-factor

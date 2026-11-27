@@ -29,6 +29,7 @@ test("protected release review and rollback draft remain separate from deploymen
         backups: true,
         upgrades: true,
         postgresReleases: f.releases.map((r) => r.image),
+        postgresOwnerRole: true,
       },
       preflight: {
         ready: true,

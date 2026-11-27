@@ -10,6 +10,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
@@ -154,7 +155,7 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 	// Any other command runs again from the start, whether or not it was stopped part way: an
 	// install's repository steps are idempotent, and a schedule an install or disable writes is
 	// committed with the command's success.
-	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && time.Now().After(c.Deadline) {
+	if e.cancelled(c.Id) || r.Checkpoint == "accepted" && deadline.Passed(c) {
 		if r.Checkpoint != "accepted" {
 			return e.finish(c.Id, "cancelled", "Cancelled. No schedule was changed.")
 		}
@@ -202,10 +203,13 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 			break
 		}
 		if b.Installation.Policy.Method == "postgres-logical" {
-			if b.Installation.Access.DatabasePassword, err = e.databasePassword(ctx, b.Installation.Policy); err != nil {
+			if err = e.recordDatabaseCredential(ctx, b.Installation.Policy); err != nil {
 				break
 			}
 		}
+		// A restore gives its database user the verifier the journal keeps for the database, so the
+		// schedule keeps no password.
+		b.Installation.Access.DatabasePassword = ""
 		if b.Installation.Policy.Method != "container-job" {
 			if err := effect(); err != nil {
 				return err
@@ -290,7 +294,10 @@ func (e *Engine) executeBackup(ctx context.Context, c api.ExecutionCommand, r Re
 // execution lock with deployments and persists each run before external effects.
 func (e *Engine) TickSchedules(ctx context.Context) error { return e.tickSchedules(ctx, time.Now) }
 func (e *Engine) tickSchedules(ctx context.Context, clock func() time.Time) error {
-	e.mu.Lock()
+	// A schedule due while a command pulls its images runs on a later tick.
+	if !e.lockUnlessLent() {
+		return nil
+	}
 	defer e.mu.Unlock()
 	if held, err := e.Journal.recoveryHeld(); err != nil {
 		return err
@@ -449,7 +456,7 @@ func (e *Engine) runScheduled(ctx context.Context, s *scheduleState, at time.Tim
 		r.Note = "Container job finished; exit result recorded."
 	}
 	if r.Verified {
-		r.Note = "Fresh restore matched its manifest, and a restored database's cluster was checked on a best-effort basis. Existing services and data remain in use until a separate reviewed deployment." + clearedNote(cleared)
+		r.Note = "Fresh restore matched its manifest. A restored database's dump ran only as its own database user, and its cluster was checked. Existing services and data remain in use until a separate reviewed deployment." + clearedNote(cleared)
 	}
 	// A run that failed before its first effect changed nothing, whatever the method.
 	effects := s.BeforeEffects != r.ID

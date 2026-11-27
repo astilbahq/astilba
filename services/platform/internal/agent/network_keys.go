@@ -13,13 +13,19 @@ import (
 // errEngineBusy says host work held the engine, so nothing was tried.
 var errEngineBusy = errors.New("the agent is running host work")
 
-// betweenCommands runs step with the engine to itself. It runs only between commands, which hold
-// the host's network lock while they work, and it is refused while one runs.
+// betweenCommands runs step with the engine to itself: between commands, or while a command has
+// lent it as it puts images into Docker, see lend. Commands hold the host's network lock while
+// they work on its networks. It is refused while a command runs otherwise.
 func (e *Engine) betweenCommands(ctx context.Context, step func(context.Context) error) error {
-	if !e.mu.TryLock() {
+	if e.mu.TryLock() {
+		defer e.mu.Unlock()
+		return step(ctx)
+	}
+	e.lendMu.Lock()
+	defer e.lendMu.Unlock()
+	if !e.lent {
 		return errEngineBusy
 	}
-	defer e.mu.Unlock()
 	return step(ctx)
 }
 

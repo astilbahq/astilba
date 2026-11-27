@@ -11,7 +11,7 @@ import {
   workspace,
   projectHandlers,
 } from "../../workshop/app-preview";
-import { scenario } from "../../workshop/fixtures";
+import { hostedScenario, scenario } from "../../workshop/fixtures";
 
 const meta = {
   title: "Pages/Projects",
@@ -164,7 +164,8 @@ export const Created: Story = {
     await expect(
       await canvas.findByRole("link", { name: "API service Open project" }),
     ).toBeVisible();
-    await expect(canvas.getByRole("status")).toHaveTextContent(
+    // The status follows the refreshed list, once the creation settles.
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
       "Project created.",
     );
   },
@@ -283,5 +284,102 @@ export const CurrentWorkspaceKeepsProject: Story = {
     await expect(
       canvas.getByRole("heading", { name: "Website" }),
     ).toBeVisible();
+  },
+};
+
+// Someone without two-factor authentication in a workspace that requires it, as new ones do,
+// can read it and is guided to set it up before changing it.
+const unenrolled = { ...session.user!, mfaEnabled: false };
+export const TwoFactorRequired: Story = {
+  parameters: scenario(
+    {
+      ...session,
+      user: unenrolled,
+      workspaces: [{ ...workspace, requireMfa: true }, session.workspaces[1]],
+    },
+    list(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const notice = await canvas.findByRole("region", {
+      name: "Set up two-factor authentication",
+    });
+    await expect(
+      await canvas.findByRole("heading", { name: "Projects" }),
+    ).toBeVisible();
+    await userEvent.click(
+      within(notice).getByRole("link", {
+        name: "Set up two-factor authentication",
+      }),
+    );
+    await expect(
+      await canvas.findByRole("heading", { name: "onboarding" }),
+    ).toBeVisible();
+  },
+};
+// A workspace that doesn't require it, such as one made before new ones did, shows no notice.
+export const TwoFactorNotRequired: Story = {
+  parameters: scenario({ ...session, user: unenrolled }, list()),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByRole("heading", { name: "Projects" }),
+    ).toBeVisible();
+    await expect(
+      canvas.queryByRole("region", {
+        name: "Set up two-factor authentication",
+      }),
+    ).toBeNull();
+  },
+};
+// On a hosted installation, where every workspace needs two-factor authentication for changes,
+// an operator sets it up in account security, since workspace setup is only for an owner's own.
+export const TwoFactorRequiredOperator: Story = {
+  parameters: hostedScenario(
+    {
+      ...session,
+      user: unenrolled,
+      workspaces: [{ ...workspace, role: "operator" }],
+    },
+    list(),
+  ),
+  play: async ({ canvasElement }) => {
+    const notice = await within(canvasElement).findByRole("region", {
+      name: "Set up two-factor authentication",
+    });
+    await userEvent.click(
+      within(notice).getByRole("link", {
+        name: "Set up two-factor authentication",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        within(canvasElement).getByRole("heading", {
+          name: "Two-factor authentication",
+        }),
+      ).toHaveFocus(),
+    );
+  },
+};
+// A viewer changes nothing with or without two-factor authentication, so sees no notice.
+export const TwoFactorRequiredViewer: Story = {
+  parameters: hostedScenario(
+    {
+      ...session,
+      user: unenrolled,
+      workspaces: [{ ...workspace, role: "viewer", requireMfa: true }],
+    },
+    list(),
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByRole("heading", { name: "Projects" }),
+    ).toBeVisible();
+    await expect(
+      canvas.queryByRole("region", {
+        name: "Set up two-factor authentication",
+      }),
+    ).toBeNull();
   },
 };

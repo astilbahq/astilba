@@ -315,10 +315,15 @@ test("agent downloads are signed and verifiable", async ({ page }) => {
     )
     .check();
   await page.getByRole("button", { name: "Create enrollment" }).click();
+  const download = page
+    .getByRole("listitem")
+    .filter({ hasText: "0.1.0-fixture.download" });
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Download agent", exact: true }).click();
+  await download
+    .getByRole("link", { name: "Download agent", exact: true })
+    .click();
   expect((await downloadPromise).suggestedFilename()).toBe("astilba-agent");
-  const manifestPath = await page
+  const manifestPath = await download
     .getByRole("link", { name: "Signed manifest" })
     .getAttribute("href");
   const manifestResponse = await page.request.get(manifestPath!);
@@ -406,6 +411,7 @@ test("visual services stay staged until a reviewed plan is applied", async ({
         visual: true,
         serviceOutputs: true,
         postgresReleases: releases.map((r) => r.image),
+        postgresOwnerRole: true,
         ...acknowledgesReleases,
       },
       preflight: {
@@ -523,6 +529,12 @@ test("visual services stay staged until a reviewed plan is applied", async ({
   const resolve = await poll();
   expect(resolve.visual.action).toBe("resolve");
   expect(JSON.stringify(resolve)).not.toContain("visual-browser-canary");
+  // The database the form staged runs its app as a user that isn't the superuser.
+  expect(
+    resolve.visual.plan.specification.applications.find(
+      (a: { kind: string }) => a.kind === "postgres",
+    ).postgres.roles,
+  ).toBe("owner");
   const images = Object.fromEntries(
     resolve.visual.plan.specification.applications.map(
       (a: { id: string; source: { image: string } }) => [a.id, a.source.image],

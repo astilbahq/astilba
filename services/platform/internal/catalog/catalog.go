@@ -83,7 +83,7 @@ const ValkeyImage = "valkey/valkey:9.1.3-alpine3.24@sha256:bf09d58e96d6b4524a153
 // The slim image leaves out Chromium and the embedded MariaDB, which the recipe does not
 // use and which carry most of the full image's advisories. The rootless image runs as
 // node (uid 1000) and ships /app/data owned by it, so a new volume is writable.
-const UptimeKumaImage = "louislam/uptime-kuma:2.5.11-slim-rootless@sha256:ebc6299a1bc8bd4a29e0bddcc04f11440e3690b1c52e19558006eeefb5a8b019"
+const UptimeKumaImage = "louislam/uptime-kuma:2.5.12-slim-rootless@sha256:212d2131952eded9b2508620455f15f5c2c85c262aafd23b97a7447c53e1d1bc"
 const RegistryImage = "registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c"
 
 // KaneoImage bundles Kaneo's API and web client behind one nginx on port 5173, as uid 1001.
@@ -133,7 +133,7 @@ func Recipes() []Recipe {
 	base := Maintenance{deployment, binding, manualBackup, manualRestore, manualUpgrade}
 	pg := Recipe{ID: "postgresql-18", Name: "PostgreSQL", Description: "PostgreSQL 18 with a retained data volume and secret-backed connection values.", Documentation: "https://hub.docker.com/_/postgres", Prerequisites: []string{private, "Staging generates the password into the secret store, or uses an existing secret version you choose. Initialization settings do not change credentials in an existing volume."}, Specification: template("postgresql-18", "PostgreSQL", "postgres", domain.PostgresImage, 0, "", domain.PostgresMount(domain.PostgresImage)), Support: base}
 	password := uuid.NewSHA1(uuid.NameSpaceURL, []byte("catalog/password-placeholder"))
-	pg.Specification.Applications[0].Postgres = &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: password}
+	pg.Specification.Applications[0].Postgres = &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: password, Roles: domain.PostgresOwner}
 	pg.Secrets = []Secret{{ID: password, ServiceID: pg.Specification.Applications[0].ID, Name: "password", Format: "token"}}
 	pg.Support.Backup = Support{"tested", "PostgreSQL logical backup using the existing encrypted off-server backup policy."}
 	pg.Support.Restore = Support{"tested", "Logical restore into fresh storage with a verified application check."}
@@ -175,7 +175,7 @@ func kaneo(base Maintenance) Recipe {
 	db := service(id, "database", "Kaneo database", "postgres", domain.PostgresImage, 0, "", domain.PostgresMount(domain.PostgresImage))
 	password, auth := placeholder(id, "database/password"), placeholder(id, "app/auth-secret")
 	database := &db.Applications[0]
-	database.Postgres = &domain.Postgres{Database: "kaneo", Username: "kaneo", PasswordSecretVersionID: password}
+	database.Postgres = &domain.Postgres{Database: "kaneo", Username: "kaneo", PasswordSecretVersionID: password, Roles: domain.PostgresOwner}
 	kaneo := &app.Applications[0]
 	// The first account becomes Kaneo's administrator even with registration closed, so the
 	// route admits only the owner's network until they have signed up (see Stage). Later
@@ -209,4 +209,20 @@ func kaneo(base Maintenance) Recipe {
 	r.Support.Restore = Support{"tested", "Logical restore of the database into fresh storage."}
 	r.Support.Upgrade = Support{"manual", "Kaneo migrates its database when a new image starts and cannot go back. Back up and check the release notes before changing the image."}
 	return r
+}
+
+// Images is every image the catalog deploys, each once, in the order the recipes name them.
+// CI pulls them before the visual lane's catalog journey through cmd/catalog-images.
+func Images() []string {
+	seen := map[string]bool{}
+	var images []string
+	for _, recipe := range Recipes() {
+		for _, app := range recipe.Specification.Applications {
+			if app.Source.Image != nil && !seen[*app.Source.Image] {
+				seen[*app.Source.Image] = true
+				images = append(images, *app.Source.Image)
+			}
+		}
+	}
+	return images
 }

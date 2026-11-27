@@ -38,32 +38,67 @@ type registryImage interface {
 }
 
 type orasImage struct {
-	repo *remote.Repository
-	// fallback marks an insecure registry over plain HTTP, which Docker tries only when it
-	// cannot reach the registry over HTTPS at all.
-	fallback bool
+	repo      *remote.Repository
+	transport *answerTransport
+	// mirror is whether this is one of Docker Hub's mirrors, rather than the registry itself.
+	mirror bool
+	// https, for an insecure registry over plain HTTP, is what the registry answered over
+	// HTTPS. Docker tries plain HTTP only when it cannot reach the registry over HTTPS at all.
+	https *registryAnswers
 }
 
 func plainHTTPFallback(source registryImage) bool {
 	image, ok := source.(orasImage)
-	return ok && image.fallback
+	return ok && image.https != nil
+}
+
+// answeredOverHTTPS reports whether source's registry, read over plain HTTP, has ever answered
+// this pull over HTTPS.
+func answeredOverHTTPS(source registryImage) bool {
+	image, ok := source.(orasImage)
+	return ok && image.https != nil && image.https.any()
 }
 
 func (o orasImage) manifest(ctx context.Context, d digest.Digest, limit int64) ([]byte, string, error) {
 	desc, rc, err := o.repo.Manifests().FetchReference(ctx, d.String())
 	if err != nil {
-		return nil, "", err
+		return nil, "", o.failure(err)
 	}
 	defer rc.Close()
 	data, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err != nil {
-		return nil, "", err
+		return nil, "", o.failure(err)
 	}
 	return data, desc.MediaType, nil
 }
 
 func (o orasImage) blob(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
-	return o.repo.Blobs().Fetch(ctx, desc)
+	rc, err := o.repo.Blobs().Fetch(ctx, desc)
+	if err != nil {
+		return nil, o.failure(err)
+	}
+	return sourceBlob{rc, o}, nil
+}
+
+// failure is a failure to read from o. An HTTP/2 connection that went silent would fail each later
+// read too, so the next has another.
+func (o orasImage) failure(err error) error {
+	o.transport.CloseIdleConnections()
+	return &sourceFailure{source: o.repo.Reference.Registry, last: o.transport.answers.lastAnswer(), err: err}
+}
+
+// sourceBlob marks a failure to read a blob as its source's.
+type sourceBlob struct {
+	io.ReadCloser
+	source orasImage
+}
+
+func (b sourceBlob) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		err = b.source.failure(err)
+	}
+	return n, err
 }
 
 // dockerCertsDirectory is where Docker reads a registry's certificate authorities and client
@@ -83,20 +118,22 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 	config := info.RegistryConfig
 	domain, path := reference.Domain(named), reference.Path(named)
 	var images []registryImage
-	add := func(host, repository string, insecure, plainHTTP bool, credential *pipeline.Credential) error {
+	add := func(host, repository string, insecure, plainHTTP, mirror bool, credential *pipeline.Credential) error {
 		image, err := newRegistryImage(host, repository, insecure, plainHTTP, credential, proxy)
 		if err != nil {
 			return &imageLoadRefused{why: "its repository name is not valid"}
 		}
-		images = append(images, image)
+		oras := image.(orasImage)
+		oras.mirror = mirror
+		images = append(images, oras)
 		return nil
 	}
 	fallback := func(host, repository string, credential *pipeline.Credential) error {
-		if err := add(host, repository, true, true, credential); err != nil {
+		if err := add(host, repository, true, true, false, credential); err != nil {
 			return err
 		}
 		image := images[len(images)-1].(orasImage)
-		image.fallback = true
+		image.https = images[len(images)-2].(orasImage).transport.answers
 		images[len(images)-1] = image
 		return nil
 	}
@@ -106,7 +143,7 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 			if mirror.prefix != "" {
 				repository = mirror.prefix + "/" + path
 			}
-			if err = add(mirror.host, repository, mirror.plainHTTP, mirror.plainHTTP, nil); err != nil {
+			if err = add(mirror.host, repository, mirror.plainHTTP, mirror.plainHTTP, true, nil); err != nil {
 				return nil, err
 			}
 		}
@@ -116,7 +153,7 @@ func registryImages(ctx context.Context, info system.Info, named reference.Named
 		host = "registry-1.docker.io"
 	}
 	secure := registrySecure(ctx, config, domain)
-	if err = add(host, path, !secure, false, credential); err != nil {
+	if err = add(host, path, !secure, false, false, credential); err != nil {
 		return nil, err
 	}
 	if !secure {
@@ -240,13 +277,20 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 		ResponseHeaderTimeout: time.Minute,
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
+		OnProxyConnectResponse: func(_ context.Context, _ *url.URL, _ *http.Request, res *http.Response) error {
+			if res.StatusCode != http.StatusOK {
+				return &proxyRefusal{res.StatusCode}
+			}
+			return nil
+		},
 	}
 	credentials := auth.StaticCredential(host, auth.EmptyCredential)
 	if credential != nil && (credential.Username != "" || credential.Password != "") {
 		credentials = auth.StaticCredential(host, auth.Credential{Username: credential.Username, Password: credential.Password})
 	}
+	answering := &answerTransport{Transport: transport, answers: &registryAnswers{}, progress: defaultRegistryProgress}
 	repo := &remote.Repository{
-		Client:           &auth.Client{Client: &http.Client{Transport: transport}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
+		Client:           &auth.Client{Client: &http.Client{Transport: answering}, Credential: credentials, Cache: auth.NewCache(), Header: http.Header{"User-Agent": {"astilba-agent"}}},
 		Reference:        registry.Reference{Registry: host, Repository: repository},
 		PlainHTTP:        plainHTTP,
 		MaxMetadataBytes: imageMetadataBytes,
@@ -254,5 +298,5 @@ func newRegistryImage(host, repository string, insecure, plainHTTP bool, credent
 	if err := repo.Reference.ValidateRepository(); err != nil {
 		return nil, errors.New("the image's repository name is not valid")
 	}
-	return orasImage{repo: repo}, nil
+	return orasImage{repo: repo, transport: answering}, nil
 }

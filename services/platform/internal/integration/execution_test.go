@@ -63,7 +63,7 @@ func enrollment(t *testing.T, f *fixture, b *browser, ws uuid.UUID, role string)
 	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/servers", map[string]string{"name": "Test server", "role": role}, 201, &v)
 	credential, _ := randtoken.New()
 	machineBoundRotation, acknowledgesReleases := true, true
-	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, PostgresReleases: agentPostgresReleases(), Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation, AcknowledgesReleases: &acknowledgesReleases}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
+	in := api.AgentEnrollment{ServerId: v.Server.Id, Token: v.Token, Credential: &credential, MachineId: uuid.New(), Capabilities: api.AgentCapabilities{Protocol: 1, PostgresReleases: agentPostgresReleases(), PostgresOwnerRole: agentPostgresOwnerRole(), Version: "test", Os: "linux", Arch: "arm64", Docker: true, MachineBoundRotation: &machineBoundRotation, AcknowledgesReleases: &acknowledgesReleases}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}}}
 	return v, in, v.Server.Id.String() + "." + credential
 }
 
@@ -442,8 +442,7 @@ func TestOperationAdmissionRollbackAndIsolation(t *testing.T) {
 		t.Fatalf("partial transaction %d %d %d", generation, count, audits)
 	}
 	_, _ = f.st.Pool.Exec(context.Background(), "DROP TRIGGER reject_test_job ON river_job; DROP FUNCTION reject_test_job()")
-	var foreign api.Workspace
-	b.call("POST", "/api/v1/workspaces", map[string]string{"name": "Other"}, 201, &foreign)
+	foreign := b.createWorkspaceWithoutMFARequirement("Other")
 	b.call("POST", "/api/v1/workspaces/"+foreign.Id.String()+"/plans", api.PlanRequest{ServerId: in.ServerId, EnvironmentId: env, Action: "start"}, 404, nil)
 	b.call("POST", base+"/plans", api.PlanRequest{ServerId: in.ServerId, EnvironmentId: uuid.New(), Action: "start"}, 404, nil)
 	// Concurrent admissions use different keys and the same reviewed plan: exactly one wins.

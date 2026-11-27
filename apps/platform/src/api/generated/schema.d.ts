@@ -2971,6 +2971,8 @@ export interface components {
             serviceOutputs?: boolean;
             /** @description The pinned PostgreSQL images this agent can run, restore and update, and whose restores it reports with restoreImage. Advertised only after Astilba-Agent-Postgres-Releases v1; an agent without it knows only postgres 17.10 and 18.4. */
             postgresReleases?: string[];
+            /** @description Runs managed databases in the owner model, restores every logical backup into it and reports its restores with restoreRoles. Advertised only after Astilba-Agent-Postgres-Owner-Role v1. */
+            postgresOwnerRole?: boolean;
             /** @description Supports instance-based stateless HTTP releases. Advertised only after Astilba-Agent-Safe-Releases v1. */
             safeReleases?: boolean;
             /** @description Supports replica recipe 3 and complete instance groups. Advertised only after Astilba-Agent-Replicas v1. */
@@ -2994,10 +2996,12 @@ export interface components {
             recoveryRestore?: boolean;
             backups?: boolean;
             upgrades?: boolean;
-            /** @description Agent accepts visual cancellation without re-sending hydrated credentials. */
+            /** @description Agent accepts visual cancellation without re-sending hydrated credentials. Management no longer reads it, and sends no stop or refusal with values whatever an agent advertises. */
             credentialFreeVisualCancel?: boolean;
             /** @description Agent acknowledges each command's secret release once it is journaled, and accepts a command without values only when it already holds them. Management releases values only to agents that advertise this. */
             acknowledgesReleases?: boolean;
+            /** @description Agent reads ExecutionCommand.expired, management's verdict that a command's deadline has passed, and applies it whatever its own clock says. Management marks a late command expired only for agents that advertise this. Advertised only after Astilba-Agent-Expired-Commands v1. */
+            expiredCommands?: boolean;
             /** @description Agent names its enrolled machine when rotating its credential. Advertised only after Astilba-Agent-Machine-Rotation v1. */
             machineBoundRotation?: boolean;
             /**
@@ -3056,6 +3060,19 @@ export interface components {
             preflight: components["schemas"]["HostPreflight"] | null;
             rotationRequested: boolean;
             identity?: components["schemas"]["ServerIdentity"];
+            agentUpdates?: components["schemas"]["AgentUpdates"];
+        };
+        /** @description The agent releases management sends this server. Present when the agent has reported its capabilities and the server can take an update; absent while it's revoked or holds no agent credential, for example while it awaits a transfer or a new enrollment. An agent refuses any release whose minimum version is below that of the release it runs, its floor, so management sends only releases at or above the floor it can be sure of. */
+        AgentUpdates: {
+            /**
+             * @description How management knows the agent's floor. catalog: from the catalog entry for the version and architecture the agent reports, so minimumVersion is its floor. version: that release isn't in the catalog, so minimumVersion is the agent's own version, which no floor exceeds; the agent may accept some releases below it, but management can't tell which. unknown: the agent reports no valid version, so management sends nothing.
+             * @enum {string}
+             */
+            basis: "catalog" | "version" | "unknown";
+            /** @description Management sends releases whose minimum version is at least this one. Absent when the basis is unknown. */
+            minimumVersion?: string;
+            /** @description The catalog releases for the agent's architecture, other than the one it runs, that management sends it, newest first. */
+            versions: string[];
         };
         ServerIdentity: {
             /** @description The agent registered a key in the current enrollment, rather than a bearer credential. It stays true while the server is revoked, re-coded or fenced. */
@@ -3229,7 +3246,7 @@ export interface components {
             sha256: string;
             /** @description The source commit the artifact was built from. */
             commit: string;
-            /** @description The earliest version an agent running this release may update to. An agent refuses any older release. */
+            /** @description An agent running this release installs only releases whose minimum version is at least this one, so never an older release. */
             minimumVersion: string;
             signature: string;
         };
@@ -3272,6 +3289,8 @@ export interface components {
             deadline: string;
             release: components["schemas"]["AgentRelease"] | null;
             cancelRequested: boolean;
+            /** @description Management's clock had passed the command's deadline when it delivered the command. The agent treats the deadline as passed whatever its own clock says. It says how the command was delivered, not what it is, and is sent only to agents that advertise expiredCommands. */
+            expired?: boolean;
             visual?: components["schemas"]["VisualPayload"];
             pipeline?: components["schemas"]["PipelineCommand"];
             /** @description A BackupCommand for the backup and schedule kinds, and a BackupRecovery for the restore kind. */
@@ -3397,6 +3416,7 @@ export interface components {
             id: string;
             name: string;
             role: components["schemas"]["Role"];
+            /** @description Whether changing the workspace needs two-factor authentication. A new workspace starts with it on; an imported one keeps its archive's setting. */
             requireMfa: boolean;
         };
         MfaRequirement: {
@@ -3770,6 +3790,8 @@ export interface components {
             username: string;
             /** Format: uuid */
             passwordSecretVersionId: string;
+            /** @description owner, which every new database must use: the database user is an ordinary role that owns the database, and the cluster's superuser is kept for Astilba's own maintenance. Absent on a database from before, whose database user is the cluster's superuser; such a database moves to the owner model only onto new storage, such as an upgrade's or a restore's target. */
+            roles?: string;
         };
         ServiceOutput: {
             name: string;
@@ -4785,6 +4807,8 @@ export interface components {
             targetId: string;
             /** @description The pinned PostgreSQL image whose server filled the restore target. Absent on runs recorded before restores named it, which were filled by the archive's own image. */
             restoreImage?: string;
+            /** @description The role model the restore target's cluster holds. Absent on runs from agents before the owner model, whose targets make the database user the superuser. */
+            restoreRoles?: string;
         };
         BackupSnapshotReceipt: {
             snapshot: string;
@@ -4844,6 +4868,8 @@ export interface components {
             manifest: components["schemas"]["BackupManifest"];
             /** @description The pinned PostgreSQL release that restored a logical snapshot, which the database must be able to open at cutover. An agent sends it only to a controller that negotiated PostgreSQL releases; without it, the archive's own image restored the snapshot. */
             restoreImage?: string;
+            /** @description The role model the restored cluster holds, which a cutover gives the database. An agent sends it only to a controller that negotiated the owner role; without it, the database user is the restored cluster's superuser. */
+            restoreRoles?: string;
         };
         BackupRecoveryRequest: {
             snapshot: string;
@@ -5370,6 +5396,8 @@ export interface components {
             oldVolumeId: string;
             /** Format: uuid */
             targetVolumeId: string;
+            /** @description The role model of the restored cluster, which the cutover gives the database. Absent for a restore whose database user is that cluster's superuser. */
+            roles?: string;
         };
     };
     responses: never;
@@ -8245,7 +8273,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Success */
+            /** @description The release catalog, newest release first. Releases of one version are in architecture order. Management refuses at startup a catalog with more releases than this list holds. */
             200: {
                 headers: {
                     [name: string]: unknown;

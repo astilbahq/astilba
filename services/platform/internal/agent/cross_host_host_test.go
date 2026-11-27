@@ -182,56 +182,6 @@ func (h *nativePlacementHost) stop() {
 		h.helper = nil
 	}
 }
-func (h *nativePlacementHost) call(t *testing.T, request hostRequest) hostReply {
-	t.Helper()
-	if c := request.Command; c != nil && c.ParentId != nil {
-		if d, ok := h.checkpoints[*c.ParentId]; ok {
-			raw, _ := stablejson.Marshal(d)
-			message := jsontext.Value(raw)
-			c.RecoveryCheckpoint = &message
-			if c.EnvironmentId == uuid.Nil {
-				c.EnvironmentId = h.checkpointEnvironments[*c.ParentId]
-			}
-			body, err := crossHostCommand(*c)
-			if err == nil && body.Phase == "reserve" && body.Unit.Plan.Local.Primary && !h.checkpointReady[*c.ParentId] {
-				checkpoint := *c
-				body.Phase = "checkpoint"
-				payload, _ := stablejson.Marshal(body)
-				msg := jsontext.Value(payload)
-				checkpoint.Id, checkpoint.Generation, checkpoint.Crosshost, checkpoint.PlanHash = uuid.New(), c.Generation-1, &msg, body.Digest()
-				h.command(t, checkpoint)
-				h.checkpointReady[*c.ParentId] = true
-			}
-		}
-	}
-	if err := stablejson.Encode(h.input, request); err != nil {
-		t.Fatal(err)
-	}
-	var reply hostReply
-	if err := json.UnmarshalDecode(h.output, &reply); err != nil {
-		t.Fatalf("host process response: %v", err)
-	}
-	if reply.Error != "" {
-		t.Fatal(reply.Error)
-	}
-	return reply
-}
-func (h *nativePlacementHost) command(t *testing.T, c api.ExecutionCommand) api.AgentReport {
-	t.Helper()
-	reply := h.call(t, hostRequest{Command: &c})
-	if reply.Report == nil {
-		t.Fatal("missing host receipt")
-	}
-	if reply.Report.State != "succeeded" {
-		for _, args := range [][]string{{"wg", "show"}, {"ip", "route"}, {"nft", "list", "ruleset"}} {
-			out, _ := exec.Command("nsenter", append([]string{"--net=/run/netns/" + h.namespace}, args...)...).CombinedOutput()
-			t.Logf("host fixture %s: %s", args[0], out)
-		}
-		t.Fatalf("host phase %s: %s", c.Kind, reply.Report.Note)
-	}
-	h.call(t, hostRequest{Acknowledge: reply.Report})
-	return *reply.Report
-}
 func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost) {
 	t.Helper()
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
@@ -406,7 +356,7 @@ chmod +x /tmp/www/cgi-bin/health
 exec httpd -f -p 8080 -h /tmp/www`
 	spec := domain.Specification{Version: 1, Variables: []domain.Variable{}, Applications: []domain.Application{
 		{ID: app, Name: "Web", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, DependsOn: []uuid.UUID{pg, files}, Command: []string{"sh", "-c", script}, Health: &domain.HealthCheck{Port: 8080, Path: "/cgi-bin/health"}},
-		{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}},
+		{ID: pg, Name: "Database", Kind: "postgres", Source: domain.ApplicationSource{Kind: "image", Image: &pgImage}, Postgres: &domain.Postgres{Database: "app", Username: "app", PasswordSecretVersionID: secret, Roles: domain.PostgresOwner}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: domain.PostgresMount(pgImage)}}},
 		{ID: files, Name: "Files", Kind: "web", Source: domain.ApplicationSource{Kind: "image", Image: &webImage}, Command: []string{"sh", "-c", "test -f /files/value || echo retained-file-data > /files/value; exec httpd -f -p 8081 -h /files"}, Health: &domain.HealthCheck{Port: 8081, Path: "/value"}, Outputs: []domain.ServiceOutput{{Name: "URL", Type: "url", Scheme: "http", Port: 8081, Path: "/value"}}, Mounts: []domain.VolumeMount{{VolumeID: fileVolume, Target: "/files"}}},
 	}, Volumes: []domain.Volume{{ID: volume, Name: "Data"}, {ID: fileVolume, Name: "Files"}}, Bindings: []domain.Binding{
 		{ID: uuid.New(), SourceID: pg, TargetID: app, Output: "HOST", Variable: "DB_HOST"},
@@ -502,7 +452,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 	if err = sourceGroup.Validate(true); err != nil {
 		t.Fatal("invalid fixture source group", err)
 	}
-	upgradePlan := upgrade.Plan{Group: &sourceGroup, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: uuid.New(), ResourceID: pg, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 7, ExpiresAt: time.Now().Add(time.Hour), Source: sourceGroup.PrimaryPlan(), TargetImage: domain.PostgresImage}
+	upgradePlan := upgrade.Plan{Group: &sourceGroup, ID: uuid.New(), Recipe: upgrade.Recipe, PolicyID: uuid.New(), ResourceID: pg, TargetVolumeID: uuid.New(), TargetPlanID: uuid.New(), TargetRevisionID: uuid.New(), RetainDays: 7, ExpiresAt: time.Now().Add(time.Hour), Source: sourceGroup.PrimaryPlan(), TargetImage: domain.PostgresImage, TargetRoles: domain.PostgresOwner}
 	if err = upgradePlan.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -774,7 +724,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		primary.command(t, primary.backupCommand(backup.Command{Action: "install", Installation: installation}, nil))
 		pgEngine := &Engine{Docker: primary.docker, DockerCLI: primary.cli}
 		pgApp := sourceGroup.Specification.Applications[1]
-		if _, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, "CREATE TABLE cross_host_marker(value text); INSERT INTO cross_host_marker VALUES('retained database data')"); err != nil {
+		if _, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, asDatabaseUserSQL(pgApp, "CREATE TABLE cross_host_marker(value text); INSERT INTO cross_host_marker VALUES('retained database data')")); err != nil {
 			t.Fatal(err)
 		}
 		effect := upgrade.Command{Action: "", Plan: upgradePlan, Installation: installation, Secrets: secrets}
@@ -887,7 +837,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 			} else if _, err := data.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, currentGroup.Specification.Applications[1], "UPDATE cross_host_marker SET value='newer source data'"); err != nil {
 				t.Fatal(err)
 			}
-			boundary := deployment.RestoreCutover{SourcePlanID: currentGroup.ID, SourceHash: currentGroup.Hash, PolicyID: policyID, RunID: run, ManifestHash: restored.ManifestHash, OldVolumeID: oldVolume, TargetVolumeID: restoredVolume}
+			boundary := deployment.RestoreCutover{SourcePlanID: currentGroup.ID, SourceHash: currentGroup.Hash, PolicyID: policyID, RunID: run, ManifestHash: restored.ManifestHash, OldVolumeID: oldVolume, TargetVolumeID: restoredVolume, Roles: restored.RestoreRoles}
 			target, err := deployment.RestoredGroup(currentGroup, boundary, uuid.New(), uuid.New(), time.Now().Add(time.Hour))
 			if err != nil || target.Validate(true) != nil {
 				t.Fatal("invalid restored target", err)

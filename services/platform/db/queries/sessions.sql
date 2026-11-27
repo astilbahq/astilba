@@ -24,6 +24,19 @@ SELECT pg_advisory_xact_lock(hashtextextended(CAST(sqlc.arg(lineage)::uuid AS te
 -- until cleanup, and a logout no longer sees it.
 DELETE FROM sessions WHERE token = @token AND expiry > clock_timestamp();
 
+-- name: LockLineageEnrolments :many
+-- unscoped: a lineage is one browser's chain of renewed session tokens.
+-- A logged-out lineage's authenticator enrolment is no one's, so another session may begin one.
+-- A logout never waits for an account's lock: a row held by another change keeps its enrolment,
+-- which BeginMFA lets go of once it finds the lineage signed out. The lock is the one an update
+-- of the row takes, so a transaction that only references the account does not hold it off.
+SELECT id FROM accounts WHERE totp_pending_lineage = @lineage::uuid FOR NO KEY UPDATE SKIP LOCKED;
+
+-- name: EndEnrolments :exec
+-- unscoped: the accounts are those LockLineageEnrolments locked for a logged-out lineage.
+UPDATE accounts SET totp_pending = NULL,totp_pending_expiry = NULL,totp_pending_lineage = NULL
+WHERE id = ANY(@ids::uuid[]);
+
 -- name: DeleteSessionLineage :exec
 -- unscoped: a lineage is one browser's chain of renewed session tokens.
 DELETE FROM sessions WHERE lineage = @lineage;
@@ -35,9 +48,10 @@ WHERE browser_session_hash = @previous AND state <> 'closed';
 
 -- name: BrowserSessionAdmission :one
 -- unscoped: the hashed browser session token is the credential.
--- Revalidates an authenticated session under the lock its request waited for.
+-- Revalidates an authenticated session under the lock its request waited for, and
+-- returns its lineage.
 -- Keep the validity predicate identical to BrowserSessionSnapshotAdmission.
-SELECT a.id FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
+SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
 WHERE a.id = @account_id AND a.auth_version = @auth_version;
 
 -- name: BrowserSessionSnapshotAdmission :one
@@ -48,3 +62,7 @@ WHERE a.id = @account_id AND a.auth_version = @auth_version;
 SELECT a.id FROM accounts a JOIN sessions s ON s.token = @token AND s.expiry > clock_timestamp()
 WHERE a.id = @account_id AND a.auth_version = @auth_version
 FOR SHARE OF a FOR KEY SHARE OF s;
+
+-- name: SessionLineageLive :one
+-- unscoped: a lineage is one browser's chain of renewed session tokens.
+SELECT EXISTS(SELECT 1 FROM sessions WHERE lineage = @lineage AND expiry > clock_timestamp());

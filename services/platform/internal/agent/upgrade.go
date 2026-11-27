@@ -16,7 +16,9 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/deadline"
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/astilbahq/astilba/services/platform/internal/upgrade"
 	"github.com/containerd/errdefs"
@@ -115,6 +117,10 @@ func (e *Engine) executeUpgrade(ctx context.Context, c api.ExecutionCommand, r R
 		return e.finish(c.Id, "failed", "Upgrade command does not match its reviewed recipe.")
 	}
 	s, err := e.Journal.upgrade(cmd.Plan.ID)
+	if errors.Is(err, os.ErrNotExist) && cmd.Action == "prepare" && cmd.Plan.TargetRoles != domain.PostgresOwner {
+		// Every database an upgrade creates is in the owner model, whatever its source's.
+		return e.finish(c.Id, "failed", "This upgrade was planned before databases kept PostgreSQL's superuser apart from their user. Plan it again.")
+	}
 	if errors.Is(err, os.ErrNotExist) && cmd.Action == "prepare" {
 		s = upgradeState{Command: cmd, Status: upgrade.Status{Phase: "planned", Serving: "old", KeepUntil: time.Now().UTC().Add(time.Duration(cmd.Plan.RetainDays) * 24 * time.Hour)}}
 	} else if err != nil {
@@ -135,8 +141,13 @@ func (e *Engine) executeUpgrade(ctx context.Context, c api.ExecutionCommand, r R
 	if !s.Status.Allows(cmd.Action) {
 		return e.finish(c.Id, "failed", "This upgrade action is not valid in the current state.")
 	}
-	if e.cancelled(c.Id) || cmd.Action == "prepare" && time.Now().After(cmd.Plan.ExpiresAt) {
+	// Past its deadline an upgrade changes nothing, whichever clock says so: management sends one
+	// it delivers late without values.
+	if late := deadline.Passed(r.Command); e.cancelled(c.Id) || cmd.Action == "prepare" && time.Now().After(cmd.Plan.ExpiresAt) || late {
 		s.Status.Note = "Upgrade cancelled before host effects."
+		if late && !e.cancelled(c.Id) {
+			s.Status.Note += " " + lateNote(r.Command)
+		}
 		if s.Status.Phase == "planned" {
 			s.Status.Phase = "rejected"
 		}
@@ -288,14 +299,14 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	labels := visualLabels(p.Source, p.ResourceID)
 	labels[labelKind] = "upgrade-source-v1"
 	labels["com.astilba.upgrade"] = p.ID.String()
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: from.Image, Labels: labels, Cmd: []string{"postgres", "-c", "listen_addresses=127.0.0.1"}}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(p.OldVolume()), Target: from.Mount}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
+	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: from.Image, Labels: labels, Env: []string{pgOptions()}, Cmd: []string{"postgres", "-c", "listen_addresses=127.0.0.1"}}, HostConfig: &container.HostConfig{NetworkMode: "none", Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: deployment.VolumeName(p.OldVolume()), Target: from.Mount}}, Resources: container.Resources{Memory: 512 << 20, PidsLimit: ptr(int64(128))}}})
 	if err != nil {
 		return err
 	}
 	if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return err
 	}
-	if err = e.waitPostgresStartup(ctx, created.ID, a.Postgres.Username, a.Postgres.Database); err != nil {
+	if err = e.waitPostgresStartup(ctx, created.ID, a.Postgres.MaintenanceUser(), a.Postgres.Database); err != nil {
 		return err
 	}
 	e.point("upgrade-isolate-effect")
@@ -392,18 +403,18 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	if _, err = e.volumePath(ctx, policy, p.TargetVolumeID); err != nil {
 		return err
 	}
-	cleared, err := e.restorePostgres(ctx, policy, a, p.ID, p.TargetVolumeID, dir, m, to, s.Command.Installation.Access.DatabasePassword)
+	restored, err := e.restorePostgres(ctx, policy, p.ID, p.TargetVolumeID, dir, m, to, s.Command.Installation.Access.DatabasePassword)
 	if errors.As(err, new(clusterRefusal)) {
 		return fmt.Errorf("the PostgreSQL 18 restore holds what a backup can't (%s), so the database may have been compromised. The old database is unchanged: return to it and inspect it", clusterReason(err))
 	}
 	if err != nil {
 		return err
 	}
-	if err = e.Journal.savePostgresData(p.TargetVolumeID, postgresData{Image: to.Image}); err != nil {
+	if err = e.Journal.saveRestoredPostgres(p.TargetVolumeID, to, restored.verifier); err != nil {
 		return err
 	}
 	e.point("upgrade-restore-effect")
-	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."+clearedNote(cleared)
+	s.Status.Phase, s.Status.Step, s.Status.Note = "ready", "verified", "Backup and PostgreSQL 18 restore verified. Applications remain stopped. Review cutover or return to the old database."+clearedNote(restored.left)
 	return nil
 }
 

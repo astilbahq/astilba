@@ -27,7 +27,7 @@ type Service struct {
 	Mail      *mailer.Mailer
 	Now       func() time.Time
 	// Tokens seals the tokens this service issues to itself: device tokens and reset requests.
-	Tokens *secretbroker.Tokens
+	Tokens TokenSealer
 	// Queue takes reset requests. Only a serving process has one.
 	Queue *river.Client[pgx.Tx]
 }
@@ -71,20 +71,39 @@ func matchTOTP(code, secret string, now time.Time, last int64) (int64, bool) {
 	return 0, false
 }
 
+// authenticatorShaped says whether a code could be an authenticator code: six digits once
+// trimmed. A recovery code never is, so a code is checked as one kind or the other, never both.
+func authenticatorShaped(code string) bool {
+	code = strings.TrimSpace(code)
+	if len(code) != 6 {
+		return false
+	}
+	for _, c := range code {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, keys *secretbroker.Session, account *db.Account, code string) error {
 	q := db.New(tx)
 	code = strings.TrimSpace(code)
 	if len(account.TotpSecret) == 0 {
 		return domain.Credentials
 	}
-	secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTP, ID: account.ID}, account.TotpSecret)
-	if err != nil {
-		return err
-	}
-	if step, ok := matchTOTP(code, string(secret), s.Now(), account.TotpLastStep); ok {
+	if authenticatorShaped(code) {
+		secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTP, ID: account.ID}, account.TotpSecret)
+		if err != nil {
+			return err
+		}
+		step, ok := matchTOTP(code, string(secret), s.Now(), account.TotpLastStep)
+		if !ok {
+			return domain.Credentials
+		}
 		return q.AcceptTOTPStep(ctx, db.AcceptTOTPStepParams{ID: account.ID, TotpLastStep: step})
 	}
-	_, err = q.ConsumeRecoveryCode(ctx, db.ConsumeRecoveryCodeParams{AccountID: account.ID, CodeHash: Hash(strings.ToUpper(code))})
+	_, err := q.ConsumeRecoveryCode(ctx, db.ConsumeRecoveryCodeParams{AccountID: account.ID, CodeHash: Hash(strings.ToUpper(code))})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Credentials
 	}
@@ -100,11 +119,18 @@ func (s *Service) checkCode(ctx context.Context, tx pgx.Tx, keys *secretbroker.S
 	account.AuthVersion++
 	return s.securityEvent(ctx, tx, account.ID, RecoveryCodeUsed)
 }
+
+// VerifyCode completes a sign-in that has proved the password. Signing in again restarts the
+// sign-in budgets, so besides five attempts in five minutes, each failure spends the code's
+// daily allowance, which confirming identity shares.
 func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion int64, code string) (_ db.Account, err error) {
 	var account db.Account
-	if err = s.Limit(ctx, "mfa:"+id.String(), 5, 5*time.Minute); err != nil {
+	attempt := codeGuess(id, code, budget{"mfa:" + id.String(), 5, 5 * time.Minute})
+	if err = s.spend(ctx, attempt); err != nil {
 		return account, err
 	}
+	var wrong bool
+	defer func() { s.settle(ctx, attempt, wrong) }()
 	keys, err := s.secondFactor(ctx, id, secretbroker.Authenticate, secretbroker.TOTP)
 	if err != nil {
 		return account, err
@@ -116,10 +142,14 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 		if err != nil {
 			return err
 		}
+		// A credential change since the password was checked ends the pending sign-in. No code
+		// was checked, so it is not a failure.
 		if account.AuthVersion != expectedVersion {
 			return domain.Credentials
 		}
-		return s.checkCode(ctx, tx, keys, &account, code)
+		err = s.checkCode(ctx, tx, keys, &account, code)
+		wrong = errors.Is(err, domain.Credentials)
+		return err
 	})
 	return account, err
 }
@@ -152,13 +182,38 @@ func recoveryCodes(ctx context.Context, q *db.Queries, id uuid.UUID) ([]string, 
 // lock, so only reading the session after the wait sees one. A logout that lands after this
 // check, while the few statements of the change run, does not stop it.
 func lockCurrent(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, error) {
-	account, err := q.LockAccount(ctx, p.Account.ID)
-	if err != nil {
-		return account, err
-	}
-	return account, store.AdmitBrowserSession(ctx, q, p)
+	account, _, err := lockCurrentLineage(ctx, q, p)
+	return account, err
 }
 
+// lockCurrentLineage is lockCurrent, also returning the session's lineage.
+func lockCurrentLineage(ctx context.Context, q *db.Queries, p store.Principal) (db.Account, uuid.UUID, error) {
+	account, err := q.LockAccount(ctx, p.Account.ID)
+	if err != nil {
+		return account, uuid.Nil, err
+	}
+	lineage, err := store.AdmittedLineage(ctx, q, p)
+	return account, lineage, err
+}
+
+// MFASetupElsewhere refuses to begin an enrolment while another signed-in browser session's
+// enrolment lasts.
+var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out your other sessions."}
+
+// pendingEnrolment refuses a session that has no unexpired enrolment of its own to confirm, such as
+// one another session began, as it refuses a lapsed one. The account must not have an authenticator.
+func (s *Service) pendingEnrolment(account db.Account, lineage uuid.UUID) error {
+	// The new authenticator's code is not the credential that confirms identity, so an
+	// enrolment that has lapsed is refused as input to try again.
+	if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) || account.TotpPendingLineage == nil || *account.TotpPendingLineage != lineage {
+		return domain.Invalid("code")
+	}
+	return nil
+}
+
+// BeginMFA starts an enrolment bound to the browser session that asks, so that no other session,
+// such as an old one someone else holds, can replace the secret its holder scanned or confirm it.
+// The session may start again, which replaces its own.
 func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string, err error) {
 	var secret, uri string
 	keys, err := s.secondFactor(ctx, p.Account.ID, secretbroker.Seal, secretbroker.TOTPPending)
@@ -167,12 +222,24 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 	}
 	defer func() { keys.Close(ctx, secretbroker.Done(err)) }()
 	err = s.Store.Transaction(ctx, func(q *db.Queries) error {
-		account, err := lockCurrent(ctx, q, p)
+		// The enrolment is bound to the session's lineage, which stays the same when it renews
+		// its token, as confirming credentials does.
+		account, lineage, err := lockCurrentLineage(ctx, q, p)
 		if err != nil {
 			return err
 		}
 		if len(account.TotpSecret) > 0 {
 			return domain.Conflict
+		}
+		if other := account.TotpPendingLineage; other != nil && *other != lineage && account.TotpPendingExpiry != nil && account.TotpPendingExpiry.After(s.Now()) {
+			// An enrolment whose session has signed out is no one's, so it gives way.
+			live, err := q.SessionLineageLive(ctx, *other)
+			if err != nil {
+				return err
+			}
+			if live {
+				return MFASetupElsewhere
+			}
 		}
 		key, err := totp.Generate(totp.GenerateOpts{Issuer: "Astilba", AccountName: account.Email, Period: 30, SecretSize: 20, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
 		if err != nil {
@@ -183,7 +250,7 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 			return err
 		}
 		expires := s.Now().Add(10 * time.Minute)
-		if err = q.SetPendingTOTP(ctx, db.SetPendingTOTPParams{ID: account.ID, TotpPending: blob, TotpPendingExpiry: &expires}); err != nil {
+		if err = q.SetPendingTOTP(ctx, db.SetPendingTOTPParams{ID: account.ID, TotpPending: blob, TotpPendingExpiry: &expires, TotpPendingLineage: &lineage}); err != nil {
 			return err
 		}
 		secret, uri = key.Secret(), key.URL()
@@ -192,14 +259,37 @@ func (s *Service) BeginMFA(ctx context.Context, p store.Principal) (_, _ string,
 	return secret, uri, err
 }
 
-// ConfirmMFA turns on two-factor authentication with the authenticator BeginMFA gave, once the
-// session's holder has given the password. Without it a stolen session could enrol its own
-// authenticator, and the account's owner could not sign in again even after resetting the
-// password.
+// ConfirmMFA turns on two-factor authentication with the authenticator BeginMFA gave the same
+// browser session, once the session's holder has given the password. Without it a stolen session
+// could enrol its own authenticator, and the account's owner could not sign in again even after
+// resetting the password.
 func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Credential, code string) (_ db.Account, _ []string, err error) {
 	id := p.Account.ID
 	var account db.Account
 	var codes []string
+	// Only the session that began the enrolment may try to confirm it, so no other session can
+	// spend the account's confirmation limit and keep the owner from confirming, and its
+	// attempts here spend no credential budget either. The refusal says only that this session
+	// has nothing to confirm, which its holder knows. A session that a credential change or
+	// logout has ended is refused as such first. Both are read in one snapshot: a logout or
+	// password change that ends the enrolment with the session, committing between two reads,
+	// would show a live session with nothing to confirm. The check is made again under the
+	// account's lock; the session's lineage stays the same, as it is fixed with its token.
+	var lineage uuid.UUID
+	var enrolling db.Account
+	err = s.Store.ReadSnapshot(ctx, func(q *db.Queries) (err error) {
+		if lineage, err = store.AdmittedLineage(ctx, q, p); err != nil {
+			return err
+		}
+		enrolling, err = q.AccountByID(ctx, id)
+		return store.IfMissing(err, domain.Unauthenticated)
+	})
+	if err != nil {
+		return account, nil, err
+	}
+	if err = s.pendingEnrolment(enrolling, lineage); err != nil {
+		return account, nil, err
+	}
 	if err = s.Limit(ctx, "mfa-confirm:"+id.String(), 5, 5*time.Minute); err != nil {
 		return account, nil, err
 	}
@@ -215,11 +305,10 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 	}
 	err = s.withCredential(ctx, p, current, openKeys, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		account = *locked
-		// The new authenticator's code is not the credential that confirms identity, so a
-		// wrong one, or an enrolment that has lapsed, is refused as input to try again.
-		if len(account.TotpSecret) > 0 || account.TotpPendingExpiry == nil || !account.TotpPendingExpiry.After(s.Now()) {
-			return domain.Invalid("code")
+		if err := s.pendingEnrolment(account, lineage); err != nil {
+			return err
 		}
+		// A wrong code for the new authenticator is refused as input to try again.
 		secret, err := keys.Open(secretbroker.Item{Kind: secretbroker.TOTPPending, ID: id}, account.TotpPending)
 		if err != nil {
 			return err
@@ -233,6 +322,10 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 			return err
 		}
 		if _, err = q.ActivateTOTP(ctx, db.ActivateTOTPParams{ID: id, TotpLastStep: step, TotpSecret: active}); err != nil {
+			return err
+		}
+		// Failed guesses at an earlier authenticator say nothing about this one.
+		if err = q.ClearAuthAttempts(ctx, Hash(codeFailures(id).scope)); err != nil {
 			return err
 		}
 		codes, err = recoveryCodes(ctx, q, id)

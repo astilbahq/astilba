@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 
 	"golang.org/x/mod/semver"
 
@@ -109,9 +111,46 @@ func Permits(floor string, r api.AgentRelease) error {
 		return errors.New("this agent has no valid minimum version, so it can't tell which releases it may install")
 	}
 	if CompareVersions(r.MinimumVersion, floor) < 0 {
-		return fmt.Errorf("release %s allows going back to %s, below %s, the minimum version of the release this agent runs", r.Version, r.MinimumVersion, floor)
+		return &BelowFloor{Version: r.Version, MinimumVersion: r.MinimumVersion, Floor: floor}
 	}
 	return nil
+}
+
+// BelowFloor is how Permits refuses a release whose minimum version is below the agent's floor.
+type BelowFloor struct {
+	Version, MinimumVersion, Floor string
+}
+
+func (e *BelowFloor) Error() string {
+	return fmt.Sprintf("release %s allows going back to %s, below %s, the minimum version of the release this agent runs", e.Version, e.MinimumVersion, e.Floor)
+}
+
+// Floor is what management can tell of the floor of an agent from the version and architecture
+// it reports. The agent installs every release whose minimum version is at least MinimumVersion.
+type Floor struct {
+	MinimumVersion string
+	// Catalogued is set when the agent's release is in the catalog, so MinimumVersion is that
+	// release's minimum version: exactly the floor the agent enforces. Otherwise MinimumVersion is
+	// the agent's own version. No release's minimum version is later than its version, so the
+	// agent's floor is no later either, but it may be earlier, and management can't tell which of
+	// the releases below the agent's version it would still install.
+	Catalogued bool
+}
+
+// RunningFloor reports the floor of an agent that runs version on arch, from the catalog
+// entry for that release, which Load makes unique. ok is false when version isn't a version,
+// so nothing bounds the agent's floor. The answer leans to refusing: every release it permits
+// is one the agent installs.
+func RunningFloor(catalog []api.AgentRelease, version string, arch api.AgentReleaseArch) (f Floor, ok bool) {
+	if !ValidVersion(version) {
+		return Floor{}, false
+	}
+	for _, r := range catalog {
+		if r.Version == version && r.Arch == arch {
+			return Floor{MinimumVersion: r.MinimumVersion, Catalogued: true}, true
+		}
+	}
+	return Floor{MinimumVersion: version}, true
 }
 
 // Identity is what an agent build reports about itself with describe. Its fields are in the order
@@ -157,19 +196,33 @@ func ArtifactPath(dir string, r api.AgentRelease) string {
 	return filepath.Join(dir, r.Sha256)
 }
 
+// MaxReleases is the most releases a catalog holds. It is the contract's limit on the release
+// list (listAgentReleases, maxItems), which serves the whole catalog, so Load refuses a larger
+// catalog at startup rather than management serving a list its clients reject.
+const MaxReleases = 100
+
+// maxCatalogEntries bounds the catalog directory Load reads: room for MaxReleases manifests and
+// their artifacts, and a few other files.
+const maxCatalogEntries = 256
+
+// Load reads and verifies the catalog in dir, newest release first. Every consumer, from the
+// release list to what management offers a server, keeps that order, so the first release offered
+// is the newest. Two releases of one version, for different architectures, are in architecture
+// order.
 func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 	out := []api.AgentRelease{}
 	entries, e := os.ReadDir(dir)
 	if e != nil {
 		return nil, e
 	}
-	if len(entries) > 256 {
+	if len(entries) > maxCatalogEntries {
 		return nil, errors.New("release catalog exceeds limit")
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
+	manifests := slices.DeleteFunc(entries, func(entry os.DirEntry) bool { return entry.IsDir() || filepath.Ext(entry.Name()) != ".json" })
+	if len(manifests) > MaxReleases {
+		return nil, fmt.Errorf("release catalog has %d manifests, more than the %d releases management serves; remove releases that no agent runs", len(manifests), MaxReleases)
+	}
+	for _, entry := range manifests {
 		data, e := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if e != nil {
 			return nil, e
@@ -184,6 +237,13 @@ func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 		if e = Validate(r, key); e != nil {
 			return nil, fmt.Errorf("release manifest %s: %w", entry.Name(), e)
 		}
+		// Management finds an agent's floor in the entry for the version and architecture it
+		// reports, so that entry must be the only one.
+		for _, seen := range out {
+			if seen.Version == r.Version && seen.Arch == r.Arch {
+				return nil, fmt.Errorf("release manifest %s: the catalog already has release %s for %s", entry.Name(), r.Version, r.Arch)
+			}
+		}
 		file, e := os.Open(ArtifactPath(dir, r))
 		if e != nil {
 			return nil, e
@@ -195,5 +255,12 @@ func Load(dir string, key ed25519.PublicKey) ([]api.AgentRelease, error) {
 		}
 		out = append(out, r)
 	}
+	// Directory order puts 0.10.0 before 0.9.0, so it says nothing about which release is newer.
+	slices.SortFunc(out, func(a, b api.AgentRelease) int {
+		if c := CompareVersions(b.Version, a.Version); c != 0 {
+			return c
+		}
+		return strings.Compare(string(a.Arch), string(b.Arch))
+	})
 	return out, nil
 }

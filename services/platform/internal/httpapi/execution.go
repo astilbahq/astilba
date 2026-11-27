@@ -58,6 +58,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Safe-Releases", "v1")
 		w.Header().Set("Astilba-Agent-Service-Outputs", "v1")
 		w.Header().Set("Astilba-Agent-Postgres-Releases", "v1")
+		// v1 reads postgresOwnerRole and restoreRoles, the owner model for managed databases.
+		w.Header().Set("Astilba-Agent-Postgres-Owner-Role", "v1")
 		w.Header().Set("Astilba-Agent-Previews", "v1")
 		// v1 delivers the visual retire action for environment retirement.
 		w.Header().Set("Astilba-Agent-Retirement", "v1")
@@ -84,6 +86,8 @@ func (s *Server) protection(next http.Handler) http.Handler {
 		w.Header().Set("Astilba-Agent-Secret-Releases", "v1")
 		// v1 reads preflight.containerRanges, which staging and planning check client allowlists against.
 		w.Header().Set("Astilba-Agent-Container-Ranges", "v1")
+		// v1 marks a command delivered after its deadline expired, for agents that read the mark.
+		w.Header().Set("Astilba-Agent-Expired-Commands", "v1")
 		limit := int64(16384)
 		if r.URL.Path == "/agent/v1/enroll" {
 			limit = 32768

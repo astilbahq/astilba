@@ -1,4 +1,5 @@
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
+import { authFixtureSQL } from "../auth-fixture";
 import { acknowledgeRelease, acknowledgesReleases } from "./agent-releases";
 import { signInAsOwner } from "./owner-sign-in";
 import { api } from "./ports";
@@ -25,9 +26,15 @@ export async function managedDatabase(
     expect(response.ok(), await response.text()).toBeTruthy();
     return response.json();
   };
-  const ws = workspaceName
-    ? (await post("/api/v1/workspaces", { name: workspaceName })).id
-    : session.workspaces[0].id;
+  let ws = session.workspaces[0].id;
+  if (workspaceName) {
+    ws = (await post("/api/v1/workspaces", { name: workspaceName })).id;
+    // The shared owner signs in with a password alone, so this workspace stands for one that
+    // doesn't require two-factor authentication, which new ones do.
+    await authFixtureSQL(
+      `UPDATE workspaces SET require_mfa=false WHERE id='${ws}'`,
+    );
+  }
   const prefix = `/api/v1/workspaces/${ws}`;
   const project = await post(`${prefix}/projects`, {
     name: `Recovery ${name}`,
@@ -64,6 +71,7 @@ export async function managedDatabase(
           database: "app",
           username: "app",
           passwordSecretVersionId: secret.id,
+          roles: "owner",
         },
         mounts: [
           {
@@ -111,6 +119,7 @@ export async function managedDatabase(
             schedules: true,
             upgrades: true,
             postgresReleases: releases.map((r) => r.image),
+            postgresOwnerRole: true,
             ...acknowledgesReleases,
           },
           preflight: {
