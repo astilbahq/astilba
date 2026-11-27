@@ -527,6 +527,7 @@ export function EnvironmentWorkspace({
               <Backups
                 path={path}
                 revision={base}
+                server={environment.deploymentUnit.serverId}
                 owner={owner}
                 dirty={dirty}
                 load={loadSaved}

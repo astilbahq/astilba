@@ -63,7 +63,7 @@ func seedLegacyValues(t *testing.T, f *fixture) (uuid.UUID, []legacySeed) {
 		{secretbroker.Registry, `INSERT INTO registries(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,'{}',$3)`, `SELECT encrypted_access FROM registries WHERE id=$1`},
 		{secretbroker.BuildSecret, `INSERT INTO build_secret_versions(id,workspace_id,name,encrypted_value) VALUES($1,$2,'LEGACY',$3)`, `SELECT encrypted_value FROM build_secret_versions WHERE id=$1`},
 		{secretbroker.BackupDestination, `INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access) VALUES($1,$2,'{}',$3)`, `SELECT encrypted_access FROM backup_destinations WHERE id=$1`},
-		{secretbroker.BackupPolicy, `INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access,status) VALUES($1,$2,$4,$5,'{}',$3,'{}')`, `SELECT encrypted_access FROM backup_policies WHERE id=$1`},
+		{secretbroker.BackupPolicy, `INSERT INTO backup_policies(id,workspace_id,environment_id,server_id,configuration,encrypted_access,status) VALUES($1,$2,$4,$5,jsonb_build_object('serverId',$5::uuid),$3,'{}')`, `SELECT encrypted_access FROM backup_policies WHERE id=$1`},
 	}
 	if _, err := f.st.Pool.Exec(ctx, `INSERT INTO servers(id,workspace_id,name,role) VALUES($1,$2,'Legacy backups','deployment')`, server, ws); err != nil {
 		t.Fatal(err)

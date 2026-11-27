@@ -20,9 +20,9 @@ func (s *Server) CreateBackupDestination(w http.ResponseWriter, r *http.Request,
 		s.fail(w, r, e)
 		return
 	}
-	d := backup.Destination{Name: b.Name, Kind: string(b.Kind), Root: b.Root, Endpoint: b.Endpoint, Bucket: b.Bucket, Region: b.Region}
+	d := backup.Destination{Name: b.Name, Kind: string(b.Kind), Root: b.Root, Endpoint: b.Endpoint, Bucket: b.Bucket, Region: b.Region, Prefix: pipelineString(b.Prefix)}
 	a := backup.Access{AccessKey: pipelineString(b.Access.AccessKey), SecretKey: pipelineString(b.Access.SecretKey)}
-	v, e := s.Execution.CreateBackupDestination(r.Context(), *principal(r.Context()), ws, d, a)
+	v, e := s.Execution.CreateBackupDestination(r.Context(), *principal(r.Context()), ws, d, a, b.ServerId)
 	s.executionResponse(w, r, 201, v, e)
 }
 func (s *Server) ListBackupPolicies(w http.ResponseWriter, r *http.Request, ws, pid, env uuid.UUID) {

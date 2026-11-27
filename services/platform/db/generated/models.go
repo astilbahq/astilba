@@ -154,10 +154,12 @@ type BackupCutover struct {
 }
 
 type BackupDestination struct {
-	ID              uuid.UUID `json:"id"`
-	WorkspaceID     uuid.UUID `json:"workspace_id"`
-	Configuration   []byte    `json:"configuration"`
-	EncryptedAccess []byte    `json:"encrypted_access"`
+	ID              uuid.UUID  `json:"id"`
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`
+	Configuration   []byte     `json:"configuration"`
+	EncryptedAccess []byte     `json:"encrypted_access"`
+	ServerID        *uuid.UUID `json:"server_id"`
+	Shared          bool       `json:"shared"`
 }
 
 type BackupPolicy struct {
