@@ -235,22 +235,53 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				pg := *a.Postgres
 				pg.Database = "postgres"
 				admin.Postgres = &pg
-				for _, object := range []struct{ create, drop string }{
-					{"CREATE FUNCTION public.marker() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "DROP FUNCTION public.marker()"},
-					{"CREATE TYPE public.marker_state AS ENUM ('ok')", "DROP TYPE public.marker_state"},
-					{`CREATE COLLATION public.application_order FROM "C"`, "DROP COLLATION public.application_order"},
-					{"SELECT lo_from_bytea(16500000, 'retained data'::bytea)", "SELECT lo_unlink(16500000)"},
-					{"CREATE SCHEMA pgcustom; CREATE TABLE pgcustom.records(id integer)", "DROP SCHEMA pgcustom CASCADE"},
+				// The restore into a fresh cluster keeps neither database's objects. Before the owner
+				// model the database user is a superuser and can add them to either.
+				template := a
+				templatePG := *a.Postgres
+				templatePG.Database = "template1"
+				template.Postgres = &templatePG
+				for _, database := range []domain.Application{admin, template} {
+					for _, object := range []struct{ create, drop string }{
+						{"CREATE FUNCTION public.marker() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "DROP FUNCTION public.marker()"},
+						{"CREATE TYPE public.marker_state AS ENUM ('ok')", "DROP TYPE public.marker_state"},
+						{`CREATE COLLATION public.application_order FROM "C"`, "DROP COLLATION public.application_order"},
+						{"SELECT lo_from_bytea(16500000, 'retained data'::bytea)", "SELECT lo_unlink(16500000)"},
+						{"CREATE SCHEMA pgcustom; CREATE TABLE pgcustom.records(id integer)", "DROP SCHEMA pgcustom CASCADE"},
+					} {
+						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.create); err != nil {
+							t.Fatal(err)
+						}
+						if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
+							t.Fatalf("%s: maintenance object was accepted", database.Postgres.Database)
+						}
+						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.drop); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				// Nor does it keep template1's settings, grants, comment or flags.
+				for _, change := range []struct{ make, undo string }{
+					{"ALTER DATABASE template1 SET work_mem = '8MB'", "ALTER DATABASE template1 RESET ALL"},
+					{"GRANT CREATE ON DATABASE template1 TO PUBLIC", "REVOKE CREATE ON DATABASE template1 FROM PUBLIC"},
+					// The default ACL, though initdb takes TEMPORARY from PUBLIC on template1.
+					{"GRANT TEMPORARY ON DATABASE template1 TO PUBLIC", "REVOKE TEMPORARY ON DATABASE template1 FROM PUBLIC"},
+					{"COMMENT ON DATABASE template1 IS 'kept'", "COMMENT ON DATABASE template1 IS 'default template for new databases'"},
+					{"ALTER DATABASE template1 IS_TEMPLATE false", "ALTER DATABASE template1 IS_TEMPLATE true"},
+					{"ALTER DATABASE template1 CONNECTION LIMIT 5", "ALTER DATABASE template1 CONNECTION LIMIT -1"},
 				} {
-					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, object.create); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, change.make); err != nil {
 						t.Fatal(err)
 					}
 					if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
-						t.Fatal("maintenance object was accepted")
+						t.Fatalf("template1 changed by %q was accepted", change.make)
 					}
-					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, object.drop); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, change.undo); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+					t.Fatal("template1 as initdb made it was refused:", err)
 				}
 				writerContext, stopWriter := context.WithCancel(ctx)
 				writerDone := make(chan struct{})
@@ -332,9 +363,29 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				return r
 			}
 			if j.name == "complete" {
+				// refuse prepares a separate plan from the same source, which must be refused for
+				// reason before any writer stops.
+				refuse := func(reason string) {
+					t.Helper()
+					refused := plan
+					refused.ID = uuid.New()
+					cmd := next(upgrade.Command{Action: "prepare", Plan: refused, Installation: in, Secrets: secrets})
+					if err := e.Execute(ctx, cmd); err != nil {
+						t.Fatal(err)
+					}
+					if r, err := e.Journal.Record(cmd.Id); err != nil || e.Journal.Acknowledge(cmd.Id, r.Report.Sequence) != nil {
+						t.Fatal("the refused upgrade has no record", err)
+					}
+					state, err := e.Journal.upgrade(refused.ID)
+					if err != nil || state.Status.Phase != "rejected" || len(state.Writers) != 0 || !strings.Contains(state.Status.Note, reason) {
+						t.Fatalf("an upgrade that must be refused for %q was prepared: %+v: %v", reason, state.Status, err)
+					}
+					if v, err := e.Docker.ContainerInspect(ctx, source.ID, client.ContainerInspectOptions{}); err != nil || !v.Container.State.Running {
+						t.Fatal("the refused upgrade stopped the source database", err)
+					}
+				}
 				// PLAT-549. A deployment that failed after a later release started on the data leaves
-				// that release recorded as serving it, so the upgrade from the earlier one is refused
-				// before any writer stops.
+				// that release recorded as serving it, so the upgrade from the earlier one is refused.
 				recorded, found, err := e.Journal.postgresData(plan.OldVolume())
 				if err != nil || !found {
 					t.Fatal("the source database's storage has no record", err)
@@ -343,24 +394,25 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, newSource func(*testing.T, st
 				if err = e.Journal.savePostgresData(plan.OldVolume(), ahead); err != nil {
 					t.Fatal(err)
 				}
-				refused := plan
-				refused.ID = uuid.New()
-				cmd := next(upgrade.Command{Action: "prepare", Plan: refused, Installation: in, Secrets: secrets})
-				if err = e.Execute(ctx, cmd); err != nil {
+				reason := postgresDataRefuses(a, ahead)
+				if reason == nil {
+					t.Fatal("the later release does not refuse the earlier one")
+				}
+				refuse(reason.Error())
+				if err = e.Journal.savePostgresData(plan.OldVolume(), recorded); err != nil {
 					t.Fatal(err)
 				}
-				if r, err := e.Journal.Record(cmd.Id); err != nil || e.Journal.Acknowledge(cmd.Id, r.Report.Sequence) != nil {
-					t.Fatal("the refused upgrade has no record", err)
+				// PLAT-546. Before the owner model the database user is a superuser and can add a table
+				// to template1, which the restore into a fresh cluster would drop.
+				template := a
+				pg := *a.Postgres
+				pg.Database = "template1"
+				template.Postgres = &pg
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, template, "CREATE TABLE public.kept(id integer)"); err != nil {
+					t.Fatal(err)
 				}
-				state, err := e.Journal.upgrade(refused.ID)
-				reason := postgresDataRefuses(a, ahead)
-				if err != nil || reason == nil || state.Status.Phase != "rejected" || len(state.Writers) != 0 || !strings.Contains(state.Status.Note, reason.Error()) {
-					t.Fatalf("an upgrade from a release the data refuses was prepared: %+v: %v", state.Status, err)
-				}
-				if v, err := e.Docker.ContainerInspect(ctx, source.ID, client.ContainerInspectOptions{}); err != nil || !v.Container.State.Running {
-					t.Fatal("the refused upgrade stopped the source database", err)
-				}
-				if err = e.Journal.savePostgresData(plan.OldVolume(), recorded); err != nil {
+				refuse("template1 contains user objects")
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, template, "DROP TABLE public.kept"); err != nil {
 					t.Fatal(err)
 				}
 			}

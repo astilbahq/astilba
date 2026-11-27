@@ -22,36 +22,45 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		{"SELECT count(*) FROM pg_prepared_xacts", "0", "prepared transactions are unsupported"},
 		{"SELECT count(*) FROM pg_replication_slots", "0", "replication slots are unsupported"},
 		{"SELECT count(*) FROM pg_subscription", "0", "subscriptions are unsupported"},
-		{"SELECT count(*) FROM pg_db_role_setting WHERE setdatabase=0 OR setdatabase IN (SELECT oid FROM pg_database WHERE datname IN (current_database(),'postgres'))", "0", "database or role settings require a separate recipe"},
+		// The upgrade restores the database into a cluster initdb made, so the maintenance database
+		// and template1 must hold only what initdb gives them. Before the owner model the database
+		// user is a superuser and can change either.
+		{"SELECT count(*) FROM pg_db_role_setting WHERE setdatabase=0 OR setdatabase IN (SELECT oid FROM pg_database WHERE datname IN (current_database(),'postgres','template1'))", "0", "database or role settings require a separate recipe"},
 		// The database user owns the database; the bootstrap superuser, the database user too
-		// before the owner model, owns the maintenance database. An ACL that only spells out the
-		// default, as a restore's grant and revoke leaves one, is no custom privilege.
-		{"SELECT count(*) FROM pg_database WHERE datname IN (current_database(),'postgres') AND (NOT (coalesce(datacl, acldefault('d',datdba)) @> acldefault('d',datdba) AND coalesce(datacl, acldefault('d',datdba)) <@ acldefault('d',datdba)) OR datconnlimit<>-1 OR datdba<>CASE WHEN datname=current_database() THEN (SELECT oid FROM pg_roles WHERE rolname=" + quoteLiteral(a.Postgres.Username) + ") ELSE 10 END OR (shobj_description(oid,'pg_database') IS NOT NULL AND (datname<>'postgres' OR shobj_description(oid,'pg_database')<>'default administrative connection database')))", "0", "custom database privileges, ownership, comments or limits require a separate recipe"},
+		// before the owner model, owns the maintenance database and template1, which stays a
+		// template that accepts connections. Each keeps the grants it starts with: the default,
+		// and for template1 initdb's, which takes TEMPORARY from PUBLIC. An ACL that only spells
+		// those out, as a restore's grant and revoke leaves one, is no custom privilege.
+		{"SELECT count(*) FROM (SELECT d.*, coalesce(datacl, acldefault('d',datdba)) AS acl, CASE WHEN datname='template1' THEN ARRAY[makeaclitem(0,datdba,'CONNECT',false), makeaclitem(datdba,datdba,'CREATE,TEMPORARY,CONNECT',false)] ELSE acldefault('d',datdba) END AS initial FROM pg_database d WHERE datname IN (current_database(),'postgres','template1')) d WHERE NOT (acl @> initial AND acl <@ initial) OR datconnlimit<>-1 OR datdba<>CASE WHEN datname=current_database() THEN (SELECT oid FROM pg_roles WHERE rolname=" + quoteLiteral(a.Postgres.Username) + ") ELSE 10 END OR datname='template1' AND NOT (datistemplate AND datallowconn) OR shobj_description(oid,'pg_database') IS NOT NULL AND shobj_description(oid,'pg_database') IS DISTINCT FROM CASE datname WHEN 'postgres' THEN 'default administrative connection database' WHEN 'template1' THEN 'default template for new databases' END", "0", "custom database privileges, ownership, comments or limits require a separate recipe"},
 	} {
 		raw, err := e.pgQuery(ctx, db, a, check.sql)
 		if err != nil || strings.TrimSpace(string(raw)) != check.want {
 			return errors.New(check.message)
 		}
 	}
-	if a.Postgres.Database != "postgres" {
+	for _, other := range []struct{ database, called string }{{"postgres", "the postgres maintenance database"}, {"template1", "template1"}} {
+		database, called := other.database, other.called
+		if a.Postgres.Database == database {
+			continue
+		}
 		admin := a
 		pg := *a.Postgres
-		pg.Database = "postgres"
+		pg.Database = database
 		admin.Postgres = &pg
 		raw, err := e.pgQuery(ctx, db, admin, "SELECT count(*) FROM pg_largeobject_metadata")
 		if err != nil || strings.TrimSpace(string(raw)) != "0" {
-			return errors.New("the postgres maintenance database contains large objects")
+			return errors.New(called + " contains large objects")
 		}
 		// The pinned dumper inventories every dumpable object class, including
 		// collations and text-search objects; a catalog allowlist misses classes.
 		inventory := &boundedOutput{limit: 65536, stopOnLimit: true}
-		if err = e.containerExec(ctx, db, inventory, "sh", "-c", `set -o pipefail && pg_dump --no-password -U "$1" -d postgres --schema-only -Fc | pg_restore --list`, "sh", pg.MaintenanceUser()); err != nil {
-			return errors.New("cannot inventory the postgres maintenance database")
+		if err = e.containerExec(ctx, db, inventory, "sh", "-c", `set -o pipefail && pg_dump --no-password -U "$1" -d "$2" --schema-only -Fc | pg_restore --list`, "sh", pg.MaintenanceUser(), database); err != nil {
+			return errors.New("cannot inventory " + called)
 		}
 		for _, line := range strings.Split(inventory.b.String(), "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" && !strings.HasPrefix(line, ";") {
-				return errors.New("the postgres maintenance database contains user objects")
+				return errors.New(called + " contains user objects")
 			}
 		}
 	}
