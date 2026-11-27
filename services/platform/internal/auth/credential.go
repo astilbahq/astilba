@@ -106,9 +106,10 @@ type Credential struct {
 	Password, Code string
 }
 
-// withCredential runs change in a transaction holding the account, once the session's holder
-// has presented a current credential. It is what stands between a stolen session and the
-// account: confirming identity, and changing the password or two-factor authentication.
+// withCredential runs change, if any, in a transaction holding the account, once the session's
+// holder has presented a current credential, then finish with the account as change left it, and
+// returns that account. It is what stands between a stolen session and the account: confirming
+// identity, and changing the password or two-factor authentication.
 //
 // The principal's account is the row at the session's version, and every change to the
 // password or to two-factor authentication advances that version, so it decides which
@@ -122,10 +123,11 @@ type Credential struct {
 // Every attempt spends the reauthentication budget and, unless it is a recovery code, the daily
 // failure allowance of its credential, so a stolen session cannot guess more often by choosing
 // which change to attempt. One that does not fail on its credential gets its failure back.
-func (s *Service) withCredential(ctx context.Context, p store.Principal, c Credential, prepare func() error, change func(pgx.Tx, *db.Queries, *db.Account) error) error {
+func (s *Service) withCredential(ctx context.Context, p store.Principal, c Credential, prepare func() error, change func(pgx.Tx, *db.Queries, *db.Account) error, finish Finish) (db.Account, error) {
+	var result db.Account
 	mfa := len(p.Account.TotpSecret) > 0
 	if mfa && c.Code == "" || !mfa && c.Password == "" {
-		return errCredentialKind
+		return result, errCredentialKind
 	}
 	var attempt guess
 	if mfa {
@@ -172,13 +174,22 @@ func (s *Service) withCredential(ctx context.Context, p store.Principal, c Crede
 					return err
 				}
 			}
-			return change(tx, q, &account)
+			if change != nil {
+				if err := change(tx, q, &account); err != nil {
+					return err
+				}
+			}
+			if err := finish.run(tx, account); err != nil {
+				return err
+			}
+			result = account
+			return nil
 		})
 	}()
 	if charged {
 		s.settle(ctx, attempt, wrong)
 	}
-	return err
+	return result, err
 }
 
 // errCredentialKind is a credential of the wrong kind for the account, which happens when a
@@ -197,12 +208,8 @@ func credentialError(err error, field func() string) error {
 func currentField() string { return "current" }
 
 // Reauthenticate renews a session's recent authentication with a current credential.
-func (s *Service) Reauthenticate(ctx context.Context, p store.Principal, c Credential) (db.Account, error) {
-	var account db.Account
-	err := s.withCredential(ctx, p, c, nil, func(_ pgx.Tx, _ *db.Queries, a *db.Account) error {
-		account = *a
-		return nil
-	})
+func (s *Service) Reauthenticate(ctx context.Context, p store.Principal, c Credential, finish Finish) (db.Account, error) {
+	account, err := s.withCredential(ctx, p, c, nil, nil, finish)
 	return account, credentialError(err, func() string {
 		if len(p.Account.TotpSecret) > 0 {
 			return "code"

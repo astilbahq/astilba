@@ -300,7 +300,7 @@ func TestReauthenticationFailsWhenThePasswordChangesDuringIt(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Password: f.password})
+		_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Password: f.password}, nil)
 		result <- err
 	}()
 	waiting := false
@@ -628,7 +628,7 @@ func TestPasswordChangeHasBudgetAndSkipsEndedSessions(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, "DELETE FROM sessions"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.auth.ChangePassword(ctx, ended, auth.Credential{Password: f.password}, "a replacement password for this test"); err == nil {
+	if _, err := f.auth.ChangePassword(ctx, ended, auth.Credential{Password: f.password}, "a replacement password for this test", nil); err == nil {
 		t.Fatal("ended session changed the password")
 	}
 	if got := attemptCount(t, f, "password-change:"+f.owner.String()); got != 0 {

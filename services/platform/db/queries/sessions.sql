@@ -28,6 +28,11 @@ SELECT @token,@data,@expiry,@lineage,i.account_id,
     CASE WHEN i.account_id IS NULL THEN NULL ELSE sqlc.narg(client_network)::text END
 FROM (SELECT sqlc.narg(account_id)::uuid AS account_id) i;
 
+-- name: DeleteSession :exec
+-- unscoped: the hashed browser session token is the credential.
+-- Ends the session a sign-in replaces, in the sign-in's transaction.
+DELETE FROM sessions WHERE token = @token;
+
 -- name: LockSessionLineage :exec
 -- unscoped: a lineage is one browser's chain of renewed session tokens.
 -- Orders a renewal and a logout of the same lineage, so that the logout's delete sees a

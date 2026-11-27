@@ -64,7 +64,7 @@ func (s *Service) InviteHosted(ctx context.Context, email, origin string) error 
 
 // AcceptHosted charges only the source's budgets. Invitations are unguessable and few, so
 // nothing about them needs an installation-wide limit that invalid ones could spend.
-func (s *Service) AcceptHosted(ctx context.Context, token, name, password, workspace string, from Source, existing *store.Principal) (db.Account, uuid.UUID, error) {
+func (s *Service) AcceptHosted(ctx context.Context, token, name, password, workspace string, from Source, existing *store.Principal, finish Finish) (db.Account, uuid.UUID, error) {
 	var account db.Account
 	var ws uuid.UUID
 	if !s.Store.Hosted {
@@ -153,6 +153,9 @@ func (s *Service) AcceptHosted(ctx context.Context, token, name, password, works
 		if e = store.AdmitBrowserSession(ctx, q, *existing); e != nil {
 			return account, ws, e
 		}
+	}
+	if e = finish.run(tx, account); e != nil {
+		return account, ws, e
 	}
 	return account, ws, tx.Commit(ctx)
 }

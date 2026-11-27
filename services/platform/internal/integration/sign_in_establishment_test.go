@@ -5,11 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/auth"
+	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
 )
@@ -76,11 +78,36 @@ func browserCookies(t *testing.T, b *browser, path string) map[string]string {
 	return out
 }
 
-// A sign-in, reauthentication or credential change that fails after renewing the session's
-// token leaves nothing it began signed in, and sends the browser neither a session cookie nor a
-// device cookie. Here the failure is the device token, the last step of establishing a session.
-func TestFailedEstablishmentSignsNothingIn(t *testing.T) {
+// refuseSessionWrites makes every insert into the session store fail while it is armed, as a
+// session store that cannot be written would, and returns its switch.
+func refuseSessionWrites(t *testing.T, f *fixture) func(bool) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := f.st.Pool.Exec(ctx, `CREATE FUNCTION refuse_session_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'session store unavailable'; END; $$`); err != nil {
+		t.Fatal(err)
+	}
+	return func(armed bool) {
+		t.Helper()
+		statement := `DROP TRIGGER refuse_session_write ON sessions`
+		if armed {
+			statement = `CREATE TRIGGER refuse_session_write BEFORE INSERT ON sessions FOR EACH ROW EXECUTE FUNCTION refuse_session_write()`
+		}
+		if _, err := f.st.Pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A sign-in, reauthentication or credential change commits what it changes together with the
+// session it stores, so one that fails before then changes nothing: a recovery or authenticator
+// code stays unspent, a password or two-factor change is not applied, recovery codes are not
+// replaced, an invitation is not used, and no security event or email is recorded. It signs
+// nothing in and sends the browser neither a session cookie nor a device cookie, and the same
+// request then succeeds. The failure is either the device token, the last step of establishing a
+// session, or the session's write itself.
+func TestFailedSignInChangesNothing(t *testing.T) {
 	const email = "owner@example.test"
+	password := func(f *fixture) map[string]string { return map[string]string{"password": f.password} }
 	cases := []struct {
 		name string
 		// prepare signs in whatever the case needs and returns the browser that then fails, with
@@ -101,54 +128,132 @@ func TestFailedEstablishmentSignsNothingIn(t *testing.T) {
 			owner := f.browser(t)
 			owner.login(email, f.password)
 			secret := enrollSecret(t, owner)
-			owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": codeAt(t, secret, time.Now()), "current": map[string]string{"password": f.password}}, 200, nil)
+			owner.call("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": codeAt(t, secret, time.Now()), "current": password(f)}, 200, nil)
 			b := f.browser(t)
 			if pending := b.login(email, f.password); !pending.MfaPending || pending.User != nil {
 				t.Fatal("the sign-in did not wait for its second factor")
 			}
+			// The next window's code, since the confirmation spent this one's.
+			code := codeAt(t, secret, time.Now().Add(30*time.Second))
+			return b, func() (int, []byte) { return b.request("POST", "/api/v1/auth/mfa", map[string]string{"code": code}) }
+		}, 1, false},
+		{"two-factor sign-in with a recovery code", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			codes := enableMFA(t, f.browser(t).withLogin(email, f.password))
+			b := f.browser(t)
+			if pending := b.login(email, f.password); !pending.MfaPending {
+				t.Fatal("the sign-in did not wait for its second factor")
+			}
 			return b, func() (int, []byte) {
-				// The next window's code, since the confirmation spent this one's. A recovery code
-				// would end the owner's session by changing the account's version.
-				return b.request("POST", "/api/v1/auth/mfa", map[string]string{"code": codeAt(t, secret, time.Now().Add(30*time.Second))})
+				return b.request("POST", "/api/v1/auth/mfa", map[string]string{"code": codes.Codes[0]})
 			}
 		}, 1, false},
-		{"credential change", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
-			b := f.browser(t)
-			b.login(email, f.password)
-			return b, func() (int, []byte) {
-				return b.request("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": map[string]string{"password": f.password}})
-			}
-		}, 0, false},
 		{"reauthentication", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
-			b := f.browser(t)
-			b.login(email, f.password)
+			b := f.browser(t).withLogin(email, f.password)
+			return b, func() (int, []byte) { return b.request("POST", "/api/v1/auth/reauthenticate", password(f)) }
+		}, 1, true},
+		{"reauthentication with a recovery code", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			b := f.browser(t).withLogin(email, f.password)
+			codes := enableMFA(t, b)
 			return b, func() (int, []byte) {
-				return b.request("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": f.password})
+				return b.request("POST", "/api/v1/auth/reauthenticate", map[string]string{"code": codes.Codes[0]})
 			}
 		}, 1, true},
+		{"password change", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			b := f.browser(t).withLogin(email, f.password)
+			return b, func() (int, []byte) {
+				return b.request("POST", "/api/v1/auth/password", map[string]any{"password": "replacement password here", "current": password(f)})
+			}
+		}, 1, true},
+		{"turning on two-factor authentication", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			b := f.browser(t).withLogin(email, f.password)
+			code := codeAt(t, enrollSecret(t, b), time.Now())
+			return b, func() (int, []byte) {
+				return b.request("POST", "/api/v1/auth/mfa/confirm", map[string]any{"code": code, "current": password(f)})
+			}
+		}, 1, true},
+		// The codes the account had stay valid: the same one confirms identity again after.
+		{"replacing recovery codes", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			b := f.browser(t).withLogin(email, f.password)
+			codes := enableMFA(t, b)
+			return b, func() (int, []byte) {
+				return b.request("POST", "/api/v1/auth/mfa/recovery-codes", map[string]any{"current": map[string]string{"code": codes.Codes[0]}})
+			}
+		}, 1, true},
+		{"turning off two-factor authentication", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			b := f.browser(t).withLogin(email, f.password)
+			codes := enableMFA(t, b)
+			return b, func() (int, []byte) {
+				return b.request("POST", "/api/v1/auth/mfa/disable", map[string]any{"current": map[string]string{"code": codes.Codes[0]}})
+			}
+		}, 1, true},
+		{"accepting an invitation", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			owner := f.browser(t)
+			ws := owner.login(email, f.password).Workspaces[0].Id
+			owner.call("POST", "/api/v1/workspaces/"+ws.String()+"/invitations", map[string]string{"email": "invited@example.test", "role": "viewer"}, 201, nil)
+			token := tokenFromLinkMail(t, f, "/invitation")
+			b := f.browser(t)
+			return b, func() (int, []byte) {
+				return b.request("POST", "/api/v1/auth/invitations/accept", map[string]string{"token": token, "name": "Invited", "password": f.password})
+			}
+		}, 1, false},
+		{"hosted sign-up", func(t *testing.T, f *fixture) (*browser, func() (int, []byte)) {
+			f.st.Hosted = true
+			f.st.Hosting = hosting.Config{CohortLimit: 5, ServerLimit: 2}
+			if err := f.auth.InviteHosted(context.Background(), "beta@example.test", f.apiServer.Origin); err != nil {
+				t.Fatal(err)
+			}
+			token := tokenFromLinkMail(t, f, "/signup")
+			b := f.browser(t)
+			return b, func() (int, []byte) {
+				return b.request("POST", "/api/v1/hosting/signup", map[string]string{"token": token, "workspace": "Beta", "name": "Beta", "password": f.password})
+			}
+		}, 0, false},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			f := setup(t)
+	failures := []struct {
+		name string
+		arm  func(t *testing.T, f *fixture) func(bool)
+	}{
+		{"device token", func(_ *testing.T, f *fixture) func(bool) {
 			tokens := &unsealableDevices{TokenSealer: f.auth.Tokens}
 			f.auth.Tokens = tokens
-			b, fail := c.prepare(t, f)
-			before := browserCookies(t, b, "/api/v1/auth/login")
-			tokens.armed.Store(true)
-			status, body := fail()
-			tokens.armed.Store(false)
-			if status != http.StatusInternalServerError {
-				t.Fatalf("status %d: %s", status, body)
-			}
-			if got := signedInSessions(t, f, f.owner); got != c.signedIn {
-				t.Fatalf("%d sessions signed in, want %d", got, c.signedIn)
-			}
-			if after := browserCookies(t, b, "/api/v1/auth/login"); len(after) != len(before) || after["astilba_session"] != before["astilba_session"] || after["astilba_device"] != before["astilba_device"] {
-				t.Fatal("the failed request replaced the browser's session or device cookie")
-			}
-			if session := b.session(); (session.User != nil) != c.stays {
-				t.Fatalf("the browser is signed in as %v", session.User)
-			}
-		})
+			return tokens.armed.Store
+		}},
+		{"session write", refuseSessionWrites},
+	}
+	for _, failure := range failures {
+		for _, c := range cases {
+			t.Run(failure.name+"/"+c.name, func(t *testing.T) {
+				f := setup(t)
+				arm := failure.arm(t, f)
+				b, request := c.prepare(t, f)
+				before := browserCookies(t, b, "/api/v1/auth/login")
+				credentials, events := accountCredentials(t, f), securityEvents(t, f)
+				arm(true)
+				status, body := request()
+				arm(false)
+				if status != http.StatusInternalServerError {
+					t.Fatalf("status %d: %s", status, body)
+				}
+				if accountCredentials(t, f) != credentials {
+					t.Fatal("the failed request changed the account's credentials")
+				}
+				if !slices.Equal(securityEvents(t, f), events) {
+					t.Fatal("the failed request recorded a security event")
+				}
+				if got := signedInSessions(t, f, f.owner); got != c.signedIn {
+					t.Fatalf("%d sessions signed in, want %d", got, c.signedIn)
+				}
+				if after := browserCookies(t, b, "/api/v1/auth/login"); len(after) != len(before) || after["astilba_session"] != before["astilba_session"] || after["astilba_device"] != before["astilba_device"] {
+					t.Fatal("the failed request replaced the browser's session or device cookie")
+				}
+				if session := b.session(); (session.User != nil) != c.stays {
+					t.Fatalf("the browser is signed in as %v", session.User)
+				}
+				// Whatever the request presented, a code, an enrolment or an invitation, is still unused.
+				if status, body = request(); status != http.StatusOK {
+					t.Fatalf("the same request then answered %d: %s", status, body)
+				}
+			})
+		}
 	}
 }

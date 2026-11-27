@@ -61,7 +61,7 @@ func changePassword(t *testing.T, ctx context.Context, f *fixture) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.auth.ChangePassword(ctx, browserPrincipal(t, f.st, account, false), auth.Credential{Password: f.password}, "replacement password here")
+	_, err = f.auth.ChangePassword(ctx, browserPrincipal(t, f.st, account, false), auth.Credential{Password: f.password}, "replacement password here", nil)
 	return err
 }
 
@@ -86,7 +86,7 @@ func TestBrowserWriteWaitingBehindWorkspaceLock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = f.auth.DisableMFA(ctx, browserPrincipal(t, f.st, account, true), auth.Credential{Code: codeAt(t, secret, time.Now().Add(30*time.Second))}); err != nil {
+			if _, err = f.auth.DisableMFA(ctx, browserPrincipal(t, f.st, account, true), auth.Credential{Code: codeAt(t, secret, time.Now().Add(30*time.Second))}, nil); err != nil {
 				t.Fatal(err)
 			}
 		}},
