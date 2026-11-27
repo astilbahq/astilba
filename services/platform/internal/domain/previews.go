@@ -90,11 +90,13 @@ func RemapPreview(source Specification, ids, secrets map[uuid.UUID]uuid.UUID, ho
 		return s, err
 	}
 	// A preview's database is new storage, so it starts on its major's current release even while
-	// the template's own database stays on a retired one.
+	// the template's own database stays on a retired one, and in the owner model even while the
+	// template's database user is still its superuser.
 	for i := range s.Applications {
 		if a := &s.Applications[i]; a.Postgres != nil && a.Source.Image != nil {
 			fresh := FreshPostgresImage(*a.Source.Image)
 			a.Source.Image = &fresh
+			a.Postgres.Roles = PostgresOwner
 		}
 	}
 	routes := []Route{}

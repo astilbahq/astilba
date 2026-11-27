@@ -52,7 +52,7 @@ astilba-cli build run --application UUID --base UUID --target-hash HASH --key UU
 
 Replace `UUID` and `HASH` with the returned identities. Saving a draft does not deploy it, and a saved change [stops automatic deployment](git-builds.md) until a plan containing it is reviewed and applied. Inspect the completed plan before applying. Use a new UUID for each distinct build/apply request; after a transport failure, reuse that same key to recover the accepted operation while the credential and normal workspace admission remain valid. The CLI never retries mutations automatically. Responses have a size limit and requests time out after one minute; durable work can continue after a client disconnects.
 
-Specifications contain secret-version references, not values from the secret store. Ordinary plaintext configuration remains visible to callers granted configuration-read access. Store sensitive application values as secrets before using automation.
+A new managed PostgreSQL database needs `"roles": "owner"` in its `postgres` settings, as the dashboard sets, so its database user isn't PostgreSQL's superuser (see [managed database roles](visual-deployments.md#managed-database-roles)). Preparing a plan refuses one without it and names the field, `applications.postgres.roles`. Specifications contain secret-version references, not values from the secret store. Ordinary plaintext configuration remains visible to callers granted configuration-read access. Store sensitive application values as secrets before using automation.
 
 ## Configured builds
 

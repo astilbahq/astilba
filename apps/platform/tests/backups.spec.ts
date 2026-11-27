@@ -521,6 +521,8 @@ test("backup setup, restore verification and separate cutover use the real API",
     id: crypto.randomUUID(),
     verified: true,
     targetId,
+    // A current agent restores into a cluster whose database user isn't the superuser.
+    restoreRoles: "owner",
     note: "Fresh restore verified",
   };
   await scheduleReport(2, [run, restored]);

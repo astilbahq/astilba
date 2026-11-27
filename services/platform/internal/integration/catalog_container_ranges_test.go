@@ -139,7 +139,7 @@ func TestStagedAllowlistLeavesOutTheServersContainers(t *testing.T) {
 	}
 	b.call("POST", fresh+"/deployment-plans/"+status.ID.String()+"/apply", api.ApplyVisualPlan{IdempotencyKey: uuid.New()}, 400, nil)
 	// Once its agent reports them, planning refuses there too.
-	heartbeat := api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true, Visual: &yes, ServiceOutputs: &yes, ContainerRanges: &yes, PostgresReleases: agentPostgresReleases()}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}, ContainerRanges: &ranges}}
+	heartbeat := api.AgentHeartbeat{Capabilities: api.AgentCapabilities{Protocol: 1, Version: "test", Os: "linux", Arch: "arm64", Docker: true, Visual: &yes, ServiceOutputs: &yes, ContainerRanges: &yes, PostgresReleases: agentPostgresReleases(), PostgresOwnerRole: agentPostgresOwnerRole()}, Preflight: api.HostPreflight{Ready: true, OsRelease: "ubuntu 24.04", FreeBytes: 1 << 30, Notes: []string{}, ContainerRanges: &ranges}}
 	agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/heartbeat", silentToken, heartbeat, 200, nil)
 	raw, _ = plan(fresh, silent, 400)
 	refusesNaming(raw, "10.0.0.0/8", "10.252.0.0/14")

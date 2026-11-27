@@ -115,7 +115,7 @@ func TestNativeScratchCrashHelper(t *testing.T) {
 		r, _ = j.Record(run.Id)
 		t.Fatal("the backup was not killed while its restic ran:", err, r.Report.State, r.Report.Note)
 	case "restore":
-		_, _, err = e.restoreArchive(ctx, f.install, uuid.New(), uuid.New(), strings.Repeat("a", 64), "files.tar", f.manifest, func() error { return nil })
+		_, _, err = e.restoreArchive(ctx, f.install, uuid.New(), uuid.New(), strings.Repeat("a", 64), "files.tar", f.manifest, "", func() error { return nil })
 		t.Fatal("the restore was not killed while its restic ran:", err)
 	}
 }
@@ -245,7 +245,7 @@ func TestNativeCrashLeavesNoRepositoryAccessOrStaging(t *testing.T) {
 			// The next restore gets past the capacity check and stages its download, and stops
 			// there: no restic answers it.
 			e := &Engine{Journal: j, Docker: docker, ResticCLI: filepath.Join(base, "no-restic")}
-			_, _, err = e.restoreArchive(ctx, f.install, uuid.New(), uuid.New(), strings.Repeat("a", 64), "files.tar", f.manifest, func() error { return nil })
+			_, _, err = e.restoreArchive(ctx, f.install, uuid.New(), uuid.New(), strings.Repeat("a", 64), "files.tar", f.manifest, "", func() error { return nil })
 			var refused restoreRefusal
 			if err == nil || errors.As(err, &refused) && refused == "insufficient restore capacity" {
 				t.Fatal("the next restore was refused for capacity:", err)

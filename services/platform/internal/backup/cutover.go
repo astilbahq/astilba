@@ -14,13 +14,14 @@ func CutoverVolume(p Policy, r Run) (uuid.UUID, error) {
 	if !r.Verified || r.State != "succeeded" || r.PolicyID != p.ID || r.Manifest == nil || !SnapshotID(r.ManifestHash) {
 		return uuid.Nil, errors.New("the restored run does not match the source policy")
 	}
-	return RestoredVolume(p, r.TargetID, *r.Manifest, r.RestoredImage())
+	return RestoredVolume(p, r.TargetID, *r.Manifest, r.RestoredImage(), r.RestoreRoles)
 }
 
 // RestoredVolume is the volume of p's plan that target, holding a verified restore of the archive
 // m describes, switches in for. A logical restore's data was written by the release whose image
-// is restored, which the frozen source must be able to open.
-func RestoredVolume(p Policy, target uuid.UUID, m Manifest, restored string) (uuid.UUID, error) {
+// is restored, which the frozen source must be able to open, in a cluster of the roles model
+// restored. A database in the owner model never moves onto a cluster whose superuser is its user.
+func RestoredVolume(p Policy, target uuid.UUID, m Manifest, restored, roles string) (uuid.UUID, error) {
 	if target == uuid.Nil || m.PolicyID != p.ID || m.EnvironmentID != p.EnvironmentID || m.ResourceID != p.ResourceID || m.Method != p.Method {
 		return uuid.Nil, errors.New("the restored archive does not match the source policy")
 	}
@@ -34,6 +35,9 @@ func RestoredVolume(p Policy, target uuid.UUID, m Manifest, restored string) (uu
 			}
 			if err := OpensRestoredPostgres(a, restored); err != nil {
 				return uuid.Nil, err
+			}
+			if a.Postgres.Owner() && roles != domain.PostgresOwner {
+				return uuid.Nil, errors.New("the restore made the database user its cluster's superuser, which this database's role model doesn't allow")
 			}
 			old, found = a.Mounts[0].VolumeID, true
 		}

@@ -131,6 +131,21 @@ func TestStorageSwitchIsNamedInReviewedEffects(t *testing.T) {
 	}
 }
 
+// A restore's cutover moves a database from before the owner model into it, and the application
+// loses the superuser it may have relied on.
+func TestOwnerModelSwitchIsNamedInReviewedEffects(t *testing.T) {
+	app := uuid.New()
+	spec := func(roles string) domain.Specification {
+		return domain.Specification{Applications: []domain.Application{{ID: app, Name: "database", Postgres: &domain.Postgres{Roles: roles}}}}
+	}
+	if effects := strings.Join(Effects(spec(domain.PostgresOwner), spec(""), false), "\n"); !strings.Contains(effects, "no longer the cluster's superuser") {
+		t.Fatalf("the switch to the owner model is not named: %s", effects)
+	}
+	if effects := strings.Join(Effects(spec(domain.PostgresOwner), spec(domain.PostgresOwner), false), "\n"); strings.Contains(effects, "superuser") {
+		t.Fatalf("an unchanged role model is named: %s", effects)
+	}
+}
+
 // A reviewer reads this as which traffic stops, and a renamed Compose route keeps its
 // endpoint under a new identity.
 func TestRemovedRoutesAreNamedByEndpoint(t *testing.T) {
@@ -149,5 +164,46 @@ func TestRemovedRoutesAreNamedByEndpoint(t *testing.T) {
 		if !strings.Contains(effects, want) {
 			t.Fatalf("missing %q:\n%s", want, effects)
 		}
+	}
+}
+
+// PLAT-450. The agent creates an owner-model database's cluster, so its service has none of the
+// image's PostgreSQL variables, and an empty volume makes the image refuse to start. A database
+// from before keeps them, and so does an export, which runs without the agent.
+func TestOwnerDatabaseServiceHasNoPostgresVariables(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		roles  string
+		export bool
+		want   bool
+	}{{"owner", domain.PostgresOwner, false, false}, {"legacy", "", false, true}, {"owner export", domain.PostgresOwner, true, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			p := testPlan()
+			p.Specification.Applications[0].Postgres.Roles = c.roles
+			p = p.WithHash()
+			secret := p.Specification.Applications[0].Postgres.PasswordSecretVersionID
+			raw, err := Compose(p, map[string]string{secret.String(): "service-password"}, c.export)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc struct {
+				Services map[string]struct {
+					Environment map[string]string `json:"environment"`
+				} `json:"services"`
+			}
+			if err = json.Unmarshal(raw, &doc); err != nil {
+				t.Fatal(err)
+			}
+			env := doc.Services[ServiceName(p.Specification.Applications[0].ID)].Environment
+			for _, name := range []string{"POSTGRES_USER", "POSTGRES_DB", "POSTGRES_PASSWORD"} {
+				if _, ok := env[name]; ok != c.want {
+					t.Fatalf("%s present %v, want %v", name, ok, c.want)
+				}
+			}
+			// The app's connection is the same either way.
+			if !strings.Contains(doc.Services[ServiceName(p.Specification.Applications[1].ID)].Environment["DATABASE_URL"], "app:") {
+				t.Fatal("the app lost its database connection")
+			}
+		})
 	}
 }

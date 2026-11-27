@@ -12,9 +12,13 @@ import (
 )
 
 // requireAgentSupport refuses a specification the server's agent cannot run: named service
-// outputs it has not negotiated, or a PostgreSQL release it does not know.
+// outputs it has not negotiated, a PostgreSQL release it does not know, or a database in the
+// owner model it would run as before.
 func requireAgentSupport(ctx context.Context, q db.DBTX, ws, server uuid.UUID, spec domain.Specification) error {
 	if err := requirePostgresReleases(ctx, q, ws, server, spec); err != nil {
+		return err
+	}
+	if err := requirePostgresOwnerRole(ctx, q, ws, server, spec); err != nil {
 		return err
 	}
 	if !domain.UsesServiceOutputs(spec) {
@@ -67,6 +71,31 @@ func requirePostgresReleases(ctx context.Context, q db.DBTX, ws, server uuid.UUI
 		}
 	}
 	return nil
+}
+
+// postgresOwnerRoleField marks a refusal an agent update clears.
+const postgresOwnerRoleField = "server.capabilities.postgresOwnerRole"
+
+// requirePostgresOwnerRole refuses a managed database in the owner model on a server whose agent
+// would run its database user as the cluster's superuser. An agent from before the owner model
+// drops the field it doesn't know, so its plan's digest wouldn't match either.
+func requirePostgresOwnerRole(ctx context.Context, q db.DBTX, ws, server uuid.UUID, spec domain.Specification) error {
+	if !slices.ContainsFunc(spec.Applications, func(a domain.Application) bool { return a.Postgres != nil && a.Postgres.Owner() }) {
+		return nil
+	}
+	raw, err := db.New(q).ServerCapabilities(ctx, db.ServerCapabilitiesParams{WorkspaceID: ws, ID: server})
+	if err != nil {
+		return err
+	}
+	var capabilities api.AgentCapabilities
+	if json.Unmarshal(raw, &capabilities) == nil && capabilities.PostgresOwnerRole != nil && *capabilities.PostgresOwnerRole {
+		return nil
+	}
+	name, err := db.New(q).ServerName(ctx, db.ServerNameParams{WorkspaceID: ws, ID: server})
+	if err != nil {
+		return err
+	}
+	return &domain.Error{Code: "invalid_input", Message: "Update the agent on " + name + " before running a managed database there: its agent would make the database user PostgreSQL's superuser.", Fields: []string{postgresOwnerRoleField}}
 }
 
 // requireMemberSupport checks a cross-host member's agent, which validates the whole
