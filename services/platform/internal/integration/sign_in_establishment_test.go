@@ -119,11 +119,11 @@ func refuseWrites(create, table string) func(*testing.T, *fixture) func(bool) {
 // together with the session it stores or ends, so one that fails before then changes nothing: a
 // recovery or authenticator code stays unspent, a password or two-factor change is not applied,
 // recovery codes are not replaced, an invitation or reset link is not used, and no security
-// event or email is recorded. It signs
-// nothing in and sends the browser neither a session cookie nor a device cookie, and the same
-// request then succeeds. The failure is the device token, the last step of establishing a
-// session; the session's write itself; or the transaction's commit, after the session's write,
-// which a deferred trigger on the account's row refuses where the request changes that row.
+// event or email is recorded. It signs nothing in, ends no session and sends the browser neither
+// a session cookie nor a device cookie, and the same request then succeeds. The failure is the
+// device token, the last step of establishing or ending a session; the session's write itself;
+// or the transaction's commit, after the session's write, which a deferred trigger on the
+// account's row refuses where the request changes that row.
 func TestFailedSignInChangesNothing(t *testing.T) {
 	const email = "owner@example.test"
 	password := func(f *fixture) map[string]string { return map[string]string{"password": f.password} }
@@ -291,7 +291,8 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 				if session := b.session(); (session.User != nil) != c.stays {
 					t.Fatalf("the browser is signed in as %v", session.User)
 				}
-				// Whatever the request presented, a code, an enrolment or an invitation, is still unused.
+				// Whatever the request presented, a code, an enrolment, an invitation or a reset link, is
+				// still unused.
 				if status, body = request(); status/100 != 2 {
 					t.Fatalf("the same request then answered %d: %s", status, body)
 				}

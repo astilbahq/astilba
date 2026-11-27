@@ -39,8 +39,8 @@ type sessionLoad struct {
 	keepCookie bool
 	// keepRow leaves a destroyed session's row in place. See dropStaleSession.
 	keepRow bool
-	// deviceToken is sent as the device cookie unless saving the session failed or its renewal
-	// was discarded. See issueDevice and renewToken.
+	// deviceToken is sent as the device cookie unless saving the session failed or the change
+	// it was issued in rolled back. See issueDevice and inChange.
 	deviceToken string
 	// lineage is the loaded session's chain of renewed tokens, which a logout ends.
 	lineage uuid.UUID

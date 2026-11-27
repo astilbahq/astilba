@@ -30,12 +30,13 @@ type Service struct {
 	Queue *river.Client[pgx.Tx]
 }
 
-// Finish completes a sign-in, or a change to how an account signs in, in the transaction that
-// makes it, given the account as that transaction leaves it. The browser session the request
-// signs in or renews is stored there, so it commits with what authorized it or neither does: a
+// Finish completes a sign-in, a change to how an account signs in, an invitation's acceptance or
+// a password reset, in the transaction that makes it, given the account as that transaction
+// leaves it. The browser session the request signs in, renews or keeps is stored there, or the
+// one a reset ends is ended there, so it commits with what authorized it or neither does: a
 // failure in between leaves a recovery code or authenticator code unspent, a password or
-// two-factor change unapplied, and the recovery codes the account had still valid, rather than
-// replaced by codes the failed response never showed.
+// two-factor change unapplied, an invitation or reset link unused, and the recovery codes the
+// account had still valid, rather than replaced by codes the failed response never showed.
 type Finish func(tx pgx.Tx, account db.Account) error
 
 // run runs f, if there is one: a caller with no session to store, such as one making a workspace,
@@ -176,7 +177,7 @@ func (s *Service) VerifyCode(ctx context.Context, id uuid.UUID, expectedVersion 
 // session still stands. The request may have spent a long time hashing a password or queued
 // behind an import, and a logout neither changes the account's version nor waits for this
 // lock, so only reading the session after the wait sees one. A logout that lands after this
-// check, while the few statements of the change run, stops only a change that then renews the
+// check, while the few statements of the change run, stops only a change that then stores the
 // session. The lock does not make a row that refers to the account wait, such as an audit event
 // another transaction records while it holds a terminal session's row, which this change's
 // renewal may move.
