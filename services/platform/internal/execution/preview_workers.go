@@ -541,49 +541,7 @@ func (s *Service) reconcilePreview(ctx context.Context, tx pgx.Tx, git *gitAnswe
 		return s.previewState(ctx, tx, id, "failed", "Preview build failed or was cancelled. Push another commit to retry.", 5*time.Minute)
 	}
 	if r.Plan == nil {
-		key, err := s.previewPromotionKey(ctx, tx, p, r)
-		if err != nil {
-			return err
-		}
-		if key == r.RefusedKey {
-			return stillRefused(ctx, tx, p.Workspace, r)
-		}
-		var raw []byte
-		if err = tx.QueryRow(ctx, "SELECT identity FROM build_artifacts WHERE workspace_id=$1 AND environment_id=$2 AND id=$3", p.Workspace, *r.View.EnvironmentId, *r.Build).Scan(&raw); err != nil {
-			return err
-		}
-		var artifact pipeline.Artifact
-		if err = json.Unmarshal(raw, &artifact); err != nil {
-			return err
-		}
-		v, err := loadVisualEnvironment(ctx, tx, p.Workspace, p.Project, *r.View.EnvironmentId)
-		if err != nil {
-			return err
-		}
-		// Only the revision is refused for good. Planning also refuses on the server's state, such
-		// as a preflight that is not ready, which a later pass can find changed.
-		var rev uuid.UUID
-		why, err := refusedChange(ctx, tx, func(tx pgx.Tx) (err error) {
-			if err = promoteSpecification(ctx, &v.Spec, *r.App, artifact); err != nil {
-				return err
-			}
-			rev, err = s.writePipelineRevision(ctx, tx, p.Workspace, *r.View.EnvironmentId, v.Revision, p.Actor, v.Spec)
-			return err
-		})
-		if err != nil {
-			return err
-		}
-		if why != "" {
-			return refusePreview(ctx, tx, p.Workspace, id, key, "Preview was not deployed: "+why, true)
-		}
-		status, err := s.createVisualPlan(ctx, tx, git.keys.inspect, p.Workspace, p.Project, *r.View.EnvironmentId, api.VisualPlanRequest{BaseRevisionId: rev, ServerId: p.Server}, true)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, "UPDATE preview_requests SET plan_id=$2,operation_id=$3,refused_key='',refusal_note='' WHERE id=$1", id, status.ID, status.OperationID); err != nil {
-			return err
-		}
-		return s.previewState(ctx, tx, id, "deploying", "Resolving preview images and runtime state.", time.Minute)
+		return s.promotePreview(ctx, tx, git, p, r)
 	}
 	var resolution string
 	if err = tx.QueryRow(ctx, "SELECT o.state FROM visual_requests r JOIN execution_operations o ON o.id=r.operation_id WHERE r.id=$1", *r.Plan).Scan(&resolution); err != nil {
