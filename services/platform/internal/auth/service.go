@@ -198,7 +198,7 @@ func lockCurrentLineage(ctx context.Context, q *db.Queries, p store.Principal) (
 
 // MFASetupElsewhere refuses to begin an enrolment while another signed-in browser session's
 // enrolment lasts.
-var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, wait up to 10 minutes, or change your password to sign out your other sessions."}
+var MFASetupElsewhere = &domain.Error{Code: "mfa_setup_elsewhere", Message: "Two-factor authentication is being set up in another signed-in session. Finish it or sign out there, sign that session out under Signed-in sessions, or wait up to 10 minutes."}
 
 // pendingEnrolment refuses a session that has no unexpired enrolment of its own to confirm, such as
 // one another session began, as it refuses a lapsed one. The account must not have an authenticator.

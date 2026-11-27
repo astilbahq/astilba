@@ -54,6 +54,22 @@ export function sessionHandlers(session = guest, hosted = false) {
         support: "",
       }),
     ),
+    // The account page lists the signed-in sessions: by default only this one.
+    http.get("/api/v1/auth/sessions", () =>
+      HttpResponse.json({
+        sessions: [
+          {
+            id: "00000000-0000-4000-8000-000000000010",
+            current: true,
+            signedInAt: "2026-11-20T09:30:00Z",
+            lastSeenAt: "2026-11-26T12:00:00Z",
+            browser: "firefox",
+            os: "macos",
+          },
+        ],
+        unlisted: 0,
+      } satisfies Schema["AccountSessions"]),
+    ),
     http.post("/api/v1/auth/logout", () => {
       signedOut = true;
       return new HttpResponse(null, { status: 204 });

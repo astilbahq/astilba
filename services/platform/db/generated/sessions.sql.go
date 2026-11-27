@@ -10,7 +10,115 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const accountHasSessionLineage = `-- name: AccountHasSessionLineage :one
+SELECT EXISTS(SELECT 1 FROM sessions WHERE account_id = $1::uuid AND lineage = $2::uuid)
+`
+
+type AccountHasSessionLineageParams struct {
+	AccountID uuid.UUID `json:"account_id"`
+	Lineage   uuid.UUID `json:"lineage"`
+}
+
+// unscoped: a browser session's account is the one it signed in to, which only that account ends.
+func (q *Queries) AccountHasSessionLineage(ctx context.Context, arg AccountHasSessionLineageParams) (bool, error) {
+	row := q.db.QueryRow(ctx, accountHasSessionLineage, arg.AccountID, arg.Lineage)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const accountSessionLineages = `-- name: AccountSessionLineages :many
+SELECT DISTINCT lineage FROM sessions WHERE account_id = $1::uuid AND lineage <> $2::uuid ORDER BY lineage
+`
+
+type AccountSessionLineagesParams struct {
+	AccountID uuid.UUID `json:"account_id"`
+	Kept      uuid.UUID `json:"kept"`
+}
+
+// unscoped: a browser session's account is the one it signed in to, which only that account ends.
+// Every lineage holding a session of the account but the one named, including any a credential
+// change has moved on from but not yet renewed, so that renewal refuses.
+func (q *Queries) AccountSessionLineages(ctx context.Context, arg AccountSessionLineagesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, accountSessionLineages, arg.AccountID, arg.Kept)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var lineage uuid.UUID
+		if err := rows.Scan(&lineage); err != nil {
+			return nil, err
+		}
+		items = append(items, lineage)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const accountSessions = `-- name: AccountSessions :many
+SELECT l.lineage,l.signed_in_at,l.last_seen_at,l.client_browser,l.client_os,l.client_network,count(*) OVER () AS live
+FROM (
+    SELECT DISTINCT ON (s.lineage) s.lineage,s.signed_in_at,s.last_seen_at,s.client_browser,s.client_os,s.client_network
+    FROM sessions s JOIN accounts a ON a.id = s.account_id AND a.auth_version = s.auth_version
+    WHERE s.account_id = $1::uuid AND s.expiry > clock_timestamp()
+    ORDER BY s.lineage,s.last_seen_at DESC
+) l
+ORDER BY l.last_seen_at DESC,l.lineage
+LIMIT $2
+`
+
+type AccountSessionsParams struct {
+	AccountID uuid.UUID `json:"account_id"`
+	Listed    int32     `json:"listed"`
+}
+
+type AccountSessionsRow struct {
+	Lineage       uuid.UUID   `json:"lineage"`
+	SignedInAt    *time.Time  `json:"signed_in_at"`
+	LastSeenAt    *time.Time  `json:"last_seen_at"`
+	ClientBrowser pgtype.Text `json:"client_browser"`
+	ClientOs      pgtype.Text `json:"client_os"`
+	ClientNetwork pgtype.Text `json:"client_network"`
+	Live          int64       `json:"live"`
+}
+
+// unscoped: a browser session's account is the one it signed in to, which only that account reads.
+// The account's sessions that would be admitted, most recently seen first, each lineage once,
+// and how many there are in all. A row a credential change has moved on from is not one.
+func (q *Queries) AccountSessions(ctx context.Context, arg AccountSessionsParams) ([]AccountSessionsRow, error) {
+	rows, err := q.db.Query(ctx, accountSessions, arg.AccountID, arg.Listed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AccountSessionsRow{}
+	for rows.Next() {
+		var i AccountSessionsRow
+		if err := rows.Scan(
+			&i.Lineage,
+			&i.SignedInAt,
+			&i.LastSeenAt,
+			&i.ClientBrowser,
+			&i.ClientOs,
+			&i.ClientNetwork,
+			&i.Live,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const browserSessionAdmission = `-- name: BrowserSessionAdmission :one
 SELECT s.lineage FROM accounts a JOIN sessions s ON s.token = $1 AND s.expiry > clock_timestamp()
@@ -57,19 +165,19 @@ func (q *Queries) BrowserSessionSnapshotAdmission(ctx context.Context, arg Brows
 	return id, err
 }
 
-const deleteRenewedSession = `-- name: DeleteRenewedSession :execrows
-DELETE FROM sessions WHERE token = $1 AND expiry > clock_timestamp()
+const deleteRenewedSession = `-- name: DeleteRenewedSession :one
+DELETE FROM sessions WHERE token = $1 AND expiry > clock_timestamp() RETURNING signed_in_at
 `
 
 // unscoped: the hashed browser session token is the credential.
 // A session that expired while its request ran is not renewed: its row may outlive the expiry
-// until cleanup, and a logout no longer sees it.
-func (q *Queries) DeleteRenewedSession(ctx context.Context, token string) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteRenewedSession, token)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// until cleanup, and a logout no longer sees it. Returns when the session signed in, which its
+// renewal keeps, if it had.
+func (q *Queries) DeleteRenewedSession(ctx context.Context, token string) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, deleteRenewedSession, token)
+	var signed_in_at *time.Time
+	err := row.Scan(&signed_in_at)
+	return signed_in_at, err
 }
 
 const deleteSessionLineage = `-- name: DeleteSessionLineage :exec
@@ -111,23 +219,45 @@ func (q *Queries) FindSession(ctx context.Context, token string) (FindSessionRow
 }
 
 const insertSession = `-- name: InsertSession :exec
-INSERT INTO sessions(token,data,expiry,lineage) VALUES($1,$2,$3,$4)
+INSERT INTO sessions(token,data,expiry,lineage,account_id,auth_version,signed_in_at,last_seen_at,client_browser,client_os,client_network)
+SELECT $1,$2,$3,$4,i.account_id,
+    CASE WHEN i.account_id IS NULL THEN NULL ELSE $5::bigint END,
+    CASE WHEN i.account_id IS NULL THEN NULL ELSE coalesce($6::timestamptz, clock_timestamp()) END,
+    CASE WHEN i.account_id IS NULL THEN NULL ELSE clock_timestamp() END,
+    CASE WHEN i.account_id IS NULL THEN NULL ELSE CAST($7 AS text) END,
+    CASE WHEN i.account_id IS NULL THEN NULL ELSE CAST($8 AS text) END,
+    CASE WHEN i.account_id IS NULL THEN NULL ELSE $9::text END
+FROM (SELECT $10::uuid AS account_id) i
 `
 
 type InsertSessionParams struct {
-	Token   string    `json:"token"`
-	Data    []byte    `json:"data"`
-	Expiry  time.Time `json:"expiry"`
-	Lineage uuid.UUID `json:"lineage"`
+	Token         string      `json:"token"`
+	Data          []byte      `json:"data"`
+	Expiry        time.Time   `json:"expiry"`
+	Lineage       uuid.UUID   `json:"lineage"`
+	AuthVersion   pgtype.Int8 `json:"auth_version"`
+	SignedInAt    *time.Time  `json:"signed_in_at"`
+	ClientBrowser string      `json:"client_browser"`
+	ClientOs      string      `json:"client_os"`
+	ClientNetwork pgtype.Text `json:"client_network"`
+	AccountID     *uuid.UUID  `json:"account_id"`
 }
 
 // unscoped: the hashed browser session token is the credential.
+// A session signed in to an account records it, its version and its client, and is last seen
+// now. It signed in at signed_in_at, which a renewal carries over, or now.
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
 	_, err := q.db.Exec(ctx, insertSession,
 		arg.Token,
 		arg.Data,
 		arg.Expiry,
 		arg.Lineage,
+		arg.AuthVersion,
+		arg.SignedInAt,
+		arg.ClientBrowser,
+		arg.ClientOs,
+		arg.ClientNetwork,
+		arg.AccountID,
 	)
 	return err
 }
@@ -190,20 +320,36 @@ func (q *Queries) MoveTroubleshootingBrowserBinding(ctx context.Context, arg Mov
 }
 
 const refreshSession = `-- name: RefreshSession :execrows
-UPDATE sessions SET data = $1,expiry = $2 WHERE token = $3 AND expiry > clock_timestamp()
+UPDATE sessions SET data = $1,expiry = $2,
+    last_seen_at = CASE WHEN account_id IS NULL THEN NULL ELSE clock_timestamp() END,
+    client_browser = CASE WHEN account_id IS NULL THEN NULL ELSE CAST($3 AS text) END,
+    client_os = CASE WHEN account_id IS NULL THEN NULL ELSE CAST($4 AS text) END,
+    client_network = CASE WHEN account_id IS NULL THEN NULL ELSE $5::text END
+WHERE token = $6 AND expiry > clock_timestamp()
 `
 
 type RefreshSessionParams struct {
-	Data   []byte    `json:"data"`
-	Expiry time.Time `json:"expiry"`
-	Token  string    `json:"token"`
+	Data          []byte      `json:"data"`
+	Expiry        time.Time   `json:"expiry"`
+	ClientBrowser string      `json:"client_browser"`
+	ClientOs      string      `json:"client_os"`
+	ClientNetwork pgtype.Text `json:"client_network"`
+	Token         string      `json:"token"`
 }
 
 // unscoped: the hashed browser session token is the credential.
 // UPDATE serializes with logout, renewal or expiry cleanup and never recreates
 // a deleted token. A session that expired while its request ran stays expired.
+// A signed-in session is last seen now, from the client this request summarized.
 func (q *Queries) RefreshSession(ctx context.Context, arg RefreshSessionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, refreshSession, arg.Data, arg.Expiry, arg.Token)
+	result, err := q.db.Exec(ctx, refreshSession,
+		arg.Data,
+		arg.Expiry,
+		arg.ClientBrowser,
+		arg.ClientOs,
+		arg.ClientNetwork,
+		arg.Token,
+	)
 	if err != nil {
 		return 0, err
 	}
