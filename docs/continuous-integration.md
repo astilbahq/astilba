@@ -147,7 +147,12 @@ from before the lanes changed is judged by the lanes it had. Packages other step
 such as the bootstrap's, are left out. It
 keeps its own issue, `Native lanes are past their time budget`, as the
 [Go race lanes' budget](#application-go-verification) does, and lists each lane's
-package medians, with their budgets, in the job summary. `make check-ci` fails when a
+package medians, with their budgets, in the job summary. The current lanes are those
+of the newest main run whose lanes all finished, so a run with a lane cancelled at the
+job's time limit leaves the sample as it was. The `internal/agent`,
+`internal/integration` and `internal/hostnetwork` packages also add a warning to any
+native run past 60% of its command's `-timeout`, so the pull request that crosses it
+shows it in its own checks. `make check-ci` fails when a
 native lane runs one package in two commands, because `go test` prints one time for a
 package. When a lane is over, move a family of tests to a lane with room, or to a new
 lane added to `verify-agent-host` and the workflow's `lane` list; each test's time is in
@@ -263,8 +268,9 @@ the issue is the notice. While a lane is over it
 keeps one issue open with the latest times, comments when another package goes over,
 and closes it when the lanes recover, as [Scheduled reports](#scheduled-reports)
 describes. It is not a required check, so runner variance cannot remove a pull request from the
-queue. The integration package also adds a warning to any run past that budget, so
-the pull request that crosses it shows it in its own checks. When a lane is past its
+queue. The `internal/agent`, `internal/integration` and `internal/hostnetwork` packages
+also add a warning to any run past that budget, so the pull request that crosses it
+shows it in its own checks. When a lane is past its
 budget, first look for time every test shares, because the fixture is the only place
 one change reaches every test. Then apply the proposed split: give each name lane its
 letters and the name the proposal gives it, adding or removing a variable, its rule,

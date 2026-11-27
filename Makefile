@@ -13,7 +13,7 @@ APP_A_TO_B_TESTS = ^Test[A-B]
 APP_C_TO_K_TESTS = ^Test[C-K]
 APP_L_TO_P_TESTS = ^Test[L-P]
 APP_Q_TO_R_TESTS = ^Test[Q-R]
-NATIVE_GO = sudo --preserve-env=GOCACHE,GOMODCACHE env PATH=/opt/astilba-plat4/go/bin:/opt/astilba-plat4/bin:/usr/sbin:/usr/bin:/sbin:/bin CGO_ENABLED=1
+NATIVE_GO = sudo --preserve-env=GOCACHE,GOMODCACHE,GITHUB_ACTIONS env PATH=/opt/astilba-plat4/go/bin:/opt/astilba-plat4/bin:/usr/sbin:/usr/bin:/sbin:/bin CGO_ENABLED=1
 NATIVE_AGENT_GO = $(NATIVE_GO) PLAT_APP_DOCKER_HOST=unix:///run/astilba-plat4/docker.sock ASTILBA_NATIVE_AGENT=1 /opt/astilba-plat4/go/bin/go test -race -count=1 -v
 
 check:
