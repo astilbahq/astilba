@@ -69,7 +69,7 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	p := *principal(r.Context())
 	if s.Store.Hosted {
-		_, id, e := s.Auth.AcceptHosted(r.Context(), value(b.Invitation), "", "", name, s.clientSource(r), &p)
+		_, id, e := s.Auth.AcceptHosted(r.Context(), value(b.Invitation), "", "", name, s.clientSource(r), &p, nil)
 		if e != nil {
 			s.fail(w, r, e)
 			return
@@ -91,9 +91,9 @@ func (s *Server) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if e := store.Audit(r.Context(), q, p, id, "workspace.create", id); e != nil {
 			return e
 		}
-		// The membership and audit rows wait for any holder of the account, such as a
-		// credential change or an import. A logout or credential change that committed
-		// meanwhile wins.
+		// The membership and audit rows wait for a transaction that locks the account FOR UPDATE,
+		// such as an import, though not for a credential change. A logout or credential change
+		// that committed meanwhile wins.
 		return store.AdmitBrowserSession(r.Context(), q, p)
 	})
 	if e != nil {

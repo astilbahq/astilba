@@ -45,7 +45,7 @@ func TestLoginRefusalChargesNoBudget(t *testing.T) {
 			}
 			seedAttempts(t, f, test.spent, limit)
 			for range 3 {
-				if _, err := f.auth.Login(ctx, email, f.password, source("192.0.2.1"), nil); !errors.Is(err, domain.RateLimited) {
+				if _, err := f.auth.Login(ctx, email, f.password, source("192.0.2.1"), nil, nil); !errors.Is(err, domain.RateLimited) {
 					t.Fatal("spent budget admitted a login", err)
 				}
 			}
@@ -80,7 +80,7 @@ func TestLoginBudgetIsSharedByConcurrentReplicas(t *testing.T) {
 		}
 		go func() {
 			<-start
-			_, err := service.Login(ctx, "unknown@example.test", "wrong password", source(fmt.Sprintf("192.0.2.%d", i+1)), nil)
+			_, err := service.Login(ctx, "unknown@example.test", "wrong password", source(fmt.Sprintf("192.0.2.%d", i+1)), nil, nil)
 			results <- err
 		}()
 	}
@@ -122,7 +122,7 @@ func TestLoginExpiryCleanupDoesNotBlockAdmission(t *testing.T) {
 	}
 	finished := make(chan error, 1)
 	go func() {
-		_, err := f.auth.Login(ctx, "owner@example.test", f.password, source("192.0.2.1"), nil)
+		_, err := f.auth.Login(ctx, "owner@example.test", f.password, source("192.0.2.1"), nil, nil)
 		finished <- err
 	}()
 	// Login must finish cleanup before it waits for this source. Retaining an expired

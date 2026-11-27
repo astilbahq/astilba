@@ -370,21 +370,21 @@ func TestCredentialMutationsRejectRevokedRequestSnapshot(t *testing.T) {
 		run  func() error
 	}{
 		{"password", func() error {
-			_, e := f.auth.ChangePassword(ctx, p, auth.Credential{Password: f.password}, "replacement password here")
+			_, e := f.auth.ChangePassword(ctx, p, auth.Credential{Password: f.password}, "replacement password here", nil)
 			return e
 		}},
-		{"disable MFA", func() error { _, e := f.auth.DisableMFA(ctx, p, auth.Credential{Password: f.password}); return e }},
+		{"disable MFA", func() error { _, e := f.auth.DisableMFA(ctx, p, auth.Credential{Password: f.password}, nil); return e }},
 		{"recovery", func() error {
-			_, _, e := f.auth.RegenerateRecovery(ctx, p, auth.Credential{Password: f.password})
+			_, _, e := f.auth.RegenerateRecovery(ctx, p, auth.Credential{Password: f.password}, nil)
 			return e
 		}},
 		{"enrollment", func() error { _, _, e := f.auth.BeginMFA(ctx, p); return e }},
 		{"confirmation", func() error {
-			_, _, e := f.auth.ConfirmMFA(ctx, p, auth.Credential{Password: f.password}, "123456")
+			_, _, e := f.auth.ConfirmMFA(ctx, p, auth.Credential{Password: f.password}, "123456", nil)
 			return e
 		}},
 		{"invitation", func() error {
-			_, e := f.auth.AcceptInvitation(ctx, token, "", "", auth.Source{Key: "test", Network: "test"}, &p)
+			_, e := f.auth.AcceptInvitation(ctx, token, "", "", auth.Source{Key: "test", Network: "test"}, &p, nil)
 			return e
 		}},
 	}

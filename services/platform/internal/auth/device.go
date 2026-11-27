@@ -120,8 +120,9 @@ func loginAttempt(email string, from Source, device *deviceToken) (passwordShare
 	)
 }
 
-// Login checks a password. A malformed email cannot match any account, so it spends nothing.
-func (s *Service) Login(ctx context.Context, email, password string, from Source, devices []string) (db.Account, error) {
+// Login checks a password, then finishes the sign-in. A malformed email cannot match any account,
+// so it spends nothing.
+func (s *Service) Login(ctx context.Context, email, password string, from Source, devices []string, finish Finish) (db.Account, error) {
 	var account db.Account
 	email, err := domain.Email(email)
 	if err != nil {
@@ -149,12 +150,16 @@ func (s *Service) Login(ctx context.Context, email, password string, from Source
 	if account.ID == uuid.Nil {
 		return account, domain.Credentials
 	}
-	// A known browser spent none of these. Clearing them would hand guessers a new budget each
-	// time the owner signs in, and that sign-in is exactly what they cannot prevent any more.
-	if device != nil {
-		return account, nil
+	// The right password clears the failures charged to the account, whether or not the sign-in
+	// then completes. A known browser spent none of these. Clearing them would hand guessers a new
+	// budget each time the owner signs in, and that sign-in is exactly what they cannot prevent
+	// any more.
+	if device == nil {
+		if err := s.clearLoginFailures(ctx, s.Store.Queries, email, from.Key); err != nil {
+			return account, err
+		}
 	}
-	return account, s.clearLoginFailures(ctx, s.Store.Queries, email, from.Key)
+	return account, s.Store.TransactionTx(ctx, func(tx pgx.Tx, _ *db.Queries) error { return finish.run(tx, account) })
 }
 
 func (s *Service) clearLoginFailures(ctx context.Context, q *db.Queries, email, source string) error {
