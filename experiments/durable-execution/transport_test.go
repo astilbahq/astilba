@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,49 +296,66 @@ func TestAgentHTTPS(t *testing.T) {
 			status        int
 			serverElapsed string
 			err           error
+			// at is when the agent had the answer.
+			at time.Time
 		}
-		firstPoll := make(chan pollCompletion, 1)
-		var firstPollOnce sync.Once
+		firstPoll, secondPoll := make(chan pollCompletion, 1), make(chan time.Time, 1)
+		var polls atomic.Int32
 		observedClient := *a.client
 		transport := observedClient.Transport
 		pollPath := "/v1/servers/" + a.identity.ServerID + "/poll"
 		observedClient.Transport = transportRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != pollPath {
+				return transport.RoundTrip(r)
+			}
+			n := polls.Add(1)
+			if n == 2 {
+				secondPoll <- time.Now()
+			}
 			resp, err := transport.RoundTrip(r)
-			if r.URL.Path == pollPath {
-				firstPollOnce.Do(func() {
-					completion := pollCompletion{err: err}
-					if resp != nil {
-						completion.status = resp.StatusCode
-						completion.serverElapsed = resp.Header.Get("X-Astilba-Fixture-Poll-Elapsed")
-					}
-					select {
-					case firstPoll <- completion:
-					default:
-					}
-				})
+			if n == 1 {
+				completion := pollCompletion{err: err, at: time.Now()}
+				if resp != nil {
+					completion.status = resp.StatusCode
+					completion.serverElapsed = resp.Header.Get("X-Astilba-Fixture-Poll-Elapsed")
+				}
+				firstPoll <- completion
 			}
 			return resp, err
 		})
 		a.client = &observedClient
-		// The controller and client can run in different clock domains. Check
-		// the timer minimum there and the reconnect deadline on the client.
+		// Each bound is on the clock of what it measures: the controller holds an empty poll
+		// for its duration and no longer, on the controller's clock, and the agent asks again
+		// as soon as it has the answer, on the agent's. Between them, the proxy and the
+		// database only add latency that the transport promises nothing about.
 		pollStarted := time.Now()
-		pollDeadline := pollStarted.Add(pollDuration + 4*time.Second)
 		stop, stopped := startTransportAgent(t, a)
+		// The database stops answering across the poll's deadline, as a runner's disk can, and
+		// the controller must still answer at the deadline.
+		h.stallDatabase(t, pollStarted.Add(pollDuration-2*time.Second), 4*time.Second)
 		var completion pollCompletion
+		// The agent's client gives up on the poll on its own before this.
 		select {
 		case completion = <-firstPoll:
-		case <-time.After(time.Until(pollDeadline)):
-			t.Fatal("empty poll did not complete before the reconnect deadline")
+		case <-time.After(time.Until(pollStarted.Add(a.client.Timeout + 5*time.Second))):
+			t.Fatal("empty poll never ended")
 		}
+		pollElapsed := completion.at.Sub(pollStarted)
 		serverElapsed, parseErr := time.ParseDuration(completion.serverElapsed)
-		if completion.err != nil || completion.status != http.StatusNoContent || parseErr != nil || serverElapsed < pollDuration {
-			t.Fatalf("empty poll failed: status=%d controller elapsed=%q error=%v parse error=%v", completion.status, completion.serverElapsed, completion.err, parseErr)
+		if completion.err != nil || completion.status != http.StatusNoContent || parseErr != nil || serverElapsed < pollDuration || serverElapsed > pollDuration+time.Second {
+			t.Fatalf("empty poll failed after %s: status=%d controller elapsed=%q error=%v parse error=%v", pollElapsed, completion.status, completion.serverElapsed, completion.err, parseErr)
 		}
-		wait(t, time.Until(pollDeadline), func() bool { return h.eventCount(t, a.identity.ServerID, "poll") >= 2 })
-		pollElapsed := time.Since(pollStarted)
-		if pollElapsed > pollDuration+4*time.Second || h.eventCount(t, a.identity.ServerID, "heartbeat") == 0 {
-			t.Fatalf("poll/heartbeat overlap failed, poll and reconnect took %s", pollElapsed)
+		select {
+		case sent := <-secondPoll:
+			if reconnect := sent.Sub(completion.at); reconnect > time.Second {
+				t.Fatalf("agent asked again %s after its empty poll ended", reconnect)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("agent did not ask again after its empty poll ended")
+		}
+		wait(t, 10*time.Second, func() bool { return h.eventCount(t, a.identity.ServerID, "poll") >= 2 })
+		if h.eventCount(t, a.identity.ServerID, "heartbeat") == 0 {
+			t.Fatal("no heartbeat during the empty poll")
 		}
 		h.fault(t, a.identity.ServerID, "delivery")
 		e := h.command(t, a.identity.ServerID)
@@ -422,6 +440,6 @@ func TestAgentHTTPS(t *testing.T) {
 				t.Fatal("offline boundary mismatch")
 			}
 		}
-		t.Logf("controller empty poll %.3fs; client poll and reconnect %.3fs; live heartbeat gaps %.3f..%.3fs; local execution survived transport stop; one reported Docker effect", serverElapsed.Seconds(), pollElapsed.Seconds(), minGap, maxGap)
+		t.Logf("controller empty poll %.3fs across a database stall; client empty poll %.3fs; live heartbeat gaps %.3f..%.3fs; local execution survived transport stop; one reported Docker effect", serverElapsed.Seconds(), pollElapsed.Seconds(), minGap, maxGap)
 	})
 }

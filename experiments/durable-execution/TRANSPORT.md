@@ -23,7 +23,7 @@ Traefik is pinned to `v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035
 
 | Setting | Fixture value |
 | --- | --- |
-| Long poll | 25 seconds, one command per response |
+| Long poll | 25 seconds, ending at its deadline even while the database is slow; one command per response |
 | Concurrent polls | One per server per controller process; additional poll returns 409 |
 | Heartbeat | Every 15 seconds, independent of polling and execution |
 | Offline indication | At 45 seconds since the last authenticated contact |
@@ -39,7 +39,7 @@ The tests cover concurrent enrollment and replay, wrong-server and expired token
 
 The live-agent case drops a command-bearing response before journal acceptance, then verifies redelivery. It records heartbeat times during a full empty poll and an effect paused across multiple heartbeat intervals. It disconnects transport during that effect, permits local completion, reconnects and drops the first committed report's acknowledgement. The expected outcome is one journaled result, one controller observation and the original running container with one `effect` log line and no restart.
 
-The empty-poll and reconnect check requires the first poll to complete without an error and return HTTP 204 with at least 25 seconds measured by the controller's monotonic clock. The fixture includes that elapsed duration in a response header only when the empty-poll timer expires. It separately measures the 29-second reconnect upper bound on the client's monotonic clock, from starting the agent until the controller records its second poll, and requires a concurrent heartbeat. The controller and client can run in different clock domains, so the controller minimum and client reconnect upper bound use their respective clocks. The first database poll event is written after authentication, later than the controller starts its timer, so the gap between database events is not the full poll duration.
+The empty-poll and reconnect check requires the first poll to complete without an error and return HTTP 204 after 25 to 26 seconds, measured by the controller's monotonic clock. The fixture freezes its database for four seconds across the poll's deadline. The controller answers at the deadline even while a check is waiting on the database, rather than once the check returns. The fixture includes that elapsed duration in a response header only when the empty-poll timer expires. On the client's monotonic clock, the agent must send its next poll within a second of receiving the empty answer. The controller must then record that poll, and a heartbeat must land during the empty poll. The controller and client can run in different clock domains, so each bound uses the clock of the side it measures. The proxy and the database add latency between the two sides, and the transport promises nothing about that latency. The first database poll event is written after authentication, later than the controller starts its timer, so the gap between database events is not the full poll duration.
 
 ## Reproduce
 
