@@ -79,6 +79,7 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 			if !catalogName.MatchString(name) {
 				return errors.New("cannot inventory " + called)
 			}
+			// inline-sql: reads a managed database's catalog, not the platform database.
 			rows = append(rows, "SELECT 'pg_catalog."+name+"'::regclass AS classid, oid FROM pg_catalog."+name+" WHERE oid >= 16384")
 		}
 		// inline-sql: reads a managed database's catalog, not the platform database.
@@ -96,6 +97,7 @@ var catalogName = regexp.MustCompile(`^pg_[a-z_]+$`)
 // temporaryObjectsSQL names, as temporary(classid, objid), the temporary schemas and every object
 // dropped with them: those depending on them, directly or not, and the labels of enums among them,
 // which pg_depend leaves out. PostgreSQL reserves the pg_ prefix, so no other schema has those names.
+// inline-sql: reads a managed database's catalog, not the platform database.
 const temporaryObjectsSQL = `WITH RECURSIVE dependent(classid, objid) AS (
 	SELECT 'pg_catalog.pg_namespace'::regclass, oid FROM pg_catalog.pg_namespace WHERE nspname ~ '^pg_(toast_)?temp_[0-9]+$'
 	UNION SELECT d.classid, d.objid FROM pg_catalog.pg_depend d JOIN dependent ON d.refclassid = dependent.classid AND d.refobjid = dependent.objid
