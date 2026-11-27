@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -204,6 +206,118 @@ func TestNativeAcceptingRoutesTheProxyCannotRouteTo(t *testing.T) {
 	}
 	if w.barrier() {
 		t.Fatal("the reservation is still held")
+	}
+}
+
+// Nothing converts a reserved host's routes until the reservation is released, so bare
+// backend names an earlier agent published would last as long as it does. Reserving
+// converts them first, and a host whose conversion fails is not reserved. The proxy counts
+// every server up again when it loads the converted routes, until it probes it, so the
+// reservation probes each server the proxy reports up, and a server the proxy had out,
+// here the other host's, is still left out of what it records.
+func TestNativeReservationConvertsBareBackends(t *testing.T) {
+	w := newRoutedWriter(t)
+	ctx := context.Background()
+	remote := net.JoinHostPort(remoteAddress, strconv.Itoa(remotePort))
+	if _, err := w.docker.ContainerStop(ctx, w.remote, client.ContainerStopOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := w.journal.routing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := state.Current
+	bare.QualifiedBackends = false
+	if err = w.engine.replaceRouteFile(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	state.Current = bare
+	if err = w.journal.saveRouting(state); err != nil {
+		t.Fatal(err)
+	}
+	published, err := os.ReadFile(w.engine.routePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualified := func() bool {
+		t.Helper()
+		state, err := w.journal.routing()
+		if err != nil {
+			t.Fatal(err)
+		}
+		drift, err := w.engine.ingressDrift(ctx, state)
+		if err != nil || drift {
+			t.Fatalf("the host's routes drifted: %v", err)
+		}
+		return state.Current.QualifiedBackends
+	}
+
+	remoteStatus := func() string {
+		runtime, err := w.engine.readIngressRuntime(ctx)
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		for _, service := range runtime["services"] {
+			for at, status := range service.ServerStatus {
+				if backend, err := backendOf(w.plan.UnitID, at); err == nil && backend == remote {
+					return status
+				}
+			}
+		}
+		return ""
+	}
+	for range 30 {
+		if remoteStatus() == "DOWN" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if remoteStatus() != "DOWN" {
+		t.Fatal("the proxy never took the other host's stopped server out")
+	}
+
+	// A conversion the proxy never activates is put back.
+	broken := false
+	w.engine.Point = func(point string) {
+		if point == "route-published" && !broken {
+			broken = true
+			if err := os.WriteFile(w.engine.routePath(), []byte("{}"), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	w.phaseEnding("reserve", "failed")
+	w.engine.Point = nil
+	if w.barrier() || qualified() {
+		t.Fatal("a host whose conversion failed was reserved, or kept the conversion")
+	}
+	if raw, err := os.ReadFile(w.engine.routePath()); err != nil || !bytes.Equal(raw, published) {
+		t.Fatal("the failed conversion did not restore the route file", err)
+	}
+
+	// The proxy must still count the other host's server up when the reservation reads it,
+	// or this run could not tell whether the reservation probed it.
+	stale := false
+	w.engine.Point = func(point string) {
+		if point == "maintenance-routes-reading" {
+			stale = remoteStatus() == "UP"
+		}
+	}
+	w.phase("reserve")
+	w.engine.Point = nil
+	if !stale {
+		t.Fatal("the proxy had already taken the other host's server out again when the reservation read its routes")
+	}
+	if !w.barrier() || !qualified() {
+		t.Fatal("the host was reserved without converting its routes")
+	}
+	s, err := w.journal.crossHost()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Routed == nil || len(s.Routed.Servers) != 1 || s.Routed.Servers[0].Backend == remote {
+		t.Fatalf("the reservation recorded %+v, not only this host's writer", s.Routed)
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -30,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -266,9 +266,10 @@ func newTransportHarness(t *testing.T) *transportHarness {
 		for _, id := range []string{x.controller, proxy.ID} {
 			logs, err := h.docker.ContainerLogs(context.Background(), id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Tail: "30"})
 			if err == nil {
-				data, _ := io.ReadAll(logs)
+				var data bytes.Buffer
+				_, err = stdcopy.StdCopy(&data, &data, logs)
 				logs.Close()
-				t.Logf("fixture process: %s", data)
+				t.Logf("fixture process: %s (%v)", data.Bytes(), err)
 			}
 		}
 	})
@@ -402,6 +403,31 @@ func reloadIdentity(t *testing.T, a *transportAgent) *transportAgent {
 		t.Fatal(err)
 	}
 	return &next
+}
+
+// stallDatabase freezes the fixture's PostgreSQL at at for d, as a disk that stops answering
+// would. The test's cleanup waits for it to run again, and skips a stall that hasn't begun.
+func (h *transportHarness) stallDatabase(t *testing.T, at time.Time, d time.Duration) {
+	t.Helper()
+	name := "plat2-postgres-" + h.h.run
+	cancelled, resumed := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(resumed)
+		select {
+		case <-time.After(time.Until(at)):
+		case <-cancelled:
+			return
+		}
+		if _, err := h.h.docker.ContainerPause(context.Background(), name, client.ContainerPauseOptions{}); err != nil {
+			t.Errorf("stall the database: %v", err)
+			return
+		}
+		time.Sleep(d)
+		if _, err := h.h.docker.ContainerUnpause(context.Background(), name, client.ContainerUnpauseOptions{}); err != nil {
+			t.Errorf("resume the database: %v", err)
+		}
+	}()
+	t.Cleanup(func() { close(cancelled); <-resumed })
 }
 
 func (h *transportHarness) shift(t *testing.T, duration string) {

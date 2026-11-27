@@ -91,14 +91,11 @@ func serverBuildEgress(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) ([]pipe
 // before builds carried the build network, which an agent that predates it would run on its
 // host's network, one queued before they carried the rootless builder, which such an agent
 // would run privileged, or one with a destination the owner removed since. It reports whether it
-// settled the command, committing tx when it did. An undelivered build fails here; one the
-// runner may hold is stopped and sent as cancelled. Returning an error instead would fail
-// every poll and hold the runner's queue.
-func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (bool, error) {
+// settled the command, through settleRefusedPipeline, and whether to deliver it.
+func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (settled, deliver bool, err error) {
 	if !p.IsBuild() {
-		return false, nil
+		return false, false, nil
 	}
-	q := db.New(tx)
 	note := ""
 	if p.BuildNetwork != pipeline.BuildNetworkV1 {
 		note = "Build stopped: it was queued before builds ran on an isolated network. Start the build again."
@@ -107,30 +104,17 @@ func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.U
 	} else if len(p.BuildEgress) > 0 {
 		current, err := serverBuildEgress(ctx, tx, ws, c.ServerId)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !pipeline.EgressCovers(current, p.BuildEgress) {
 			note = "Build stopped: the runner's build network allowlist no longer includes a private destination this build was queued with. Start the build again."
 		}
 	}
 	if note == "" {
-		return false, nil
+		return false, false, nil
 	}
-	var err error
-	if undelivered {
-		if err = q.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "failed", Note: note}); err != nil {
-			return false, err
-		}
-		if err = s.enqueuePreviewForEnvironment(ctx, tx, ws, c.EnvironmentId); err != nil {
-			return false, err
-		}
-	} else {
-		if err = q.StopPossiblyDeliveredOperation(ctx, db.StopPossiblyDeliveredOperationParams{WorkspaceID: ws, ID: c.Id, Note: note}); err != nil {
-			return false, err
-		}
-		c.CancelRequested = true
-	}
-	return true, tx.Commit(ctx)
+	deliver, err = s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, note, note)
+	return true, deliver, err
 }
 
 func buildNetworkView(rules []pipeline.EgressRule) api.BuildNetwork {

@@ -348,14 +348,14 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 			}
 			// Only a command that may already have reached the runner is still delivered. The
 			// runner holds its credentials, so only releasing them again asks the provider, and
-			// a changed repository refuses that.
+			// a changed repository would stop the build then. A cancellation or expiry stops it
+			// first, without asking.
 			first := poll(op.Id)
 			repositoryIdentity.Store(13)
 			if held := poll(op.Id); held.SecretRelease == nil || held.SecretRelease.Values {
 				t.Fatal("a held release was made again", held.SecretRelease)
 			}
 			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: op.Id, Epoch: first.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
-			agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 500, nil)
 			if expired {
 				var raw []byte
 				_ = f.st.Pool.QueryRow(context.Background(), "SELECT command FROM execution_operations WHERE id=$1", op.Id).Scan(&raw)
@@ -370,8 +370,10 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 				b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
 			}
 			command := poll(op.Id)
-			if !command.CancelRequested {
-				t.Fatal("cancelled/expired delivery did not request cancellation")
+			var note string
+			_ = f.st.Pool.QueryRow(context.Background(), "SELECT note FROM execution_operations WHERE id=$1", op.Id).Scan(&note)
+			if !command.CancelRequested || strings.Contains(note, "no longer the one this pipeline was queued for") {
+				t.Fatal("cancelled/expired delivery did not request cancellation before the provider was asked", note)
 			}
 			for _, value := range []string{"clone-read-canary", "build-only-canary", "push-canary"} {
 				if strings.Contains(string(*command.Pipeline), value) {

@@ -314,36 +314,64 @@ func (c *transportController) poll(w http.ResponseWriter, r *http.Request, id, c
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.polling, id); c.mu.Unlock() }()
 	pollStarted := time.Now()
-	deadline := time.NewTimer(pollDuration)
-	defer deadline.Stop()
+	// The poll ends at its deadline even while a check waits on the database. Waiting for the
+	// check would hold the agent past the poll's duration, and past the proxy's wait for an
+	// answer, whenever the database stalls across the deadline.
+	ctx, cancel := context.WithTimeout(r.Context(), pollDuration)
+	defer cancel()
+	// expired reports whether err ended a check because the poll's deadline passed, rather
+	// than because the agent went away.
+	expired := func(err error) bool {
+		return errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil
+	}
+	empty := func() {
+		w.Header().Set("X-Astilba-Fixture-Poll-Elapsed", time.Since(pollStarted).String())
+		w.WriteHeader(204)
+	}
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	first := true
 	for {
-		tx, err := c.pool.Begin(r.Context())
+		tx, err := c.pool.Begin(ctx)
 		if err != nil {
+			if expired(err) {
+				empty()
+			}
 			return
 		}
-		role, _, err := c.authenticate(r.Context(), tx, id, credential, first)
+		role, _, err := c.authenticate(ctx, tx, id, credential, first)
 		if err != nil {
-			tx.Rollback(context.Background())
+			// A rollback the deadline cuts short leaves the connection for the pool to discard,
+			// so the answer doesn't wait on the database either.
+			tx.Rollback(ctx)
+			if expired(err) {
+				empty()
+				return
+			}
 			http.Error(w, "unauthorized", 401)
 			return
 		}
 		if first {
-			err = c.event(r.Context(), tx, id, "poll")
+			err = c.event(ctx, tx, id, "poll")
 			first = false
 		}
 		var payload []byte
 		if err == nil {
-			err = tx.QueryRow(r.Context(), `SELECT payload FROM transport_commands WHERE server_id=$1 AND result IS NULL ORDER BY id LIMIT 1`, id).Scan(&payload)
+			err = tx.QueryRow(ctx, `SELECT payload FROM transport_commands WHERE server_id=$1 AND result IS NULL ORDER BY id LIMIT 1`, id).Scan(&payload)
 		}
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			tx.Rollback(context.Background())
+			tx.Rollback(ctx)
+			if expired(err) {
+				empty()
+				return
+			}
 			http.Error(w, "unavailable", 503)
 			return
 		}
-		if tx.Commit(r.Context()) != nil {
+		if err = tx.Commit(ctx); err != nil {
+			if expired(err) {
+				empty()
+			}
 			return
 		}
 		if payload != nil {
@@ -361,11 +389,10 @@ func (c *transportController) poll(w http.ResponseWriter, r *http.Request, id, c
 			return
 		}
 		select {
-		case <-r.Context().Done():
-			return
-		case <-deadline.C:
-			w.Header().Set("X-Astilba-Fixture-Poll-Elapsed", time.Since(pollStarted).String())
-			w.WriteHeader(204)
+		case <-ctx.Done():
+			if expired(ctx.Err()) {
+				empty()
+			}
 			return
 		case <-tick.C:
 		}

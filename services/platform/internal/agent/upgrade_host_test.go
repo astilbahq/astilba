@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ import (
 
 // The fault points an upgrade's prepare passes. Restarted at one, the agent ends
 // the prepare failed, and return serves the old database again.
-var upgradePreparationFaults = []string{"upgrade-admitted", "upgrade-preflight", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect"}
+var upgradePreparationFaults = []string{"upgrade-admitted", "upgrade-preflight", "upgrade-preflight-clients-checked", "upgrade-quiesce-effect", "upgrade-isolate-effect", "upgrade-backup-effect", "upgrade-restore-effect"}
 
 // The fault points an upgrade's cutover passes. Restarted at one, the agent keeps
 // the new-write boundary, refuses a return that would lose writes, and reconcile
@@ -312,23 +313,139 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				pg := *a.Postgres
 				pg.Database = "postgres"
 				admin.Postgres = &pg
-				for _, object := range []struct{ create, drop string }{
-					{"CREATE FUNCTION public.marker() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "DROP FUNCTION public.marker()"},
-					{"CREATE TYPE public.marker_state AS ENUM ('ok')", "DROP TYPE public.marker_state"},
-					{`CREATE COLLATION public.application_order FROM "C"`, "DROP COLLATION public.application_order"},
-					{"SELECT lo_from_bytea(16500000, 'retained data'::bytea)", "SELECT lo_unlink(16500000)"},
-					{"CREATE SCHEMA pgcustom; CREATE TABLE pgcustom.records(id integer)", "DROP SCHEMA pgcustom CASCADE"},
+				// The restore into a fresh cluster keeps neither database's objects. Before the owner
+				// model the database user is a superuser and can add them to either.
+				template := a
+				templatePG := *a.Postgres
+				templatePG.Database = "template1"
+				template.Postgres = &templatePG
+				for _, database := range []domain.Application{admin, template} {
+					for _, object := range []struct{ create, drop string }{
+						{"CREATE FUNCTION public.marker() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "DROP FUNCTION public.marker()"},
+						{"CREATE TYPE public.marker_state AS ENUM ('ok')", "DROP TYPE public.marker_state"},
+						{`CREATE COLLATION public.application_order FROM "C"`, "DROP COLLATION public.application_order"},
+						{"SELECT lo_from_bytea(16500000, 'retained data'::bytea)", "SELECT lo_unlink(16500000)"},
+						{"CREATE SCHEMA pgcustom; CREATE TABLE pgcustom.records(id integer)", "DROP SCHEMA pgcustom CASCADE"},
+						// A dump leaves out PostgreSQL's own schemas, which a superuser can add to too.
+						{"CREATE TABLE information_schema.kept(id integer)", "DROP TABLE information_schema.kept"},
+						{"CREATE FUNCTION pg_catalog.kept() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "DROP FUNCTION pg_catalog.kept()"},
+						// Only temporary tables are left out, not what else a temporary schema holds.
+						{"SET allow_system_table_mods = on; CREATE SCHEMA pg_temp_99999; CREATE FUNCTION pg_temp_99999.kept() RETURNS integer LANGUAGE sql AS 'SELECT 1'", "SET allow_system_table_mods = on; DROP SCHEMA pg_temp_99999 CASCADE"},
+					} {
+						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.create); err != nil {
+							t.Fatal(err)
+						}
+						if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
+							t.Fatalf("%s: maintenance object was accepted", database.Postgres.Database)
+						}
+						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.drop); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				// Nor does it keep template1's settings, grants, comment or flags.
+				for _, change := range []struct{ make, undo string }{
+					{"ALTER DATABASE template1 SET work_mem = '8MB'", "ALTER DATABASE template1 RESET ALL"},
+					{"GRANT CREATE ON DATABASE template1 TO PUBLIC", "REVOKE CREATE ON DATABASE template1 FROM PUBLIC"},
+					// The default ACL, though initdb takes TEMPORARY from PUBLIC on template1.
+					{"GRANT TEMPORARY ON DATABASE template1 TO PUBLIC", "REVOKE TEMPORARY ON DATABASE template1 FROM PUBLIC"},
+					{"COMMENT ON DATABASE template1 IS 'kept'", "COMMENT ON DATABASE template1 IS 'default template for new databases'"},
+					{"ALTER DATABASE template1 IS_TEMPLATE false", "ALTER DATABASE template1 IS_TEMPLATE true"},
+					{"ALTER DATABASE template1 CONNECTION LIMIT 5", "ALTER DATABASE template1 CONNECTION LIMIT -1"},
 				} {
-					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, object.create); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, change.make); err != nil {
 						t.Fatal(err)
 					}
 					if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
-						t.Fatal("maintenance object was accepted")
+						t.Fatalf("template1 changed by %q was accepted", change.make)
 					}
-					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, object.drop); err != nil {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, change.undo); err != nil {
 						t.Fatal(err)
 					}
 				}
+				// Temporary tables go with their sessions, and the temporary schemas the sessions
+				// leave behind hold nothing; any role may make them in postgres.
+				for _, database := range []domain.Application{admin, template} {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, "CREATE TEMPORARY TABLE scratch(id integer)"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// hold runs statement in a session of database that stays open, once ready returns 1
+				// in another session, until the returned stop ends it.
+				hold := func(database domain.Application, statement, ready string) (stop func()) {
+					holding, release := context.WithCancel(ctx)
+					held := make(chan struct{})
+					go func() {
+						defer close(held)
+						_, _ = e.pgQuery(holding, pgClient{container: source.ID}, database, statement+"; SELECT pg_sleep(120)")
+					}()
+					stop = func() {
+						_, _ = e.pgQuery(ctx, pgClient{container: source.ID}, database, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND query LIKE "+quoteLiteral(statement+"%"))
+						release()
+						<-held
+					}
+					for n := 0; ; n++ {
+						out, err := e.pgQuery(ctx, pgClient{container: source.ID}, database, ready)
+						if err == nil && strings.TrimSpace(string(out)) == "1" {
+							return stop
+						}
+						if n == 100 {
+							stop()
+							t.Fatalf("%s: %q never held: %q (%v)", database.Postgres.Database, statement, out, err)
+						}
+						time.Sleep(100 * time.Millisecond)
+					}
+				}
+				stop := hold(admin, "BEGIN; CREATE TEMPORARY TABLE kept(id serial PRIMARY KEY, mood text DEFAULT 'calm' CHECK (id > 0)); CREATE INDEX ON kept(mood); CREATE TEMPORARY VIEW seen AS SELECT * FROM kept; COMMIT", "SELECT count(*) FROM pg_class WHERE relname = 'kept' AND relpersistence = 't'")
+				err = e.upgradeDatabaseChecks(ctx, helper, a)
+				stop()
+				if err != nil {
+					t.Fatal("template1 and postgres as initdb made them, with temporary tables, were refused:", err)
+				}
+				// A permanent table using a temporary one's type outlives it, so it counts.
+				for _, database := range []domain.Application{admin, template} {
+					stop = hold(database, "BEGIN; CREATE TEMPORARY TABLE linked(id integer); CREATE TABLE information_schema.linked(id integer, kept pg_temp.linked); COMMIT", "SELECT count(*) FROM pg_class WHERE oid = 'information_schema.linked'::regclass")
+					err = e.upgradeDatabaseChecks(ctx, helper, a)
+					stop()
+					if _, dropErr := e.pgQuery(ctx, pgClient{container: source.ID}, database, "DROP TABLE information_schema.linked"); dropErr != nil {
+						t.Fatal(dropErr)
+					}
+					if err == nil {
+						t.Fatalf("%s: a permanent table using a temporary one was accepted", database.Postgres.Database)
+					}
+				}
+				// A session that ends uncleanly, as when the server crashes, leaves its temporary
+				// functions and types in its temporary schema. They're refused by name until dropped.
+				out, err := e.pgQuery(ctx, pgClient{container: source.ID}, admin, "SELECT min(nspname) FROM pg_namespace WHERE nspname ~ '^pg_temp_[0-9]+$'")
+				left := strings.TrimSpace(string(out))
+				if err != nil || left == "" {
+					t.Fatalf("no temporary schema was left: %q (%v)", out, err)
+				}
+				// A range type's constructors and multirange go with it, so only the type is named.
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "CREATE FUNCTION "+left+".leftover() RETURNS integer LANGUAGE sql AS 'SELECT 1'; CREATE TYPE "+left+".mood AS ENUM ('calm'); CREATE TYPE "+left+".span AS RANGE (subtype = integer)"); err != nil {
+					t.Fatal(err)
+				}
+				err = e.upgradeDatabaseChecks(ctx, helper, a)
+				if err == nil || !strings.Contains(err.Error(), "function "+left+".leftover()") || !strings.Contains(err.Error(), "type "+left+".mood") || !strings.Contains(err.Error(), "type "+left+".span") || strings.Contains(err.Error(), "[]") || strings.Contains(err.Error(), "multirange") || strings.Contains(err.Error(), ".span(") {
+					t.Fatalf("a crashed session's leftovers weren't named, each once: %v", err)
+				}
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "DROP FUNCTION "+left+".leftover(); DROP TYPE "+left+".mood; DROP TYPE "+left+".span"); err != nil {
+					t.Fatal(err)
+				}
+				if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+					t.Fatal("the dropped leftovers were still refused:", err)
+				}
+				// An unknown local client is refused as a client, before the databases are checked: the
+				// temporary functions it holds in postgres go with it.
+				stop = hold(admin, "BEGIN; CREATE FUNCTION pg_temp.held() RETURNS integer LANGUAGE sql AS 'SELECT 1'; COMMIT", "SELECT count(*) FROM pg_proc WHERE proname = 'held'")
+				clients := state
+				clients.Command.Plan.ID = uuid.New()
+				_, err = e.upgradePreflight(checks, clients, source.ID, a)
+				stop()
+				if err == nil || !strings.Contains(err.Error(), "disconnect external or unknown database clients") {
+					t.Fatalf("an unknown local client holding temporary functions wasn't refused as a client: %v", err)
+				}
+				// So is one in the application's own database.
 				writerContext, stopWriter := context.WithCancel(ctx)
 				writerDone := make(chan struct{})
 				go func() {
@@ -409,9 +526,29 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				return r
 			}
 			if j.name == "complete" {
+				// refuse prepares a separate plan from the same source, which must be refused for
+				// reason before any writer stops.
+				refuse := func(reason string) {
+					t.Helper()
+					refused := plan
+					refused.ID = uuid.New()
+					cmd := next(upgrade.Command{Action: "prepare", Plan: refused, Installation: in, Secrets: secrets})
+					if err := e.Execute(ctx, cmd); err != nil {
+						t.Fatal(err)
+					}
+					if r, err := e.Journal.Record(cmd.Id); err != nil || e.Journal.Acknowledge(cmd.Id, r.Report.Sequence) != nil {
+						t.Fatal("the refused upgrade has no record", err)
+					}
+					state, err := e.Journal.upgrade(refused.ID)
+					if err != nil || state.Status.Phase != "rejected" || len(state.Writers) != 0 || !strings.Contains(state.Status.Note, reason) {
+						t.Fatalf("an upgrade that must be refused for %q was prepared: %+v: %v", reason, state.Status, err)
+					}
+					if v, err := e.Docker.ContainerInspect(ctx, source.ID, client.ContainerInspectOptions{}); err != nil || !v.Container.State.Running {
+						t.Fatal("the refused upgrade stopped the source database", err)
+					}
+				}
 				// PLAT-549. A deployment that failed after a later release started on the data leaves
-				// that release recorded as serving it, so the upgrade from the earlier one is refused
-				// before any writer stops.
+				// that release recorded as serving it, so the upgrade from the earlier one is refused.
 				recorded, found, err := e.Journal.postgresData(plan.OldVolume())
 				if err != nil || !found {
 					t.Fatal("the source database's storage has no record", err)
@@ -420,24 +557,25 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				if err = e.Journal.savePostgresData(plan.OldVolume(), ahead); err != nil {
 					t.Fatal(err)
 				}
-				refused := plan
-				refused.ID = uuid.New()
-				cmd := next(upgrade.Command{Action: "prepare", Plan: refused, Installation: in, Secrets: secrets})
-				if err = e.Execute(ctx, cmd); err != nil {
+				reason := postgresDataRefuses(a, ahead)
+				if reason == nil {
+					t.Fatal("the later release does not refuse the earlier one")
+				}
+				refuse(reason.Error())
+				if err = e.Journal.savePostgresData(plan.OldVolume(), recorded); err != nil {
 					t.Fatal(err)
 				}
-				if r, err := e.Journal.Record(cmd.Id); err != nil || e.Journal.Acknowledge(cmd.Id, r.Report.Sequence) != nil {
-					t.Fatal("the refused upgrade has no record", err)
+				// PLAT-546. Before the owner model the database user is a superuser and can add a table
+				// to template1, which the restore into a fresh cluster would drop.
+				template := a
+				pg := *a.Postgres
+				pg.Database = "template1"
+				template.Postgres = &pg
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, template, "CREATE TABLE public.kept(id integer)"); err != nil {
+					t.Fatal(err)
 				}
-				state, err := e.Journal.upgrade(refused.ID)
-				reason := postgresDataRefuses(a, ahead)
-				if err != nil || reason == nil || state.Status.Phase != "rejected" || len(state.Writers) != 0 || !strings.Contains(state.Status.Note, reason.Error()) {
-					t.Fatalf("an upgrade from a release the data refuses was prepared: %+v: %v", state.Status, err)
-				}
-				if v, err := e.Docker.ContainerInspect(ctx, source.ID, client.ContainerInspectOptions{}); err != nil || !v.Container.State.Running {
-					t.Fatal("the refused upgrade stopped the source database", err)
-				}
-				if err = e.Journal.savePostgresData(plan.OldVolume(), recorded); err != nil {
+				refuse("template1 contains user objects")
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, template, "DROP TABLE public.kept"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -523,23 +661,34 @@ func nativeStoppedPreflight(t *testing.T, e *Engine, s upgradeState, source stri
 	pg.Database = "postgres"
 	admin.Postgres = &pg
 	db := pgClient{container: source}
-	if _, err := e.pgQuery(ctx, db, admin, "CREATE TABLE public.held(id integer)"); err != nil {
+	if _, err := e.pgQuery(ctx, db, admin, "CREATE TABLE public.held(id integer); GRANT ALL ON public.held TO "+quoteIdentifier(a.Postgres.Username)); err != nil {
 		t.Fatal(err)
 	}
-	holding, release := context.WithCancel(ctx)
-	held := make(chan struct{})
-	go func() {
-		defer close(held)
-		_, _ = e.pgQuery(holding, db, admin, "LOCK TABLE public.held IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120)")
-	}()
+	// The lock is held from the managed application's network identity, so the preflight takes its
+	// holder for a known writer and goes on to the dump.
+	p := s.Command.Plan.Source
+	holder, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image:  domain.Postgres17Image,
+			Cmd:    []string{"psql", "-h", deployment.ServiceName(a.ID), "-U", a.Postgres.Username, "-d", "postgres", "-c", "LOCK TABLE public.held IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120)"},
+			Env:    []string{"PGPASSWORD=" + s.Command.Installation.Access.DatabasePassword},
+			Labels: visualLabels(p, uuid.New()),
+		},
+		HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + p.ContainerName(p.Specification.Applications[0].ID))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		_, _ = e.pgQuery(ctx, db, a, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LOCK TABLE public.held%'")
-		release()
-		<-held
+		_, _ = e.Docker.ContainerRemove(ctx, holder.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 		if _, err := e.pgQuery(ctx, db, admin, "DROP TABLE public.held"); err != nil {
 			t.Error(err)
 		}
 	}()
+	if _, err = e.Docker.ContainerStart(ctx, holder.ID, client.ContainerStartOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	until := func(what, sql, want string) {
 		t.Helper()
 		for n := 0; ; n++ {
@@ -557,11 +706,30 @@ func nativeStoppedPreflight(t *testing.T, e *Engine, s upgradeState, source stri
 	until("the lock was never held", locked, "1")
 	stopped, stop := context.WithTimeout(ctx, 5*time.Minute)
 	defer stop()
+	// The polls below are local, so unknown, clients: they start once the preflight has checked
+	// its clients, so it doesn't refuse them before its dump.
+	clientsChecked := make(chan struct{})
+	var once sync.Once
+	previous := e.Point
+	e.Point = func(point string) {
+		if point == "upgrade-preflight-clients-checked" {
+			once.Do(func() { close(clientsChecked) })
+		}
+		if previous != nil {
+			previous(point)
+		}
+	}
 	checked := make(chan error, 1)
 	go func() {
 		_, err := e.upgradePreflight(stopped, s, source, a)
 		checked <- err
 	}()
+	defer func() { e.Point = previous }()
+	select {
+	case <-clientsChecked:
+	case err := <-checked:
+		t.Fatal("the preflight ended before its dump:", err)
+	}
 	until("the preflight's dump never waited on the lock", "SELECT count(*) FROM pg_stat_activity WHERE application_name='pg_dump' AND wait_event_type='Lock' AND client_addr='127.0.0.1'", "1")
 	stop()
 	if err := <-checked; err == nil {
