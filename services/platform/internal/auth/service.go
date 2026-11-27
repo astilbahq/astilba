@@ -32,13 +32,6 @@ type Service struct {
 	Queue *river.Client[pgx.Tx]
 }
 
-// TokenSealer seals and opens self-issued tokens. A serving process uses
-// secretbroker.Tokens.
-type TokenSealer interface {
-	Seal(kind secretbroker.TokenKind, plaintext []byte) ([]byte, error)
-	Open(kind secretbroker.TokenKind, ciphertext []byte) ([]byte, error)
-}
-
 // Hash is the stored lookup key for two kinds of value, neither a secret a person chose. Link
 // and invitation tokens and recovery codes carry at least 128 random bits, so their keys cannot
 // be reversed by guessing. Rate-limit scopes are labels naming an operation and an address,
