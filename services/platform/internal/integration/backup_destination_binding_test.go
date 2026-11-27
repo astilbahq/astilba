@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -232,4 +233,78 @@ func TestOnlyOneServerBindsAnUnboundDestination(t *testing.T) {
 			t.Fatalf("the raced destination = %+v, want bound to %s", got, winner)
 		}
 	}
+}
+
+// A coordinated backup on a destination with a prefix needs a primary whose agent keeps
+// repositories under it. One rolled back past prefixes would refuse the command only after every
+// writer had stopped, so the scheduler refuses each occurrence before reserving or pausing anything,
+// and schedules it once the agent can take it.
+func TestACoordinatedBackupWaitsForAnAgentThatKeepsItsPrefix(t *testing.T) {
+	g := newRevokedGroup(t, 2)
+	a, b := g.hosts[0], g.hosts[1]
+	e, volume := g.filesStack(t, a)
+	g.applied(t, &e, g.place(t, &e, a.id, b.id))
+	prefixes := func(on bool) {
+		g.reports(t, a, func(c *api.AgentCapabilities, _ *api.HostPreflight) {
+			c.BackupPrefixes = nil
+			if on {
+				c.BackupPrefixes = &on
+			}
+		})
+	}
+	prefixes(true)
+	var destination api.BackupDestination
+	g.b.call("POST", g.base+"/backup-destinations", s3Destination("Prefixed", map[string]any{"serverId": a.id, "prefix": "servers/primary"}), 201, &destination)
+	password := "fixture-repository-password"
+	var policy backup.Policy
+	g.b.call("POST", e.path+"/backup-policies", api.BackupPolicyRequest{Name: "Files", ResourceId: volume, DestinationId: destination.Id, Method: "quiesced-files", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
+	if !policy.Coordinated {
+		t.Fatal("the policy isn't coordinated")
+	}
+	prefixes(false)
+	// Due at its last slot, as the primary reports its installed schedule.
+	now := time.Now().UTC()
+	due := time.Date(now.Year(), now.Month(), now.Day(), 2, 30, 0, 0, time.UTC)
+	if due.After(now) {
+		due = due.AddDate(0, 0, -1)
+	}
+	if err := g.f.execution.ScheduleReport(g.ctx, a.identity, 1, backup.Status{Enabled: true, PolicyID: policy.ID, Generation: policy.Generation, Next: due, Runs: []backup.Run{}}); err != nil {
+		t.Fatal(err)
+	}
+	var claimed time.Time
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT clock_timestamp()`).Scan(&claimed); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := func() int {
+		var count int
+		if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND command->'crosshost'->>'action'='maintenance'`, g.ws).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	// Each pass claims the policy, and a claim skips it while an earlier try still holds it, so the
+	// second claim since it fell due comes after the first try.
+	for _, what := range []string{"the scheduler to try the occurrence", "the scheduler to try it again"} {
+		g.waitFor(t, what, func() bool {
+			var at time.Time
+			if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT GREATEST(coordinated_checked_at,'epoch') FROM backup_policies WHERE id=$1`, policy.ID).Scan(&at); err != nil {
+				t.Fatal(err)
+			}
+			if at.After(claimed) {
+				claimed = at
+				return true
+			}
+			return scheduled() != 0
+		})
+	}
+	var next time.Time
+	if err := g.f.st.Pool.QueryRow(g.ctx, `SELECT (status->>'next')::timestamptz FROM backup_policies WHERE id=$1`, policy.ID).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	maintenance := scheduled()
+	if maintenance != 0 || g.reservations(t) != 0 || g.received(a, "pause") || g.received(b, "pause") || !next.Equal(due) {
+		t.Fatalf("an agent that can't keep the prefix was scheduled a backup: %d maintenance, %d reservations, next %s", maintenance, g.reservations(t), next)
+	}
+	prefixes(true)
+	g.waitFor(t, "the occurrence once the agent keeps prefixes", func() bool { return g.received(a, "backup") })
 }
