@@ -243,6 +243,9 @@ func (e *Engine) activateRestoreCutover(ctx context.Context, c api.ExecutionComm
 		for _, id := range target.InstanceIDs(app.ID) {
 			replacement := s.Restore.Replacements[id.String()]
 			if replacement.Running {
+				if err = e.Journal.recordPostgresServing(target, func(started uuid.UUID) bool { return started == app.ID }); err != nil {
+					return err
+				}
 				if _, err = e.Docker.ContainerStart(ctx, replacement.ContainerID, client.ContainerStartOptions{}); err != nil {
 					return err
 				}

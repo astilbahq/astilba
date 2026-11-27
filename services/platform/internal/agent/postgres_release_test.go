@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -279,5 +281,76 @@ func TestStorageWithNoRecordKeepsItsRebuildWhateverPlansTheUnitSaves(t *testing.
 	}
 	if err := journal.postgresDataOpens(plan(oldest, served), served); !errors.Is(err, errPostgresVersionChange) {
 		t.Fatalf("an earlier release opened data the serving one wrote: %v", err)
+	}
+}
+
+// PLAT-549. PostgreSQL writes a volume's data from its first start, so a run that starts a
+// database records its release as serving the data first. A deployment whose run then fails, as
+// one whose service starts but never turns healthy does, still refuses a redeploy of the earlier
+// release. A run that only creates the container records nothing, one that names its services
+// records only theirs, and storage with no record gets the assumed record, served by the release.
+func TestFailedDeploymentStillRefusesTheEarlierRelease(t *testing.T) {
+	journal, identity := testVisualJournal(t)
+	docker, err := client.New(client.WithHost("unix:///nonexistent/astilba-test.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	cli := filepath.Join(t.TempDir(), "docker")
+	if err = os.WriteFile(cli, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Journal: journal, Docker: docker, DockerCLI: cli}
+	serving, _ := domain.CurrentPostgres(18)
+	oldest := oldestPostgres(18)
+	recorded, unrecorded := uuid.New(), uuid.New()
+	ids := map[uuid.UUID]uuid.UUID{recorded: uuid.New(), unrecorded: uuid.New()}
+	plan := func(r domain.PostgresRelease) deployment.Plan {
+		p := identity
+		image := r.Image
+		p.Specification = domain.Specification{Version: 1, Variables: []domain.Variable{}}
+		for _, volume := range []uuid.UUID{recorded, unrecorded} {
+			p.Specification.Volumes = append(p.Specification.Volumes, domain.Volume{ID: volume, Name: volume.String()})
+			p.Specification.Applications = append(p.Specification.Applications, domain.Application{ID: ids[volume], Name: volume.String(), Source: domain.ApplicationSource{Kind: "image", Image: &image}, Postgres: &domain.Postgres{Database: "app", Username: "app"}, Mounts: []domain.VolumeMount{{VolumeID: volume, Target: r.Mount}}})
+		}
+		return p.WithHash()
+	}
+	if err = journal.savePostgresData(recorded, postgresData{Image: oldest.Image}); err != nil {
+		t.Fatal(err)
+	}
+	update := plan(serving)
+	record := func(volume uuid.UUID) postgresData {
+		t.Helper()
+		v, _, err := journal.postgresData(volume)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if err = e.compose(t.Context(), update, []byte("{}"), nil, "up", "--force-recreate", "--no-start", "--no-deps"); err == nil || record(recorded) != (postgresData{Image: oldest.Image}) {
+		t.Fatalf("creating the containers recorded %+v: %v", record(recorded), err)
+	}
+	if err = e.compose(t.Context(), update, []byte("{}"), nil, "up", "--detach", "--no-deps", "--wait", "--wait-timeout", "60", deployment.ServiceName(ids[recorded])); err == nil {
+		t.Fatal("the failing run succeeded")
+	}
+	if got := record(recorded); got != (postgresData{Image: oldest.Image, Served: serving.Image}) {
+		t.Fatalf("the database's start recorded %+v", got)
+	}
+	if _, found, _ := journal.postgresData(unrecorded); found {
+		t.Fatal("a run recorded a database it does not start")
+	}
+	if err = e.compose(t.Context(), update, []byte("{}"), nil, "up", "--detach", "--wait"); err == nil {
+		t.Fatal("the failing run succeeded")
+	}
+	if got := record(unrecorded); got != assumedPostgresData(serving) {
+		t.Fatalf("storage with no record was recorded as %+v", got)
+	}
+	for _, volume := range []uuid.UUID{recorded, unrecorded} {
+		if err = journal.postgresDataOpens(plan(oldest), volume); !errors.Is(err, errPostgresVersionChange) {
+			t.Fatalf("a redeploy of the earlier release opened data the later one wrote: %v", err)
+		}
+		if err = journal.postgresDataOpens(update, volume); err != nil {
+			t.Fatalf("a retry of the update was refused: %v", err)
+		}
 	}
 }

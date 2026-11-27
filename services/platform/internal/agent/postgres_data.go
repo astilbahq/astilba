@@ -26,8 +26,9 @@ import (
 type postgresData struct {
 	Image string `json:"image"`
 	// Served is the later release that served the data while a rebuild of Image's indexes is
-	// outstanding: set when a unit first saves a plan with storage that has no record, or before a
-	// rebuild starts, and dropped once it finishes. Image may then be one assumed of storage with
+	// outstanding: set just before a database first starts on a later release, when a unit first
+	// saves a plan with storage that has no record, or before a rebuild starts, and dropped once
+	// it finishes. Image may then be one assumed of storage with
 	// no record, the oldest release of its major, which says nothing of what wrote the data; Served
 	// is what the data must still open with.
 	Served string `json:"served,omitempty"`
@@ -78,20 +79,71 @@ func (j *Journal) postgresDataOpens(p deployment.Plan, volume uuid.UUID) error {
 			continue
 		}
 		record, found, err := j.postgresData(volume)
-		last := cmp.Or(record.Served, record.Image)
-		if err != nil || !found || last == *a.Source.Image {
+		if err != nil || !found {
 			return err
 		}
-		written, known := postgresReleaseOf(last)
-		serving, ok := postgresReleaseOf(*a.Source.Image)
-		if !known || !ok {
-			return errPostgresVersionChange
-		}
-		if err = serving.OpensDataFrom(written); err != nil {
-			return postgresDataRefusal{application: a.Name, reason: err}
-		}
+		return postgresDataRefuses(a, record)
 	}
 	return nil
+}
+
+// postgresDataRefuses says why a's release cannot open the data record describes, if it cannot.
+func postgresDataRefuses(a domain.Application, record postgresData) error {
+	last := cmp.Or(record.Served, record.Image)
+	if last == *a.Source.Image {
+		return nil
+	}
+	written, known := postgresReleaseOf(last)
+	serving, ok := postgresReleaseOf(*a.Source.Image)
+	if !known || !ok {
+		return errPostgresVersionChange
+	}
+	if err := serving.OpensDataFrom(written); err != nil {
+		return postgresDataRefusal{application: a.Name, reason: err}
+	}
+	return nil
+}
+
+// recordPostgresServing records, just before each managed database of the plan that starts
+// does, that its release serves the volume's data: PostgreSQL writes the data from its first
+// start, so a deployment that fails after that still refuses a release that cannot open what
+// this one wrote. The record keeps the release whose indexes the data holds, so the rebuild
+// reindexPostgres finishes stays due; storage with no record gets the one assumePostgresData
+// would give it. A release the record refuses is refused again here, so nothing starts on it.
+func (j *Journal) recordPostgresServing(p deployment.Plan, starts func(uuid.UUID) bool) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		for _, a := range p.LocalApplications() {
+			if !starts(a.ID) || a.Postgres == nil || a.Source.Image == nil || len(a.Mounts) != 1 {
+				continue
+			}
+			serving, ok := domain.PostgresReleaseOf(*a.Source.Image)
+			if !ok {
+				continue
+			}
+			volume := a.Mounts[0].VolumeID.String()
+			var record postgresData
+			err := j.get(tx, postgresDataBucket, volume, &record)
+			if errors.Is(err, os.ErrNotExist) {
+				if err = j.put(tx, postgresDataBucket, volume, assumedPostgresData(serving)); err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if cmp.Or(record.Served, record.Image) == serving.Image {
+				continue
+			}
+			if err = postgresDataRefuses(a, record); err != nil {
+				return err
+			}
+			if err = j.put(tx, postgresDataBucket, volume, postgresData{Image: record.Image, Served: serving.Image}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // postgresDataRefusal is a PostgreSQL version change refused for the data on a volume before any
