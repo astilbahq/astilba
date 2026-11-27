@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
-	"slices"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -242,8 +241,7 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 			continue
 		}
 		found := api.BackupStorageFoundUser{UserName: u.Name, InstallationId: u.Tags["astilba:installation"], ServerId: u.Tags["astilba:server"], Bounded: u.Boundary == account.Boundary}
-		peer, err := uuid.Parse(found.InstallationId)
-		found.Peer = err == nil && slices.Contains(account.Peers, peer)
+		found.Peer = isPeer(found.InstallationId, account.Peers)
 		switch {
 		case !found.Bounded:
 			// A user without the boundary isn't confined to backups, whatever its tags say.

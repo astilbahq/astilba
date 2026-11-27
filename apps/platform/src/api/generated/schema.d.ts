@@ -4867,8 +4867,10 @@ export interface components {
              * @description The storage account a managed destination's keys are minted from, or null.
              */
             accountId: string | null;
-            /** @description A managed destination's minted keys, newest first. Empty for any other. */
+            /** @description A managed destination's minted keys, newest first: those not yet revoked, then the most recently revoked, up to 20. Empty for any other. */
             keys: components["schemas"]["BackupStorageKey"][];
+            /** @description Whether this is a managed destination none of whose keys has ever been active: its key is still being made, or making it failed and the destination goes once that key is revoked. No policy can use it. */
+            placeholder: boolean;
             /** @description Why minting a renewed server's new key failed, as a fixed code; management retries. */
             remintError: string | null;
             /** @description The backup policies using this destination. */

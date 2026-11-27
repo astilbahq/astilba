@@ -49,8 +49,9 @@ var keyStates = map[string]int{"minting": 0, "active": 1, "revoked": 2, "revokin
 
 var errRecoveryKeyState = errors.New("storage key state conflicts with known management metadata")
 
-// recoveryKeyKnowledge keeps the copy of a storage key further along, and the later revocation its
-// handover is bound to.
+// recoveryKeyKnowledge keeps the copy of a storage key further along, the later revocation its
+// handover is bound to, and the install tries of the copy that has had more: the operations of
+// every earlier try are in the history, so a key that forgot them would walk through each again.
 func recoveryKeyKnowledge(prior, incoming portability.Row) (portability.Row, error) {
 	was, err := recoveryValue[string](prior, "state")
 	if err != nil {
@@ -81,5 +82,18 @@ func recoveryKeyKnowledge(prior, incoming portability.Row) (portability.Row, err
 		x = y
 	}
 	recoverySet(out, "handed_over", x)
+	tried, err := recoveryValue[int64](prior, "install_attempts")
+	if err != nil {
+		return nil, err
+	}
+	more, err := recoveryValue[int64](incoming, "install_attempts")
+	if err != nil {
+		return nil, err
+	}
+	if more > tried {
+		out["install_attempts"], out["install_next_at"] = incoming["install_attempts"], incoming["install_next_at"]
+	} else {
+		out["install_attempts"], out["install_next_at"] = prior["install_attempts"], prior["install_next_at"]
+	}
 	return out, nil
 }

@@ -24,6 +24,9 @@ const Account = "123456789012"
 type Admin struct {
 	// Name and Path are the admin user's own.
 	Name, Path string
+	// Account is the AWS account the admin user lives in, if not the fake's Account. Only who its
+	// key answers as changes: a key from another account sees the same users.
+	Account string
 	// Within confines user actions to users under this path, as the admin policy's resources do.
 	Within string
 	// Boundary is the boundary the admin policy requires on the users it creates and edits.
@@ -54,10 +57,10 @@ type AWS struct {
 }
 
 type user struct {
-	name, path, boundary string
-	tags                 map[string]string
-	policies             map[string]string
-	created              time.Time
+	name, path, boundary, account string
+	tags                          map[string]string
+	policies                      map[string]string
+	created                       time.Time
 }
 
 type key struct {
@@ -79,7 +82,7 @@ type Credential struct{ AccessKeyID, SecretAccessKey, SessionToken string }
 func (a *AWS) AddAdmin(admin Admin) Credential {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.users[admin.Name] = &user{name: admin.Name, path: admin.Path, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
+	a.users[admin.Name] = &user{name: admin.Name, path: admin.Path, account: admin.Account, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
 	k := a.issue(admin.Name)
 	a.admins[admin.Name] = admin
 	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}

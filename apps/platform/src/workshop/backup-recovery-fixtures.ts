@@ -142,11 +142,6 @@ export function resetRevokedServerBackups() {
   reloadsToFail = 0;
 }
 
-/**
- * With `refuseDiscard`, another owner's discard starts first, so the owner's own is refused.
- * With `failReload`, the reload after an accepted discard fails, and by the next one the
- * discard has already failed. With `loseReply`, the discard starts but its reply is lost.
- */
 const placeholderDestination: Schema["BackupDestination"] = {
   id: "00000000-0000-4000-8000-000000000a10",
   name: "Managed bucket",
@@ -173,10 +168,16 @@ const placeholderDestination: Schema["BackupDestination"] = {
       lastError: null,
     },
   ],
+  placeholder: true,
   remintError: null,
   policies: [],
 };
 
+/**
+ * With `refuseDiscard`, another owner's discard starts first, so the owner's own is refused.
+ * With `failReload`, the reload after an accepted discard fails, and by the next one the
+ * discard has already failed. With `loseReply`, the discard starts but its reply is lost.
+ */
 export function revokedServerBackupHandlers({
   refuseDiscard = false,
   failReload = false,
@@ -211,6 +212,7 @@ export function revokedServerBackupHandlers({
           exposed: true,
           accountId: null,
           keys: [],
+          placeholder: false,
           remintError: null,
           policies: [
             {

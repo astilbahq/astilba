@@ -140,6 +140,7 @@ const destination = (
   exposed: true,
   accountId,
   keys: keys(revoked),
+  placeholder: false,
   remintError: "timeout",
   policies: [],
 });

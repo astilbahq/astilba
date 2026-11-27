@@ -16,7 +16,11 @@ SELECT workspace_id,id,encrypted_secret FROM backup_storage_keys WHERE encrypted
 UPDATE backup_storage_keys SET encrypted_secret=$3 WHERE workspace_id=$1 AND id=$2;
 
 -- name: ListBackupDestinations :many
-SELECT configuration, server_id, shared, account_id, remint_error FROM backup_destinations WHERE workspace_id = @workspace_id ORDER BY id LIMIT 100;
+-- placeholder is as BackupDestinationBinding has it.
+SELECT d.configuration, d.server_id, d.shared, d.account_id, d.remint_error,
+    (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
+FROM backup_destinations d WHERE d.workspace_id = @workspace_id ORDER BY d.id LIMIT 100;
 
 -- name: CountBackupDestinations :one
 SELECT count(*) FROM backup_destinations WHERE workspace_id = @workspace_id;

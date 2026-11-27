@@ -72,15 +72,19 @@ func errorCode(err error) string {
 // errAccountMoved is a credential that now answers for another AWS account than the one recorded.
 var errAccountMoved = errors.New("the credential belongs to another AWS account")
 
-// checkAdmin checks an admin credential with no locks held: whose it is, that its boundary is that
-// account's, and that its policy lets it list the workspace's path.
-func (s *Service) checkAdmin(ctx context.Context, ws uuid.UUID, cred awskeys.Credential, boundary string) (awskeys.Identity, error) {
+// checkAdmin checks an admin credential with no locks held: whose it is, that it belongs to
+// account when one is given, that its boundary is that account's, and that its policy lets it
+// list the workspace's path.
+func (s *Service) checkAdmin(ctx context.Context, ws uuid.UUID, cred awskeys.Credential, account, boundary string) (awskeys.Identity, error) {
 	if !cred.Valid() {
 		return awskeys.Identity{}, errAccountCredential
 	}
 	id, err := s.AWS.Identify(ctx, cred)
 	if err != nil {
 		return id, providerError(err)
+	}
+	if account != "" && id.Account != account {
+		return id, errAccountOther
 	}
 	if !awskeys.ValidBoundary(boundary, id.Account) {
 		return id, errAccountBoundary
@@ -102,7 +106,7 @@ func (s *Service) CreateBackupStorageAccount(ctx context.Context, p store.Princi
 	}
 	cred := awskeys.Credential{AccessKeyID: writeOnly(in.AccessKeyId), SecretAccessKey: writeOnly(in.SecretAccessKey)}
 	defer clearCredential(&cred)
-	id, err := s.checkAdmin(ctx, ws, cred, in.Boundary)
+	id, err := s.checkAdmin(ctx, ws, cred, "", in.Boundary)
 	if err != nil {
 		return api.BackupStorageAccount{}, err
 	}
@@ -161,16 +165,13 @@ func (s *Service) ReplaceBackupStorageAccountCredential(ctx context.Context, p s
 	}
 	cred := awskeys.Credential{AccessKeyID: writeOnly(in.AccessKeyId), SecretAccessKey: writeOnly(in.SecretAccessKey)}
 	defer clearCredential(&cred)
-	// The boundary stays the account's for its life: the admin policy can change only users with
-	// the boundary it names, and every user minted so far carries this one.
-	id, err := s.checkAdmin(ctx, ws, cred, recorded.Boundary)
+	// Minted users are deleted by the account they live in: another account's credential would
+	// report every one of them missing, and so revoked. The boundary stays the account's for its
+	// life: the admin policy can change only users with the boundary it names, and every user
+	// minted so far carries this one.
+	id, err := s.checkAdmin(ctx, ws, cred, recorded.AwsAccount, recorded.Boundary)
 	if err != nil {
 		return api.BackupStorageAccount{}, err
-	}
-	// Minted users are deleted by the account they live in. Another account's credential would
-	// report every one of them missing, and so revoked.
-	if id.Account != recorded.AwsAccount {
-		return api.BackupStorageAccount{}, errAccountOther
 	}
 	item := secretbroker.Item{Kind: secretbroker.BackupStorageAccount, ID: account}
 	keys, done, err := s.sealing(ctx, p, ws, item)
@@ -259,6 +260,12 @@ type accountReport struct {
 	Alert bool `json:"alert"`
 }
 
+// isPeer reports whether a found user's installation tag names one of the account's peers.
+func isPeer(installation string, peers []uuid.UUID) bool {
+	id, err := uuid.Parse(installation)
+	return err == nil && slices.Contains(peers, id)
+}
+
 // accountView is an account as its latest check found it, with the found users management is
 // still revoking, which a check no longer reports once their rows make them known, and why each
 // revocation last failed.
@@ -287,6 +294,10 @@ func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow
 			j = len(report.Found) - 1
 		}
 		report.Found[j].Revoking, report.Found[j].LastError = true, textPointer(k.LastError)
+	}
+	// A peer added since the check is shown as one at once, as revoking its users is refused.
+	for i := range report.Found {
+		report.Found[i].Peer = isPeer(report.Found[i].InstallationId, row.Peers)
 	}
 	peers := slices.Clone(row.Peers)
 	if peers == nil {
@@ -368,8 +379,9 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 			return errFoundUnbounded
 		}
 		// A peer's user is that installation's to revoke: its key may be one a transferred
-		// server still uses.
-		if report.Found[j].Peer {
+		// server still uses. The account's peers are read as they are now, not as the check saw
+		// them.
+		if isPeer(report.Found[j].InstallationId, rows[i].Peers) {
 			return errFoundPeer
 		}
 		tags, _ := stablejson.Marshal(map[string]string{"astilba:installation": report.Found[j].InstallationId, "astilba:server": report.Found[j].ServerId})

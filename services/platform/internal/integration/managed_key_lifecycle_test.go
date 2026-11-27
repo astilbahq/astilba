@@ -2,12 +2,15 @@ package integration
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/awskeys"
+	"github.com/astilbahq/astilba/services/platform/internal/awskeys/awsfake"
+	"github.com/astilbahq/astilba/services/platform/internal/backup"
 	"github.com/google/uuid"
 )
 
@@ -18,7 +21,13 @@ func TestAMintCutShortIsRevokedOnceItsDeadlinePasses(t *testing.T) {
 	k := newKeysFixture(t)
 	var d api.BackupDestination
 	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	if d.Placeholder || k.destinations()[d.Id].Placeholder {
+		t.Fatal("a destination with an active key is shown as a placeholder")
+	}
 	k.exec(t, `UPDATE backup_storage_keys SET state='minting',activated_at=NULL,access_key_id=NULL,encrypted_secret=NULL WHERE id=$1`, d.Keys[0].Id)
+	if !k.destinations()[d.Id].Placeholder {
+		t.Fatal("a destination whose key was never active isn't shown as a placeholder")
+	}
 
 	reply := <-k.b.send("POST", k.environment(k.first)+"/backup-policies", k.policy(k.first, "Managed", d.Id))
 	if reply.status != 400 || !strings.Contains(string(reply.body), "destination.key") {
@@ -78,7 +87,6 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
 	k.aws.CreateUser(peer, path, k.boundary, map[string]string{"astilba:installation": peerInstallation.String()}, "")
 	account := k.base + "/backup-storage-accounts/" + k.account.Id.String()
-	k.b.call("POST", account+"/peers", api.BackupStorageAccountPeerRequest{InstallationId: peerInstallation}, 204, nil)
 	k.run(t, accountCheck{})
 	accounts := func() api.BackupStorageAccount {
 		t.Helper()
@@ -97,14 +105,29 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	if got := accounts(); got.CheckedAt == nil || len(got.FoundUsers) != 2 {
 		t.Fatalf("after the check the account is %+v", got)
 	}
+	// The check that adding the peer asks for fails, so the latest report still has the peer's
+	// user as a stranger's. The account's peers are what count.
+	k.aws.Fail("ListUsers", "ServiceFailure", "ServiceFailure", "ServiceFailure")
+	k.b.call("POST", account+"/peers", api.BackupStorageAccountPeerRequest{InstallationId: peerInstallation}, 204, nil)
+	k.run(t, accountCheck{})
+	reported()
+	got := accounts()
+	if got.CheckError == nil {
+		t.Fatalf("the check after adding the peer didn't fail: %+v", got)
+	}
+	for _, u := range got.FoundUsers {
+		if u.Peer != (u.UserName == peer) {
+			t.Fatalf("with the peer added, the found user is shown as %+v", u)
+		}
+	}
 	k.b.call("POST", account+"/found-users/"+peer+"/revoke", nil, 409, nil)
 
-	k.aws.Fail("PutUserPolicy", "ServiceFailure", "ServiceFailure", "ServiceFailure")
+	k.aws.Fail("ListAccessKeys", "ServiceFailure", "ServiceFailure", "ServiceFailure")
 	k.b.call("POST", account+"/found-users/"+stranger+"/revoke", nil, 204, nil)
 	k.run(t, keySweep{})
 	k.run(t, accountCheck{})
 	reported()
-	got := accounts()
+	got = accounts()
 	var shown *api.BackupStorageFoundUser
 	for i, u := range got.FoundUsers {
 		if u.UserName == stranger {
@@ -133,4 +156,59 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	}
 	k.b.call("POST", account+"/peers", api.BackupStorageAccountPeerRequest{InstallationId: peerInstallation}, 204, nil)
 	k.b.call("POST", account+"/peers", api.BackupStorageAccountPeerRequest{InstallationId: uuid.New()}, 409, nil)
+}
+
+// A storage account's credential can be replaced only with one of the same AWS account, whose
+// users are the ones minted so far; another account's key is refused for what it is.
+func TestAReplacementCredentialMustBelongToTheSameAccount(t *testing.T) {
+	k := newKeysFixture(t)
+	credential := k.base + "/backup-storage-accounts/" + k.account.Id.String() + "/credential"
+	other := k.aws.AddAdmin(awsfake.Admin{Name: "other-admin", Path: "/", Account: "210987654321", Within: awskeys.Path(k.ws.String()), Boundary: k.boundary})
+	reply := <-k.b.send("PUT", credential, api.BackupStorageCredentialRequest{AccessKeyId: &other.AccessKeyID, SecretAccessKey: &other.SecretAccessKey, Generation: k.account.Generation})
+	if reply.status != 400 || !strings.Contains(string(reply.body), "another AWS account") || !strings.Contains(string(reply.body), `"credential"`) {
+		t.Fatalf("another account's key answered %d %s", reply.status, reply.body)
+	}
+	same := k.aws.AddAdmin(awsfake.Admin{Name: "second-admin", Path: "/", Within: awskeys.Path(k.ws.String()), Boundary: k.boundary})
+	var replaced api.BackupStorageAccount
+	k.b.call("PUT", credential, api.BackupStorageCredentialRequest{AccessKeyId: &same.AccessKeyID, SecretAccessKey: &same.SecretAccessKey, Generation: k.account.Generation}, 200, &replaced)
+	if replaced.Generation == k.account.Generation {
+		t.Fatalf("the replacement left the account at generation %d", replaced.Generation)
+	}
+}
+
+// An install that can't start because its environment is already running something waits for the
+// next pass, and the sweep goes on to revoke what is due.
+func TestABusyEnvironmentDoesntHoldUpRevocation(t *testing.T) {
+	k := newKeysFixture(t)
+	var d api.BackupDestination
+	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	var policy backup.Policy
+	k.b.call("POST", k.environment(k.first)+"/backup-policies", k.policy(k.first, "Managed", d.Id), 201, &policy)
+	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/revoke", nil, 204, nil)
+	k.run(t, keySweep{})
+	k.renew(t, d)
+
+	// The environment runs a check, so the install the next pass queues has to wait, while a
+	// found user the owner revoked is due.
+	k.b.call("POST", k.environment(k.first)+"/backup-policies/"+policy.ID.String()+"/commands", api.BackupCommandRequest{Action: "check", RequestKey: uuid.New()}, 202, nil)
+	path := awskeys.Path(k.ws.String())
+	stranger := "astilba-" + uuid.NewString()
+	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
+	account := k.base + "/backup-storage-accounts/" + k.account.Id.String()
+	k.b.call("POST", account+"/check", nil, 204, nil)
+	k.run(t, accountCheck{})
+	waitFor(t, "the account check didn't report the stranger", 30*time.Second, func() bool {
+		var list []api.BackupStorageAccount
+		k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &list)
+		return len(list) == 1 && !list[0].Checking && len(list[0].FoundUsers) == 1
+	})
+	k.b.call("POST", account+"/found-users/"+stranger+"/revoke", nil, 204, nil)
+	k.run(t, keySweep{})
+	if slices.Contains(k.aws.Users(path), stranger) {
+		t.Fatal("with an install waiting, the found user wasn't revoked")
+	}
+	var pending int
+	if err := k.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM execution_operations WHERE workspace_id=$1 AND kind='backup' AND state NOT IN ('succeeded','failed','cancelled')`, k.ws).Scan(&pending); err != nil || pending != 1 {
+		t.Fatal("the busy environment holds", pending, "unfinished backup operations", err)
+	}
 }

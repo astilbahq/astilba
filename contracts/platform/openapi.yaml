@@ -9997,9 +9997,17 @@
           description: The storage account a managed destination's keys are minted from, or null.
         keys:
           type: array
-          maxItems: 100
-          description: A managed destination's minted keys, newest first. Empty for any other.
+          maxItems: 20
+          description: >-
+            A managed destination's minted keys, newest first: those not yet revoked, then the most
+            recently revoked, up to 20. Empty for any other.
           items: {$ref: '#/components/schemas/BackupStorageKey'}
+        placeholder:
+          type: boolean
+          description: >-
+            Whether this is a managed destination none of whose keys has ever been active: its key
+            is still being made, or making it failed and the destination goes once that key is
+            revoked. No policy can use it.
         remintError:
           type: string
           nullable: true
@@ -10023,6 +10031,7 @@
         - exposed
         - accountId
         - keys
+        - placeholder
         - remintError
         - policies
     ServerRevokeRequest:

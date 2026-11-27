@@ -388,24 +388,28 @@ func (c *Client) Probe(ctx context.Context, key Credential, spec Spec) error {
 
 // Revoke takes user's access away and deletes it: a deny-all policy first, so the user can do
 // nothing even while its keys are deleted, then its access keys, its policy and the user. It
-// reports gone when the user no longer exists. A user AWS won't delete gets its deny-all back
-// before Revoke reports ErrConflict, so it stays unable to act until it is deleted. The caller
-// must have checked that cred belongs to the account the user was minted in, or a missing user
-// proves nothing.
+// reports gone when the user no longer exists. A deny-all AWS refuses, for example because someone
+// with the admin key filled the user's inline policy quota, doesn't stop the rest: deleting the
+// access keys already leaves the user unable to act. A user AWS won't delete gets its deny-all back before
+// Revoke reports ErrConflict, so it stays unable to act until it is deleted. The caller must have
+// checked that cred belongs to the account the user was minted in, or a missing user proves
+// nothing.
 func (c *Client) Revoke(ctx context.Context, cred Credential, user string) error {
 	client := c.iamClient(cred)
 	deny := func() error {
 		_, err := client.PutUserPolicy(ctx, &iam.PutUserPolicyInput{UserName: aws.String(user), PolicyName: aws.String(policyName), PolicyDocument: aws.String(denyAll)})
 		return classify(err)
 	}
-	if err := deny(); err != nil {
-		return err
+	denied := deny()
+	if errors.Is(denied, ErrNotFound) {
+		return denied
 	}
 	if err := c.deleteKeys(ctx, client, user); err != nil {
-		return err
+		return errors.Join(denied, err)
 	}
+	// With its access keys gone the user can sign nothing, deny-all or not.
 	if _, err := client.DeleteUserPolicy(ctx, &iam.DeleteUserPolicyInput{UserName: aws.String(user), PolicyName: aws.String(policyName)}); err != nil && classify(err) != ErrNotFound {
-		return classify(err)
+		return errors.Join(denied, classify(err))
 	}
 	_, err := client.DeleteUser(ctx, &iam.DeleteUserInput{UserName: aws.String(user)})
 	if err = classify(err); errors.Is(err, ErrConflict) {

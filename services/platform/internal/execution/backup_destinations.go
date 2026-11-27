@@ -45,7 +45,7 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 			}
 			view := destinationView(v, row.ServerID, row.Shared, slices.Contains(exposed, v.ID))
 			if row.AccountID != nil {
-				view.AccountId, view.Keys, view.RemintError = row.AccountID, keys[v.ID], textPointer(row.RemintError)
+				view.AccountId, view.Keys, view.RemintError, view.Placeholder = row.AccountID, keys[v.ID], textPointer(row.RemintError), row.Placeholder
 			}
 			for _, p := range policies {
 				if p.DestinationID == v.ID {

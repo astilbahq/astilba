@@ -27,10 +27,9 @@ import {
 } from "./schedule-fields";
 import type { EnvironmentPath } from "./visual-editor";
 
-// A managed destination whose key has never worked: management is still making it, or making it
-// failed. A policy can't use it until a key has been active.
-const placeholder = (d: Schema["BackupDestination"]) =>
-  !!d.accountId && !d.keys.some((k) => k.activatedAt);
+// A managed destination whose key has never worked, as management reports it: its key is still
+// being made, or making it failed. A policy can't use it until a key has been active.
+const placeholder = (d: Schema["BackupDestination"]) => d.placeholder;
 
 export function Backups({
   path,

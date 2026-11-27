@@ -12,6 +12,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -221,7 +222,9 @@ func (s *Service) queueKeyInstall(ctx context.Context, rows []db.PendingKeyInsta
 }
 
 // queueInstall queues one install under request, in a savepoint, so an install refused for now,
-// such as one whose environment is busy, leaves the rest of the pass's work standing.
+// such as one whose environment or server is busy, leaves the rest of the pass's work standing.
+// A busy environment or server is refused only by the active-operation indexes, which raise a
+// unique violation that store.Normalize reports as a conflict.
 func (s *Service) queueInstall(ctx context.Context, tx pgx.Tx, ws uuid.UUID, row db.PendingKeyInstallsRow, request uuid.UUID) error {
 	sp, err := tx.Begin(ctx)
 	if err != nil {
@@ -229,7 +232,7 @@ func (s *Service) queueInstall(ctx context.Context, tx pgx.Tx, ws uuid.UUID, row
 	}
 	_, err = s.backupCommand(ctx, sp, ws, row.EnvironmentID, row.PolicyID, api.BackupCommandRequest{Action: "install", RequestKey: request})
 	var refused *domain.Error
-	if errors.As(err, &refused) {
+	if errors.As(store.Normalize(err), &refused) {
 		return sp.Rollback(ctx)
 	} else if err != nil {
 		return errors.Join(err, sp.Rollback(ctx))

@@ -725,7 +725,10 @@ func (q *Queries) InsertBackupRecovery(ctx context.Context, arg InsertBackupReco
 }
 
 const listBackupDestinations = `-- name: ListBackupDestinations :many
-SELECT configuration, server_id, shared, account_id, remint_error FROM backup_destinations WHERE workspace_id = $1 ORDER BY id LIMIT 100
+SELECT d.configuration, d.server_id, d.shared, d.account_id, d.remint_error,
+    (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
+FROM backup_destinations d WHERE d.workspace_id = $1 ORDER BY d.id LIMIT 100
 `
 
 type ListBackupDestinationsRow struct {
@@ -734,8 +737,10 @@ type ListBackupDestinationsRow struct {
 	Shared        bool        `json:"shared"`
 	AccountID     *uuid.UUID  `json:"account_id"`
 	RemintError   pgtype.Text `json:"remint_error"`
+	Placeholder   bool        `json:"placeholder"`
 }
 
+// placeholder is as BackupDestinationBinding has it.
 func (q *Queries) ListBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]ListBackupDestinationsRow, error) {
 	rows, err := q.db.Query(ctx, listBackupDestinations, workspaceID)
 	if err != nil {
@@ -751,6 +756,7 @@ func (q *Queries) ListBackupDestinations(ctx context.Context, workspaceID uuid.U
 			&i.Shared,
 			&i.AccountID,
 			&i.RemintError,
+			&i.Placeholder,
 		); err != nil {
 			return nil, err
 		}

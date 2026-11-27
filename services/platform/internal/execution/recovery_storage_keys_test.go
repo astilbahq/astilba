@@ -13,6 +13,8 @@ func keyRow(state string, handedOver any, extra ...string) portability.Row {
 	row := portability.Row{}
 	recoverySet(row, "state", state)
 	recoverySet(row, "handed_over", handedOver)
+	recoverySet(row, "install_attempts", 0)
+	recoverySet(row, "install_next_at", nil)
 	for i := 0; i+1 < len(extra); i += 2 {
 		recoverySet(row, extra[i], extra[i+1])
 	}
@@ -50,6 +52,29 @@ func TestRecoveryKeepsTheKeyFurtherAlong(t *testing.T) {
 	}
 	if _, err := recoveryKeyKnowledge(keyRow("active", nil), keyRow("lost", nil)); err == nil {
 		t.Error("an unknown state was merged")
+	}
+}
+
+// A key keeps the install tries of the copy that has had more, whichever copy wins, so it never
+// walks through tries whose operations the history already has.
+func TestRecoveryKeepsTheMoreTriedInstalls(t *testing.T) {
+	tried := func(state string, attempts int, next string) portability.Row {
+		row := keyRow(state, nil)
+		recoverySet(row, "install_attempts", attempts)
+		recoverySet(row, "install_next_at", next)
+		return row
+	}
+	for _, c := range []struct{ prior, incoming portability.Row }{
+		{tried("active", 12, "2026-11-27T10:00:00Z"), tried("revoking", 3, "2026-11-27T09:00:00Z")},
+		{tried("revoking", 3, "2026-11-27T09:00:00Z"), tried("active", 12, "2026-11-27T10:00:00Z")},
+	} {
+		got, err := recoveryKeyKnowledge(c.prior, c.incoming)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got["state"]) != `"revoking"` || string(got["install_attempts"]) != "12" || string(got["install_next_at"]) != `"2026-11-27T10:00:00Z"` {
+			t.Errorf("merged into %s, %s tries, next at %s", got["state"], got["install_attempts"], got["install_next_at"])
+		}
 	}
 }
 

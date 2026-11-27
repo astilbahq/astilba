@@ -103,6 +103,34 @@ func runJob(t *testing.T, f *fixture, job interface{ Kind() string }) {
 	})
 }
 
+// renew renews the first server after its revocation, re-enrolls its agent and waits for d's new
+// key.
+func (k *keysFixture) renew(t *testing.T, d api.BackupDestination) api.BackupStorageKey {
+	t.Helper()
+	var renewal api.Enrollment
+	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/enrollment", nil, 201, &renewal)
+	credential, err := randtoken.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := k.first.enroll
+	in.Token, in.Credential = renewal.Token, &credential
+	agentRequest(t, k.f.server.Client(), k.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
+	k.first.token = k.first.server.String() + "." + credential
+	k.run(t, keySweep{})
+	var minted api.BackupStorageKey
+	waitFor(t, "the renewed server's destination got no new key", 30*time.Second, func() bool {
+		for _, key := range k.destinations()[d.Id].Keys {
+			if key.Id != d.Keys[0].Id && key.State == "active" {
+				minted = key
+				return true
+			}
+		}
+		return false
+	})
+	return minted
+}
+
 // key is the destination's only key, as its view shows it.
 func (k *keysFixture) key(t *testing.T, destination uuid.UUID) api.BackupStorageKey {
 	t.Helper()
@@ -225,27 +253,7 @@ func TestARenewedServerGetsANewKey(t *testing.T) {
 	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/revoke", nil, 204, nil)
 	k.run(t, keySweep{})
 
-	var renewal api.Enrollment
-	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/enrollment", nil, 201, &renewal)
-	credential, err := randtoken.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	in := k.first.enroll
-	in.Token, in.Credential = renewal.Token, &credential
-	agentRequest(t, k.f.server.Client(), k.f.server.URL, "/agent/v1/enroll", "", in, 200, nil)
-	k.first.token = k.first.server.String() + "." + credential
-	k.run(t, keySweep{})
-	var minted api.BackupStorageKey
-	waitFor(t, "the renewed server's destination got no new key", 30*time.Second, func() bool {
-		for _, key := range k.destinations()[d.Id].Keys {
-			if key.Id != d.Keys[0].Id && key.State == "active" {
-				minted = key
-				return true
-			}
-		}
-		return false
-	})
+	minted := k.renew(t, d)
 	if users := k.aws.Users(awskeys.Path(k.ws.String())); len(users) != 1 || users[0] != minted.UserName {
 		t.Fatalf("AWS has %v, want only the new key's user", users)
 	}

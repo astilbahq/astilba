@@ -185,7 +185,8 @@ var version19Tables = func() []table {
 }()
 
 // Version 21 carries managed backup storage accounts, with their admin credentials, and the keys
-// management minted with them, with each server's revocation count their handovers are bound to.
+// management minted with them, with each server's revocation count their handovers are bound to,
+// and how many tries each re-minted key's installs have had.
 // An account comes before the destinations that name it. Version 20 is a recovery base.
 var tables = func() []table {
 	out := append([]table{}, version19Tables...)
@@ -199,5 +200,5 @@ var tables = func() []table {
 	}
 	i := slices.IndexFunc(out, func(t table) bool { return t.Name == "backup_destinations" })
 	out = slices.Insert(out, i, table{Name: "backup_storage_accounts", Columns: "id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential,generation,peers,created_at"})
-	return append(out, table{Name: "backup_storage_keys", Columns: "id,workspace_id,account_id,destination_id,holder_server_id,purpose,recovery_request,recovery_policy_id,recovery_snapshot,recovery_id,scope,user_name,access_key_id,state,mint_deadline,handed_over,activated_at,revoked_at,installs,found_tags,encrypted_secret,created_at"})
+	return append(out, table{Name: "backup_storage_keys", Columns: "id,workspace_id,account_id,destination_id,holder_server_id,purpose,recovery_request,recovery_policy_id,recovery_snapshot,recovery_id,scope,user_name,access_key_id,state,mint_deadline,handed_over,activated_at,revoked_at,installs,install_attempts,install_next_at,found_tags,encrypted_secret,created_at"})
 }()

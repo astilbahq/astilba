@@ -370,11 +370,16 @@ func (q *Queries) DeleteBackupPlaceholder(ctx context.Context, arg DeleteBackupP
 }
 
 const destinationBackupStorageKeys = `-- name: DestinationBackupStorageKeys :many
-SELECT k.destination_id,k.id,k.purpose,k.state,k.user_name,k.holder_server_id,k.activated_at,k.revoked_at,k.attempts,k.last_error,
-    (k.handed_over IS NOT NULL AND s.revoked AND k.handed_over = s.revocations)::bool AS handed_over
-FROM backup_storage_keys k JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
-WHERE k.workspace_id = $1 AND k.destination_id IS NOT NULL
-ORDER BY k.destination_id,k.created_at DESC,k.id DESC LIMIT 2000
+SELECT destination_id,id,purpose,state,user_name,holder_server_id,activated_at,revoked_at,attempts,last_error,handed_over
+FROM (
+    SELECT k.destination_id,k.id,k.purpose,k.state,k.user_name,k.holder_server_id,k.activated_at,k.revoked_at,k.attempts,k.last_error,k.created_at,
+        (k.handed_over IS NOT NULL AND s.revoked AND k.handed_over = s.revocations)::bool AS handed_over,
+        row_number() OVER (PARTITION BY k.destination_id ORDER BY k.state = 'revoked',k.created_at DESC,k.id DESC) AS n
+    FROM backup_storage_keys k JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+    WHERE k.workspace_id = $1 AND k.destination_id IS NOT NULL
+) ranked
+WHERE n <= 20
+ORDER BY destination_id,created_at DESC,id DESC LIMIT 2000
 `
 
 type DestinationBackupStorageKeysRow struct {
@@ -391,7 +396,9 @@ type DestinationBackupStorageKeysRow struct {
 	HandedOver     bool        `json:"handed_over"`
 }
 
-// The keys of a workspace's managed destinations, for their views.
+// The keys of a workspace's managed destinations, for their views: up to 20 for each, those not yet
+// revoked before those revoked, newest first. Revoked keys are kept, so a destination whose
+// re-mint keeps failing gathers them, and a workspace has at most 100 destinations.
 func (q *Queries) DestinationBackupStorageKeys(ctx context.Context, workspaceID uuid.UUID) ([]DestinationBackupStorageKeysRow, error) {
 	rows, err := q.db.Query(ctx, destinationBackupStorageKeys, workspaceID)
 	if err != nil {

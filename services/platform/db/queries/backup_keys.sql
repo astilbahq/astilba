@@ -224,12 +224,19 @@ SELECT id,purpose,state,user_name,access_key_id,activated_at,revoked_at,holder_s
 FROM backup_storage_keys WHERE workspace_id = @workspace_id AND account_id = @account_id;
 
 -- name: DestinationBackupStorageKeys :many
--- The keys of a workspace's managed destinations, for their views.
-SELECT k.destination_id,k.id,k.purpose,k.state,k.user_name,k.holder_server_id,k.activated_at,k.revoked_at,k.attempts,k.last_error,
-    (k.handed_over IS NOT NULL AND s.revoked AND k.handed_over = s.revocations)::bool AS handed_over
-FROM backup_storage_keys k JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
-WHERE k.workspace_id = @workspace_id AND k.destination_id IS NOT NULL
-ORDER BY k.destination_id,k.created_at DESC,k.id DESC LIMIT 2000;
+-- The keys of a workspace's managed destinations, for their views: up to 20 for each, those not yet
+-- revoked before those revoked, newest first. Revoked keys are kept, so a destination whose
+-- re-mint keeps failing gathers them, and a workspace has at most 100 destinations.
+SELECT destination_id,id,purpose,state,user_name,holder_server_id,activated_at,revoked_at,attempts,last_error,handed_over
+FROM (
+    SELECT k.destination_id,k.id,k.purpose,k.state,k.user_name,k.holder_server_id,k.activated_at,k.revoked_at,k.attempts,k.last_error,k.created_at,
+        (k.handed_over IS NOT NULL AND s.revoked AND k.handed_over = s.revocations)::bool AS handed_over,
+        row_number() OVER (PARTITION BY k.destination_id ORDER BY k.state = 'revoked',k.created_at DESC,k.id DESC) AS n
+    FROM backup_storage_keys k JOIN servers s ON s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
+    WHERE k.workspace_id = @workspace_id AND k.destination_id IS NOT NULL
+) ranked
+WHERE n <= 20
+ORDER BY destination_id,created_at DESC,id DESC LIMIT 2000;
 
 -- name: LiveServerKeyExists :one
 SELECT EXISTS(SELECT 1 FROM backup_storage_keys WHERE workspace_id = @workspace_id AND destination_id = @destination_id AND purpose = 'server' AND state IN ('minting','active'))::bool;

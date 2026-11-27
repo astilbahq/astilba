@@ -216,14 +216,13 @@ function RevokeServer({
         d.accountId && d.keys.some((k) => k.serverId === server.id && key(k)),
     );
   const managed = holds((k) => k.purpose === "server" && k.state === "active");
-  // A restore's own key is revoked with the server whatever happens to its server keys.
-  const restoring =
-    managed &&
-    holds(
-      (k) =>
-        k.purpose === "recovery" &&
-        (k.state === "minting" || k.state === "active"),
-    );
+  // A restore's own key is revoked with the server whatever happens to its server keys, and a
+  // server can hold one without any server key: a replacement restoring a lost server's backups.
+  const restoring = holds(
+    (k) =>
+      k.purpose === "recovery" &&
+      (k.state === "minting" || k.state === "active"),
+  );
   const [open, setOpen] = useState(false);
   const [handOver, setHandOver] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -264,6 +263,14 @@ function RevokeServer({
               couldn’t be checked. If it does, revoking it revokes them at AWS.
               If you are moving this workspace to another installation, cancel
               and reload the page first.
+            </p>
+          )}
+          {restoring && !managed && (
+            <p className={s.notice}>
+              A restore running on this server holds a backup storage key
+              management made. Revoking the server revokes that key at AWS, and
+              the restore’s destination is exposed until an hour after AWS
+              confirms the key revoked.
             </p>
           )}
           {managed && (

@@ -37,16 +37,9 @@ var keySweepPrincipal = secretbroker.System("backup-keys")
 func (s *Service) runKeySweep(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, sweepPassBudget)
 	defer cancel()
-	if err := s.latchDerivedKeys(ctx); err != nil {
-		return err
-	}
-	if err := s.queueRemints(ctx); err != nil {
-		return err
-	}
-	if err := s.queueKeyInstalls(ctx); err != nil {
-		return err
-	}
-	return s.revokeDueKeys(ctx)
+	// Each step runs whatever an earlier one hit, so nothing stops revocation. Latching runs
+	// first, so the keys it latches are revoked in the same pass.
+	return errors.Join(s.latchDerivedKeys(ctx), s.queueRemints(ctx), s.queueKeyInstalls(ctx), s.revokeDueKeys(ctx))
 }
 
 // latchDerivedKeys latches the keys whose rows say they are done with: keys still minting past

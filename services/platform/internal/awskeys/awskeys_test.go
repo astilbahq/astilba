@@ -326,3 +326,24 @@ func TestRevokeKeepsDenyingAUserItCantDelete(t *testing.T) {
 		t.Fatal("the user's old key should do nothing")
 	}
 }
+
+// A deny-all AWS refuses, as when someone with the admin key filled the user's inline policy
+// quota, doesn't keep the user's access keys alive.
+func TestRevokeGoesOnWhenTheDenyAllIsRefused(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	key, err := f.client.Mint(ctx, f.admin, f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.aws.Fail("PutUserPolicy", "LimitExceeded")
+	if err = f.client.Revoke(ctx, f.admin, f.spec.User); err != nil {
+		t.Fatal(err)
+	}
+	if users := f.aws.Users("/astilba/"); len(users) != 0 {
+		t.Fatalf("users left: %v", users)
+	}
+	if err = reach(t, f.s3(key), "backups", "servers/one/data/1"); !errors.Is(err, ErrCredential) {
+		t.Fatalf("revoked key: %v", err)
+	}
+}

@@ -66,11 +66,15 @@ func (a *AWS) query(w http.ResponseWriter, who caller, action string, f form) {
 				a.queryError(w, "InvalidClientTokenId")
 				return
 			}
+			account := me.account
+			if account == "" {
+				account = Account
+			}
 			respond(w, "sts", action, struct {
 				Arn     string `xml:"Arn"`
 				UserID  string `xml:"UserId"`
 				Account string `xml:"Account"`
-			}{"arn:aws:iam::" + Account + ":user" + me.path + me.name, "AIDAFAKE", Account})
+			}{"arn:aws:iam::" + account + ":user" + me.path + me.name, "AIDAFAKE", account})
 		case "GetSessionToken":
 			// No policy can stop an IAM user minting session credentials.
 			if who.session {
