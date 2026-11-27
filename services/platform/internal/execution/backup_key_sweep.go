@@ -226,7 +226,7 @@ func (s *Service) settleUnlisted(ctx context.Context, k db.ClaimDueBackupStorage
 	case k.EncryptedSecret != nil:
 		works, err := s.keyWorks(ctx, k)
 		if err != nil {
-			return errors.Join(unlisted, err)
+			return err
 		} else if works {
 			return errors.Join(unlisted, errKeyWorks)
 		}

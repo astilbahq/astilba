@@ -276,11 +276,12 @@ WHERE workspace_id = @workspace_id AND id = @id;
 -- name: AlertingBackupStorageAccounts :many
 -- The accounts whose latest check failed or found something the owner should look at.
 -- A found user whose revocation keeps failing is still a user management didn't make, and a key
--- whose user was moved off the workspace's path still works where management can't revoke it.
+-- management holds whose revocation keeps failing may still work, as one whose user was moved off
+-- the workspace's path does. A key whose mint never finished holds a secret nobody has.
 SELECT a.id FROM backup_storage_accounts a
 WHERE a.workspace_id = @workspace_id AND (a.check_error IS NOT NULL OR COALESCE((a.report->>'alert')::bool,false)
     OR EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id
-        AND k.state = 'revoking' AND ((k.purpose = 'found' AND k.attempts >= 3) OR k.last_error = 'moved_off_path')));
+        AND k.state = 'revoking' AND k.attempts >= 3 AND (k.purpose = 'found' OR k.encrypted_secret IS NOT NULL)));
 
 -- name: RelatchRevokedBackupStorageKey :execrows
 -- A key recorded revoked whose user the account check still finds an hour later is revoked again.

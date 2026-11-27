@@ -265,13 +265,30 @@ func TestAKeyWhoseUserMovedOffThePathStaysRevoking(t *testing.T) {
 	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
 	k.aws.MoveUser(d.Keys[0].UserName, "/elsewhere/")
 	k.b.call("POST", k.base+"/backup-destinations/"+d.Id.String()+"/keys/"+d.Keys[0].Id.String()+"/revoke", nil, 204, nil)
-	k.run(t, keySweep{})
-	if s, e := k.keyState(t, d.Keys[0].Id); s != "revoking" || e != "moved_off_path" {
-		t.Fatalf("the key whose user was moved is %s (%s)", s, e)
+	alerts := func() bool {
+		t.Helper()
+		alerting, err := db.New(k.f.st.Pool).AlertingBackupStorageAccounts(context.Background(), k.ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.Contains(alerting, k.account.Id)
 	}
-	alerting, err := db.New(k.f.st.Pool).AlertingBackupStorageAccounts(context.Background(), k.ws)
-	if err != nil || !slices.Contains(alerting, k.account.Id) {
-		t.Fatal("the account doesn't alert for the moved user's key", alerting, err)
+	for range 3 {
+		k.exec(t, `UPDATE backup_storage_keys SET next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
+		k.run(t, keySweep{})
+		if s, e := k.keyState(t, d.Keys[0].Id); s != "revoking" || e != "moved_off_path" {
+			t.Fatalf("the key whose user was moved is %s (%s)", s, e)
+		}
+	}
+	if !alerts() {
+		t.Fatal("the account doesn't alert for the moved user's key")
+	}
+	// An attempt that fails for another reason leaves the alert standing.
+	k.aws.Fail("GetCallerIdentity", "ServiceFailure", "ServiceFailure", "ServiceFailure")
+	k.exec(t, `UPDATE backup_storage_keys SET next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
+	k.run(t, keySweep{})
+	if s, e := k.keyState(t, d.Keys[0].Id); s != "revoking" || e != "unavailable" || !alerts() {
+		t.Fatalf("after a failed attempt the moved user's key is %s (%s), alerting %v", s, e, alerts())
 	}
 }
 
