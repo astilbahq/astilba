@@ -166,18 +166,53 @@ func TestSigningOutOtherSessions(t *testing.T) {
 	enrollSecret(t, owner)
 	awaitNotice(t, f, "Sessions of your Astilba account were signed out")
 
-	// With no other session left there is nothing to sign out, and nothing to tell anyone.
+	// With no other session left there is nothing to sign out, and nothing to tell anyone. A
+	// session past its expiry, which the store has not yet cleaned up, is signed out already.
+	expired := uuid.New()
+	if _, err := f.st.Pool.Exec(context.Background(), `INSERT INTO sessions(token,data,expiry,lineage,account_id,auth_version,signed_in_at,last_seen_at,client_browser,client_os)
+		SELECT 'expired', '\x00', now() - interval '1 minute', $2, a.id, a.auth_version, now() - interval '1 hour', now() - interval '31 minutes', 'other', 'other'
+		FROM accounts a WHERE a.id = $1`, f.owner, expired); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := owner.request("DELETE", "/api/v1/auth/sessions/"+expired.String(), nil); status != http.StatusNotFound {
+		t.Fatalf("signing out an expired session: %d %s", status, body)
+	}
 	owner.call("POST", "/api/v1/auth/sessions/sign-out-others", nil, 200, nil)
 	if events := securityEvents(t, f); !slices.Equal(events, []string{"sessions_signed_out"}) {
 		t.Fatalf("security events %v", events)
 	}
 }
 
-// The list holds the sessions seen most recently and counts the rest, which signing out every
-// other session ends too.
+// Another account's sessions are neither listed nor signed out: naming one is not found, and
+// signing out every other session leaves them signed in.
+func TestAnotherAccountsSessionsAreNotTheAccounts(t *testing.T) {
+	f := setup(t)
+	seedOtherAccount(t, f, "other@example.test")
+	stranger := f.browser(t)
+	stranger.login("other@example.test", f.password)
+	theirs := accountSessions(t, stranger).Sessions[0].Id
+	owner := signedInBrowser(t, f, "")
+	if listed := accountSessions(t, owner); len(listed.Sessions) != 1 || !listed.Sessions[0].Current || listed.Unlisted != 0 {
+		t.Fatalf("the owner's list holds another account's session: %+v", listed)
+	}
+	if status, body := owner.request("DELETE", "/api/v1/auth/sessions/"+theirs.String(), nil); status != http.StatusNotFound {
+		t.Fatalf("signing out another account's session: %d %s", status, body)
+	}
+	owner.call("POST", "/api/v1/auth/sessions/sign-out-others", nil, 200, nil)
+	if !signedIn(t, stranger) || len(securityEvents(t, f)) != 0 {
+		t.Fatal("the owner's sign-out reached another account's session")
+	}
+}
+
+// The list holds the session that asks and those seen most recently, and counts the rest, which
+// signing out every other session ends too.
 func TestSigningOutOtherSessionsEndsThoseNotListed(t *testing.T) {
 	f := setup(t)
 	owner := signedInBrowser(t, f, "")
+	// The session that asks was last seen before every other, as one is after a while away.
+	if _, err := f.st.Pool.Exec(context.Background(), `UPDATE sessions SET last_seen_at = now() - interval '3 hours' WHERE account_id = $1`, f.owner); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.st.Pool.Exec(context.Background(), `INSERT INTO sessions(token,data,expiry,lineage,account_id,auth_version,signed_in_at,last_seen_at,client_browser,client_os)
 		SELECT 'listed-' || i, '\x00', now() + interval '1 hour', gen_random_uuid(), a.id, a.auth_version, now() - interval '2 hours', now() - interval '1 hour', 'other', 'other'
 		FROM accounts a, generate_series(1, 51) i WHERE a.id = $1`, f.owner); err != nil {

@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { cx } from "../../../styled-system/css";
 import { accountSessionsOptions } from "../../api/account-sessions";
-import { client, result, type Schema } from "../../api/client";
+import { ApiError, client, result, type Schema } from "../../api/client";
+import { isRecentAuthRequired } from "../../api/step-up";
 import { useSessionRequest } from "../../api/use-session-request";
 import { Button } from "../../components/button";
 import * as s from "../../styles";
@@ -25,14 +26,15 @@ function SessionItem({
   const id = useId();
   const signedInAt = new Date(session.signedInAt);
   const lastSeenAt = new Date(session.lastSeenAt);
+  const client = t(($) => $.sessions.client, {
+    browser: t(($) => $.sessions.browser[session.browser]),
+    os: t(($) => $.sessions.os[session.os]),
+  });
   return (
     <li className={styles.session}>
       <div className={styles.sessionDetails} id={id}>
         <p className={styles.sessionClient}>
-          {t(($) => $.sessions.client, {
-            browser: t(($) => $.sessions.browser[session.browser]),
-            os: t(($) => $.sessions.os[session.os]),
-          })}
+          {client}
           {session.current && (
             <span className={styles.sessionCurrent}>
               {t(($) => $.sessions.current)}
@@ -68,6 +70,7 @@ function SessionItem({
       {!session.current && (
         <Button
           size="sm"
+          aria-label={t(($) => $.sessions.signOutNamed, { client })}
           aria-describedby={id}
           disabled={busy}
           onClick={(event) => onSignOut(event.currentTarget)}
@@ -90,24 +93,58 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
   const sessions = useQuery(options);
   const request = useSessionRequest();
   const action = useAction({ recentAuth: true });
-  const [message, setMessage] = useState<"one" | "others">();
+  const [kind, setKind] = useState<"one" | "others">("one");
+  const [message, setMessage] = useState<"one" | "others" | "gone">();
   const heading = useRef<HTMLHeadingElement>(null);
+  // The control that asked, which a failure returns focus to once it is enabled again.
+  const returnTo = useRef<Element>(null);
+  useEffect(() => {
+    if (action.isPending || !action.isError) return;
+    const target = returnTo.current;
+    returnTo.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    (target instanceof HTMLElement && target.isConnected
+      ? target
+      : heading.current
+    )?.focus();
+  }, [action.isPending, action.isError]);
+  const signedOut = (outcome: "one" | "others" | "gone") => {
+    setMessage(outcome);
+    returnTo.current = null;
+    // The control that asked is gone, or has nothing left to do.
+    heading.current?.focus();
+  };
   const signOut = (
-    kind: "one" | "others",
+    asked: "one" | "others",
     send: (signal: AbortSignal) => Promise<Schema["AccountSessions"]>,
     origin: Element,
   ) => {
     setMessage(undefined);
+    setKind(asked);
+    returnTo.current = origin;
     action.run(
       () =>
         request(send, (next) => {
           queries.setQueryData(options.queryKey, next);
-          setMessage(kind);
-          // The control that asked is gone, or has nothing left to do.
-          heading.current?.focus();
-        }).catch((error: unknown) => {
+          signedOut(asked);
+        }).catch(async (error: unknown) => {
+          // Refused before anything changed: useAction confirms identity and asks again.
+          if (isRecentAuthRequired(error)) throw error;
           // A session may have signed out meanwhile, so the list is read again.
-          void queries.invalidateQueries({ queryKey: options.queryKey });
+          const reread = queries.invalidateQueries({
+            queryKey: options.queryKey,
+          });
+          if (
+            asked === "one" &&
+            error instanceof ApiError &&
+            error.detail.code === "not_found"
+          ) {
+            // Signed out elsewhere, or expired: what was asked for is done.
+            await reread;
+            signedOut("gone");
+            return;
+          }
           throw error;
         }),
       origin,
@@ -124,29 +161,44 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
         </h2>
         <p className={s.muted}>{t(($) => $.sessions.description)}</p>
       </div>
-      {message && (
-        <p role="status">
-          {message === "one"
-            ? t(($) => $.sessions.signedOut)
-            : t(($) => $.sessions.othersSignedOut)}
-        </p>
+      {action.isPending ? (
+        <p role="status">{t(($) => $.sessions.signingOut)}</p>
+      ) : (
+        message && (
+          <p role="status">
+            {message === "one"
+              ? t(($) => $.sessions.signedOut)
+              : message === "others"
+                ? t(($) => $.sessions.othersSignedOut)
+                : t(($) => $.sessions.alreadySignedOut)}
+          </p>
+        )
       )}
       <ErrorNotice
         error={action.error}
-        message={t(($) => $.sessions.signOutFailed)}
+        message={
+          kind === "one"
+            ? t(($) => $.sessions.signOutFailed)
+            : t(($) => $.sessions.othersSignOutFailed)
+        }
       />
-      {sessions.isPending ? (
-        <p role="status">{t(($) => $.sessions.loading)}</p>
-      ) : sessions.isError ? (
-        <div className={styles.actions}>
-          <ErrorNotice
-            error={sessions.error}
-            message={t(($) => $.sessions.loadFailed)}
-          />
-          <Button onClick={() => void sessions.refetch()}>
-            {t(($) => $.sessions.retry)}
-          </Button>
-        </div>
+      {!sessions.data ? (
+        sessions.isError ? (
+          <div className={styles.actions}>
+            <ErrorNotice
+              error={sessions.error}
+              message={t(($) => $.sessions.loadFailed)}
+            />
+            <Button
+              disabled={sessions.isFetching}
+              onClick={() => void sessions.refetch()}
+            >
+              {t(($) => $.sessions.retry)}
+            </Button>
+          </div>
+        ) : (
+          <p role="status">{t(($) => $.sessions.loading)}</p>
+        )
       ) : (
         <>
           <ul className={cx(s.list, styles.sessions)}>
@@ -196,9 +248,7 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
                   )
                 }
               >
-                {action.isPending
-                  ? t(($) => $.sessions.signingOut)
-                  : t(($) => $.sessions.signOutOthers)}
+                {t(($) => $.sessions.signOutOthers)}
               </Button>
             </div>
           ) : (

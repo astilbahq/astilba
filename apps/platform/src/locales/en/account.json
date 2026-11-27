@@ -69,10 +69,13 @@
     "unlisted_other": "{{count}} older sessions aren’t shown. Signing out all other sessions ends them too.",
     "noOthers": "No other sessions are signed in.",
     "signOut": "Sign out",
+    "signOutNamed": "Sign out {{client}}",
     "signOutOthers": "Sign out all other sessions",
     "signingOut": "Signing out…",
-    "signOutFailed": "The session could not be signed out. The list shows the sessions signed in now.",
+    "signOutFailed": "The session could not be signed out.",
+    "othersSignOutFailed": "The other sessions could not be signed out.",
     "signedOut": "Session signed out.",
+    "alreadySignedOut": "That session was already signed out.",
     "othersSignedOut": "All other sessions signed out."
   }
 }

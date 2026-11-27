@@ -14,7 +14,7 @@ import (
 )
 
 const accountHasSessionLineage = `-- name: AccountHasSessionLineage :one
-SELECT EXISTS(SELECT 1 FROM sessions WHERE account_id = $1::uuid AND lineage = $2::uuid)
+SELECT EXISTS(SELECT 1 FROM sessions WHERE account_id = $1::uuid AND lineage = $2::uuid AND expiry > clock_timestamp())
 `
 
 type AccountHasSessionLineageParams struct {
@@ -23,6 +23,7 @@ type AccountHasSessionLineageParams struct {
 }
 
 // unscoped: a browser session's account is the one it signed in to, which only that account ends.
+// Whether the lineage holds an unexpired session of the account, as AccountSessionLineages counts one.
 func (q *Queries) AccountHasSessionLineage(ctx context.Context, arg AccountHasSessionLineageParams) (bool, error) {
 	row := q.db.QueryRow(ctx, accountHasSessionLineage, arg.AccountID, arg.Lineage)
 	var exists bool
@@ -31,7 +32,8 @@ func (q *Queries) AccountHasSessionLineage(ctx context.Context, arg AccountHasSe
 }
 
 const accountSessionLineages = `-- name: AccountSessionLineages :many
-SELECT DISTINCT lineage FROM sessions WHERE account_id = $1::uuid AND lineage <> $2::uuid ORDER BY lineage
+SELECT DISTINCT lineage FROM sessions
+WHERE account_id = $1::uuid AND lineage <> $2::uuid AND expiry > clock_timestamp() ORDER BY lineage
 `
 
 type AccountSessionLineagesParams struct {
@@ -40,8 +42,9 @@ type AccountSessionLineagesParams struct {
 }
 
 // unscoped: a browser session's account is the one it signed in to, which only that account ends.
-// Every lineage holding a session of the account but the one named, including any a credential
-// change has moved on from but not yet renewed, so that renewal refuses.
+// Every lineage holding an unexpired session of the account but the one named, including any a
+// credential change has moved on from but not yet renewed, so that renewal refuses. An expired
+// row grants nothing and the store's cleanup removes it, so it is not signed out.
 func (q *Queries) AccountSessionLineages(ctx context.Context, arg AccountSessionLineagesParams) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, accountSessionLineages, arg.AccountID, arg.Kept)
 	if err != nil {
@@ -63,26 +66,27 @@ func (q *Queries) AccountSessionLineages(ctx context.Context, arg AccountSession
 }
 
 const accountSessions = `-- name: AccountSessions :many
-SELECT l.lineage,l.signed_in_at,l.last_seen_at,l.client_browser,l.client_os,l.client_network,count(*) OVER () AS live
+SELECT l.lineage,l.signed_in_at::timestamptz AS signed_in_at,l.last_seen_at::timestamptz AS last_seen_at,l.client_browser,l.client_os,l.client_network,count(*) OVER () AS live
 FROM (
     SELECT DISTINCT ON (s.lineage) s.lineage,s.signed_in_at,s.last_seen_at,s.client_browser,s.client_os,s.client_network
     FROM sessions s JOIN accounts a ON a.id = s.account_id AND a.auth_version = s.auth_version
     WHERE s.account_id = $1::uuid AND s.expiry > clock_timestamp()
     ORDER BY s.lineage,s.last_seen_at DESC
 ) l
-ORDER BY l.last_seen_at DESC,l.lineage
-LIMIT $2
+ORDER BY l.lineage = $2::uuid DESC,l.last_seen_at DESC,l.lineage
+LIMIT $3
 `
 
 type AccountSessionsParams struct {
 	AccountID uuid.UUID `json:"account_id"`
+	Current   uuid.UUID `json:"current"`
 	Listed    int32     `json:"listed"`
 }
 
 type AccountSessionsRow struct {
 	Lineage       uuid.UUID   `json:"lineage"`
-	SignedInAt    *time.Time  `json:"signed_in_at"`
-	LastSeenAt    *time.Time  `json:"last_seen_at"`
+	SignedInAt    time.Time   `json:"signed_in_at"`
+	LastSeenAt    time.Time   `json:"last_seen_at"`
 	ClientBrowser pgtype.Text `json:"client_browser"`
 	ClientOs      pgtype.Text `json:"client_os"`
 	ClientNetwork pgtype.Text `json:"client_network"`
@@ -90,10 +94,12 @@ type AccountSessionsRow struct {
 }
 
 // unscoped: a browser session's account is the one it signed in to, which only that account reads.
-// The account's sessions that would be admitted, most recently seen first, each lineage once,
-// and how many there are in all. A row a credential change has moved on from is not one.
+// The account's sessions that would be admitted, the current one first and then the most
+// recently seen, each lineage once, and how many there are in all. A row a credential change has
+// moved on from is not one. The current row was last seen at its previous request, so it comes
+// first by name. A signed-in row has both times, as sessions_sign_in_check keeps true.
 func (q *Queries) AccountSessions(ctx context.Context, arg AccountSessionsParams) ([]AccountSessionsRow, error) {
-	rows, err := q.db.Query(ctx, accountSessions, arg.AccountID, arg.Listed)
+	rows, err := q.db.Query(ctx, accountSessions, arg.AccountID, arg.Current, arg.Listed)
 	if err != nil {
 		return nil, err
 	}

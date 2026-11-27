@@ -284,7 +284,9 @@ test("the account page lists signed-in sessions and signs out another", async ({
 
     // Signing in just now is recent authentication, so nothing asks for it again.
     await sessions
-      .getByRole("button", { name: "Sign out", exact: true })
+      .getByRole("listitem")
+      .filter({ hasNotText: "This session" })
+      .getByRole("button")
       .click();
     await expect(sessions.getByRole("status")).toHaveText(
       "Session signed out.",

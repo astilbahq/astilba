@@ -35,20 +35,17 @@ func (s *Server) SignOutOtherSessions(w http.ResponseWriter, r *http.Request) {
 // sendAccountSessions answers with the account's signed-in sessions, marking the one that asks.
 func (s *Server) sendAccountSessions(w http.ResponseWriter, r *http.Request) {
 	p := principal(r.Context())
-	rows, e := s.Store.Queries.AccountSessions(r.Context(), db.AccountSessionsParams{AccountID: p.Account.ID, Listed: sessionsListed})
+	current := r.Context().Value(sessionLoadKey{}).(*sessionLoad).lineage
+	rows, e := s.Store.Queries.AccountSessions(r.Context(), db.AccountSessionsParams{AccountID: p.Account.ID, Current: current, Listed: sessionsListed})
 	if e != nil {
 		s.fail(w, r, e)
 		return
 	}
-	current := r.Context().Value(sessionLoadKey{}).(*sessionLoad).lineage
 	out := api.AccountSessions{Sessions: make([]api.AccountSession, 0, len(rows))}
 	for _, row := range rows {
 		out.Unlisted = int(row.Live) - len(rows)
-		if row.SignedInAt == nil || row.LastSeenAt == nil {
-			// A signed-in row has both, which the table's check keeps true.
-			continue
-		}
-		session := api.AccountSession{Id: row.Lineage, Current: row.Lineage == current, SignedInAt: *row.SignedInAt, LastSeenAt: *row.LastSeenAt, Browser: api.AccountSessionBrowser(row.ClientBrowser.String), Os: api.AccountSessionOs(row.ClientOs.String)}
+		session := api.AccountSession{Id: row.Lineage, Current: row.Lineage == current, SignedInAt: row.SignedInAt, LastSeenAt: row.LastSeenAt, Browser: api.AccountSessionBrowser(row.ClientBrowser.String), Os: api.AccountSessionOs(row.ClientOs.String)}
+		// A later release may record a family this one does not name, and survive a rollback.
 		if !session.Browser.Valid() {
 			session.Browser = api.AccountSessionBrowserOther
 		}

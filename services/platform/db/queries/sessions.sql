@@ -86,24 +86,29 @@ SELECT EXISTS(SELECT 1 FROM sessions WHERE lineage = @lineage AND expiry > clock
 
 -- name: AccountSessions :many
 -- unscoped: a browser session's account is the one it signed in to, which only that account reads.
--- The account's sessions that would be admitted, most recently seen first, each lineage once,
--- and how many there are in all. A row a credential change has moved on from is not one.
-SELECT l.lineage,l.signed_in_at,l.last_seen_at,l.client_browser,l.client_os,l.client_network,count(*) OVER () AS live
+-- The account's sessions that would be admitted, the current one first and then the most
+-- recently seen, each lineage once, and how many there are in all. A row a credential change has
+-- moved on from is not one. The current row was last seen at its previous request, so it comes
+-- first by name. A signed-in row has both times, as sessions_sign_in_check keeps true.
+SELECT l.lineage,l.signed_in_at::timestamptz AS signed_in_at,l.last_seen_at::timestamptz AS last_seen_at,l.client_browser,l.client_os,l.client_network,count(*) OVER () AS live
 FROM (
     SELECT DISTINCT ON (s.lineage) s.lineage,s.signed_in_at,s.last_seen_at,s.client_browser,s.client_os,s.client_network
     FROM sessions s JOIN accounts a ON a.id = s.account_id AND a.auth_version = s.auth_version
     WHERE s.account_id = @account_id::uuid AND s.expiry > clock_timestamp()
     ORDER BY s.lineage,s.last_seen_at DESC
 ) l
-ORDER BY l.last_seen_at DESC,l.lineage
+ORDER BY l.lineage = @current::uuid DESC,l.last_seen_at DESC,l.lineage
 LIMIT @listed;
 
 -- name: AccountSessionLineages :many
 -- unscoped: a browser session's account is the one it signed in to, which only that account ends.
--- Every lineage holding a session of the account but the one named, including any a credential
--- change has moved on from but not yet renewed, so that renewal refuses.
-SELECT DISTINCT lineage FROM sessions WHERE account_id = @account_id::uuid AND lineage <> @kept::uuid ORDER BY lineage;
+-- Every lineage holding an unexpired session of the account but the one named, including any a
+-- credential change has moved on from but not yet renewed, so that renewal refuses. An expired
+-- row grants nothing and the store's cleanup removes it, so it is not signed out.
+SELECT DISTINCT lineage FROM sessions
+WHERE account_id = @account_id::uuid AND lineage <> @kept::uuid AND expiry > clock_timestamp() ORDER BY lineage;
 
 -- name: AccountHasSessionLineage :one
 -- unscoped: a browser session's account is the one it signed in to, which only that account ends.
-SELECT EXISTS(SELECT 1 FROM sessions WHERE account_id = @account_id::uuid AND lineage = @lineage::uuid);
+-- Whether the lineage holds an unexpired session of the account, as AccountSessionLineages counts one.
+SELECT EXISTS(SELECT 1 FROM sessions WHERE account_id = @account_id::uuid AND lineage = @lineage::uuid AND expiry > clock_timestamp());

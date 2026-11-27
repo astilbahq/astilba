@@ -37,6 +37,7 @@ export default interface Resources {
     },
     "sessions": {
       "activeNow": "Active now",
+      "alreadySignedOut": "That session was already signed out.",
       "browser": {
         "chrome": "Chrome",
         "edge": "Edge",
@@ -63,10 +64,12 @@ export default interface Resources {
         "other": "an unknown system",
         "windows": "Windows"
       },
+      "othersSignOutFailed": "The other sessions could not be signed out.",
       "othersSignedOut": "All other sessions signed out.",
       "retry": "Try again",
       "signOut": "Sign out",
-      "signOutFailed": "The session could not be signed out. The list shows the sessions signed in now.",
+      "signOutFailed": "The session could not be signed out.",
+      "signOutNamed": "Sign out {{client}}",
       "signOutOthers": "Sign out all other sessions",
       "signedIn": "Signed in {{at, datetime}}",
       "signedOut": "Session signed out.",

@@ -19,7 +19,8 @@ var CurrentSession = &domain.Error{Code: "invalid_input", Message: "This is the 
 //
 // It holds the account's row, so it orders with a credential change, and rechecks the session
 // that asks under it, as those changes do. Signing out every other session ends one a credential
-// change has moved on from but not yet renewed, so that renewal refuses. Ending any records an
+// change has moved on from but not yet renewed, so that renewal refuses. A session past its
+// expiry is signed out already, so it is not found and ends nothing. Ending any records an
 // account security event and queues its notice in the same transaction.
 func (s *Service) SignOutSessions(ctx context.Context, p store.Principal, lineage *uuid.UUID) error {
 	if !p.Recent() {

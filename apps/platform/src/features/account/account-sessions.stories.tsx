@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/tanstack-react";
 import { http, HttpResponse } from "msw/http";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Schema, Session } from "../../api/client";
 import { scenario } from "../../workshop/fixtures";
 import { Account } from "./account";
@@ -54,21 +54,39 @@ const phone: Schema["AccountSession"] = {
 };
 const signedIn = { sessions: [thisSession, laptop, phone], unlisted: 0 };
 const alone = { sessions: [thisSession], unlisted: 0 };
-// The list starts as initial, and each sign-out answers with after.
+const failure = (code: Schema["Error"]["code"], status: number) =>
+  HttpResponse.json(
+    {
+      code,
+      message: "Workshop response.",
+      requestId: "workshop-request",
+    } satisfies Schema["Error"],
+    { status },
+  );
+// The list starts as initial, and each sign-out answers with after. A single sign-out can
+// instead fail, or find the session already signed out, when the list becomes after.
 function sessionsScenario(
   initial: Schema["AccountSessions"],
-  after: Schema["AccountSessions"] = initial,
-  session: Session = enabled,
-  ...actions: Parameters<typeof scenario>[1][]
+  {
+    after = initial,
+    session = enabled,
+    signOut = "succeeds",
+  }: {
+    after?: Schema["AccountSessions"];
+    session?: Session;
+    signOut?: "succeeds" | "fails" | "gone";
+  } = {},
 ) {
   let current = initial;
   const parameters = scenario(
     session,
-    ...actions,
     http.delete("/api/v1/auth/sessions/:id", ({ params }) => {
       sent.push(params.id);
+      if (signOut === "fails") return failure("internal_error", 500);
       current = after;
-      return HttpResponse.json(after);
+      return signOut === "gone"
+        ? failure("not_found", 404)
+        : HttpResponse.json(after);
     }),
     http.post("/api/v1/auth/sessions/sign-out-others", () => {
       sent.push("others");
@@ -103,14 +121,18 @@ export const SignedInSessions: Story = {
     await expect(items[0]).toHaveTextContent("Firefox on macOS");
     await expect(items[0]).toHaveTextContent("This session");
     await expect(items[0]).toHaveTextContent("Active now");
-    await expect(
-      within(items[0]).queryByRole("button", { name: "Sign out" }),
-    ).toBeNull();
+    await expect(within(items[0]).queryByRole("button")).toBeNull();
     await expect(items[1]).toHaveTextContent("Network 198.51.100.0/24");
     await expect(items[2]).toHaveTextContent("Network unknown");
+    // Each button names the session it ends, which lists of controls show without context.
     await expect(
-      within(items[1]).getByRole("button", { name: "Sign out" }),
+      within(items[1]).getByRole("button", {
+        name: "Sign out Chrome on Windows",
+      }),
     ).toHaveAccessibleDescription(/^Chrome on Windows/);
+    await expect(
+      within(items[2]).getByRole("button", { name: "Sign out Safari on iOS" }),
+    ).toBeVisible();
     await expect(
       list.getByText(
         "2 older sessions aren’t shown. Signing out all other sessions ends them too.",
@@ -121,14 +143,15 @@ export const SignedInSessions: Story = {
 // Signing out one session ends it; focus moves to the section, since its button is gone.
 export const SignOutASession: Story = {
   ...sessionsScenario(signedIn, {
-    sessions: [thisSession, phone],
-    unlisted: 0,
+    after: { sessions: [thisSession, phone], unlisted: 0 },
   }),
   play: async ({ canvasElement }) => {
     const list = sessionList(canvasElement);
     const items = await list.findAllByRole("listitem");
     await userEvent.click(
-      within(items[1]).getByRole("button", { name: "Sign out" }),
+      within(items[1]).getByRole("button", {
+        name: "Sign out Chrome on Windows",
+      }),
     );
     await expect(await list.findByText("Session signed out.")).toHaveAttribute(
       "role",
@@ -141,11 +164,56 @@ export const SignOutASession: Story = {
     await expect(sent).toEqual([laptop.id]);
   },
 };
+// A sign-out that fails says so, keeps the list and returns focus to the button that asked.
+export const SignOutFails: Story = {
+  ...sessionsScenario(signedIn, { signOut: "fails" }),
+  play: async ({ canvasElement }) => {
+    const list = sessionList(canvasElement);
+    const button = within((await list.findAllByRole("listitem"))[1]).getByRole(
+      "button",
+      { name: "Sign out Chrome on Windows" },
+    );
+    await userEvent.click(button);
+    await expect(await list.findByRole("alert")).toHaveTextContent(
+      "The session could not be signed out.",
+    );
+    await expect(list.getAllByRole("listitem")).toHaveLength(3);
+    await waitFor(() => expect(button).toHaveFocus());
+    await expect(sent).toEqual([laptop.id]);
+  },
+};
+// A session signed out elsewhere meanwhile is as good as signed out here.
+export const SignOutASessionAlreadySignedOut: Story = {
+  ...sessionsScenario(signedIn, {
+    after: { sessions: [thisSession, phone], unlisted: 0 },
+    signOut: "gone",
+  }),
+  play: async ({ canvasElement }) => {
+    const list = sessionList(canvasElement);
+    const items = await list.findAllByRole("listitem");
+    await userEvent.click(
+      within(items[1]).getByRole("button", {
+        name: "Sign out Chrome on Windows",
+      }),
+    );
+    await expect(
+      await list.findByText("That session was already signed out."),
+    ).toHaveAttribute("role", "status");
+    await expect(list.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(list.getAllByRole("listitem")).toHaveLength(2));
+    await expect(
+      list.getByRole("heading", { name: "Signed-in sessions" }),
+    ).toHaveFocus();
+  },
+};
 // Without recent authentication, signing out asks the person to confirm their identity first.
 export const SignOutOtherSessionsConfirmsIdentity: Story = {
   ...(() => {
     const confirmed = sessionMutation(staleEnabled, enabled, "reauthenticate");
-    const signingOut = sessionsScenario(signedIn, alone, staleEnabled);
+    const signingOut = sessionsScenario(signedIn, {
+      after: alone,
+      session: staleEnabled,
+    });
     // Only its session read: its defaults would answer for the list this story sets.
     signingOut.parameters.msw.handlers.session.unshift(
       ...confirmed.parameters.msw.handlers.session.filter(
@@ -179,29 +247,32 @@ export const SignOutOtherSessionsConfirmsIdentity: Story = {
     await expect(sent).toEqual([{ code: "123456" }, "others"]);
   },
 };
-// A list that cannot be read says so and offers to try again.
+// A list that cannot be read says so, and trying again reads it.
 export const SessionsUnavailable: Story = {
-  parameters: (() => {
+  ...(() => {
+    let failed = false;
     const parameters = scenario(enabled);
     parameters.msw.handlers.session.unshift(
-      http.get("/api/v1/auth/sessions", () =>
-        HttpResponse.json(
-          {
-            code: "internal_error",
-            message: "Workshop response.",
-            requestId: "workshop-request",
-          } satisfies Schema["Error"],
-          { status: 500 },
-        ),
-      ),
+      http.get("/api/v1/auth/sessions", () => {
+        if (failed) return HttpResponse.json(alone);
+        failed = true;
+        return failure("internal_error", 500);
+      }),
     );
-    return parameters;
+    return {
+      parameters,
+      beforeEach: () => {
+        failed = false;
+      },
+    };
   })(),
   play: async ({ canvasElement }) => {
     const list = sessionList(canvasElement);
     await expect(
       await list.findByText("Your sessions could not be loaded."),
     ).toBeVisible();
-    await expect(list.getByRole("button", { name: "Try again" })).toBeVisible();
+    await userEvent.click(list.getByRole("button", { name: "Try again" }));
+    await expect(await list.findAllByRole("listitem")).toHaveLength(1);
+    await expect(list.queryByRole("alert")).toBeNull();
   },
 };

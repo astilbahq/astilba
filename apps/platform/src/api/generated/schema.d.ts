@@ -704,7 +704,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The account's signed-in browser sessions, most recently seen first, marking the one that asks. */
+        /** @description The account's signed-in browser sessions, the one that asks first and then the most recently seen, marking the one that asks. */
         get: operations["listAccountSessions"];
         put?: never;
         post?: never;
@@ -743,7 +743,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** @description Signs out another session of the account. Needs recent authentication; the session that asks logs out instead. */
+        /** @description Signs out another session of the account. Needs recent authentication; the session that asks logs out instead. A session that is not signed in, as one signed out elsewhere or expired, is not found. */
         delete: operations["signOutSession"];
         options?: never;
         head?: never;
@@ -3522,7 +3522,7 @@ export interface components {
         };
         AccountSessions: {
             sessions: components["schemas"]["AccountSession"][];
-            /** @description Signed-in sessions seen less recently than those listed. Signing out every other session ends them too. */
+            /** @description Other signed-in sessions seen less recently than those listed. Signing out every other session ends them too. */
             unlisted: number;
         };
         /** @description A signed-in browser session, from its sign-in across every renewal of its token. What it shows of the client is from its latest request. */
