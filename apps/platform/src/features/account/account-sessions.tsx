@@ -1,25 +1,55 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  type RefObject,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { cx } from "../../../styled-system/css";
 import { accountSessionsOptions } from "../../api/account-sessions";
 import { ApiError, client, result, type Schema } from "../../api/client";
 import { isRecentAuthRequired } from "../../api/step-up";
 import { useSessionRequest } from "../../api/use-session-request";
-import { Button } from "../../components/button";
+import { Button, type ButtonProps } from "../../components/button";
 import * as s from "../../styles";
 import { ErrorNotice, useAction } from "../../ui";
 import * as styles from "./account.styles";
 
 const when = { dateStyle: "medium", timeStyle: "short" } as const;
 
+/**
+ * A button of the section that passes its focus to the section's heading when it goes away with
+ * focus on it: a re-read can remove a session's row, signing out the rest removes its button,
+ * and trying the list again replaces its button. It keeps focus while it waits, so a failure
+ * leaves focus on the button that asked.
+ */
+function SectionButton({
+  heading,
+  ...props
+}: ButtonProps & { heading: RefObject<HTMLHeadingElement | null> }) {
+  const button = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    const node = button.current;
+    const fallback = heading.current;
+    // Layout cleanup runs while the button is still in the document, so it sees that focus.
+    return () => {
+      if (node && node === document.activeElement) fallback?.focus();
+    };
+  }, [heading]);
+  return <Button ref={button} focusableWhenDisabled {...props} />;
+}
+
 function SessionItem({
   session,
   busy,
+  heading,
   onSignOut,
 }: {
   session: Schema["AccountSession"];
   busy: boolean;
+  heading: RefObject<HTMLHeadingElement | null>;
   onSignOut: (origin: Element) => void;
 }) {
   const { t } = useTranslation("account");
@@ -68,7 +98,8 @@ function SessionItem({
         </p>
       </div>
       {!session.current && (
-        <Button
+        <SectionButton
+          heading={heading}
           size="sm"
           aria-label={t(($) => $.sessions.signOutNamed, { client })}
           aria-describedby={id}
@@ -76,7 +107,7 @@ function SessionItem({
           onClick={(event) => onSignOut(event.currentTarget)}
         >
           {t(($) => $.sessions.signOut)}
-        </Button>
+        </SectionButton>
       )}
     </li>
   );
@@ -96,22 +127,8 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
   const [kind, setKind] = useState<"one" | "others">("one");
   const [message, setMessage] = useState<"one" | "others" | "gone">();
   const heading = useRef<HTMLHeadingElement>(null);
-  // The control that asked, which a failure returns focus to once it is enabled again.
-  const returnTo = useRef<Element>(null);
-  useEffect(() => {
-    if (action.isPending || !action.isError) return;
-    const target = returnTo.current;
-    returnTo.current = null;
-    const active = document.activeElement;
-    if (active && active !== document.body && active.isConnected) return;
-    (target instanceof HTMLElement && target.isConnected
-      ? target
-      : heading.current
-    )?.focus();
-  }, [action.isPending, action.isError]);
   const signedOut = (outcome: "one" | "others" | "gone") => {
     setMessage(outcome);
-    returnTo.current = null;
     // The control that asked is gone, or has nothing left to do.
     heading.current?.focus();
   };
@@ -122,7 +139,6 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
   ) => {
     setMessage(undefined);
     setKind(asked);
-    returnTo.current = origin;
     action.run(
       () =>
         request(send, (next) => {
@@ -189,12 +205,12 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
               error={sessions.error}
               message={t(($) => $.sessions.loadFailed)}
             />
-            <Button
-              disabled={sessions.isFetching}
+            <SectionButton
+              heading={heading}
               onClick={() => void sessions.refetch()}
             >
               {t(($) => $.sessions.retry)}
-            </Button>
+            </SectionButton>
           </div>
         ) : (
           <p role="status">{t(($) => $.sessions.loading)}</p>
@@ -207,6 +223,7 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
                 key={session.id}
                 session={session}
                 busy={action.isPending}
+                heading={heading}
                 onSignOut={(origin) =>
                   signOut(
                     "one",
@@ -232,7 +249,8 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
           )}
           {others > 0 ? (
             <div className={styles.actions}>
-              <Button
+              <SectionButton
+                heading={heading}
                 variant="danger"
                 disabled={action.isPending}
                 onClick={(event) =>
@@ -249,7 +267,7 @@ export function SessionsSection({ user }: { user: Schema["Account"] }) {
                 }
               >
                 {t(($) => $.sessions.signOutOthers)}
-              </Button>
+              </SectionButton>
             </div>
           ) : (
             <p className={s.muted}>{t(($) => $.sessions.noOthers)}</p>

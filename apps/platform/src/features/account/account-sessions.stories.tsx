@@ -63,8 +63,9 @@ const failure = (code: Schema["Error"]["code"], status: number) =>
     } satisfies Schema["Error"],
     { status },
   );
-// The list starts as initial, and each sign-out answers with after. A single sign-out can
-// instead fail, or find the session already signed out, when the list becomes after.
+// The list starts as initial, and each sign-out answers with after. A sign-out can instead fail
+// before ending anything, fail after ending what it was asked to ("lost"), or find a single
+// session already signed out; the list becomes after unless it fails before ending anything.
 function sessionsScenario(
   initial: Schema["AccountSessions"],
   {
@@ -74,24 +75,27 @@ function sessionsScenario(
   }: {
     after?: Schema["AccountSessions"];
     session?: Session;
-    signOut?: "succeeds" | "fails" | "gone";
+    signOut?: "succeeds" | "fails" | "lost" | "gone";
   } = {},
 ) {
   let current = initial;
+  const answer = () => {
+    if (signOut === "fails") return failure("internal_error", 500);
+    current = after;
+    if (signOut === "lost") return failure("internal_error", 502);
+    return signOut === "gone"
+      ? failure("not_found", 404)
+      : HttpResponse.json(after);
+  };
   const parameters = scenario(
     session,
     http.delete("/api/v1/auth/sessions/:id", ({ params }) => {
       sent.push(params.id);
-      if (signOut === "fails") return failure("internal_error", 500);
-      current = after;
-      return signOut === "gone"
-        ? failure("not_found", 404)
-        : HttpResponse.json(after);
+      return answer();
     }),
     http.post("/api/v1/auth/sessions/sign-out-others", () => {
       sent.push("others");
-      current = after;
-      return HttpResponse.json(after);
+      return answer();
     }),
   );
   parameters.msw.handlers.session.unshift(
@@ -178,8 +182,48 @@ export const SignOutFails: Story = {
       "The session could not be signed out.",
     );
     await expect(list.getAllByRole("listitem")).toHaveLength(3);
-    await waitFor(() => expect(button).toHaveFocus());
+    await expect(button).toHaveFocus();
     await expect(sent).toEqual([laptop.id]);
+  },
+};
+// A sign-out that ended the session but whose answer was lost fails, and reading the list again
+// shows the session gone; focus moves to the section, since its button went with it.
+export const SignOutAnswerLost: Story = {
+  ...sessionsScenario(signedIn, {
+    after: { sessions: [thisSession, phone], unlisted: 0 },
+    signOut: "lost",
+  }),
+  play: async ({ canvasElement }) => {
+    const list = sessionList(canvasElement);
+    await userEvent.click(
+      within((await list.findAllByRole("listitem"))[1]).getByRole("button", {
+        name: "Sign out Chrome on Windows",
+      }),
+    );
+    await expect(await list.findByRole("alert")).toHaveTextContent(
+      "The session could not be signed out.",
+    );
+    await waitFor(() => expect(list.getAllByRole("listitem")).toHaveLength(2));
+    await expect(
+      list.getByRole("heading", { name: "Signed-in sessions" }),
+    ).toHaveFocus();
+  },
+};
+// Failing to sign out the rest says so for all of them, and keeps focus on their button.
+export const SignOutOtherSessionsFails: Story = {
+  ...sessionsScenario(signedIn, { signOut: "fails" }),
+  play: async ({ canvasElement }) => {
+    const list = sessionList(canvasElement);
+    const button = await list.findByRole("button", {
+      name: "Sign out all other sessions",
+    });
+    await userEvent.click(button);
+    await expect(await list.findByRole("alert")).toHaveTextContent(
+      "The other sessions could not be signed out.",
+    );
+    await expect(list.getAllByRole("listitem")).toHaveLength(3);
+    await expect(button).toHaveFocus();
+    await expect(sent).toEqual(["others"]);
   },
 };
 // A session signed out elsewhere meanwhile is as good as signed out here.
@@ -272,6 +316,10 @@ export const SessionsUnavailable: Story = {
       await list.findByText("Your sessions could not be loaded."),
     ).toBeVisible();
     await userEvent.click(list.getByRole("button", { name: "Try again" }));
+    // Its button goes away as the list is read again, so focus moves to the section.
+    await expect(
+      list.getByRole("heading", { name: "Signed-in sessions" }),
+    ).toHaveFocus();
     await expect(await list.findAllByRole("listitem")).toHaveLength(1);
     await expect(list.queryByRole("alert")).toBeNull();
   },
