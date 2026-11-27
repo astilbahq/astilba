@@ -87,6 +87,9 @@ func (s *Service) StartBackupRecovery(ctx context.Context, p store.Principal, ws
 		if destination.Kind != "s3" {
 			return domain.Invalid("policy.destination")
 		}
+		if err = requireBackupPrefixes(ctx, tx, ws, server, destination); err != nil {
+			return err
+		}
 		receipts, err := db.New(tx).BackupSnapshotReceipts(ctx, db.BackupSnapshotReceiptsParams{WorkspaceID: ws, EnvironmentID: env, ID: id})
 		if err != nil {
 			return err
@@ -501,6 +504,11 @@ func openRecoveryAccess(ctx context.Context, q *db.Queries, keys valueKeys, ws u
 	}
 	if err = json.Unmarshal(destination.Configuration, &r.Installation.Destination); err != nil {
 		return err
+	}
+	// The lost server's destination: the restore's server is given its keys for this restore
+	// alone, see docs/backups.md#restoring-a-lost-servers-snapshot.
+	if !destinationAdmits(r.Installation.Destination.Kind, destination.ServerID, destination.Shared, policy.ServerID) {
+		return domain.Conflict
 	}
 	var a backup.Access
 	if err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: policy.DestinationID}, destination.EncryptedAccess, &a); err != nil {

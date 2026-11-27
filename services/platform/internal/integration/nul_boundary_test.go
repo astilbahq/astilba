@@ -122,7 +122,7 @@ func TestNULIsRefusedFromPeopleAndReplacedFromHosts(t *testing.T) {
 	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Local", "kind": "filesystem", "root": "/var/backups" + nul, "endpoint": "", "bucket": "", "region": "", "access": map[string]string{"accessKey": "", "secretKey": "", "password": ""}}, 400, &refused)
 	invalidField(t, refused, "root")
 	var dest backup.Destination
-	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Recovery bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &dest)
+	b.call("POST", prefix+"/backup-destinations", map[string]any{"name": "Recovery bucket", "kind": "s3", "serverId": enrolled.Server.Id, "root": "", "endpoint": "https://storage.example.test", "bucket": "recovery-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key", "secretKey": "storage-secret", "password": ""}}, 201, &dest)
 
 	// 2. A policy's name.
 	password := "repository-password"

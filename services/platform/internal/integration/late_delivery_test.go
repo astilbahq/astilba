@@ -202,7 +202,7 @@ func TestExpiredBackupCommandReachesALaggingAgentCancelled(t *testing.T) {
 
 	secretKey, password := "storage-secret-late-canary", "repository-password-late-canary"
 	var dest backup.Destination
-	h.b.call("POST", h.prefix+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "root": "", "endpoint": "https://storage.example.test", "bucket": "late-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key-id", "secretKey": secretKey, "password": ""}}, 201, &dest)
+	h.b.call("POST", h.prefix+"/backup-destinations", map[string]any{"name": "Bucket", "kind": "s3", "serverId": h.server, "root": "", "endpoint": "https://storage.example.test", "bucket": "late-fixture", "region": "test-1", "access": map[string]string{"accessKey": "storage-key-id", "secretKey": secretKey, "password": ""}}, 201, &dest)
 	var policy backup.Policy
 	h.b.call("POST", h.path+"/backup-policies", api.BackupPolicyRequest{Name: "Daily backup", ResourceId: h.pg, DestinationId: dest.ID, Method: "postgres-logical", Schedule: api.DailySchedule{Hour: 2, Minute: 30, Timezone: "UTC"}, Retain: 7, Enabled: true, Command: []string{}, Password: &password}, 201, &policy)
 	var check api.Operation

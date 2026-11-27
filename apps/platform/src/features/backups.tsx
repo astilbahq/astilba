@@ -2,7 +2,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import {
   backupDestinationsOptions,
-  backupDestinationsPath,
   backupPoliciesPath,
   nilID,
 } from "../api/backups";
@@ -14,6 +13,7 @@ import { Label } from "../components/label";
 import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
+import { BackupDestinationForm } from "./backup-destination-form";
 import { PolicyStatus } from "./backup-policy-status";
 import {
   BackupRecommendations,
@@ -71,76 +71,11 @@ export function Backups({
       />
       {owner && (
         <>
-          <details className={s.panel}>
-            <summary>Add a reusable backup destination</summary>
-            <p>
-              Filesystem destinations must use a root enabled by the server
-              operator and share the server’s failure boundary. S3 data travels
-              directly from the agent to your storage.
-            </p>
-            <Form
-              action={action}
-              label="Add backup destination"
-              onSubmit={(d, form) =>
-                action.run(async () => {
-                  await result(
-                    client.POST(backupDestinationsPath, {
-                      params: { path },
-                      body: {
-                        name: text(d, "name"),
-                        kind: text(d, "kind") as "filesystem" | "s3",
-                        root: text(d, "root"),
-                        endpoint: text(d, "endpoint"),
-                        bucket: text(d, "bucket"),
-                        region: text(d, "region"),
-                        access: {
-                          accessKey: text(d, "key"),
-                          secretKey: text(d, "secret"),
-                          password: "",
-                        },
-                      },
-                    }),
-                  );
-                  form.reset();
-                  await queries.invalidateQueries({
-                    queryKey: ["backup-destinations", path.workspaceId],
-                  });
-                })
-              }
-            >
-              <Field name="name" label="Destination name" />
-              <Label>
-                Storage type
-                <Select name="kind">
-                  <option value="filesystem">Filesystem</option>
-                  <option value="s3">S3 compatible</option>
-                </Select>
-              </Label>
-              <Field
-                name="root"
-                label="Operator-approved filesystem root"
-                required={false}
-              />
-              <Field name="endpoint" label="S3 HTTPS origin" required={false} />
-              <Field name="bucket" label="S3 bucket" required={false} />
-              <Field name="region" label="S3 region" required={false} />
-              <Field
-                name="key"
-                label="S3 access key"
-                type="password"
-                autoComplete="off"
-                required={false}
-              />
-              <Field
-                name="secret"
-                label="S3 secret key"
-                type="password"
-                autoComplete="off"
-                required={false}
-              />
-              <BusyButton busy={action.isPending}>Add destination</BusyButton>
-            </Form>
-          </details>
+          <BackupDestinationForm
+            path={path}
+            servers={servers.data}
+            action={action}
+          />
           <BackupRecommendations
             path={path}
             revision={revision}
@@ -198,11 +133,17 @@ export function Backups({
                       },
                     }),
                   ).catch(async (error: unknown) => {
-                    // A destination exposed since the list loaded is refused until it is
-                    // acknowledged, so the list is refreshed to offer the acknowledgement.
+                    // A destination exposed, or bound to a server, since the list loaded is
+                    // refused, so the list is refreshed to show why.
                     if (
                       error instanceof ApiError &&
-                      error.detail.fields?.includes("destination.exposed")
+                      error.detail.fields?.some((f) =>
+                        [
+                          "destination.exposed",
+                          "destination.server",
+                          "destination.shared",
+                        ].includes(f),
+                      )
                     )
                       await queries.invalidateQueries({
                         queryKey: backupDestinationsOptions(path.workspaceId)
@@ -278,11 +219,15 @@ export function Backups({
                     >
                       <option value="">Choose a destination</option>
                       {destinations.data?.map((d) => (
-                        <option key={d.id} value={d.id}>
+                        <option key={d.id} value={d.id} disabled={d.shared}>
                           {d.name}
                           {d.kind === "filesystem"
                             ? " — same server failure boundary"
-                            : ""}
+                            : d.shared
+                              ? " — shared by several servers, closed to new policies"
+                              : d.serverId
+                                ? ` — keys held by ${servers.data?.find((v) => v.id === d.serverId)?.name ?? "another server"}`
+                                : ""}
                           {d.exposed
                             ? " — keys exposed to a revoked server"
                             : ""}

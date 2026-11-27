@@ -45,12 +45,7 @@ func (e *Engine) resticTo(ctx context.Context, in backup.Installation, dir strin
 	if err = os.WriteFile(filepath.Join(secret, scratchPassword), []byte(in.Access.Password), 0600); err != nil {
 		return err
 	}
-	repo := ""
-	if in.Destination.Kind == "filesystem" {
-		repo = filepath.Join(in.Destination.Root, in.Policy.WorkspaceID.String(), in.Policy.ID.String(), "repository")
-	} else {
-		repo = "s3:" + in.Destination.Endpoint + "/" + in.Destination.Bucket + "/astilba/" + in.Policy.WorkspaceID.String() + "/" + in.Policy.ID.String()
-	}
+	repo := in.Destination.Repository(in.Policy)
 	cmd := exec.CommandContext(ctx, cli, append([]string{"--no-cache", "--json"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + secret, "RESTIC_REPOSITORY=" + repo, "RESTIC_PASSWORD_FILE=" + filepath.Join(secret, scratchPassword), "AWS_ACCESS_KEY_ID=" + in.Access.AccessKey, "AWS_SECRET_ACCESS_KEY=" + in.Access.SecretKey, "AWS_DEFAULT_REGION=" + in.Destination.Region, "TMPDIR=" + secret}

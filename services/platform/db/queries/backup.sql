@@ -8,23 +8,30 @@ SELECT workspace_id,id,encrypted_access FROM backup_policies FOR UPDATE;
 UPDATE backup_policies SET encrypted_access=$3 WHERE workspace_id=$1 AND id=$2;
 
 -- name: ListBackupDestinations :many
-SELECT configuration FROM backup_destinations WHERE workspace_id = @workspace_id ORDER BY id LIMIT 100;
+SELECT configuration, server_id, shared FROM backup_destinations WHERE workspace_id = @workspace_id ORDER BY id LIMIT 100;
 
 -- name: CountBackupDestinations :one
 SELECT count(*) FROM backup_destinations WHERE workspace_id = @workspace_id;
 
 -- name: InsertBackupDestination :exec
-INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access)
-VALUES(@id,@workspace_id,@configuration,@encrypted_access);
+INSERT INTO backup_destinations(id,workspace_id,configuration,encrypted_access,server_id)
+VALUES(@id,@workspace_id,@configuration,@encrypted_access,sqlc.narg(server_id));
 
--- name: BackupDestinationExists :one
-SELECT EXISTS(SELECT 1 FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id);
+-- name: LockBackupDestinationBinding :one
+-- Held until the policy saving under it commits, so two policies on different servers can't both
+-- bind a destination that has no server yet.
+SELECT configuration, server_id, shared FROM backup_destinations
+WHERE workspace_id = @workspace_id AND id = @id FOR UPDATE;
+
+-- name: BindBackupDestination :exec
+UPDATE backup_destinations SET server_id = @server_id
+WHERE workspace_id = @workspace_id AND id = @id AND server_id IS NULL AND NOT shared AND configuration->>'kind' = 's3';
 
 -- name: BackupDestinationConfiguration :one
 SELECT configuration FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: BackupDestinationAccess :one
-SELECT configuration,encrypted_access FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
+SELECT configuration,encrypted_access,server_id,shared FROM backup_destinations WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: ListBackupPolicies :many
 SELECT configuration FROM backup_policies

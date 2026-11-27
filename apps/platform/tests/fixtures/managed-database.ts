@@ -120,6 +120,7 @@ export async function managedDatabase(
             upgrades: true,
             postgresReleases: releases.map((r) => r.image),
             postgresOwnerRole: true,
+            backupPrefixes: true,
             ...acknowledgesReleases,
           },
           preflight: {
@@ -210,6 +211,7 @@ export async function managedDatabase(
   return {
     secret,
     ws,
+    server: enrollment.server,
     headers,
     post,
     prefix,

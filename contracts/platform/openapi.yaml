@@ -5905,6 +5905,9 @@
         recoveryRestore:
           type: boolean
           description: Runs the restore command kind, which restores a snapshot from a lost server's backup repository. Advertised only after Astilba-Agent-Recovery-Restore v1.
+        backupPrefixes:
+          type: boolean
+          description: Keeps an S3 destination's repositories under its prefix. A policy or restore on a destination with a prefix needs it. Advertised only after Astilba-Agent-Backup-Prefixes v1.
         backups:
           type: boolean
         upgrades:
@@ -9619,6 +9622,28 @@
         region:
           type: string
           maxLength: 80
+        prefix:
+          type: string
+          maxLength: 256
+          description: >-
+            Where in the bucket an S3 destination keeps its repositories, as
+            `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names
+            of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'.
+            Without one, repositories are at the bucket's root.
+        serverId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            The server an S3 destination's storage keys are given to. Only policies on it can use
+            the destination. Null for a filesystem destination, a shared one, and one created before
+            destinations were bound that no policy has used yet, which its first policy binds.
+        shared:
+          type: boolean
+          description: >-
+            Whether this S3 destination was used by policies on more than one server before
+            destinations were bound. Each of those servers holds its keys and can delete or
+            overwrite the others' backups. Its policies keep using it, and no new policy can.
         exposed:
           type: boolean
           description: >-
@@ -9639,6 +9664,8 @@
         - endpoint
         - bucket
         - region
+        - serverId
+        - shared
         - exposed
         - policies
     BackupInstallationDestination:
@@ -9669,6 +9696,14 @@
         region:
           type: string
           maxLength: 80
+        prefix:
+          type: string
+          maxLength: 256
+          description: >-
+            Where in the bucket an S3 destination keeps its repositories, as
+            `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names
+            of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'.
+            Without one, repositories are at the bucket's root.
       required:
         - id
         - name
@@ -9735,6 +9770,21 @@
         region:
           type: string
           maxLength: 80
+        prefix:
+          type: string
+          maxLength: 256
+          description: >-
+            Where in the bucket an S3 destination keeps its repositories, as
+            `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names
+            of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'.
+            Without one, repositories are at the bucket's root.
+        serverId:
+          type: string
+          format: uuid
+          description: >-
+            Required for an S3 destination, and refused for a filesystem one: the deployment server
+            its storage keys are given to. Only policies on that server can use it, so give it keys
+            limited to its prefix or bucket.
         access:
           $ref: '#/components/schemas/BackupAccess'
       required:
@@ -9788,6 +9838,10 @@
         destinationId:
           type: string
           format: uuid
+          description: >-
+            A new policy can use only an S3 destination bound to its server, or one no policy has
+            used yet, which it binds to its server. One bound to another server is refused with the
+            field `destination.server`, and a shared one with `destination.shared`.
         method:
           type: string
           enum:
