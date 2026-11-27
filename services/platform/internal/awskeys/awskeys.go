@@ -46,8 +46,10 @@ var (
 	// ErrUnlisted is a user AWS refused a call on by name, and that isn't listed under its path.
 	// For a user that doesn't exist, IAM may answer a call by name with AccessDenied rather than
 	// NoSuchEntity, since it checks the call against the user's ARN without its path, which a
-	// path-scoped admin policy doesn't match. ListUsers can lag a create, so only a caller that
-	// knows the user, if it exists, is older than that lag may take this as gone.
+	// path-scoped admin policy doesn't match. It also answers for a user someone with wider
+	// rights moved off the path, which keeps its keys, and ListUsers can lag a create. So a caller
+	// takes this as gone only with more: that the user's own key no longer works (KeyWorks), or
+	// that the user, if it exists, is older than that lag and holds no key anyone has.
 	ErrUnlisted = errors.New("AWS refused a call on the user, and it isn't listed under its path")
 	// ErrUnavailable is any other failure: the network, a timeout or an AWS error.
 	ErrUnavailable = errors.New("AWS could not be reached or failed")
@@ -255,6 +257,16 @@ func (c *Client) Identify(ctx context.Context, cred Credential) (Identity, error
 		return Identity{}, ErrNotAdmin
 	}
 	return id, nil
+}
+
+// KeyWorks reports whether AWS still accepts key, a minted user's own access key. No policy can
+// refuse GetCallerIdentity, so only a key that no longer exists fails it, with ErrCredential.
+func (c *Client) KeyWorks(ctx context.Context, key Credential) (bool, error) {
+	_, err := c.stsClient(key).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err = classify(err); errors.Is(err, ErrCredential) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // CanList checks that cred may list the users under path, which an admin policy that isn't
@@ -506,7 +518,7 @@ func (c *Client) UserExists(ctx context.Context, cred Credential, path, user str
 // unlisted settles a call on user that IAM refused with denied: ErrUnlisted if no user of that
 // name is listed under path, and denied if one is, or if the listing fails too.
 func (c *Client) unlisted(ctx context.Context, client *iam.Client, path, user string, denied error) error {
-	pages := iam.NewListUsersPaginator(client, &iam.ListUsersInput{PathPrefix: aws.String(path)})
+	pages := iam.NewListUsersPaginator(client, &iam.ListUsersInput{PathPrefix: aws.String(path), MaxItems: aws.Int32(1000)})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {

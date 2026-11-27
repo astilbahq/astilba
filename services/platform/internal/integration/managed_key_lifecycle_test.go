@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/awskeys"
 	"github.com/astilbahq/astilba/services/platform/internal/awskeys/awsfake"
@@ -219,9 +220,23 @@ func TestABusyEnvironmentDoesntHoldUpRevocation(t *testing.T) {
 	}
 }
 
-// A key whose IAM user is gone at AWS is revoked, whether IAM answers a call on the missing user by
-// name with NoSuchEntity or, under the path-scoped admin policy, with AccessDenied. Refused by
-// name and unlisted counts as gone only once the user, had the mint made it, would be listed.
+// keyState is a key's state and last error as its row has them.
+func (k *keysFixture) keyState(t *testing.T, id uuid.UUID) (string, string) {
+	t.Helper()
+	var state string
+	var last *string
+	if err := k.f.st.Pool.QueryRow(context.Background(), `SELECT state,last_error FROM backup_storage_keys WHERE id=$1`, id).Scan(&state, &last); err != nil {
+		t.Fatal(err)
+	}
+	if last == nil {
+		return state, ""
+	}
+	return state, *last
+}
+
+// A key whose IAM user is gone at AWS is revoked on the next pass, whether IAM answers a call on
+// the missing user by name with NoSuchEntity or, under the path-scoped admin policy, with
+// AccessDenied: the key itself no longer works.
 func TestAKeyWhoseUserIsGoneIsRevokedWhateverIAMAnswers(t *testing.T) {
 	for _, report := range []bool{false, true} {
 		k := newKeysFixture(t)
@@ -233,32 +248,69 @@ func TestAKeyWhoseUserIsGoneIsRevokedWhateverIAMAnswers(t *testing.T) {
 		k.exec(t, `UPDATE backup_storage_keys SET activated_at=now() - interval '2 hours' WHERE id=$1`, d.Keys[0].Id)
 		k.b.call("POST", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/check", nil, 204, nil)
 		k.run(t, accountCheck{})
-		state := func() (string, string) {
-			var s string
-			var e *string
-			if err := k.f.st.Pool.QueryRow(context.Background(), `SELECT state,last_error FROM backup_storage_keys WHERE id=$1`, d.Keys[0].Id).Scan(&s, &e); err != nil {
-				t.Fatal(err)
-			}
-			if e == nil {
-				return s, ""
-			}
-			return s, *e
-		}
-		waitFor(t, "the account check didn't find the user gone", 30*time.Second, func() bool { s, _ := state(); return s != "active" })
+		waitFor(t, "the account check didn't find the user gone", 30*time.Second, func() bool { s, _ := k.keyState(t, d.Keys[0].Id); return s != "active" })
 		k.exec(t, `UPDATE backup_storage_keys SET next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
 		k.run(t, keySweep{})
-		if s, e := state(); report && s != "revoked" {
-			t.Fatalf("with NoSuchEntity, the key is %s (%s)", s, e)
-		} else if !report && (s != "revoking" || e != "not_listed") {
-			t.Fatalf("refused by name and unlisted just after its mint, the key is %s (%s)", s, e)
+		if s, e := k.keyState(t, d.Keys[0].Id); s != "revoked" {
+			t.Fatalf("reporting missing users %v, the key whose user is gone is %s (%s)", report, s, e)
 		}
-		if report {
-			continue
-		}
-		k.exec(t, `UPDATE backup_storage_keys SET created_at=now() - interval '20 minutes',next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
-		k.run(t, keySweep{})
-		if s, e := state(); s != "revoked" {
-			t.Fatalf("refused by name and unlisted well after its mint, the key is %s (%s)", s, e)
-		}
+	}
+}
+
+// A user someone with wider rights moved off the workspace's path is refused by name and unlisted,
+// as a missing one is, but its key still works: it stays revoking, and the account alerts.
+func TestAKeyWhoseUserMovedOffThePathStaysRevoking(t *testing.T) {
+	k := newKeysFixture(t)
+	var d api.BackupDestination
+	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	k.aws.MoveUser(d.Keys[0].UserName, "/elsewhere/")
+	k.b.call("POST", k.base+"/backup-destinations/"+d.Id.String()+"/keys/"+d.Keys[0].Id.String()+"/revoke", nil, 204, nil)
+	k.run(t, keySweep{})
+	if s, e := k.keyState(t, d.Keys[0].Id); s != "revoking" || e != "moved_off_path" {
+		t.Fatalf("the key whose user was moved is %s (%s)", s, e)
+	}
+	alerting, err := db.New(k.f.st.Pool).AlertingBackupStorageAccounts(context.Background(), k.ws)
+	if err != nil || !slices.Contains(alerting, k.account.Id) {
+		t.Fatal("the account doesn't alert for the moved user's key", alerting, err)
+	}
+}
+
+// A found user the owner deleted in the AWS console before revoking it here is revoked at once:
+// the check listed it under the path, so being refused by name and unlisted means it is gone.
+// A mint that never finished, whose user was never made, waits until the user would be listed.
+func TestUnlistedUsersWithoutAKeyAreRevokedOnceTheyWouldBeListed(t *testing.T) {
+	k := newKeysFixture(t)
+	path := awskeys.Path(k.ws.String())
+	stranger := "astilba-" + uuid.NewString()
+	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
+	account := k.base + "/backup-storage-accounts/" + k.account.Id.String()
+	k.b.call("POST", account+"/check", nil, 204, nil)
+	k.run(t, accountCheck{})
+	waitFor(t, "the account check didn't report the stranger", 30*time.Second, func() bool {
+		var list []api.BackupStorageAccount
+		k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &list)
+		return len(list) == 1 && !list[0].Checking && len(list[0].FoundUsers) == 1
+	})
+	k.aws.DeleteUser(stranger)
+	k.b.call("POST", account+"/found-users/"+stranger+"/revoke", nil, 204, nil)
+	k.run(t, keySweep{})
+	var found string
+	if err := k.f.st.Pool.QueryRow(context.Background(), `SELECT state FROM backup_storage_keys WHERE user_name=$1`, stranger).Scan(&found); err != nil || found != "revoked" {
+		t.Fatal("the found user deleted in the console is", found, err)
+	}
+
+	var d api.BackupDestination
+	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	k.aws.DeleteUser(d.Keys[0].UserName)
+	k.exec(t, `UPDATE backup_storage_keys SET state='revoking',activated_at=NULL,access_key_id=NULL,encrypted_secret=NULL,mint_deadline=now() - interval '10 minutes',next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
+	k.run(t, keySweep{})
+	if s, e := k.keyState(t, d.Keys[0].Id); s != "revoking" || e != "not_listed" {
+		t.Fatalf("an unfinished mint's missing user, just after its mint, is %s (%s)", s, e)
+	}
+	k.exec(t, `UPDATE backup_storage_keys SET created_at=now() - interval '20 minutes',next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
+	k.run(t, keySweep{})
+	// Revoked, the key goes with its destination, which never had an active key.
+	if _, ok := k.destinations()[d.Id]; ok {
+		t.Fatalf("an unfinished mint's missing user, well after its mint, is %v", k.destinations()[d.Id].Keys)
 	}
 }

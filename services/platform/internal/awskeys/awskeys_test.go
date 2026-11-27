@@ -383,3 +383,22 @@ func TestAMissingUserIsMissingWhateverIAMAnswers(t *testing.T) {
 		}
 	}
 }
+
+// A minted key works until it is revoked, wherever its user is moved, and no admin policy can
+// change that answer.
+func TestKeyWorksUntilTheKeyIsGone(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	key, err := f.client.Mint(ctx, f.admin, f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.aws.MoveUser(f.spec.User, "/elsewhere/")
+	if works, err := f.client.KeyWorks(ctx, key); err != nil || !works {
+		t.Fatalf("a moved user's key works %v: %v", works, err)
+	}
+	f.aws.DeleteUser(f.spec.User)
+	if works, err := f.client.KeyWorks(ctx, key); err != nil || works {
+		t.Fatalf("a deleted user's key works %v: %v", works, err)
+	}
+}

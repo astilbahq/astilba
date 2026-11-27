@@ -222,6 +222,14 @@ func (a *AWS) IssueKey(name string) Credential {
 	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}
 }
 
+// MoveUser moves a user to another path, as someone with IAM rights wider than the admin policy's
+// could. The user keeps its keys and policies.
+func (a *AWS) MoveUser(name, userPath string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.users[name].path = userPath
+}
+
 // DeleteUser removes a user and its keys directly, as someone with IAM rights would.
 func (a *AWS) DeleteUser(name string) {
 	a.mu.Lock()

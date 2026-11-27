@@ -17,6 +17,7 @@ const failures = {
   user_missing: "userMissing",
   delete_conflict: "deleteConflict",
   not_listed: "notListed",
+  moved_off_path: "movedOffPath",
 } as const;
 
 // Turns a managed key's or storage account's machine values into plain words. Codes are an open

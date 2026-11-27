@@ -119,11 +119,12 @@ const alertingBackupStorageAccounts = `-- name: AlertingBackupStorageAccounts :m
 SELECT a.id FROM backup_storage_accounts a
 WHERE a.workspace_id = $1 AND (a.check_error IS NOT NULL OR COALESCE((a.report->>'alert')::bool,false)
     OR EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id
-        AND k.purpose = 'found' AND k.state = 'revoking' AND k.attempts >= 3))
+        AND k.state = 'revoking' AND ((k.purpose = 'found' AND k.attempts >= 3) OR k.last_error = 'moved_off_path')))
 `
 
 // The accounts whose latest check failed or found something the owner should look at.
-// A found user whose revocation keeps failing is still a user management didn't make.
+// A found user whose revocation keeps failing is still a user management didn't make, and a key
+// whose user was moved off the workspace's path still works where management can't revoke it.
 func (q *Queries) AlertingBackupStorageAccounts(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := q.db.Query(ctx, alertingBackupStorageAccounts, workspaceID)
 	if err != nil {
@@ -284,15 +285,17 @@ WHERE id=(SELECT k.id FROM backup_storage_keys k
         AND (k.activated_at IS NOT NULL OR k.purpose = 'found' OR k.mint_deadline + interval '5 minutes' <= clock_timestamp())
         AND k.workspace_id <> ALL($1::uuid[])
     ORDER BY k.next_attempt_at,k.id LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING workspace_id,id,account_id,user_name,created_at
+RETURNING workspace_id,id,account_id,user_name,purpose,encrypted_secret,created_at
 `
 
 type ClaimDueBackupStorageKeyRow struct {
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-	AccountID   uuid.UUID `json:"account_id"`
-	UserName    string    `json:"user_name"`
-	CreatedAt   time.Time `json:"created_at"`
+	WorkspaceID     uuid.UUID `json:"workspace_id"`
+	ID              uuid.UUID `json:"id"`
+	AccountID       uuid.UUID `json:"account_id"`
+	UserName        string    `json:"user_name"`
+	Purpose         string    `json:"purpose"`
+	EncryptedSecret []byte    `json:"encrypted_secret"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // unscoped: the revocation sweep visits every workspace. Claiming moves the key's next attempt on,
@@ -308,6 +311,8 @@ func (q *Queries) ClaimDueBackupStorageKey(ctx context.Context, stalledWorkspace
 		&i.ID,
 		&i.AccountID,
 		&i.UserName,
+		&i.Purpose,
+		&i.EncryptedSecret,
 		&i.CreatedAt,
 	)
 	return i, err

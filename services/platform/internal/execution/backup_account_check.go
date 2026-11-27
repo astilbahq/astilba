@@ -171,7 +171,9 @@ func (s *Service) listAccount(ctx context.Context, account db.BackupStorageAccou
 		}
 		if !listed[k.UserName] {
 			// A listing can lag a create, so only a key activated well before it began is
-			// asked about, and only IAM's own answer for the user counts.
+			// asked about, and only IAM's answer for the user, confirmed by a second listing
+			// when IAM refuses it by name, counts. A user moved off the path seems missing too;
+			// the sweep revokes its key only once AWS no longer accepts it.
 			if l.truncated || k.ActivatedAt == nil || k.ActivatedAt.After(l.began.Add(-time.Hour)) {
 				continue
 			}

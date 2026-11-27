@@ -154,8 +154,9 @@ var rules = map[Purpose]rule{
 	Seal:    {principals: people, seal: append(slices.Clone(workspaceKinds), installationKinds...), open: []Kind{RecoveryCheckpoint}, limit: defaultLimit},
 	Deliver: {principals: []PrincipalKind{AgentPrincipal}, open: []Kind{SecretVersion, BuildSecret, Git, GitHubAuthorization, Registry, BackupDestination, BackupPolicy, BackupStorageKey, RecoveryCheckpoint}, limit: defaultLimit},
 	// Operating with a GitHub grant or connection can refresh and store it again. Minting a backup
-	// storage key opens the storage account's credential and seals the key it mints.
-	Operate: {principals: people, open: []Kind{Git, GitHubAuthorization, Registry, AlertWebhook, BackupStorageAccount}, seal: []Kind{Git, GitHubAuthorization, BackupStorageKey}, limit: defaultLimit},
+	// storage key opens the storage account's credential and seals the key it mints; revoking one
+	// whose user AWS can't find opens the key, to check that AWS no longer accepts it.
+	Operate: {principals: people, open: []Kind{Git, GitHubAuthorization, Registry, AlertWebhook, BackupStorageAccount, BackupStorageKey}, seal: []Kind{Git, GitHubAuthorization, BackupStorageKey}, limit: defaultLimit},
 	// Planning work checks build inputs, and measures what a command will carry, before it
 	// stores a command an agent will receive.
 	Inspect:      {principals: people, open: []Kind{SecretVersion, BuildSecret, Registry, BackupPolicy, BackupDestination, BackupStorageKey}, limit: defaultLimit},

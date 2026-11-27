@@ -203,18 +203,65 @@ func (s *Service) revokeAtAWS(ctx context.Context, k db.ClaimDueBackupStorageKey
 		return errAccountMoved
 	}
 	err = s.AWS.Revoke(ctx, admin, awskeys.Path(k.WorkspaceID.String()), k.UserName)
-	switch {
-	case errors.Is(err, awskeys.ErrNotFound):
-		return nil
-	case errors.Is(err, awskeys.ErrUnlisted) && time.Since(k.CreatedAt) > unlistedAfter:
-		// IAM refuses a missing user by name under a path-scoped admin policy. The user, if any,
-		// was made after the key's row, by the mint, so by now it would be listed.
+	if errors.Is(err, awskeys.ErrUnlisted) {
+		return s.settleUnlisted(ctx, k, err)
+	}
+	if errors.Is(err, awskeys.ErrNotFound) {
 		return nil
 	}
 	return err
 }
 
-// unlistedAfter is how old a key's row must be before a user IAM refuses by name and doesn't list
-// counts as gone: past the mint that may still be making the user, and a margin for ListUsers,
-// which can lag a create.
+// settleUnlisted decides whether a key whose user IAM refuses by name and doesn't list under the
+// workspace's path is revoked. That is how IAM answers for a missing user under a path-scoped
+// admin policy, but also for one moved off the path, which keeps its keys.
+//   - A key management holds the secret of is revoked once AWS no longer accepts the key itself.
+//   - A found user is revoked: the account check listed it under the path, and only someone with
+//     wider rights than the admin key could have moved it.
+//   - A key whose mint never finished holds a secret nobody kept. Its user, if the mint made one,
+//     was made after the key's row, so once the row is past the mint and a margin for ListUsers,
+//     which can lag a create, the user would be listed.
+func (s *Service) settleUnlisted(ctx context.Context, k db.ClaimDueBackupStorageKeyRow, unlisted error) error {
+	switch {
+	case k.EncryptedSecret != nil:
+		works, err := s.keyWorks(ctx, k)
+		if err != nil {
+			return errors.Join(unlisted, err)
+		} else if works {
+			return errors.Join(unlisted, errKeyWorks)
+		}
+		return nil
+	case k.Purpose == "found":
+		return nil
+	case time.Since(k.CreatedAt) > unlistedAfter:
+		return nil
+	}
+	return unlisted
+}
+
+// unlistedAfter is how old a key's row must be before an unfinished mint's user that IAM refuses
+// by name and doesn't list counts as gone.
 const unlistedAfter = mintDeadline + 10*time.Minute
+
+// errKeyWorks is a key AWS still accepts, though IAM refuses its user by name and doesn't list it
+// under the workspace's path: someone with wider rights than the admin key moved the user.
+var errKeyWorks = errors.New("AWS still accepts the key, whose user is no longer under the workspace's path")
+
+// keyWorks opens k's secret and asks AWS whether it still accepts the key.
+func (s *Service) keyWorks(ctx context.Context, k db.ClaimDueBackupStorageKeyRow) (bool, error) {
+	item := secretbroker.Item{Kind: secretbroker.BackupStorageKey, ID: k.ID}
+	session, err := s.Store.Broker.Begin(ctx, secretbroker.Request{Workspace: k.WorkspaceID, Purpose: secretbroker.Operate, Principal: keySweepPrincipal, Items: []secretbroker.Item{item}, Reason: "revoke"})
+	if err != nil {
+		return false, err
+	}
+	var a mintedAccess
+	err = openIntegration(session, item, k.EncryptedSecret, &a)
+	session.Close(ctx, secretbroker.UsedIf(err == nil))
+	if err != nil {
+		return false, err
+	}
+	key := awskeys.Credential{AccessKeyID: a.AccessKey, SecretAccessKey: a.SecretKey}
+	a = mintedAccess{}
+	defer clearCredential(&key)
+	return s.AWS.KeyWorks(ctx, key)
+}

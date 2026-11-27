@@ -476,6 +476,7 @@ export default interface Resources {
       "accountChanged": "The admin key now belongs to another AWS account. Replace it with a key of the account it was added with.",
       "credentialRefused": "AWS no longer accepts the account’s admin key. Replace it.",
       "deleteConflict": "AWS won’t delete the user while something else is attached to it, such as a console password, an MFA device, a group or another policy. Management keeps it denied all access meanwhile. Remove those in the AWS console so management can delete it.",
+      "movedOffPath": "The user is no longer under the workspace’s path, so the admin key can’t change it, but AWS still accepts its key. Someone with wider IAM rights moved it. Delete the user in the AWS console, or move it back so management can revoke it.",
       "notAdmin": "The admin key no longer belongs to an IAM user outside /astilba/.",
       "notFound": "AWS couldn’t find the user or key.",
       "notListed": "AWS refused the request for the user, and doesn’t list it under the workspace’s path, which is how IAM can answer for a user that no longer exists. Management counts it revoked once the user, if it existed, would be listed.",
