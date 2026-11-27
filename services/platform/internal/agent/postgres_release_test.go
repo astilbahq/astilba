@@ -142,6 +142,22 @@ func TestLongNamesKeepWholeCharactersAndTheirApplication(t *testing.T) {
 	}
 }
 
+// A name can't break a note's lines, reorder its text or pass for another: what isn't graphic is
+// escaped, in a database's name and its application's, and a cut still keeps whole characters and
+// the application.
+func TestNamesAreEscapedInNotes(t *testing.T) {
+	override := string(rune(0x202e))
+	escaped := "\\u" + "202e"
+	if list := listSome([]listed{{"a\nb" + override + "c\\d" + string([]byte{0xff}) + `"e"`, "Bill" + override + "ing"}}, exclusionsRoom); list != `a\nb`+escaped+`c\\d\xff"e" (Bill`+escaped+`ing)` {
+		t.Fatalf("a name wasn't escaped: %q", list)
+	}
+	long := "x\n" + strings.Repeat(override+"ä", 100)
+	note := reindexNote(nil, []listed{{long, "Billing"}}, nil, []string{long})
+	if !utf8.ValidString(note) || strings.Contains(note, override) || strings.Contains(note, "\n") || !strings.Contains(note, "… (Billing)") {
+		t.Fatalf("an escaped name broke the note: %q", note)
+	}
+}
+
 // A lone name needs no room for a count of the rest, so one that fits its room is kept whole.
 func TestALoneNameThatFitsIsKeptWhole(t *testing.T) {
 	alone := strings.Repeat("d", 55)

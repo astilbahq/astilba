@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
@@ -289,12 +290,16 @@ func reindexNote(unfinished []string, closed, invalid []listed, exclusions []str
 // which deployment's it is.
 type listed struct{ name, application string }
 
-// listSome joins names within limit bytes, its count of the rest included. A name longer than
-// 120 bytes, or than the room the count leaves, is cut at a whole character, its own part before
-// its application's, so the note still says whose it is. An application keeps whatever room its
-// database's whole name leaves, and at least half.
+// listSome joins names within limit bytes, its count of the rest included. Names come from the
+// customer's database, so each is escaped first. A name longer than 120 bytes, or than the room the
+// count leaves, is cut at a whole character, its own part before its application's, so the note
+// still says whose it is. An application keeps whatever room its database's whole name leaves, and
+// at least half.
 func listSome(names []listed, limit int) string {
 	names = slices.Clone(names)
+	for i, n := range names {
+		names[i] = listed{graphicName(n.name), graphicName(n.application)}
+	}
 	slices.SortFunc(names, func(a, b listed) int {
 		return cmp.Or(cmp.Compare(a.name, b.name), cmp.Compare(a.application, b.application))
 	})
@@ -324,6 +329,30 @@ func listSome(names []listed, limit int) string {
 		out = next
 	}
 	return out
+}
+
+// graphicName escapes, as Go quotes a string, each character in name that isn't graphic, each byte
+// that isn't UTF-8 and each backslash, so a name can't break the note's lines, reorder its text or
+// pass for another. Quotation marks, which PostgreSQL puts around unusual identifiers, stay as
+// they are.
+func graphicName(name string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); {
+		r, size := utf8.DecodeRuneInString(name[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			b.WriteString(`\x` + strconv.FormatUint(uint64(name[i])|0x100, 16)[1:])
+		case r == '\\':
+			b.WriteString(`\\`)
+		case unicode.IsGraphic(r):
+			b.WriteRune(r)
+		default:
+			quoted := strconv.QuoteRuneToGraphic(r)
+			b.WriteString(quoted[1 : len(quoted)-1])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // cutName shortens name to whole characters within width bytes, the mark of the cut included.

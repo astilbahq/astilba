@@ -420,18 +420,29 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				if err != nil || left == "" {
 					t.Fatalf("no temporary schema was left: %q (%v)", out, err)
 				}
-				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "CREATE FUNCTION "+left+".leftover() RETURNS integer LANGUAGE sql AS 'SELECT 1'; CREATE TYPE "+left+".mood AS ENUM ('calm')"); err != nil {
+				// A range type's constructors and multirange go with it, so only the type is named.
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "CREATE FUNCTION "+left+".leftover() RETURNS integer LANGUAGE sql AS 'SELECT 1'; CREATE TYPE "+left+".mood AS ENUM ('calm'); CREATE TYPE "+left+".span AS RANGE (subtype = integer)"); err != nil {
 					t.Fatal(err)
 				}
 				err = e.upgradeDatabaseChecks(ctx, helper, a)
-				if err == nil || !strings.Contains(err.Error(), "function "+left+".leftover()") || !strings.Contains(err.Error(), "type "+left+".mood") || strings.Contains(err.Error(), "[]") {
-					t.Fatalf("a crashed session's leftovers weren't named: %v", err)
+				if err == nil || !strings.Contains(err.Error(), "function "+left+".leftover()") || !strings.Contains(err.Error(), "type "+left+".mood") || !strings.Contains(err.Error(), "type "+left+".span") || strings.Contains(err.Error(), "[]") || strings.Contains(err.Error(), "multirange") || strings.Contains(err.Error(), ".span(") {
+					t.Fatalf("a crashed session's leftovers weren't named, each once: %v", err)
 				}
-				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "DROP FUNCTION "+left+".leftover(); DROP TYPE "+left+".mood"); err != nil {
+				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "DROP FUNCTION "+left+".leftover(); DROP TYPE "+left+".mood; DROP TYPE "+left+".span"); err != nil {
 					t.Fatal(err)
 				}
 				if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
 					t.Fatal("the dropped leftovers were still refused:", err)
+				}
+				// What a connected session holds goes with it, so an unknown client holding temporary
+				// functions is refused as a client, before the databases are checked.
+				stop = hold(admin, "BEGIN; CREATE FUNCTION pg_temp.held() RETURNS integer LANGUAGE sql AS 'SELECT 1'; COMMIT", "SELECT count(*) FROM pg_proc WHERE proname = 'held'")
+				clients := state
+				clients.Command.Plan.ID = uuid.New()
+				_, err = e.upgradePreflight(ctx, clients, source.ID, a)
+				stop()
+				if err == nil || !strings.Contains(err.Error(), "disconnect external or unknown database clients") {
+					t.Fatalf("an unknown client holding temporary functions wasn't refused as a client: %v", err)
 				}
 				writerContext, stopWriter := context.WithCancel(ctx)
 				writerDone := make(chan struct{})
@@ -648,23 +659,34 @@ func nativeStoppedPreflight(t *testing.T, e *Engine, s upgradeState, source stri
 	pg.Database = "postgres"
 	admin.Postgres = &pg
 	db := pgClient{container: source}
-	if _, err := e.pgQuery(ctx, db, admin, "CREATE TABLE public.held(id integer)"); err != nil {
+	if _, err := e.pgQuery(ctx, db, admin, "CREATE TABLE public.held(id integer); GRANT ALL ON public.held TO "+quoteIdentifier(a.Postgres.Username)); err != nil {
 		t.Fatal(err)
 	}
-	holding, release := context.WithCancel(ctx)
-	held := make(chan struct{})
-	go func() {
-		defer close(held)
-		_, _ = e.pgQuery(holding, db, admin, "LOCK TABLE public.held IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120)")
-	}()
+	// The lock is held from the managed application's network identity, so the preflight takes its
+	// holder for a known writer and goes on to the dump.
+	p := s.Command.Plan.Source
+	holder, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image:  domain.Postgres17Image,
+			Cmd:    []string{"psql", "-h", deployment.ServiceName(a.ID), "-U", a.Postgres.Username, "-d", "postgres", "-c", "LOCK TABLE public.held IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120)"},
+			Env:    []string{"PGPASSWORD=" + s.Command.Installation.Access.DatabasePassword},
+			Labels: visualLabels(p, uuid.New()),
+		},
+		HostConfig: &container.HostConfig{NetworkMode: container.NetworkMode("container:" + p.ContainerName(p.Specification.Applications[0].ID))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		_, _ = e.pgQuery(ctx, db, a, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LOCK TABLE public.held%'")
-		release()
-		<-held
+		_, _ = e.Docker.ContainerRemove(ctx, holder.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 		if _, err := e.pgQuery(ctx, db, admin, "DROP TABLE public.held"); err != nil {
 			t.Error(err)
 		}
 	}()
+	if _, err = e.Docker.ContainerStart(ctx, holder.ID, client.ContainerStartOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	until := func(what, sql, want string) {
 		t.Helper()
 		for n := 0; ; n++ {

@@ -85,8 +85,9 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		// inline-sql: reads a managed database's catalog, not the platform database.
 		raw, err = e.pgQuery(ctx, db, admin, uncountedSQL+"SELECT count(*) FROM ("+strings.Join(rows, " UNION ALL ")+") o WHERE (o.classid, o.oid) NOT IN (SELECT classid, objid FROM uncounted)")
 		if err != nil || strings.TrimSpace(string(raw)) != "0" {
+			// Each object named can be dropped: its own parts, which can't, go with it.
 			// inline-sql: reads a managed database's catalog, not the platform database.
-			raw, err = e.pgQuery(ctx, db, admin, uncountedSQL+"SELECT coalesce(json_agg(pg_catalog.pg_describe_object(d.classid, d.objid, 0) ORDER BY 1), '[]') FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_namespace n ON d.refclassid = 'pg_catalog.pg_namespace'::regclass AND d.refobjid = n.oid WHERE n.nspname ~ '^pg_(toast_)?temp_[0-9]+$' AND d.objsubid = 0 AND (d.classid, d.objid) NOT IN (SELECT classid, objid FROM uncounted)")
+			raw, err = e.pgQuery(ctx, db, admin, uncountedSQL+"SELECT coalesce(json_agg(pg_catalog.pg_describe_object(d.classid, d.objid, 0)), '[]') FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_namespace n ON d.refclassid = 'pg_catalog.pg_namespace'::regclass AND d.refobjid = n.oid WHERE n.nspname ~ '^pg_(toast_)?temp_[0-9]+$' AND (d.classid, d.objid) NOT IN (SELECT classid, objid FROM uncounted) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend i WHERE i.classid = d.classid AND i.objid = d.objid AND i.deptype = 'i')")
 			var leftovers []string
 			if err != nil || json.Unmarshal(raw, &leftovers) != nil {
 				leftovers = nil
@@ -102,14 +103,14 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 const leftoversRoom = 400
 
 // userObjectsNote refuses a maintenance database holding user objects. It names, by kind and
-// qualified name but never content, those in temporary schemas: a session that ends without
-// cleaning up, as when the server crashes, leaves its temporary functions and types there, and
-// PostgreSQL removes only tables.
+// qualified name but never content, those in temporary schemas: a connected session's temporary
+// functions and types are there, and so are those of a session that ended without cleaning up,
+// as when the server crashes, which PostgreSQL never removes on its own.
 func userObjectsNote(called string, leftovers []string) string {
 	if len(leftovers) == 0 {
 		return called + " contains user objects"
 	}
-	return called + " contains user objects, among them " + listSome(unqualified(leftovers), leftoversRoom) + " in temporary schemas, which a session that ended uncleanly leaves; drop them before upgrading"
+	return called + " contains user objects, among them " + listSome(unqualified(leftovers), leftoversRoom) + " in temporary schemas, held by a connected session or left by one that ended uncleanly; end the session or drop them before upgrading"
 }
 
 // catalogName is a PostgreSQL system catalog's name, put into a query only once it matches.
@@ -181,10 +182,11 @@ func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source st
 	if err = e.postgresManifest(ctx, helper, a, from.Image, &m); err != nil {
 		return nil, err
 	}
-	if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+	// Unknown clients are refused first: what a connected session holds isn't what it leaves.
+	if err = e.knownUpgradeWriters(ctx, helper, a, s.Command.Plan.Source); err != nil {
 		return nil, err
 	}
-	if err = e.knownUpgradeWriters(ctx, helper, a, s.Command.Plan.Source); err != nil {
+	if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
 		return nil, err
 	}
 	return e.pgQuery(ctx, helper, a, "SELECT pg_database_size(current_database())")
