@@ -285,9 +285,9 @@ func cloneRoutes(current routeSnapshot) (routeSnapshot, error) {
 }
 
 // applyRoutes publishes s and waits for the proxy to report it, and says whether it
-// created the proxy. It waits for the certificates of the publishing unit only, if any:
-// another environment's certificate, which depends on where that environment's domain
-// points, must not stop this publish.
+// created the proxy. It waits for the servers and certificates of the publishing unit
+// only, if any: another environment's certificate, which depends on where that
+// environment's domain points, must not stop this publish.
 func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyPolicy, unit string) (created bool, err error) {
 	raw, err := renderSnapshot(s)
 	if err != nil {
@@ -311,6 +311,9 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyP
 	if err = e.awaitRoutes(ctx, s, raw); err != nil {
 		return created, err
 	}
+	if err = e.awaitRouteServers(ctx, s, raw, unit); err != nil {
+		return created, err
+	}
 	return created, e.verifyCertificates(ctx, s.Sets[unit])
 }
 
@@ -318,33 +321,64 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyP
 // not enable.
 var errRouteDisabled = errors.New("reviewed route is not enabled")
 
-func (e *Engine) verifyRoutes(ctx context.Context, s routeSnapshot) error {
-	exec, err := e.Docker.ExecCreate(ctx, proxyName, client.ExecCreateOptions{AttachStdout: true, AttachStderr: true, Cmd: []string{"wget", "-T", "2", "-qO-", "http://127.0.0.1:8080/api/rawdata"}})
+// ingressRuntime is what the running proxy reports of each kind of runtime object, such
+// as its routers and services, by name. A health-checked service reports the status of
+// each of its servers, by URL.
+type ingressRuntime map[string]map[string]struct {
+	Status       string            `json:"status"`
+	ServerStatus map[string]string `json:"serverStatus"`
+}
+
+// errProxyOutputLimit is a proxy command that wrote more than its caller reads.
+var errProxyOutputLimit = errors.New("ingress observation exceeds limit")
+
+// proxyExec runs cmd in the proxy and returns what it wrote to each stream, refusing more
+// than limit bytes in all, and whether it ended with status 0.
+func (e *Engine) proxyExec(ctx context.Context, cmd []string, limit int) (stdout, stderr []byte, ok bool, err error) {
+	exec, err := e.Docker.ExecCreate(ctx, proxyName, client.ExecCreateOptions{AttachStdout: true, AttachStderr: true, Cmd: cmd})
 	if err != nil {
-		return err
+		return nil, nil, false, err
 	}
 	attached, err := e.Docker.ExecAttach(ctx, exec.ID, client.ExecAttachOptions{})
 	if err != nil {
-		return err
+		return nil, nil, false, err
 	}
 	defer attached.Close()
 	// The client doesn't tie a hijacked stream to ctx, and a frozen exec holds the engine lock.
 	defer context.AfterFunc(ctx, func() { attached.Close() })()
-	var output bytes.Buffer
-	if _, err = stdcopy.StdCopy(&output, io.Discard, io.LimitReader(attached.Reader, maxProxyObservation+1)); err != nil {
-		return err
+	var out, errOut bytes.Buffer
+	if _, err = stdcopy.StdCopy(&out, &errOut, io.LimitReader(attached.Reader, int64(limit)+1)); err != nil {
+		return nil, nil, false, err
 	}
-	if output.Len() > maxProxyObservation {
-		return errors.New("ingress observation exceeds limit")
+	if out.Len()+errOut.Len() > limit {
+		return nil, nil, false, errProxyOutputLimit
 	}
 	status, err := e.Docker.ExecInspect(ctx, exec.ID, client.ExecInspectOptions{})
-	if err != nil || status.Running || status.ExitCode != 0 {
-		return errors.New("ingress runtime API is unavailable")
+	if err != nil {
+		return nil, nil, false, err
 	}
-	var runtime map[string]map[string]struct {
-		Status string `json:"status"`
+	return out.Bytes(), errOut.Bytes(), !status.Running && status.ExitCode == 0, nil
+}
+
+// readIngressRuntime asks the running proxy what it loaded.
+func (e *Engine) readIngressRuntime(ctx context.Context) (ingressRuntime, error) {
+	output, _, ok, err := e.proxyExec(ctx, []string{"wget", "-T", "2", "-qO-", "http://127.0.0.1:8080/api/rawdata"}, maxProxyObservation)
+	if err != nil {
+		return nil, err
 	}
-	if err = json.Unmarshal(output.Bytes(), &runtime); err != nil {
+	if !ok {
+		return nil, errors.New("ingress runtime API is unavailable")
+	}
+	var runtime ingressRuntime
+	if err = json.Unmarshal(output, &runtime); err != nil {
+		return nil, err
+	}
+	return runtime, nil
+}
+
+func (e *Engine) verifyRoutes(ctx context.Context, s routeSnapshot) error {
+	runtime, err := e.readIngressRuntime(ctx)
+	if err != nil {
 		return err
 	}
 	if runtime["routers"]["activation-"+s.Revision+"@file"].Status != "enabled" {
