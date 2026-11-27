@@ -40,6 +40,18 @@ type unreadyWriter struct {
 
 func newUnreadyWriter(t *testing.T, app domain.Application, health *container.HealthConfig) *unreadyWriter {
 	t.Helper()
+	return newMaintenanceWriter(t, app, health, false)
+}
+
+// newRoutedWriter is a writer serving the route routed.example.test from a pool the
+// proxy probes at /health, which it answers while its health file exists.
+func newRoutedWriter(t *testing.T) *unreadyWriter {
+	t.Helper()
+	return newMaintenanceWriter(t, domain.Application{Command: []string{"sh", "-c", "mkdir -p /www && echo writer > /www/index.html && touch /www/health && trap 'exit 0' TERM; httpd -f -p 8080 -h /www & wait"}, Health: &domain.HealthCheck{Port: 8080, Path: "/health"}}, nil, true)
+}
+
+func newMaintenanceWriter(t *testing.T, app domain.Application, health *container.HealthConfig, routed bool) *unreadyWriter {
+	t.Helper()
 	if testing.Short() || os.Getenv("ASTILBA_NATIVE_AGENT") != "1" {
 		t.Skip("requires disposable native Linux host")
 	}
@@ -70,6 +82,13 @@ func newUnreadyWriter(t *testing.T, app domain.Application, health *container.He
 	p.Specification.Routes = []domain.Route{{ID: uuid.New(), TargetID: placed, Protocol: "http", Domain: "maintenance.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}}
 	p.Specification.Placement = &domain.Placement{NetworkID: networkID, IngressServerID: p.ServerID, Applications: []domain.ApplicationPlacement{{ApplicationID: placed, CPUMillis: 100, MemoryMiB: 64, Targets: []domain.PlacementTarget{{ServerID: remote, Count: 1}}}}}
 	p.Local = &deployment.LocalPlacement{GroupID: uuid.New(), Primary: true, Instances: map[string][]uuid.UUID{app.ID.String(): {app.ID}}, Network: hostnetwork.Manifest{Version: 1, NetworkID: networkID, MembershipID: uuid.New(), ServerID: p.ServerID, Generation: 1, ControllerGeneration: 1, Prefix: "10.251.0.0/24", Address: "10.251.0.1", PublicKey: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), ListenPort: 51820}}
+	if routed {
+		// The writer serves the route as a pool, as an ingress host serves another host's.
+		p.Specification.Routes = append(p.Specification.Routes, domain.Route{ID: uuid.New(), TargetID: app.ID, Protocol: "http", Domain: "routed.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}})
+		p.Local.Backends = map[string][]deployment.PrivateEndpoint{app.ID.String(): {{ServerID: p.ServerID, UnitID: p.UnitID, ResourceID: app.ID, InstanceID: app.ID, Address: deployment.ServiceName(app.ID), Port: 8080, ContainerPort: 8080}}}
+		p.HostChanges = true
+		newBackendFixture(t, p.ServerID)
+	}
 	p = p.WithHash()
 	if err = p.Validate(true); err != nil {
 		t.Fatal("invalid fixture plan: ", err)
@@ -102,6 +121,16 @@ func newUnreadyWriter(t *testing.T, app domain.Application, health *container.He
 		t.Fatal(err)
 	}
 	engine := &Engine{Docker: docker, Journal: j}
+	if routed {
+		// The proxy leaves the unit's network before the network goes.
+		t.Cleanup(func() {
+			_, _ = docker.ContainerRemove(context.Background(), proxyName, client.ContainerRemoveOptions{Force: true})
+			_, _ = docker.NetworkRemove(context.Background(), "astilba-ingress-network", client.NetworkRemoveOptions{})
+		})
+		if err = engine.publishVisualRoutes(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, expected, err := engine.observeVisualPlan(ctx, p, nil, true)
 	if err != nil {
 		t.Fatal(err)

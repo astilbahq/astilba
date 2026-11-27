@@ -83,6 +83,9 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 		if err := e.recordUnready(ctx, c, &s); err != nil {
 			return refuse(err)
 		}
+		if err := e.recordRouted(ctx, &s); err != nil {
+			return refuse(err)
+		}
 	case "restore":
 		if s.Maintenance.Kind != "restore" || !p.Local.Primary || s.Phase != "paused" && s.Phase != "restoring" && s.Phase != "restored" {
 			return fail(errors.New("restored-volume activation requires the frozen primary writer pause"))
@@ -173,6 +176,10 @@ func (e *Engine) executeMaintenancePhase(ctx context.Context, c api.ExecutionCom
 			}
 			if _, err = e.inspectMaintenanceWriters(ctx, s, expected, current.Expected); err != nil {
 				return fail(fmt.Errorf("the resumed unit changed before maintenance completion: %w", err))
+			}
+			// Every host has resumed by now, so a pool's servers on other hosts run too.
+			if err = e.confirmRouted(ctx, s, expected); err != nil {
+				return fail(fmt.Errorf("the resumed routes are not ready for maintenance completion: %w", err))
 			}
 		}
 		o, _, err := e.observeUnit(ctx, current.Plan, command.Secrets)

@@ -137,6 +137,10 @@ func (e *Engine) AcceptUnreadyWriters(ctx context.Context, id uuid.UUID) error {
 			s.Pause.Writers[key] = writer
 		}
 	}
+	// So are the routes, whose servers on other hosts this host cannot excuse.
+	if s.Routed != nil {
+		s.Routed = &maintenanceRoutes{Servers: []routedServer{}}
+	}
 	return e.Journal.db.Update(func(tx *bolt.Tx) error {
 		if err := e.Journal.checkController(tx, r.Command); err != nil {
 			return err
@@ -148,7 +152,7 @@ func (e *Engine) AcceptUnreadyWriters(ctx context.Context, id uuid.UUID) error {
 			return err
 		}
 		r.Report.State = "running"
-		r.Report.Note = "Local operator accepted this host's writers as they are after inspection. No container was changed."
+		r.Report.Note = "Local operator accepted this host's writers and routes as they are after inspection. No container was changed."
 		r.Report.Sequence++
 		return e.Journal.put(tx, "operations", id.String(), r)
 	})

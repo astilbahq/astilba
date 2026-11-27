@@ -541,7 +541,8 @@ func (e *Engine) activateUpgrade(ctx context.Context, c api.ExecutionCommand, s 
 			}
 		}
 	}
-	// A coordinated upgrade's writers run on other hosts and resume outside this command.
+	// A coordinated upgrade's writers resume outside this command, on every host, and each
+	// host's maintenance completion waits for its proxy to route them: see confirmRouted.
 	if c.ParentId == nil {
 		if err = e.confirmRouteServers(ctx, target.UnitID); err != nil {
 			return err

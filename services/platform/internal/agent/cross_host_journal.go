@@ -33,6 +33,9 @@ type crossHostState struct {
 	// Unready names the running instances that maintenance does not expect to be ready: see
 	// recordUnready and AcceptUnreadyWriters.
 	Unready map[string]bool
+	// Routed names the route servers completion waits for the proxy to route again: see
+	// recordRouted. It is nil for maintenance that an earlier agent reserved.
+	Routed *maintenanceRoutes
 }
 
 func (j *Journal) crossHostIn(tx *bolt.Tx) (crossHostState, error) {
