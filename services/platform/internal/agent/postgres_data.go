@@ -333,8 +333,9 @@ func listSome(names []listed, limit int) string {
 
 // graphicName escapes, as Go quotes a string, each character in name that isn't graphic, each byte
 // that isn't UTF-8 and each backslash, so a name can't break the note's lines or reorder its text.
-// Quotation marks stay as they are: the names come quoted as PostgreSQL quotes identifiers, so one
-// with commas or parentheses can't pass for several or for another application's.
+// Quotation marks stay as they are: database and object names come quoted as PostgreSQL quotes
+// identifiers, so one with commas or parentheses can't pass for several or for another
+// application's. Application names come from the platform and aren't quoted.
 func graphicName(name string) string {
 	var b strings.Builder
 	for i := 0; i < len(name); {
@@ -355,16 +356,26 @@ func graphicName(name string) string {
 	return b.String()
 }
 
-// cutName shortens name to whole characters within width bytes, the mark of the cut included.
+// cutName shortens name to whole characters within width bytes, the mark of the cut included. A
+// quotation mark the cut leaves open is closed before the mark, within width too, so a quoted
+// name still reads as one: PostgreSQL doubles a quotation mark inside a quoted identifier, so an
+// odd count means one is open.
 func cutName(name string, width int) string {
 	if len(name) <= width {
 		return name
 	}
-	end := max(width-len("…"), 0)
-	for end > 0 && !utf8.RuneStart(name[end]) {
-		end--
+	for end := max(width-len("…"), 0); ; end-- {
+		for end > 0 && !utf8.RuneStart(name[end]) {
+			end--
+		}
+		cut := name[:end]
+		if strings.Count(cut, `"`)%2 == 0 {
+			return cut + "…"
+		}
+		if len(cut)+len(`"…`) <= width {
+			return cut + `"…`
+		}
 	}
-	return name[:end] + "…"
 }
 
 // unqualified lists names that belong to no application in particular.

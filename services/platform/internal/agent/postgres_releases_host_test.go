@@ -260,7 +260,7 @@ RESET ROLE;`); err != nil {
 	}
 	note, err = e.reindexPostgres(ctx, after, begin)
 	e.Point = nil
-	if err != nil || !strings.Contains(note, "records_slot_excl") || strings.Contains(note, "did not finish") || steps != 2 || !moved {
+	if err != nil || !strings.Contains(note, `"a=b moved".public.records_slot_excl`) || strings.Contains(note, "did not finish") || steps != 2 || !moved {
 		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
 	}
 	query(`ALTER DATABASE "a=b" RENAME TO decoy`, `ALTER DATABASE "a=b moved" RENAME TO "a=b"`)

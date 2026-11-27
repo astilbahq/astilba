@@ -161,6 +161,35 @@ func TestNamesAreEscapedInNotes(t *testing.T) {
 			t.Fatalf("a list of escaped names of %d bytes in a room of %d: %q", len(list), room, list)
 		}
 	}
+	// A cut keeps a quoted name's quotation marks balanced, so it still reads as one name: the
+	// longest database name PostgreSQL allows (63 bytes), quoted, alone or beside another, and a
+	// long quoted database.index.
+	database := `"prod (Billing), ` + strings.Repeat("x", 47) + `"`
+	exclusion := `"` + strings.Repeat(`a""b (Billing), `, 8) + `".public."` + strings.Repeat("i", 60) + `"`
+	if len(database) != 63+len(`""`) || len(exclusion) <= 120 {
+		t.Fatalf("names of %d and %d bytes", len(database), len(exclusion))
+	}
+	for _, list := range []struct {
+		names []listed
+		room  int
+	}{
+		{[]listed{{database, "Shop"}}, closedRoom},
+		{[]listed{{database, "Shop"}, {"other", "Shop"}}, closedRoom},
+		{[]listed{{database, "Shop"}, {"other", "Shop"}}, invalidRoom},
+		{unqualified([]string{exclusion}), exclusionsRoom},
+		{unqualified([]string{exclusion, "other.public.i"}), exclusionsRoom},
+	} {
+		if text := listSome(list.names, list.room); len(text) > list.room || strings.Count(text, `"`)%2 != 0 || !strings.Contains(text, `"…`) {
+			t.Fatalf("a cut quoted name of %d bytes in a room of %d: %q", len(text), list.room, text)
+		}
+	}
+	for width := len("…"); width <= 130; width++ {
+		for _, name := range []string{database, exclusion, `"` + strings.Repeat(`""`, 70) + `"`} {
+			if cut := cutName(name, width); len(cut) > width || strings.Count(cut, `"`)%2 != 0 || !utf8.ValidString(cut) {
+				t.Fatalf("%q cut within %d bytes: %q", name, width, cut)
+			}
+		}
+	}
 	long := "x\n" + strings.Repeat(override+"ä", 100)
 	note := reindexNote(nil, []listed{{long, "Billing"}}, nil, []string{long})
 	if !utf8.ValidString(note) || strings.Contains(note, override) || strings.Contains(note, "\n") || !strings.Contains(note, "… (Billing)") {
