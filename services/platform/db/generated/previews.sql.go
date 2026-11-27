@@ -209,6 +209,88 @@ func (q *Queries) PreviewHost(ctx context.Context, arg PreviewHostParams) (uuid.
 	return server_id, err
 }
 
+const previewRefusalEnvironment = `-- name: PreviewRefusalEnvironment :one
+SELECT e.state::text AS state, e.draft_revision_id, e.applied_revision_id,
+ (SELECT md5(COALESCE(string_agg(v.id::text || ':' || (s.retired_at IS NULL)::text || ':' || (v.erased_at IS NULL)::text || ':' || COALESCE(v.plaintext_bytes::text, ''), ',' ORDER BY v.id), ''))
+  FROM secret_versions v JOIN secrets s ON s.workspace_id = v.workspace_id AND s.id = v.secret_id
+  WHERE s.workspace_id = e.workspace_id AND s.environment_id = e.id)::text AS secrets
+FROM environments e WHERE e.workspace_id = $1 AND e.id = $2
+`
+
+type PreviewRefusalEnvironmentParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type PreviewRefusalEnvironmentRow struct {
+	State             string     `json:"state"`
+	DraftRevisionID   uuid.UUID  `json:"draft_revision_id"`
+	AppliedRevisionID *uuid.UUID `json:"applied_revision_id"`
+	Secrets           string     `json:"secrets"`
+}
+
+// What a preview's build or promotion reads of its environment that an owner or a deployment
+// changes: its state, its draft and applied revisions, and, as a digest, each of its secrets'
+// versions with whether the secret is retired, the version is erased and its length is measured.
+// The runtime-secret check chooses what it searches for from these.
+func (q *Queries) PreviewRefusalEnvironment(ctx context.Context, arg PreviewRefusalEnvironmentParams) (PreviewRefusalEnvironmentRow, error) {
+	row := q.db.QueryRow(ctx, previewRefusalEnvironment, arg.WorkspaceID, arg.ID)
+	var i PreviewRefusalEnvironmentRow
+	err := row.Scan(
+		&i.State,
+		&i.DraftRevisionID,
+		&i.AppliedRevisionID,
+		&i.Secrets,
+	)
+	return i, err
+}
+
+const previewRefusalHost = `-- name: PreviewRefusalHost :one
+SELECT md5(capabilities::text)::text AS capabilities, revoked FROM servers WHERE workspace_id = $1 AND id = $2
+`
+
+type PreviewRefusalHostParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type PreviewRefusalHostRow struct {
+	Capabilities string `json:"capabilities"`
+	Revoked      bool   `json:"revoked"`
+}
+
+// What a preview step reads of its host that an agent update or a revocation changes: the
+// capabilities its agent last advertised, as a digest, and whether it is revoked.
+func (q *Queries) PreviewRefusalHost(ctx context.Context, arg PreviewRefusalHostParams) (PreviewRefusalHostRow, error) {
+	row := q.db.QueryRow(ctx, previewRefusalHost, arg.WorkspaceID, arg.ID)
+	var i PreviewRefusalHostRow
+	err := row.Scan(&i.Capabilities, &i.Revoked)
+	return i, err
+}
+
+const refusePreviewStep = `-- name: RefusePreviewStep :exec
+UPDATE preview_requests SET state = 'failed', note = $1, refused_key = $2, refusal_note = $1, updated_at = now(), next_check_at = now() + interval '5 minutes'
+WHERE workspace_id = $3 AND id = $4
+`
+
+type RefusePreviewStepParams struct {
+	Note        string    `json:"note"`
+	RefusedKey  string    `json:"refused_key"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// Fails a request whose step was refused for good, recording the step's key and the reason.
+func (q *Queries) RefusePreviewStep(ctx context.Context, arg RefusePreviewStepParams) error {
+	_, err := q.db.Exec(ctx, refusePreviewStep,
+		arg.Note,
+		arg.RefusedKey,
+		arg.WorkspaceID,
+		arg.ID,
+	)
+	return err
+}
+
 const releaseRevokedHostPreviews = `-- name: ReleaseRevokedHostPreviews :many
 UPDATE preview_requests r SET state='deleted',note = $1,released_by_revocation=true,cleanup_at=NULL,updated_at=now(),next_check_at=now()+interval '1 day'
 WHERE r.workspace_id = $2 AND r.environment_id IS NOT NULL AND r.state<>'deleted'
