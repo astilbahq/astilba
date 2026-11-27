@@ -34,7 +34,7 @@ func (e *Engine) settledRoutes(ctx context.Context, stableProxy bool) (routeStat
 
 // attemptRoutes replaces the host's settled routes with next, recording the attempt first
 // so an interrupted one is put back. A failed attempt restores the previous routes.
-func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next routeSnapshot, drift bool, unit string, stableProxy bool) error {
+func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next routeSnapshot, drift bool, wait routeWait, stableProxy bool) error {
 	state.Pending = true
 	if err := e.Journal.saveRouting(state); err != nil {
 		return err
@@ -43,7 +43,7 @@ func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next route
 	if drift {
 		policy = proxyRebuild
 	}
-	if created, err := e.applyRoutes(ctx, next, policy, unit); err != nil {
+	if created, err := e.applyRoutes(ctx, next, policy, wait); err != nil {
 		reloadErr := err
 		// The proxy is the one the journal records unless drift was accepted, and one this
 		// attempt created is new.
@@ -87,7 +87,7 @@ func (e *Engine) attemptRoutes(ctx context.Context, state routeState, next route
 // the proxy image, the proxy the journal recorded stays and serves the previous routes
 // again; any other proxy stays too, and the recovery needs attention.
 func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouched, stableProxy bool) error {
-	created, err := e.applyRoutes(ctx, previous, proxyRestore, "")
+	created, err := e.applyRoutes(ctx, previous, proxyRestore, routeWait{})
 	if errors.Is(err, errRouteDisabled) || err != nil && stableProxy {
 		return err
 	}
@@ -107,6 +107,6 @@ func (e *Engine) restoreRoutes(ctx context.Context, previous routeSnapshot, vouc
 			return errors.New("release proxy recovery requires an unchanged owned proxy")
 		}
 	}
-	_, err = e.applyRoutes(ctx, previous, proxyRebuild, "")
+	_, err = e.applyRoutes(ctx, previous, proxyRebuild, routeWait{})
 	return err
 }

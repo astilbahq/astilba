@@ -59,6 +59,24 @@ func TestHealthCheckedPoolsAreProbedWhereTheProxyProbes(t *testing.T) {
 	}
 }
 
+// The proxy refuses a check whose path names another host, so the agent must not probe
+// that host, and the pool fails at once.
+func TestHealthCheckPathNamingAHostIsNotProbed(t *testing.T) {
+	unit, target := uuid.New(), uuid.New()
+	r := domain.Route{ID: uuid.New(), TargetID: target, Protocol: "http", Domain: "pool.example.test", Port: 8080, TLS: "off", AllowCIDRs: []string{}}
+	set := deployment.RouteSet{UnitID: unit, EnvironmentID: uuid.New(), Routes: []domain.Route{r}, Backends: map[string]deployment.Backend{
+		target.String(): {InstanceIDs: []uuid.UUID{uuid.New(), uuid.New()}, Health: &domain.HealthCheck{Path: "//10.0.0.5/x", Port: 9000}},
+	}}
+	raw, err := renderSnapshot(routeSnapshot{QualifiedBackends: true, Revision: uuid.NewString(), Sets: map[string]deployment.RouteSet{unit.String(): set}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pools, err := healthCheckedPools(raw, set)
+	if !errors.As(err, new(*routeServersUnready)) || !strings.Contains(err.Error(), "route pool.example.test") || pools != nil {
+		t.Fatalf("pools %+v, err %v", pools, err)
+	}
+}
+
 // A failed probe's reason carries the server's answer, so it is kept to one short line of
 // printable text.
 func TestProbeReasonKeepsOnePrintableLine(t *testing.T) {
@@ -78,7 +96,7 @@ func TestProbeReasonKeepsOnePrintableLine(t *testing.T) {
 func TestRouteServersNoteNamesTheServer(t *testing.T) {
 	unready := &routeServersUnready{reason: errors.New("route a.example.test: server http://10.0.0.1:80 failed the proxy's health check: token-value")}
 	got := routeServersNote(errors.Join(errors.New("previous routes were restored"), unready), "Routing failed.", map[string]string{"TOKEN": "token-value"})
-	if !strings.HasPrefix(got, "Routing failed. The proxy could not route to every new server: route a.example.test") || strings.Contains(got, "token-value") {
+	if !strings.HasPrefix(got, "Routing failed. The proxy could not route to every server of the routes: route a.example.test") || strings.Contains(got, "token-value") {
 		t.Fatalf("note %q", got)
 	}
 	if got := routeServersNote(errors.New("other"), "Routing failed.", nil); got != "Routing failed." {

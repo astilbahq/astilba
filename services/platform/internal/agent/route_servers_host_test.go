@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -106,9 +107,18 @@ func TestNativeRoutedPoolServesOnceReady(t *testing.T) {
 	h.removeProxy()
 	h.healthy(u, false)
 	restored := make(chan struct{})
+	var arm sync.Once
 	h.e.Point = func(point string) {
 		if point == "route-published" {
-			time.AfterFunc(7*time.Second, func() { h.healthy(u, true); close(restored) })
+			arm.Do(func() {
+				// A failed publish publishes again to restore, and the test may end first.
+				timer := time.AfterFunc(7*time.Second, func() { h.healthy(u, true); close(restored) })
+				t.Cleanup(func() {
+					if !timer.Stop() {
+						<-restored
+					}
+				})
+			})
 		}
 	}
 	if err := h.e.publishVisualRoutes(t.Context(), h.poolPlan(u)); err != nil {
@@ -148,12 +158,16 @@ func TestNativeUnreachablePoolFailsItsPublish(t *testing.T) {
 	if err == nil {
 		t.Fatal("a pool the proxy cannot probe was published")
 	}
-	for _, want := range []string{"previous routes were restored", "the proxy cannot route to every server", "route " + u.domain, "failed the proxy's health check", "404"} {
+	for _, want := range []string{"previous routes were restored", "the proxy cannot route to every server", "route " + u.domain, "failed the proxy's health check"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the failure %q does not say %q", err, want)
 		}
 	}
-	if note := routeServersNote(err, "Routing failed.", nil); !strings.Contains(note, "The proxy could not route to every new server: route "+u.domain) {
+	// What the server answered stays in the agent's log.
+	if strings.Contains(err.Error(), "server returned error") {
+		t.Fatalf("the failure %q carries the server's answer", err)
+	}
+	if note := routeServersNote(err, "Routing failed.", nil); !strings.Contains(note, "The proxy could not route to every server of the routes: route "+u.domain) {
 		t.Fatalf("the note %q does not say why", note)
 	}
 	state, err := h.j.routing()
@@ -163,5 +177,15 @@ func TestNativeUnreachablePoolFailsItsPublish(t *testing.T) {
 	h.f.answers(proxyName, steady.domain, "steady")
 	if got, err := h.f.request(proxyName, u.domain); err == nil {
 		t.Fatalf("the failed route answered %q", got)
+	}
+	// The proxy reaps no process it did not start, so every probe must end with its exec.
+	processes, _, ok, err := h.e.proxyExec(t.Context(), []string{"ps", "-o", "stat,comm"}, 16<<10)
+	if err != nil || !ok {
+		t.Fatalf("listing the proxy's processes: %v", err)
+	}
+	for _, line := range strings.Split(string(processes), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Z") {
+			t.Fatalf("the probes left processes in the proxy:\n%s", processes)
+		}
 	}
 }

@@ -55,6 +55,11 @@ func TestNativeSupportedMajorUpgrades(t *testing.T) {
 		p.Specification.Routes = p.Specification.Routes[:1]
 		p.Specification.Applications[1].Source.Image = &image
 		p.Specification.Applications[1].Mounts[0].Target = domain.PostgresMount(image)
+		if releaseVerified {
+			// An upgrade publishes routes while the pool it routes to is stopped.
+			p.Specification.Applications[0].Replicas = 2
+			p.PrepareInstances(deployment.Plan{})
+		}
 		p = p.WithHash()
 		if !releaseVerified {
 			p.Specification.Applications[0].Command = []string{"sh", "-c", `mkdir -p /tmp/www/cgi-bin; printf ready > /tmp/www/health; printf '%s' "$VALUE" > /tmp/www/index.html; printf '#!/bin/sh\nsleep 6\nprintf "Content-Type: text/plain\\r\\n\\r\\n"\nprintf "%%s" "$VALUE"\n' > /tmp/www/cgi-bin/slow; chmod +x /tmp/www/cgi-bin/slow; exec httpd -f -p 8080 -h /tmp/www`}

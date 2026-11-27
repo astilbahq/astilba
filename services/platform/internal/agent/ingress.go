@@ -161,12 +161,34 @@ func (e *Engine) rememberProxy(ctx context.Context, s *routeSnapshot) error {
 	return nil
 }
 func (e *Engine) publishVisualRoutes(ctx context.Context, p deployment.Plan) error {
-	return e.publishRoutes(ctx, p, false)
+	return e.publishRoutes(ctx, p, false, true)
 }
 func (e *Engine) publishReleaseRoutes(ctx context.Context, p deployment.Plan) error {
-	return e.publishRoutes(ctx, p, true)
+	return e.publishRoutes(ctx, p, true, true)
 }
-func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stableProxy bool) error {
+
+// publishRoutesBeforeServers publishes p's routes while its servers are stopped, as an
+// upgrade does before it starts its writers again; confirmRouteServers waits for them
+// once they run.
+func (e *Engine) publishRoutesBeforeServers(ctx context.Context, p deployment.Plan) error {
+	return e.publishRoutes(ctx, p, false, false)
+}
+
+// confirmRouteServers waits until the proxy routes every health-checked pool of unit's
+// published routes, which the caller has found settled and in place.
+func (e *Engine) confirmRouteServers(ctx context.Context, unit uuid.UUID) error {
+	state, err := e.Journal.routing()
+	if err != nil {
+		return err
+	}
+	raw, err := renderSnapshot(state.Current)
+	if err != nil {
+		return err
+	}
+	return e.awaitRouteServers(ctx, state.Current, raw, unit.String())
+}
+
+func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stableProxy, servers bool) error {
 	state, err := e.settledRoutes(ctx, stableProxy)
 	if err != nil {
 		return err
@@ -185,7 +207,7 @@ func (e *Engine) publishRoutes(ctx context.Context, p deployment.Plan, stablePro
 	if err != nil {
 		return err
 	}
-	return e.attemptRoutes(ctx, state, next, drift, p.UnitID.String(), stableProxy)
+	return e.attemptRoutes(ctx, state, next, drift, routeWait{unit: p.UnitID.String(), servers: servers}, stableProxy)
 }
 
 // routesServe says whether the host already serves p's routes as publishing them would:
@@ -284,11 +306,19 @@ func cloneRoutes(current routeSnapshot) (routeSnapshot, error) {
 	return next, json.Unmarshal(raw, &next)
 }
 
-// applyRoutes publishes s and waits for the proxy to report it, and says whether it
-// created the proxy. It waits for the servers and certificates of the publishing unit
-// only, if any: another environment's certificate, which depends on where that
-// environment's domain points, must not stop this publish.
-func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyPolicy, unit string) (created bool, err error) {
+// routeWait is what a publish waits for besides its routes: the publishing unit's
+// certificates, and its servers unless they are not running yet. It names no unit when
+// routes are restored or only the proxy changes. Only the publishing unit is waited for:
+// another environment's certificate, which depends on where that environment's domain
+// points, or its servers, down or not, must not stop this publish.
+type routeWait struct {
+	unit    string
+	servers bool
+}
+
+// applyRoutes publishes s and waits for the proxy to report it and for what wait names,
+// and says whether it created the proxy.
+func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyPolicy, wait routeWait) (created bool, err error) {
 	raw, err := renderSnapshot(s)
 	if err != nil {
 		return false, err
@@ -311,10 +341,12 @@ func (e *Engine) applyRoutes(ctx context.Context, s routeSnapshot, policy proxyP
 	if err = e.awaitRoutes(ctx, s, raw); err != nil {
 		return created, err
 	}
-	if err = e.awaitRouteServers(ctx, s, raw, unit); err != nil {
-		return created, err
+	if wait.servers {
+		if err = e.awaitRouteServers(ctx, s, raw, wait.unit); err != nil {
+			return created, err
+		}
 	}
-	return created, e.verifyCertificates(ctx, s.Sets[unit])
+	return created, e.verifyCertificates(ctx, s.Sets[wait.unit])
 }
 
 // errRouteDisabled is a route the running proxy loaded from the published file and did
@@ -347,10 +379,12 @@ func (e *Engine) proxyExec(ctx context.Context, cmd []string, limit int) (stdout
 	// The client doesn't tie a hijacked stream to ctx, and a frozen exec holds the engine lock.
 	defer context.AfterFunc(ctx, func() { attached.Close() })()
 	var out, errOut bytes.Buffer
-	if _, err = stdcopy.StdCopy(&out, &errOut, io.LimitReader(attached.Reader, int64(limit)+1)); err != nil {
+	// The stream frames each write, so a read that reaches the limit is cut short.
+	stream := &io.LimitedReader{R: attached.Reader, N: int64(limit)}
+	if _, err = stdcopy.StdCopy(&out, &errOut, stream); err != nil {
 		return nil, nil, false, err
 	}
-	if out.Len()+errOut.Len() > limit {
+	if stream.N == 0 {
 		return nil, nil, false, errProxyOutputLimit
 	}
 	status, err := e.Docker.ExecInspect(ctx, exec.ID, client.ExecInspectOptions{})
