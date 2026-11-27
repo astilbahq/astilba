@@ -4781,7 +4781,9 @@ export interface components {
             /** @enum {string} */
             kind: "filesystem" | "s3";
             root: string;
+            /** @description An S3 destination's HTTPS origin, as `https://<host>[:<port>]`: a DNS name without a trailing dot or an IP address, and nothing after it. An AWS access point's host is refused. A destination that would share part of a bucket with another of the workspace's only because one's host names that bucket, such as `<bucket>.s3.<region>.amazonaws.com`, is refused with the field `endpoint`. */
             endpoint: string;
+            /** @description An S3 destination's bucket: 3 to 63 lowercase letters, digits, '.' and '-', starting and ending with a letter or digit. An AWS access point's alias, ending in `-s3alias` or `--ol-s3`, is refused. */
             bucket: string;
             region: string;
             /** @description Where in the bucket an S3 destination keeps its repositories, as `<bucket>/<prefix>/astilba/<workspace>/<policy>`, so its keys can be limited to it: names of letters, digits, '.', '_' and '-' that start with a letter or digit, joined by '/'. Without one, repositories are under `astilba/` at the bucket's root, so a prefix can't begin with `astilba`. A prefix that equals, contains or is inside another of the workspace's destinations' in a bucket of the same name, at any endpoint, or a second destination without one there, is refused with the field `prefix`, since keys limited to one would reach the other's backups. */

@@ -9845,9 +9845,19 @@
         endpoint:
           type: string
           maxLength: 512
+          description: >-
+            An S3 destination's HTTPS origin, as `https://<host>[:<port>]`: a DNS name without a
+            trailing dot or an IP address, and nothing after it. An AWS access point's host is
+            refused. A destination that would share part of a bucket with another of the
+            workspace's only because one's host names that bucket, such as
+            `<bucket>.s3.<region>.amazonaws.com`, is refused with the field `endpoint`.
         bucket:
           type: string
           maxLength: 63
+          description: >-
+            An S3 destination's bucket: 3 to 63 lowercase letters, digits, '.' and '-', starting
+            and ending with a letter or digit. An AWS access point's alias, ending in `-s3alias` or
+            `--ol-s3`, is refused.
         region:
           type: string
           maxLength: 80
