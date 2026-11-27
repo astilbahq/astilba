@@ -12,9 +12,9 @@
 ALTER TABLE preview_requests ADD COLUMN refused_key text NOT NULL DEFAULT '';
 ALTER TABLE preview_requests ADD COLUMN refusal_note text NOT NULL DEFAULT '';
 
-INSERT INTO schema_additive_migrations (version) VALUES (74);
+INSERT INTO schema_additive_migrations (version) VALUES (76);
 
 -- +goose Down
-DELETE FROM schema_additive_migrations WHERE version = 74;
+DELETE FROM schema_additive_migrations WHERE version = 76;
 ALTER TABLE preview_requests DROP COLUMN refusal_note;
 ALTER TABLE preview_requests DROP COLUMN refused_key;

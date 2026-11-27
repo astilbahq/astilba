@@ -90,9 +90,11 @@ func (s *Service) previewPromotionKey(ctx context.Context, tx pgx.Tx, p previewP
 }
 
 // refusePreview fails the request with note and records key, so later passes skip the step until
-// its inputs change.
+// its inputs change. The note is kept to be shown at every later pass, so it is bounded as an
+// agent's is. Every reason is a fixed sentence or names a field the API bounds, such as a host's
+// name or a Railpack digest, and never quotes the configuration (refusedChange).
 func refusePreview(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID, key, note string) error {
-	return db.New(tx).RefusePreviewStep(ctx, db.RefusePreviewStepParams{WorkspaceID: ws, ID: id, RefusedKey: key, Note: note + refusalRetry})
+	return db.New(tx).RefusePreviewStep(ctx, db.RefusePreviewStepParams{WorkspaceID: ws, ID: id, RefusedKey: key, Note: boundedNote(note) + refusalRetry})
 }
 
 // stillRefused is a pass that skips a step refused under the same key: the request stays failed
