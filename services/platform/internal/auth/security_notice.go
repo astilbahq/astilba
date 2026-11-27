@@ -23,6 +23,7 @@ const (
 	MFADisabled              = "mfa_disabled"
 	RecoveryCodesRegenerated = "recovery_codes_regenerated"
 	RecoveryCodeUsed         = "recovery_code_used"
+	SessionsSignedOut        = "sessions_signed_out"
 )
 
 const (
@@ -153,6 +154,8 @@ func securityNoticeText(kind string) (subject, change, remedy string) {
 		return "New Astilba recovery codes", "New recovery codes were made for your Astilba account, and the old ones no longer work", reset
 	case RecoveryCodeUsed:
 		return "An Astilba recovery code was used", "A recovery code was used to confirm your identity on your Astilba account, and it no longer works", reset
+	case SessionsSignedOut:
+		return "Sessions of your Astilba account were signed out", "Other signed-in sessions of your Astilba account were signed out from its account page", reset
 	}
 	return "Your Astilba account changed", "How your Astilba account signs in was changed", reset
 }
