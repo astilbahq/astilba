@@ -204,13 +204,14 @@ func (e *Engine) reindexPostgres(ctx context.Context, p deployment.Plan, begin f
 			continue
 		}
 		volume := a.Mounts[0].VolumeID
-		record, found, err := e.Journal.postgresData(volume)
+		record, _, err := e.Journal.postgresData(volume)
 		if err != nil {
 			return "", err
 		}
 		written, known := domain.PostgresReleaseOf(record.Image)
-		if !found || !known {
-			// As assumePostgresData does for storage no plan the unit saved has recorded yet.
+		if !known {
+			// A record that names no pinned release, or none at all, says nothing of the indexes:
+			// assume the oldest release of the major holds them, as assumePostgresData does.
 			written = oldestPostgres(serving.Major())
 		}
 		var queries []string
