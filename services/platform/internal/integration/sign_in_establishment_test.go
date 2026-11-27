@@ -14,6 +14,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/hosting"
 	"github.com/astilbahq/astilba/services/platform/internal/secretbroker"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // unsealableDevices refuses to seal device tokens while armed, as a token key that cannot be
@@ -62,6 +63,20 @@ func signedInSessions(t *testing.T, f *fixture, account uuid.UUID) int {
 		t.Fatal(err)
 	}
 	return count
+}
+
+// storedSessions is every stored session row, as text to compare.
+func storedSessions(t *testing.T, f *fixture) []string {
+	t.Helper()
+	rows, err := f.st.Pool.Query(context.Background(), "SELECT token || ' ' || encode(data,'hex') || ' ' || expiry::text FROM sessions ORDER BY token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 // browserCookies is every cookie b would send to path.
@@ -238,7 +253,7 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 				arm := failure.arm(t, f)
 				b, request := c.prepare(t, f)
 				before := browserCookies(t, b, "/api/v1/auth/login")
-				credentials, events := accountCredentials(t, f), securityEvents(t, f)
+				credentials, events, sessions := accountCredentials(t, f), securityEvents(t, f), storedSessions(t, f)
 				arm(true)
 				status, body := request()
 				arm(false)
@@ -250,6 +265,10 @@ func TestFailedSignInChangesNothing(t *testing.T) {
 				}
 				if !slices.Equal(securityEvents(t, f), events) {
 					t.Fatal("the failed request recorded a security event")
+				}
+				// Of any account, such as one the request would have created.
+				if !slices.Equal(storedSessions(t, f), sessions) {
+					t.Fatal("the failed request stored, changed or ended a session")
 				}
 				if got := signedInSessions(t, f, f.owner); got != c.signedIn {
 					t.Fatalf("%d sessions signed in, want %d", got, c.signedIn)

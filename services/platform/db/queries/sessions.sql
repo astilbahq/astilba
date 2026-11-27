@@ -63,6 +63,13 @@ WHERE id = ANY(@ids::uuid[]);
 -- unscoped: a lineage is one browser's chain of renewed session tokens.
 DELETE FROM sessions WHERE lineage = @lineage;
 
+-- name: HoldTroubleshootingBrowserBinding :exec
+-- unscoped: the hashed browser session token identifies the sessions it opened.
+-- Locks them for MoveTroubleshootingBrowserBinding before a transaction locks their account:
+-- one that ends a session locks its row first, and its audit event then refers to the account.
+SELECT id FROM troubleshooting_sessions
+WHERE browser_session_hash = @binding AND state <> 'closed' FOR UPDATE;
+
 -- name: MoveTroubleshootingBrowserBinding :exec
 -- unscoped: the hashed browser session token identifies the sessions it opened.
 UPDATE troubleshooting_sessions SET browser_session_hash = @renewed

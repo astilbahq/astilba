@@ -300,7 +300,7 @@ func TestReauthenticationFailsWhenThePasswordChangesDuringIt(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Password: f.password}, nil)
+		_, err := f.auth.Reauthenticate(ctx, principal, auth.Credential{Password: f.password}, nil, nil)
 		result <- err
 	}()
 	waiting := false

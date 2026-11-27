@@ -156,7 +156,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 		keys, err = s.secondFactor(ctx, id, secretbroker.Authenticate, secretbroker.TOTPPending, secretbroker.TOTP)
 		return err
 	}
-	account, err = s.withCredential(ctx, p, current, openKeys, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+	account, err = s.withCredential(ctx, p, current, openKeys, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		if err := s.pendingEnrolment(*locked, lineage); err != nil {
 			return err
 		}
@@ -194,7 +194,7 @@ func (s *Service) ConfirmMFA(ctx context.Context, p store.Principal, current Cre
 }
 func (s *Service) DisableMFA(ctx context.Context, p store.Principal, current Credential, finish Finish) (db.Account, error) {
 	id := p.Account.ID
-	account, err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+	account, err := s.withCredential(ctx, p, current, nil, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		if len(locked.TotpSecret) == 0 {
 			return domain.Conflict
 		}
@@ -216,7 +216,7 @@ func (s *Service) DisableMFA(ctx context.Context, p store.Principal, current Cre
 func (s *Service) RegenerateRecovery(ctx context.Context, p store.Principal, current Credential, finish Finish) (db.Account, []string, error) {
 	id := p.Account.ID
 	var codes []string
-	account, err := s.withCredential(ctx, p, current, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+	account, err := s.withCredential(ctx, p, current, nil, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		if len(locked.TotpSecret) == 0 {
 			return domain.Conflict
 		}

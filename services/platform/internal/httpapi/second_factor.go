@@ -40,8 +40,8 @@ func (s *Server) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request)
 	s.sendCodes(w, r, a, codes, session, e)
 }
 
-// sendCodes shows new recovery codes, which were saved only with the session stored with them,
-// so a failure before then left the codes the account had, and nothing fails after.
+// sendCodes shows new recovery codes, which were saved only with the session stored with them: a
+// failure before then left the codes the account had, and nothing on the server can fail after.
 func (s *Server) sendCodes(w http.ResponseWriter, r *http.Request, a db.Account, codes []string, session api.Session, e error) {
 	if e != nil {
 		s.fail(w, r, e)

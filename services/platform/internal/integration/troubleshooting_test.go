@@ -6,9 +6,11 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -310,4 +312,37 @@ func TestTroubleshootingEndsAtManagementRecovery(t *testing.T) {
 		t.Fatal("recovery left a session open", state, reason, err)
 	}
 	x.audited(t, "session.close", 1)
+}
+
+// Closing a terminal session locks its row, then its audit event refers to the account. Confirming
+// credentials locks the account and moves the session to the renewed token, so it takes the row
+// first: each waits for the other in turn rather than deadlocking.
+func TestReauthenticationWaitsForClosingTerminal(t *testing.T) {
+	x := relayFixture(t)
+	opened := x.open(t, x.owner, x.app, 1, 201)
+	ctx := context.Background()
+	held, err := x.f.st.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Rollback(ctx)
+	q, closing := db.New(held), db.CloseTroubleshootingSessionParams{CloseReason: "closed", WorkspaceID: x.ws, ID: opened.Session.Id}
+	if _, err = q.GetTroubleshootingSessionActor(ctx, db.GetTroubleshootingSessionActorParams{WorkspaceID: x.ws, ID: opened.Session.Id}); err != nil {
+		t.Fatal(err)
+	}
+	reauthenticated := x.owner.send("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": x.f.password})
+	awaitLockWait(t, x.f, "troubleshooting_sessions")
+	if err = q.CloseTroubleshootingSession(ctx, closing); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Audit(ctx, q, store.Principal{Account: db.Account{ID: x.f.owner}}, x.ws, "session.close", opened.Session.Id); err != nil {
+		t.Fatal(err)
+	}
+	if err = held.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-reauthenticated; got.err != nil || got.status != 200 {
+		t.Fatalf("reauthentication answered %d: %s %v", got.status, got.body, got.err)
+	}
+	x.waitClosed(t, opened.Session.Id, "closed")
 }

@@ -47,6 +47,10 @@ func (f Finish) run(tx pgx.Tx, account db.Account) error {
 	return f(tx, account)
 }
 
+// Hold takes, first in such a transaction and before the account's row, the locks its Finish will
+// need on rows that other transactions lock before they refer to the account.
+type Hold func(q *db.Queries) error
+
 // Hash is the stored lookup key for two kinds of value, neither a secret a person chose. Link
 // and invitation tokens and recovery codes carry at least 128 random bits, so their keys cannot
 // be reversed by guessing. Rate-limit scopes are labels naming an operation and an address,
@@ -212,7 +216,7 @@ func (s *Service) ChangePassword(ctx context.Context, p store.Principal, current
 		hash, err = s.hashNewPassword(ctx, passwordShare{"account:" + id.String(), true}, budgets, password)
 		return err
 	}
-	account, err := s.withCredential(ctx, p, current, hashNew, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
+	account, err := s.withCredential(ctx, p, current, hashNew, nil, func(tx pgx.Tx, q *db.Queries, locked *db.Account) error {
 		if err := q.UpdatePassword(ctx, db.UpdatePasswordParams{ID: id, PasswordHash: hash}); err != nil {
 			return err
 		}
