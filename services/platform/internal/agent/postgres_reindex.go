@@ -323,6 +323,10 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 				named[oid] = reindexLeft{exclusions: exclusions}
 			}
 			seen[key] = true
+			if found {
+				// It was handled as read, which may be after its row changed again.
+				seen[database.key] = true
+			}
 		}
 	}
 }
