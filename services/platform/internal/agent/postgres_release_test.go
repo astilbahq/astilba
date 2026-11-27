@@ -41,15 +41,20 @@ func TestRestoreFromAnotherMajorIsRefusedBeforeTouchingTheHost(t *testing.T) {
 }
 
 // A report's note is refused past 1024 characters on every retry, so no note may grow past it,
-// however many databases a rebuild leaves unfinished or exclusion indexes it names.
+// however many databases a rebuild leaves unfinished or closed or exclusion indexes it names. The
+// longest note a maintenance report puts before the rebuild's leaves it room to fit whole.
 func TestReportNoteStaysWithinTheContract(t *testing.T) {
-	var many []string
+	var many, wide []string
 	for i := range 60 {
 		many = append(many, strings.Repeat("ä", 70)+strconv.Itoa(i))
+		wide = append(wide, strings.Repeat("a", 118)+strconv.Itoa(i))
 	}
-	note := "This host's maintenance reservation is released. 12 instances were not required to be ready: they were already stopped or failing, or an operator accepted them. " + reindexNote(many, many)
-	if got := utf8.RuneCountInString(reportNote(note)); got > 1024 || !strings.Contains(reindexNote(many, many), "more") {
-		t.Fatalf("a note of %d characters, or no count of the rest", got)
+	for _, names := range [][]string{many, wide} {
+		rebuild := reindexNote(names, names, names)
+		note := "This host's maintenance reservation is released. 12 instances were not required to be ready: they were already stopped or failing, or an operator accepted them. " + rebuild
+		if got := utf8.RuneCountInString(note); got > 1024 || reportNote(note) != note || strings.Count(rebuild, " more") != 3 {
+			t.Fatalf("a note of %d characters, or no count of the rest: %s", got, note)
+		}
 	}
 	if reportNote("short") != "short" {
 		t.Fatal("a short note changed")
