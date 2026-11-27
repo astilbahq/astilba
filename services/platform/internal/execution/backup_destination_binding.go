@@ -101,8 +101,8 @@ func (s *Service) admitDestination(ctx context.Context, tx pgx.Tx, ws, server uu
 var errDestinationOverlaps = &domain.Error{Code: "invalid_input", Message: "Another destination keeps its backups in this part of the bucket, or around it, so keys limited to one would reach the other's. Choose a prefix that neither contains nor is inside another destination's, or another bucket.", Fields: []string{"prefix"}}
 
 // errDestinationEndpointOverlaps refuses an S3 destination that would share part of a bucket with
-// another destination only because one's endpoint names that bucket in its host.
-var errDestinationEndpointOverlaps = &domain.Error{Code: "invalid_input", Message: "This destination and another would keep their backups in one part of a bucket, because one's endpoint names that bucket in its host, such as <bucket>.s3.<region>.amazonaws.com, and that destination's own bucket then starts the path within it. Use the provider's endpoint without a bucket in its host, or choose another prefix or bucket.", Fields: []string{"endpoint"}}
+// another destination only because its endpoint names that bucket in its host.
+var errDestinationEndpointOverlaps = &domain.Error{Code: "invalid_input", Message: "This endpoint names, in its host, a bucket another destination keeps its backups in, such as <bucket>.s3.<region>.amazonaws.com does, and this destination's bucket would then start the path within it, in or around the other's part. Use the provider's endpoint without a bucket in its host, or choose another prefix or bucket.", Fields: []string{"endpoint"}}
 
 // requireOwnScope refuses S3 destination d if it overlaps one of the workspace's destinations.
 func requireOwnScope(ctx context.Context, tx pgx.Tx, ws uuid.UUID, d backup.Destination) error {

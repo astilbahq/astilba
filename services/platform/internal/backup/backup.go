@@ -2,6 +2,7 @@ package backup
 
 import (
 	"errors"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -201,7 +202,8 @@ func ValidateDestination(d Destination, a Access) error {
 			return errors.New("invalid filesystem destination")
 		}
 	case "s3":
-		if !validEndpoint(d.Endpoint) || d.Root != "" || !bucketPattern.MatchString(d.Bucket) || awsAlias(d) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") || d.Prefix != "" && !ValidPrefix(d.Prefix) {
+		u, err := url.Parse(d.Endpoint)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || d.Root != "" || !bucketPattern.MatchString(d.Bucket) || a.AccessKey == "" || a.SecretKey == "" || len(d.Region) > 80 || strings.ContainsAny(d.Region, "\x00\r\n") || d.Prefix != "" && !ValidPrefix(d.Prefix) {
 			return errors.New("invalid S3 destination")
 		}
 	default:

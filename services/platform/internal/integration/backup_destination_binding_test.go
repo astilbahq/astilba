@@ -150,9 +150,11 @@ func TestABackupDestinationIsBoundToOneServer(t *testing.T) {
 	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", hosted), "endpoint")
 	hosted["prefix"] = "second"
 	x.b.call("POST", x.base+"/backup-destinations", hosted, 201, nil)
+	// One in that destination's part is refused on its prefix, since its endpoint is the provider's.
+	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", beside("servers/second")), "prefix")
 	// An access point reaches a bucket its name doesn't say.
 	accessPoint := s3Destination("Access point", map[string]any{"serverId": x.other.server, "endpoint": "https://ap-123456789012.s3-accesspoint.eu-west-1.amazonaws.com"})
-	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", accessPoint), "destination")
+	wantRefusedField(t, <-x.b.send("POST", x.base+"/backup-destinations", accessPoint), "endpoint")
 	var onPrefix backup.Policy
 	x.b.call("POST", x.environment(x.first)+"/backup-policies", x.policy(x.first, "Prefixed", created.Id), 201, &onPrefix)
 	// An agent that stops reading prefixes is refused the destination's commands rather than sent
