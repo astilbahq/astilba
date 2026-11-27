@@ -42,20 +42,17 @@ func Start() (done func()) {
 	_ = os.Setenv(timedKey, "1")
 	name := callerPackage()
 	return func() {
-		var timeout time.Duration
-		if f := flag.Lookup("test.timeout"); f != nil {
-			timeout, _ = f.Value.(flag.Getter).Get().(time.Duration)
-		}
+		timeout := flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration)
 		if line := warning(name, now().Sub(began), timeout, os.Getenv); line != "" {
 			printLine(line)
 		}
 	}
 }
 
-// warning is the annotation for a package whose tests took took under a go test -timeout of
-// timeout, or nothing when it is within its budget or this is not a GitHub Actions run. A native lane holds
-// each package to a share of its go test command's -timeout, and a Go race lane holds every
-// package to one budget. A native run is one that runs the native tests, which every native
+// warning is the annotation for a package whose tests ran for took under a go test -timeout of
+// timeout, or nothing when it is within its budget or this is not a GitHub Actions run. A native
+// lane holds each package to a share of its go test command's -timeout, and a Go race lane holds
+// every package to one budget. A native run is one that runs the native tests, which every native
 // lane's command enables and no Go race lane's does.
 func warning(name string, took, timeout time.Duration, getenv func(string) string) string {
 	if getenv("GITHUB_ACTIONS") != "true" {
@@ -79,16 +76,11 @@ func warning(name string, took, timeout time.Duration, getenv func(string) strin
 }
 
 // callerPackage is the import path of the package whose TestMain called Start, as go test prints
-// it. An external test package's name ends in _test, and go test prints the package it tests.
+// it.
 func callerPackage() string {
-	pc, _, _, ok := runtime.Caller(2)
-	if !ok {
-		return "this package"
-	}
+	pc, _, _, _ := runtime.Caller(2)
 	function := runtime.FuncForPC(pc).Name()
 	slash := strings.LastIndex(function, "/")
-	if dot := strings.Index(function[slash+1:], "."); dot >= 0 {
-		function = function[:slash+1+dot]
-	}
-	return strings.TrimSuffix(function, "_test")
+	dot := strings.Index(function[slash+1:], ".")
+	return function[:slash+1+dot]
 }
