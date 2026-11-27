@@ -87,7 +87,7 @@ type testFile struct {
 	size int
 }
 
-func tarOf(t *testing.T, files ...testFile) []byte {
+func tarOf(t testing.TB, files ...testFile) []byte {
 	t.Helper()
 	var out bytes.Buffer
 	w := tar.NewWriter(&out)
@@ -105,7 +105,7 @@ func tarOf(t *testing.T, files ...testFile) []byte {
 	return out.Bytes()
 }
 
-func gzipOf(t *testing.T, data []byte) []byte {
+func gzipOf(t testing.TB, data []byte) []byte {
 	t.Helper()
 	var out bytes.Buffer
 	w := gzip.NewWriter(&out)

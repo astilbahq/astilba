@@ -29,7 +29,6 @@ import (
 // nativePullFixture is a TLS registry on the host, trusted by Docker and the agent through
 // /etc/docker/certs.d, serving fixture/app.
 type nativePullFixture struct {
-	t        *testing.T
 	ctx      context.Context
 	docker   *client.Client
 	host     string
@@ -56,7 +55,7 @@ func newNativePullFixture(t *testing.T) *nativePullFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = docker.Close() })
-	f := &nativePullFixture{t: t, ctx: context.Background(), docker: docker, docs: map[string][2]string{}, blobs: map[string][]byte{}, overlong: map[string]bool{}, large: map[string]func() io.Reader{}, paced: map[string]func(*http.Request, io.Writer){}, reads: map[string]*atomic.Int64{}}
+	f := &nativePullFixture{ctx: context.Background(), docker: docker, docs: map[string][2]string{}, blobs: map[string][]byte{}, overlong: map[string]bool{}, large: map[string]func() io.Reader{}, paced: map[string]func(*http.Request, io.Writer){}, reads: map[string]*atomic.Int64{}}
 	server := httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	t.Cleanup(server.Close)
 	f.host = strings.TrimPrefix(server.URL, "https://")
@@ -118,9 +117,10 @@ func (f *nativePullFixture) serve(w http.ResponseWriter, r *http.Request) {
 
 // image adds a manifest for arch with one layer holding file, and returns its digest and its
 // layer's.
-func (f *nativePullFixture) image(arch, file string) (manifest, layer string) {
-	layerTar := tarOf(f.t, testFile{file, 10})
-	layerData := gzipOf(f.t, layerTar)
+func (f *nativePullFixture) image(t testing.TB, arch, file string) (manifest, layer string) {
+	t.Helper()
+	layerTar := tarOf(t, testFile{file, 10})
+	layerData := gzipOf(t, layerTar)
 	config := fmt.Appendf(nil, `{"architecture":%q,"os":"linux","config":{"Cmd":["/%s"]},"rootfs":{"type":"layers","diff_ids":[%q]}}`, arch, file, sha(layerTar))
 	layer = sha(layerData)
 	f.blobs[layer], f.blobs[sha(config)] = layerData, config
@@ -155,13 +155,13 @@ func (f *nativePullFixture) index(entries map[string]string, extra ...string) st
 }
 
 // leastFree runs fn and returns how much of Docker's storage it took at most.
-func (f *nativePullFixture) leastFree(fn func()) int64 {
-	f.t.Helper()
-	return storageTaken(f.t, f.ctx, f.docker, fn)
+func (f *nativePullFixture) leastFree(t testing.TB, fn func()) int64 {
+	t.Helper()
+	return storageTaken(t, f.ctx, f.docker, fn)
 }
 
 // storageTaken runs fn and returns how much of Docker's storage it took at most while it ran.
-func storageTaken(t *testing.T, ctx context.Context, docker *client.Client, fn func()) int64 {
+func storageTaken(t testing.TB, ctx context.Context, docker *client.Client, fn func()) int64 {
 	t.Helper()
 	roots, ok := imageStorageRoots(ctx, docker)
 	before, _, known := storageFree(roots)
@@ -207,11 +207,11 @@ func TestNativePullRefusesBlobsUnlikeTheirDescriptors(t *testing.T) {
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			manifest, layer := f.image(runtime.GOARCH, tc.file)
+			manifest, layer := f.image(t, runtime.GOARCH, tc.file)
 			tc.spoil(layer)
 			image := f.host + "/fixture/app@" + manifest
 			var err error
-			used := f.leastFree(func() {
+			used := f.leastFree(t, func() {
 				err = (&Engine{Docker: f.docker}).pullMeasuredImage(f.ctx, image, nil)
 			})
 			var refused *imagePullRefused
@@ -255,7 +255,7 @@ func TestNativePullWatchStopsAPullBeyondItsMeasure(t *testing.T) {
 	f.docs[manifest] = [2]string{ocispec.MediaTypeImageManifest, content}
 	image := f.host + "/fixture/app@" + manifest
 	var err error
-	used := f.leastFree(func() {
+	used := f.leastFree(t, func() {
 		err = (&Engine{Docker: f.docker}).pullWatched(f.ctx, image, "", imageCost{Bytes: 1 << 20}, imageLoadLimit{reserveBytes: DefaultImageLoadReserveBytes})
 	})
 	var refused *imageLoadRefused
@@ -288,8 +288,8 @@ func (zeros) Read(p []byte) (int, error) {
 func TestNativePullPutsAMultiPlatformImageInDocker(t *testing.T) {
 	f := newNativePullFixture(t)
 	other := map[string]string{"amd64": "arm64", "arm64": "amd64"}[runtime.GOARCH]
-	ours, ourLayer := f.image(runtime.GOARCH, "ours")
-	theirs, theirLayer := f.image(other, "theirs")
+	ours, ourLayer := f.image(t, runtime.GOARCH, "ours")
+	theirs, theirLayer := f.image(t, other, "theirs")
 	// BuildKit pushes a provenance attestation for each image by default.
 	root := f.index(map[string]string{runtime.GOARCH: ours, other: theirs}, f.attestation(ours), f.attestation(theirs))
 	for _, d := range []string{ourLayer, theirLayer} {

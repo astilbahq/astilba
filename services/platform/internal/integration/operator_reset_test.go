@@ -54,7 +54,7 @@ func resetPassword(t *testing.T, f *fixture) {
 	if err := f.auth.RequestReset(context.Background(), "owner@example.test", auth.Source{Key: "test", Network: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.auth.CompleteReset(context.Background(), tokenFromLinkMail(t, f, "/reset"), "the holder's new password", "test"); err != nil {
+	if _, err := f.auth.CompleteReset(context.Background(), tokenFromLinkMail(t, f, "/reset"), "the holder's new password", "test", nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitNotice(t, f, "Your Astilba password was reset")
@@ -114,7 +114,7 @@ func TestOperatorResetRemovesAForeignAuthenticator(t *testing.T) {
 		t.Fatal("the intruder's session outlived the reset")
 	}
 	oldPasswordRefused(t, f, f.password)
-	if _, err := f.auth.CompleteReset(context.Background(), link, "the intruder's new password", "intruder"); !errors.Is(err, domain.Credentials) {
+	if _, err := f.auth.CompleteReset(context.Background(), link, "the intruder's new password", "intruder", nil); !errors.Is(err, domain.Credentials) {
 		t.Fatal("a reset link from before the reset still works: ", err)
 	}
 	// The intruder's authenticator is gone too, so a code from it confirms nothing.

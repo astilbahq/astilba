@@ -34,7 +34,6 @@ import (
 // nativeVisualFixture owns a journal, Docker resources and a monotonically
 // increasing command stream on a disposable native Linux host.
 type nativeVisualFixture struct {
-	t             *testing.T
 	docker        *client.Client
 	state         string
 	dockerCLI     string
@@ -70,7 +69,7 @@ func newNativeVisualFixture(t *testing.T) *nativeVisualFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &nativeVisualFixture{t: t, docker: docker, state: state, dockerCLI: "docker", server: uuid.New(), engine: &Engine{Journal: j, Docker: docker}, requestClient: &http.Client{Timeout: 2 * time.Second}}
+	f := &nativeVisualFixture{docker: docker, state: state, dockerCLI: "docker", server: uuid.New(), engine: &Engine{Journal: j, Docker: docker}, requestClient: &http.Client{Timeout: 2 * time.Second}}
 	t.Cleanup(func() { f.engine.Journal.Close() })
 	if err = j.SetConfig(Config{ServerID: f.server, MachineID: uuid.New(), Role: "deployment"}); err != nil {
 		t.Fatal(err)
@@ -122,20 +121,20 @@ func (f *nativeVisualFixture) command(action string, p deployment.Plan, secrets 
 	return api.ExecutionCommand{Id: uuid.New(), ServerId: f.server, EnvironmentId: p.EnvironmentID, ResourceId: p.UnitID, Kind: "visual", Action: "inspect", Generation: f.generation, PlanHash: payload.Digest(), Visual: &v, Deadline: time.Now().Add(time.Minute)}
 }
 
-func (f *nativeVisualFixture) finish(c api.ExecutionCommand) Record {
-	f.t.Helper()
+func (f *nativeVisualFixture) finish(t testing.TB, c api.ExecutionCommand) Record {
+	t.Helper()
 	if err := f.engine.Execute(context.Background(), c); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	r, err := f.engine.Journal.Record(c.Id)
 	if err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	if r.Report.State != "succeeded" {
-		f.t.Fatalf("%s failed: %s", c.Kind, r.Report.Note)
+		t.Fatalf("%s failed: %s", c.Kind, r.Report.Note)
 	}
 	if err = f.engine.Journal.Acknowledge(c.Id, r.Report.Sequence); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	return r
 }
@@ -169,39 +168,39 @@ exec httpd -f -p 8080 -h /tmp/www`
 	return p, secrets
 }
 
-func (f *nativeVisualFixture) resolve(p deployment.Plan) deployment.Plan {
-	f.t.Helper()
-	r := f.finish(f.command("resolve", p, nil))
+func (f *nativeVisualFixture) resolve(t testing.TB, p deployment.Plan) deployment.Plan {
+	t.Helper()
+	r := f.finish(t, f.command("resolve", p, nil))
 	var observed deployment.Observation
 	if err := json.Unmarshal(*r.Report.Observation, &observed); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	p.Images = observed.Images
 	p.ExpectedState = observed.StateHash
 	return p.WithHash()
 }
 
-func (f *nativeVisualFixture) request(host, want string) {
-	f.t.Helper()
+func (f *nativeVisualFixture) request(t testing.TB, host, want string) {
+	t.Helper()
 	req, _ := http.NewRequest("GET", "http://127.0.0.1/", nil)
 	req.Host = host
 	res, err := f.requestClient.Do(req)
 	if err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	defer res.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(res.Body, 512))
 	if err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	if res.StatusCode != 200 || string(b) != want {
-		f.t.Fatalf("route %s: %d %q", host, res.StatusCode, b)
+		t.Fatalf("route %s: %d %q", host, res.StatusCode, b)
 	}
 }
 
 // The fixture must already have transferred to controller generation 1.
-func (f *nativeVisualFixture) refuseInUseVolumeDeletion(p deployment.Plan) {
-	f.t.Helper()
+func (f *nativeVisualFixture) refuseInUseVolumeDeletion(t testing.TB, p deployment.Plan) {
+	t.Helper()
 	deletion := f.command("delete-volume", p, nil)
 	controllerGeneration := int64(1)
 	deletion.ControllerGeneration = &controllerGeneration
@@ -214,11 +213,11 @@ func (f *nativeVisualFixture) refuseInUseVolumeDeletion(p deployment.Plan) {
 	deletion.Visual = &message
 	deletion.PlanHash = payload.Digest()
 	if err := f.engine.Execute(context.Background(), deletion); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	deleted, err := f.engine.Journal.Record(deletion.Id)
 	if err != nil || deleted.Report.State != "needs_attention" {
-		f.t.Fatal("in-use volume deletion was not refused")
+		t.Fatal("in-use volume deletion was not refused")
 	}
 }
 
@@ -230,19 +229,19 @@ func TestNativeVisualDeployment(t *testing.T) {
 	p, secrets := plan("first", true)
 	p.Specification.Applications[0].Replicas = 3
 	p.PrepareInstances(deployment.Plan{})
-	p = resolve(p.WithHash())
+	p = resolve(t, p.WithHash())
 	abandoned := append([]uuid.UUID(nil), p.InstanceIDs(p.Specification.Applications[0].ID)[1:]...)
 	nativeAbandonReplicaStart(t, f.engine, p, command("deploy", p, secrets))
 	p.ID, p.RevisionID = uuid.New(), uuid.New()
 	p.PrepareInstances(deployment.Plan{})
-	p = resolve(p.WithHash())
-	r := finish(command("deploy", p, secrets))
+	p = resolve(t, p.WithHash())
+	r := finish(t, command("deploy", p, secrets))
 	for _, id := range abandoned {
 		if _, err := docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{}); err == nil {
 			t.Fatal("abandoned initial replica survived successful reconciliation")
 		}
 	}
-	request("first.example.test", "v1")
+	request(t, "first.example.test", "v1")
 	t.Run("replica_distribution_and_health", func(t *testing.T) { nativeReplicaDistribution(t, f.engine, p) })
 	if strings.Contains(string(*r.Report.Observation), "canary") || strings.Contains(string(*r.Report.Observation), "native%2F") {
 		t.Fatal("observation leaked database credentials")
@@ -330,16 +329,16 @@ func TestNativeVisualDeployment(t *testing.T) {
 	})
 	nativeFilesAndJobs(t, f.engine, server)
 	other, otherSecrets := plan("second", false)
-	other = resolve(other)
-	finish(command("deploy", other, otherSecrets))
-	request("first.example.test", "v1")
-	request("second.example.test", "v1")
+	other = resolve(t, other)
+	finish(t, command("deploy", other, otherSecrets))
+	request(t, "first.example.test", "v1")
+	request(t, "second.example.test", "v1")
 	// A manual network disconnect is visible without repairing it on inspection.
 	web := p.Specification.Applications[0].ID
 	if _, err = docker.NetworkDisconnect(ctx, deployment.NetworkName(p.UnitID), client.NetworkDisconnectOptions{Container: deployment.UnitName(web)}); err != nil {
 		t.Fatal(err)
 	}
-	r = finish(command("observe", p, nil))
+	r = finish(t, command("observe", p, nil))
 	var observed deployment.Observation
 	_ = json.Unmarshal(*r.Report.Observation, &observed)
 	drift := false
@@ -356,8 +355,8 @@ func TestNativeVisualDeployment(t *testing.T) {
 	p.Specification.Applications[0].Variables[0].Value = &value2
 	p.Images = map[string]string{}
 	p = p.WithHash()
-	p = resolve(p)
-	finish(command("deploy", p, secrets))
+	p = resolve(t, p)
+	finish(t, command("deploy", p, secrets))
 	// A rejected runtime reload restores the preceding routes before reporting failure.
 	next := p
 	next.ID = uuid.New()
@@ -366,7 +365,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	next.Specification.Routes[0].Domain = "replacement.example.test"
 	next.Specification.Routes[1].AllowCIDRs = []string{"192.0.2.0/24"}
 	next.Images = map[string]string{}
-	next = resolve(next.WithHash())
+	next = resolve(t, next.WithHash())
 	c := command("deploy", next, secrets)
 	injected := false
 	f.engine.Point = func(point string) {
@@ -392,14 +391,14 @@ func TestNativeVisualDeployment(t *testing.T) {
 	if r.Report.State != "needs_attention" || !strings.Contains(r.Report.Note, "restored") {
 		t.Fatalf("reload was not rejected and recovered: %s", r.Report.Note)
 	}
-	request("first.example.test", "v2")
-	request("second.example.test", "v1")
+	request(t, "first.example.test", "v2")
+	request(t, "second.example.test", "v1")
 	f.engine.Point = nil
 	if err = f.engine.Journal.Mutate(c.Id, func(r *Record) { r.Report.State = "running" }); err != nil {
 		t.Fatal(err)
 	}
-	finish(c)
-	request("replacement.example.test", "v2")
+	finish(t, c)
+	request(t, "replacement.example.test", "v2")
 	denied, stop := context.WithTimeout(ctx, 2*time.Second)
 	defer stop()
 	blocked, err := pgx.Connect(denied, databaseURL.String())
@@ -407,13 +406,13 @@ func TestNativeVisualDeployment(t *testing.T) {
 		blocked.Close(ctx)
 		t.Fatal("TCP route ignored its source allowlist")
 	}
-	request("second.example.test", "v1")
+	request(t, "second.example.test", "v1")
 	// Reopening durable state after publication replays recovery instead of losing another unit.
 	crash := next
 	crash.ID = uuid.New()
 	crash.RevisionID = uuid.New()
 	crash.Images = map[string]string{}
-	crash = resolve(crash.WithHash())
+	crash = resolve(t, crash.WithHash())
 	cc := command("deploy", crash, secrets)
 	f.engine.Point = func(point string) {
 		if point == "route-published" {
@@ -436,8 +435,8 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.engine = &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
-	finish(cc)
-	request("second.example.test", "v1")
+	finish(t, cc)
+	request(t, "second.example.test", "v1")
 	nativeControllerTransfer(t, f.engine)
 	// The same exported Compose bundle runs with management and the journal closed.
 	bundle, err := deployment.ExportConfiguration(crash)
@@ -506,7 +505,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 	if output, err := run.CombinedOutput(); err != nil {
 		t.Fatalf("standalone export: %v %s", err, output)
 	}
-	request("replacement.example.test", "v2")
+	request(t, "replacement.example.test", "v2")
 	for _, a := range crash.Specification.Applications {
 		for _, id := range crash.InstanceIDs(a.ID) {
 			v, err := docker.ContainerInspect(ctx, deployment.UnitName(id), client.ContainerInspectOptions{})
@@ -537,7 +536,7 @@ func TestNativeVisualDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.engine = &Engine{Journal: j, Docker: docker, DockerCLI: dockerCLI}
-	f.refuseInUseVolumeDeletion(crash)
+	f.refuseInUseVolumeDeletion(t, crash)
 
 	// Explicit removal of an in-use volume must fail; deleting a service keeps data.
 	inspect, err := docker.VolumeInspect(ctx, deployment.VolumeName(crash.Specification.Volumes[0].ID), client.VolumeInspectOptions{})
