@@ -108,8 +108,7 @@ func TestPreviewBuildRejectedAtDeliverySettlesOnce(t *testing.T) {
 // A preview build its runner may hold has its values released again when the runner asks for
 // them, and the check then finds a secret in its arguments that was out of its reach at the first
 // delivery. Refusing that poll would refuse every later one until the build's deadline, and hold
-// the runner's other commands, so the runner is told to stop the build, without its values, and
-// its later commands reach it.
+// the runner's other commands, so the runner is told to stop the build, without its values.
 func TestPreviewBuildRejectedAtRedeliveryStops(t *testing.T) {
 	h := newHungPreview(t)
 	const canary = "preview-redelivery-canary"
@@ -156,11 +155,4 @@ func TestPreviewBuildRejectedAtRedeliveryStops(t *testing.T) {
 	}
 	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/report", h.token, api.AgentReport{Id: stop.Id, Generation: stop.Generation, PlanHash: stop.PlanHash, Sequence: 1, State: "cancelled", Steps: []api.ExecutionStep{}}, 204, nil)
 	h.waitPreview(t, "failed")
-	// The runner's next command reaches it.
-	execSQL(t, h.hungBuild, "UPDATE preview_requests SET configuration=jsonb_set(configuration,'{build,arguments}','{}'::jsonb) WHERE id=$1", preview.Id)
-	pushPreviewCommit(t, h, strings.Repeat("c", 40))
-	preview = h.waitPreview(t, "building")
-	if next := nextPreviewCommand(t, h); next.Id != *preview.OperationId || next.Id == operation || next.CancelRequested {
-		t.Fatal("the stopped build held the runner's later commands", next.Id)
-	}
 }

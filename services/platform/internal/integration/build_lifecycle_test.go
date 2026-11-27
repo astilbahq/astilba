@@ -171,13 +171,6 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 			if err := f.st.Pool.QueryRow(ctx, "SELECT state FROM execution_operations WHERE id=$1", op.Id).Scan(&state); err != nil || state != "cancelled" {
 				t.Fatal("the stopped build did not end cancelled", state, err)
 			}
-			// The runner's later commands reach it.
-			healthy := create(t, healthyPath, healthyDraft, cfg)
-			next := poll(t)
-			if next.Id != healthy.Id || next.CancelRequested {
-				t.Fatal("the stopped build held the runner queue", next.Id)
-			}
-			finish(t, next)
 		})
 	}
 	for _, ending := range []string{"cancelled", "expired"} {

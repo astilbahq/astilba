@@ -124,14 +124,17 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		const note = "Stopped: drafts are now submitted by management, never by a runner. Submit the draft again."
 		return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, note, note)
 	}
-	if settled, err := s.settleBuildIsolation(ctx, tx, ws, c, p, undelivered); settled || err != nil {
-		return settled && c.CancelRequested, err
+	if settled, deliver, err := s.settleBuildIsolation(ctx, tx, ws, c, p, undelivered); settled || err != nil {
+		return deliver, err
 	}
-	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack()) {
+	// An agent offers builds, and with them their controls, Railpack pins and cache, only while
+	// its host can run one now: Docker answers and has room. A runner that can't for the moment
+	// is refused, and that passes by itself, so it comes before the checks below, which
+	// settle for good.
+	if p.Build != nil && (p.Build.NeedsControls() || p.Build.UsesRailpack() || p.CacheScope != "") {
 		if _, err = runnerEligible(ctx, tx, ws, c.ServerId, p.Build.Architecture, p.Build.NeedsControls(), nil, false); err != nil {
 			// A runner that no longer applies build controls, as after a downgrade, gets them back
-			// only from an update, which this build would hold. Any other refusal, such as Docker
-			// not answering the agent, may pass by itself.
+			// only from an update, which this build would hold.
 			if runnerUpgradeRequired(err) {
 				const note = "Update the agent on the runner: it no longer applies build controls, such as this build's budget or watched paths. Start the build again once it is updated."
 				return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Build stopped before runner delivery. "+note, "Build stopped. "+note)
@@ -156,6 +159,8 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Build stopped before runner delivery. "+refusal.Message, "Build stopped. "+refusal.Message)
 		}
 	}
+	// A runner that can build but no longer offers the project cache, as after a downgrade, has
+	// not negotiated it.
 	if p.CacheScope != "" {
 		var raw []byte
 		if err = tx.QueryRow(ctx, "SELECT capabilities FROM servers WHERE id=$1", c.ServerId).Scan(&raw); err != nil {

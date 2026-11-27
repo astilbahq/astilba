@@ -91,10 +91,10 @@ func serverBuildEgress(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID) ([]pipe
 // before builds carried the build network, which an agent that predates it would run on its
 // host's network, one queued before they carried the rootless builder, which such an agent
 // would run privileged, or one with a destination the owner removed since. It reports whether it
-// settled the command, through settleRefusedPipeline.
-func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (bool, error) {
+// settled the command, through settleRefusedPipeline, and whether to deliver it.
+func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c *api.ExecutionCommand, p pipeline.Command, undelivered bool) (settled, deliver bool, err error) {
 	if !p.IsBuild() {
-		return false, nil
+		return false, false, nil
 	}
 	note := ""
 	if p.BuildNetwork != pipeline.BuildNetworkV1 {
@@ -104,17 +104,17 @@ func (s *Service) settleBuildIsolation(ctx context.Context, tx pgx.Tx, ws uuid.U
 	} else if len(p.BuildEgress) > 0 {
 		current, err := serverBuildEgress(ctx, tx, ws, c.ServerId)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !pipeline.EgressCovers(current, p.BuildEgress) {
 			note = "Build stopped: the runner's build network allowlist no longer includes a private destination this build was queued with. Start the build again."
 		}
 	}
 	if note == "" {
-		return false, nil
+		return false, false, nil
 	}
-	_, err := s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, note, note)
-	return true, err
+	deliver, err = s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, note, note)
+	return true, deliver, err
 }
 
 func buildNetworkView(rules []pipeline.EgressRule) api.BuildNetwork {
