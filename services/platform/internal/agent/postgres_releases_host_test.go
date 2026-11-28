@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -368,11 +369,45 @@ RESET ROLE;`); err != nil {
 	cafeDatabase.Database = databaseURI("caf\xe9")
 	cafe.Postgres = &cafeDatabase
 	cafeFiles := files(updated, cafe)
+	// A DROP DATABASE interrupted between the rebuild's read of a database and its rebuild marks
+	// the row invalid in place, keeping its oid and xmin. The failed rebuild then names it as
+	// invalid, not the step as unfinished. Here the drop waits on a held lock on pg_tablespace,
+	// which it takes after marking the row, until its statement timeout cancels it.
+	query(`CREATE DATABASE halted TEMPLATE template0`)
+	halted := false
+	e.Point = func(point string) {
+		if point != "postgres-reindex-read halted" || halted {
+			return
+		}
+		halted = true
+		holder, err := e.Docker.ExecCreate(ctx, updated, client.ExecCreateOptions{Cmd: []string{"psql", "-XAt", "-U", "app", "-d", "app", "-c", "BEGIN; LOCK pg_tablespace IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(60); COMMIT;"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = e.Docker.ExecStart(ctx, holder.ID, client.ExecStartOptions{Detach: true}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 50; i++ {
+			if raw, _ := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT count(*) FROM pg_locks WHERE relation = 'pg_tablespace'::regclass AND mode = 'AccessExclusiveLock' AND granted"); strings.TrimSpace(string(raw)) != "0" {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if e.containerExec(ctx, pgClient{container: updated}, io.Discard, "psql", "-XAtq", "-v", "ON_ERROR_STOP=1", "-U", "app", "-d", "app", "-c", "SET statement_timeout = '500ms'", "-c", "DROP DATABASE halted") == nil {
+			t.Fatal("the drop to interrupt finished")
+		}
+		query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'BEGIN; LOCK pg_tablespace%'`)
+		if raw, _ := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT datconnlimit FROM pg_database WHERE datname = 'halted'"); strings.TrimSpace(string(raw)) != "-2" {
+			t.Fatalf("the interrupted drop left the database's connection limit %q", raw)
+		}
+	}
 	served := files(updated, a)
 	if err = e.Journal.forgetPostgresData(volume); err != nil {
 		t.Fatal(err)
 	}
-	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, "template0 (") || strings.Contains(note, "kept") || !strings.Contains(note, `"broken (Billing), ledger" (`+a.Name+") are invalid") || !strings.Contains(note, `"caf\xe9".public.records_slot_excl`) || strings.Contains(note, "did not finish") {
+	note, err = e.reindexPostgres(ctx, after, begin)
+	e.Point = nil
+	if err != nil || !halted || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, "template0 (") || strings.Contains(note, "kept") || !strings.Contains(note, `"broken (Billing), ledger" (`+a.Name+"), halted ("+a.Name+") are invalid") || !strings.Contains(note, `"caf\xe9".public.records_slot_excl`) || strings.Contains(note, "did not finish") {
 		t.Fatalf("a closed or invalid database was not named: %q, %v", note, err)
 	}
 	if files(updated, a)["unbounded"] == served["unbounded"] {
@@ -396,7 +431,23 @@ RESET ROLE;`); err != nil {
 	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE "broken (Billing), ledger"`); err != nil {
 		t.Fatal(err)
 	}
-	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "do not accept connections") || strings.Contains(note, "invalid") || files(updated, shut)["unbounded"] == was["unbounded"] {
+	query(`DROP DATABASE halted`)
+	// A database named early in the step and dropped before its last listing isn't named, so the
+	// record still moves on. Its oid, chosen from 16384 to 19999, is listed before template1's.
+	query(`CREATE DATABASE gone OID 19998 TEMPLATE template0`, `ALTER DATABASE gone ALLOW_CONNECTIONS false`)
+	gone := false
+	e.Point = func(point string) {
+		if point == "postgres-reindex-read template1" && !gone {
+			gone = true
+			query(`DROP DATABASE gone`)
+		}
+	}
+	note, err = e.reindexPostgres(ctx, after, begin)
+	e.Point = nil
+	if !gone {
+		t.Fatal("the database to drop was not dropped during the rebuild")
+	}
+	if err != nil || strings.Contains(note, "do not accept connections") || strings.Contains(note, "invalid") || files(updated, shut)["unbounded"] == was["unbounded"] {
 		t.Fatalf("the reopened database was not rebuilt: %q, %v", note, err)
 	}
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {

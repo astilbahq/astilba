@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -274,6 +275,13 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		if err != nil {
 			return reindexLeft{}, err
 		}
+		// A database dropped since it was handled leaves nothing to name.
+		present := map[string]bool{}
+		for _, key := range listed {
+			oid, _, _ := strings.Cut(key, ":")
+			present[oid] = true
+		}
+		maps.DeleteFunc(named, func(oid string, _ reindexLeft) bool { return !present[oid] })
 		listed = slices.DeleteFunc(listed, func(key string) bool { return seen[key] })
 		if len(listed) == 0 {
 			var left reindexLeft
@@ -309,9 +317,10 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 				e.point("postgres-reindex-read " + database.name)
 				skipped, err := rebuild(reindexDatabase{connection: databaseURI(database.name), oid: oid})
 				if err != nil {
-					if now, found, lookup := current(oid); ctx.Err() == nil && lookup == nil && (!found || now.key != database.key) {
+					if now, found, lookup := current(oid); ctx.Err() == nil && lookup == nil && (!found || now.key != database.key || now.state != database.state) {
 						// Dropped, renamed or otherwise changed during its rebuild: the next round
-						// finds it as it is then, or doesn't.
+						// finds it as it is then, or doesn't. A DROP DATABASE marks the row invalid
+						// in place, keeping its key, so the state is compared too.
 						continue
 					}
 					return reindexLeft{}, err
