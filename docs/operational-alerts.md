@@ -83,11 +83,12 @@ running; it is not an external uptime service.
   found a user with the boundary tagged with one of the account's [peer
   installations](backups.md#managed-keys), which someone holding a leaked admin key could also
   have made. One alert is raised for each such user, the first time a check finds it, so an earlier
-  alert acknowledged in the inbox doesn't hide a later user. Its resource is the user's identity
+  alert acknowledged in the inbox doesn't hide a later user. A sweep raises or resolves at most 200
+  of them for a workspace, and the following sweeps the rest. Its resource is the user's identity
   under the account, and the Alerts page names the user and its account while the account's latest
   check finds it. Acknowledging the user by name on the Workspace page, if that installation made
-  it, or the user being gone, establishes recovery. The user made again under the same name, or
-  given another access key, raises it again.
+  it, revoking it there if not, or the user being gone, establishes recovery. The user made again
+  under the same name, or given another access key, raises it again.
 - **Operation problem:** a deployment, image build or backup operation failed or
   needs attention. One record is created per operation, including when a
   needs-attention operation later fails. This is a historical event, not a claim

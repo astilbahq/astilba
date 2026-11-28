@@ -259,6 +259,73 @@ func TestEachPeerUserHasItsOwnAlert(t *testing.T) {
 	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action='backup.key.acknowledge'`, p.ws).Scan(&audited); err != nil || audited != 1 {
 		t.Fatalf("refused acknowledgements were audited: %d, %v", audited, err)
 	}
+
+	// A firing user that goes away ends its alert, unacknowledged.
+	p.aws.DeleteUser(first)
+	if p.check(t); p.firing(t, a.Id) {
+		t.Fatal("a peer user that's gone still alerts")
+	}
+}
+
+// The owner can revoke a peer's user they haven't acknowledged, which may have been made with a
+// leaked admin key, but not one they have: that is the peer's. Each revocation is audited with
+// the record management keeps for the user, and the user's alert ends once it is known. An
+// acknowledgement of a user already covered is refused, so acknowledgements stay as many as the
+// users reviewed.
+func TestAnUnacknowledgedPeerUserCanBeRevoked(t *testing.T) {
+	p := newPeerUsers(t)
+	kept, suspect := "astilba-"+uuid.NewString(), "astilba-"+uuid.NewString()
+	p.aws.CreateUser(kept, p.path, p.boundary, map[string]string{"astilba:installation": p.peer.String()}, "")
+	p.aws.CreateUser(suspect, p.path, p.boundary, map[string]string{"astilba:installation": p.peer.String()}, "")
+	view := p.check(t)
+	a, b := found(t, view, kept), found(t, view, suspect)
+	p.acknowledge(t, a, 204)
+	p.acknowledge(t, a, 409)
+	if audited := p.audited(t, a.Id); audited != 1 {
+		t.Fatalf("a refused acknowledgement was audited: %d", audited)
+	}
+	p.b.call("POST", p.account+"/found-users/"+kept+"/revoke", nil, 409, nil)
+	p.b.call("POST", p.account+"/found-users/"+suspect+"/revoke", nil, 204, nil)
+	var audited int
+	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events e JOIN backup_storage_keys k ON k.workspace_id=e.workspace_id AND k.id=e.resource_id WHERE e.workspace_id=$1 AND e.action='backup.key.revoke' AND k.user_name=$2`, p.ws, suspect).Scan(&audited); err != nil || audited != 1 {
+		t.Fatalf("the revocation was audited %d times by its record: %v", audited, err)
+	}
+	if !found(t, p.view(t), suspect).Revoking {
+		t.Fatal("the revoked peer user isn't shown as revoking")
+	}
+	p.run(t, keySweep{})
+	if p.aws.UserID(suspect) != "" || p.aws.UserID(kept) == "" {
+		t.Fatalf("after the sweep the users are %q and %q", p.aws.UserID(kept), p.aws.UserID(suspect))
+	}
+	p.check(t)
+	if p.firing(t, b.Id) || p.firing(t, a.Id) {
+		t.Fatalf("after the revocation the alerts are %+v", p.alerts(t, api.BackupPeerUser))
+	}
+}
+
+// A sweep raises a bounded number of peer user alerts, and the next raises the rest, so a leaked
+// admin key making many users can't push a workspace's sweep past its time budget.
+func TestManyPeerUsersAlertOverSeveralSweeps(t *testing.T) {
+	p := newPeerUsers(t)
+	const users = 250
+	for range users {
+		p.aws.CreateUser("astilba-"+uuid.NewString(), p.path, p.boundary, map[string]string{"astilba:installation": p.peer.String()}, "")
+	}
+	raised := func() int {
+		var n int
+		if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM operational_alerts WHERE workspace_id=$1 AND kind='backup_peer_user' AND state='firing'`, p.ws).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	p.check(t)
+	if got := raised(); got == 0 || got >= users {
+		t.Fatalf("one sweep raised %d of %d alerts", got, users)
+	}
+	alertSweep(t, p.f, p.ws)
+	if got := raised(); got != users {
+		t.Fatalf("two sweeps raised %d of %d alerts", got, users)
+	}
 }
 
 // A found user deleted between the check's listing and its listing of the user's access keys is

@@ -491,7 +491,7 @@ function PeerUserAlert({
         </>
       )}
       {firing &&
-        "Acknowledge the user by name if that installation made it, for example after a workspace transfer. A leaked admin key can make a user with a peer's tag. "}
+        "Acknowledge the user by name if that installation made it, for example after a workspace transfer. A leaked admin key can make a user with a peer's tag: if you don't recognise it, revoke it and replace the admin key. "}
       <Link
         to="/members"
         search={{ workspace: workspaceId }}

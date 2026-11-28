@@ -37,6 +37,7 @@ DELETE FROM operational_alerts WHERE kind = 'backup_peer_user';
 ALTER TABLE operational_alerts DROP CONSTRAINT operational_alerts_kind_check;
 ALTER TABLE operational_alerts ADD CONSTRAINT operational_alerts_kind_check CHECK(kind IN ('server_offline','disk_docker','disk_agent','service_runtime','service_health','backup_schedule','deployment_problem','build_problem','backup_problem','network_problem','identity_conflict','recovery_window','dns_withdrawal_held','backup_exposure','backup_account'));
 DROP TABLE backup_storage_acknowledgements;
-UPDATE backup_storage_accounts SET report = '{}' WHERE octet_length(report::text) > 262144;
+-- A report too large for the older limit is dropped, and its account checked again at once.
+UPDATE backup_storage_accounts SET report = '{}', checked_at = NULL WHERE octet_length(report::text) > 262144;
 ALTER TABLE backup_storage_accounts DROP CONSTRAINT backup_storage_accounts_report_check;
 ALTER TABLE backup_storage_accounts ADD CONSTRAINT backup_storage_accounts_report_check CHECK(octet_length(report::text) <= 262144);

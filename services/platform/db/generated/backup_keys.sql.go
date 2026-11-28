@@ -215,44 +215,6 @@ func (q *Queries) BackupStorageAccount(ctx context.Context, arg BackupStorageAcc
 	return i, err
 }
 
-const backupStorageAcknowledgements = `-- name: BackupStorageAcknowledgements :many
-SELECT account_id,identity,access_key_ids,acknowledged_at FROM backup_storage_acknowledgements
-WHERE workspace_id = $1 ORDER BY account_id,identity,acknowledged_at DESC LIMIT 10000
-`
-
-type BackupStorageAcknowledgementsRow struct {
-	AccountID      uuid.UUID `json:"account_id"`
-	Identity       uuid.UUID `json:"identity"`
-	AccessKeyIds   []string  `json:"access_key_ids"`
-	AcknowledgedAt time.Time `json:"acknowledged_at"`
-}
-
-// The peer installations' users the owner has acknowledged, for the accounts' views.
-func (q *Queries) BackupStorageAcknowledgements(ctx context.Context, workspaceID uuid.UUID) ([]BackupStorageAcknowledgementsRow, error) {
-	rows, err := q.db.Query(ctx, backupStorageAcknowledgements, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []BackupStorageAcknowledgementsRow{}
-	for rows.Next() {
-		var i BackupStorageAcknowledgementsRow
-		if err := rows.Scan(
-			&i.AccountID,
-			&i.Identity,
-			&i.AccessKeyIds,
-			&i.AcknowledgedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const backupStorageKey = `-- name: BackupStorageKey :one
 SELECT id, workspace_id, account_id, destination_id, holder_server_id, purpose, recovery_request, recovery_policy_id, recovery_snapshot, recovery_id, scope, user_name, access_key_id, state, mint_deadline, handed_over, activated_at, revoked_at, next_attempt_at, attempts, last_error, installs, install_attempts, install_next_at, found_tags, encrypted_secret, created_at FROM backup_storage_keys WHERE workspace_id = $1 AND id = $2
 `
@@ -585,6 +547,45 @@ func (q *Queries) DestinationServerKeys(ctx context.Context) ([]DestinationServe
 			&i.ActivatedAt,
 			&i.Installs,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const foundBackupStorageAcknowledgements = `-- name: FoundBackupStorageAcknowledgements :many
+SELECT a.id AS account_id, (u.value->>'id')::uuid AS identity, max(k.acknowledged_at)::timestamptz AS acknowledged_at
+FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+    AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
+WHERE a.workspace_id = $1 AND u.value->>'id' IS NOT NULL
+GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000
+`
+
+type FoundBackupStorageAcknowledgementsRow struct {
+	AccountID      uuid.UUID `json:"account_id"`
+	Identity       uuid.UUID `json:"identity"`
+	AcknowledgedAt time.Time `json:"acknowledged_at"`
+}
+
+// When the newest acknowledgement covering each user the accounts' latest checks found was made,
+// by the same rule as UnacknowledgedPeerBackupStorageUsers. Users not covered aren't listed. An
+// account's check reports at most 1000 users, and a workspace has at most 10 accounts.
+func (q *Queries) FoundBackupStorageAcknowledgements(ctx context.Context, workspaceID uuid.UUID) ([]FoundBackupStorageAcknowledgementsRow, error) {
+	rows, err := q.db.Query(ctx, foundBackupStorageAcknowledgements, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FoundBackupStorageAcknowledgementsRow{}
+	for rows.Next() {
+		var i FoundBackupStorageAcknowledgementsRow
+		if err := rows.Scan(&i.AccountID, &i.Identity, &i.AcknowledgedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

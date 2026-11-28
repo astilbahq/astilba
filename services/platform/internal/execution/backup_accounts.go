@@ -29,12 +29,13 @@ var (
 	errAccountBoundary      = &domain.Error{Code: "invalid_input", Message: "The permissions boundary must be a customer-managed policy in the same AWS account.", Fields: []string{"boundary"}}
 	errAccountOther         = &domain.Error{Code: "invalid_input", Message: "This access key belongs to another AWS account. A storage account's credential can only be replaced with one of the same account.", Fields: []string{"credential"}}
 	errAccountTaken         = &domain.Error{Code: "conflict", Message: "This workspace already has a storage account for this AWS account.", Fields: []string{"credential"}}
-	errFoundPeer            = &domain.Error{Code: "conflict", Message: "This user belongs to a peer installation, which may still use its key. Revoke it from that installation."}
+	errFoundPeer            = &domain.Error{Code: "conflict", Message: "This user is acknowledged as a peer installation's, which may still use its key. Revoke it from that installation."}
 	errPeerLimit            = &domain.Error{Code: "conflict", Message: "A storage account lists at most 16 peer installations."}
 	errFoundUnbounded       = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so the storage account's admin policy can't change it. Delete it in the AWS console."}
 	errAcknowledgeUnbounded = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so it isn't confined to backups, whoever made it. Delete it in the AWS console."}
 	errAcknowledgeNotPeer   = &domain.Error{Code: "conflict", Message: "Only a peer installation's user can be acknowledged. Add its installation as a peer if this workspace was transferred to or from it, or revoke the user."}
 	errFoundChanged         = &domain.Error{Code: "conflict", Message: "The latest check found this user with another IAM user ID or other access keys than you reviewed. Review it again."}
+	errAcknowledged         = &domain.Error{Code: "conflict", Message: "This user is already acknowledged as the latest check found it."}
 	errProviderUnavailable  = &domain.Error{Code: "provider_unavailable", Message: "AWS could not be reached or failed. Try again shortly."}
 )
 
@@ -235,7 +236,7 @@ func (s *Service) BackupStorageAccounts(ctx context.Context, p store.Principal, 
 		if err != nil {
 			return err
 		}
-		acks, err := q.BackupStorageAcknowledgements(ctx, ws)
+		acks, err := acknowledgements(ctx, q, ws)
 		if err != nil {
 			return err
 		}
@@ -287,30 +288,38 @@ func foundUserID(account uuid.UUID, name, iamUserID string) uuid.UUID {
 	return uuid.NewSHA1(account, []byte("iam-user\x00"+name+"\x00"+iamUserID))
 }
 
-// acknowledgement is the time the latest acknowledgement covering a found user was made, or nil:
-// one of its identity that holds every access key the check found on it. acks are newest first. Only a bounded peer's user is
-// acknowledged, as UnacknowledgedPeerBackupStorageUsers reads it.
-func acknowledgement(account uuid.UUID, u api.BackupStorageFoundUser, acks []db.BackupStorageAcknowledgementsRow) *time.Time {
-	if !u.Peer || !u.Bounded {
+// acknowledged is when the newest acknowledgement covering each found user was made, by account
+// and identity.
+type acknowledged map[[2]uuid.UUID]time.Time
+
+// acknowledgements are the workspace's found users that acknowledgements cover, as the accounts'
+// latest checks found them.
+func acknowledgements(ctx context.Context, q *db.Queries, ws uuid.UUID) (acknowledged, error) {
+	rows, err := q.FoundBackupStorageAcknowledgements(ctx, ws)
+	if err != nil {
+		return nil, err
+	}
+	out := acknowledged{}
+	for _, r := range rows {
+		out[[2]uuid.UUID{r.AccountID, r.Identity}] = r.AcknowledgedAt
+	}
+	return out, nil
+}
+
+// acknowledgement is when the newest acknowledgement covering a found user was made, or nil. Only
+// a bounded peer's user is acknowledged, as UnacknowledgedPeerBackupStorageUsers reads it.
+func acknowledgement(account uuid.UUID, u api.BackupStorageFoundUser, acks acknowledged) *time.Time {
+	at, ok := acks[[2]uuid.UUID{account, u.Id}]
+	if !u.Peer || !u.Bounded || u.Id == uuid.Nil || !ok {
 		return nil
 	}
-	for _, a := range acks {
-		covers := a.AccountID == account && a.Identity == u.Id
-		for _, k := range u.AccessKeyIds {
-			covers = covers && slices.Contains(a.AccessKeyIds, k)
-		}
-		if covers {
-			at := a.AcknowledgedAt
-			return &at
-		}
-	}
-	return nil
+	return &at
 }
 
 // accountView is an account as its latest check found it, with the found users management is
 // still revoking, which a check no longer reports once their rows make them known, and why each
 // revocation last failed.
-func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow, revoking []db.RevokingFoundBackupStorageKeysRow, acks []db.BackupStorageAcknowledgementsRow) (api.BackupStorageAccount, error) {
+func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow, revoking []db.RevokingFoundBackupStorageKeysRow, acks acknowledged) (api.BackupStorageAccount, error) {
 	var report accountReport
 	if len(row.Report) > 0 {
 		if err := json.Unmarshal(row.Report, &report); err != nil {
@@ -401,7 +410,9 @@ func (s *Service) AddBackupStorageAccountPeer(ctx context.Context, p store.Princ
 // to revoke. Only a user the latest check reported can be named, so this can't reach a user
 // another installation's records hold, or one outside the workspace's path.
 func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Principal, ws, account uuid.UUID, user string) error {
-	return s.scope(ctx, p, ws, ownerSettings, "backup.key.revoke", account, func(tx pgx.Tx) error {
+	// The audit names the revoked user's key row, which records its name and tags.
+	key := uuid.New()
+	return s.scope(ctx, p, ws, ownerSettings, "backup.key.revoke", key, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		rows, err := q.ListBackupStorageAccounts(ctx, ws)
 		if err != nil {
@@ -423,14 +434,23 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 		if !report.Found[j].Bounded {
 			return errFoundUnbounded
 		}
-		// A peer's user is that installation's to revoke: its key may be one a transferred
-		// server still uses. The account's peers are read as they are now, not as the check saw
-		// them.
-		if isPeer(report.Found[j].InstallationId, rows[i].Peers) {
-			return errFoundPeer
+		// A peer's user the owner acknowledged is that installation's to revoke: its key may be
+		// one a transferred server still uses. One not acknowledged may have been made with a
+		// leaked admin key, so the owner can revoke it, which the dashboard warns may break that
+		// installation's backups. The account's peers are read as they are now, not as the check
+		// saw them.
+		if found := report.Found[j]; isPeer(found.InstallationId, rows[i].Peers) {
+			acks, err := acknowledgements(ctx, q, ws)
+			if err != nil {
+				return err
+			}
+			found.Peer = true
+			if acknowledgement(account, found, acks) != nil {
+				return errFoundPeer
+			}
 		}
 		tags, _ := stablejson.Marshal(map[string]string{"astilba:installation": report.Found[j].InstallationId, "astilba:server": report.Found[j].ServerId})
-		if err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: uuid.New(), WorkspaceID: ws, AccountID: account, UserName: user, FoundTags: tags}); err != nil {
+		if err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: key, WorkspaceID: ws, AccountID: account, UserName: user, FoundTags: tags}); err != nil {
 			return err
 		}
 		// The account shows the user as revoking from its row. A check now finds the user known,
@@ -476,6 +496,15 @@ func (s *Service) AcknowledgeFoundBackupStorageUser(ctx context.Context, p store
 		reviewed := slices.Compact(slices.Sorted(slices.Values(in.AccessKeyIds)))
 		if found.Id != foundUserID(account, user, in.UserId) || !slices.Equal(slices.Sorted(slices.Values(found.AccessKeyIds)), reviewed) {
 			return errFoundChanged
+		}
+		// Each acknowledgement is kept, so one the user is already covered by isn't added again.
+		acks, err := acknowledgements(ctx, q, ws)
+		if err != nil {
+			return err
+		}
+		found.Peer = true
+		if acknowledgement(account, found, acks) != nil {
+			return errAcknowledged
 		}
 		// A user with no access keys is acknowledged with none, which the column holds as an
 		// empty array rather than NULL.

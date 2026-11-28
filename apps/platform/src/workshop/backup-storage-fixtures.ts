@@ -273,7 +273,7 @@ export function backupStorageHandlers({
       if (refusePeerRevoke)
         return workshopFailure(
           "conflict",
-          "This user belongs to a peer installation, which may still use its key. Revoke it from that installation.",
+          "This user is acknowledged as a peer installation's, which may still use its key. Revoke it from that installation.",
           409,
         );
       revokedUsers.add(String(params.userName));

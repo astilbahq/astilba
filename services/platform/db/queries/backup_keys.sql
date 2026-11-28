@@ -300,10 +300,17 @@ FROM servers s
 WHERE k.workspace_id = @workspace_id AND k.state = 'active' AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
     AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations);
 
--- name: BackupStorageAcknowledgements :many
--- The peer installations' users the owner has acknowledged, for the accounts' views.
-SELECT account_id,identity,access_key_ids,acknowledged_at FROM backup_storage_acknowledgements
-WHERE workspace_id = @workspace_id ORDER BY account_id,identity,acknowledged_at DESC LIMIT 10000;
+-- name: FoundBackupStorageAcknowledgements :many
+-- When the newest acknowledgement covering each user the accounts' latest checks found was made,
+-- by the same rule as UnacknowledgedPeerBackupStorageUsers. Users not covered aren't listed. An
+-- account's check reports at most 1000 users, and a workspace has at most 10 accounts.
+SELECT a.id AS account_id, (u.value->>'id')::uuid AS identity, max(k.acknowledged_at)::timestamptz AS acknowledged_at
+FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+    AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
+WHERE a.workspace_id = @workspace_id AND u.value->>'id' IS NOT NULL
+GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000;
 
 -- name: AcknowledgeBackupStorageUser :exec
 INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,identity,user_name,iam_user_id,access_key_ids)
