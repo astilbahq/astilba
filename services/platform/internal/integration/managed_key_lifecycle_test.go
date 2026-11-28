@@ -85,10 +85,7 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	path := awskeys.Path(k.ws.String())
 	stranger, peer := "astilba-"+uuid.NewString(), "astilba-"+uuid.NewString()
 	peerInstallation := uuid.New()
-	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
-	k.aws.CreateUser(peer, path, k.boundary, map[string]string{"astilba:installation": peerInstallation.String()}, "")
 	account := k.base + "/backup-storage-accounts/" + k.account.Id.String()
-	k.run(t, accountCheck{})
 	accounts := func() api.BackupStorageAccount {
 		t.Helper()
 		var list []api.BackupStorageAccount
@@ -98,10 +95,22 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 		}
 		return list[0]
 	}
+	// A check asked for as a check job finishes waits for the next periodic pass, since River
+	// takes the request's job for the finishing one (PLAT-640), so check jobs run until the account
+	// reports. The account check tests do the same; drop the loops once PLAT-640 is fixed.
 	reported := func() {
 		t.Helper()
-		waitFor(t, "the account check didn't report", 30*time.Second, func() bool { return !accounts().Checking })
+		waitFor(t, "the account check didn't report", 30*time.Second, func() bool {
+			k.run(t, accountCheck{})
+			return !accounts().Checking
+		})
 	}
+	// Adding the account checks it at once, which may run before or after the users are made, so
+	// they are made once that check has reported, and then checked for.
+	reported()
+	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
+	k.aws.CreateUser(peer, path, k.boundary, map[string]string{"astilba:installation": peerInstallation.String()}, "")
+	k.b.call("POST", account+"/check", nil, 204, nil)
 	reported()
 	if got := accounts(); got.CheckedAt == nil || len(got.FoundUsers) != 2 {
 		t.Fatalf("after the check the account is %+v", got)
@@ -110,7 +119,6 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	// user as a stranger's. The account's peers are what count.
 	k.aws.Fail("ListUsers", "ServiceFailure", "ServiceFailure", "ServiceFailure")
 	k.b.call("POST", account+"/peers", api.BackupStorageAccountPeerRequest{InstallationId: peerInstallation}, 204, nil)
-	k.run(t, accountCheck{})
 	reported()
 	got := accounts()
 	if got.CheckError == nil {
@@ -133,7 +141,6 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	k.aws.Fail("DeleteUserPolicy", "ServiceFailure", "ServiceFailure", "ServiceFailure")
 	k.b.call("POST", account+"/found-users/"+stranger+"/revoke", nil, 204, nil)
 	k.run(t, keySweep{})
-	k.run(t, accountCheck{})
 	reported()
 	got = accounts()
 	var shown *api.BackupStorageFoundUser

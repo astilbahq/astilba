@@ -34,9 +34,9 @@ func newPeerUsers(t *testing.T) *peerUsers {
 func (p *peerUsers) check(t *testing.T) api.BackupStorageAccount {
 	t.Helper()
 	p.b.call("POST", p.account+"/check", nil, 204, nil)
-	p.run(t, accountCheck{})
 	var got api.BackupStorageAccount
 	waitFor(t, "the account check didn't report", 30*time.Second, func() bool {
+		p.run(t, accountCheck{})
 		got = p.view(t)
 		return !got.Checking
 	})
@@ -285,6 +285,18 @@ func TestAnUnacknowledgedPeerUserCanBeRevoked(t *testing.T) {
 		t.Fatalf("a refused acknowledgement was audited: %d", audited)
 	}
 	p.b.call("POST", p.account+"/found-users/"+kept+"/revoke", nil, 409, nil)
+	// Revoking queues a key sweep, which could finish the revocation before the account is read,
+	// so it is held at its first call, which only a revocation makes, until then.
+	release := make(chan struct{})
+	p.aws.Before(func(action string) {
+		if action == "DeleteUserPolicy" {
+			select {
+			case <-release:
+			case <-time.After(30 * time.Second):
+			}
+		}
+	})
+	t.Cleanup(func() { p.aws.Before(nil) })
 	p.b.call("POST", p.account+"/found-users/"+suspect+"/revoke", nil, 204, nil)
 	// Revoking it again, before a check drops it from the report, is refused and not audited.
 	p.b.call("POST", p.account+"/found-users/"+suspect+"/revoke", nil, 409, nil)
@@ -299,9 +311,15 @@ func TestAnUnacknowledgedPeerUserCanBeRevoked(t *testing.T) {
 	if !found(t, p.view(t), suspect).Revoking {
 		t.Fatal("the revoked peer user isn't shown as revoking")
 	}
-	p.run(t, keySweep{})
-	if p.aws.UserID(suspect) != "" || p.aws.UserID(kept) == "" {
-		t.Fatalf("after the sweep the users are %q and %q", p.aws.UserID(kept), p.aws.UserID(suspect))
+	close(release)
+	// A sweep asked for as one finishes waits for the next (PLAT-640), so sweeps run until the
+	// user is gone.
+	waitFor(t, "the sweep didn't revoke the peer user", 30*time.Second, func() bool {
+		p.run(t, keySweep{})
+		return p.aws.UserID(suspect) == ""
+	})
+	if p.aws.UserID(kept) == "" {
+		t.Fatal("the sweep revoked the acknowledged peer user")
 	}
 	p.check(t)
 	if p.firing(t, b.Id) || p.firing(t, a.Id) {
