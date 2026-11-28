@@ -36,11 +36,17 @@ const gitHeads = new Map();
 const gitProvider=createServer((request,response)=>{
  response.setHeader("Content-Type","application/json");
  // Before a push, Git asks for the receive-pack advertisement, which Gitea grants only to a credential
- // that can write. Astilba asks this of every clone credential before a runner may hold it.
+ // that can write. Astilba asks this of every clone credential before a runner may hold it. Gitea's
+ // refusal is a bare Forbidden, so Astilba then asks its API to delete a branch no repository has,
+ // which Gitea refuses to a token without write:repository.
+ const basic=Buffer.from((request.headers.authorization??"").replace(/^Basic /,""),"base64").toString();
+ const gitToken=basic.slice(basic.indexOf(":")+1);
  if(request.url==="/team/app.git/info/refs?service=git-receive-pack"){
-  const basic=Buffer.from((request.headers.authorization??"").replace(/^Basic /,""),"base64").toString();
-  const token=basic.slice(basic.indexOf(":")+1);
-  response.writeHead(token==="browser-api-fixture"?200:token==="browser-clone-fixture"?403:401).end();return
+  if(gitToken==="browser-clone-fixture"){response.setHeader("Content-Type","text/plain");response.writeHead(403).end("Forbidden\n");return}
+  response.writeHead(gitToken==="browser-api-fixture"?200:401).end();return
+ }
+ if(request.method==="DELETE" && request.url==="/api/v1/repos/team/app/branches/astilba..push-check" && gitToken==="browser-clone-fixture"){
+  response.writeHead(403).end(JSON.stringify({message:"token does not have at least one of required scope(s), required=[write:repository], token scope=read:repository"}));return
  }
  if(request.headers.authorization!=="token browser-api-fixture"){response.writeHead(401).end();return}
  if(request.method==="POST" && request.url==="/__fixture/head"){
