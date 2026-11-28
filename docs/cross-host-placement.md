@@ -167,7 +167,8 @@ version of the environments it carries, however old, without its value.
 - **What comes back.** Recovery restores configuration, unfinished work, the newest 100
   operations and audit events, the final state of runtime changes and cross-host roots, and
   anything they name. Of each secret it restores the 10 newest versions, the current one and
-  every version those records name. It erases again every value of a carried environment that
+  every version those records name, other than audit events, which name the version they record
+  without needing it. It erases again every value of a carried environment that
   the checkpoint records as erased, so none of those retired or purged values comes back from
   the backup, however old. Other releases, revisions, build runs and secret versions from between
   the backup and the failure are lost. An operation the backup holds unfinished gets the final state the newest
