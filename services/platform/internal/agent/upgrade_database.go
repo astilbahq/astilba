@@ -123,7 +123,8 @@ var localeDatabases = map[string]string{"application": "the application database
 // encoding or locale differs from template0's, always oid 4, which the checks before it require.
 // The upgrade's new cluster gives every database what the target image's initdb chooses by
 // default, which is template0's for a source the pinned image made with its defaults. A source
-// made with other locale variables differs from the new cluster in template0 too, as does one whose
+// whose initdb took another encoding, LC_COLLATE or LC_CTYPE from its variables differs from the
+// new cluster in template0 too, as does one whose
 // template0 a superuser changed or, with allow_system_table_mods, made again under oid 4; a
 // database matching it then differs from the new cluster, which the restore's verification
 // refuses for the application's database, after downtime. Before the owner model the database user is
