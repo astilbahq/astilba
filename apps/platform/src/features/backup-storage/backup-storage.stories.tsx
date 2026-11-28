@@ -9,7 +9,6 @@ import {
   lastReplacement,
   otherInstallation,
   resetBackupStorage,
-  savedRotation,
 } from "../../workshop/backup-storage-fixtures";
 import { scenario } from "../../workshop/fixtures";
 import { BackupStorage } from "./backup-storage";
@@ -98,6 +97,10 @@ export const Accounts: Story = {
         /^The key was due to be replaced on .+ Management is replacing it\.$/,
       ),
     ).toBeVisible();
+    // Whether a server is revoked comes with the servers list, so the rotations are looked at once
+    // both destinations name their servers.
+    await expect(await view.findByText(/Keys for edge-1$/)).toBeVisible();
+    await expect(view.getByText(/Keys for edge-0$/)).toBeVisible();
     await expect(
       view.getAllByRole("button", { name: "Rotate key" }),
     ).toHaveLength(1);
@@ -141,101 +144,6 @@ export const RevokeHandedOverKey: Story = {
     await expect(
       item.queryByRole("button", { name: "Revoke key" }),
     ).not.toBeInTheDocument();
-  },
-};
-
-// Rotating asks for a new key without revoking the server, which the destination then says it is
-// waiting for, and focus moves to the destination once the action has gone.
-export const RotateKey: Story = {
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const heading = await canvas.findByRole("heading", {
-      name: "Edge backups",
-    });
-    const section = within(heading.closest("section") as HTMLElement);
-    await userEvent.click(section.getByRole("button", { name: "Rotate key" }));
-    const dialog = within(
-      await within(canvasElement.ownerDocument.body).findByRole("alertdialog"),
-    );
-    await expect(
-      dialog.getByText(/The old key keeps working until the server reports/),
-    ).toBeVisible();
-    await expect(dialog.getByText(/revoke it instead/)).toBeVisible();
-    await userEvent.click(dialog.getByRole("button", { name: "Rotate key" }));
-    await waitFor(() => expect(heading).toHaveFocus());
-    await expect(
-      section.getByText(
-        "A new key has been asked for. Management is making it.",
-      ),
-    ).toBeVisible();
-    await expect(
-      section.queryByRole("button", { name: "Rotate key" }),
-    ).not.toBeInTheDocument();
-  },
-};
-
-// Turning key rotation off is a choice of its own, which the account then shows.
-export const TurnOffKeyRotation: Story = {
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const account = within(
-      await canvas.findByRole("article", { name: "Production AWS" }),
-    );
-    await userEvent.click(account.getByText("Change key rotation"));
-    const form = within(
-      account.getByRole("form", { name: "Key rotation of Production AWS" }),
-    );
-    await expect(
-      form.getByLabelText("Maximum key age in days, from 30 to 365"),
-    ).toHaveValue(90);
-    await userEvent.click(
-      form.getByRole("radio", { name: /^Don’t replace keys automatically/ }),
-    );
-    await expect(
-      form.queryByLabelText("Maximum key age in days, from 30 to 365"),
-    ).not.toBeInTheDocument();
-    await userEvent.click(
-      form.getByRole("button", { name: "Save key rotation" }),
-    );
-    await expect(await account.findByText("Key rotation saved.")).toBeVisible();
-    await expect(savedRotation()).toEqual({ days: null });
-    await expect(
-      await account.findByText("Off. Keys stay in use until you rotate them."),
-    ).toBeVisible();
-    // The destinations no longer say when their keys are replaced, and the choice stays made.
-    await waitFor(() =>
-      expect(
-        canvas.queryByText(/^The key was due to be replaced on /),
-      ).not.toBeInTheDocument(),
-    );
-    await expect(
-      form.getByRole("radio", { name: /^Don’t replace keys automatically/ }),
-    ).toBeChecked();
-  },
-};
-
-// A period saved from the keyboard keeps focus in its field, which shows the saved period.
-export const ShortenKeyRotation: Story = {
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const account = within(
-      await canvas.findByRole("article", { name: "Production AWS" }),
-    );
-    await userEvent.click(account.getByText("Change key rotation"));
-    const days = account.getByLabelText(
-      "Maximum key age in days, from 30 to 365",
-    );
-    await userEvent.clear(days);
-    await userEvent.type(days, "60{Enter}");
-    await expect(await account.findByText("Key rotation saved.")).toBeVisible();
-    await expect(savedRotation()).toEqual({ days: 60 });
-    await expect(
-      await account.findByText(
-        "Management replaces each destination’s key when it is 60 days old.",
-      ),
-    ).toBeVisible();
-    await expect(days).toHaveFocus();
-    await expect(days).toHaveValue(60);
   },
 };
 

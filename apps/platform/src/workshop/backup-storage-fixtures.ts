@@ -168,11 +168,13 @@ const currentActivated = "2026-08-20T09:00:00Z";
 
 // The live server's destination: its current key, the one it superseded, and the rotation that is
 // due, whose new key keeps failing to be made. As management does, the due date follows the
-// account's key rotation, and once the owner asks for a rotation it waits for its key.
+// account's key rotation, and once the owner asks for a rotation it waits for its key. A revoked
+// server's key isn't replaced, so it has no due date.
 const destinations = (
   revoked: ReadonlySet<string>,
   rotated: ReadonlySet<string>,
   days: number | null,
+  serverRevoked: boolean,
 ): Schema["BackupDestination"][] => [
   managed({
     id: destinationId,
@@ -192,7 +194,10 @@ const destinations = (
     remintError: "timeout",
     rotationRequested: rotated.has(destinationId),
     rotationDueAt:
-      revoked.has(currentKey) || rotated.has(destinationId) || days === null
+      revoked.has(currentKey) ||
+      rotated.has(destinationId) ||
+      days === null ||
+      serverRevoked
         ? null
         : new Date(
             Date.parse(currentActivated) + days * 24 * 60 * 60 * 1000,
@@ -237,7 +242,19 @@ export const acknowledgement = (userName: string) => acknowledged.get(userName);
 // The body of the latest admin key replacement, which names no boundary.
 let replacement: Record<string, unknown> | undefined;
 export const lastReplacement = () => replacement;
+// The servers list, which a story can hold until it has looked at the page without it.
+let releaseServers = () => {};
+let serversReleased = Promise.resolve();
+export const releaseHeldServers = () => releaseServers();
+// The live server, once a story has had it revoked since the page loaded.
+let liveServerRevoked = false;
 export function resetBackupStorage() {
+  // A held list from the story before answers, so its request doesn't outlive it.
+  releaseServers();
+  serversReleased = new Promise((resolve) => {
+    releaseServers = resolve;
+  });
+  liveServerRevoked = false;
   revokedKeys.clear();
   addedPeers.clear();
   revokedUsers.clear();
@@ -255,6 +272,11 @@ export function backupStorageHandlers({
   // Revoking a found user is refused: another owner acknowledged it as a peer's since the page
   // loaded, which the refreshed list then shows.
   refusePeerRevoke = false,
+  // The servers list answers only once the story calls releaseHeldServers.
+  holdServers = false,
+  // Rotating the live server's key is refused: the server was revoked since the page loaded, which
+  // the refreshed servers list then shows.
+  revokeOnRotate = false,
 } = {}) {
   const accountPath = `${workspaceRoot}/backup-storage-accounts/:accountId`;
   const destinationPath = `${workspaceRoot}/backup-destinations/:destinationId`;
@@ -295,20 +317,30 @@ export function backupStorageHandlers({
               revokedKeys,
               rotatedDestinations,
               rotation ? rotation.days : account.keyRotationDays,
+              liveServerRevoked,
             ),
           ),
     ),
-    http.get(`${workspaceRoot}/servers`, () =>
-      HttpResponse.json([
-        server(edge, "edge-1", "online"),
+    http.get(`${workspaceRoot}/servers`, async () => {
+      if (holdServers) await serversReleased;
+      return HttpResponse.json([
+        server(edge, "edge-1", liveServerRevoked ? "revoked" : "online"),
         server(retired, "edge-0", "revoked"),
-      ]),
-    ),
+      ]);
+    }),
     http.post(`${destinationPath}/keys/:keyId/revoke`, ({ params }) => {
       revokedKeys.add(String(params.keyId));
       return new HttpResponse(null, { status: 204 });
     }),
     http.post(`${destinationPath}/keys/rotate`, ({ params }) => {
+      if (revokeOnRotate) {
+        liveServerRevoked = true;
+        return workshopFailure(
+          "conflict",
+          "This destination's server is revoked, so its keys aren't replaced.",
+          409,
+        );
+      }
       rotatedDestinations.add(String(params.destinationId));
       return new HttpResponse(null, { status: 204 });
     }),
