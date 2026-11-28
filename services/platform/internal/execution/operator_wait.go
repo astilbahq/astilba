@@ -13,9 +13,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Why a command waited for management's own configuration. Each is added to the operation's note
-// once, and kept if the command then expires undelivered.
+// Why a command's delivery waited: on GitHub's rate limits, or for management's own configuration.
+// Each is added to the operation's note once, and kept if the command then expires undelivered.
 const (
+	gitHubBusyNote     = "GitHub limited how fast Astilba's GitHub App could make requests, so delivery to the runner waited and retried."
 	noGitHubAppNote    = "Delivery waited because management is running without the GitHub App this connection uses. An operator can configure it again."
 	otherGitHubAppNote = "Delivery waited because management is running with another GitHub App than the one this connection was authorized with. An operator can configure that App again, or the repository can be connected again with the current one."
 	providerPolicyNote = "Delivery waited because management's configuration does not allow this connection's Git provider, as once an operator removes its origin. An operator can allow it again."

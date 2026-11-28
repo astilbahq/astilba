@@ -277,10 +277,6 @@ func (s *Service) settleRefusedPipeline(ctx context.Context, tx pgx.Tx, ws uuid.
 	return true, tx.Commit(ctx)
 }
 
-// gitHubBusyNote says why a pipeline's delivery waited. It is added once, and kept if the pipeline
-// then expires undelivered.
-const gitHubBusyNote = "GitHub limited how fast Astilba's GitHub App could make requests, so delivery to the runner waited and retried."
-
 // pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
 // management has heard its runner started it. The start must reach management by the deadline
 // (pipelineReport cancels one heard of later), so an agent whose clock lags can neither start a
