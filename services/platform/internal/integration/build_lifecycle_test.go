@@ -128,18 +128,27 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 			} else {
 				if mode == "delivered without report" {
 					// The runner holds this delivery's inputs, so only releasing them again checks
-					// them, and is refused.
+					// them.
 					if held := poll(t); held.Id != op.Id || held.SecretRelease == nil || held.SecretRelease.Values {
 						t.Fatal("a held release was made again", held.SecretRelease)
 					}
 					agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/releases", token, api.SecretReleaseNotice{Acknowledged: []api.SecretReleaseRef{}, Redeliver: []api.SecretRedelivery{{OperationId: op.Id, Epoch: delivered.SecretRelease.Epoch, Reason: api.JournalMissing}}}, 204, nil)
 				}
-				agentRequest(t, f.server.Client(), f.server.URL, "/agent/v1/poll", token, nil, 400, nil)
+				// The runner may hold the build, so the rejection tells it to stop, with nothing it
+				// could build with, rather than refuse this poll and every later one until the
+				// build's deadline.
+				stop := poll(t)
+				var command pipeline.Command
+				if stop.Id != op.Id || !stop.CancelRequested || stop.SecretRelease != nil || json.Unmarshal(*stop.Pipeline, &command) != nil || command.Access != nil || command.BuildSecrets != nil || command.RegistryAccess != nil {
+					t.Fatal("a possibly delivered build whose inputs were rejected was not stopped without credentials", stop.Id, stop.CancelRequested, stop.SecretRelease)
+				}
+				delivered = stop
 			}
 			var state, note string
 			var sequence int64
+			var cancelled bool
 			var started *bool
-			if err := f.st.Pool.QueryRow(ctx, "SELECT o.state,o.note,o.report_sequence,r.delivery_started FROM execution_operations o JOIN pipeline_runs r ON r.id=o.id WHERE o.id=$1", op.Id).Scan(&state, &note, &sequence, &started); err != nil {
+			if err := f.st.Pool.QueryRow(ctx, "SELECT o.state,o.note,o.report_sequence,o.cancel_requested,r.delivery_started FROM execution_operations o JOIN pipeline_runs r ON r.id=o.id WHERE o.id=$1", op.Id).Scan(&state, &note, &sequence, &cancelled, &started); err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(note, canary) || sequence != 0 {
@@ -151,16 +160,17 @@ func TestBuildDeliveryAdmissionLifecycle(t *testing.T) {
 				}
 				return
 			}
-			if state != "dispatched" || mode == "delivered without report" && (started == nil || !*started) || mode == "legacy unknown" && started != nil {
-				t.Fatal("possibly delivered build was falsely failed", state, started)
+			// It ends when the runner reports it, not before: it may be running.
+			if state != "dispatched" || !cancelled || mode == "delivered without report" && (started == nil || !*started) || mode == "legacy unknown" && started != nil {
+				t.Fatal("possibly delivered build was falsely failed, or not stopped", state, cancelled, started)
 			}
-			b.call("POST", prefix+"/operations/"+op.Id.String()+"/cancel", nil, 204, nil)
-			c := poll(t)
-			var command pipeline.Command
-			if err := json.Unmarshal(*c.Pipeline, &command); err != nil || !c.CancelRequested || command.Access != nil || command.BuildSecrets != nil {
-				t.Fatal("rejection obstructed credential-free cancellation", c, err)
+			if note != "Build stopped: Public build arguments contain a known secret value." {
+				t.Fatalf("the stopped build's note is %q", note)
 			}
-			finish(t, c)
+			finish(t, delivered)
+			if err := f.st.Pool.QueryRow(ctx, "SELECT state FROM execution_operations WHERE id=$1", op.Id).Scan(&state); err != nil || state != "cancelled" {
+				t.Fatal("the stopped build did not end cancelled", state, err)
+			}
 		})
 	}
 	for _, ending := range []string{"cancelled", "expired"} {

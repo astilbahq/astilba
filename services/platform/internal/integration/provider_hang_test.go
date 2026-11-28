@@ -418,8 +418,9 @@ func TestDeliveryRechecksEverythingAfterAHungProvider(t *testing.T) {
 		// During runs while the provider hangs, against this operation.
 		during func(t *testing.T, h *hungBuild, operation uuid.UUID)
 		check  func(t *testing.T, h *hungBuild, operation uuid.UUID, result polled)
-		// Finishes means the poll has nothing to return and waits out its long poll instead.
-		finishes bool
+		// Ends is the state the operation settles in, when it settles during the poll, which then
+		// has nothing to return and waits out its long poll instead.
+		ends string
 	}{
 		{
 			name:   "nothing changed",
@@ -452,8 +453,8 @@ func TestDeliveryRechecksEverythingAfterAHungProvider(t *testing.T) {
 			check: refusedAuthentication,
 		},
 		{
-			name:     "operation cancelled",
-			finishes: true,
+			name: "operation cancelled",
+			ends: "cancelled",
 			during: func(t *testing.T, h *hungBuild, operation uuid.UUID) {
 				execSQL(t, h, "UPDATE execution_operations SET cancel_requested=true WHERE id=$1", operation)
 			},
@@ -462,22 +463,28 @@ func TestDeliveryRechecksEverythingAfterAHungProvider(t *testing.T) {
 		{
 			// Hosted with no entitlement row is a lapsed subscription. Setting it only now keeps
 			// the dispatcher from refusing the command before the poll reaches the provider.
-			name:     "subscription lapsed",
-			finishes: true,
-			during:   func(t *testing.T, h *hungBuild, _ uuid.UUID) { h.f.st.Hosted = true },
-			check:    stoppedBeforeDelivery,
+			name:   "subscription lapsed",
+			ends:   "cancelled",
+			during: func(t *testing.T, h *hungBuild, _ uuid.UUID) { h.f.st.Hosted = true },
+			check:  stoppedBeforeDelivery,
 		},
 		{
 			name: "connection repointed",
+			ends: "failed",
 			during: func(t *testing.T, h *hungBuild, _ uuid.UUID) {
 				// The held answer still says 12, which matches the frozen command. Only the
-				// answer to the question asked again, about the new state, can refuse this.
+				// answer to the question asked again, about the new state, can refuse this, and
+				// a repository that moved never moves back, so the build fails undelivered.
 				h.provider.repository.Store(13)
 				execSQL(t, h, `UPDATE git_connections SET configuration=configuration||'{"name":"Repointed"}' WHERE id=$1`, h.connection.ID)
 			},
 			check: func(t *testing.T, h *hungBuild, operation uuid.UUID, result polled) {
-				if result.err == nil || carriesCredential(result.command) || h.deliveryStarted(t, operation) {
-					t.Fatal("an answer about the old connection authorized delivery", result.err)
+				var note string
+				if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT note FROM execution_operations WHERE id=$1", operation).Scan(&note); err != nil {
+					t.Fatal(err)
+				}
+				if carriesCredential(result.command) || h.deliveryStarted(t, operation) || !strings.Contains(note, "no longer the one this pipeline was queued for") {
+					t.Fatal("an answer about the old connection authorized delivery", note, result.err)
 				}
 			},
 		},
@@ -506,8 +513,8 @@ func TestDeliveryRechecksEverythingAfterAHungProvider(t *testing.T) {
 			h.requireNothingHeld(t, op.Id)
 			tc.during(t, h, op.Id)
 			release()
-			if tc.finishes {
-				h.waitState(t, op.Id, "cancelled")
+			if tc.ends != "" {
+				h.waitState(t, op.Id, tc.ends)
 				cancel()
 			}
 			tc.check(t, h, op.Id, <-result)

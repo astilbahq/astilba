@@ -253,8 +253,8 @@ func nativePlacementHosts(t *testing.T) (context.Context, []*nativePlacementHost
 			}
 		})
 		hostEnd, peerEnd := "ah"+fmt.Sprint(index)+strings.ReplaceAll(owner, "-", "")[:7], "uplink"
-		run("ip", "link", "add", hostEnd, "type", "veth", "peer", "name", peerEnd)
-		run("ip", "link", "set", peerEnd, "netns", namespace)
+		// Create the peer in its namespace: udev gives every root-namespace "uplink" the same MAC, which made the bridge flap.
+		run("ip", "link", "add", hostEnd, "type", "veth", "peer", "name", peerEnd, "netns", namespace)
 		run("ip", "link", "set", hostEnd, "master", bridge)
 		run("ip", "link", "set", hostEnd, "up")
 		run("ip", "-n", namespace, "address", "add", fmt.Sprintf("10.219.0.%d/24", index+1), "dev", peerEnd)
@@ -764,6 +764,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 		primary.command(t, command(0, "effect", "cutover", false))
 		primary.command(t, upgradeCommand("cutover"))
 		nativeResumeThenComplete(t, hosts, completed, func(index int) api.ExecutionCommand { return command(index, "resume-target", "", true) }, func(index int) api.ExecutionCommand { return command(index, "complete", "", true) })
+		currentGroup = upgradePlan.TargetGroup()
 		rows, err := pgEngine.pgQuery(ctx, pgClient{container: deployment.UnitName(pg)}, pgApp, "SELECT count(*) FROM cross_host_marker WHERE value='retained database data'")
 		if err != nil || strings.TrimSpace(string(rows)) != "1" {
 			t.Fatal("major upgrade did not preserve application data", err)
@@ -772,7 +773,6 @@ exec httpd -f -p 8080 -h /tmp/www`
 			t.Fatal("major upgrade removed the retained source volume", err)
 		}
 		nativeWaitPlacementRecovery(t)
-		currentGroup = upgradePlan.TargetGroup()
 	})
 	for _, restore := range []struct {
 		method, name string
@@ -888,6 +888,7 @@ exec httpd -f -p 8080 -h /tmp/www`
 			}
 			nativeRequireHealthy(t, recreated.Container)
 			nativeResumeThenComplete(t, hosts, completed, func(index int) api.ExecutionCommand { return command(index, "resume-target") }, func(index int) api.ExecutionCommand { return command(index, "complete") })
+			currentGroup = target
 			if method == backup.QuiescedFiles {
 				value, err := data.dataOutput(ctx, pgClient{container: deployment.UnitName(files)}, "cat", "/files/value")
 				nativeRequireValue(t, "restored files", value, "retained-file-data", err)
@@ -899,7 +900,6 @@ exec httpd -f -p 8080 -h /tmp/www`
 				t.Fatal("restore cutover removed source data", err)
 			}
 			nativeWaitPlacementRecovery(t)
-			currentGroup = target
 		})
 	}
 	t.Run("current_controller_and_completion_drift", func(t *testing.T) {
