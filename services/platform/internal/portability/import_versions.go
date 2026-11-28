@@ -214,5 +214,15 @@ func upgradeArchive(archive *Archive, version int) error {
 			setValue(row, "revocations", revocations)
 		}
 	}
+	// Version 24 carries each storage account's key rotation. An older archive's accounts take the
+	// 90 days migration 00079 gave every account.
+	if version < 24 {
+		for _, row := range archive.Tables["backup_storage_accounts"] {
+			if _, exists := row["key_rotation_days"]; exists {
+				return ErrArchive
+			}
+			setValue(row, "key_rotation_days", 90)
+		}
+	}
 	return nil
 }

@@ -78,9 +78,10 @@ var version5Tables = func() []table {
 // when management first received each backup snapshot; version 15 added restores of a revoked
 // server's backup snapshots onto another server; version 17 added each restore's latest discard;
 // version 19 added the server each backup destination is bound to; version 21 added managed backup
-// storage accounts and the keys management minted with them. Versions 10, 12, 14, 16, 18, 20, 22
-// and 23 are recovery bases, so the next export version is 24.
-const ArchiveVersion = 21
+// storage accounts and the keys management minted with them; version 24 added each storage
+// account's key rotation. Versions 10, 12, 14, 16, 18, 20, 22, 23 and 25 are recovery bases, so
+// the next export version is 26.
+const ArchiveVersion = 24
 
 var version7Tables = func() []table {
 	out := append([]table{}, version5Tables...)
@@ -188,7 +189,7 @@ var version19Tables = func() []table {
 // management minted with them, with each server's revocation count their handovers are bound to,
 // and how many tries each re-minted key's installs have had.
 // An account comes before the destinations that name it. Version 20 is a recovery base.
-var tables = func() []table {
+var version21Tables = func() []table {
 	out := append([]table{}, version19Tables...)
 	for i := range out {
 		switch out[i].Name {
@@ -201,4 +202,16 @@ var tables = func() []table {
 	i := slices.IndexFunc(out, func(t table) bool { return t.Name == "backup_destinations" })
 	out = slices.Insert(out, i, table{Name: "backup_storage_accounts", Columns: "id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential,generation,peers,created_at"})
 	return append(out, table{Name: "backup_storage_keys", Columns: "id,workspace_id,account_id,destination_id,holder_server_id,purpose,recovery_request,recovery_policy_id,recovery_snapshot,recovery_id,scope,user_name,access_key_id,state,mint_deadline,handed_over,activated_at,revoked_at,installs,install_attempts,install_next_at,found_tags,encrypted_secret,created_at"})
+}()
+
+// Version 24 carries how old each storage account lets its managed destinations' keys grow before
+// management replaces them. Versions 22 and 23 are recovery bases.
+var tables = func() []table {
+	out := append([]table{}, version21Tables...)
+	for i := range out {
+		if out[i].Name == "backup_storage_accounts" {
+			out[i].Columns += ",key_rotation_days"
+		}
+	}
+	return out
 }()

@@ -727,20 +727,38 @@ func (q *Queries) InsertBackupRecovery(ctx context.Context, arg InsertBackupReco
 const listBackupDestinations = `-- name: ListBackupDestinations :many
 SELECT d.configuration, d.server_id, d.shared, d.account_id, d.remint_error,
     (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
-        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
-FROM backup_destinations d WHERE d.workspace_id = $1 ORDER BY d.id LIMIT 100
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder,
+    COALESCE(d.rekey_requested_at > n.activated_at,false)::bool AS rotation_requested,
+    (SELECT count(*) FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.state = 'active')::bigint AS active_keys,
+    n.activated_at AS key_activated_at, a.key_rotation_days, COALESCE(s.revoked,false)::bool AS server_revoked
+FROM backup_destinations d
+LEFT JOIN servers s ON s.workspace_id = d.workspace_id AND s.id = d.server_id
+LEFT JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+LEFT JOIN LATERAL (SELECT k.activated_at FROM backup_storage_keys k
+    WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.state = 'active'
+    ORDER BY k.activated_at DESC LIMIT 1) n ON true
+WHERE d.workspace_id = $1 ORDER BY d.id LIMIT 100
 `
 
 type ListBackupDestinationsRow struct {
-	Configuration []byte      `json:"configuration"`
-	ServerID      *uuid.UUID  `json:"server_id"`
-	Shared        bool        `json:"shared"`
-	AccountID     *uuid.UUID  `json:"account_id"`
-	RemintError   pgtype.Text `json:"remint_error"`
-	Placeholder   bool        `json:"placeholder"`
+	Configuration     []byte      `json:"configuration"`
+	ServerID          *uuid.UUID  `json:"server_id"`
+	Shared            bool        `json:"shared"`
+	AccountID         *uuid.UUID  `json:"account_id"`
+	RemintError       pgtype.Text `json:"remint_error"`
+	Placeholder       bool        `json:"placeholder"`
+	RotationRequested bool        `json:"rotation_requested"`
+	ActiveKeys        int64       `json:"active_keys"`
+	KeyActivatedAt    *time.Time  `json:"key_activated_at"`
+	KeyRotationDays   pgtype.Int4 `json:"key_rotation_days"`
+	ServerRevoked     bool        `json:"server_revoked"`
 }
 
-// placeholder is as BackupDestinationBinding has it.
+// placeholder is as BackupDestinationBinding has it. A managed destination's rotation is as
+// BackupDestinationKeyState reads it: whether the owner's request waits for its key, and, for the
+// view's due date, how many server keys are active, when the newest was activated, and whether its
+// server is revoked.
 func (q *Queries) ListBackupDestinations(ctx context.Context, workspaceID uuid.UUID) ([]ListBackupDestinationsRow, error) {
 	rows, err := q.db.Query(ctx, listBackupDestinations, workspaceID)
 	if err != nil {
@@ -757,6 +775,11 @@ func (q *Queries) ListBackupDestinations(ctx context.Context, workspaceID uuid.U
 			&i.AccountID,
 			&i.RemintError,
 			&i.Placeholder,
+			&i.RotationRequested,
+			&i.ActiveKeys,
+			&i.KeyActivatedAt,
+			&i.KeyRotationDays,
+			&i.ServerRevoked,
 		); err != nil {
 			return nil, err
 		}

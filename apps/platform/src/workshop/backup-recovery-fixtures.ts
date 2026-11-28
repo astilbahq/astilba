@@ -170,6 +170,8 @@ const placeholderDestination: Schema["BackupDestination"] = {
   ],
   placeholder: true,
   remintError: null,
+  rotationRequested: false,
+  rotationDueAt: null,
   policies: [],
 };
 
@@ -214,6 +216,8 @@ export function revokedServerBackupHandlers({
           keys: [],
           placeholder: false,
           remintError: null,
+          rotationRequested: false,
+          rotationDueAt: null,
           policies: [
             {
               id: policyId,

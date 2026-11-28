@@ -21,15 +21,16 @@ import (
 // says which export version's tables each recovery base version carries
 // (TestExportVersionsStayBelowTheRecoveryBaseVersion). A release before it refuses such a base, so
 // cross-host recovery has to run on the release that sealed the newest base or a newer one.
-// Version 23 carries erased secret versions as ranges (RecoveryHistory.Erasures) rather than as rows.
-const RecoveryArchiveVersion = 23
+// Version 23 carries erased secret versions as ranges (RecoveryHistory.Erasures) rather than as rows,
+// and version 25 carries version 24's tables.
+const RecoveryArchiveVersion = 25
 
 // recoveryErasureRanges is the first recovery base version that carries erasure ranges. One before
 // it carries every erased version of its secrets as a row instead.
 const recoveryErasureRanges = 23
 
 // recoveryBaseTables maps each recovery base version to the export version whose tables it carries.
-var recoveryBaseTables = map[int]int{10: 9, 12: 11, 14: 13, 16: 15, 18: 17, 20: 19, 22: 21, RecoveryArchiveVersion: ArchiveVersion}
+var recoveryBaseTables = map[int]int{10: 9, 12: 11, 14: 13, 16: 15, 18: 17, 20: 19, 22: 21, 23: 21, RecoveryArchiveVersion: ArchiveVersion}
 
 const (
 	// RecoveryWindowTarget is how far back a base's applied history reaches when it fits.

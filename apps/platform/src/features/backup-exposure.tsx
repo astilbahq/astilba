@@ -2,7 +2,6 @@ import { useTranslation } from "react-i18next";
 import { Checkbox } from "../components/checkbox";
 import { Label } from "../components/label";
 import * as s from "../styles";
-import * as r from "./backup-recovery.styles";
 
 // The warnings for a destination whose storage keys a revoked server was given
 // (docs/backups.md#destination-setup).
@@ -30,7 +29,7 @@ export function ExposureAcknowledgement({ managed }: { managed: boolean }) {
           ? t(($) => $.exposed.managedWarning)
           : t(($) => $.exposed.warning)}
       </p>
-      <Label className={r.choice}>
+      <Label className={s.choice}>
         <Checkbox name="exposureAcknowledged" required />
         {t(($) => $.exposed.acknowledge)}
       </Label>

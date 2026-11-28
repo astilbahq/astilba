@@ -50,9 +50,12 @@ func (s *Service) settleRevokedWork(ctx context.Context, tx pgx.Tx, ws, server u
 		return err
 	}
 	// A revoked server's minted backup keys are revoked at AWS, except those handed over at this
-	// revocation. The sweep starts at once.
+	// revocation, and none is made for it until it is renewed. The sweep starts at once.
 	latched, err := q.LatchServerBackupStorageKeys(ctx, db.LatchServerBackupStorageKeysParams{WorkspaceID: ws, ServerID: &server})
 	if err != nil {
+		return err
+	}
+	if err = q.ClearServerBackupRemints(ctx, db.ClearServerBackupRemintsParams{WorkspaceID: ws, ServerID: &server}); err != nil {
 		return err
 	}
 	if len(latched) > 0 {

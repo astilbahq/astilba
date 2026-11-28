@@ -4221,6 +4221,45 @@
           application/json:
             schema:
               $ref: '#/components/schemas/BackupStorageCredentialRequest'
+  /api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/key-rotation:
+    put:
+      operationId: SetBackupStorageKeyRotation
+      description: >-
+        Sets how old the account's managed destinations' keys may grow before management replaces them, or
+        turns that off. Audited as backup.account.rotation.set, or backup.account.rotation.off. Needs recent
+        authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupStorageAccount'
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupStorageKeyRotationRequest'
   /api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/check:
     post:
       operationId: CheckBackupStorageAccount
@@ -4354,6 +4393,36 @@
           application/json:
             schema:
               $ref: '#/components/schemas/BackupStorageAcknowledgementRequest'
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/backup-destinations/{destinationId}/keys/rotate:
+    post:
+      operationId: RotateBackupStorageKey
+      description: >-
+        Asks management to replace a managed destination's key without revoking its server. Management mints
+        a new key, installs it on the server's policies, and revokes the old key once the server reports
+        them. Refused while the server is revoked, while the destination has no key in use, and while a
+        rotation is asked for or under way. Audited as backup.key.rotate. Needs recent authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: destinationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
       responses:
         '204':
           description: Success
@@ -10060,7 +10129,19 @@
           type: string
           nullable: true
           maxLength: 80
-          description: Why minting a renewed server's new key failed, as a fixed code; management retries.
+          description: >-
+            Why minting a new key failed, for a renewed server or a rotation, as a fixed code; management
+            retries.
+        rotationRequested:
+          type: boolean
+          description: Whether the owner asked for the managed destination's key to be replaced, and its new key isn't active yet.
+        rotationDueAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            When the storage account's key rotation replaces the managed destination's key. Null while the
+            rotation is off, while the destination has no key in use or two, and while its server is revoked.
         policies:
           type: array
           maxItems: 100
@@ -10081,6 +10162,8 @@
         - keys
         - placeholder
         - remintError
+        - rotationRequested
+        - rotationDueAt
         - policies
     ServerRevokeRequest:
       type: object
@@ -10103,7 +10186,26 @@
           type: string
           maxLength: 2048
           description: The ARN of the permissions-boundary policy every minted user is created with.
-      required: [name, accessKeyId, secretAccessKey, boundary]
+        keyRotationDays:
+          type: integer
+          minimum: 30
+          maximum: 365
+          nullable: true
+          description: >-
+            How many days old the account's managed destinations' keys may grow before management replaces
+            them, or null to replace them only when the owner asks. The dashboard suggests 90.
+      required: [name, accessKeyId, secretAccessKey, boundary, keyRotationDays]
+    BackupStorageKeyRotationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        keyRotationDays:
+          type: integer
+          minimum: 30
+          maximum: 365
+          nullable: true
+          description: How many days old a key may grow before management replaces it, or null for never.
+      required: [keyRotationDays]
     BackupStorageCredentialRequest:
       type: object
       additionalProperties: false
@@ -10188,6 +10290,10 @@
           type: array
           maxItems: 16
           items: {type: string, format: uuid}
+        keyRotationDays:
+          type: integer
+          nullable: true
+          description: How many days old its managed destinations' keys may grow before management replaces them, or null for never.
         checkedAt: {type: string, format: date-time, nullable: true, description: "When the latest account check reported."}
         checking: {type: boolean, description: "Whether a check has been asked for, or is running, and hasn't reported yet."}
         checkError:
@@ -10202,7 +10308,7 @@
         extraKeysDeleted:
           type: integer
           description: Access keys the latest check found on minted users that management never made, and deleted.
-      required: [id, name, awsAccount, adminArn, boundary, path, installationId, generation, peers, checkedAt, checking, checkError, foundUsers, extraKeysDeleted]
+      required: [id, name, awsAccount, adminArn, boundary, path, installationId, generation, peers, keyRotationDays, checkedAt, checking, checkError, foundUsers, extraKeysDeleted]
     BackupStorageKey:
       type: object
       additionalProperties: false
