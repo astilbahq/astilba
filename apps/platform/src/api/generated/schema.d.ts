@@ -2059,7 +2059,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Lists another installation that shares this account after a workspace transfer, so its users are shown as managed by it without an alert. Needs recent authentication. */
+        /** @description Lists another installation that shares this account after a workspace transfer, so its users are shown as managed by it. Each with the account's permissions boundary raises a backup_peer_user alert until the owner acknowledges it by name, and once acknowledged is never revoked here. Needs recent authentication. */
         post: operations["AddBackupStorageAccountPeer"];
         delete?: never;
         options?: never;
@@ -2076,8 +2076,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Revokes an IAM user the account check found under this workspace's path with no record here. Its access is taken away and the user deleted at AWS. Needs recent authentication. */
+        /** @description Revokes an IAM user the account check found under this workspace's path with no record here. Its access is taken away and the user deleted at AWS. A peer installation's user can be revoked only while it isn't acknowledged, since that installation may still use its key. Audited as backup.key.revoke, naming the user's new key record. Needs recent authentication. */
         post: operations["RevokeFoundBackupStorageUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/found-users/{userName}/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Acknowledges an IAM user the account check found tagged with a peer installation as that installation's, which clears the backup_peer_user alert it raised. The acknowledgement covers the user's IAM user ID and the access keys it has now: a user made again under the same name, or given another access key, raises the alert again. Refused if an acknowledgement already covers the user as the latest check found it. Audited as backup.key.acknowledge, naming the acknowledgement's own record. Needs recent authentication. */
+        post: operations["AcknowledgeFoundBackupStorageUser"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4901,9 +4918,28 @@ export interface components {
             /** Format: uuid */
             installationId: string;
         };
+        /** @description The found user as the owner saw it. The acknowledgement is refused if the latest check found it with another IAM user ID or other access keys. */
+        BackupStorageAcknowledgementRequest: {
+            userId: string;
+            accessKeyIds: string[];
+        };
         /** @description An IAM user under the workspace's path with no record at this installation. */
         BackupStorageFoundUser: {
+            /**
+             * Format: uuid
+             * @description The user's identity under this account, from its name and IAM user ID. A backup_peer_user alert names it as its resource. The nil UUID until a check records it: for a user management is revoking, which the check no longer reports since its record makes it known, or in a report from before identities were recorded.
+             */
+            id: string;
             userName: string;
+            /** @description Its IAM user ID, which a user made again under the same name doesn't keep. Empty for a user being revoked that the latest check didn't report. */
+            userId: string;
+            /** @description The access keys the check found on it, if it has the account's permissions boundary. Empty for a user without it, or one being revoked that the latest check didn't report. */
+            accessKeyIds: string[];
+            /**
+             * Format: date-time
+             * @description When the owner acknowledged a peer installation's user as that installation's, if the acknowledgement still covers it: the same IAM user, with no access key it didn't have then.
+             */
+            acknowledgedAt: string | null;
             /** @description Its astilba:installation tag, as found. */
             installationId: string;
             /** @description Its astilba:server tag, as found. */
@@ -5465,7 +5501,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held" | "backup_exposure" | "backup_account";
+            kind: "server_offline" | "disk_docker" | "disk_agent" | "service_runtime" | "service_health" | "backup_schedule" | "deployment_problem" | "build_problem" | "backup_problem" | "network_problem" | "identity_conflict" | "recovery_window" | "dns_withdrawal_held" | "backup_exposure" | "backup_account" | "backup_peer_user";
             /** Format: uuid */
             resourceId: string;
             /** Format: uuid */
@@ -10705,6 +10741,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    AcknowledgeFoundBackupStorageUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                accountId: string;
+                userName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupStorageAcknowledgementRequest"];
+            };
+        };
         responses: {
             /** @description Success */
             204: {

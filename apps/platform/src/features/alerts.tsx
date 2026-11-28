@@ -34,6 +34,8 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   backup_exposure: "A revoked server holds a backup destination's storage keys",
   backup_account:
     "A backup storage account's check failed or found keys management didn't make",
+  backup_peer_user:
+    "A backup storage account has a peer installation's user to acknowledge",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);
@@ -80,10 +82,13 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
     ...projectsOptions(workspace.id),
     enabled: exposure,
   });
-  // An account alert names a storage account, whose name comes from the accounts.
+  // An account alert names a storage account, whose name comes from the accounts, and a peer
+  // user alert one of the users an account's check found.
   const accounts = useQuery({
     ...backupStorageAccountsOptions(workspace.id),
-    enabled: !!inbox.data?.alerts.some((a) => a.kind === "backup_account"),
+    enabled: !!inbox.data?.alerts.some(
+      (a) => a.kind === "backup_account" || a.kind === "backup_peer_user",
+    ),
   });
   return (
     <>
@@ -159,6 +164,14 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                     account={accounts.data?.find(
                       (a) => a.id === alert.resourceId,
                     )}
+                  />
+                )}
+                {alert.kind === "backup_peer_user" && (
+                  <PeerUserAlert
+                    workspaceId={workspace.id}
+                    firing={alert.state === "firing"}
+                    user={alert.resourceId}
+                    accounts={accounts.data}
                   />
                 )}
                 <p>
@@ -450,6 +463,46 @@ function ExposedDestination({
   );
 }
 
+/**
+ * A peer user alert names the user's identity under its account, which the account's latest check
+ * reports. Once the user is acknowledged or gone, the check may no longer name it.
+ */
+function PeerUserAlert({
+  workspaceId,
+  firing,
+  user,
+  accounts,
+}: {
+  workspaceId: string;
+  firing: boolean;
+  user: string;
+  accounts?: Schema["BackupStorageAccount"][];
+}) {
+  const account = accounts?.find((a) =>
+    a.foundUsers.some((u) => u.id === user),
+  );
+  const found = account?.foundUsers.find((u) => u.id === user);
+  return (
+    <p>
+      {account && found && (
+        <>
+          Storage account: {account.name}. User: <code>{found.userName}</code>,
+          tagged by installation <code>{found.installationId}</code>.{" "}
+        </>
+      )}
+      {firing &&
+        "Acknowledge the user by name if that installation made it, for example after a workspace transfer. A leaked admin key can make a user with a peer's tag: if you don't recognise it, revoke it and replace the admin key. "}
+      <Link
+        to="/members"
+        search={{ workspace: workspaceId }}
+        hash={backupStorageSection}
+      >
+        Backup storage accounts
+      </Link>
+    </p>
+  );
+}
+
 // The storage account an account alert names. While it fires, its latest check couldn't list the
 // account's users, or found one management didn't make, which the storage accounts list names.
 function StorageAccountAlert({
@@ -465,7 +518,7 @@ function StorageAccountAlert({
     <p>
       {account && <>Storage account: {account.name}. </>}
       {firing &&
-        "Review what its latest check found, revoke the users management didn't make, and fix a failing check. "}
+        "Review what its latest check found, revoke the users management didn't make, and fix a failing check. If nobody you know made a user, replace the admin key too. "}
       <Link
         to="/members"
         search={{ workspace: workspaceId }}
