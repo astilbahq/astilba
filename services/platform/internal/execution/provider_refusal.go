@@ -17,21 +17,25 @@ const repositoryMoved = "the connection's repository is no longer the one this p
 // connection's repository for good, and if so why, to end a note with. Asking again gets the same
 // answer until someone changes the connection, the repository or the App's installation, which
 // the pipeline does not wait for: delivery would otherwise fail every poll by its runner until
-// the pipeline's deadline. A rate limit, a minted token GitHub stopped accepting, a server error,
-// a temporary redirect or a failed request passes, so none of them is final.
+// the pipeline's deadline. A rate limit, a minted token GitHub stopped accepting, management's own
+// configuration refusing the App, a server error, a temporary redirect or a failed request
+// passes, so none of them is final.
 func finalProviderRefusal(err error) (string, bool) {
-	// A missing branch is the branch's answer, which a push can change, not the repository's.
-	if errors.Is(err, errGitHubBusy) || errors.Is(err, errGitHubTokenRejected) || errors.Is(err, pipeline.ErrBranchNotFound) {
+	if errors.Is(err, errGitHubTokenRejected) {
 		return "", false
 	}
+	// Management's own configuration refusing the App is the operator's to restore.
 	var unusable *appUnusable
 	if errors.As(err, &unusable) {
-		return "the connection's GitHub App authorization was removed, or no longer matches Astilba's GitHub App. Connect the repository again, then start this again.", true
+		if unusable.operator {
+			return "", false
+		}
+		return "the connection's GitHub App authorization was removed, or no longer matches its repository. Connect the repository again, then start this again.", true
 	}
 	if githubapp.Revoked(err) {
 		return "Astilba's GitHub App can no longer reach the repository: it was uninstalled, suspended or removed from the repository, or lost a permission Astilba needs. Install it on the repository again, then start this again.", true
 	}
-	if errors.Is(err, githubapp.ErrRepositoryChanged) {
+	if errors.Is(err, githubapp.ErrRepositoryChanged) || errors.Is(err, pipeline.ErrRepositoryChanged) {
 		return repositoryMoved, true
 	}
 	var status int
@@ -50,6 +54,9 @@ func finalProviderRefusal(err error) (string, bool) {
 	// cause, and is not the repository's answer.
 	case errors.As(err, &app):
 		status = app.Status
+		if status == http.StatusForbidden {
+			return "GitHub refused Astilba's GitHub App access to the repository (HTTP 403), as it does once the App's installation is suspended, loses a permission Astilba needs, or is outside an organization's IP allow list. Check the App's installation, then start this again.", true
+		}
 	}
 	switch status {
 	case http.StatusMovedPermanently, http.StatusPermanentRedirect:
@@ -62,4 +69,15 @@ func finalProviderRefusal(err error) (string, bool) {
 		return "the Git provider blocked access to the repository (HTTP 451). Start this again once it is available.", true
 	}
 	return "", false
+}
+
+// headRefusal is finalProviderRefusal for a question about a branch's head, which a branch the
+// provider no longer has also answers for good. A report asks it, as a succeeded automatic build
+// deploys only its branch's head, and refusing the report instead would fail it at every retry,
+// holding the build, and the runner's later pipelines behind it, until its end.
+func headRefusal(err error) (string, bool) {
+	if errors.Is(err, pipeline.ErrBranchNotFound) {
+		return "the Git provider no longer has the build's branch.", true
+	}
+	return finalProviderRefusal(err)
 }

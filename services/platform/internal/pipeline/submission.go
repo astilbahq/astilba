@@ -59,7 +59,7 @@ func SubmissionRetryable(err error) bool {
 	}
 	var status *ProviderError
 	if errors.As(err, &status) {
-		return status.Limited || status.Status >= 500 || status.Status == http.StatusTooManyRequests || status.Status == http.StatusRequestTimeout
+		return status.Limited || status.Status >= 500 || status.Status == http.StatusRequestTimeout
 	}
 	return true
 }

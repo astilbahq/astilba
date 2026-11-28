@@ -127,6 +127,10 @@ var errProviderResponseSize = errors.New("provider response exceeds its limit")
 // ErrBranchNotFound is Resolve's error when the repository answers and has no such branch.
 var ErrBranchNotFound = errors.New("branch not found")
 
+// ErrRepositoryChanged is the answer about a repository whose ID or visibility is no longer the
+// connection's, which stays so until the repository is connected again.
+var ErrRepositoryChanged = errors.New("repository identity or visibility changed; reconnect explicitly")
+
 func (e *ProviderError) Error() string { return fmt.Sprintf("provider returned HTTP %d", e.Status) }
 
 // refused is the error for a response that is not a success.
@@ -218,7 +222,7 @@ func (p *Provider) verifyRepository(ctx context.Context) error {
 		return err
 	}
 	if id != p.Connection.RepositoryID || private != p.Connection.Private {
-		return errors.New("repository identity or visibility changed; reconnect explicitly")
+		return ErrRepositoryChanged
 	}
 	return nil
 }

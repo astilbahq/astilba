@@ -138,3 +138,60 @@ func TestPreviewWhosePullRequestIsGoneStopsAtThePoll(t *testing.T) {
 		}
 	})
 }
+
+// A succeeded automatic build's report asks for its branch's head before deploying it. A branch or
+// repository the provider no longer has answers so at every retry of the report, which would hold
+// the build, and the runner's later pipelines behind it, until its end. The build stands without
+// its automatic deployment instead, and a rate limit still leaves the report to retry.
+func TestBuildReportStandsWhenItsBranchIsGone(t *testing.T) {
+	for _, tc := range []struct {
+		name, match, note string
+		status            int
+	}{
+		{name: "branch deleted", match: "/branches/main", status: http.StatusNotFound, note: "Built, but not deployed automatically: the Git provider no longer has the build's branch."},
+		{name: "repository deleted", match: "/repos/team/app", status: http.StatusNotFound, note: "Built, but not deployed automatically: the Git provider has no repository by that name that the connection can see (HTTP 404)"},
+		{name: "access refused", match: "/repos/team/app", status: http.StatusForbidden, note: "Built, but not deployed automatically: the Git provider refused the connection access to the repository (HTTP 403)"},
+		{name: "repository replaced", note: "Built, but not deployed automatically: " + "the connection's repository is no longer the one this pipeline was queued for."},
+		{name: "rate limited", match: "/branches/main", status: http.StatusTooManyRequests},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHungBuild(t)
+			config := h.config
+			config.AutoBuild, config.AutoDeploy = true, true
+			c := h.deliver(t, config)
+			if tc.match == "" {
+				// Deleted and created again under the same name, so it answers with another ID.
+				h.provider.repository.Store(13)
+			} else {
+				h.provider.refusing.Store(&providerRefusal{match: tc.match, status: tc.status})
+			}
+			outcome := func() (state, note string, artifacts, deployments int) {
+				t.Helper()
+				if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state,note,(SELECT count(*) FROM build_artifacts WHERE id=$1),(SELECT count(*) FROM pipeline_auto_deployments WHERE id=$1) FROM execution_operations WHERE id=$1", c.Id).Scan(&state, &note, &artifacts, &deployments); err != nil {
+					t.Fatal(err)
+				}
+				return state, note, artifacts, deployments
+			}
+			err := h.f.execution.Report(t.Context(), h.identity, h.succeeded(t, c))
+			if tc.note == "" {
+				if state, _, artifacts, _ := outcome(); err == nil || state == "succeeded" || artifacts != 0 {
+					t.Fatal("a rate-limited branch check was accepted", err, state, artifacts)
+				}
+				h.provider.refusing.Store(nil)
+				if err = h.f.execution.Report(t.Context(), h.identity, h.succeeded(t, c)); err != nil {
+					t.Fatal("the report did not recover once the limit passed:", err)
+				}
+				if state, _, artifacts, deployments := outcome(); state != "succeeded" || artifacts != 1 || deployments != 1 {
+					t.Fatal("the retried report was incomplete", state, artifacts, deployments)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal("the report was refused:", err)
+			}
+			if state, note, artifacts, deployments := outcome(); state != "succeeded" || !strings.HasPrefix(note, tc.note) || artifacts != 1 || deployments != 0 {
+				t.Fatalf("the build ended %s with the note %q, %d artifacts and %d automatic deployments", state, note, artifacts, deployments)
+			}
+		})
+	}
+}

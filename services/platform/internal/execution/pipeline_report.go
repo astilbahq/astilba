@@ -542,10 +542,14 @@ func (s *Service) pipelineReport(ctx context.Context, tx pgx.Tx, git *gitAnswers
 				if err != nil {
 					return err
 				}
+				// Only the automatic deployment needs the branch's head, so the build stands without one.
 				if head.Err != nil {
-					return head.Err
-				}
-				if v.Revision == p.RevisionID && head.Value == p.Commit {
+					why, final := headRefusal(head.Err)
+					if !final {
+						return head.Err
+					}
+					r.Note = "Built, but not deployed automatically: " + why
+				} else if v.Revision == p.RevisionID && head.Value == p.Commit {
 					// The build stands, and its artifact can still be deployed by hand.
 					why, err := refusedChange(ctx, tx, func(tx pgx.Tx) error {
 						if err := promoteSpecification(ctx, &v.Spec, p.AppID, artifact); err != nil {
