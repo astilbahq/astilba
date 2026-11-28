@@ -275,7 +275,8 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		if err != nil {
 			return reindexLeft{}, err
 		}
-		// A database dropped since it was handled leaves nothing to name.
+		// A database dropped since it was handled leaves nothing to name, and template0 closed
+		// again is skipped as it is when closed from the start.
 		present := map[string]bool{}
 		for _, key := range listed {
 			oid, _, _ := strings.Cut(key, ":")
