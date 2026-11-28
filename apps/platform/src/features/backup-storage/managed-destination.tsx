@@ -7,6 +7,7 @@ import {
   backupDestinationsOptions,
 } from "../../api/backups";
 import { ApiError, client, result, type Schema } from "../../api/client";
+import { serversOptions } from "../../api/servers";
 import { Button } from "../../components/button";
 import * as s from "../../styles";
 import { ErrorNotice, useAction } from "../../ui";
@@ -56,9 +57,11 @@ export function ManagedDestination({
   const serverKeys = destination.keys.filter((k) => k.purpose === "server");
   const active = serverKeys.filter((k) => k.state === "active").length;
   const minting = serverKeys.some((k) => k.state === "minting");
-  // A revoked server's keys are never replaced: they are revoked, or kept for a handover.
-  const revokedServer =
-    servers?.find((v) => v.id === destination.serverId)?.status === "revoked";
+  // A revoked server's keys are never replaced: they are revoked, or kept for a handover. Until the
+  // servers have loaded, or for one they don't list, whether the server is revoked isn't known, so
+  // its key isn't offered for rotation.
+  const server = servers?.find((v) => v.id === destination.serverId);
+  const liveServer = !!server && server.status !== "revoked";
   // Rotating takes the button away, so focus moves to the heading, which the notice follows.
   const heading = useRef<HTMLHeadingElement>(null);
   const revoked = destination.keys.filter((k) => k.state === "revoked");
@@ -137,13 +140,13 @@ export function ManagedDestination({
         )
       )}
       {owner && (
-        // Only one key in use on a server that isn't revoked, with no new one being made or asked
-        // for, is rotated.
+        // Only one key in use on a server known not to be revoked, with no new one being made or
+        // asked for, is rotated.
         <ConfirmAction
           available={
             active === 1 &&
             !minting &&
-            !revokedServer &&
+            liveServer &&
             !destination.rotationRequested
           }
           focusAfter={heading}
@@ -161,9 +164,15 @@ export function ManagedDestination({
                 },
               }),
             ).catch(async (error: unknown) => {
-              // A refusal means the keys changed since they were shown.
+              // A refusal means the keys or the server changed since they were shown, so both are
+              // shown again as they are now.
               if (error instanceof ApiError && error.status === 409)
-                await refresh();
+                await Promise.all([
+                  refresh(),
+                  queries.invalidateQueries({
+                    queryKey: serversOptions(workspaceId).queryKey,
+                  }),
+                ]);
               throw error;
             });
             await refresh();
