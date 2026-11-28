@@ -213,7 +213,11 @@ type reply struct {
 func (b *browser) send(method, path string, body any) <-chan reply {
 	out := make(chan reply, 1)
 	go func() {
-		raw, _ := stablejson.Marshal(body)
+		// A nil body is sent as none, as request sends it, not as the JSON null.
+		var raw []byte
+		if body != nil {
+			raw, _ = stablejson.Marshal(body)
+		}
 		request, err := http.NewRequest(method, b.f.server.URL+path, bytes.NewReader(raw))
 		if err != nil {
 			out <- reply{err: err}
@@ -221,7 +225,9 @@ func (b *browser) send(method, path string, body any) <-chan reply {
 		}
 		request.Header.Set("Origin", b.f.server.URL)
 		request.Header.Set("X-CSRF-Token", b.csrf)
-		request.Header.Set("Content-Type", "application/json")
+		if body != nil {
+			request.Header.Set("Content-Type", "application/json")
+		}
 		response, err := b.client.Do(request)
 		if err != nil {
 			out <- reply{err: err}

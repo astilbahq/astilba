@@ -91,7 +91,9 @@ UNION ALL SELECT 'build-secret',id,name FROM build_secret_versions WHERE workspa
 UNION ALL SELECT 'git',id,COALESCE(configuration->>'name','') FROM git_connections WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
 UNION ALL SELECT 'registry',id,COALESCE(configuration->>'name','') FROM registries WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
 UNION ALL SELECT 'backup-destination',id,COALESCE(configuration->>'name','') FROM backup_destinations WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
-UNION ALL SELECT 'backup-policy',id,COALESCE(configuration->>'name','') FROM backup_policies WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]);
+UNION ALL SELECT 'backup-policy',id,COALESCE(configuration->>'name','') FROM backup_policies WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
+UNION ALL SELECT 'backup-storage-account',id,name FROM backup_storage_accounts WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[])
+UNION ALL SELECT 'backup-storage-key',id,user_name FROM backup_storage_keys WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]);
 
 -- name: ExpireSecretAccess :one
 -- unscoped: retention applies to every workspace's records alike.

@@ -301,6 +301,8 @@ func Title(kind api.AlertKind) string {
 		return heldTitle
 	case api.BackupExposure:
 		return "A revoked server holds a backup destination's storage keys"
+	case api.BackupAccount:
+		return "A backup storage account's check failed or found keys management didn't make"
 	default:
 		return "Operational alert"
 	}

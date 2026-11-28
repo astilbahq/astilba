@@ -14,6 +14,8 @@ const kinds = {
   registry: "registry",
   "backup-destination": "backupDestination",
   "backup-policy": "backupPolicy",
+  "backup-storage-account": "backupStorageAccount",
+  "backup-storage-key": "backupStorageKey",
   "alert-webhook": "alertWebhook",
   "recovery-checkpoint": "recoveryCheckpoint",
   totp: "totp",
@@ -141,6 +143,12 @@ export function useSecretAccessText() {
           return t(($) => $.reason.signIn);
         case "start-up":
           return t(($) => $.reason.startUp);
+        case "mint":
+          return t(($) => $.reason.mint);
+        case "revoke":
+          return t(($) => $.reason.revoke);
+        case "account-check":
+          return t(($) => $.reason.accountCheck);
         // Management records these when a request gives no reason of its own.
         case "operate":
         case "inspect":

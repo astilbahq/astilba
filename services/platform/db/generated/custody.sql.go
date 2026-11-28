@@ -251,6 +251,8 @@ UNION ALL (SELECT 'registry',workspace_id,id,encrypted_access FROM registries WH
 UNION ALL (SELECT 'build-secret',workspace_id,id,encrypted_value FROM build_secret_versions LIMIT 1)
 UNION ALL (SELECT 'backup-destination',workspace_id,id,encrypted_access FROM backup_destinations WHERE encrypted_access IS NOT NULL LIMIT 1)
 UNION ALL (SELECT 'backup-policy',workspace_id,id,encrypted_access FROM backup_policies WHERE encrypted_access IS NOT NULL LIMIT 1)
+UNION ALL (SELECT 'backup-storage-account',workspace_id,id,encrypted_credential FROM backup_storage_accounts LIMIT 1)
+UNION ALL (SELECT 'backup-storage-key',workspace_id,id,encrypted_secret FROM backup_storage_keys WHERE encrypted_secret IS NOT NULL LIMIT 1)
 UNION ALL (SELECT 'alert-webhook',workspace_id,workspace_id,encrypted_webhook FROM alert_settings WHERE encrypted_webhook IS NOT NULL LIMIT 1)
 UNION ALL (SELECT 'totp','00000000-0000-0000-0000-000000000000'::uuid,id,totp_secret FROM accounts WHERE totp_secret IS NOT NULL LIMIT 1)
 UNION ALL (SELECT 'totp-pending','00000000-0000-0000-0000-000000000000'::uuid,id,totp_pending FROM accounts WHERE totp_pending IS NOT NULL LIMIT 1)

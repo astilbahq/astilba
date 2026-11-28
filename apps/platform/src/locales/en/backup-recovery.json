@@ -64,7 +64,9 @@
   },
   "exposed": {
     "policy": "A revoked server was given this destination's storage keys. It can still delete or overwrite these backups until you revoke the keys at your storage provider. For backups it can't reach, add a destination with new keys and create a policy on it.",
+    "managedPolicy": "A revoked server may still hold one of this destination's storage keys, so it can delete or overwrite these backups until AWS confirms the key revoked. Management revokes it itself, and this ends an hour after AWS confirms it.",
     "warning": "A revoked server was given this destination's storage keys. It can still delete or overwrite anything written here until you revoke them at your storage provider.",
+    "managedWarning": "A revoked server may still hold one of this destination's storage keys, so it can delete or overwrite anything written here until management has revoked it at AWS.",
     "acknowledge": "I understand that the revoked server can delete or overwrite this policy's backups until its keys are revoked at the provider."
   }
 }

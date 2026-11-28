@@ -16,7 +16,7 @@ func failureStatus(code string) int {
 		return 409
 	case "rate_limited":
 		return 429
-	case "temporarily_busy":
+	case "temporarily_busy", "provider_unavailable":
 		return 503
 	default:
 		return 400

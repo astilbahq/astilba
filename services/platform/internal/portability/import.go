@@ -39,122 +39,8 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 	if (archive.Recovery != nil) != base || base && !recovery {
 		return archive, ErrArchive
 	}
-	if version == 1 {
-		if err := normalizeLegacyArchive(&archive); err != nil {
-			return archive, err
-		}
-	}
-	if version < 5 {
-		if err := normalizePreNetworkArchive(&archive); err != nil {
-			return archive, err
-		}
-	}
-	if version < 6 {
-		for _, row := range archive.Tables["environments"] {
-			if _, exists := row["runtime_operation_id"]; exists {
-				return archive, ErrArchive
-			}
-			setValue(row, "runtime_operation_id", nil)
-		}
-
-		for _, row := range archive.Tables["execution_operations"] {
-			for _, field := range []string{"runtime_outcome", "runtime_plan_id"} {
-				if _, exists := row[field]; exists {
-					return archive, ErrArchive
-				}
-				setValue(row, field, nil)
-			}
-		}
-	}
-	// Version 7 carries the submissions management makes. An older archive has only runners'.
-	if version < 7 {
-		if _, exists := archive.Tables["source_submissions"]; exists {
-			return archive, ErrArchive
-		}
-		archive.Tables["source_submissions"] = []Row{}
-	}
-	if version < 8 {
-		// An environment from before retirement is active, and nothing recorded which PostgreSQL
-		// major initialised a volume: its next deployment records it.
-		fields := map[string]map[string]any{
-			"environments":    {"state": "active", "retired_at": nil, "retired_by": nil, "retirement_operation_id": nil, "retired_without_host": false},
-			"managed_volumes": {"postgres_major": nil},
-		}
-		for table, values := range fields {
-			for _, row := range archive.Tables[table] {
-				for field, value := range values {
-					if _, exists := row[field]; exists {
-						return archive, ErrArchive
-					}
-					setValue(row, field, value)
-				}
-			}
-		}
-	}
-	if version < 9 {
-		// Nothing was purged, retired or erased before version 9.
-		fields := map[string]map[string]any{
-			"environments":    {"purged_at": nil, "purged_by": nil, "purge_operation_id": nil, "purged_without_host": false},
-			"secrets":         {"retired_at": nil},
-			"secret_versions": {"erased_at": nil},
-		}
-		for table, values := range fields {
-			for _, row := range archive.Tables[table] {
-				for field, value := range values {
-					if _, exists := row[field]; exists {
-						return archive, ErrArchive
-					}
-					setValue(row, field, value)
-				}
-			}
-		}
-	}
-	if version < 11 {
-		// Nothing recorded which requests revocation released. Their notes go without it.
-		for _, row := range archive.Tables["preview_requests"] {
-			if _, exists := row["released_by_revocation"]; exists {
-				return archive, ErrArchive
-			}
-			setValue(row, "released_by_revocation", false)
-		}
-	}
-	if version < 13 {
-		// Nothing recorded when a revocation began or when a snapshot was first reported. A server
-		// revoked then shows no time, and its snapshots stay on the manual route (docs/backups.md).
-		fields := map[string]map[string]any{"servers": {"revoked_at": nil}, "backup_policies": {"snapshot_receipts": map[string]any{}}}
-		for table, values := range fields {
-			for _, row := range archive.Tables[table] {
-				for field, value := range values {
-					if _, exists := row[field]; exists {
-						return archive, ErrArchive
-					}
-					setValue(row, field, value)
-				}
-			}
-		}
-	}
-	// Version 15 carries restores onto another server. None was made before it.
-	if version < 15 {
-		if _, exists := archive.Tables["backup_recoveries"]; exists {
-			return archive, ErrArchive
-		}
-		archive.Tables["backup_recoveries"] = []Row{}
-	}
-	// Version 17 carries each restore's latest discard. None was recorded before it.
-	if version < 17 {
-		for _, row := range archive.Tables["backup_recoveries"] {
-			if _, exists := row["discard_operation_id"]; exists {
-				return archive, ErrArchive
-			}
-			setValue(row, "discard_operation_id", nil)
-		}
-	}
-	// Version 19 carries each destination's server. An older archive's are bound as migration
-	// 00075 binds a database's.
-	if version < 19 {
-		if err := bindArchiveDestinations(&archive); err != nil {
-			return archive, err
-		}
+	if err := upgradeArchive(&archive, version); err != nil {
+		return archive, err
 	}
 	if len(archive.Tables) != len(tables) {
 		return archive, ErrArchive
@@ -236,6 +122,11 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 		{"backup_recoveries", "plan_id", "visual_requests"},
 		{"backup_recoveries", "source_server_id", "servers"},
 		{"backup_recoveries", "server_id", "servers"},
+		{"backup_destinations", "account_id", "backup_storage_accounts"},
+		{"backup_storage_keys", "account_id", "backup_storage_accounts"},
+		{"backup_storage_keys", "destination_id", "backup_destinations"},
+		{"backup_storage_keys", "holder_server_id", "servers"},
+		{"backup_storage_keys", "recovery_id", "backup_recoveries"},
 		{"route_claims", "server_id", "servers"},
 		{"execution_operations", "parent_id", "execution_operations"},
 		{"network_members", "network_id", "workspace_networks"},
@@ -403,6 +294,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 	if e != nil {
 		return out, e
 	}
+	installation, e := q.InstallationID(ctx)
+	if e != nil {
+		return out, e
+	}
 	for _, table := range tables {
 		for _, row := range archive.Tables[table.Name] {
 			for _, actor := range []string{"author_id", "actor_id", "policy_actor"} {
@@ -421,6 +316,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 					setValue(row, "state", "failed")
 					setValue(row, "note", "Imported before this attempt was made. Submit the draft again.")
 					setValue(row, "finished_at", time.Now().UTC())
+				}
+			case "backup_storage_accounts":
+				if e = importPeer(row, archive.Installation, installation); e != nil {
+					return out, e
 				}
 			case "network_members":
 				setValue(row, "acknowledged_generation", 0)
@@ -545,6 +444,10 @@ func (s *Service) Import(ctx context.Context, p store.Principal, passphrase stri
 		if _, e = tx.Exec(ctx, "UPDATE execution_operations SET visual_plan_id=$3 WHERE workspace_id=$1 AND id=$2", archive.Workspace, id, value); e != nil {
 			return out, store.Normalize(e)
 		}
+	}
+	// The exporter revoked these servers; only a key handed over at that revocation lives on.
+	if _, e = q.LatchRevokedHolderBackupStorageKeys(ctx, archive.Workspace); e != nil {
+		return out, e
 	}
 	if e = store.Audit(ctx, q, p, archive.Workspace, "workspace.import_owner_attribution", archive.Workspace); e != nil {
 		return out, e

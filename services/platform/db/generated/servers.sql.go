@@ -799,7 +799,7 @@ func (q *Queries) ResumeMaintenanceSource(ctx context.Context, arg ResumeMainten
 }
 
 const revokeServer = `-- name: RevokeServer :execrows
-UPDATE servers SET revoked=true,revoked_at=CASE WHEN revoked THEN revoked_at ELSE clock_timestamp() END,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
+UPDATE servers SET revoked=true,revoked_at=CASE WHEN revoked THEN revoked_at ELSE clock_timestamp() END,revocations=CASE WHEN revoked THEN revocations ELSE revocations+1 END,credential_hash=NULL,previous_hash=NULL,enrollment_hash=NULL,rotation_requested=false,rotate_key_requested=false
 WHERE workspace_id = $1 AND id = $2
 `
 
@@ -809,7 +809,7 @@ type RevokeServerParams struct {
 }
 
 // Revoking a revoked server again keeps the time its revocation began, or none when it began
-// before times were recorded.
+// before times were recorded, and its revocation count.
 func (q *Queries) RevokeServer(ctx context.Context, arg RevokeServerParams) (int64, error) {
 	result, err := q.db.Exec(ctx, revokeServer, arg.WorkspaceID, arg.ID)
 	if err != nil {

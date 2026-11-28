@@ -6,6 +6,7 @@ import (
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
+	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
@@ -21,7 +22,24 @@ func (s *Server) CreateBackupDestination(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	d := backup.Destination{Name: b.Name, Kind: string(b.Kind), Root: b.Root, Endpoint: b.Endpoint, Bucket: b.Bucket, Region: b.Region, Prefix: pipelineString(b.Prefix)}
-	a := backup.Access{AccessKey: pipelineString(b.Access.AccessKey), SecretKey: pipelineString(b.Access.SecretKey)}
+	if b.AccountId != nil {
+		// A managed destination's key is minted by management, so the request carries none.
+		if b.Access != nil {
+			s.fail(w, r, domain.Invalid("access"))
+			return
+		}
+		if b.ServerId == nil {
+			s.fail(w, r, domain.Invalid("serverId"))
+			return
+		}
+		v, e := s.Execution.CreateManagedBackupDestination(r.Context(), *principal(r.Context()), ws, d, *b.AccountId, *b.ServerId)
+		s.executionResponse(w, r, 201, v, e)
+		return
+	}
+	var a backup.Access
+	if b.Access != nil {
+		a = backup.Access{AccessKey: pipelineString(b.Access.AccessKey), SecretKey: pipelineString(b.Access.SecretKey)}
+	}
 	v, e := s.Execution.CreateBackupDestination(r.Context(), *principal(r.Context()), ws, d, a, b.ServerId)
 	s.executionResponse(w, r, 201, v, e)
 }

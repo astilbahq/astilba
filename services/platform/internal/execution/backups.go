@@ -23,101 +23,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws uuid.UUID) ([]api.BackupDestination, error) {
-	out := []api.BackupDestination{}
-	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		rows, err := db.New(tx).ListBackupDestinations(ctx, ws)
-		if err != nil {
-			return err
-		}
-		exposed, err := db.New(tx).ExposedBackupDestinations(ctx, ws)
-		if err != nil {
-			return err
-		}
-		policies, err := db.New(tx).BackupDestinationPolicies(ctx, ws)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			var v backup.Destination
-			if err = json.Unmarshal(row.Configuration, &v); err != nil {
-				return err
-			}
-			view := destinationView(v, row.ServerID, row.Shared, slices.Contains(exposed, v.ID))
-			for _, p := range policies {
-				if p.DestinationID == v.ID {
-					view.Policies = append(view.Policies, api.BackupDestinationPolicy{Id: p.ID, Name: p.Name, ProjectId: p.ProjectID, EnvironmentId: p.EnvironmentID, EnvironmentName: p.EnvironmentName})
-				}
-			}
-			out = append(out, view)
-		}
-		return nil
-	})
-	return out, err
-}
-
-// destinationView is d, bound to server or shared, as the API shows it.
-func destinationView(d backup.Destination, server *uuid.UUID, shared, exposed bool) api.BackupDestination {
-	v := api.BackupDestination{Id: d.ID, Name: d.Name, Kind: api.BackupDestinationKind(d.Kind), Root: d.Root, Endpoint: d.Endpoint, Bucket: d.Bucket, Region: d.Region, ServerId: server, Shared: shared, Exposed: exposed, Policies: []api.BackupDestinationPolicy{}}
-	if d.Prefix != "" {
-		v.Prefix = &d.Prefix
-	}
-	return v
-}
-
-// CreateBackupDestination adds destination d with access a. An S3 destination is bound to server,
-// the deployment server its keys are given to, and a filesystem destination has none.
-func (s *Service) CreateBackupDestination(ctx context.Context, p store.Principal, ws uuid.UUID, d backup.Destination, a backup.Access, server *uuid.UUID) (api.BackupDestination, error) {
-	d.ID = uuid.New()
-	a.Password = ""
-	if d.Kind == "s3" && d.Prefix != "" && !backup.ValidPrefix(d.Prefix) {
-		return api.BackupDestination{}, domain.Invalid("prefix")
-	}
-	if backup.ValidateDestination(d, a) != nil {
-		return api.BackupDestination{}, domain.Invalid("destination")
-	}
-	if d.Kind == "s3" {
-		if field := d.Unknowable(); field != "" {
-			return api.BackupDestination{}, domain.Invalid(field)
-		}
-	}
-	if (d.Kind == "s3") != (server != nil) {
-		return api.BackupDestination{}, domain.Invalid("serverId")
-	}
-	item := secretbroker.Item{Kind: secretbroker.BackupDestination, ID: d.ID}
-	keys, done, err := s.sealing(ctx, p, ws, item)
-	if err != nil {
-		return api.BackupDestination{}, err
-	}
-	sealed := false
-	defer func() { done(sealed) }()
-	err = s.scope(ctx, p, ws, ownerSettings, "backup.destination.create", d.ID, func(tx pgx.Tx) error {
-		n, err := db.New(tx).CountBackupDestinations(ctx, ws)
-		if err != nil {
-			return err
-		}
-		if n >= 100 {
-			return domain.Conflict
-		}
-		if server != nil {
-			if err = s.admitDestination(ctx, tx, ws, *server, d); err != nil {
-				return err
-			}
-		}
-		secret, err := sealIntegration(ctx, db.New(tx), keys, item, a)
-		if err != nil {
-			return err
-		}
-		sealed = true
-		raw, _ := stablejson.Marshal(d)
-		return db.New(tx).InsertBackupDestination(ctx, db.InsertBackupDestinationParams{ID: d.ID, WorkspaceID: ws, Configuration: raw, EncryptedAccess: secret, ServerID: server})
-	})
-	if err != nil {
-		return api.BackupDestination{}, err
-	}
-	// No policy uses a new destination yet.
-	return destinationView(d, server, false, false), nil
-}
 func (s *Service) BackupPolicies(ctx context.Context, p store.Principal, ws, pid, env uuid.UUID) ([]backup.Policy, error) {
 	out := []backup.Policy{}
 	err := s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
@@ -311,6 +216,18 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		if _, err := loadVisualEnvironment(ctx, tx, ws, pid, env); err != nil {
 			return err
 		}
+		var err error
+		out, err = s.backupCommand(ctx, tx, ws, env, id, in)
+		return err
+	})
+	return operationFor(p, out), err
+}
+
+// backupCommand queues a backup policy's command in tx, which holds the workspace's turn. An
+// owner's request and management's own install after a re-mint both start here.
+func (s *Service) backupCommand(ctx context.Context, tx pgx.Tx, ws, env, id uuid.UUID, in api.BackupCommandRequest) (api.Operation, error) {
+	var out api.Operation
+	err := func() error {
 		v, err := loadBackupPolicy(ctx, tx, ws, env, id)
 		if err != nil {
 			return err
@@ -390,8 +307,8 @@ func (s *Service) BackupCommand(ctx context.Context, p store.Principal, ws, pid,
 		}
 		out, err = s.insert(ctx, tx, ws, in.RequestKey, nil, c)
 		return err
-	})
-	return operationFor(p, out), err
+	}()
+	return out, err
 }
 
 // hydrateBackup fills a backup command's access, or with nil keys only makes its checks.
@@ -440,7 +357,12 @@ func (s *Service) hydrateBackup(ctx context.Context, keys valueKeys, c *api.Exec
 			return err
 		}
 		var a backup.Access
-		if err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: b.Installation.Policy.DestinationID}, destination.EncryptedAccess, &a); err != nil {
+		if destination.AccountID != nil {
+			a, err = s.managedAccess(ctx, keys, b.Installation.Policy.WorkspaceID, b.Installation.Policy.DestinationID, c.ServerId)
+		} else {
+			err = openJSON(keys, secretbroker.Item{Kind: secretbroker.BackupDestination, ID: b.Installation.Policy.DestinationID}, destination.EncryptedAccess, &a)
+		}
+		if err != nil {
 			return err
 		}
 		b.Installation.Access.AccessKey = a.AccessKey

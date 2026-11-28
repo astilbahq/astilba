@@ -298,6 +298,7 @@ function ServerWorkspace({ workspace }: { workspace: Schema["Workspace"] }) {
                 server={server}
                 busy={busy}
                 run={runCredential}
+                refresh={refresh}
                 onEnrollment={setEnrollment}
               />
             )}

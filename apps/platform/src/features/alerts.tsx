@@ -1,6 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useContext, useState } from "react";
-import { backupDestinationsOptions } from "../api/backups";
+import {
+  backupDestinationsOptions,
+  backupStorageAccountsOptions,
+} from "../api/backups";
 import { client, result, type Schema } from "../api/client";
 import { projectsOptions } from "../api/projects";
 import { Button } from "../components/button";
@@ -11,6 +14,7 @@ import { Select } from "../components/select";
 import * as s from "../styles";
 import { BusyButton, ErrorNotice, Field, Form, text, useAction } from "../ui";
 import { WorkspaceContext } from "../workspace-context";
+import { backupStorageSection } from "./backup-storage/backup-storage";
 
 const titles: Record<Schema["Alert"]["kind"], string> = {
   server_offline: "Server disconnected",
@@ -28,6 +32,8 @@ const titles: Record<Schema["Alert"]["kind"], string> = {
   dns_withdrawal_held:
     "DNS records may resolve to addresses Astilba no longer controls: the operator must review them with `astilba dns withdrawals`",
   backup_exposure: "A revoked server holds a backup destination's storage keys",
+  backup_account:
+    "A backup storage account's check failed or found keys management didn't make",
 };
 export function Alerts() {
   const workspace = useContext(WorkspaceContext);
@@ -74,6 +80,11 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
     ...projectsOptions(workspace.id),
     enabled: exposure,
   });
+  // An account alert names a storage account, whose name comes from the accounts.
+  const accounts = useQuery({
+    ...backupStorageAccountsOptions(workspace.id),
+    enabled: !!inbox.data?.alerts.some((a) => a.kind === "backup_account"),
+  });
   return (
     <>
       <section className={s.panel} aria-label="Operational inbox">
@@ -99,7 +110,9 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
           is retained for 30 days, up to 1,000 entries per workspace.
         </p>
         <ErrorNotice
-          error={inbox.error ?? action.error ?? destinations.error}
+          error={
+            inbox.error ?? action.error ?? destinations.error ?? accounts.error
+          }
         />
         {inbox.isPending ? (
           <p role="status">Loading alerts…</p>
@@ -137,6 +150,15 @@ function Inbox({ workspace }: { workspace: Schema["Workspace"] }) {
                       (d) => d.id === alert.resourceId,
                     )}
                     projects={projects.data}
+                  />
+                )}
+                {alert.kind === "backup_account" && (
+                  <StorageAccountAlert
+                    workspaceId={workspace.id}
+                    firing={alert.state === "firing"}
+                    account={accounts.data?.find(
+                      (a) => a.id === alert.resourceId,
+                    )}
                   />
                 )}
                 <p>
@@ -383,8 +405,21 @@ function ExposedDestination({
       <p>
         Destination: {destination.name}.
         {firing &&
-          " A revoked server can delete or overwrite its backups until you revoke its keys at your storage provider. Add a destination with new keys for backups it can't reach."}
+          (destination.accountId
+            ? " A revoked server can delete or overwrite its backups until AWS confirms its keys revoked. Management revokes them itself, and the alert recovers an hour after AWS confirms it."
+            : " A revoked server can delete or overwrite its backups until you revoke its keys at your storage provider. Add a destination with new keys for backups it can't reach.")}
       </p>
+      {destination.accountId && (
+        <p>
+          <Link
+            to="/members"
+            search={{ workspace: workspaceId }}
+            hash={backupStorageSection}
+          >
+            Review its keys
+          </Link>
+        </p>
+      )}
       {!!destination.policies.length && (
         <>
           <p>Policies using it:</p>
@@ -412,5 +447,32 @@ function ExposedDestination({
         </>
       )}
     </>
+  );
+}
+
+// The storage account an account alert names. While it fires, its latest check couldn't list the
+// account's users, or found one management didn't make, which the storage accounts list names.
+function StorageAccountAlert({
+  workspaceId,
+  firing,
+  account,
+}: {
+  workspaceId: string;
+  firing: boolean;
+  account?: Schema["BackupStorageAccount"];
+}) {
+  return (
+    <p>
+      {account && <>Storage account: {account.name}. </>}
+      {firing &&
+        "Review what its latest check found, revoke the users management didn't make, and fix a failing check. "}
+      <Link
+        to="/members"
+        search={{ workspace: workspaceId }}
+        hash={backupStorageSection}
+      >
+        Backup storage accounts
+      </Link>
+    </p>
   );
 }

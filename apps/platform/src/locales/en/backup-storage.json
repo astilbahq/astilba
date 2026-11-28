@@ -1,0 +1,123 @@
+{
+  "title": "Backup storage accounts",
+  "description": "On AWS, management can make each server’s backup storage key itself and revoke it when the server is revoked, so no key outlives its server and none is copied by hand. Add a storage account once for each AWS account, then choose it when you add an S3 backup destination.",
+  "guide": "Managed backup keys setup guide",
+  "loading": "Loading storage accounts…",
+  "loadFailed": "Storage accounts could not be loaded.",
+  "retry": "Try again",
+  "empty": "No storage accounts yet. Backup destinations use storage keys you make and limit yourself.",
+  "cancel": "Cancel",
+  "account": {
+    "awsAccount": "AWS account",
+    "admin": "Admin user",
+    "boundary": "Permissions boundary",
+    "path": "IAM path of the users management makes",
+    "installation": "This installation",
+    "checked": "Last checked {{date}}.",
+    "notChecked": "Not checked yet.",
+    "checkFailed": "The latest check failed: {{reason}}",
+    "extraKeys_one": "The latest check found {{count}} access key that management didn’t make on one of its users, and deleted it. Someone holding the admin key may have made it.",
+    "extraKeys_other": "The latest check found {{count}} access keys that management didn’t make on its users, and deleted them. Someone holding the admin key may have made them.",
+    "check": "Check now",
+    "checking": "Checking…",
+    "peers": "Peer installations",
+    "peersDescription": "Users these installations make in this AWS account are shown as theirs, with no alert."
+  },
+  "found": {
+    "title": "Users management didn’t make",
+    "description": "The latest check found these IAM users under this workspace’s path with no record here. One may have been restored from an older management backup, made by another installation, or made with a leaked admin key.",
+    "installation": "Tagged by installation {{installation}}",
+    "self": "Tagged by this installation",
+    "untagged": "No installation tag",
+    "server": "Tagged for server {{server}}",
+    "peer": "Made by a peer installation. Nothing needs doing.",
+    "unbounded": "It has no permissions boundary, so the admin key can’t revoke it. Delete it in the AWS console.",
+    "revoking": "Management is revoking it.",
+    "revokeFailing": "Management is revoking it, and its last attempt failed: {{reason}}",
+    "revoke": "Revoke user",
+    "revokeTitle": "Revoke {{name}}?",
+    "revokeDescription": "Management takes away the user’s access and deletes it at AWS. Anything using its key, such as another installation’s backups, stops working. This can’t be undone.",
+    "addPeer": "Add installation as a peer",
+    "addPeerTitle": "Add installation {{installation}} as a peer?",
+    "addPeerDescription": "Users it makes in this AWS account are then shown as its, with no alert, and management never revokes them. Add only an installation this workspace was transferred to or from.",
+    "addPeerConfirm": "Add peer"
+  },
+  "credential": {
+    "accessKeyId": "Admin access key ID",
+    "secretAccessKey": "Admin secret access key",
+    "boundary": "Permissions boundary ARN, such as arn:aws:iam::123456789012:policy/astilba-backups"
+  },
+  "add": {
+    "summary": "Add a storage account",
+    "instructions": "Create the permissions boundary policy first. Then give an IAM user outside /astilba/ a policy that lets it manage only users under {{path}} that carry the boundary, and enter its access key here. Management checks the key with AWS before storing it and never shows it again.",
+    "label": "Add storage account",
+    "name": "Account name",
+    "submit": "Add storage account",
+    "added": "Storage account {{name}} added."
+  },
+  "replace": {
+    "summary": "Replace the admin key",
+    "instructions": "The new key must belong to the same AWS account. Keys management already made keep working. Delete the old admin key at AWS afterwards.",
+    "boundaryStays": "The account keeps this permissions boundary, since every user management made under it carries it. To use another boundary, add another storage account.",
+    "label": "Replace the admin key of {{name}}",
+    "submit": "Replace admin key",
+    "replaced": "Admin key replaced. Delete the old one at AWS."
+  },
+  "destinations": {
+    "title": "Destinations using this account",
+    "loading": "Loading destinations…",
+    "loadFailed": "Destinations could not be loaded.",
+    "none": "No destination uses this account yet. Choose it when you add an S3 backup destination."
+  },
+  "destination": {
+    "location": "Bucket {{bucket}} in {{region}}",
+    "locationPrefix": "Bucket {{bucket}} in {{region}}, under {{prefix}}",
+    "server": "Keys for {{server}}",
+    "unknownServer": "server {{id}}",
+    "exposed": "A revoked server may still hold one of this destination’s keys, so it could delete or overwrite these backups. Management revokes its keys itself; this ends an hour after AWS confirms them revoked.",
+    "remintFailed": "Management couldn’t make a key for the renewed server and keeps trying: {{reason}}",
+    "retry": "Retry now",
+    "retrying": "Retrying…",
+    "retryRequested": "Management is trying again.",
+    "noKeys": "No keys yet.",
+    "revoked": "Recently revoked keys"
+  },
+  "key": {
+    "label": "{{purpose}} for {{server}}",
+    "purpose": {
+      "server": "Server key",
+      "recovery": "Restore key"
+    },
+    "state": {
+      "minting": "Being made",
+      "active": "Active",
+      "revoking": "Being revoked",
+      "revoked": "Revoked"
+    },
+    "handedOver": "Handed over to a workspace transfer",
+    "activated": "Active since {{date}}.",
+    "revokedAt": "Revoked {{date}}.",
+    "failing_one": "Revoking it has failed {{count}} time: {{reason}} Fix the cause, then retry.",
+    "failing_other": "Revoking it has failed {{count}} times: {{reason}} Fix the cause, then retry.",
+    "revoke": "Revoke key",
+    "revokeTitle": "Revoke this key?",
+    "revokeCurrent": "Management revokes the key at AWS and then makes the server a new one. The server’s backups can fail until it has installed the new key.",
+    "revokeHandedOver": "This key was handed over to a workspace transfer. Revoking it breaks the transferred server’s backups, which can then no longer reach this bucket.",
+    "revokeRecovery": "The restore using it can no longer read its snapshot. Management revokes it itself once the restore ends."
+  },
+  "failure": {
+    "credentialRefused": "AWS no longer accepts the account’s admin key. Replace it.",
+    "accessDenied": "AWS refused the request. Check that the admin policy is still attached to the admin user.",
+    "notFound": "AWS couldn’t find the user or key.",
+    "notAdmin": "The admin key no longer belongs to an IAM user outside /astilba/.",
+    "accountChanged": "The admin key now belongs to another AWS account. Replace it with a key of the account it was added with.",
+    "timeout": "AWS didn’t answer in time.",
+    "unavailable": "AWS couldn’t be reached or failed.",
+    "superseded": "Replaced by a newer key.",
+    "userMissing": "Its IAM user is gone at AWS.",
+    "deleteConflict": "AWS won’t delete the user while something else is attached to it, such as a console password, an MFA device, a group or another policy. Management keeps it denied all access meanwhile. Remove those in the AWS console so management can delete it.",
+    "notListed": "AWS refused the request for the user, and doesn’t list it under the workspace’s path, which is how IAM can answer for a user that no longer exists. Management counts it revoked once the user, if it existed, would be listed.",
+    "movedOffPath": "The user is no longer under the workspace’s path, so the admin key can’t change it, but AWS still accepts its key. Someone with wider IAM rights moved it. Delete the user in the AWS console, or move it back so management can revoke it.",
+    "other": "Failure code {{code}}."
+  }
+}

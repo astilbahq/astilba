@@ -194,6 +194,7 @@ export function environmentHandlers() {
       "build-secrets",
       "artifacts",
       "backup-destinations",
+      "backup-storage-accounts",
       "service-catalog",
     ].map((suffix) =>
       http.get(`/api/v1/workspaces/:workspaceId/${suffix}`, () =>
