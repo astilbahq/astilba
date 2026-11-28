@@ -115,14 +115,29 @@ func (p *Provider) apiPath() string {
 	}
 }
 
-type ProviderError struct{ Status int }
+// ProviderError is a provider answering a request with a status other than success. Limited
+// marks a refusal under the provider's rate limits, which passes, as a 403 can be on GitHub.
+type ProviderError struct {
+	Status  int
+	Limited bool
+}
 
 var errProviderResponseSize = errors.New("provider response exceeds its limit")
 
 // ErrBranchNotFound is Resolve's error when the repository answers and has no such branch.
 var ErrBranchNotFound = errors.New("branch not found")
 
+// ErrRepositoryChanged is the answer about a repository whose ID or visibility is no longer the
+// connection's, which stays so until the repository is connected again.
+var ErrRepositoryChanged = errors.New("repository identity or visibility changed; reconnect explicitly")
+
 func (e *ProviderError) Error() string { return fmt.Sprintf("provider returned HTTP %d", e.Status) }
+
+// refused is the error for a response that is not a success.
+func refused(response *http.Response) *ProviderError {
+	_, limited := outbound.RateLimit(response, time.Now())
+	return &ProviderError{Status: response.StatusCode, Limited: limited}
+}
 func (p *Provider) request(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -153,12 +168,15 @@ func (p *Provider) request(ctx context.Context, method, path string, body, out a
 	}
 	response, err := p.client.Do(req)
 	if err != nil {
+		if status, moved := outbound.Moved(response); moved {
+			return &ProviderError{Status: status}
+		}
 		return errors.New("provider request failed")
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		p.unauthorized(response.StatusCode)
-		return &ProviderError{Status: response.StatusCode}
+		return refused(response)
 	}
 	if out == nil {
 		return nil
@@ -204,7 +222,7 @@ func (p *Provider) verifyRepository(ctx context.Context) error {
 		return err
 	}
 	if id != p.Connection.RepositoryID || private != p.Connection.Private {
-		return errors.New("repository identity or visibility changed; reconnect explicitly")
+		return ErrRepositoryChanged
 	}
 	return nil
 }

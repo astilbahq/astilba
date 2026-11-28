@@ -11,6 +11,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +47,8 @@ type heldGitHub struct {
 	// limitMints, when set, answers token requests as GitHub does under its rate limits, for
 	// that many seconds.
 	limitMints atomic.Int64
+	// uninstalled answers the repository's installation as GitHub does once the App is uninstalled.
+	uninstalled atomic.Bool
 	// repositoryToken is the token management last checked the repository with.
 	repositoryToken atomic.Value
 	challenge       atomic.Value
@@ -120,6 +123,10 @@ func heldGitHubFor(t *testing.T, f *fixture, b *browser, ws uuid.UUID) *heldGitH
 		case "/app":
 			_ = stablejson.Encode(w, map[string]any{"id": 1, "client_id": "fixture-client"})
 		case "/repos/team/app/installation":
+			if h.uninstalled.Load() {
+				w.WriteHeader(404)
+				return
+			}
 			_ = stablejson.Encode(w, map[string]any{"id": 2, "app_id": 1, "permissions": map[string]string{"contents": "write", "pull_requests": "write"}})
 		case "/repos/team/app":
 			h.repositoryToken.Store(bearer)
@@ -202,15 +209,24 @@ func (h *heldGitHub) connect(t *testing.T) uuid.UUID {
 }
 
 // Validating a GitHub App grant is the longest call on the delivery path, and a token is
-// minted behind it. A grant that changed during it must stop that token being delivered.
+// minted behind it. A grant that changed during it must stop that token being delivered, and a
+// grant that no longer reaches the repository settles the build, so the runner's polls answer.
 func TestAppDeliveryRechecksTheGrantAfterAHungValidation(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		during string
+		name, during, note string
 	}{
 		{name: "nothing changed"},
-		{name: "grant revoked", during: "UPDATE github_app_connections SET active=false WHERE connection_id=$1"},
-		{name: "grant moved to another installation", during: "UPDATE github_app_connections SET installation_id=3 WHERE connection_id=$1"},
+		{
+			name:   "grant revoked",
+			during: "UPDATE github_app_connections SET active=false WHERE connection_id=$1",
+			note:   "Refused before runner delivery: the connection's GitHub App authorization was removed",
+		},
+		{
+			// The repository's installation is still 2, so the grant's no longer reaches it.
+			name:   "grant moved to another installation",
+			during: "UPDATE github_app_connections SET installation_id=3 WHERE connection_id=$1",
+			note:   "Refused before runner delivery: Astilba's GitHub App can no longer reach the repository",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHungBuild(t)
@@ -231,18 +247,57 @@ func TestAppDeliveryRechecksTheGrantAfterAHungValidation(t *testing.T) {
 				execSQL(t, h, tc.during, h.connection.ID)
 			}
 			release()
+			if tc.during != "" {
+				// The poll goes on waiting for other work once the build settles.
+				h.waitState(t, op.Id, "failed")
+				cancel()
+			}
 			outcome := <-result
 			delivered := outcome.command != nil && outcome.command.Pipeline != nil && strings.Contains(string(*outcome.command.Pipeline), "installation-read-canary")
 			if tc.during != "" {
-				if outcome.err == nil || delivered || h.deliveryStarted(t, op.Id) {
-					t.Fatal("a token minted for the old grant was delivered", outcome.err)
+				if (outcome.err != nil && !errors.Is(outcome.err, context.Canceled)) || delivered || h.deliveryStarted(t, op.Id) {
+					t.Fatal("a token minted for the old grant was delivered, or the poll failed", outcome.err)
 				}
+				requireNote(t, h, op.Id, tc.note)
 				return
 			}
 			if outcome.err != nil || !delivered || !h.deliveryStarted(t, op.Id) {
 				t.Fatal("an unchanged App delivery was lost", outcome.err)
 			}
 		})
+	}
+}
+
+// An App uninstalled from the repository after a build was queued answers so at every poll, so
+// the build settles at the first, and the poll answers.
+func TestAppDeliverySettlesABuildWhoseAppWasUninstalled(t *testing.T) {
+	h := newHungBuild(t)
+	github := heldGitHubFor(t, h.f, h.b, h.ws)
+	h.connection.ID = github.connect(t)
+	config := h.config
+	config.ConnectionID = h.connection.ID
+	op := h.createBuild(t, config)
+	github.uninstalled.Store(true)
+	execSQL(t, h, "UPDATE github_app_connections SET generation=generation+1 WHERE connection_id=$1", h.connection.ID)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	result := h.pollAsync(ctx)
+	h.waitState(t, op.Id, "failed")
+	cancel()
+	if outcome := <-result; (outcome.err != nil && !errors.Is(outcome.err, context.Canceled)) || outcome.command != nil || h.deliveryStarted(t, op.Id) {
+		t.Fatal("a build whose App was uninstalled failed the poll, or was delivered", outcome.err)
+	}
+	requireNote(t, h, op.Id, "Refused before runner delivery: Astilba's GitHub App can no longer reach the repository: it was uninstalled")
+}
+
+func requireNote(t *testing.T, h *hungBuild, operation uuid.UUID, prefix string) {
+	t.Helper()
+	var note string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT note FROM execution_operations WHERE id=$1", operation).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(note, prefix) {
+		t.Fatalf("the note is %q, want it to begin %q", note, prefix)
 	}
 }
 
@@ -480,5 +535,37 @@ func TestGitHubConnectRechecksTheGrantAfterAHungCall(t *testing.T) {
 				t.Fatal("connections", connections, "want", tc.connections)
 			}
 		})
+	}
+}
+
+// A binding made for another GitHub App than management's, as when management restarts with
+// another App's configuration, is the operator's to put right, so a build waits for it rather than
+// settling, and is delivered once the App matches again.
+func TestAppDeliveryWaitsForManagementsOwnApp(t *testing.T) {
+	h := newHungBuild(t)
+	github := heldGitHubFor(t, h.f, h.b, h.ws)
+	h.connection.ID = github.connect(t)
+	config := h.config
+	config.ConnectionID = h.connection.ID
+	op := h.createBuild(t, config)
+	execSQL(t, h, "UPDATE github_app_connections SET app_id=app_id+1 WHERE connection_id=$1", h.connection.ID)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	minted := func(c *api.ExecutionCommand) bool {
+		return c != nil && c.Pipeline != nil && strings.Contains(string(*c.Pipeline), "installation-read-canary")
+	}
+	if command, err := pollReleased(h.f.execution, ctx, h.identity); err == nil || minted(command) || h.deliveryStarted(t, op.Id) {
+		t.Fatal("a build for another App's binding did not wait", err)
+	}
+	var state, note string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state,note FROM execution_operations WHERE id=$1", op.Id).Scan(&state, &note); err != nil {
+		t.Fatal(err)
+	}
+	if state != "dispatched" || note != "" {
+		t.Fatalf("a build waiting for management's App is %s with the note %q", state, note)
+	}
+	execSQL(t, h, "UPDATE github_app_connections SET app_id=app_id-1 WHERE connection_id=$1", h.connection.ID)
+	if command, err := pollReleased(h.f.execution, ctx, h.identity); err != nil || !minted(command) {
+		t.Fatal("the build was not delivered once the App matched again", err)
 	}
 }

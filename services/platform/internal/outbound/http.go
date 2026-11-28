@@ -55,3 +55,13 @@ func Client(private bool, timeout time.Duration) *http.Client {
 	}
 	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects are disabled") }}
 }
+
+// Moved reports the status of a permanent redirect that a Client refused to follow, given the
+// response Do returns beside its error, with its body closed: the resource has another address now, as a renamed repository
+// does, so asking at this one again gets the same answer.
+func Moved(res *http.Response) (int, bool) {
+	if res != nil && (res.StatusCode == http.StatusMovedPermanently || res.StatusCode == http.StatusPermanentRedirect) {
+		return res.StatusCode, true
+	}
+	return 0, false
+}
