@@ -53,7 +53,12 @@ func newHeldGitea(t *testing.T) *heldGitea {
 	h.pullHead.Store(strings.Repeat("a", 40))
 	h.repository.Store(12)
 	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if answerReceivePack(w, r) {
+		// The push check is answered at once, as Gitea answers it for a read-only token, unless a
+		// refusal names it.
+		if pushCheck(r) {
+			if refusal := h.refusing.Load(); refusal == nil || !refusal.answer(w, r) {
+				answerPushCheck(w, r)
+			}
 			return
 		}
 		// Read before waiting: a held request answers with what was true when it was asked.
@@ -96,12 +101,7 @@ func newHeldGitea(t *testing.T) *heldGitea {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		if refusal := h.refusing.Load(); refusal != nil && strings.HasSuffix(r.URL.Path, refusal.match) {
-			for name, value := range refusal.header {
-				w.Header().Set(name, value)
-			}
-			w.WriteHeader(refusal.status)
-			_, _ = io.WriteString(w, refusal.body)
+		if refusal := h.refusing.Load(); refusal != nil && refusal.answer(w, r) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -132,6 +132,19 @@ type providerRefusal struct {
 	status int
 	header map[string]string
 	body   string
+}
+
+// answer refuses r if its path ends with the refusal's match, and reports whether it did.
+func (p *providerRefusal) answer(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasSuffix(r.URL.Path, p.match) {
+		return false
+	}
+	for name, value := range p.header {
+		w.Header().Set(name, value)
+	}
+	w.WriteHeader(p.status)
+	_, _ = io.WriteString(w, p.body)
+	return true
 }
 
 // hold makes requests whose path ends with match hang until the returned release runs.

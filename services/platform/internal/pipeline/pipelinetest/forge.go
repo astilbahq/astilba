@@ -47,6 +47,9 @@ type Forge struct {
 	Writes   []string
 	// Down answers every request with this status while it is set.
 	Down int
+	// Blocked refuses every request with a bare 403, as an IP allow list in front of the server or
+	// GitLab's ban after failed sign-ins does whatever the credential could do.
+	Blocked bool
 	// Version is what a Gitea says it runs.
 	Version string
 }
@@ -186,6 +189,10 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(f.Down)
 		return
 	}
+	if f.Blocked {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	if r.URL.Path == "/team/app.git/info/refs" {
 		_, password, _ := r.BasicAuth()
 		if r.URL.Query().Get("service") != "git-receive-pack" {
@@ -193,9 +200,28 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if password == Writer {
 			w.Header().Set("Content-Type", "application/x-git-receive-pack-advertisement")
 		} else if password == Reader {
-			w.WriteHeader(403)
+			// Each server's own refusal of a credential without write access. Gitea's says only
+			// "Forbidden", as anything in front of it may.
+			http.Error(w, map[string]string{"github": "Write access to repository not granted.", "gitlab": "You are not allowed to upload code.", "gitea": "Forbidden"}[f.kind], http.StatusForbidden)
 		} else {
 			w.WriteHeader(401)
+		}
+		return
+	}
+	// Gitea refuses a write request by a token without write:repository before it looks for the
+	// repository or what was asked for, as it does the push check's request to delete a branch no
+	// repository can have.
+	if f.kind == "gitea" && r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") && strings.HasSuffix(r.URL.Path, "/branches/astilba..push-check") {
+		_, password, _ := r.BasicAuth()
+		switch password {
+		case Reader:
+			w.WriteHeader(http.StatusForbidden)
+			answer(w, map[string]string{"message": "token does not have at least one of required scope(s), required=[write:repository], token scope=read:repository", "url": "http://" + r.Host + "/api/swagger"})
+		case Writer:
+			w.WriteHeader(http.StatusNotFound)
+			answer(w, map[string]string{"message": "branch does not exist"})
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
 		}
 		return
 	}

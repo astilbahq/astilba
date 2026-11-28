@@ -64,8 +64,7 @@ func newSubmissionFixtureWith(t *testing.T, ctx context.Context, forge bool) *su
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/team/app.git/info/refs" {
-			w.WriteHeader(403)
+		if answerPushCheck(w, r) {
 			return
 		}
 		if r.Method != http.MethodGet {
