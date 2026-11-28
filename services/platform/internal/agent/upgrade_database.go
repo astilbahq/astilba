@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/astilbahq/astilba/services/platform/internal/backup"
@@ -15,10 +16,12 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domain.Application) error {
+// upgradeDatabaseChecks refuses a source database the supported upgrade can't move into a cluster
+// target makes.
+func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domain.Application, target domain.PostgresRelease) error {
 	for _, check := range []struct{ sql, want, message string }{
-		// template0 is oid 4, which the checks below compare the other databases with. A superuser
-		// can drop it once it isn't a template.
+		// template0 is always oid 4, which the checks below hold to what initdb gives it. A
+		// superuser can drop it once it isn't a template, and nothing can make it again.
 		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_database WHERE oid = 4", "1", "a cluster without template0 requires a separate recipe"},
 		// By name: a database its owner marked as a template is still one the upgrade would lose.
@@ -53,7 +56,7 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 			return errors.New(check.message)
 		}
 	}
-	if err := e.upgradeLocaleCheck(ctx, db, a); err != nil {
+	if err := e.upgradeLocaleCheck(ctx, db, a, target); err != nil {
 		return err
 	}
 	for _, other := range []struct{ database, called string }{{"postgres", "the postgres maintenance database"}, {"template1", "template1"}} {
@@ -115,41 +118,58 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 	return nil
 }
 
-// localeDatabases names, by the key upgradeLocaleSQL gives it, each database whose encoding and
-// locale the upgrade's new cluster sets.
-var localeDatabases = map[string]string{"application": "the application database", "postgres": "the postgres maintenance database", "template1": "template1"}
+// localeKeys names, by the key upgradeLocaleSQL gives it, each database whose encoding and locale
+// the upgrade's new cluster sets, and the server's settings it sets.
+var localeKeys = map[string]string{"template0": "template0", "application": "the application database", "postgres": "the postgres maintenance database", "template1": "template1", "settings": "the server's settings"}
 
-// upgradeLocaleSQL lists, one per line as key:properties, the databases of localeDatabases whose
-// encoding or locale differs from template0's, always oid 4, which the checks before it require.
-// The upgrade's new cluster gives every database what the target image's initdb chooses by
-// default, which is template0's for a source the pinned image made with its defaults. A source
-// whose initdb took another encoding, LC_COLLATE or LC_CTYPE from its variables differs from the
-// new cluster in template0 too, as does one whose
-// template0 a superuser changed or, with allow_system_table_mods, made again under oid 4; a
-// database matching it then differs from the new cluster, which the restore's verification
-// refuses for the application's database, after downtime. Before the owner model the database user is
-// a superuser and can drop template1 or postgres and create it again from template0 in another
-// encoding or locale, or do the same to the application's database from another one. The columns
-// are PostgreSQL 17's and 18's, the majors an upgrade starts from or reaches. datcollversion is
-// left out: it records the collation library's version, which a new cluster records afresh.
-// inline-sql: reads a managed database's catalog, not the platform database.
-const upgradeLocaleSQL = `SELECT CASE WHEN d.datname = pg_catalog.current_database() THEN 'application' ELSE d.datname END || ':' || pg_catalog.concat_ws(',',
-	CASE WHEN d.encoding <> t.encoding THEN 'encoding' END,
-	CASE WHEN d.datlocprovider <> t.datlocprovider THEN 'locale provider' END,
-	CASE WHEN d.datcollate <> t.datcollate THEN 'LC_COLLATE' END,
-	CASE WHEN d.datctype <> t.datctype THEN 'LC_CTYPE' END,
-	CASE WHEN d.datlocale IS DISTINCT FROM t.datlocale THEN 'ICU or builtin locale' END,
-	CASE WHEN d.daticurules IS DISTINCT FROM t.daticurules THEN 'ICU rules' END)
-FROM pg_catalog.pg_database d, pg_catalog.pg_database t
-WHERE t.oid = 4 AND d.oid <> 4 AND d.datname IN (pg_catalog.current_database(), 'postgres', 'template1')
-	AND (d.encoding, d.datlocprovider, d.datcollate, d.datctype, d.datlocale, d.daticurules) IS DISTINCT FROM (t.encoding, t.datlocprovider, t.datcollate, t.datctype, t.datlocale, t.daticurules)
-ORDER BY 1`
+// upgradeLocaleSQL lists, one per line as key:properties, the databases of localeKeys whose
+// encoding or locale differs from what the target release's initdb gives the upgrade's new cluster,
+// and, under the key settings, the settings of its record the source's server has another value
+// for. A source's initdb takes them from its variables, which a database from before the owner
+// model can have, such as LANG, LC_COLLATE or LC_MONETARY: its every database and its
+// postgresql.conf then differ from the new cluster. Before the owner model the database user is a
+// superuser, too, and can change the settings with ALTER SYSTEM, change template0's row or, with
+// allow_system_table_mods, make it again under oid 4, drop template1 or postgres and create it
+// again from template0 in another encoding or locale, or do the same to the application's database
+// from another one. The restore's verification refuses the application's database differing, but
+// only after downtime, and the rest it can't see. The checks before it refuse per-database and
+// per-role settings, and no option the agent's sessions set touches these, so a session reads the
+// server's own. The columns are PostgreSQL 17's and 18's, the majors an upgrade starts from or
+// reaches. datcollversion is left out: it records the collation library's version, which a new
+// cluster records afresh. The values are the agent's own, quoted all the same.
+func upgradeLocaleSQL(target domain.PostgresInitdb) string {
+	locale := "NULL"
+	if target.Locale != "" {
+		locale = quoteLiteral(target.Locale)
+	}
+	settings := make([]string, 0, len(target.Settings()))
+	for n, setting := range target.Settings() {
+		settings = append(settings, "("+strconv.Itoa(n)+", "+quoteLiteral(setting[0])+", "+quoteLiteral(setting[1])+")")
+	}
+	// inline-sql: reads a managed database's catalog, not the platform database.
+	return `SELECT key || ':' || what FROM (SELECT CASE WHEN d.oid = 4 THEN 'template0' WHEN d.datname = pg_catalog.current_database() THEN 'application' ELSE d.datname END AS key, pg_catalog.concat_ws(',',
+	CASE WHEN pg_catalog.pg_encoding_to_char(d.encoding) <> ` + quoteLiteral(target.Encoding) + ` THEN 'encoding' END,
+	CASE WHEN d.datlocprovider::text <> ` + quoteLiteral(target.LocaleProvider) + ` THEN 'locale provider' END,
+	CASE WHEN d.datcollate <> ` + quoteLiteral(target.Collate) + ` THEN 'LC_COLLATE' END,
+	CASE WHEN d.datctype <> ` + quoteLiteral(target.Ctype) + ` THEN 'LC_CTYPE' END,
+	CASE WHEN d.datlocale IS DISTINCT FROM ` + locale + ` THEN 'ICU or builtin locale' END,
+	CASE WHEN d.daticurules IS NOT NULL THEN 'ICU rules' END) AS what
+FROM pg_catalog.pg_database d
+WHERE d.oid = 4 OR d.datname IN (pg_catalog.current_database(), 'postgres', 'template1')
+UNION ALL SELECT 'settings', pg_catalog.string_agg(t.name, ',' ORDER BY t.n)
+FROM (VALUES ` + strings.Join(settings, ", ") + `) AS t(n, name, setting) LEFT JOIN pg_catalog.pg_settings s ON s.name = t.name
+WHERE s.setting IS DISTINCT FROM t.setting) AS differ
+WHERE what <> ''
+ORDER BY key COLLATE "C"`
+}
 
-// upgradeLocaleCheck refuses an upgrade whose new cluster would silently give the application's
-// database, postgres or template1 another encoding or locale, so that databases made from
-// template1 afterwards would differ too. It names each database and what differs, never a value.
-func (e *Engine) upgradeLocaleCheck(ctx context.Context, db pgClient, a domain.Application) error {
-	raw, err := e.pgQuery(ctx, db, a, upgradeLocaleSQL)
+// upgradeLocaleCheck refuses an upgrade whose new cluster, which target's initdb makes, would
+// silently give the application's database, postgres, template1 or template0 another encoding or
+// locale, so that databases made from them afterwards would differ too, or would give the server
+// another setting of target's record, which changes how values read, such as money, dates and
+// messages. It names each database and what differs, and each setting, never a value.
+func (e *Engine) upgradeLocaleCheck(ctx context.Context, db pgClient, a domain.Application, target domain.PostgresRelease) error {
+	raw, err := e.pgQuery(ctx, db, a, upgradeLocaleSQL(target.Initdb))
 	if err != nil {
 		return errors.New("cannot read the databases' encodings and locales")
 	}
@@ -159,14 +179,14 @@ func (e *Engine) upgradeLocaleCheck(ctx context.Context, db pgClient, a domain.A
 			continue
 		}
 		key, what, _ := strings.Cut(line, ":")
-		called, known := localeDatabases[key]
+		called, known := localeKeys[key]
 		if !known || what == "" {
 			return errors.New("cannot read the databases' encodings and locales")
 		}
 		differ = append(differ, called+" ("+strings.ReplaceAll(what, ",", ", ")+")")
 	}
 	if len(differ) > 0 {
-		return errors.New("an encoding or locale other than template0's, which the new cluster gives every database, requires a separate recipe: " + strings.Join(differ, "; "))
+		return errors.New("an encoding, locale or setting other than what PostgreSQL " + target.Name() + "'s initdb gives the new cluster requires a separate recipe: " + strings.Join(differ, "; "))
 	}
 	return nil
 }
@@ -247,6 +267,10 @@ func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source st
 	if err != nil {
 		return nil, err
 	}
+	to, err := s.Command.Plan.TargetRelease()
+	if err != nil {
+		return nil, err
+	}
 	helper, err := e.postgresHelper(ctx, "astilba-upgrade-preflight-"+s.Command.Plan.ID.String(), upgradeHelperLabels(s, a, "upgrade-preflight-v1"), source, from.Image)
 	if err != nil {
 		return nil, err
@@ -261,7 +285,7 @@ func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source st
 		return nil, err
 	}
 	e.point("upgrade-preflight-clients-checked")
-	if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+	if err = e.upgradeDatabaseChecks(ctx, helper, a, to); err != nil {
 		return nil, err
 	}
 	return e.pgQuery(ctx, helper, a, "SELECT pg_database_size(current_database())") // inline-sql: reads a managed database's catalog, not the platform database.
