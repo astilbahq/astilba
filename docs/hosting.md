@@ -962,26 +962,32 @@ app lists:
 - each environment's 20 releases, 50 revisions, 100 pipeline runs and 100 draft submissions;
 - each preview template's 100 preview requests;
 - the newest 100 audit events and build artifacts;
-- every version of each secret;
-- everything those name, including the build artifacts a configuration uses.
+- everything those name, including the build artifacts a configuration uses;
+- of each secret, its 10 newest versions, its current version, and every version anything else the
+  export carries names, such as a revision, release, plan, operation, preview or upgrade.
 
 A submission still waiting is imported as failed, since its attempts stay behind; submit the draft
-again. So an export grows with the workspace's configuration, not its age. The exception is secret
-versions: every version is kept, so a secret that automation sets on every deploy grows the export
-each time. An imported workspace shows the same lists as its source, except that preview
-environments retired before the export aren't listed, and older entries can't be opened by ID.
+again. So an export grows with the workspace's configuration, not its age, even for a secret that
+automation sets on every deploy. An imported workspace shows the same lists as its source, except
+that preview environments retired before the export aren't listed, older entries can't be opened
+by ID, and a secret lists only the versions the export carried. An audit event can name a version
+the export left out.
 Audit history beyond the newest 100 stays in the source installation's database.
 
 A cross-host recovery checkpoint carries the workspace's configuration, unfinished work, the
 newest 100 operations and audit events, the revisions the app lists or a record names, and a
-compact record of the runtime changes committed in the 90 days before it was captured. Its size
-follows the configuration, not the workspace's age. A busy workspace whose history doesn't fit
+compact record of the runtime changes committed in the 90 days before it was captured. Of each
+secret of the environments it carries, it carries the 10 newest versions, the current one, every
+version anything else it carries names other than an audit event, and every erased version,
+without its value, so recovering from a backup that still holds a
+retired or purged value erases it again. Its size follows the configuration, not the workspace's
+age, except for those erased versions, which it keeps however old. A busy workspace whose history doesn't fit
 gets a shorter window, and management warns while it is under 35 days. Checkpoints are compressed
 with zstd. Cross-host recovery can use a management backup taken after the newest checkpoint's
 window opened, which the Workspace page shows; [Recovering management from an older
 backup](cross-host-placement.md#the-recovery-window) says what comes back. A workspace recovered
-from a backup doesn't get back the housekeeping, releases, revisions, build runs or audit events
-recorded after the backup that the checkpoint left out.
+from a backup doesn't get back the housekeeping, releases, revisions, build runs, audit events or
+secret versions recorded after the backup that the checkpoint left out.
 
 Work that Git webhooks start runs in a background queue of its own, with four workers
 per replica: source refreshes, draft submissions, pull-request previews and GitHub App

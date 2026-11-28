@@ -59,8 +59,8 @@ const (
 // A busy workspace's exports and recovery bases used to carry every audit event, revision and
 // operation it ever had, so they grew until they passed the archive's limits. An export now carries
 // what the app lists, and a base drops the audit events and revisions nothing names beyond those
-// lists. An imported workspace shows the same lists, and still has every secret version and the
-// build artifact a configuration pins, which no foreign key names.
+// lists. An imported workspace shows the same lists, and still has the secret versions its
+// revisions name and the build artifact a configuration pins, which no foreign key names.
 func TestExportAndBaseCarryWhatTheAppLists(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)

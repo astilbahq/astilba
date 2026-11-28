@@ -1,6 +1,7 @@
 package portability
 
 import (
+	"bytes"
 	"context"
 
 	"github.com/google/uuid"
@@ -19,16 +20,17 @@ import (
 //   - per backup policy, the 100 restores onto another server the app lists, and the restore of
 //     each carried operation;
 //   - the newest 100 audit events and build artifacts;
-//   - every version of each carried secret, as the app lists them;
 //   - the build artifacts those configurations use (archivePinnedArtifacts);
 //   - everything those rows name, closed over every reference the import checks and every
 //     database foreign key, which can bring in a retired preview environment that something
-//     carried names.
+//     carried names;
+//   - of each carried secret, its newest 10 versions and current version (keptSecretVersions), and
+//     every version a carried row names (keepNamedSecretVersions).
 //
 // An export is imported as a new workspace and never merged with older copies, so this is safe
 // in a way it isn't for a recovery base, which chooses its rows itself (baseSelection).
 func exportSelection(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (map[string]string, error) {
-	return selectArchive(ctx, tx, ws, []archiveStep{{exportEnvironments, nil}, {exportSeeds, nil}})
+	return selectArchive(ctx, tx, ws, []archiveStep{{exportEnvironments, nil}, {exportSeeds, nil}}, archiveStep{keptSecretVersions, []any{SecretVersionsKept, false}})
 }
 
 // archiveStep seeds the working set: a statement over $1, the workspace, and its own arguments.
@@ -37,10 +39,11 @@ type archiveStep struct {
 	args []any
 }
 
-// selectArchive runs the seeds, adds the build artifacts their configurations use and closes the
-// set over every reference. The rows chosen go in a transaction-local table, which the returned
-// filters read. A capture that runs again in the same transaction starts from an empty set.
-func selectArchive(ctx context.Context, tx pgx.Tx, ws uuid.UUID, seeds []archiveStep) (map[string]string, error) {
+// selectArchive runs the seeds, adds the build artifacts their configurations use, closes the
+// set over every reference and then runs versions, which chooses secret versions by the carried
+// environments. The rows chosen go in a transaction-local table, which the returned filters read.
+// A capture that runs again in the same transaction starts from an empty set.
+func selectArchive(ctx context.Context, tx pgx.Tx, ws uuid.UUID, seeds []archiveStep, versions archiveStep) (map[string]string, error) {
 	// inline-sql: transaction-local working set for an archive's selection
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE IF NOT EXISTS archive_keep(kind text NOT NULL, id uuid NOT NULL, PRIMARY KEY(kind,id)) ON COMMIT DROP`); err != nil {
 		return nil, err
@@ -60,9 +63,88 @@ func selectArchive(ctx context.Context, tx pgx.Tx, ws uuid.UUID, seeds []archive
 			return nil, err
 		}
 		if tag.RowsAffected() == 0 {
-			return archiveFilters, nil
+			break
 		}
 	}
+	if _, err := tx.Exec(ctx, versions.sql, append([]any{ws}, versions.args...)...); err != nil {
+		return nil, err
+	}
+	return archiveFilters, nil
+}
+
+// SecretVersionsKept is how many of each secret's newest versions an archive carries, whatever
+// names them (owner decision on PLAT-206). A secret that automation sets on every deploy would
+// otherwise grow every export and recovery base by a version each time.
+const SecretVersionsKept = 10
+
+// Of each carried secret: its newest $2 versions, newest by creation as LiveSecretVersion orders
+// them, erased ones included; its current version, the newest with a value, which a recovery that
+// restored newer ones erased can leave older than those; and, when $3, every erased version.
+// inline-sql: chooses the secret versions in the archive's transaction-local working set
+const keptSecretVersions = `INSERT INTO archive_keep(kind,id) SELECT 'version',x.id FROM (
+	SELECT v.id,v.erased_at,row_number() OVER (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC) n,
+		row_number() OVER (PARTITION BY v.secret_id,v.erased_at IS NULL ORDER BY v.created_at DESC,v.id DESC) live FROM secret_versions v
+	JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id
+	WHERE v.workspace_id=$1) x WHERE x.n<=$2 OR (x.erased_at IS NULL AND x.live=1) OR ($3 AND x.erased_at IS NOT NULL) ON CONFLICT DO NOTHING`
+
+// keepNamedSecretVersions adds to the selection the versions of carried secrets in named, the IDs
+// the archive's other rows name. No foreign key points at a secret version, so a capture finds them
+// in the rows it read (captureTables): every revision, plan, operation command, preview, upgrade,
+// runtime and backup configuration it carries, in any shape, including ones added later. So no
+// carried row names a version of a carried secret that the archive leaves out.
+func keepNamedSecretVersions(ctx context.Context, tx pgx.Tx, ws uuid.UUID, named map[uuid.UUID]struct{}) error {
+	ids := make([]uuid.UUID, 0, len(named))
+	for id := range named {
+		ids = append(ids, id)
+	}
+	// inline-sql: chooses the secret versions in the archive's transaction-local working set
+	_, err := tx.Exec(ctx, `INSERT INTO archive_keep(kind,id) SELECT 'version',v.id FROM secret_versions v
+	JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id
+	WHERE v.workspace_id=$1 AND v.id=ANY($2::uuid[]) ON CONFLICT DO NOTHING`, ws, ids)
+	return err
+}
+
+// collectNamedIDs adds the IDs a row of table names to named: every lower-case ID, as PostgreSQL
+// and the platform write them, whether a JSON string of its own or inside one, such as an escaped
+// document. An audit event names the version it records without needing it, and the newest 100
+// would keep the versions set last whatever the bound, so its rows are not read. The scan looks only
+// around dashes: a sealed value, written as hex, has none, so a full archive takes milliseconds.
+func collectNamedIDs(table string, raw []byte, named map[uuid.UUID]struct{}) {
+	if table == "audit_events" || table == "secret_versions" {
+		return
+	}
+	for i := 0; ; {
+		dash := bytes.IndexByte(raw[i:], '-')
+		if dash < 0 {
+			return
+		}
+		start := i + dash - 8
+		if start < 0 || start+36 > len(raw) || !idShaped(raw[start:start+36]) {
+			i += dash + 1
+			continue
+		}
+		if id, err := uuid.ParseBytes(raw[start : start+36]); err == nil {
+			named[id] = struct{}{}
+		}
+		i = start + 36
+	}
+}
+
+// idShaped reports whether b is an ID in its canonical lower-case form.
+func idShaped(b []byte) bool {
+	for i, c := range b {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // inline-sql: seeds the export's transaction-local working set
@@ -203,7 +285,8 @@ var archiveFilters = func() map[string]string {
 		"backup_destinations": ` AND (account_id IS NULL OR EXISTS (SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id=$1 AND k.destination_id=backup_destinations.id AND k.activated_at IS NOT NULL))`,
 		"backup_storage_keys": ` AND state<>'minting' AND (destination_id IS NULL OR EXISTS (SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id=$1 AND k.destination_id=backup_storage_keys.destination_id AND k.activated_at IS NOT NULL)) AND (recovery_id IS NULL OR recovery_id IN (SELECT id FROM archive_keep WHERE kind='recovery'))`,
 		"execution_plans":     ` AND id IN (SELECT o.plan_id FROM execution_operations o JOIN archive_keep k ON k.kind='op' AND k.id=o.id)`,
-		"secret_versions":     ` AND secret_id IN (SELECT s.id FROM secrets s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1)`,
+		// Each statement that chooses a version keeps only those of carried secrets.
+		"secret_versions": archiveKept("version", "id"),
 	}
 	for _, table := range []string{"deployment_units", "environment_layouts", "secrets", "managed_volumes", "managed_resources", "route_claims", "visual_runtime", "cross_host_runtime", "git_sources", "build_targets", "backup_policies", "backup_cutovers"} {
 		out[table] = archiveKept("env", "environment_id")

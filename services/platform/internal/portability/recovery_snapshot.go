@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"slices"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -186,12 +187,29 @@ func captureArchive(ctx context.Context, tx pgx.Tx, archive Archive, mode captur
 	return archive, err
 }
 
+// captureOrder is the archived tables in the order a capture reads them: secret versions last, so a
+// selected capture knows which ones the other rows name.
+var captureOrder = func() []table {
+	out := slices.DeleteFunc(slices.Clone(tables), func(t table) bool { return t.Name == "secret_versions" })
+	return append(out, tables[slices.IndexFunc(tables, func(t table) bool { return t.Name == "secret_versions" })])
+}()
+
 // captureTables reads each archived table through its filter, and reports the rows' size and
-// number. A bounded capture refuses past the archive's limits.
+// number. A bounded capture refuses past the archive's limits. A selected capture, one with
+// filters, also carries each secret version its other rows name (keepNamedSecretVersions).
 func captureTables(ctx context.Context, tx pgx.Tx, archive Archive, filters map[string]string, bounded bool) (Archive, int, int, error) {
 	archive.Tables = map[string][]Row{}
 	size, count := 0, 0
-	for _, table := range tables {
+	var named map[uuid.UUID]struct{}
+	if filters != nil {
+		named = map[uuid.UUID]struct{}{}
+	}
+	for _, table := range captureOrder {
+		if named != nil && table.Name == "secret_versions" {
+			if err := keepNamedSecretVersions(ctx, tx, archive.Workspace, named); err != nil {
+				return archive, 0, 0, err
+			}
+		}
 		filter := ""
 		if bounded {
 			filter = filters[table.Name] + fmt.Sprintf(" LIMIT %d", maxArchiveRecords+1)
@@ -213,6 +231,9 @@ func captureTables(ctx context.Context, tx pgx.Tx, archive Archive, filters map[
 			if bounded && (count > maxArchiveRecords || size > MaxArchiveBytes) {
 				rows.Close()
 				return archive, 0, 0, ErrArchive
+			}
+			if named != nil {
+				collectNamedIDs(table.Name, raw, named)
 			}
 			var row Row
 			if err := json.Unmarshal(raw, &row); err != nil {
