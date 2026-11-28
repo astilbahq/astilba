@@ -27,7 +27,7 @@ func finalProviderRefusal(err error) (string, bool) {
 	// Management's own configuration refusing the App is the operator's to restore.
 	var unusable *appUnusable
 	if errors.As(err, &unusable) {
-		if unusable.operator {
+		if unusable.operator != "" {
 			return "", false
 		}
 		return "the connection's GitHub App authorization was removed, or no longer matches its repository. Connect the repository again, then start this again.", true

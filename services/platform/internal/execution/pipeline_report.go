@@ -62,10 +62,14 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	var state api.ExecutionState
 	var cancelled bool
 	var sequence int64
-	if err = tx.QueryRow(ctx, `SELECT command,state,cancel_requested,report_sequence FROM execution_operations WHERE id=$1 AND server_id=$2 FOR UPDATE`, c.Id, a.ID).Scan(&raw, &state, &cancelled, &sequence); err != nil {
+	var waited string
+	if err = tx.QueryRow(ctx, `SELECT command,state,cancel_requested,report_sequence,note FROM execution_operations WHERE id=$1 AND server_id=$2 FOR UPDATE`, c.Id, a.ID).Scan(&raw, &state, &cancelled, &sequence, &waited); err != nil {
 		return false, err
 	}
-	if Terminal(state) {
+	// One handed back to the queue while management's configuration refused it (holdForOperator)
+	// is delivered only once it is dispatched again: a poll that read it before then is not proof
+	// that it still holds its runner's turn.
+	if Terminal(state) || state == "queued" {
 		return false, nil
 	}
 	pollCancelled := c.CancelRequested
@@ -101,14 +105,10 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		}
 		// No runner holds this command, and its public arguments have not passed the
 		// delivery check, so it finishes here rather than reaching one to be cancelled. One that
-		// waited on GitHub's rate limits still says so.
+		// waited, as on GitHub's rate limits or management's configuration, still says why.
 		note := "Cancelled or expired before runner delivery."
-		waited, err := queries.OperationNoteHas(ctx, db.OperationNoteHasParams{WorkspaceID: ws, ID: c.Id, Note: gitHubBusyNote})
-		if err != nil {
-			return false, err
-		}
-		if waited {
-			note += " " + gitHubBusyNote
+		if waited := waitedNotes(waited); waited != "" {
+			note += " " + waited
 		}
 		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: note}); err != nil {
 			return false, err
@@ -177,6 +177,11 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	// with those it holds, as a backup's access does not.
 	if git == nil || time.Now().After(c.Deadline) {
 		return true, nil
+	}
+	// Management's own configuration refusing the connection passes once an operator puts it
+	// right, so the pipeline waits for that without taking its runner's turn (holdForOperator).
+	if err = git.refusedByOperator(ctx, tx, p.Connection.ID); err != nil {
+		return false, err
 	}
 	// A connection whose repository is no longer the one the pipeline froze never becomes it again.
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
@@ -271,10 +276,6 @@ func (s *Service) settleRefusedPipeline(ctx context.Context, tx pgx.Tx, ws uuid.
 	c.CancelRequested = true
 	return true, tx.Commit(ctx)
 }
-
-// gitHubBusyNote says why a pipeline's delivery waited. It is added once, and kept if the pipeline
-// then expires undelivered.
-const gitHubBusyNote = "GitHub limited how fast Astilba's GitHub App could make requests, so delivery to the runner waited and retried."
 
 // pipelineEnd is when management stops a pipeline: its deadline, or its lifetime past that once
 // management has heard its runner started it. The start must reach management by the deadline

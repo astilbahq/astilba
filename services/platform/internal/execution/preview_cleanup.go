@@ -289,6 +289,11 @@ func (s *Service) previewCommandAllowed(ctx context.Context, tx pgx.Tx, git *git
 		return false, nil
 	}
 	if git != nil {
+		// Management's own configuration refusing the connection is not the request's answer, and
+		// passes once an operator puts it right: the command waits for it, without its values.
+		if err = git.refusedByOperator(ctx, tx, p.Connection); err != nil {
+			return false, err
+		}
 		answer, err := git.pullRequest(ctx, tx, p.Connection, r.View.Number, "")
 		if err != nil {
 			return false, err

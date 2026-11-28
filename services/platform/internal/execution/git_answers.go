@@ -97,7 +97,7 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 		return st, nil
 	}
 	if s.GitHub == nil {
-		st.unusable = &appUnusable{err: domain.Invalid("githubApp.reauthorizationRequired"), operator: true}
+		st.unusable = &appUnusable{err: domain.Invalid("githubApp.reauthorizationRequired"), operator: noGitHubAppNote}
 		return st, nil
 	}
 	binding, err := q.ShareActiveGitHubAppConnection(ctx, db.ShareActiveGitHubAppConnectionParams{WorkspaceID: ws, ConnectionID: id})
@@ -113,7 +113,7 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 	if c.Provider != "github" || c.BaseURL != "https://api.github.com" || c.RepositoryID != binding.RepositoryID {
 		st.unusable = &appUnusable{err: domain.Forbidden}
 	} else if binding.AppID != s.GitHub.Config.ID {
-		st.unusable = &appUnusable{err: domain.Forbidden, operator: true}
+		st.unusable = &appUnusable{err: domain.Forbidden, operator: otherGitHubAppNote}
 	}
 	return st, nil
 }
@@ -122,11 +122,11 @@ func (s *Service) loadGitState(ctx context.Context, tx pgx.Tx, ws, id uuid.UUID)
 // a network call: management has no GitHub App, the connection's App binding is gone, or the
 // binding no longer matches the connection or management's App. A binding that is gone or no
 // longer matches its connection stays so until the repository is connected again. One that only
-// management's configuration refuses, as when it starts without its App or with another, is
-// operator's: it passes once the operator restores the App.
+// management's configuration refuses, as when it starts without its App or with another, is the
+// operator's: it passes once the operator restores the App, and operator says why it waits.
 type appUnusable struct {
 	err      error
-	operator bool
+	operator string
 }
 
 func (e *appUnusable) Error() string { return e.err.Error() }

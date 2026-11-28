@@ -20,9 +20,17 @@ UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_i
 -- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations o SET state = @state, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || @note::text
 WHERE o.workspace_id = @workspace_id AND o.id = @id;
--- name: OperationNoteHas :one
--- Whether an operation's note already says something, such as why its delivery waited.
-SELECT strpos(note, @note::text) > 0 AS has FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id;
+-- name: LockServerOperationState :one
+-- An operation of the polling server, locked while what it waits for is recorded.
+SELECT state FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id AND server_id = @server_id FOR UPDATE;
+-- name: RequeueUndeliveredPipeline :exec
+-- A dispatched pipeline that no runner holds goes back to the queue, giving up its runner's turn
+-- while management's configuration refuses it. The caller holds the operation's row, so whether
+-- delivery started is read after any delivery that held it committed.
+UPDATE execution_operations o SET state = 'queued'
+FROM pipeline_runs r
+WHERE o.workspace_id = @workspace_id AND o.id = @id AND o.kind = 'pipeline' AND o.state = 'dispatched' AND o.report_sequence = 0
+    AND r.workspace_id = o.workspace_id AND r.id = o.id AND r.delivery_started = false;
 -- name: PipelineReportedStart :one
 -- Whether management has a report that the pipeline's runner started it: its start step.
 SELECT (steps @> jsonb_build_array(jsonb_build_object('name', @step::text)))::boolean AS started FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id;

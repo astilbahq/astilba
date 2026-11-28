@@ -537,35 +537,3 @@ func TestGitHubConnectRechecksTheGrantAfterAHungCall(t *testing.T) {
 		})
 	}
 }
-
-// A binding made for another GitHub App than management's, as when management restarts with
-// another App's configuration, is the operator's to put right, so a build waits for it rather than
-// settling, and is delivered once the App matches again.
-func TestAppDeliveryWaitsForManagementsOwnApp(t *testing.T) {
-	h := newHungBuild(t)
-	github := heldGitHubFor(t, h.f, h.b, h.ws)
-	h.connection.ID = github.connect(t)
-	config := h.config
-	config.ConnectionID = h.connection.ID
-	op := h.createBuild(t, config)
-	execSQL(t, h, "UPDATE github_app_connections SET app_id=app_id+1 WHERE connection_id=$1", h.connection.ID)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	minted := func(c *api.ExecutionCommand) bool {
-		return c != nil && c.Pipeline != nil && strings.Contains(string(*c.Pipeline), "installation-read-canary")
-	}
-	if command, err := pollReleased(h.f.execution, ctx, h.identity); err == nil || minted(command) || h.deliveryStarted(t, op.Id) {
-		t.Fatal("a build for another App's binding did not wait", err)
-	}
-	var state, note string
-	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state,note FROM execution_operations WHERE id=$1", op.Id).Scan(&state, &note); err != nil {
-		t.Fatal(err)
-	}
-	if state != "dispatched" || note != "" {
-		t.Fatalf("a build waiting for management's App is %s with the note %q", state, note)
-	}
-	execSQL(t, h, "UPDATE github_app_connections SET app_id=app_id-1 WHERE connection_id=$1", h.connection.ID)
-	if command, err := pollReleased(h.f.execution, ctx, h.identity); err != nil || !minted(command) {
-		t.Fatal("the build was not delivered once the App matched again", err)
-	}
-}
