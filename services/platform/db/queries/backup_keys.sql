@@ -50,8 +50,9 @@ ORDER BY account_id,user_name LIMIT 1000;
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,destination_id,holder_server_id,purpose,scope,user_name,recovery_request,recovery_policy_id,recovery_snapshot)
 VALUES(@id,@workspace_id,@account_id,@destination_id,@holder_server_id,@purpose,@scope,@user_name,sqlc.narg(recovery_request),sqlc.narg(recovery_policy_id),sqlc.narg(recovery_snapshot));
 
--- name: InsertFoundBackupStorageKey :exec
--- A user the account check found with no row, latched for the sweep to revoke.
+-- name: InsertFoundBackupStorageKey :execrows
+-- A user the account check found with no row, latched for the sweep to revoke. A name that already
+-- has a row inserts nothing.
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
 VALUES(@id,@workspace_id,@account_id,'found',@user_name,@found_tags,'revoking')
 ON CONFLICT (user_name) DO NOTHING;
@@ -299,3 +300,33 @@ UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestam
 FROM servers s
 WHERE k.workspace_id = @workspace_id AND k.state = 'active' AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
     AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations);
+
+-- name: FoundBackupStorageAcknowledgements :many
+-- When the newest acknowledgement covering each user the accounts' latest checks found was made,
+-- by the same rule as UnacknowledgedPeerBackupStorageUsers. Users not covered aren't listed. An
+-- account's check reports at most 1000 users, and a workspace has at most 10 accounts.
+SELECT a.id AS account_id, (u.value->>'id')::uuid AS identity, max(k.acknowledged_at)::timestamptz AS acknowledged_at
+FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+    AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
+WHERE a.workspace_id = @workspace_id
+GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000;
+
+-- name: AcknowledgeBackupStorageUser :exec
+INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,identity,user_name,iam_user_id,access_key_ids)
+VALUES(@workspace_id,@id,@account_id,@identity,@user_name,@iam_user_id,@access_key_ids::text[]);
+
+-- name: UnacknowledgedPeerBackupStorageUsers :many
+-- The users each account's latest check found with its boundary and tagged with one of its peers,
+-- as the account lists them now, that no acknowledgement covers. One covers a user when it has the
+-- user's identity and holds every access key the check found on it. Management writes a peer's
+-- tag as the UUID's canonical text, so a tag in any other form isn't a peer's.
+SELECT (u.value->>'id')::uuid AS id FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+WHERE a.workspace_id = @workspace_id AND u.value->>'bounded' = 'true' AND u.value->>'id' IS NOT NULL
+    AND u.value->>'installationId' = ANY(a.peers::text[])
+    AND NOT EXISTS(SELECT 1 FROM backup_storage_acknowledgements k
+        WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+            AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids)
+ORDER BY 1 LIMIT 10000;

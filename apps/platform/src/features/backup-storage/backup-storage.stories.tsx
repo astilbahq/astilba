@@ -3,6 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ShellPreview, session, workspace } from "../../workshop/app-preview";
 import {
   account,
+  acknowledgement,
   backupStorageHandlers,
   lastReplacement,
   otherInstallation,
@@ -40,10 +41,17 @@ export const Accounts: Story = {
       view.getByText(/^The latest check failed: AWS refused the request\./),
     ).toBeVisible();
     await expect(view.getByText(/found 1 access key/)).toBeVisible();
-    // A peer's user needs nothing, and one without the boundary is left to the AWS console.
+    // A peer's user raises an alert until it is acknowledged, and one without the boundary is left
+    // to the AWS console.
     await expect(
-      view.getByText("Made by a peer installation. Nothing needs doing."),
+      view.getByText(/^Tagged by a peer installation, and acknowledged on /),
     ).toBeVisible();
+    await expect(
+      view.getByText(/^Tagged by a peer installation, and no acknowledgement/),
+    ).toBeVisible();
+    await expect(
+      view.getAllByRole("button", { name: "Acknowledge user" }),
+    ).toHaveLength(1);
     await expect(
       view.getByText(/Delete it in the AWS console\./),
     ).toBeVisible();
@@ -54,9 +62,11 @@ export const Accounts: Story = {
     ).toBeVisible();
     await expect(view.getByText(/^Last checked /)).toBeVisible();
     await expect(view.queryByText(/^Checking…/)).not.toBeInTheDocument();
+    // A stranger's user and an unacknowledged peer's user can be revoked; an acknowledged one
+    // can't.
     await expect(
       view.getAllByRole("button", { name: "Revoke user" }),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     await expect(
       view.getAllByRole("button", { name: "Add installation as a peer" }),
     ).toHaveLength(1);
@@ -126,8 +136,8 @@ export const CheckRunning: Story = {
   },
 };
 
-// A found user whose installation became a peer since the latest check can't be revoked here:
-// the refusal stays in the dialog, beside the button that asked.
+// A peer's user acknowledged since the page loaded can't be revoked here: the refusal stays in the
+// dialog, beside the button that asked.
 export const RefusedPeerRevoke: Story = {
   parameters: scenario(
     session,
@@ -135,18 +145,34 @@ export const RefusedPeerRevoke: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    const user = (
+      await canvas.findByText(
+        /^Tagged by a peer installation, and no acknowledgement/,
+      )
+    ).closest("li");
+    if (!user) throw new Error("the peer's user isn't listed");
     await userEvent.click(
-      await canvas.findByRole("button", { name: "Revoke user" }),
+      within(user).getByRole("button", { name: "Revoke user" }),
     );
     const body = within(canvasElement.ownerDocument.body);
     const dialog = within(await body.findByRole("alertdialog"));
     const confirm = dialog.getByRole("button", { name: "Revoke user" });
     await userEvent.click(confirm);
     await expect(await dialog.findByRole("alert")).toHaveTextContent(
-      /belongs to a peer installation.*Revoke it from that installation\./,
+      /acknowledged as a peer installation.s.*Revoke it from that installation\./,
     );
     await expect(body.getByRole("alertdialog")).toBeVisible();
     await expect(confirm).toHaveFocus();
+    // The list is shown again as it is now: the user is acknowledged, so it offers no revoke.
+    await expect(
+      within(user).getByText(
+        /^Tagged by a peer installation, and acknowledged on /,
+      ),
+    ).toBeVisible();
+    // The modal hides the page from assistive technology while it is open.
+    await expect(
+      within(user).queryByRole("button", { name: "Revoke user", hidden: true }),
+    ).not.toBeInTheDocument();
   },
 };
 
@@ -231,15 +257,98 @@ export const AddPeer: Story = {
       }),
     ).toBeVisible();
     await userEvent.click(dialog.getByRole("button", { name: "Add peer" }));
-    await waitFor(() => expect(user).toHaveFocus());
+    // The user can still be revoked, so focus stays within it.
+    await waitFor(() =>
+      expect(user).toContainElement(
+        canvasElement.ownerDocument.activeElement as HTMLElement,
+      ),
+    );
+    // Its user is the peer's now, and raises an alert until it is acknowledged.
     await expect(
-      canvas.getAllByText("Made by a peer installation. Nothing needs doing."),
+      canvas.getAllByText(
+        /^Tagged by a peer installation, and no acknowledgement/,
+      ),
+    ).toHaveLength(2);
+    await expect(
+      canvas.getAllByRole("button", { name: "Acknowledge user" }),
     ).toHaveLength(2);
     await expect(
       canvas.queryByRole("button", { name: "Add installation as a peer" }),
     ).not.toBeInTheDocument();
+    // Neither is acknowledged yet, so either can still be revoked.
     await expect(
-      canvas.queryByRole("button", { name: "Revoke user" }),
+      canvas.getAllByRole("button", { name: "Revoke user" }),
+    ).toHaveLength(2);
+  },
+};
+
+// Revoking a peer's user the owner hasn't acknowledged warns that a transferred server may still
+// use its key, and to replace the admin key.
+export const RevokePeerUser: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const user = (
+      await canvas.findByText(
+        /^Tagged by a peer installation, and no acknowledgement/,
+      )
+    ).closest("li");
+    if (!user) throw new Error("the peer's user isn't listed");
+    await userEvent.click(
+      within(user).getByRole("button", { name: "Revoke user" }),
+    );
+    const dialog = within(
+      await within(canvasElement.ownerDocument.body).findByRole("alertdialog"),
+    );
+    await expect(
+      dialog.getByText(/no acknowledgement covers it.*replace the admin key/),
+    ).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Revoke user" }));
+    await waitFor(() => expect(user).toHaveFocus());
+    await expect(
+      within(user).getByText("Management is revoking it."),
+    ).toBeVisible();
+    await expect(
+      within(user).queryByRole("button", { name: "Acknowledge user" }),
+    ).not.toBeInTheDocument();
+  },
+};
+
+// Acknowledging a peer's user asks first, naming its access keys, and sends what the owner saw.
+export const AcknowledgePeerUser: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const acknowledge = await canvas.findByRole("button", {
+      name: "Acknowledge user",
+    });
+    const user = acknowledge.closest("li");
+    await userEvent.click(acknowledge);
+    const dialog = within(
+      await within(canvasElement.ownerDocument.body).findByRole("alertdialog"),
+    );
+    const name = "astilba-3b9e7a21-5c48-4d0f-b6e2-9a1c7f3d8e05";
+    await expect(
+      dialog.getByRole("heading", {
+        name: new RegExp(`^Acknowledge ${name} `),
+      }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByText(
+        /IAM user ID AIDAEXAMPLE000000002 with access keys AKIAEXAMPLE000000002/,
+      ),
+    ).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Acknowledge" }));
+    await waitFor(() => expect(user).toHaveFocus());
+    await expect(acknowledgement(name)).toEqual({
+      userId: "AIDAEXAMPLE000000002",
+      accessKeyIds: ["AKIAEXAMPLE000000002"],
+    });
+    await expect(
+      canvas.getAllByText(
+        /^Tagged by a peer installation, and acknowledged on /,
+      ),
+    ).toHaveLength(2);
+    await expect(
+      canvas.queryByRole("button", { name: "Acknowledge user" }),
     ).not.toBeInTheDocument();
   },
 };

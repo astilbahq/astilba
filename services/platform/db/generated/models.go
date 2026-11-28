@@ -213,6 +213,17 @@ type BackupStorageAccount struct {
 	CreatedAt           time.Time   `json:"created_at"`
 }
 
+type BackupStorageAcknowledgement struct {
+	WorkspaceID    uuid.UUID `json:"workspace_id"`
+	ID             uuid.UUID `json:"id"`
+	AccountID      uuid.UUID `json:"account_id"`
+	Identity       uuid.UUID `json:"identity"`
+	UserName       string    `json:"user_name"`
+	IamUserID      string    `json:"iam_user_id"`
+	AccessKeyIds   []string  `json:"access_key_ids"`
+	AcknowledgedAt time.Time `json:"acknowledged_at"`
+}
+
 type BackupStorageKey struct {
 	ID               uuid.UUID   `json:"id"`
 	WorkspaceID      uuid.UUID   `json:"workspace_id"`

@@ -78,8 +78,8 @@ func TestRevokingALiveServersKeyExposesNothing(t *testing.T) {
 }
 
 // A found user the owner revokes shows as revoking from its own row, with why its revocation
-// last failed, and the check that follows no longer raises the alert. A peer's user can't be
-// revoked here, and a full peer list refuses another.
+// last failed, and the check that follows no longer raises the alert. A peer's user the owner
+// acknowledged can't be revoked here, and a full peer list refuses another.
 func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	k := newKeysFixture(t)
 	path := awskeys.Path(k.ws.String())
@@ -116,14 +116,21 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	if got.CheckError == nil {
 		t.Fatalf("the check after adding the peer didn't fail: %+v", got)
 	}
+	var peerUser api.BackupStorageFoundUser
 	for _, u := range got.FoundUsers {
 		if u.Peer != (u.UserName == peer) {
 			t.Fatalf("with the peer added, the found user is shown as %+v", u)
 		}
+		if u.UserName == peer {
+			peerUser = u
+		}
 	}
+	k.b.call("POST", account+"/found-users/"+peer+"/acknowledge", api.BackupStorageAcknowledgementRequest{UserId: peerUser.UserId, AccessKeyIds: peerUser.AccessKeyIds}, 204, nil)
 	k.b.call("POST", account+"/found-users/"+peer+"/revoke", nil, 409, nil)
 
-	k.aws.Fail("ListAccessKeys", "ServiceFailure", "ServiceFailure", "ServiceFailure")
+	// The check lists found users' access keys too, so the failures go to a call only the
+	// revocation makes.
+	k.aws.Fail("DeleteUserPolicy", "ServiceFailure", "ServiceFailure", "ServiceFailure")
 	k.b.call("POST", account+"/found-users/"+stranger+"/revoke", nil, 204, nil)
 	k.run(t, keySweep{})
 	k.run(t, accountCheck{})

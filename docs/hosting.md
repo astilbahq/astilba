@@ -1136,7 +1136,13 @@ replaces what each host holds, including peers the backup does not know about. S
    changes. Existing containers, volumes and installed schedules continue running.
    Choose **hand over storage keys** for a server with [managed backup
    keys](backups.md#managed-keys), or revoking it revokes them and its installed
-   schedules' backups fail.
+   schedules' backups fail. Afterwards the source's account check raises an
+   alert for the first user the importer makes in the AWS account, such as a
+   key it mints for a renewed server. Add the importer as a peer from that
+   alert. Each of the importer's users, that one included, then raises its own
+   alert until it is acknowledged by name on the Workspace page. The importer
+   lists the source as a peer, and raises the same alert for each user the
+   source makes after the export.
 3. Sign in as the intended owner at the destination, complete MFA where required,
    and import the archive from Projects. A hosted destination also requires a
    workspace invitation. The importer becomes the owner and author of imported
