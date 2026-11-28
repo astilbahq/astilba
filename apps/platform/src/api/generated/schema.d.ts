@@ -2033,6 +2033,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/key-rotation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Sets how old the account's managed destinations' keys may grow before management replaces them, or turns that off. Audited as backup.account.rotation.set, or backup.account.rotation.off. Needs recent authentication. */
+        put: operations["SetBackupStorageKeyRotation"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/check": {
         parameters: {
             query?: never;
@@ -2095,6 +2112,23 @@ export interface paths {
         put?: never;
         /** @description Acknowledges an IAM user the account check found tagged with a peer installation as that installation's, which clears the backup_peer_user alert it raised. The acknowledgement covers the user's IAM user ID and the access keys it has now: a user made again under the same name, or given another access key, raises the alert again. Refused if an acknowledgement already covers the user as the latest check found it. Audited as backup.key.acknowledge, naming the acknowledgement's own record. Needs recent authentication. */
         post: operations["AcknowledgeFoundBackupStorageUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspaceId}/backup-destinations/{destinationId}/keys/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Asks management to replace a managed destination's key without revoking its server. Management mints a new key, installs it on the server's policies, and revokes the old key once the server reports them. Refused while the server is revoked, while the destination has no key in use, and while a rotation is asked for or under way. Audited as backup.key.rotate. Needs recent authentication. */
+        post: operations["RotateBackupStorageKey"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4888,8 +4922,15 @@ export interface components {
             keys: components["schemas"]["BackupStorageKey"][];
             /** @description Whether this is a managed destination none of whose keys has ever been active: its key is still being made, or making it failed and the destination goes once that key is revoked. No policy can use it. */
             placeholder: boolean;
-            /** @description Why minting a renewed server's new key failed, as a fixed code; management retries. */
+            /** @description Why minting a new key failed, for a renewed server or a rotation, as a fixed code; management retries. */
             remintError: string | null;
+            /** @description Whether the owner asked for the managed destination's key to be replaced, and its new key isn't active yet. */
+            rotationRequested: boolean;
+            /**
+             * Format: date-time
+             * @description When the storage account's key rotation replaces the managed destination's key. Null while the rotation is off, while the destination has no key in use or two, and while its server is revoked.
+             */
+            rotationDueAt: string | null;
             /** @description The backup policies using this destination. */
             policies: components["schemas"]["BackupDestinationPolicy"][];
         };
@@ -4903,6 +4944,12 @@ export interface components {
             secretAccessKey: string;
             /** @description The ARN of the permissions-boundary policy every minted user is created with. */
             boundary: string;
+            /** @description How many days old the account's managed destinations' keys may grow before management replaces them, or null to replace them only when the owner asks. The dashboard suggests 90. */
+            keyRotationDays: number | null;
+        };
+        BackupStorageKeyRotationRequest: {
+            /** @description How many days old a key may grow before management replaces it, or null for never. */
+            keyRotationDays: number | null;
         };
         /** @description A replacement admin credential. The account's permissions boundary stays, since every user minted under it carries it. */
         BackupStorageCredentialRequest: {
@@ -4970,6 +5017,8 @@ export interface components {
             /** Format: int64 */
             generation: number;
             peers: string[];
+            /** @description How many days old its managed destinations' keys may grow before management replaces them, or null for never. */
+            keyRotationDays: number | null;
             /**
              * Format: date-time
              * @description When the latest account check reported.
@@ -10665,6 +10714,42 @@ export interface operations {
             };
         };
     };
+    SetBackupStorageKeyRotation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                accountId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupStorageKeyRotationRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupStorageAccount"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     CheckBackupStorageAccount: {
         parameters: {
             query?: never;
@@ -10776,6 +10861,36 @@ export interface operations {
                 "application/json": components["schemas"]["BackupStorageAcknowledgementRequest"];
             };
         };
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    RotateBackupStorageKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: string;
+                destinationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Success */
             204: {

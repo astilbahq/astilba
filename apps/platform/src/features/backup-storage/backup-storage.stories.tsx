@@ -5,9 +5,11 @@ import {
   account,
   acknowledgement,
   backupStorageHandlers,
+  lastCreation,
   lastReplacement,
   otherInstallation,
   resetBackupStorage,
+  savedRotation,
 } from "../../workshop/backup-storage-fixtures";
 import { scenario } from "../../workshop/fixtures";
 import { BackupStorage } from "./backup-storage";
@@ -28,8 +30,8 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 // An account whose check failed and found users management didn't make, one of which AWS won't let
-// management delete, and a managed destination with an active, a handed-over, a failing and a
-// revoked key.
+// management delete, a managed destination whose rotation keeps failing, and one on a revoked
+// server with a handed-over and a failing key.
 export const Accounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -79,16 +81,37 @@ export const Accounts: Story = {
     ).toBeVisible();
     await expect(
       view.getByText(
-        /couldn’t make a key for the renewed server and keeps trying: AWS didn’t answer in time\./,
+        /couldn’t make a new key for this destination and keeps trying: AWS didn’t answer in time\./,
       ),
     ).toBeVisible();
     await expect(
       view.getAllByRole("button", { name: "Revoke key" }),
     ).toHaveLength(2);
-    await expect(view.getByText("Recently revoked keys")).toBeVisible();
-    await userEvent.click(view.getByRole("button", { name: "Retry now" }));
+    // Keys rotate every 90 days, and only the live server's destination can be rotated.
     await expect(
-      await view.findByText("Management is trying again."),
+      view.getByText(
+        "Management replaces each destination’s key when it is 90 days old.",
+      ),
+    ).toBeVisible();
+    await expect(
+      view.getByText(/^Management replaces the key on /),
+    ).toBeVisible();
+    await expect(
+      view.getAllByRole("button", { name: "Rotate key" }),
+    ).toHaveLength(1);
+    await expect(view.getByText("Recently revoked keys")).toBeVisible();
+    // Each destination with failing work has its own retry.
+    await expect(
+      view.getAllByRole("button", { name: "Retry now" }),
+    ).toHaveLength(2);
+    const edge = within(
+      view
+        .getByRole("heading", { name: "Edge backups" })
+        .closest("section") as HTMLElement,
+    );
+    await userEvent.click(edge.getByRole("button", { name: "Retry now" }));
+    await expect(
+      await edge.findByText("Management is trying again."),
     ).toBeVisible();
   },
 };
@@ -116,6 +139,67 @@ export const RevokeHandedOverKey: Story = {
     await expect(
       item.queryByRole("button", { name: "Revoke key" }),
     ).not.toBeInTheDocument();
+  },
+};
+
+// Rotating asks for a new key without revoking the server, which the destination then says it is
+// waiting for, and focus moves to the destination once the action has gone.
+export const RotateKey: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const heading = await canvas.findByRole("heading", {
+      name: "Edge backups",
+    });
+    const section = within(heading.closest("section") as HTMLElement);
+    await userEvent.click(section.getByRole("button", { name: "Rotate key" }));
+    const dialog = within(
+      await within(canvasElement.ownerDocument.body).findByRole("alertdialog"),
+    );
+    await expect(
+      dialog.getByText(/The old key keeps working until the server reports/),
+    ).toBeVisible();
+    await expect(dialog.getByText(/revoke it instead/)).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Rotate key" }));
+    await waitFor(() => expect(heading).toHaveFocus());
+    await expect(
+      section.getByText(
+        "A new key has been asked for. Management is making it.",
+      ),
+    ).toBeVisible();
+    await expect(
+      section.queryByRole("button", { name: "Rotate key" }),
+    ).not.toBeInTheDocument();
+  },
+};
+
+// Turning key rotation off is a choice of its own, which the account then shows.
+export const TurnOffKeyRotation: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const account = within(
+      await canvas.findByRole("article", { name: "Production AWS" }),
+    );
+    await userEvent.click(account.getByText("Change key rotation"));
+    const form = within(
+      account.getByRole("form", { name: "Key rotation of Production AWS" }),
+    );
+    await expect(
+      form.getByLabelText("Maximum key age in days, from 30 to 365"),
+    ).toHaveValue(90);
+    await userEvent.click(
+      form.getByRole("radio", { name: /^Don’t replace keys automatically/ }),
+    );
+    await expect(
+      form.queryByLabelText("Maximum key age in days, from 30 to 365"),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      form.getByRole("button", { name: "Save key rotation" }),
+    );
+    await expect(await account.findByText("Key rotation saved.")).toBeVisible();
+    await expect(savedRotation()).toEqual({ days: null });
+    await expect(
+      await account.findByText("Off. Keys stay in use until you rotate them."),
+    ).toBeVisible();
   },
 };
 
@@ -384,6 +468,8 @@ export const RefusedAccount: Story = {
     await expect(canvas.getByLabelText("Account name")).toHaveValue(
       "Staging AWS",
     );
+    // A new account rotates its keys every 90 days unless the owner turns that off.
+    await expect(lastCreation()?.keyRotationDays).toBe(90);
   },
 };
 
@@ -402,10 +488,15 @@ export const ReadOnly: Story = {
     ).toBeVisible();
     await expect(await canvas.findByText("Edge backups")).toBeVisible();
     await expect(
-      canvas.queryByRole("button", { name: /^(Revoke|Retry|Check|Add)/ }),
+      canvas.queryByRole("button", {
+        name: /^(Revoke|Retry|Check|Add|Rotate)/,
+      }),
     ).not.toBeInTheDocument();
     await expect(
       canvas.queryByText("Add a storage account"),
+    ).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByText("Change key rotation"),
     ).not.toBeInTheDocument();
   },
 };

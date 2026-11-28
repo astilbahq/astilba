@@ -20,7 +20,7 @@ import (
 // ended, its mint failed or never finished, or a newer key has replaced it on a server that
 // installed that one, and
 // the sweep revokes latched keys at AWS until AWS confirms. It also starts re-mints for renewed
-// servers' destinations. See docs/backups.md#managed-keys.
+// servers' destinations and rotations of keys that are due. See docs/backups.md#managed-keys.
 type keySweepWorker struct {
 	river.WorkerDefaults[keySweepArgs]
 	service *Service
@@ -44,8 +44,9 @@ func (s *Service) runKeySweep(ctx context.Context) error {
 
 // latchDerivedKeys latches the keys whose rows say they are done with: keys still minting past
 // their deadline, recovery keys whose operation has ended however it ended, and server keys
-// replaced by a newer one that their holder has installed. Only a management recovery that merges
-// two histories, each of which re-minted the destination, leaves two active server keys.
+// replaced by a newer one that their holder has installed. A rotation leaves two active server
+// keys until then, as does a management recovery that merges two histories, each of which
+// re-minted the destination.
 func (s *Service) latchDerivedKeys(ctx context.Context) error {
 	if _, err := s.Store.Queries.LatchExpiredMintingKeys(ctx); err != nil {
 		return err
@@ -111,7 +112,8 @@ func (s *Service) installedEverywhere(ctx context.Context, ws uuid.UUID, raw []b
 	return true, nil
 }
 
-// queueRemints starts a re-mint job for each destination whose renewed server has no key.
+// queueRemints starts a re-mint job for each destination whose renewed server has no key, or
+// whose key is due to be rotated.
 func (s *Service) queueRemints(ctx context.Context) error {
 	for range 20 {
 		if ctx.Err() != nil {

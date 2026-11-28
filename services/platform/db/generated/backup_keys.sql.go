@@ -174,6 +174,47 @@ func (q *Queries) AlertingBackupStorageAccounts(ctx context.Context, workspaceID
 	return items, nil
 }
 
+const backupDestinationKeyState = `-- name: BackupDestinationKeyState :one
+SELECT k.active::bigint AS active,k.minting::bigint AS minting,k.activated::bigint AS activated,
+    COALESCE(d.rekey_requested_at > k.newest,false)::bool AS requested,
+    COALESCE(k.newest + make_interval(hours => 24 * a.key_rotation_days) <= clock_timestamp(),false)::bool AS due
+FROM backup_destinations d
+JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE k.state = 'active') AS active,count(*) FILTER (WHERE k.state = 'minting') AS minting,
+        count(k.activated_at) AS activated,max(k.activated_at) FILTER (WHERE k.state = 'active') AS newest
+    FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server') k
+WHERE d.workspace_id = $1 AND d.id = $2
+`
+
+type BackupDestinationKeyStateParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type BackupDestinationKeyStateRow struct {
+	Active    int64 `json:"active"`
+	Minting   int64 `json:"minting"`
+	Activated int64 `json:"activated"`
+	Requested bool  `json:"requested"`
+	Due       bool  `json:"due"`
+}
+
+// A managed destination's server keys, by ClaimDueBackupRemint's reading: how many are active,
+// minting, or were ever active; whether the owner asked for the newest active one to be replaced;
+// and whether it is older than its account's key_rotation_days.
+func (q *Queries) BackupDestinationKeyState(ctx context.Context, arg BackupDestinationKeyStateParams) (BackupDestinationKeyStateRow, error) {
+	row := q.db.QueryRow(ctx, backupDestinationKeyState, arg.WorkspaceID, arg.ID)
+	var i BackupDestinationKeyStateRow
+	err := row.Scan(
+		&i.Active,
+		&i.Minting,
+		&i.Activated,
+		&i.Requested,
+		&i.Due,
+	)
+	return i, err
+}
+
 const backupStorageAccount = `-- name: BackupStorageAccount :one
 SELECT id,workspace_id,name,aws_account,admin_arn,boundary,generation,peers,encrypted_credential,report
 FROM backup_storage_accounts WHERE workspace_id = $1 AND id = $2
@@ -263,9 +304,12 @@ const claimDueBackupRemint = `-- name: ClaimDueBackupRemint :one
 UPDATE backup_destinations SET remint_next_at=clock_timestamp() + interval '10 minutes'
 WHERE id=(SELECT d.id FROM backup_destinations d
     JOIN servers s ON s.workspace_id = d.workspace_id AND s.id = d.server_id AND NOT s.revoked
-    WHERE d.account_id IS NOT NULL AND (d.remint_next_at IS NULL OR d.remint_next_at <= clock_timestamp())
-        AND EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.activated_at IS NOT NULL)
-        AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.state IN ('minting','active'))
+    JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+    CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE k.state = 'active') AS active,count(*) FILTER (WHERE k.state = 'minting') AS minting,
+            count(k.activated_at) AS activated,max(k.activated_at) FILTER (WHERE k.state = 'active') AS newest
+        FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server') k
+    WHERE (d.remint_next_at IS NULL OR d.remint_next_at <= clock_timestamp()) AND k.activated > 0 AND k.minting = 0
+        AND (k.active = 0 OR k.active = 1 AND (d.rekey_requested_at > k.newest OR k.newest <= clock_timestamp() - make_interval(hours => 24 * a.key_rotation_days)))
     ORDER BY d.remint_next_at NULLS FIRST,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)
 RETURNING workspace_id,id
 `
@@ -275,8 +319,10 @@ type ClaimDueBackupRemintRow struct {
 	ID          uuid.UUID `json:"id"`
 }
 
-// unscoped: a managed destination whose server isn't revoked, that once had a key and now has no
-// active or minting one. Claiming pushes its next attempt on before the mint runs.
+// unscoped: a managed destination whose server isn't revoked, that once had a key and has none
+// minting, and either has no active one, a renewed server's, or has one the owner asked to replace
+// or that is older than its account's key_rotation_days, as BackupDestinationKeyState reads it.
+// Claiming pushes its next attempt on before the mint runs.
 func (q *Queries) ClaimDueBackupRemint(ctx context.Context) (ClaimDueBackupRemintRow, error) {
 	row := q.db.QueryRow(ctx, claimDueBackupRemint)
 	var i ClaimDueBackupRemintRow
@@ -631,18 +677,19 @@ func (q *Queries) HandOverServerBackupStorageKeys(ctx context.Context, arg HandO
 }
 
 const insertBackupStorageAccount = `-- name: InsertBackupStorageAccount :exec
-INSERT INTO backup_storage_accounts(id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential)
-VALUES($1,$2,$3,$4,$5,$6,$7)
+INSERT INTO backup_storage_accounts(id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential,key_rotation_days)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 `
 
 type InsertBackupStorageAccountParams struct {
-	ID                  uuid.UUID `json:"id"`
-	WorkspaceID         uuid.UUID `json:"workspace_id"`
-	Name                string    `json:"name"`
-	AwsAccount          string    `json:"aws_account"`
-	AdminArn            string    `json:"admin_arn"`
-	Boundary            string    `json:"boundary"`
-	EncryptedCredential []byte    `json:"encrypted_credential"`
+	ID                  uuid.UUID   `json:"id"`
+	WorkspaceID         uuid.UUID   `json:"workspace_id"`
+	Name                string      `json:"name"`
+	AwsAccount          string      `json:"aws_account"`
+	AdminArn            string      `json:"admin_arn"`
+	Boundary            string      `json:"boundary"`
+	EncryptedCredential []byte      `json:"encrypted_credential"`
+	KeyRotationDays     pgtype.Int4 `json:"key_rotation_days"`
 }
 
 func (q *Queries) InsertBackupStorageAccount(ctx context.Context, arg InsertBackupStorageAccountParams) error {
@@ -654,6 +701,7 @@ func (q *Queries) InsertBackupStorageAccount(ctx context.Context, arg InsertBack
 		arg.AdminArn,
 		arg.Boundary,
 		arg.EncryptedCredential,
+		arg.KeyRotationDays,
 	)
 	return err
 }
@@ -865,24 +913,25 @@ func (q *Queries) LatchServerBackupStorageKeys(ctx context.Context, arg LatchSer
 }
 
 const listBackupStorageAccounts = `-- name: ListBackupStorageAccounts :many
-SELECT id,name,aws_account,admin_arn,boundary,generation,peers,reported_at,check_error,report,created_at,
+SELECT id,name,aws_account,admin_arn,boundary,generation,peers,key_rotation_days,reported_at,check_error,report,created_at,
     (checked_at IS NULL OR ((reported_at IS NULL OR reported_at < checked_at) AND checked_at > clock_timestamp() - interval '10 minutes'))::bool AS checking
 FROM backup_storage_accounts WHERE workspace_id = $1 ORDER BY name,id LIMIT 100
 `
 
 type ListBackupStorageAccountsRow struct {
-	ID         uuid.UUID   `json:"id"`
-	Name       string      `json:"name"`
-	AwsAccount string      `json:"aws_account"`
-	AdminArn   string      `json:"admin_arn"`
-	Boundary   string      `json:"boundary"`
-	Generation int64       `json:"generation"`
-	Peers      []uuid.UUID `json:"peers"`
-	ReportedAt *time.Time  `json:"reported_at"`
-	CheckError pgtype.Text `json:"check_error"`
-	Report     []byte      `json:"report"`
-	CreatedAt  time.Time   `json:"created_at"`
-	Checking   bool        `json:"checking"`
+	ID              uuid.UUID   `json:"id"`
+	Name            string      `json:"name"`
+	AwsAccount      string      `json:"aws_account"`
+	AdminArn        string      `json:"admin_arn"`
+	Boundary        string      `json:"boundary"`
+	Generation      int64       `json:"generation"`
+	Peers           []uuid.UUID `json:"peers"`
+	KeyRotationDays pgtype.Int4 `json:"key_rotation_days"`
+	ReportedAt      *time.Time  `json:"reported_at"`
+	CheckError      pgtype.Text `json:"check_error"`
+	Report          []byte      `json:"report"`
+	CreatedAt       time.Time   `json:"created_at"`
+	Checking        bool        `json:"checking"`
 }
 
 // checking is a check asked for and not yet claimed, or one claimed in the last ten minutes, as long
@@ -904,6 +953,7 @@ func (q *Queries) ListBackupStorageAccounts(ctx context.Context, workspaceID uui
 			&i.Boundary,
 			&i.Generation,
 			&i.Peers,
+			&i.KeyRotationDays,
 			&i.ReportedAt,
 			&i.CheckError,
 			&i.Report,
@@ -918,22 +968,6 @@ func (q *Queries) ListBackupStorageAccounts(ctx context.Context, workspaceID uui
 		return nil, err
 	}
 	return items, nil
-}
-
-const liveServerKeyExists = `-- name: LiveServerKeyExists :one
-SELECT EXISTS(SELECT 1 FROM backup_storage_keys WHERE workspace_id = $1 AND destination_id = $2 AND purpose = 'server' AND state IN ('minting','active'))::bool
-`
-
-type LiveServerKeyExistsParams struct {
-	WorkspaceID   uuid.UUID  `json:"workspace_id"`
-	DestinationID *uuid.UUID `json:"destination_id"`
-}
-
-func (q *Queries) LiveServerKeyExists(ctx context.Context, arg LiveServerKeyExistsParams) (bool, error) {
-	row := q.db.QueryRow(ctx, liveServerKeyExists, arg.WorkspaceID, arg.DestinationID)
-	var column_1 bool
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const managedBackupDestination = `-- name: ManagedBackupDestination :one
@@ -1275,6 +1309,22 @@ func (q *Queries) ReplaceBackupStorageAccountCredential(ctx context.Context, arg
 	return result.RowsAffected(), nil
 }
 
+const requestBackupRekey = `-- name: RequestBackupRekey :exec
+UPDATE backup_destinations SET rekey_requested_at=clock_timestamp(),remint_next_at=NULL
+WHERE workspace_id = $1 AND id = $2 AND account_id IS NOT NULL
+`
+
+type RequestBackupRekeyParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// The owner's request to replace a destination's key, which the next pass claims.
+func (q *Queries) RequestBackupRekey(ctx context.Context, arg RequestBackupRekeyParams) error {
+	_, err := q.db.Exec(ctx, requestBackupRekey, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const requestBackupStorageAccountCheck = `-- name: RequestBackupStorageAccountCheck :exec
 UPDATE backup_storage_accounts SET checked_at=NULL WHERE workspace_id = $1 AND id = $2
 `
@@ -1379,6 +1429,25 @@ func (q *Queries) RevokingFoundBackupStorageKeys(ctx context.Context, workspaceI
 		return nil, err
 	}
 	return items, nil
+}
+
+const setBackupStorageKeyRotation = `-- name: SetBackupStorageKeyRotation :execrows
+UPDATE backup_storage_accounts SET key_rotation_days = $1
+WHERE workspace_id = $2 AND id = $3
+`
+
+type SetBackupStorageKeyRotationParams struct {
+	KeyRotationDays pgtype.Int4 `json:"key_rotation_days"`
+	WorkspaceID     uuid.UUID   `json:"workspace_id"`
+	ID              uuid.UUID   `json:"id"`
+}
+
+func (q *Queries) SetBackupStorageKeyRotation(ctx context.Context, arg SetBackupStorageKeyRotationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setBackupStorageKeyRotation, arg.KeyRotationDays, arg.WorkspaceID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const unacknowledgedPeerBackupStorageUsers = `-- name: UnacknowledgedPeerBackupStorageUsers :many

@@ -1,11 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { cx } from "../../../styled-system/css";
 import {
   backupDestinationPath,
   backupDestinationsOptions,
 } from "../../api/backups";
-import { client, result, type Schema } from "../../api/client";
+import { ApiError, client, result, type Schema } from "../../api/client";
 import { Button } from "../../components/button";
 import * as s from "../../styles";
 import { ErrorNotice, useAction } from "../../ui";
@@ -16,8 +17,9 @@ import { ConfirmAction } from "./confirm-action";
 type Key = Schema["BackupStorageKey"];
 
 /**
- * A managed destination's minted keys and their states, newest first. Its owners can revoke an
- * active key and retry revocations or a re-mint that keep failing once they have fixed the cause.
+ * A managed destination's minted keys and their states, newest first. Its owners can rotate its
+ * key without revoking its server, revoke an active key, and retry revocations or a new key's
+ * making that keep failing once they have fixed the cause.
  */
 export function ManagedDestination({
   workspaceId,
@@ -42,6 +44,14 @@ export function ManagedDestination({
       id: (serverId ?? "").slice(0, 8),
     });
   const current = destination.keys.filter((k) => k.state !== "revoked");
+  const serverKeys = destination.keys.filter((k) => k.purpose === "server");
+  const active = serverKeys.filter((k) => k.state === "active").length;
+  const minting = serverKeys.some((k) => k.state === "minting");
+  // A revoked server's keys are revoked rather than replaced.
+  const revokedServer =
+    servers?.find((v) => v.id === destination.serverId)?.status === "revoked";
+  // Rotating takes the button away, so focus moves to the heading, which the notice follows.
+  const heading = useRef<HTMLHeadingElement>(null);
   const revoked = destination.keys.filter((k) => k.state === "revoked");
   const failing =
     !!destination.remintError ||
@@ -63,7 +73,12 @@ export function ManagedDestination({
   );
   return (
     <section className={st.part} aria-labelledby={id}>
-      <h5 id={id} className={st.subheading}>
+      <h5
+        id={id}
+        ref={heading}
+        tabIndex={-1}
+        className={cx(st.subheading, st.focusTarget)}
+      >
         {destination.name}
       </h5>
       <p className={s.muted}>
@@ -90,6 +105,57 @@ export function ManagedDestination({
             reason: text.failure(destination.remintError),
           })}
         </p>
+      )}
+      {destination.rotationRequested ? (
+        <p>{t(($) => $.destination.rotationRequested)}</p>
+      ) : active > 1 ? (
+        <p>
+          {t(($) => $.destination.rotating, {
+            server: serverName(destination.serverId),
+          })}
+        </p>
+      ) : (
+        destination.rotationDueAt && (
+          <p className={s.muted}>
+            {t(($) => $.destination.rotationDue, {
+              date: text.date(destination.rotationDueAt),
+            })}
+          </p>
+        )
+      )}
+      {owner && (
+        // Only one key in use on a server that isn't revoked, with no new one being made or asked
+        // for, is rotated.
+        <ConfirmAction
+          available={
+            active === 1 &&
+            !minting &&
+            !revokedServer &&
+            !destination.rotationRequested
+          }
+          focusAfter={heading}
+          danger={false}
+          label={t(($) => $.destination.rotate)}
+          title={t(($) => $.destination.rotateTitle)}
+          description={t(($) => $.destination.rotateDescription, {
+            server: serverName(destination.serverId),
+          })}
+          run={async () => {
+            await result(
+              client.POST(`${backupDestinationPath}/keys/rotate`, {
+                params: {
+                  path: { workspaceId, destinationId: destination.id },
+                },
+              }),
+            ).catch(async (error: unknown) => {
+              // A refusal means the keys changed since they were shown.
+              if (error instanceof ApiError && error.status === 409)
+                await refresh();
+              throw error;
+            });
+            await refresh();
+          }}
+        />
       )}
       {current.length ? (
         <ul className={st.items}>{current.map(keyItem)}</ul>

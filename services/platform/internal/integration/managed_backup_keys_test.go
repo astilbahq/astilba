@@ -64,7 +64,7 @@ func newManagedAccount(t *testing.T, f *fixture, b *browser, ws uuid.UUID) manag
 	}
 	f.execution.AWS = client
 	a := managedAccount{aws: fake, client: client, boundary: arn}
-	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/backup-storage-accounts", map[string]any{"name": "Backups", "accessKeyId": admin.AccessKeyID, "secretAccessKey": admin.SecretAccessKey, "boundary": arn}, 201, &a.account)
+	b.call("POST", "/api/v1/workspaces/"+ws.String()+"/backup-storage-accounts", map[string]any{"name": "Backups", "accessKeyId": admin.AccessKeyID, "secretAccessKey": admin.SecretAccessKey, "boundary": arn, "keyRotationDays": 90}, 201, &a.account)
 	return a
 }
 

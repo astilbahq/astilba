@@ -17,6 +17,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // A workspace keeps few storage accounts: each is one AWS account's admin credential.
@@ -146,7 +147,7 @@ func (s *Service) CreateBackupStorageAccount(ctx context.Context, p store.Princi
 			return err
 		}
 		sealed = true
-		if err = q.InsertBackupStorageAccount(ctx, db.InsertBackupStorageAccountParams{ID: account, WorkspaceID: ws, Name: name, AwsAccount: id.Account, AdminArn: id.ARN, Boundary: in.Boundary, EncryptedCredential: secret}); err != nil {
+		if err = q.InsertBackupStorageAccount(ctx, db.InsertBackupStorageAccountParams{ID: account, WorkspaceID: ws, Name: name, AwsAccount: id.Account, AdminArn: id.ARN, Boundary: in.Boundary, EncryptedCredential: secret, KeyRotationDays: rotationDays(in.KeyRotationDays)}); err != nil {
 			return err
 		}
 		// A new account is checked at once, so the owner sees what is already under its path.
@@ -358,7 +359,49 @@ func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow
 	if peers == nil {
 		peers = []uuid.UUID{}
 	}
-	return api.BackupStorageAccount{Id: row.ID, Name: row.Name, AwsAccount: row.AwsAccount, AdminArn: row.AdminArn, Boundary: row.Boundary, Path: awskeys.Path(ws.String()), InstallationId: installation, Generation: row.Generation, Peers: peers, CheckedAt: row.ReportedAt, Checking: row.Checking, CheckError: textPointer(row.CheckError), FoundUsers: report.Found, ExtraKeysDeleted: report.ExtraKeysDeleted}, nil
+	return api.BackupStorageAccount{Id: row.ID, Name: row.Name, AwsAccount: row.AwsAccount, AdminArn: row.AdminArn, Boundary: row.Boundary, Path: awskeys.Path(ws.String()), InstallationId: installation, Generation: row.Generation, Peers: peers, KeyRotationDays: rotationDaysView(row.KeyRotationDays), CheckedAt: row.ReportedAt, Checking: row.Checking, CheckError: textPointer(row.CheckError), FoundUsers: report.Found, ExtraKeysDeleted: report.ExtraKeysDeleted}, nil
+}
+
+// rotationDays is an account's key_rotation_days, or NULL for none. The contract bounds it.
+func rotationDays(days *int) pgtype.Int4 {
+	if days == nil {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: int32(*days), Valid: true}
+}
+
+func rotationDaysView(days pgtype.Int4) *int {
+	if !days.Valid {
+		return nil
+	}
+	v := int(days.Int32)
+	return &v
+}
+
+// SetBackupStorageKeyRotation sets how old the account's managed destinations' keys may grow
+// before management replaces them, or turns that off. Turning it off is audited apart, since it
+// leaves keys in use until the owner rotates them.
+func (s *Service) SetBackupStorageKeyRotation(ctx context.Context, p store.Principal, ws, account uuid.UUID, in api.BackupStorageKeyRotationRequest) (api.BackupStorageAccount, error) {
+	action := "backup.account.rotation.set"
+	if in.KeyRotationDays == nil {
+		action = "backup.account.rotation.off"
+	}
+	err := s.scope(ctx, p, ws, ownerSettings, action, account, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		n, err := q.SetBackupStorageKeyRotation(ctx, db.SetBackupStorageKeyRotationParams{WorkspaceID: ws, ID: account, KeyRotationDays: rotationDays(in.KeyRotationDays)})
+		if err == nil && n != 1 {
+			return domain.NotFound
+		}
+		if err == nil {
+			// A shorter period can make keys due at once.
+			err = s.queueKeySweep(ctx, tx)
+		}
+		return err
+	})
+	if err != nil {
+		return api.BackupStorageAccount{}, err
+	}
+	return s.backupStorageAccount(ctx, p, ws, account)
 }
 
 // CheckBackupStorageAccount asks for the account check to run on the next pass.

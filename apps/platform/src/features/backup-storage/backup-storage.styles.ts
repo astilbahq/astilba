@@ -47,3 +47,25 @@ export const itemHeader = css({
   justifyContent: "space-between",
   gap: "2",
 });
+// A choice between radio buttons, each with its own label.
+export const choices = css({
+  borderWidth: "0",
+  padding: "0",
+  margin: "0",
+  minInlineSize: "0",
+  display: "grid",
+  gap: "3",
+});
+export const legend = css({ fontWeight: "semibold", marginBlockEnd: "2" });
+export const choice = css({
+  display: "flex",
+  alignItems: "flex-start",
+  gap: "3",
+  cursor: "pointer",
+  "& > input": { marginBlockStart: "1" },
+});
+export const choiceText = css({
+  display: "grid",
+  gap: "0.5",
+  minInlineSize: "0",
+});

@@ -2,9 +2,12 @@ package portability
 
 import (
 	"encoding/json/v2"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
 	"github.com/google/uuid"
 )
 
@@ -41,5 +44,44 @@ func TestAnImportListsTheExporterAsAPeer(t *testing.T) {
 	setValue(row, "peers", append(full, uuid.New()))
 	if importPeer(row, exporter, self) == nil {
 		t.Fatal("an archive with too many peers was accepted")
+	}
+}
+
+// An archive from before key rotation imports each storage account with the 90 days the migration
+// gave every account, and one that already carries the setting is refused as malformed.
+func TestOlderArchivesImportAccountsRotatingEvery90Days(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := Row{}
+	i := slices.IndexFunc(tables, func(t table) bool { return t.Name == "backup_storage_accounts" })
+	for column := range strings.SplitSeq(tables[i].Columns, ",") {
+		setValue(account, column, "x")
+	}
+	setValue(account, "id", uuid.New())
+	setValue(account, "workspace_id", a.Workspace)
+	setValue(account, "peers", []uuid.UUID{})
+	setValue(account, "generation", 1)
+	setValue(account, "key_rotation_days", 30)
+	a.Tables["backup_storage_accounts"] = []Row{account}
+	a.Version = 21
+	raw, _ = stablejson.Marshal(a)
+	if _, err = decodeArchive(raw); err == nil {
+		t.Fatal("a version 21 archive carried a key rotation")
+	}
+	delete(account, "key_rotation_days")
+	raw, _ = stablejson.Marshal(a)
+	got, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var days int
+	if err = json.Unmarshal(got.Tables["backup_storage_accounts"][0]["key_rotation_days"], &days); err != nil || days != 90 {
+		t.Fatalf("key_rotation_days = %d, %v", days, err)
 	}
 }

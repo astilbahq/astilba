@@ -154,16 +154,17 @@ type BackupCutover struct {
 }
 
 type BackupDestination struct {
-	ID              uuid.UUID   `json:"id"`
-	WorkspaceID     uuid.UUID   `json:"workspace_id"`
-	Configuration   []byte      `json:"configuration"`
-	EncryptedAccess []byte      `json:"encrypted_access"`
-	ServerID        *uuid.UUID  `json:"server_id"`
-	Shared          bool        `json:"shared"`
-	AccountID       *uuid.UUID  `json:"account_id"`
-	RemintAttempts  int32       `json:"remint_attempts"`
-	RemintNextAt    *time.Time  `json:"remint_next_at"`
-	RemintError     pgtype.Text `json:"remint_error"`
+	ID               uuid.UUID   `json:"id"`
+	WorkspaceID      uuid.UUID   `json:"workspace_id"`
+	Configuration    []byte      `json:"configuration"`
+	EncryptedAccess  []byte      `json:"encrypted_access"`
+	ServerID         *uuid.UUID  `json:"server_id"`
+	Shared           bool        `json:"shared"`
+	AccountID        *uuid.UUID  `json:"account_id"`
+	RemintAttempts   int32       `json:"remint_attempts"`
+	RemintNextAt     *time.Time  `json:"remint_next_at"`
+	RemintError      pgtype.Text `json:"remint_error"`
+	RekeyRequestedAt *time.Time  `json:"rekey_requested_at"`
 }
 
 type BackupPolicy struct {
@@ -211,6 +212,7 @@ type BackupStorageAccount struct {
 	CheckError          pgtype.Text `json:"check_error"`
 	Report              []byte      `json:"report"`
 	CreatedAt           time.Time   `json:"created_at"`
+	KeyRotationDays     pgtype.Int4 `json:"key_rotation_days"`
 }
 
 type BackupStorageAcknowledgement struct {
