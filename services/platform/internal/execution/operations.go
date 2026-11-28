@@ -303,7 +303,8 @@ func (w *worker) work(ctx context.Context, keys *passKeys, ws uuid.UUID, job *ri
 	var state api.ExecutionState
 	var raw []byte
 	var cancelled bool
-	if err = tx.QueryRow(ctx, "SELECT state,command,cancel_requested FROM execution_operations WHERE id=$1 FOR UPDATE", job.Args.ID).Scan(&state, &raw, &cancelled); err != nil {
+	var note string
+	if err = tx.QueryRow(ctx, "SELECT state,command,cancel_requested,note FROM execution_operations WHERE id=$1 FOR UPDATE", job.Args.ID).Scan(&state, &raw, &cancelled, &note); err != nil {
 		return err
 	}
 	if Terminal(state) {
@@ -369,7 +370,11 @@ func (w *worker) work(ctx context.Context, keys *passKeys, ws uuid.UUID, job *ri
 		// One that waited, as delivery hands back a pipeline management's configuration refuses,
 		// still says why.
 		if cancelled || time.Now().After(c.Deadline) {
-			if _, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',note=COALESCE((SELECT reason||' ' FROM pipeline_runs WHERE id=$1 AND reason<>''),'')||'Cancelled or expired before dispatch.'||CASE WHEN note='' THEN '' ELSE ' '||note END WHERE id=$1", c.Id); err != nil {
+			waited := waitedNotes(note)
+			if waited != "" {
+				waited = " " + waited
+			}
+			if _, err = tx.Exec(ctx, "UPDATE execution_operations SET state='cancelled',note=COALESCE((SELECT reason||' ' FROM pipeline_runs WHERE id=$1 AND reason<>''),'')||'Cancelled or expired before dispatch.'||$2 WHERE id=$1", c.Id, waited); err != nil {
 				return err
 			}
 			return tx.Commit(ctx)

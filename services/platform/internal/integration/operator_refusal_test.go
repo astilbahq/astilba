@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
+	"github.com/google/uuid"
 )
 
 // Management's own configuration can refuse a pipeline's connection: an operator removes its
@@ -86,7 +87,7 @@ func TestOperatorRefusalWaitsQueuedWhileTheRunnersOtherCommandsGo(t *testing.T) 
 			}
 			r.report(t, updating, "succeeded")
 			// The dispatcher keeps the build queued, rather than giving it the runner's turn back.
-			time.Sleep(3 * time.Second)
+			r.dispatcherPassed(t, op.Id)
 			if c := r.poll(t, 200); c != nil {
 				t.Fatal("the runner was given a command while the build waited:", c.Id)
 			}
@@ -127,5 +128,50 @@ func TestOperatorRefusalWithholdsAPossiblyHeldBuildsValues(t *testing.T) {
 	state, note, cancelled := r.operation(t, delivered.Id)
 	if state != "dispatched" || cancelled || !strings.Contains(note, "Delivery waited because management's configuration does not allow this connection's Git provider") {
 		t.Fatalf("a possibly held build waiting for management's configuration is %s, cancel requested %v, with the note %q", state, cancelled, note)
+	}
+}
+
+// dispatcherPassed waits until the dispatcher has worked the operation's job again, after the
+// runner's turn was free for it.
+func (r *refusalRunner) dispatcherPassed(t *testing.T, operation uuid.UUID) {
+	t.Helper()
+	const attempted = "SELECT j.attempted_at FROM river_job j JOIN execution_operations o ON o.job_id=j.id WHERE o.id=$1"
+	var since time.Time
+	if err := r.f.st.Pool.QueryRow(t.Context(), "SELECT now()").Scan(&since); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var at *time.Time
+		if err := r.f.st.Pool.QueryRow(t.Context(), attempted, operation).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		if at != nil && at.After(since) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the dispatcher did not work the build's job again")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// The poll asks a dispatched preview's pull request before serving it. Management's own
+// configuration refusing the preview's connection is not the request's answer, so the preview's
+// build waits for it, queued, as any build does, and the poll by its host answers.
+func TestOperatorRefusalHoldsAPreviewAtThePoll(t *testing.T) {
+	h, preview := approvedPreviewBuild(t)
+	h.f.execution.Policy.Development = false
+	var out api.AgentPoll
+	agentRequest(t, h.f.server.Client(), h.f.server.URL, "/agent/v1/poll", h.token, nil, 200, &out)
+	if out.Command != nil {
+		t.Fatal("the preview's host was given a command management's configuration refuses:", out.Command.Id)
+	}
+	var state, note string
+	if err := h.f.st.Pool.QueryRow(t.Context(), "SELECT state,note FROM execution_operations WHERE id=$1", *preview.OperationId).Scan(&state, &note); err != nil {
+		t.Fatal(err)
+	}
+	if state != "queued" || !strings.Contains(note, "Delivery waited because management's configuration does not allow this connection's Git provider") {
+		t.Fatalf("a preview build waiting for management's configuration is %s with the note %q", state, note)
 	}
 }

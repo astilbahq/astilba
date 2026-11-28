@@ -33,3 +33,15 @@ func TestOperatorRefusal(t *testing.T) {
 		})
 	}
 }
+
+// An expiry ends its note with why delivery waited, never with the run's reason again, which the
+// note starts with and the expiry puts in front itself.
+func TestWaitedNotesLeaveTheReasonOut(t *testing.T) {
+	const reason = "Imports commit abc again."
+	if got := waitedNotes(reason + " " + providerPolicyNote + " " + gitHubBusyNote); got != gitHubBusyNote+" "+providerPolicyNote {
+		t.Fatalf("got %q", got)
+	}
+	if got := waitedNotes(reason); got != "" {
+		t.Fatalf("a run that never waited kept %q", got)
+	}
+}

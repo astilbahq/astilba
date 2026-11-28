@@ -20,6 +20,9 @@ UPDATE pipeline_runs SET delivery_started=true WHERE workspace_id = @workspace_i
 -- name: FinishUndeliveredPipeline :exec
 UPDATE execution_operations o SET state = @state, note = COALESCE((SELECT r.reason || ' ' FROM pipeline_runs r WHERE r.workspace_id = o.workspace_id AND r.id = o.id AND r.reason <> ''), '') || @note::text
 WHERE o.workspace_id = @workspace_id AND o.id = @id;
+-- name: LockServerOperationState :one
+-- An operation of the polling server, locked while what it waits for is recorded.
+SELECT state FROM execution_operations WHERE workspace_id = @workspace_id AND id = @id AND server_id = @server_id FOR UPDATE;
 -- name: RequeueUndeliveredPipeline :exec
 -- A dispatched pipeline that no runner holds goes back to the queue, giving up its runner's turn
 -- while management's configuration refuses it. The caller holds the operation's row, so whether

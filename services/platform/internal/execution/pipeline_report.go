@@ -66,7 +66,10 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 	if err = tx.QueryRow(ctx, `SELECT command,state,cancel_requested,report_sequence,note FROM execution_operations WHERE id=$1 AND server_id=$2 FOR UPDATE`, c.Id, a.ID).Scan(&raw, &state, &cancelled, &sequence, &waited); err != nil {
 		return false, err
 	}
-	if Terminal(state) {
+	// One handed back to the queue while management's configuration refused it (holdForOperator)
+	// is delivered only once it is dispatched again: a poll that read it before then is not proof
+	// that it still holds its runner's turn.
+	if Terminal(state) || state == "queued" {
 		return false, nil
 	}
 	pollCancelled := c.CancelRequested
@@ -104,7 +107,7 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		// delivery check, so it finishes here rather than reaching one to be cancelled. One that
 		// waited, as on GitHub's rate limits or management's configuration, still says why.
 		note := "Cancelled or expired before runner delivery."
-		if waited != "" {
+		if waited := waitedNotes(waited); waited != "" {
 			note += " " + waited
 		}
 		if err = queries.FinishUndeliveredPipeline(ctx, db.FinishUndeliveredPipelineParams{WorkspaceID: ws, ID: c.Id, State: "cancelled", Note: note}); err != nil {

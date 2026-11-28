@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"strings"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -19,6 +20,22 @@ const (
 	otherGitHubAppNote = "Delivery waited because management is running with another GitHub App than the one this connection was authorized with. An operator can configure that App again, or the repository can be connected again with the current one."
 	providerPolicyNote = "Delivery waited because management's configuration does not allow this connection's Git provider, as once an operator removes its origin. An operator can allow it again."
 )
+
+// waitNotes say why a pipeline's delivery waited, in the order waitedNotes gives them.
+var waitNotes = []string{gitHubBusyNote, noGitHubAppNote, otherGitHubAppNote, providerPolicyNote}
+
+// waitedNotes is what of an operation's note says why its delivery waited, for the note it ends
+// with if it expires undelivered. The rest, such as the run's reason, which the note starts with
+// and its end puts in front again, is left out.
+func waitedNotes(note string) string {
+	var waited []string
+	for _, n := range waitNotes {
+		if strings.Contains(note, n) {
+			waited = append(waited, n)
+		}
+	}
+	return strings.Join(waited, " ")
+}
 
 // operatorWait is a command that management's own configuration refuses for now, as once an
 // operator removes a provider's origin or management starts without its GitHub App. Only the
@@ -60,14 +77,11 @@ func (g *gitAnswers) refusedByOperator(ctx context.Context, tx pgx.Tx, id uuid.U
 // it back.
 func (s *Service) queuedOperatorRefusal(ctx context.Context, tx pgx.Tx, ws uuid.UUID, c api.ExecutionCommand) (string, error) {
 	var p pipeline.Command
-	// Delivery refuses an invalid payload, and a connection that is gone, for itself.
+	// Delivery refuses an invalid payload for itself.
 	if c.Pipeline == nil || json.Unmarshal(*c.Pipeline, &p) != nil {
 		return "", nil
 	}
 	st, err := s.loadGitState(ctx, tx, ws, p.Connection.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
 	if err != nil {
 		return "", err
 	}
@@ -85,14 +99,14 @@ func (s *Service) holdForOperator(ctx context.Context, a Identity, c api.Executi
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var state api.ExecutionState
-	if err = tx.QueryRow(ctx, "SELECT state FROM execution_operations WHERE id=$1 AND server_id=$2 FOR UPDATE", c.Id, a.ID).Scan(&state); err != nil {
+	queries := db.New(tx)
+	state, err := queries.LockServerOperationState(ctx, db.LockServerOperationStateParams{WorkspaceID: a.Workspace, ID: c.Id, ServerID: a.ID})
+	if err != nil {
 		return err
 	}
-	if Terminal(state) {
+	if Terminal(api.ExecutionState(state)) {
 		return nil
 	}
-	queries := db.New(tx)
 	if c.Kind == "pipeline" {
 		if err = queries.RequeueUndeliveredPipeline(ctx, db.RequeueUndeliveredPipelineParams{WorkspaceID: a.Workspace, ID: c.Id}); err != nil {
 			return err

@@ -589,6 +589,24 @@ func (q *Queries) LockDeliveredPipeline(ctx context.Context, arg LockDeliveredPi
 	return i, err
 }
 
+const lockServerOperationState = `-- name: LockServerOperationState :one
+SELECT state FROM execution_operations WHERE workspace_id = $1 AND id = $2 AND server_id = $3 FOR UPDATE
+`
+
+type LockServerOperationStateParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+}
+
+// An operation of the polling server, locked while what it waits for is recorded.
+func (q *Queries) LockServerOperationState(ctx context.Context, arg LockServerOperationStateParams) (string, error) {
+	row := q.db.QueryRow(ctx, lockServerOperationState, arg.WorkspaceID, arg.ID, arg.ServerID)
+	var state string
+	err := row.Scan(&state)
+	return state, err
+}
+
 const lockSourceSubmission = `-- name: LockSourceSubmission :one
 SELECT environment_id,revision_id,configuration,state,created_at,withdrawn_at FROM source_submissions WHERE workspace_id = $1 AND id = $2 FOR UPDATE
 `
