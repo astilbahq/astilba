@@ -381,9 +381,27 @@ func (g *gitAnswers) access(ctx context.Context, tx pgx.Tx, id uuid.UUID, write 
 // it could do is then unknown.
 var errCloneRejected = &domain.Error{Code: "invalid_input", Message: "The Git server did not accept the connection's clone credential, so whether it can push is unknown. Check its username and token.", Fields: []string{"clone.rejected"}}
 
+// errClonePushUnknown refuses a stored clone credential the Git server refused to say could not
+// push. A server answers so for reasons that say nothing about the credential, and one that can
+// push once they pass must never reach a runner.
+var errClonePushUnknown = &domain.Error{Code: "invalid_input", Message: "The Git server refused to say whether the connection's clone credential can push, so runners don't receive it. Servers refuse so when a firewall, an IP allow list or a ban after failed sign-ins blocks Astilba, when single sign-on hasn't authorized the token, when the credential can't read the repository, or when the repository is archived or read-only. Check that Astilba can read the repository with the credential, and that the credential has only read access.", Fields: []string{"clone.pushUnknown"}}
+
+// cloneCheckRefusal is the refusal for CanPush's err that refuses the clone credential itself,
+// or err.
+func cloneCheckRefusal(err error) error {
+	var unclear *pipeline.PushUnclear
+	switch {
+	case errors.Is(err, pipeline.ErrCredentialRejected):
+		return errCloneRejected
+	case errors.As(err, &unclear):
+		return errClonePushUnknown
+	}
+	return err
+}
+
 // cloneRefusal reports whether err refuses the clone credential itself, which no retry changes.
 func cloneRefusal(err error) (*domain.Error, bool) {
-	for _, refusal := range []*domain.Error{errCloneCanPush, errCloneRejected} {
+	for _, refusal := range []*domain.Error{errCloneCanPush, errCloneRejected, errClonePushUnknown} {
 		if errors.Is(err, refusal) {
 			return refusal, true
 		}
@@ -460,8 +478,8 @@ func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id, run uuid.UU
 	if err != nil {
 		return gitAnswer[pipeline.RunnerAccess]{}, err
 	}
-	if errors.Is(push.Err, pipeline.ErrCredentialRejected) {
-		return gitAnswer[pipeline.RunnerAccess]{Err: errCloneRejected, Setup: true, Connection: answer.Connection}, nil
+	if refusal, refused := cloneRefusal(cloneCheckRefusal(push.Err)); refused {
+		return gitAnswer[pipeline.RunnerAccess]{Err: refusal, Setup: true, Connection: answer.Connection}, nil
 	}
 	if push.Err != nil {
 		return gitAnswer[pipeline.RunnerAccess]{Err: push.Err, Setup: push.Setup, Connection: answer.Connection}, nil

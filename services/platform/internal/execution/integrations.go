@@ -128,8 +128,8 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		if repository.Err != nil {
 			return domain.Invalid("repository")
 		}
-		if errors.Is(push.Err, pipeline.ErrCredentialRejected) {
-			return errCloneRejected
+		if refusal, refused := cloneRefusal(cloneCheckRefusal(push.Err)); refused {
+			return refusal
 		}
 		if push.Err != nil {
 			return &domain.Error{Code: "invalid_input", Message: "The Git server did not say whether the clone credential can push, so it was not saved. Try again.", Fields: []string{"clone"}}

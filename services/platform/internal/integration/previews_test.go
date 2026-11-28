@@ -45,7 +45,7 @@ func previewIsolationJourney(t *testing.T, transfer, recoverCleanup bool) {
 	open.Store(true)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if answerReceivePack(w, r) {
+		if answerPushCheck(w, r) {
 			return
 		}
 		switch {

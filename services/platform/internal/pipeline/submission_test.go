@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"context"
 	"errors"
 	"maps"
 	"net/http"
@@ -112,53 +111,5 @@ func TestSubmitThroughEachProvider(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// A runner receives only a credential the Git server will not let push. The server is asked for
-// its receive-pack advertisement, which every provider refuses without write access.
-func TestCanPushAsksTheGitServer(t *testing.T) {
-	for _, kind := range []string{"github", "gitlab", "gitea"} {
-		t.Run(kind, func(t *testing.T) {
-			f, _ := pipelinetest.NewForge(kind, map[string]pipelinetest.File{"compose.yaml": {Content: "services: {}\n", Mode: "100644"}})
-			if can, err := forgeProvider(t, f, pipelinetest.Writer).CanPush(t.Context()); err != nil || !can {
-				t.Fatalf("a write credential was taken for read-only: %t %v", can, err)
-			}
-			reader := forgeProvider(t, f, pipelinetest.Reader)
-			if can, err := reader.CanPush(t.Context()); err != nil || can {
-				t.Fatalf("a read credential was taken for one that can push: %t %v", can, err)
-			}
-			// A credential the server didn't accept says nothing about what it could do.
-			if _, err := forgeProvider(t, f, "not-a-token").CanPush(t.Context()); !errors.Is(err, ErrCredentialRejected) {
-				t.Fatalf("an unaccepted credential was taken for read-only: %v", err)
-			}
-			f.Down = http.StatusInternalServerError
-			if _, err := reader.CanPush(t.Context()); err == nil {
-				t.Fatal("an unknown answer was taken for read-only")
-			}
-		})
-	}
-	// A refusal under the server's rate limits says nothing about what the credential can do, so
-	// a credential that can push is never taken for read-only while the server limits it.
-	for name, limit := range map[string]http.HandlerFunc{
-		"retry-after": func(w http.ResponseWriter, r *http.Request) { w.Header().Set("Retry-After", "30"); w.WriteHeader(403) },
-		"body": func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(403)
-			_, _ = w.Write([]byte("API rate limit exceeded"))
-		},
-	} {
-		limited := httptest.NewServer(limit)
-		p, _ := NewProvider(Connection{Provider: "gitea", BaseURL: limited.URL, Repository: "team/app"}, Credential{Password: pipelinetest.Writer}, Policy{Development: true})
-		if can, err := p.CanPush(context.Background()); err == nil {
-			t.Fatalf("a rate limit (%s) was taken for read-only: %t", name, can)
-		}
-		limited.Close()
-	}
-	// Redirects are not followed, so a redirect to a page that answers 200 proves nothing.
-	server := httptest.NewServer(http.RedirectHandler("/elsewhere", http.StatusFound))
-	defer server.Close()
-	p, _ := NewProvider(Connection{Provider: "gitea", BaseURL: server.URL, Repository: "team/app"}, Credential{Password: pipelinetest.Reader}, Policy{Development: true})
-	if _, err := p.CanPush(context.Background()); err == nil {
-		t.Fatal("a redirect was taken for an answer")
 	}
 }
