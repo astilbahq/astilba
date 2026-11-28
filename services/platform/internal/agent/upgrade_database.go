@@ -19,15 +19,21 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 	for _, check := range []struct{ sql, want, message string }{
 		// By name: a database its owner marked as a template is still one the upgrade would lose.
 		// template0 is always oid 4, so another database a superuser names template0 is one too.
+		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_database WHERE oid <> 4 AND datname NOT IN (current_database(),'postgres','template1')", "0", "additional databases require a separate recipe"},
+		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_tablespace WHERE spcname NOT IN ('pg_default','pg_global')", "0", "custom tablespaces are unsupported"},
+		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_prepared_xacts", "0", "prepared transactions are unsupported"},
+		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_replication_slots", "0", "replication slots are unsupported"},
+		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_subscription", "0", "subscriptions are unsupported"},
 		// The upgrade restores the database into a cluster initdb made, so the maintenance database,
 		// template1 and template0, always oid 4, must hold only what initdb gives them. Before the
 		// owner model the database user is a superuser and can change any of them, template0 too
 		// once it opens it, and close it again.
+		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_db_role_setting WHERE setdatabase=0 OR setdatabase IN (SELECT oid FROM pg_database WHERE oid = 4 OR datname IN (current_database(),'postgres','template1'))", "0", "database or role settings require a separate recipe"},
 		// The database user owns the database; the bootstrap superuser, the database user too
 		// before the owner model, owns the others. The maintenance database isn't a template and
@@ -35,12 +41,16 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		// that doesn't, under its own name. Each keeps the grants it starts with: the default,
 		// and for the templates initdb's, which takes TEMPORARY from PUBLIC. An ACL that only
 		// spells those out, as a restore's grant and revoke leaves one, is no custom privilege.
+		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM (SELECT d.*, coalesce(datacl, acldefault('d',datdba)) AS acl, CASE WHEN oid = 4 OR datname='template1' THEN ARRAY[makeaclitem(0,datdba,'CONNECT',false), makeaclitem(datdba,datdba,'CREATE,TEMPORARY,CONNECT',false)] ELSE acldefault('d',datdba) END AS initial FROM pg_database d WHERE oid = 4 OR datname IN (current_database(),'postgres','template1')) d WHERE NOT (acl @> initial AND acl <@ initial) OR datconnlimit<>-1 OR datdba<>CASE WHEN datname=current_database() THEN (SELECT oid FROM pg_roles WHERE rolname=" + quoteLiteral(a.Postgres.Username) + ") ELSE 10 END OR oid = 4 AND (datname<>'template0' OR NOT (datistemplate AND NOT datallowconn)) OR datname='template1' AND NOT (datistemplate AND datallowconn) OR datname='postgres' AND datname<>current_database() AND (datistemplate OR NOT datallowconn) OR shobj_description(oid,'pg_database') IS NOT NULL AND shobj_description(oid,'pg_database') IS DISTINCT FROM CASE WHEN oid = 4 THEN 'unmodifiable empty database' WHEN datname='postgres' THEN 'default administrative connection database' WHEN datname='template1' THEN 'default template for new databases' END", "0", "custom database privileges, ownership, comments or limits require a separate recipe"},
 	} {
 		raw, err := e.pgQuery(ctx, db, a, check.sql)
 		if err != nil || strings.TrimSpace(string(raw)) != check.want {
 			return errors.New(check.message)
 		}
+	}
+	if err := e.upgradeLocaleCheck(ctx, db, a); err != nil {
+		return err
 	}
 	for _, other := range []struct{ database, called string }{{"postgres", "the postgres maintenance database"}, {"template1", "template1"}} {
 		database, called := other.database, other.called
@@ -51,7 +61,7 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 		pg := *a.Postgres
 		pg.Database = database
 		admin.Postgres = &pg
-		raw, err := e.pgQuery(ctx, db, admin, "SELECT count(*) FROM pg_largeobject_metadata")
+		raw, err := e.pgQuery(ctx, db, admin, "SELECT count(*) FROM pg_largeobject_metadata") // inline-sql: reads a managed database's catalog, not the platform database.
 		if err != nil || strings.TrimSpace(string(raw)) != "0" {
 			return errors.New(called + " contains large objects")
 		}
@@ -97,6 +107,57 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 			}
 			return errors.New(userObjectsNote(called, leftovers))
 		}
+	}
+	return nil
+}
+
+// localeDatabases names, by the key upgradeLocaleSQL gives it, each database whose encoding and
+// locale the upgrade's new cluster sets.
+var localeDatabases = map[string]string{"application": "the application database", "postgres": "the postgres maintenance database", "template1": "template1"}
+
+// upgradeLocaleSQL lists, one per line as key:properties, the databases of localeDatabases whose
+// encoding or locale differs from template0's. template0 is always oid 4 and can't be dropped, so
+// it keeps what initdb gave the cluster, and the upgrade's new cluster gives every database what its
+// own initdb chose, from the same image defaults. Before the owner model the database user is a
+// superuser and can drop template1 or postgres and create it again from template0 in another
+// encoding or locale, or do the same to the application's database from another one. The columns
+// are PostgreSQL 17's and 18's, the majors an upgrade starts from or reaches. datcollversion is left
+// out: it records the collation library's version, which a new cluster records afresh.
+// inline-sql: reads a managed database's catalog, not the platform database.
+const upgradeLocaleSQL = `SELECT CASE WHEN d.datname = pg_catalog.current_database() THEN 'application' ELSE d.datname END || ':' || pg_catalog.concat_ws(',',
+	CASE WHEN d.encoding <> t.encoding THEN 'encoding' END,
+	CASE WHEN d.datlocprovider <> t.datlocprovider THEN 'locale provider' END,
+	CASE WHEN d.datcollate <> t.datcollate THEN 'LC_COLLATE' END,
+	CASE WHEN d.datctype <> t.datctype THEN 'LC_CTYPE' END,
+	CASE WHEN d.datlocale IS DISTINCT FROM t.datlocale THEN 'ICU or builtin locale' END,
+	CASE WHEN d.daticurules IS DISTINCT FROM t.daticurules THEN 'ICU rules' END)
+FROM pg_catalog.pg_database d, pg_catalog.pg_database t
+WHERE t.oid = 4 AND d.oid <> 4 AND d.datname IN (pg_catalog.current_database(), 'postgres', 'template1')
+	AND (d.encoding, d.datlocprovider, d.datcollate, d.datctype, d.datlocale, d.daticurules) IS DISTINCT FROM (t.encoding, t.datlocprovider, t.datcollate, t.datctype, t.datlocale, t.daticurules)
+ORDER BY 1`
+
+// upgradeLocaleCheck refuses an upgrade whose new cluster would silently give the application's
+// database, postgres or template1 another encoding or locale, so that databases made from
+// template1 afterwards would differ too. It names each database and what differs, never a value.
+func (e *Engine) upgradeLocaleCheck(ctx context.Context, db pgClient, a domain.Application) error {
+	raw, err := e.pgQuery(ctx, db, a, upgradeLocaleSQL)
+	if err != nil {
+		return errors.New("cannot read the databases' encodings and locales")
+	}
+	var differ []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		key, what, _ := strings.Cut(line, ":")
+		called, known := localeDatabases[key]
+		if !known || what == "" {
+			return errors.New("cannot read the databases' encodings and locales")
+		}
+		differ = append(differ, called+" ("+strings.ReplaceAll(what, ",", ", ")+")")
+	}
+	if len(differ) > 0 {
+		return errors.New("an encoding or locale other than template0's, which the new cluster gives every database, requires a separate recipe: " + strings.Join(differ, "; "))
 	}
 	return nil
 }
@@ -154,7 +215,7 @@ func (e *Engine) knownUpgradeWriters(ctx context.Context, db pgClient, a domain.
 		}
 	}
 	delete(allowed, "")
-	raw, err := e.pgQuery(ctx, db, a, "SELECT coalesce(json_agg(host(client_addr)),'[]') FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid()")
+	raw, err := e.pgQuery(ctx, db, a, "SELECT coalesce(json_agg(host(client_addr)),'[]') FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid()") // inline-sql: reads a managed database's catalog, not the platform database.
 	var clients []*string
 	if err != nil || json.Unmarshal(raw, &clients) != nil {
 		return errors.New("cannot identify database writers")
@@ -194,7 +255,7 @@ func (e *Engine) upgradePreflight(ctx context.Context, s upgradeState, source st
 	if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
 		return nil, err
 	}
-	return e.pgQuery(ctx, helper, a, "SELECT pg_database_size(current_database())")
+	return e.pgQuery(ctx, helper, a, "SELECT pg_database_size(current_database())") // inline-sql: reads a managed database's catalog, not the platform database.
 }
 
 func upgradeHelperLabels(s upgradeState, a domain.Application, kind string) map[string]string {

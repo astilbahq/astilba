@@ -385,6 +385,41 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 				}
+				// A superuser can drop template1 or postgres and create it again from template0, with
+				// initdb's flags, owner, grants and connection limit, in another encoding or locale,
+				// which the new cluster wouldn't keep (PLAT-602). Created again as initdb made it, it's
+				// accepted, and then the attributes left out are what differ.
+				recreate := func(database, options string) {
+					t.Helper()
+					statements := []string{"DROP DATABASE " + database + " WITH (FORCE)", "CREATE DATABASE " + database + " TEMPLATE template0 " + options}
+					if database == "template1" {
+						statements = []string{"ALTER DATABASE template1 IS_TEMPLATE false", statements[0], statements[1] + " IS_TEMPLATE true", "REVOKE TEMPORARY ON DATABASE template1 FROM PUBLIC"}
+					}
+					for _, statement := range statements {
+						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, statement); err != nil {
+							t.Fatalf("%s: %v", statement, err)
+						}
+					}
+				}
+				for _, database := range []struct{ name, called string }{{"template1", "template1"}, {"postgres", "the postgres maintenance database"}} {
+					recreate(database.name, "")
+					if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+						t.Fatalf("%s created again from template0 as initdb made it was refused: %v", database.name, err)
+					}
+					for _, variant := range []struct{ options, differs string }{
+						{"ENCODING 'LATIN1' LOCALE 'C'", "(encoding, LC_COLLATE, LC_CTYPE)"},
+						{"LC_COLLATE 'C'", "(LC_COLLATE)"},
+						{"LOCALE_PROVIDER icu ICU_LOCALE 'en-US'", "(locale provider, ICU or builtin locale)"},
+						{"LOCALE_PROVIDER builtin BUILTIN_LOCALE 'C.UTF-8'", "(locale provider, ICU or builtin locale)"},
+						{"LOCALE_PROVIDER icu ICU_LOCALE 'en-US' ICU_RULES '&a < b'", "(locale provider, ICU or builtin locale, ICU rules)"},
+					} {
+						recreate(database.name, variant.options)
+						if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil || !strings.Contains(err.Error(), "an encoding or locale other than template0's") || !strings.Contains(err.Error(), database.called+" "+variant.differs) {
+							t.Fatalf("%s created again with %s wasn't refused by name: %v", database.name, variant.options, err)
+						}
+					}
+					recreate(database.name, "")
+				}
 				// Temporary tables go with their sessions, and the temporary schemas the sessions
 				// leave behind hold nothing; any role may make them in postgres.
 				for _, database := range []domain.Application{admin, template} {
