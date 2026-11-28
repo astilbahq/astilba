@@ -50,7 +50,7 @@ type AWS struct {
 	calls    map[string]int
 	// Lag is how many requests an access key issued from now on fails with InvalidAccessKeyId
 	// before IAM has propagated it.
-	Lag int
+	Lag    int
 	before func(action string)
 	serial int
 	// reportMissing answers a call by name on a user that doesn't exist with NoSuchEntity even
