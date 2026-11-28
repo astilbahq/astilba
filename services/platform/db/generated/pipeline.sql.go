@@ -667,24 +667,6 @@ func (q *Queries) NoteSourceSubmission(ctx context.Context, arg NoteSourceSubmis
 	return err
 }
 
-const operationNoteHas = `-- name: OperationNoteHas :one
-SELECT strpos(note, $1::text) > 0 AS has FROM execution_operations WHERE workspace_id = $2 AND id = $3
-`
-
-type OperationNoteHasParams struct {
-	Note        string    `json:"note"`
-	WorkspaceID uuid.UUID `json:"workspace_id"`
-	ID          uuid.UUID `json:"id"`
-}
-
-// Whether an operation's note already says something, such as why its delivery waited.
-func (q *Queries) OperationNoteHas(ctx context.Context, arg OperationNoteHasParams) (bool, error) {
-	row := q.db.QueryRow(ctx, operationNoteHas, arg.Note, arg.WorkspaceID, arg.ID)
-	var has bool
-	err := row.Scan(&has)
-	return has, err
-}
-
 const pipelineReportedStart = `-- name: PipelineReportedStart :one
 SELECT (steps @> jsonb_build_array(jsonb_build_object('name', $1::text)))::boolean AS started FROM execution_operations WHERE workspace_id = $2 AND id = $3
 `
@@ -792,6 +774,26 @@ func (q *Queries) RejectBuildTarget(ctx context.Context, arg RejectBuildTargetPa
 		arg.EnvironmentID,
 		arg.ApplicationID,
 	)
+	return err
+}
+
+const requeueUndeliveredPipeline = `-- name: RequeueUndeliveredPipeline :exec
+UPDATE execution_operations o SET state = 'queued'
+FROM pipeline_runs r
+WHERE o.workspace_id = $1 AND o.id = $2 AND o.kind = 'pipeline' AND o.state = 'dispatched' AND o.report_sequence = 0
+    AND r.workspace_id = o.workspace_id AND r.id = o.id AND r.delivery_started = false
+`
+
+type RequeueUndeliveredPipelineParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// A dispatched pipeline that no runner holds goes back to the queue, giving up its runner's turn
+// while management's configuration refuses it. The caller holds the operation's row, so whether
+// delivery started is read after any delivery that held it committed.
+func (q *Queries) RequeueUndeliveredPipeline(ctx context.Context, arg RequeueUndeliveredPipelineParams) error {
+	_, err := q.db.Exec(ctx, requeueUndeliveredPipeline, arg.WorkspaceID, arg.ID)
 	return err
 }
 

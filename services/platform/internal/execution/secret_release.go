@@ -127,7 +127,9 @@ func (s *Service) releaseValues(ctx context.Context, a Identity, key db.SecretRe
 	defer func() { keys.finish(ctx, outcome) }()
 	deliver, carried, err := s.hydrate(ctx, a, keys, c)
 	if err != nil || !deliver || !carried {
-		if err == nil {
+		// A command that waits for management's configuration is turned down for now, not failed.
+		var wait *operatorWait
+		if err == nil || errors.As(err, &wait) {
 			outcome = secretbroker.UsedIf(keys.opened())
 		}
 		if err != nil || !deliver {

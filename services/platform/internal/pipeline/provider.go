@@ -27,6 +27,11 @@ type Policy struct {
 	GitHubFixture string
 }
 
+// ErrNotAllowed marks a provider that management's configuration does not let it reach: an
+// origin the operator has not configured, plain HTTP outside development, or a GitHub fixture
+// outside loopback development. Only the operator's change undoes it.
+var ErrNotAllowed = errors.New("provider not allowed by management's configuration")
+
 func (p Policy) Allowed(base string) (bool, error) {
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.Path != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(base, "\r\n\\") || strings.HasSuffix(base, "/") {
@@ -42,12 +47,35 @@ func (p Policy) Allowed(base string) (bool, error) {
 	public := origin == "https://api.github.com" || origin == "https://gitlab.com" || origin == "https://gitea.com"
 	loop := net.ParseIP(u.Hostname())
 	if u.Scheme != "https" && !(p.Development && u.Scheme == "http" && loop != nil && loop.IsLoopback()) {
-		return false, errors.New("provider HTTPS is required")
+		return false, fmt.Errorf("%w: provider HTTPS is required", ErrNotAllowed)
 	}
 	if !public && !explicit && !(p.Development && loop != nil && loop.IsLoopback()) {
-		return false, errors.New("provider origin must be configured by the operator")
+		return false, fmt.Errorf("%w: provider origin must be configured by the operator", ErrNotAllowed)
 	}
 	return explicit || p.Development, nil
+}
+
+// endpoint is where management reaches a connection's API under p, and whether that address may
+// be private, or why p refuses it.
+func (p Policy) endpoint(c Connection) (base string, private bool, err error) {
+	if private, err = p.Allowed(c.BaseURL); err != nil {
+		return "", false, err
+	}
+	if c.Provider != "github" || p.GitHubFixture == "" {
+		return c.BaseURL, private, nil
+	}
+	u, e := url.Parse(p.GitHubFixture)
+	if !p.Development || e != nil || u.Scheme != "http" || net.ParseIP(u.Hostname()) == nil || !net.ParseIP(u.Hostname()).IsLoopback() || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", false, fmt.Errorf("%w: GitHub fixture requires loopback development", ErrNotAllowed)
+	}
+	return p.GitHubFixture, true, nil
+}
+
+// Check is NewProvider's judgement of p alone, which needs no credential: an error wrapping
+// ErrNotAllowed says management's configuration refuses the connection's provider.
+func (p Policy) Check(c Connection) error {
+	_, _, err := p.endpoint(c)
+	return err
 }
 
 type Provider struct {
@@ -71,7 +99,7 @@ func (p *Provider) unauthorized(status int) {
 }
 
 func NewProvider(c Connection, credential Credential, policy Policy) (*Provider, error) {
-	private, err := policy.Allowed(c.BaseURL)
+	base, private, err := policy.endpoint(c)
 	if err != nil {
 		return nil, err
 	}
@@ -85,15 +113,6 @@ func NewProvider(c Connection, credential Credential, policy Policy) (*Provider,
 		if len(v) > 8192 || strings.ContainsAny(v, "\r\n\x00") {
 			return nil, errors.New("invalid source credential")
 		}
-	}
-	base := c.BaseURL
-	if c.Provider == "github" && policy.GitHubFixture != "" {
-		u, e := url.Parse(policy.GitHubFixture)
-		if !policy.Development || e != nil || u.Scheme != "http" || net.ParseIP(u.Hostname()) == nil || !net.ParseIP(u.Hostname()).IsLoopback() || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-			return nil, errors.New("GitHub fixture requires loopback development")
-		}
-		base = policy.GitHubFixture
-		private = true
 	}
 	return &Provider{Connection: c, access: credential, client: outbound.Client(private, 20*time.Second), base: base}, nil
 }

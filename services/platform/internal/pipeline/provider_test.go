@@ -212,3 +212,38 @@ func TestProviderTellsRateLimitsAndMovesApart(t *testing.T) {
 		})
 	}
 }
+
+// Management's configuration refuses a provider it does not allow, which only the operator's change
+// undoes, distinctly from a base URL that is never valid. NewProvider refuses what Check does.
+func TestPolicyCheckMarksTheOperatorsRefusal(t *testing.T) {
+	gitea := func(base string) Connection {
+		return Connection{Provider: "gitea", BaseURL: base, Repository: "team/app"}
+	}
+	github := Connection{Provider: "github", BaseURL: "https://api.github.com", Repository: "team/app"}
+	for _, tc := range []struct {
+		name       string
+		policy     Policy
+		connection Connection
+		refused    bool
+	}{
+		{name: "origin removed", policy: Policy{Origins: []string{"https://other.example"}}, connection: gitea("https://git.example"), refused: true},
+		{name: "plain HTTP outside development", policy: Policy{}, connection: gitea("http://127.0.0.1:3000"), refused: true},
+		{name: "GitHub fixture outside development", policy: Policy{GitHubFixture: "http://127.0.0.1:9"}, connection: github, refused: true},
+		{name: "configured origin", policy: Policy{Origins: []string{"https://git.example"}}, connection: gitea("https://git.example")},
+		{name: "public provider", policy: Policy{}, connection: github},
+		{name: "loopback in development", policy: Policy{Development: true}, connection: gitea("http://127.0.0.1:3000")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.policy.Check(tc.connection)
+			if errors.Is(err, ErrNotAllowed) != tc.refused || (err != nil) != tc.refused {
+				t.Fatalf("checked with %v, refused %v", err, tc.refused)
+			}
+			if _, err := NewProvider(tc.connection, Credential{}, tc.policy); (err != nil) != tc.refused || errors.Is(err, ErrNotAllowed) != tc.refused {
+				t.Fatalf("NewProvider answered %v, refused %v", err, tc.refused)
+			}
+		})
+	}
+	if err := (Policy{Development: true}).Check(gitea("https://git.example/")); err == nil || errors.Is(err, ErrNotAllowed) {
+		t.Fatal("a base URL that is never valid was taken for the operator's refusal:", err)
+	}
+}

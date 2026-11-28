@@ -116,8 +116,12 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 				// is asked only before values leave, which a lapsed command never carries.
 				verify := state == "dispatched" && verified != c.Id && !lapsed
 				allowed, e := s.commandAllowed(ctx, a, c, verify)
-				if e != nil {
-					return nil, e
+				if waits, e := s.heldForOperator(ctx, a, c, e); waits || e != nil {
+					if e != nil {
+						return nil, e
+					}
+					skipped = append(skipped, c.Id)
+					continue
 				}
 				if !allowed {
 					cancel = true
@@ -138,8 +142,12 @@ func (s *Service) poll(ctx context.Context, a Identity, out *api.AgentPoll) (*ap
 			}
 			if carriesValues(c) {
 				decision, err := s.release(ctx, a, epoch, &c)
-				if err != nil {
-					return nil, err
+				if waits, e := s.heldForOperator(ctx, a, c, err); waits || e != nil {
+					if e != nil {
+						return nil, e
+					}
+					skipped = append(skipped, c.Id)
+					continue
 				}
 				if decision == skipCommand {
 					skipped = append(skipped, c.Id)
