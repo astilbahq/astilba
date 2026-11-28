@@ -384,19 +384,19 @@ var errCloneRejected = &domain.Error{Code: "invalid_input", Message: "The Git se
 // errClonePushUnknown refuses a stored clone credential the Git server refused to say could not
 // push. A server answers so for reasons that say nothing about the credential, and one that can
 // push once they pass must never reach a runner.
-var errClonePushUnknown = &domain.Error{Code: "invalid_input", Message: "The Git server refused to say whether the connection's clone credential can push, so runners don't receive it. Servers refuse so when a firewall, an IP allow list or a ban after failed sign-ins blocks Astilba, when single sign-on hasn't authorized the token, when the credential can't read the repository, or when the repository is archived or read-only. Check that Astilba can read the repository with the credential, and that the credential has only read access.", Fields: []string{"clone.pushUnknown"}}
+var errClonePushUnknown = &domain.Error{Code: "invalid_input", Message: "The Git server refused to say whether the connection's clone credential can push, so Astilba won't give it to runners. Servers refuse so when a firewall, an IP allow list or a ban after failed sign-ins blocks Astilba, when single sign-on hasn't authorized the token, when the credential can't read the repository, or when the repository is archived, read-only or scheduled for deletion. Check that Astilba can read the repository with the credential, and that the credential itself grants only read access, not only an account or role that can't push. On GitLab, use a deploy token with only read_repository.", Fields: []string{"clone.pushUnknown"}}
 
-// cloneCheckRefusal is the refusal for CanPush's err that refuses the clone credential itself,
-// or err.
-func cloneCheckRefusal(err error) error {
+// cloneCheckRefusal reports whether CanPush's err refuses the clone credential itself, which no
+// retry changes, and how.
+func cloneCheckRefusal(err error) (*domain.Error, bool) {
 	var unclear *pipeline.PushUnclear
 	switch {
 	case errors.Is(err, pipeline.ErrCredentialRejected):
-		return errCloneRejected
+		return errCloneRejected, true
 	case errors.As(err, &unclear):
-		return errClonePushUnknown
+		return errClonePushUnknown, true
 	}
-	return err
+	return nil, false
 }
 
 // cloneRefusal reports whether err refuses the clone credential itself, which no retry changes.
@@ -478,7 +478,7 @@ func (g *gitAnswers) cloneAccess(ctx context.Context, tx pgx.Tx, id, run uuid.UU
 	if err != nil {
 		return gitAnswer[pipeline.RunnerAccess]{}, err
 	}
-	if refusal, refused := cloneRefusal(cloneCheckRefusal(push.Err)); refused {
+	if refusal, refused := cloneCheckRefusal(push.Err); refused {
 		return gitAnswer[pipeline.RunnerAccess]{Err: refusal, Setup: true, Connection: answer.Connection}, nil
 	}
 	if push.Err != nil {

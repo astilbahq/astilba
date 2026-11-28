@@ -209,8 +209,9 @@ func (f *Forge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Gitea refuses a write request by a token without write:repository before it looks for the
-	// repository or what was asked for.
-	if f.kind == "gitea" && r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") {
+	// repository or what was asked for, as it does the push check's request to delete a branch no
+	// repository can have.
+	if f.kind == "gitea" && r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") && strings.HasSuffix(r.URL.Path, "/branches/astilba..push-check") {
 		_, password, _ := r.BasicAuth()
 		switch password {
 		case Reader:

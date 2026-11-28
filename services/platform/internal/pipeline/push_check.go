@@ -65,15 +65,18 @@ func (e *PushUnclear) Error() string {
 
 // GitHub's and GitLab's own refusals of a push by a credential without write access, answered
 // as the whole body of a 403, as each server's source and real servers show. GitHub names the
-// repository and who was refused, and GitLab a fine-grained token's missing permissions. GitLab
-// answers "upload code" for a token or deploy token without push, and "push code" for a user
-// whose role can't push.
+// repository and who was refused. GitLab answers "upload code" for a token or deploy token whose
+// scope can't push, and "upload code for this project" for a caller that is neither a user nor a
+// deploy key, as a CI job without a user, which can't push over HTTPS. Neither its "push code"
+// nor its refusal naming a fine-grained token's missing permissions is one: GitLab answers the
+// first whenever the project's policy withholds push, as while the project is scheduled for
+// deletion, and the second to a classic token that can push, in a group that requires
+// fine-grained tokens.
 var (
-	gitHubNoWrite     = regexp.MustCompile(`^Permission to \S+ denied to \S+\.$`)
-	gitLabFineGrained = regexp.MustCompile(`^Access denied: This operation requires a fine-grained .+ with the following (\S+ )?permissions: \[.+\]\.$`)
-	noWrite           = map[string][]string{
+	gitHubNoWrite = regexp.MustCompile(`^Permission to \S+ denied to \S+\.$`)
+	noWrite       = map[string][]string{
 		"github": {"Write access to repository not granted."},
-		"gitlab": {"You are not allowed to upload code.", "You are not allowed to upload code for this project.", "You are not allowed to push code to this project."},
+		"gitlab": {"You are not allowed to upload code.", "You are not allowed to upload code for this project."},
 	}
 )
 
@@ -86,7 +89,7 @@ func (p *Provider) refusesWrite(ctx context.Context, body []byte) (bool, error) 
 	case "github":
 		return slices.Contains(noWrite["github"], said) || gitHubNoWrite.MatchString(said), nil
 	case "gitlab":
-		return slices.Contains(noWrite["gitlab"], said) || gitLabFineGrained.MatchString(said), nil
+		return slices.Contains(noWrite["gitlab"], said), nil
 	case "gitea":
 		return p.giteaRefusesWrite(ctx)
 	}

@@ -48,18 +48,25 @@ func TestCanPushAsksTheGitServer(t *testing.T) {
 		})
 	}
 	// Redirects are not followed, so a redirect to a page that answers 200 proves nothing.
-	server := httptest.NewServer(http.RedirectHandler("/elsewhere", http.StatusFound))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/elsewhere" {
+			w.Header().Set("Content-Type", "application/x-git-receive-pack-advertisement")
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
 	defer server.Close()
 	p, _ := NewProvider(Connection{Provider: "gitea", BaseURL: server.URL, Repository: "team/app"}, Credential{Password: pipelinetest.Reader}, Policy{Development: true})
-	if _, err := p.CanPush(t.Context()); err == nil {
-		t.Fatal("a redirect was taken for an answer")
+	if can, err := p.CanPush(t.Context()); err == nil || can {
+		t.Fatalf("a redirect was taken for an answer: %t %v", can, err)
 	}
 }
 
 // A credential is read-only only when the server says it has no write access, in its own words,
 // as GitHub, GitLab 19.5 and Gitea 28.3 answer them. A refusal for any other reason, as for an
-// archived repository, a ban, single sign-on the credential was not authorized for, or a
-// repository the credential cannot see, says nothing about what it could do once that passes.
+// archived repository or one scheduled for deletion, a ban, single sign-on the credential was not
+// authorized for, or a repository the credential cannot see, says nothing about what it could do
+// once that passes.
 func TestCanPushReadsOnlyTheServersOwnNo(t *testing.T) {
 	scope := `{"message":"token does not have at least one of required scope(s), required=[write:repository], token scope=read:repository","url":"https://gitea.example/api/swagger"}`
 	for _, tc := range []struct {
@@ -78,9 +85,9 @@ func TestCanPushReadsOnlyTheServersOwnNo(t *testing.T) {
 		{name: "unseen repository", kind: "github", status: 404, body: "Repository not found.\n"},
 		{name: "message within another", kind: "github", status: 403, body: "Blocked. Write access to repository not granted.\n"},
 		{name: "token without push", kind: "gitlab", status: 403, body: "You are not allowed to upload code.", readOnly: true},
-		{name: "deploy token", kind: "gitlab", status: 403, body: "You are not allowed to upload code for this project.", readOnly: true},
-		{name: "role without push", kind: "gitlab", status: 403, body: "You are not allowed to push code to this project.", readOnly: true},
-		{name: "fine-grained token", kind: "gitlab", status: 403, body: "Access denied: This operation requires a fine-grained personal access token with the following project permissions: [Repository: Push].", readOnly: true},
+		{name: "caller without a user", kind: "gitlab", status: 403, body: "You are not allowed to upload code for this project.", readOnly: true},
+		{name: "push withheld by policy", kind: "gitlab", status: 403, body: "You are not allowed to push code to this project."},
+		{name: "fine-grained tokens required", kind: "gitlab", status: 403, body: "Access denied: This operation requires a fine-grained personal access token with the following project permissions: [Repository: Push]."},
 		{name: "failed sign-in ban", kind: "gitlab", status: 403, body: "Too many failed authentication attempts from this IP"},
 		{name: "archived", kind: "gitlab", status: 403, body: "You can't push code to an archived project."},
 		{name: "read-only repository", kind: "gitlab", status: 403, body: "The repository is temporarily read-only. Please try again later."},
@@ -147,7 +154,7 @@ func TestCanPushPassesWhatMayPass(t *testing.T) {
 			t.Run(name+"/"+where, func(t *testing.T) {
 				p := answeringProvider(t, "gitea", func(w http.ResponseWriter, r *http.Request) {
 					if where == "API" && strings.HasPrefix(r.URL.Path, "/team/") {
-						http.Error(w, "Forbidden", 403)
+						http.Error(w, "Forbidden", http.StatusForbidden)
 						return
 					}
 					refuse(w, r)

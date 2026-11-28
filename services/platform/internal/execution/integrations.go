@@ -128,7 +128,7 @@ func (s *Service) CreateConnection(ctx context.Context, p store.Principal, ws uu
 		if repository.Err != nil {
 			return domain.Invalid("repository")
 		}
-		if refusal, refused := cloneRefusal(cloneCheckRefusal(push.Err)); refused {
+		if refusal, refused := cloneCheckRefusal(push.Err); refused {
 			return refusal
 		}
 		if push.Err != nil {
