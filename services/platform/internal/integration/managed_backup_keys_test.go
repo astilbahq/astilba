@@ -380,9 +380,12 @@ func TestTheAccountCheckReportsUsersManagementDidntMake(t *testing.T) {
 	k.exec(t, `UPDATE backup_storage_keys SET activated_at=now() - interval '2 hours' WHERE id=$1`, d.Keys[0].Id)
 	extra := k.aws.IssueKey(d.Keys[0].UserName)
 	k.b.call("POST", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/check", nil, 204, nil)
-	k.run(t, accountCheck{})
 	var accounts []api.BackupStorageAccount
-	k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &accounts)
+	waitFor(t, "the account check didn't report", 30*time.Second, func() bool {
+		k.run(t, accountCheck{})
+		k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &accounts)
+		return len(accounts) == 1 && !accounts[0].Checking
+	})
 	if len(accounts) != 1 || accounts[0].CheckError != nil || len(accounts[0].FoundUsers) != 2 || accounts[0].ExtraKeysDeleted != 1 {
 		t.Fatalf("the check found %+v", accounts)
 	}
