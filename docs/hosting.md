@@ -976,10 +976,11 @@ the export left out.
 Audit history beyond the newest 100 stays in the source installation's database.
 
 A cross-host recovery checkpoint carries the workspace's configuration, unfinished work, the
-newest 100 operations and audit events, the revisions the app lists or a record names, the secret
-versions an export would carry and every version whose value was erased inside its window, and a
-compact record of the runtime changes committed in the 90 days before it was captured. Carrying an
-erasure means recovering from a backup that still holds the value erases it again. Its size
+newest 100 operations and audit events, the revisions the app lists or a record names, and a
+compact record of the runtime changes committed in the 90 days before it was captured. Of each
+secret it carries the 10 newest versions, every version something it carries names, and every
+erased version, without its value, so recovering from a backup that still holds a retired or
+purged value erases it again. Its size
 follows the configuration, not the workspace's age. A busy workspace whose history doesn't fit
 gets a shorter window, and management warns while it is under 35 days. Checkpoints are compressed
 with zstd. Cross-host recovery can use a management backup taken after the newest checkpoint's

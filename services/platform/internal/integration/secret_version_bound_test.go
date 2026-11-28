@@ -74,9 +74,10 @@ func unresolvedReferences(t *testing.T, f *fixture, ws uuid.UUID) []uuid.UUID {
 
 // Automation that sets a secret on every deploy used to grow every export and recovery base by a
 // version each time. Of each secret they now carry its newest 10 versions and every version a
-// carried row names: here the applied revision, the draft and a queued deployment. A base also
-// carries a version retired inside its window, so recovering from a backup that still holds the
-// value erases it. An import and a recovery from them leave no revision naming a missing version.
+// carried row names: here the applied revision, the draft, a queued deployment and an operation's
+// note, which stands for any shape a row may name one in. A base also carries every erased version,
+// however old, so recovering from a backup that still holds the value erases it again. An import and
+// a recovery from them leave no revision naming a missing version.
 func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
@@ -101,8 +102,8 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 		return draft.Id
 	}
 
-	// Versions 0 to 14 of one secret, each made by the API, so each has an audit event naming it.
-	versions := make([]uuid.UUID, 15)
+	// Versions 0 to 15 of one secret, each made by the API, so each has an audit event naming it.
+	versions := make([]uuid.UUID, 16)
 	var first api.SecretVersion
 	b.call("POST", path+"/secrets", map[string]string{"name": "TOKEN", "value": "bounded-version-canary-0"}, 201, &first)
 	versions[0] = first.Id
@@ -155,25 +156,36 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 		t.Fatal("no queued deployment names version 3")
 	}
 	saveDraft(versions[1])
-	// Version 2 is retired now, inside any recovery window; version 4 was erased long before it.
-	var retired struct {
-		value           []byte
+	// Only the finished deployment's note names version 5.
+	exec(`UPDATE execution_operations SET note='replaced '||$2 WHERE workspace_id=$1 AND state='succeeded' AND visual_plan_id IS NOT NULL`, ws, versions[5].String())
+	if !rowExists(t, f, `SELECT 1 FROM execution_operations WHERE workspace_id=$1 AND note LIKE '%'||$2`, ws, versions[5].String()) {
+		t.Fatal("no operation's note names version 5")
+	}
+	// Version 2 is retired now and version 4 was erased long before any recovery window; a backup
+	// from before then still holds their values.
+	type value struct {
+		sealed          []byte
 		plaintext, json *int32
 	}
-	if err := f.st.Pool.QueryRow(ctx, `SELECT encrypted_value,plaintext_bytes,json_bytes FROM secret_versions WHERE id=$1`, versions[2]).Scan(&retired.value, &retired.plaintext, &retired.json); err != nil {
-		t.Fatal(err)
+	backup := map[uuid.UUID]value{}
+	for _, id := range []uuid.UUID{versions[2], versions[4]} {
+		var v value
+		if err := f.st.Pool.QueryRow(ctx, `SELECT encrypted_value,plaintext_bytes,json_bytes FROM secret_versions WHERE id=$1`, id).Scan(&v.sealed, &v.plaintext, &v.json); err != nil {
+			t.Fatal(err)
+		}
+		backup[id] = v
 	}
 	b.call("DELETE", path+"/secrets/"+first.SecretId.String()+"/versions/"+versions[2].String(), nil, 204, nil)
 	exec(`UPDATE secret_versions SET encrypted_value=NULL,plaintext_bytes=NULL,json_bytes=NULL,erased_at=now()-interval '200 days' WHERE id=$1`, versions[4])
 
-	// Versions 5 to 14 are the newest 10; 2 and 4 to 14 are named only by audit events.
+	// Versions 6 to 15 are the newest 10; 2, 4 and 6 to 15 are named only by audit events.
 	newest := versions[len(versions)-portability.SecretVersionsKept:]
 	newestFirst := slices.Clone(newest)
 	slices.Reverse(newestFirst)
 	if !slices.Equal(listedIDs(t, f, `SELECT id FROM secret_versions WHERE secret_id=$1 ORDER BY created_at DESC,id DESC LIMIT 10`, first.SecretId), newestFirst) {
 		t.Fatal("the fixture's versions were not made in order")
 	}
-	exported := sortedIDs(append(slices.Clone(newest), versions[0], versions[1], versions[3], other.Id)...)
+	exported := sortedIDs(append(slices.Clone(newest), versions[0], versions[1], versions[3], versions[5], other.Id)...)
 	audited := func(a portability.Archive, id uuid.UUID) bool {
 		for _, row := range a.Tables["audit_events"] {
 			if string(row["resource_id"]) == `"`+id.String()+`"` {
@@ -183,13 +195,10 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 		return false
 	}
 
-	// A recovery base carries the versions an export does and the one retired inside its window.
+	// A recovery base carries the newest 10, the named versions and every erased one.
 	base := capturedBase(t, f, ws)
-	if got, want := archivedVersions(t, base), sortedIDs(append(slices.Clone(exported), versions[2])...); !slices.Equal(got, want) {
+	if got, want := archivedVersions(t, base), sortedIDs(append(slices.Clone(exported), versions[2], versions[4])...); !slices.Equal(got, want) {
 		t.Fatalf("a recovery base carried versions %v, want %v", got, want)
-	}
-	if !audited(base, versions[4]) {
-		t.Fatal("the fixture no longer has an audit event naming a version the base leaves out")
 	}
 
 	// An export carries the newest 10 and the named versions, and its import names none it lacks.
@@ -215,8 +224,10 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 	if got := archivedVersions(t, archive); !slices.Equal(got, exported) {
 		t.Fatalf("an export carried versions %v, want %v", got, exported)
 	}
-	if !audited(archive, versions[2]) {
-		t.Fatal("the fixture no longer has an audit event naming a version the export leaves out")
+	for _, id := range []uuid.UUID{versions[2], versions[4]} {
+		if !audited(archive, id) {
+			t.Fatal("the fixture no longer has an audit event naming a version the export leaves out")
+		}
 	}
 	destination := setup(t)
 	importer, err := destination.st.Queries.AccountByID(ctx, destination.owner)
@@ -236,10 +247,13 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 		t.Fatal("the import lost the secret's current value")
 	}
 
-	// Recovery from a backup taken before version 2 was retired and versions 8 to 14 were made: the
-	// base brings back the newest versions and erases the value the backup still holds.
-	exec(`UPDATE secret_versions SET encrypted_value=$2,plaintext_bytes=$3,json_bytes=$4,erased_at=NULL WHERE id=$1`, versions[2], retired.value, retired.plaintext, retired.json)
-	exec(`DELETE FROM secret_versions WHERE id=ANY($1)`, versions[8:])
+	// Recovery from a backup taken before versions 2 and 4 were erased and versions 9 to 15 were
+	// made: the base brings back the newest versions and erases the values the backup still holds,
+	// however long ago they were erased.
+	for id, v := range backup {
+		exec(`UPDATE secret_versions SET encrypted_value=$2,plaintext_bytes=$3,json_bytes=$4,erased_at=NULL WHERE id=$1`, id, v.sealed, v.plaintext, v.json)
+	}
+	exec(`DELETE FROM secret_versions WHERE id=ANY($1)`, versions[9:])
 	tx, err := f.st.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -258,13 +272,15 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 	if missing := unresolvedReferences(t, f, ws); len(missing) != 0 {
 		t.Fatal("a recovered revision names a missing version", missing)
 	}
-	for _, id := range versions[8:] {
+	for _, id := range versions[9:] {
 		if !rowExists(t, f, `SELECT 1 FROM secret_versions WHERE id=$1 AND erased_at IS NULL AND encrypted_value IS NOT NULL`, id) {
 			t.Fatal("recovery lost a version the base carries")
 		}
 	}
-	if !rowExists(t, f, `SELECT 1 FROM secret_versions WHERE id=$1 AND erased_at IS NOT NULL AND encrypted_value IS NULL`, versions[2]) {
-		t.Fatal("recovery brought back a value retired inside the window")
+	for id := range backup {
+		if !rowExists(t, f, `SELECT 1 FROM secret_versions WHERE id=$1 AND erased_at IS NOT NULL AND encrypted_value IS NULL`, id) {
+			t.Fatal("recovery brought back an erased value")
+		}
 	}
 	// The list shows each secret's live versions, newest first.
 	var listed []api.SecretVersion

@@ -284,7 +284,8 @@ var archiveFilters = func() map[string]string {
 		"backup_destinations": ` AND (account_id IS NULL OR EXISTS (SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id=$1 AND k.destination_id=backup_destinations.id AND k.activated_at IS NOT NULL))`,
 		"backup_storage_keys": ` AND state<>'minting' AND (destination_id IS NULL OR EXISTS (SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id=$1 AND k.destination_id=backup_storage_keys.destination_id AND k.activated_at IS NOT NULL)) AND (recovery_id IS NULL OR recovery_id IN (SELECT id FROM archive_keep WHERE kind='recovery'))`,
 		"execution_plans":     ` AND id IN (SELECT o.plan_id FROM execution_operations o JOIN archive_keep k ON k.kind='op' AND k.id=o.id)`,
-		"secret_versions":     ` AND secret_id IN (SELECT s.id FROM secrets s JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id WHERE s.workspace_id=$1)` + archiveKept("version", "id"),
+		// Each statement that chooses a version keeps only those of carried secrets.
+		"secret_versions": archiveKept("version", "id"),
 	}
 	for _, table := range []string{"deployment_units", "environment_layouts", "secrets", "managed_volumes", "managed_resources", "route_claims", "visual_runtime", "cross_host_runtime", "git_sources", "build_targets", "backup_policies", "backup_cutovers"} {
 		out[table] = archiveKept("env", "environment_id")

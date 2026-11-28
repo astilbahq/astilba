@@ -25,8 +25,8 @@ import (
 //   - the build artifacts those configurations use (archivePinnedArtifacts);
 //   - everything those rows name, as an export closes over it, which includes each environment's
 //     runtime head and retirement;
-//   - of each carried secret, the versions an export carries, and every version erased since the
-//     window opened (baseSecretVersions).
+//   - of each carried secret, its newest 10 versions, every version a carried row names
+//     (keepNamedSecretVersions) and every erased version (baseSecretVersions).
 //
 // Operations that changed a runtime travel as the recovery section's applied history instead
 // (RecoveryHistory), and roots and runtime changes that ended inside the window as its settled
@@ -35,18 +35,18 @@ import (
 // endpoints again from its runtime (projectCrossHostGrants). since is the window's start less the widest margin a recorded time is given (7 days),
 // so the window's edge errs towards carrying a row.
 func baseSelection(ctx context.Context, tx pgx.Tx, ws uuid.UUID, since time.Time) (map[string]string, error) {
-	return selectArchive(ctx, tx, ws, []archiveStep{{baseEnvironments, []any{since}}, {baseSeeds, []any{since}}}, archiveStep{baseSecretVersions, []any{SecretVersionsKept, since}})
+	return selectArchive(ctx, tx, ws, []archiveStep{{baseEnvironments, []any{since}}, {baseSeeds, []any{since}}}, archiveStep{baseSecretVersions, []any{SecretVersionsKept}})
 }
 
-// A base carries a version erased inside the window however old it is and whatever names it: a
-// backup from inside the window may still hold its value, and recovery takes the base's erasure
-// over it (recoveryErasure). Without it, recovering from that backup would bring a retired value
-// back. A version erased before the window opened is erased in any backup recovery can use.
+// A base carries every erased version of a carried secret, however old and whatever names it:
+// recovery takes the base's erasure over a value the restored backup still holds (recoveryErasure),
+// and it accepts a backup from before the window whose runtimes haven't changed since. Without it,
+// recovering from such a backup would bring a retired value back. An erased row holds no value.
 // inline-sql: chooses the secret versions in the base's transaction-local working set
 const baseSecretVersions = `INSERT INTO archive_keep(kind,id) SELECT 'version',x.id FROM (
 	SELECT v.id,v.erased_at,row_number() OVER (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC) n FROM secret_versions v
 	JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id
-	WHERE v.workspace_id=$1) x WHERE x.n<=$2 OR x.erased_at>=$3 ON CONFLICT DO NOTHING`
+	WHERE v.workspace_id=$1) x WHERE x.n<=$2 OR x.erased_at IS NOT NULL ON CONFLICT DO NOTHING`
 
 // A preview environment is live while an open request names it or its runtime is applied. One
 // retired inside the window is carried too, so a backup from inside the window can't show it live

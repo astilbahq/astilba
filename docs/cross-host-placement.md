@@ -165,9 +165,9 @@ follows the workspace's configuration, not its age.
   window is read with a day's margin, and a week's for an operation from before recorded times.
 - **What comes back.** Recovery restores configuration, unfinished work, the newest 100
   operations and audit events, the final state of runtime changes and cross-host roots, and
-  anything they name. Of each secret it restores the 10 newest versions, every version those
-  records name, and every erasure of a version's value inside the window, so no retired or
-  purged value comes back from the backup. Other releases, revisions, build runs and secret versions from between
+  anything they name. Of each secret it restores the 10 newest versions and every version those
+  records name, and it erases again every value the checkpoint records as erased, so no retired
+  or purged value comes back from the backup, however old. Other releases, revisions, build runs and secret versions from between
   the backup and the failure are lost. An operation the backup holds unfinished gets the final state the newest
   checkpoint records for it; one it records nothing for is fenced as cancelled, as before.
 - **Retired environments.** A base carries every standard environment, retired or not, and
